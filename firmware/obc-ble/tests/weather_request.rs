@@ -8,11 +8,12 @@
 
 use obc_ble::descriptor::FEATURE_WEATHER;
 use obc_ble::weather_request::{
-    authenticated_context_was_served, classify_upload, BundleIdentity, UploadDisposition, WeatherRefresh,
-    WeatherRequestBudget, WeatherRequestContext, REASON_HOURLY_ONLY, REASON_NO_BUNDLE, REASON_OUT_OF_AREA,
-    REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE,
-    VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID, WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION,
-    WEATHER_REQUEST_SERVICE_UUID, WEATHER_REQUEST_SERVICE_UUID_LE,
+    authenticated_context_was_served, classify_upload, BundleIdentity, Raise, RequestContextBundle,
+    RequestContextFacts, RequestContextFix, UploadDisposition, WeatherRefresh, WeatherRequestBudget,
+    WeatherRequestContext, REASON_HOURLY_ONLY, REASON_NO_BUNDLE, REASON_OUT_OF_AREA, REASON_RETRY, REASON_SCHEDULED,
+    REASON_URGENT, VALID_BEARING, VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED, WEATHER_BUNDLE_OBJECT_ID,
+    WEATHER_REQUEST_CONTEXT_UUID, WEATHER_REQUEST_CONTEXT_VERSION, WEATHER_REQUEST_SERVICE_UUID,
+    WEATHER_REQUEST_SERVICE_UUID_LE,
 };
 use obc_ble::{Config, DescriptorError, ObjectType, VersionRead};
 
@@ -37,7 +38,91 @@ fn full_context() -> WeatherRequestContext {
     }
 }
 
+fn full_request_facts() -> RequestContextFacts {
+    RequestContextFacts {
+        fix: Some(RequestContextFix { lat_udeg: 47_999_008, lon_udeg: 7_842_104, fix_utc: 1_800_001_800 }),
+        bearing_deg: Some(342),
+        speed_deci_ms: Some(71),
+        route_id: Some(7),
+        bundle: Some(RequestContextBundle { generation: 6, generated_at: 1_800_000_000, crc32: 0xBC1E_46C8 }),
+    }
+}
+
 // ============================ The context codec ============================
+
+#[test]
+fn raised_context_matches_the_binary_vectors() {
+    let full = WeatherRequestContext::raised(
+        WeatherRefresh::Every30.as_u8(),
+        Raise { request_id: 0x1188_0001, reason: REASON_SCHEDULED },
+        full_request_facts(),
+    );
+    assert_eq!(
+        &full.encode(),
+        include_bytes!("../../../specs/vectors/weather-request-context-full.bin"),
+        "the shared constructor must preserve the established full wire value"
+    );
+
+    let no_fix = WeatherRequestContext::raised(
+        WeatherRefresh::Off.as_u8(),
+        Raise { request_id: 0x1188_0002, reason: REASON_URGENT | REASON_NO_BUNDLE },
+        RequestContextFacts::default(),
+    );
+    assert_eq!(
+        &no_fix.encode(),
+        include_bytes!("../../../specs/vectors/weather-request-context-no-fix.bin"),
+        "absence stays five clear validity groups with zero fields"
+    );
+
+    let unknown_refresh = WeatherRequestContext::raised(
+        9,
+        Raise { request_id: 0x1188_0003, reason: REASON_SCHEDULED },
+        full_request_facts(),
+    );
+    assert_eq!(
+        &unknown_refresh.encode(),
+        include_bytes!("../../../specs/vectors/weather-request-context-unknown-refresh.bin"),
+        "the unknown refresh byte must pass through without changing another group"
+    );
+}
+
+#[test]
+fn raised_context_validates_each_group_independently() {
+    let raised = |facts| WeatherRequestContext::raised(9, Raise { request_id: 7, reason: 0xA000 }, facts);
+
+    let fix = raised(RequestContextFacts {
+        fix: Some(RequestContextFix { lat_udeg: -1, lon_udeg: 2, fix_utc: -3 }),
+        ..RequestContextFacts::default()
+    });
+    assert_eq!(fix.validity, VALID_POSITION);
+    assert_eq!((fix.lat_udeg, fix.lon_udeg, fix.fix_utc), (-1, 2, -3));
+
+    let bearing = raised(RequestContextFacts { bearing_deg: Some(359), ..RequestContextFacts::default() });
+    assert_eq!(bearing.validity, VALID_BEARING);
+    assert_eq!(bearing.bearing_deg, 359);
+
+    let speed = raised(RequestContextFacts { speed_deci_ms: Some(123), ..RequestContextFacts::default() });
+    assert_eq!(speed.validity, VALID_SPEED);
+    assert_eq!(speed.speed_deci_ms, 123);
+
+    let route = raised(RequestContextFacts { route_id: Some(42), ..RequestContextFacts::default() });
+    assert_eq!(route.validity, VALID_ROUTE);
+    assert_eq!(route.route_id, 42);
+
+    let bundle = raised(RequestContextFacts {
+        bundle: Some(RequestContextBundle { generation: 5, generated_at: -6, crc32: 7 }),
+        ..RequestContextFacts::default()
+    });
+    assert_eq!(bundle.validity, VALID_BUNDLE);
+    assert_eq!((bundle.bundle_generation, bundle.bundle_generated_at, bundle.bundle_crc32), (5, -6, 7));
+
+    for context in [fix, bearing, speed, route, bundle] {
+        assert_eq!(context.refresh_raw, 9);
+        assert_eq!(context.request_id, 7);
+        assert_eq!(context.reason, 0xA000);
+        assert_eq!(context.encode().len(), WeatherRequestContext::ENCODED_LEN);
+    }
+}
 
 #[test]
 fn context_round_trips_every_field() {

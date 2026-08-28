@@ -248,6 +248,13 @@ mod tests {
         }
     }
 
+    fn parked() -> obc_app::ble::WeatherSnapshot {
+        obc_app::ble::WeatherSnapshot {
+            position: Some(obc_app::ble::WeatherFix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, fix_utc: 0 }),
+            ..Default::default()
+        }
+    }
+
     /// §11.7: a device with no storage raises **nothing** — not even the no-bundle request that
     /// the same levels raise immediately with a card. If it did, every upload would be answered
     /// `error` and the phone would spend its battery on the loop forever.
@@ -255,11 +262,14 @@ mod tests {
     fn no_card_means_no_request_and_no_http_at_all() {
         let mut companion = SimCompanion::new(false);
         let mut live = offline_live();
-        let bytes = companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        companion.request_now();
+        assert!(companion.refreshing(), "the typed request is visible until the scheduler consumes it");
+        let bytes = companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
         assert!(bytes.is_none());
         assert_eq!(companion.state.raises, 0, "a card-less device must not raise a weather request");
         assert_eq!(companion.state.next_wake_s, None, "…and must not schedule one either");
         assert_eq!(live.total_requests(), 0, "no request may reach the wire");
+        assert!(!companion.refreshing(), "the rejected request cannot leave a false refreshing level");
     }
 
     /// The same levels *with* a card: the request is raised and the fetch is attempted. This is
@@ -272,6 +282,58 @@ mod tests {
         assert!(bytes.is_none(), "the offline client cannot produce a bundle");
         assert_eq!(companion.state.raises, 1);
         assert!(live.total_requests() > 0, "the companion must actually go and fetch");
+    }
+
+    #[test]
+    fn one_typed_urgent_request_raises_once_while_refresh_is_off_and_the_ride_is_inactive() {
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.request_now();
+
+        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
+        assert_eq!(companion.state.raises, 1);
+        assert_eq!(companion.state.last_reason, REASON_URGENT | REASON_NO_BUNDLE);
+        assert!(companion.refreshing(), "the failed fetch remains pending on its retry ladder");
+        assert!(live.total_requests() > 0, "Off disables cadence, not a rider's typed urgent request");
+
+        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 1);
+        assert_eq!(companion.state.raises, 1, "one typed request cannot become a per-frame screen sniff");
+    }
+
+    #[test]
+    fn conservative_bundle_facts_do_not_invent_reuse_movement_or_hourly_only_evidence() {
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        let held = RequestContextBundle { generation: 7, generated_at: 0, crc32: 0xDEAD_BEEF };
+        companion.request_now();
+
+        companion.run(&parked(), 0, Some(held), (48_060_000, 7_900_000), &mut live, 1);
+        assert_eq!(companion.state.raises, 1, "no metadata exists to prove that the bundle is reusable");
+        assert_eq!(companion.state.last_reason, REASON_URGENT, "the recent held bundle is otherwise usable");
+        assert_eq!(companion.state.last_reason & obc_ble::REASON_OUT_OF_AREA, 0);
+        assert_eq!(companion.state.last_reason & obc_ble::REASON_HOURLY_ONLY, 0);
+    }
+
+    #[test]
+    fn refreshing_level_tracks_cadence_completion_and_urgent_lapse() {
+        let mut cadence = SimCompanion::new(true);
+        let mut live = offline_live();
+        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 0);
+        assert!(cadence.refreshing(), "a cadence raise is the same visible pending level");
+        cadence.scheduler.commit_succeeded(1);
+        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1);
+        assert!(!cadence.refreshing(), "completion clears the level before the next pass");
+
+        let mut urgent = SimCompanion::new(true);
+        let mut live = offline_live();
+        urgent.request_now();
+        for now in [0, 300, 900, 2_100] {
+            urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, now);
+            assert!(urgent.refreshing(), "the urgent ladder remains pending at {now}");
+        }
+        urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 2_160);
+        assert!(!urgent.refreshing(), "the final request window lapses without a cadence fallback");
+        assert_eq!(urgent.state.pending_request_id, None);
     }
 
     /// §11.4's last field and §11.8's refresh byte, both filled from the facts rather than from a

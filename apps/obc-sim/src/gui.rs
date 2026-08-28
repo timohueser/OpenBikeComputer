@@ -1220,3 +1220,41 @@ impl eframe::App for SimGui {
         ctx.request_repaint();
     }
 }
+
+#[cfg(test)]
+mod sim_platform_tests {
+    use super::*;
+
+    fn panel() -> PanelState {
+        PanelState {
+            lat_deg: 0.0,
+            lon_deg: 0.0,
+            heading_deg: 0.0,
+            compass_deg: 0.0,
+            ble: obc_app::BleStatus::default(),
+            upload_sel: 0,
+            trip_sel: 0,
+            gps_time: false,
+            clock_offset_secs: 0,
+            retention_route_sel: 0,
+            retention_level: obc_app::Retention::default(),
+            synced_ride_sel: 0,
+        }
+    }
+
+    #[test]
+    fn typed_weather_request_reaches_only_a_live_companion() {
+        let mut settings = FileSettingsStore::open(std::env::temp_dir().join("obc-sim-unused-weather-settings"));
+        let mut panel = panel();
+        let mut unavailable = SimPlatform { settings: &mut settings, panel: &mut panel, companion: None };
+        assert!(
+            !unavailable.request_weather_refresh(),
+            "false is the HostLoop signal for WeatherOutcome::Failed {{ LinkLost }}"
+        );
+
+        let mut companion = crate::weather_companion::SimCompanion::new(true);
+        let mut available = SimPlatform { settings: &mut settings, panel: &mut panel, companion: Some(&mut companion) };
+        assert!(available.request_weather_refresh(), "a live companion accepts the typed effect");
+        assert!(companion.refreshing(), "the accepted request becomes the shared pending level");
+    }
+}
