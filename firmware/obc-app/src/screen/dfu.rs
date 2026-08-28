@@ -119,7 +119,7 @@ pub struct DfuConfirmScreen {
 
 impl DfuConfirmScreen {
     pub fn new(report: DfuScanReport) -> Self {
-        DfuConfirmScreen { report, actions: ActionRows::new() }
+        DfuConfirmScreen { report, actions: ActionRows::new(0) }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
