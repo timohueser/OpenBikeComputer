@@ -81,3 +81,13 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.miniz_oxide]
 opt-level = 2
+# `obc-crc` is the hottest inner loop in the whole test run, and it is not a weather crate. Every
+# storage checkpoint, every media cut in the crash matrices, and every OBCG frame the bakery writes
+# runs a CRC over its bytes, so an unoptimized `obc-crc` taxes suites that do not look like numeric
+# work at all. Measured with `cargo nextest run --workspace --all-features`: this one override takes
+# `obc-storage`'s 490 tests from 137.1 s to 5.4 s, and the whole run's test CPU from 1,329 s to
+# 697 s. `obc-storage` itself follows for its own crash matrices, 28.0 s to 13.5 s of test CPU.
+[profile.dev.package.obc-crc]
+opt-level = 2
+[profile.dev.package.obc-storage]
+opt-level = 2
