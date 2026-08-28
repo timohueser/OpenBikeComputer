@@ -339,7 +339,17 @@ impl Page {
 /// The contextual drawer's whole state: when it opened, the table it was opened over, the cursor,
 /// the page, and the ordinal the editor has staged but not committed.
 pub struct ContextDrawerScreen {
-    opened_ms: u32,
+    /// When the open slide started — the clock of the **first frame that could draw the sheet**,
+    /// and `None` until one has.
+    ///
+    /// The sheet is not handed a clock when it is built, and that is the fix for #1569. A chord is
+    /// resolved *above* the pass, before the pass sets its `now_ms`, so a sheet stamped at
+    /// construction carries the clock of the pass **before** the squeeze. On a host whose frames
+    /// gap — the board's Map sleeps until something happens — that is seconds old, the first frame
+    /// computes an elapsed far past [`OPEN_MS`], and the sheet is drawn already landed: the open
+    /// cuts. Starting the clock on the first tick makes the open begin where it can first be seen,
+    /// on every host and with no host having to say anything.
+    opened_ms: Option<u32>,
     menu: &'static ContextMenu,
     /// When the page transition in flight started, or `None` when none is.
     slide_ms: Option<u32>,
@@ -362,11 +372,12 @@ pub struct ContextDrawerScreen {
 }
 
 impl ContextDrawerScreen {
-    /// A freshly opened drawer over `menu`, sliding up from `now_ms` with the first row selected.
-    pub fn new(now_ms: u32, menu: &'static ContextMenu) -> Self {
+    /// A drawer over `menu` that has begun to open, with the first row selected. Its slide starts
+    /// on the first frame that ticks it — see [`opened_ms`](Self::opened_ms).
+    pub fn opening(menu: &'static ContextMenu) -> Self {
         debug_assert!(menu.rows.len() <= MAX_ROWS, "a context table is a sheet, not a page — see MAX_ROWS");
         ContextDrawerScreen {
-            opened_ms: now_ms,
+            opened_ms: None,
             menu,
             slide_ms: None,
             selected: 0,
@@ -487,17 +498,16 @@ impl ContextDrawerScreen {
 
     /// The sheet's animation: the open slide, then any page slide, at the panel's step cadence.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        // This frame is the open's origin if no frame has been one yet (#1569).
+        let opened_ms = *self.opened_ms.get_or_insert(now_ms);
         let settled = self.settle(now_ms);
         let sheet_h = self.sheet_height(now_ms);
         let visible = self.visible_height(now_ms, sheet_h);
         // The open is over when the sheet has **arrived**, not when its clock runs out: the
         // ease-out's last few per cent move no pixel, and the steps they would ask for are whole
         // renders that push nothing.
-        let opening = if sheet_h > 0 && visible >= sheet_h {
-            0
-        } else {
-            OPEN_MS.saturating_sub(now_ms.wrapping_sub(self.opened_ms))
-        };
+        let opening =
+            if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
         let sliding = self.slide_ms.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s)));
         let moved = visible != self.shown_h as i32;
         // Whether the frozen base has to be drawn under this frame — a page slide is running (see
@@ -507,7 +517,7 @@ impl ContextDrawerScreen {
         // The wake is the time to the **next step boundary**, not a whole step from wherever this
         // poll happened to land: the sheet advances on those boundaries, so asking for a full step
         // off one carries the offset to the end and finishes the open a step late.
-        let to_step = STEP_MS - now_ms.wrapping_sub(self.opened_ms) % STEP_MS;
+        let to_step = STEP_MS - now_ms.wrapping_sub(opened_ms) % STEP_MS;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
             // A page slide moves its two pages across a sheet that may not change height at all, so
             // it is a change whether or not the sheet grew.
@@ -611,8 +621,14 @@ impl ContextDrawerScreen {
     /// instead means the sheet moves exactly as often as it asked to be woken, and a wake between
     /// two steps draws the frame that is already there — which the tick then does not ask for.
     fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
-        let elapsed = now_ms.wrapping_sub(self.opened_ms);
-        let stepped = elapsed - elapsed % STEP_MS;
+        // Before the first tick the open has not started, so a host that draws a sheet it has not
+        // ticked draws no sheet — which is the frame the open begins from anyway.
+        let Some(opened_ms) = self.opened_ms else { return 0 };
+        let elapsed = now_ms.wrapping_sub(opened_ms);
+        // The frame the sheet opens on is its **first step**, not a frame that draws nothing: the
+        // chord costs the host a repaint whatever this returns, and #1559's rule is that no frame
+        // of the open is spent on nothing. So a step boundary is counted from one step in.
+        let stepped = (elapsed / STEP_MS + 1) * STEP_MS;
         (sheet_h as f32 * sheet::arrived(stepped, 0, OPEN_MS) + 0.5) as i32
     }
 
@@ -755,12 +771,11 @@ mod tests {
     }
 
     fn drawer() -> ContextDrawerScreen {
-        // Opened far enough in the past that the slide has landed.
-        ContextDrawerScreen::new(0, &RIDE)
+        ContextDrawerScreen::opening(&RIDE)
     }
 
     fn up_ahead_drawer() -> ContextDrawerScreen {
-        ContextDrawerScreen::new(0, &UP_AHEAD)
+        ContextDrawerScreen::opening(&UP_AHEAD)
     }
 
     /// The ride context is the compass menu's inventory minus its Main-menu station, and each row
@@ -911,11 +926,12 @@ mod tests {
     /// The sheet arrives monotonically from the bottom and lands exactly on its content height.
     #[test]
     fn the_sheet_slides_up_monotonically_and_lands_exactly() {
-        let d = ContextDrawerScreen::new(1_000, &RIDE);
+        let mut d = ContextDrawerScreen::opening(&RIDE);
+        d.tick_timers(1_000); // the frame the open starts on
         let target = Page::Root.height(&RIDE);
         let frames: heapless::Vec<i32, 8> =
             [0, 55, 110, 165, OPEN_MS].iter().map(|dt| d.visible_height(1_000 + dt, target)).collect();
-        assert_eq!(frames[0], 0, "nothing is visible on the opening frame");
+        assert!(frames[0] > 0, "the sheet's first step is on the frame it opens on, not one step later");
         assert_eq!(frames[4], target, "and the sheet lands exactly on its height");
         assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
     }
@@ -1086,6 +1102,7 @@ mod tests {
     #[test]
     fn the_wake_lands_on_the_next_step_boundary() {
         let mut d = drawer();
+        d.tick_timers(0); // the frame the open starts on
         assert_eq!(d.tick_timers(STEP_MS + 5).next_wake_ms, Some(STEP_MS - 5), "five into a step, ask for the rest");
         assert_eq!(d.tick_timers(STEP_MS * 2).next_wake_ms, Some(STEP_MS), "on a boundary, ask for a whole step");
     }
@@ -1119,7 +1136,7 @@ mod tests {
         let root_h = Page::Root.height(&UP_AHEAD);
         assert!(root_h < EDITOR_H, "the two-row table is shorter than the editor, so the sheet must grow");
 
-        let mut d = ContextDrawerScreen::new(0, &UP_AHEAD);
+        let mut d = ContextDrawerScreen::opening(&UP_AHEAD);
         d.slide_to(Page::Editor, 1_000);
         let grow: heapless::Vec<i32, 8> =
             [0, 45, 90, 135, SLIDE_MS].iter().map(|dt| d.sheet_height(1_000 + dt)).collect();

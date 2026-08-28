@@ -1190,6 +1190,17 @@ impl App {
         self.ui.base_needs_reader()
     }
 
+    /// Whether the frame this pass renders draws the **sheet and nothing else**: a drawer covers a
+    /// base that does not recess, on a host that declared a
+    /// [resident frame](App::set_resident_frame), so the base's draw is skipped (#1559).
+    ///
+    /// A host asks so it can *say so*: on the board an open step and a whole-screen redraw both
+    /// cost a render and a push, and its RTT line is the only instrument either is measured with
+    /// (#1569). A frame that skipped the base is not "a screen redraw" and must not claim to be.
+    pub fn sheet_only(&self) -> bool {
+        self.ui.sheet_only()
+    }
+
     /// Whether there's a **current** GPS fix at `now_ms`: a fix has been accepted and is no older
     /// than the ride engine's staleness window ([`RideEngine::has_live_fix`]). `false` before the
     /// first fix (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix"
@@ -2248,13 +2259,13 @@ impl App {
             return false;
         }
         match chord {
-            Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::new(self.ui.now_ms))),
+            Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
             // The contextual sheet exists only where content is declared (#1515 D3): a base screen
             // that names no [`ContextMenu`](crate::screen::ContextMenu) gets nothing, not an empty
             // drawer. The squeeze is still swallowed by the recogniser, so it can never leak a step
             // and a Back on the way to doing nothing.
             Chord::Context => match self.base_context() {
-                Some(menu) => self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::new(self.ui.now_ms, menu))),
+                Some(menu) => self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::opening(menu))),
                 None => false,
             },
         }
@@ -2731,10 +2742,9 @@ impl App {
     /// its input stage, from the same frame's clock. **Adopting it here instead is not free** — it
     /// was tried: `run_pass` brackets its before/after render-key comparison around every
     /// clock-driven change, so moving `now_ms` ahead of the *before* key hides one (the sensor
-    /// staleness crossing, caught by `dirty_parity` at 14,000 ms). The visible cost of leaving it
-    /// is that a chord resolved here stamps its drawer with the previous pass's clock, so on a host
-    /// whose frames can gap the sheet can arrive already past its open slide. That is the same
-    /// one-frame lag the two-plane firmware has by construction, and at 16 ms it is invisible.
+    /// staleness crossing, caught by `dirty_parity` at 14,000 ms). So a chord resolved here is
+    /// applied against the *previous* pass's clock — which is why a drawer is not handed one: its
+    /// open starts on the first frame that ticks it (#1569, `QuickDrawerScreen::opened_ms`).
     pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource) -> heapless::Vec<Gesture, GESTURE_BUF> {
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
         let chord = self.ui.input.recognize(clock, input, |g| {
@@ -3409,17 +3419,10 @@ impl App {
         // rows on the panel are right, and drawing them again only puts back what is already there.
         // On a **resident** target the base's draw is therefore skipped altogether, and an open
         // step costs the sheet and nothing else — the map render the open used to pay for at each
-        // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all.
-        //
-        // Three things are excluded, and each says so itself. A host that composes every frame from
-        // nothing (the snapshot sweep) never claims a resident frame, and draws the base as always.
-        // A base that **recesses** takes its second draw, because the recess *is* that draw: the
-        // rows standing on the panel are the undimmed ones, and skipping the draw would leave them
-        // there for the life of the sheet. And a sheet that is not purely *covering* this frame
-        // asks for the base itself ([`Screen::needs_base`]) — a page slide is travelling through the
-        // margin either side of it.
-        let sheet_only =
-            ui.resident_frame && covered && !recessed && !ui.stack.iter().skip(base + 1).any(|s| s.needs_base());
+        // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all. The
+        // three exclusions, and why each is one, are on [`UiRuntime::sheet_only`] — which the
+        // frame's `Reader` need reads too, because a frame that skips this draw reads nothing.
+        let sheet_only = ui.sheet_only();
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
@@ -4095,6 +4098,22 @@ mod tests {
         let quiet = pass_fix(&mut app, moving(180.0), 2_000);
         assert!(!quiet.map, "the sheet has settled and the map under it is frozen");
         assert!(app.state.user_fix.is_some(), "…even though the fix landed and moved the camera");
+    }
+
+    /// **A sheet-only frame asks the host for no `Reader`** (#1569). The base's draw is skipped, so
+    /// the SD style-table parse behind it would be a parse the frame throws away — and on the board
+    /// that parse is about half the cost of an open step.
+    #[test]
+    fn a_sheet_only_frame_needs_no_reader_and_an_uncovered_map_still_does() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.set_resident_frame(true);
+        assert!(app.base_needs_reader(), "an uncovered Map draws the map, so it needs the reader");
+
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        assert!(!app.base_needs_reader(), "the sheet covers an undimmed map: nothing reads the card");
+
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the same chord closes it");
+        assert!(app.base_needs_reader(), "…and the uncovered map needs it again");
     }
 
     /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the
