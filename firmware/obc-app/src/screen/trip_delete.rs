@@ -23,9 +23,9 @@ use obc_formats::obcr::NAME_CAP;
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
-use super::vocab::list;
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{palette, Ctx, Render, Transition};
 
 /// Per-row guard flags: only *Delete trip & routes* is destructive.
@@ -42,7 +42,7 @@ pub struct TripDeleteScreen {
     /// the pass.
     trip_id: crate::CatalogObjectId,
     name: heapless::String<NAME_CAP>,
-    selected: usize,
+    actions: ActionRows,
 }
 
 impl TripDeleteScreen {
@@ -53,31 +53,33 @@ impl TripDeleteScreen {
     pub fn new(trip_id: crate::CatalogObjectId, name: &str) -> Self {
         let mut n = heapless::String::new();
         let _ = n.push_str(fit_to_cap(name));
-        TripDeleteScreen { trip_id, name: n, selected: CANCEL }
+        TripDeleteScreen { trip_id, name: n, actions: ActionRows::new(CANCEL) }
     }
 
     /// True while the highlighted option needs a hold: its row fills with the live hold progress in
     /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
     /// hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
-        GUARDS[self.selected.min(GUARDS.len() - 1)]
+        self.actions.selection_is_guarded(&GUARDS)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
-            // Cancel answers a plain press *and* a hold (never dead air); Delete is guarded — a
-            // press on it does nothing, it takes the completed hold.
-            Gesture::Press | Gesture::Hold if self.selected == CANCEL => Transition::Pop,
-            Gesture::Hold if self.selected == DELETE => {
+        // Cancel answers a hold as well as a press. Keep this screen-specific rule before the
+        // shared controller; unguarded holds are otherwise inert.
+        if matches!(g, Gesture::Hold) && !self.actions.selection_is_guarded(&GUARDS) {
+            return Transition::Pop;
+        }
+
+        match self.actions.handle(g, &GUARDS) {
+            CardEvent::Activate(DELETE) => {
                 // Record the cascade-delete against the trip's durable id and pop back to the top
                 // level. The host drains it, deletes the `TP{id}.OBT` + member routes, rescans, and
                 // re-feeds — the folder is gone and the menu regroups on the next draw.
                 cx.activity.request_trip_delete(self.trip_id);
                 Transition::Pop
             }
-            Gesture::Back => Transition::Pop, // back = Cancel (keep the trip)
-            _ => Transition::None,
+            CardEvent::Activate(CANCEL) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::Activate(_) | CardEvent::None => Transition::None,
         }
     }
 
@@ -104,7 +106,7 @@ impl TripDeleteScreen {
             MenuItem { label: rx.t(Msg::TripDeleteConfirm), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::TripDeleteCancel), guard: GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, WARNING, geo);
     }
 }
 
