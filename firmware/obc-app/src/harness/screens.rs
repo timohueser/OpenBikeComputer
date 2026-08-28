@@ -46,8 +46,8 @@ fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
-/// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
-/// [`route_ctx`].
+/// A handle [`Ctx`] over fresh camera, Activity, and Recorder state. Route-menu tests use
+/// [`route_ctx_with_nav`] when they also need Navigator and a route catalog.
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, recorder: &'a mut RecorderMachine) -> Ctx<'a> {
     Ctx { recorder, ..test_ctx(state, activity, leaked_settings()) }
 }
@@ -488,7 +488,7 @@ fn route_menu_with_no_routes_ignores_press() {
 
 // Loading a route mid-session: the swap / save prompt, Finish / Discard.
 
-/// An activity navigating route `r`, with `rec` already recording.
+/// An Activity in Riding mode and a Navigator following route `r`, with `rec` already recording.
 fn tracking(r: usize, rec: &mut RecorderMachine) -> (Activity, crate::navigator::NavigatorMachine) {
     let act = Activity::new(Mode::Riding);
     let mut navigator = crate::navigator::NavigatorMachine::new();

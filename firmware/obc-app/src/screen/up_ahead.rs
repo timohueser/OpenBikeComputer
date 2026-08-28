@@ -240,7 +240,8 @@ fn scoped_corridor(corridor: &[CorridorPoi], source: UpAheadSource, route_loaded
 }
 
 /// Pure route-relative figures for one row. The distance axis is the entry's `dist_along_m` against
-/// matched activity progress. Remaining ascent is the cached profile's own
+/// matched progress from Navigator's [`RouteState`](crate::navigator::RouteState). Remaining ascent
+/// is the cached profile's own
 /// [`ascent_between_m`](obc_route::Profile::ascent_between_m) over those two along-route distances —
 /// not entry elevation (which may be absent or off the line), and not coarse chunk metadata. That
 /// is the shared climb-between-two-points lookup the `TO CLIMB` tile and the ETA model read too

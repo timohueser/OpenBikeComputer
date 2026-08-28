@@ -252,8 +252,8 @@ mod tests {
         }
     }
 
-    /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint
-    /// ahead — enough for the panel drawer (which reads only those three).
+    /// A bare metric readout over Navigator route state plus `waypoints`, resolving `next` as the
+    /// first waypoint ahead — enough for the panel drawer (which reads only those three).
     /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
     static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
 

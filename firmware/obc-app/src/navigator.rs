@@ -216,7 +216,13 @@ pub(crate) enum PlanPhase {
     Failed,
 }
 
-/// The domain that owns route planning, detour planning, preview and commit.
+/// The domain that owns active-route following, route planning, detour planning, preview, and
+/// commit.
+///
+/// Persistent route identity, match and guidance state, route caches, seam state, and travel
+/// heading live here. Screens borrow [`RouteState`] directly. The short-lived
+/// [`Prepare`](crate::screen::Prepare) context copies only the route facts that one pre-draw pass
+/// needs; it is not an owner.
 ///
 /// Everything one rider request passes through lives here and nowhere else: the undelivered
 /// request, the cancel that annihilates it, the phase, the operation token, and the [`CoreMode`]
