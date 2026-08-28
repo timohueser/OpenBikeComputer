@@ -436,7 +436,15 @@ pull_request = "affected"
 scheduled = "weekly"
 extra_triggers = ["ops/weather/**"]
 coverage_component = "weather"
-ownership = [{ kind = "rust-package", name = "obc-wx-bake" }]
+# The second owner is what makes `pull_request = "affected"` above reach the workflow. The
+# `test-weather` matrix runs this package and nothing else, but its legs compile `--workspace`, so
+# Cargo coverage alone would route every package in the tree to it and start four bakery runners
+# for any Rust change at all. The matrix therefore carries its own argument list and this suite
+# claims the run line, so the bakery is a route for the bakery.
+ownership = [
+  { kind = "rust-package", name = "obc-wx-bake" },
+  { kind = "workflow", pattern = "cargo nextest run ${{ matrix.args }}" },
+]
 budget_exception = { reason = "The repeated bake work is gone; one bake per assertion still puts the canonical-mosaic and event-pack binaries over the per-binary cap.", issue = "#1496" }
 cadence_conflict = { reason = "Fast codec tests, captured fixtures, expensive bakes, and ignored generators still share this package.", issue = "#1449" }
 

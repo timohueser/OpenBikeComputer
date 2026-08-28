@@ -194,7 +194,6 @@ class SuiteRegistryTests(unittest.TestCase):
         # The `on:` block is not a job, so its keys never become CI routes.
         self.assertEqual(set(registry.workflow_jobs(self.root)), {"test", "board"})
 
-
     def test_a_bare_assignment_is_shell_state_but_an_env_prefix_is_a_command(self) -> None:
         """`VAR=value` alone sets shell state; `VAR=value cmd` still runs, and still routes.
 
@@ -725,13 +724,13 @@ class ShippedRoutingTests(unittest.TestCase):
 
     def test_every_suite_routes_to_the_job_that_executes_it(self) -> None:
         expected = {
-            "rust.obc-crc": ["clippy", "fmt", "test", "test-weather"],
+            "rust.obc-crc": ["clippy", "fmt", "test"],
             "rust.obc-fw-nrf54l": ["embedded", "fmt"],
             "rust.obc-boot": ["boot", "fmt"],
             "rust.obc-desktop": ["desktop", "fmt"],
-            "rust.obc-web-convert": ["clippy", "fmt", "test", "test-weather", "wasm-bridges"],
+            "rust.obc-web-convert": ["clippy", "fmt", "test", "wasm-bridges"],
             # Routed by `trunk build --config docs/Trunk.toml`, whose HTML target links its manifest.
-            "rust.obc-web-demo": ["clippy", "fmt", "test", "test-weather", "wasm"],
+            "rust.obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "swift.obckit-host": ["ios-unit"],
             "ci.docs": ["docs"],
             "web.builder-vitest": ["web"],
@@ -756,7 +755,7 @@ class ShippedRoutingTests(unittest.TestCase):
 
         cases = [
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
-            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test", "test-weather"]),
+            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test"]),
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
@@ -765,7 +764,21 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "shared vectors",
                 ["specs/vectors/obcm-v2.json"],
-                ["clippy", "device", "fmt", "ios-unit", "test", "test-weather", "wasm-bridges", "web"],
+                ["clippy", "device", "fmt", "ios-unit", "test", "wasm-bridges", "web"],
+            ),
+            # The bakery's four runners are the most expensive thing on the gate, so the two
+            # directions of its route are pinned: a change under the baker starts them, and a leaf
+            # crate elsewhere in the workspace does not, even though every leg compiles
+            # `--workspace`. `obc-weather` is the device-side reader, not the baker.
+            (
+                "the weather baker",
+                ["host/obc-wx-bake/src/pack/rebake.rs"],
+                ["clippy", "fmt", "test", "test-weather"],
+            ),
+            (
+                "the device weather reader",
+                ["firmware/obc-weather/src/lib.rs"],
+                ["clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
             ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app"]),
             (
@@ -780,7 +793,7 @@ class ShippedRoutingTests(unittest.TestCase):
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
-            ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "test-weather", "wasm"]),
+            ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
             (
                 "OBCKit package source",
