@@ -59,8 +59,8 @@ impl RideRecoveryScreen {
         match g {
             Gesture::Step(n) if self.can_continue => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press if self.can_continue && self.selected == CONTINUE => {
-                // The host's recovered recorder has no app session attached yet. Mint one through
-                // the continuation edge, which tells Navigator not to run its fresh-session reset.
+                // Tell Recorder that the next Start continues the recovered session, so it keeps
+                // the restored accumulators instead of applying a fresh-session reset.
                 let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
                 cx.state.enter_riding_view(lon, lat);
                 cx.activity.mode = crate::activity::Mode::Riding;
