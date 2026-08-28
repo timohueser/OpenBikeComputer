@@ -279,6 +279,23 @@ impl UiRuntime {
         self.stack.iter().skip(base + 1).any(|s| s.is_overlay())
     }
 
+    /// Whether this frame draws the **sheet and nothing else** (#1559): the frozen base's rows on
+    /// the panel are already right, so its draw is skipped and an open step costs the sheet alone.
+    ///
+    /// Three things are excluded, and each is declared by the thing it is about. A host that
+    /// composes every frame from nothing never claims a
+    /// [resident frame](App::set_resident_frame) and draws the base as always. A base that
+    /// **recesses** takes its second draw, because the recess *is* that draw. And a sheet that is
+    /// not purely *covering* this frame asks for the base itself ([`Screen::needs_base`]) — a page
+    /// slide travels through the margin either side of it.
+    pub(crate) fn sheet_only(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        self.resident_frame
+            && self.base_frozen()
+            && self.stack.get(base).is_some_and(|s| !s.caps().recess)
+            && !self.stack.iter().skip(base + 1).any(|s| s.needs_base())
+    }
+
     /// Whether the base (lowest opaque) screen **wants the rain overlay** — its declared
     /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay), true only for the WX11 rain map.
     /// The frame's rain lease is dropped when this is false, so the precipitation raster is a
@@ -313,6 +330,13 @@ impl UiRuntime {
         // energy pattern as the two POI rows below. Disarmed (the normal state) this is free.
         if self.corridor_scratch.pending() {
             return true;
+        }
+        // **A frame that does not draw the base needs nothing the base reads** (#1569). The
+        // sheet-only open skips that draw, and on the board building the `Reader` for it is an SD
+        // style-table parse the frame then throws away — measured at about 45 ms of an 80 ms open
+        // step, which is the difference between six steps of a 440 ms slide and eleven.
+        if self.sheet_only() {
+            return false;
         }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         let Some(scr) = self.stack.get(base) else { return false };
