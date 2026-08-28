@@ -259,7 +259,7 @@ jobs:
         with:
           workspaces: .
           shared-key: host-tests
-          save-if: true  # PROBE ONLY: seed this throwaway PR's cache so the warm gate can be timed.
+          save-if: ${{ github.event_name == 'push' }}
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
