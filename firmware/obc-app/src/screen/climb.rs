@@ -120,7 +120,7 @@ impl ClimbScreen {
 
         // The live within-climb cursor from the route progress — column 0 is the base, the last the
         // summit; below the base clamps to 0.0, past the summit to 1.0.
-        let cursor_frac = profile.cursor_frac(rx.activity.progress_m);
+        let cursor_frac = profile.cursor_frac(rx.navigation.progress_m);
 
         // Header: "CLIMB" with the summit elevation in the right slot — just the number + unit
         // (e.g. "1762 m"). On a screen already titled CLIMB the figure reads as the summit without a
@@ -196,7 +196,7 @@ impl ClimbScreen {
         let col_w = (chart_w - gap) / 2;
         let grid_top = prog_y + 16;
         let row_h = ((h - 10 - grid_top - gap) / 2).max(20);
-        let cells = climb_tiles(&climb, rx.activity.progress_m, units, rx.settings.language);
+        let cells = climb_tiles(&climb, rx.navigation.progress_m, units, rx.settings.language);
         for (i, cell) in cells.iter().enumerate() {
             let (r, c) = (i / 2, i % 2);
             let x = chart_x + c as i32 * (col_w + gap);

@@ -158,17 +158,17 @@ fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     start_riding(&mut app); // riding index 0 = id 10
     let session = app.ride_session();
     // Simulate an established match on the *old* geometry.
-    app.activity.progress_m = 4_321;
-    app.activity.off_route = true;
-    app.activity.dist_to_route_m = 55;
+    app.navigator.route_state_mut().progress_m = 4_321;
+    app.navigator.route_state_mut().off_route = true;
+    app.navigator.route_state_mut().dist_to_route_m = 55;
 
     route_upload(&mut app, 10, true); // the navigated id re-uploaded — bytes swapped
     assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)), "active replace → the info-only card");
     // Forced adoption: everything derived from the old bytes is dropped — the matcher re-runs
     // from the current fix, the readouts clear until recomputed.
-    assert_eq!(app.activity.progress_m, 0, "stale progress over the old geometry is dropped");
-    assert!(!app.activity.off_route, "the stale off-route verdict is dropped");
-    assert_eq!(app.activity.dist_to_route_m, 0);
+    assert_eq!(app.navigator.route_state_mut().progress_m, 0, "stale progress over the old geometry is dropped");
+    assert!(!app.navigator.route_state_mut().off_route, "the stale off-route verdict is dropped");
+    assert_eq!(app.navigator.route_state_mut().dist_to_route_m, 0);
     assert_eq!(app.active_route_index(), Some(0), "still navigating the same route (same id)");
     assert_eq!(app.ride_session(), session, "the recording session is untouched");
     assert!(app.take_dirty().map, "the route line changed under the rider — repaint");
@@ -184,12 +184,16 @@ fn active_replace_adoption_happens_even_when_the_prompt_is_suppressed() {
     // The passkey card is up → the popup is dropped. The adoption must land anyway.
     let mut app = idle_app();
     start_riding(&mut app);
-    app.activity.progress_m = 999;
+    app.navigator.route_state_mut().progress_m = 999;
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: Some(42), paired: false });
     assert!(app.passkey_card_up());
 
     route_upload(&mut app, 10, true);
-    assert_eq!(app.activity.progress_m, 0, "adoption is not optional — stale state drops regardless");
+    assert_eq!(
+        app.navigator.route_state_mut().progress_m,
+        0,
+        "adoption is not optional — stale state drops regardless"
+    );
     assert!(app.passkey_card_up(), "the card stays; no popup landed under or over it");
     app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: false });
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the suppressed prompt was dropped, not queued");
@@ -201,10 +205,10 @@ fn replace_of_a_non_active_route_is_not_the_info_card() {
     // tracking (nothing to invalidate — no cached state exists for a non-active route).
     let mut app = idle_app();
     start_riding(&mut app); // riding id 10
-    app.activity.progress_m = 777;
+    app.navigator.route_state_mut().progress_m = 777;
     route_upload(&mut app, 11, true);
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "non-active replace → the swap prompt");
-    assert_eq!(app.activity.progress_m, 777, "the active route's match state is untouched");
+    assert_eq!(app.navigator.route_state_mut().progress_m, 777, "the active route's match state is untouched");
 }
 
 // --- replace-the-popup: consecutive uploads, and the manual swap prompt ------------------------

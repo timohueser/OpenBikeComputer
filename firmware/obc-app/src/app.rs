@@ -20,7 +20,6 @@ use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
 use crate::ride::RideSummary;
-use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
 use crate::screen::{
     self, ContextDrawerScreen, Ctx, MapScreen, MenuScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags,
@@ -515,11 +514,49 @@ pub enum ClockTrust {
 /// diagnostics/retry, but today's companion cannot fetch until a fresh device fix arrives.
 pub const WEATHER_FIX_FRESH_MS: u32 = 30_000;
 
+const NO_FIX_FLOOR_MS: u32 = 5_000;
+const NO_FIX_INTERVALS: u32 = 3;
+const BATTERY_POLL_MS: u32 = 30_000;
+
+/// Tick-local timing and sampling state that no product domain or screen owns.
+#[derive(Debug, Default)]
+struct TickState {
+    last_battery_poll_ms: Option<u32>,
+    temp_c: Option<f32>,
+    last_fix_ms: Option<u32>,
+    pending_terrain: Option<(i32, i32)>,
+}
+
+impl TickState {
+    const fn new() -> Self {
+        TickState { last_battery_poll_ms: None, temp_c: None, last_fix_ms: None, pending_terrain: None }
+    }
+
+    fn battery_poll_due(&mut self, now_ms: u32) -> bool {
+        let due = self.last_battery_poll_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= BATTERY_POLL_MS);
+        if due {
+            self.last_battery_poll_ms = Some(now_ms);
+        }
+        due
+    }
+
+    fn has_live_fix(&self, now_ms: u32, settings: &Settings) -> bool {
+        let window = (settings.fix_interval_s as u32 * 1_000 * NO_FIX_INTERVALS).max(NO_FIX_FLOOR_MS);
+        self.last_fix_ms.is_some_and(|last| now_ms.wrapping_sub(last) <= window)
+    }
+
+    #[cfg(test)]
+    fn assert_boot_state(&self) {
+        assert!(self.last_battery_poll_ms.is_none() && self.temp_c.is_none(), "nothing sampled at boot");
+        assert!(self.last_fix_ms.is_none() && self.pending_terrain.is_none(), "no fix or terrain request at boot");
+    }
+}
+
 pub struct App {
     /// The camera / orientation / last-fix state — public so the host's mouse pan/zoom and control
     /// panel can read and adjust it directly.
     pub state: AppState,
-    /// The ride mode + tracking accumulators.
+    /// The operating mode, viewed ride, and small UI requests outside a product domain.
     pub activity: Activity,
     /// The resident route / ride / trip catalogs keyed by durable object ids, plus the
     /// identity-keyed view caches (ride profile/preview, nav preview) — the one component owning
@@ -531,11 +568,8 @@ pub struct App {
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
     /// Only the names are mirrored (≤ 8 × 12 B); the multiplier tables stay solely in `MapTables`.
     nav_profiles: crate::NavProfiles,
-    /// The ride-domain component: the live route-matcher, the once-per-load route caches
-    /// (elevation profile, climbs, waypoints) with their build keys, the resident climb detail
-    /// buffer, and the tick-edge state (fix freshness, sensor-tile
-    /// edges, battery-poll cadence, ambient temperature). `App::tick` orchestrates it each frame.
-    pub(crate) ride: RideEngine,
+    /// Private cadence and one-shot state used only by [`tick`](App::tick).
+    tick_state: TickState,
     /// The UI-plane component: the screen stack, the fused input plane, the map-plane clock,
     /// repaint accumulation (full-frame + region) and wake scheduling, hold cancellation, the
     /// idle-return policy, and the [`CardScheduler`](crate::card_scheduler::CardScheduler) that
@@ -572,9 +606,9 @@ pub struct App {
     /// decision. The bundle itself stays in the platform's store — this owns what the rider is
     /// *told*, never the frames.
     pub(crate) weather: crate::weather::WeatherDomain,
-    /// The **Navigator** domain (#1397 S2): the rider's undelivered plan requests, the per-family
-    /// phase, and the operation token every planner answer must carry back. The only writer of any
-    /// of them, and of [`mode`](App::mode)'s two search levels.
+    /// The **Navigator** domain: active-route following and caches, plus the rider's undelivered
+    /// plan requests, per-family phase, and operation token. It is the only writer of route
+    /// guidance and of [`mode`](App::mode)'s two search levels.
     pub(crate) navigator: NavigatorMachine,
     /// **`CoreMode`** (#1397 S5): the one owner of "what heavy work may run now, and what the rider
     /// is looking at" — the two search levels Navigator writes, the transfer level
@@ -670,7 +704,7 @@ impl App {
             state: state,
             activity: Activity::new(Mode::Idle),
             catalogs: CatalogState::new() => CatalogState::init_in_place,
-            ride: RideEngine::new() => RideEngine::init_in_place,
+            tick_state: TickState::new(),
             ui: UiRuntime::new() => UiRuntime::init_in_place,
             nav_profiles: crate::NavProfiles::new(),
             settings: Settings::default(),
@@ -681,7 +715,7 @@ impl App {
             retention: crate::retention::RetentionMachine::new(),
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             weather: crate::weather::WeatherDomain::new(),
-            navigator: NavigatorMachine::new(),
+            navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
             alert_marks_ops: crate::settings::SettingsMachine::new(),
@@ -720,7 +754,7 @@ impl App {
             state: camera,
             activity,
             catalogs,
-            ride,
+            tick_state,
             ui,
             nav_profiles,
             settings,
@@ -743,10 +777,8 @@ impl App {
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
         assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
-        assert!(activity.active_route.is_none() && activity.active_climb.is_none(), "nothing loaded, no climb");
-        assert!(activity.next_waypoint.is_none(), "no next waypoint at power-on");
         catalogs.assert_boot_state();
-        ride.assert_boot_state();
+        tick_state.assert_boot_state();
         ui.assert_boot_state();
         assert!(nav_profiles.is_empty(), "no routing profiles before a map loads");
         assert_eq!(*settings, Settings::default(), "the defaults until the store answers");
@@ -821,16 +853,16 @@ impl App {
         // path below for why, and `device_core::core_mode` for the whole rule).
         let frozen = self.reroute_freeze_active();
         // The once-per-load route/session sync — matcher re-lock, session restart (accumulators +
-        // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
-        // ride engine's; a change there (route line appeared/vanished, breadcrumb cleared)
+        // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is
+        // Navigator's; a change there (route line appeared/vanished, breadcrumb cleared)
         // repaints the map even on a frame with no fresh fix.
-        if self.ride.sync_route_state(&mut self.activity, route) {
+        if self.navigator.sync_route_state(route) {
             self.ui.map_dirty = true;
         }
         // A detour commit queues a seam re-anchor because the commit handler owns no host
         // `RouteReader`. Install matcher progress + the forward-only floor at the splice seam
         // before this tick's fresh fix, then re-derive every guidance consumer from it.
-        if self.ride.apply_pending_seam(&mut self.activity, route) {
+        if self.navigator.apply_pending_seam(route) {
             if let Some(route) = route {
                 self.update_active_climb(route);
                 self.update_next_waypoint(route);
@@ -844,7 +876,7 @@ impl App {
         // [`RenderKeyKind::Home`](crate::screen::RenderKeyKind) and that key carries the level — so
         // a change repaints exactly when Home is visible, and the riding views that never draw it
         // are not woken for a full ~97 ms map render every 30 s.
-        if self.ride.battery_poll_due(now_ms) {
+        if self.tick_state.battery_poll_due(now_ms) {
             if let Some(soc) = fuel.and_then(|f| f.poll()) {
                 self.state.device.battery_pct = soc;
             }
@@ -860,7 +892,7 @@ impl App {
         // read. Stored off `AppState` (no screen draws it yet) so it never gates a map redraw.
         if let Some(temperature) = temperature {
             if let Some(c) = temperature.poll() {
-                self.ride.temp_c = Some(c);
+                self.tick_state.temp_c = Some(c);
             }
         }
         // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
@@ -901,12 +933,12 @@ impl App {
             // Stamp the fix-freshness clock against `self.ui.now_ms` — the map-plane clock the banner's
             // staleness check + render read with. Off `AppState`, so a stationary fix that moves
             // nothing doesn't force a redraw here.
-            self.ride.last_fix_ms = Some(self.ui.now_ms);
+            self.tick_state.last_fix_ms = Some(self.ui.now_ms);
             // Arm the map-referenced altimeter's one terrain read for this fix (EL8, epic #1068).
             // Nothing is sampled here — `tick` holds no elevation source, and an SD tile read does
             // not belong in the middle of the fix path anyway. The host drains it right after this
             // tick through `sample_terrain`, at the fix cadence and never per frame.
-            self.ride.pending_terrain = Some((fix.lat, fix.lon));
+            self.tick_state.pending_terrain = Some((fix.lat, fix.lon));
             if let Some(route) = route {
                 // The **Recalculating freeze** (issue #1146, P2) pauses exactly this: the matcher.
                 // The frozen frame on glass shows the progress of the fix it was drawn from, and a
@@ -919,9 +951,9 @@ impl App {
                 if frozen {
                     // The cursor stands still while the fixes keep coming, so the next match must
                     // not be judged against a one-fix-wide forward window: arm the wide re-lock.
-                    self.ride.note_unmatched_fix();
+                    self.navigator.note_unmatched_fix();
                 } else {
-                    self.ride.match_fix(&mut self.activity, fix, route);
+                    self.navigator.match_fix(fix, route);
                 }
                 // "Am I on a climb now?" is derived from the fresh match — with hysteresis, and a
                 // detail-profile refill only on a new climb entry (see `update_active_climb`).
@@ -939,7 +971,7 @@ impl App {
                 self.recorder.speed_win.push_mps(speed);
             }
             if !frozen {
-                self.ride.update_travel(&self.activity, route);
+                self.navigator.update_travel(route);
             }
             // The fix into the ride: the totals, the trail and the sample the ride log owes. No
             // write happens here — the staged sample leaves as a
@@ -993,7 +1025,7 @@ impl App {
     /// seam. Keeping it here also keeps the source's `&mut` out of the fix path, where the board
     /// holds it as a `.bss` `&'static mut` shared with the planner.
     pub fn sample_terrain(&mut self, elev: &mut dyn ElevationSource) -> bool {
-        let Some((lat, lon)) = self.ride.pending_terrain.take() else { return false };
+        let Some((lat, lon)) = self.tick_state.pending_terrain.take() else { return false };
         if let Some(map_m) = elev.sample(lat, lon) {
             self.recorder.record_map_elevation(map_m);
         }
@@ -1025,14 +1057,14 @@ impl App {
         let now_utc = self.clock_trusted().then(|| self.wall_unix_now());
         let now_ms = self.ui.now_ms;
         let recording = self.recorder.recording();
-        let App { retention, catalogs, activity, settings, .. } = self;
+        let App { retention, catalogs, navigator, settings, .. } = self;
         let view = crate::retention::RetentionView {
             now_utc,
             now_ms,
             recording,
             route_ids: catalogs.route_ids(),
             route_metas: catalogs.route_metas(),
-            active_route: activity.active_route,
+            active_route: navigator.route_state().active_route,
             ride_records: catalogs.ride_records(),
             ride_retention: settings.ride_retention,
         };
@@ -1051,12 +1083,11 @@ impl App {
         self.retention.note_catalog_changed();
     }
 
-    /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m` — the ride
-    /// engine's hysteresis + once-per-entry detail refill
-    /// ([`RideEngine::update_active_climb`]) — then apply the App-plane consequences of a
+    /// Recompute Navigator's active climb from the freshly-matched progress — its hysteresis and
+    /// once-per-entry detail refill — then apply the App-plane consequences of a
     /// transition: one repaint, and the C5 host auto-switch off the same edge.
     fn update_active_climb(&mut self, route: &RouteReader) {
-        if let Some((prev, next)) = self.ride.update_active_climb(&mut self.activity, route) {
+        if let Some((prev, next)) = self.navigator.update_active_climb(route) {
             // No repaint request: the active climb is in the Statistics and Climb render keys, so
             // the riding views' climb-scoped readouts repaint from the declaration.
             // Host-driven auto-switch / auto-return (C5), off the same entry/exit edge.
@@ -1064,13 +1095,12 @@ impl App {
         }
     }
 
-    /// Recompute [`Activity::next_waypoint`] from the freshly-matched `progress_m` — the ride
-    /// engine's linger hysteresis + truncated-table re-window
-    /// ([`RideEngine::update_next_waypoint`]) — repainting once when the next waypoint moved.
+    /// Recompute Navigator's next waypoint from the freshly-matched progress — its linger
+    /// hysteresis and truncated-table re-window — repainting once when the next waypoint moved.
     fn update_next_waypoint(&mut self, route: &RouteReader) {
         // No repaint request: the next waypoint is in the Map and Statistics render keys, so the
         // chip and the fields repaint from the declaration.
-        self.ride.update_next_waypoint(&mut self.activity, route);
+        self.navigator.update_next_waypoint(route);
     }
 
     /// The Auto-mode screen follow (epic #506, C5), driven off the climb entry/exit edge in
@@ -1202,11 +1232,11 @@ impl App {
     }
 
     /// Whether there's a **current** GPS fix at `now_ms`: a fix has been accepted and is no older
-    /// than the ride engine's staleness window ([`RideEngine::has_live_fix`]). `false` before the
+    /// than the tick state's staleness window. `false` before the
     /// first fix (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix"
     /// banner shows.
     pub fn has_live_fix(&self, now_ms: u32) -> bool {
-        self.ride.has_live_fix(now_ms, &self.settings)
+        self.tick_state.has_live_fix(now_ms, &self.settings)
     }
 
     /// Replace the resident route catalog from a host store without durable ids, assigning
@@ -1284,7 +1314,7 @@ impl App {
     /// (#450). Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
     ///
     /// The remap is the live-catalog contract: a rescan that inserts or removes a route re-points
-    /// [`Activity::active_route`], the matcher/profile caches keyed on it, an open Skip-ahead
+    /// Navigator's active route, the matcher/profile caches keyed on it, an open Skip-ahead
     /// chooser or queued skip commit, a Route-menu selection, a Route-overview preview, and a pending
     /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
     /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
@@ -1334,15 +1364,12 @@ impl App {
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
     fn remap_route_indices(&mut self, old_ids: &[crate::CatalogObjectId]) {
-        let App { catalogs, ride, activity, ui, navigator, .. } = self;
+        let App { catalogs, ui, navigator, .. } = self;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
-        // The navigated route + every ride-engine cache keyed on it follow the identity together
-        // (survives → nothing resets; vanished → navigation unloads and the stale per-route state
-        // drops with it) — the ride engine owns that walk.
-        ride.remap_route_keys(activity, &remap);
-        // The undelivered detour request follows the same durable identity as the route it plans
-        // around, or is dropped with it — Navigator's half of the same walk.
+        // The active route, every route-derived cache, the seam request, and the undelivered detour
+        // request follow the same durable identity in Navigator.
+        navigator.remap_route_keys(&remap);
         navigator.remap_detour_route(&remap);
 
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
@@ -1380,15 +1407,25 @@ impl App {
     /// sync its route store's active bytes each pass (the write twin is the menu selection / a
     /// finished plan, never a host poke of the field).
     pub fn active_route_index(&self) -> Option<usize> {
-        self.activity.active_route
+        self.navigator.route_state().active_route
+    }
+
+    /// The rider's matched along-route progress, in meters. It freezes while off-route.
+    pub fn progress_m(&self) -> u32 {
+        self.navigator.route_state().progress_m
+    }
+
+    /// Whether the matcher currently places the rider outside the route corridor.
+    pub fn off_route(&self) -> bool {
+        self.navigator.route_state().off_route
     }
 
     /// Activate the route at catalog index `idx` (a host baseline / demo-reset seam) — the
     /// invariant-preserving twin of the menu's own selection, bounds-checked against the resident
-    /// catalog, so hosts never write `activity.active_route` directly to stage a route. An
+    /// catalog, so hosts never write Navigator's active route directly to stage a route. An
     /// out-of-range index clears the active route. Dirties the map so an open Map repaints the line.
     pub fn activate_route(&mut self, idx: usize) {
-        self.activity.active_route = (idx < self.catalogs.route_len()).then_some(idx);
+        self.navigator.set_active_route((idx < self.catalogs.route_len()).then_some(idx));
         self.ui.map_dirty = true;
     }
 
@@ -1629,7 +1666,7 @@ impl App {
     /// on-route, else `None` (neutral arrows, never a fabricated head/tail — a momentary GPS
     /// course is not a direction the rider is committed to).
     pub fn travel_deg(&self) -> Option<f32> {
-        self.ride.travel_deg
+        self.navigator.travel_deg()
     }
 
     /// The WX12 ride projection for [`WeatherSnapshot::sample_along`](crate::weather::WeatherSnapshot::sample_along),
@@ -1643,7 +1680,8 @@ impl App {
     /// 20 km away, in the wrong weather. Falling back to rider-position sampling is the honest,
     /// less-informative answer (review F1).
     pub fn ride_projection(&self) -> Option<crate::weather::RideProjection> {
-        if self.activity.active_route.is_none() || !self.ride.started() || self.activity.off_route {
+        let route = self.navigator.route_state();
+        if route.active_route.is_none() || !self.navigator.started() || route.off_route {
             return None;
         }
         let speed_cms = self
@@ -1653,7 +1691,7 @@ impl App {
             .unwrap_or(crate::weather::TOURING_FALLBACK_CMS)
             .min(crate::weather::SPEED_CAP_CMS);
         Some(crate::weather::RideProjection {
-            progress_m: self.activity.progress_m,
+            progress_m: route.progress_m,
             speed_cms,
             now: self.wall_unix_now() as i64,
         })
@@ -1705,16 +1743,15 @@ impl App {
     /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
     /// only thing route-replacing paths should call.
     ///
-    /// `RideEngine::drop_route_derived_state` covers the engine's
-    /// half (matcher, profile, climbs, waypoints, progress); the UI's
+    /// Navigator drops its matcher, caches, and visible route state; the UI's
     /// [`NextAhead`](crate::next_ahead::NextAhead) cache is the other half and lives on the far
-    /// side of the `ride`/`ui` split, so it cannot be reached from there. It is invalidated for
+    /// side of the domain/UI split, so it cannot be reached from there. It is invalidated for
     /// exactly the same reason as the rest: its entries are **along-route distances**, and a
     /// same-index/new-bytes replace leaves the catalog index untouched — so the cache's own
     /// route-identity check sees nothing change, and an entry measured on the old geometry would
     /// name a different place on the new.
     pub(crate) fn drop_route_derived_state(&mut self) {
-        self.ride.drop_route_derived_state(&mut self.activity);
+        self.navigator.drop_route_derived_state();
         self.ui.next_ahead.invalidate();
     }
 
@@ -1840,8 +1877,7 @@ impl App {
                 self.drop_route_derived_state();
                 // Activate for the preview (the overview contract: the host streams the geometry
                 // while the page shows); `prev_active` restores whatever was loaded on cancel.
-                let prev = self.activity.active_route;
-                self.activity.active_route = Some(idx);
+                let prev = self.navigator.replace_active_route(idx);
                 // Every plan starts preview-less (#685 §4): a re-route commits new bytes under
                 // the same id/index, so an old shape must never survive into the new overview.
                 // The host hands the fresh decimated polyline via `set_nav_preview` (the sim's
@@ -1914,8 +1950,8 @@ impl App {
                 // The splice committed new geometry, often under the same route identity — the
                 // derived keys move with the bytes (#1437).
                 self.catalogs.note_commit();
-                self.activity.active_route = Some(idx);
-                self.activity.request_seam(idx, anchor.unwrap_or(0));
+                self.navigator.set_active_route(Some(idx));
+                self.navigator.request_seam(idx, anchor.unwrap_or(0));
                 self.catalogs.clear_detour_preview();
                 if let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::Detour(_))) {
                     self.ui.stack.truncate(i.max(1)); // never below the Home root
@@ -1946,7 +1982,7 @@ impl App {
     /// [`set_nav_preview`](App::set_nav_preview), keyed to the active route the detour was
     /// planned against.
     pub fn set_detour_preview(&mut self, pts: &[(i32, i32)]) {
-        self.catalogs.set_detour_preview(pts, self.activity.active_route);
+        self.catalogs.set_detour_preview(pts, self.active_route_index());
         self.ui.map_dirty = true;
     }
 
@@ -1955,7 +1991,7 @@ impl App {
     /// pager wants the shape too) — the host's per-pass cue to decimate the active route's
     /// polyline ([`RouteReader::preview_polyline`](obc_route::RouteReader::preview_polyline)) and
     /// hand it to [`set_nav_preview`](App::set_nav_preview). Entering the overview points
-    /// [`active_route`](Activity::active_route) at the previewed route (the same key the
+    /// Navigator's active route at the previewed route (the same key the
     /// elevation-profile rebuild streams on), so the fill runs once per overview entry — `false`
     /// the moment the preview is in (or the overview is gone), never per pass.
     pub fn nav_preview_missing(&self) -> bool {
@@ -1971,7 +2007,7 @@ impl App {
     /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
-        let Some(key) = self.catalogs.nav_preview_key(self.activity.active_route) else { return };
+        let Some(key) = self.catalogs.nav_preview_key(self.active_route_index()) else { return };
         let input = DerivedInput::filled(key);
         self.apply_derived(
             DerivedInputs::nav_preview(input),
@@ -2123,7 +2159,7 @@ impl App {
         replaced: bool,
         elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
     ) {
-        let active_id = self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i));
+        let active_id = self.active_route_index().and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if replaced {
             // New bytes under a durable identity: every derived key moves, so a preview or profile
@@ -2200,7 +2236,7 @@ impl App {
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
-        self.activity.active_route = None;
+        self.navigator.set_active_route(None);
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new())),
@@ -2220,7 +2256,7 @@ impl App {
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
-        self.activity.active_route = None;
+        self.navigator.set_active_route(None);
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::damaged())),
@@ -2582,7 +2618,7 @@ impl App {
     pub fn weather_snapshot(&self) -> crate::ble::WeatherSnapshot {
         let now_utc = if self.clock_trusted() { Some(self.wall_unix_now()) } else { None };
         // The fresh fix + its age on the map-plane clock (the same timebase `last_fix_ms` stamps).
-        let fresh = match (self.state.user_fix, self.ride.last_fix_ms) {
+        let fresh = match (self.state.user_fix, self.tick_state.last_fix_ms) {
             (Some(fix), Some(at_ms)) => {
                 let age_ms = self.ui.now_ms.wrapping_sub(at_ms);
                 if age_ms <= WEATHER_FIX_FRESH_MS {
@@ -2624,7 +2660,8 @@ impl App {
             // The weather request's legacy compact route id remains optional until that protocol
             // moves to the flat store's full-width ObjectId. Never truncate a valid catalog id.
             route_id: self
-                .activity
+                .navigator
+                .route_state()
                 .active_route
                 .and_then(|i| self.catalogs.route_id_at(i))
                 .and_then(|id| u16::try_from(id).ok()),
@@ -2684,7 +2721,7 @@ impl App {
             s.wants_hold_fill(
                 &self.settings,
                 &self.state,
-                &self.activity,
+                self.navigator.route_state(),
                 self.recorder.recording(),
                 self.catalogs.routes(),
                 self.catalogs.rides(),
@@ -2901,7 +2938,6 @@ impl App {
             settings,
             catalogs,
             nav_profiles,
-            ride,
             recorder,
             ui,
             navigator,
@@ -2925,9 +2961,6 @@ impl App {
             nav_profiles,
             backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
-            // The Up-ahead timeline's two source tables, read-only: `handle` must see exactly the
-            // merged rows `draw` drew, or a Press would open the wrong row (epic #946, U3).
-            waypoints: ride.waypoints.as_slice(),
             corridor: ui.corridor_scratch.entries(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             now_ms: ui.now_ms,
@@ -3034,7 +3067,8 @@ impl App {
         // decision of whether the cache wants one more single-category snapshot — and ends in the
         // same `reconcile_corridor`, so the stack still has the last word on the shared scratch.
         let scope = self.up_ahead_scope();
-        self.ui.reconcile_next_ahead(&self.settings, scope, self.activity.active_route, self.activity.progress_m);
+        let navigation = self.navigator.route_state();
+        self.ui.reconcile_next_ahead(&self.settings, scope, navigation.active_route, navigation.progress_m);
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in
@@ -3264,7 +3298,7 @@ impl App {
 
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
-        self.ride.refresh_route_profile(self.activity.active_route, route);
+        self.navigator.refresh_route_profile(route);
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the executor's keyed answer; only
@@ -3275,14 +3309,15 @@ impl App {
         // Pre-draw acquisition (#803): the base screen resolves any streamed-reader state (POI
         // snapshot / hours or Detour route geometry) before the draw loop, so `Render` carries
         // the POI scratch read-only and every screen's `draw` is side-effect-free.
+        let navigation = self.navigator.route_state();
         self.ui.prepare_base(
             core_reader,
             route,
             self.state.user_fix,
-            self.activity.active_route,
-            self.activity.progress_m,
-            self.activity.route_total_m,
-            self.catalogs.detour_preview_for(self.activity.active_route),
+            navigation.active_route,
+            navigation.progress_m,
+            navigation.route_total_m,
+            self.catalogs.detour_preview_for(navigation.active_route),
         );
 
         // Computed before the field borrow below splits `self`.
@@ -3319,7 +3354,7 @@ impl App {
             activity,
             settings,
             catalogs,
-            ride,
+            navigator,
             recorder,
             ui,
             nav_profiles,
@@ -3331,18 +3366,19 @@ impl App {
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
-        let nav_key = catalogs.nav_preview_key(activity.active_route);
+        let navigation = navigator.route_state();
+        let nav_key = catalogs.nav_preview_key(navigation.active_route);
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
-        let detour_preview: &[(i32, i32)] = catalogs.detour_preview_for(activity.active_route);
+        let detour_preview: &[(i32, i32)] = catalogs.detour_preview_for(navigation.active_route);
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
         // resolves to a live segment — a stale buffer is never reachable through `Render`.
-        let climb = activity
+        let climb = navigation
             .active_climb
-            .and_then(|i| ride.climbs.as_slice().get(i))
-            .map(|seg| screen::ActiveClimb { seg, profile: &ride.climb_profile });
+            .and_then(|i| navigator.climbs().as_slice().get(i))
+            .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
             scratch,
             // Reborrow so the lease's trait-object lifetime shrinks to this frame's `Render`
@@ -3350,6 +3386,7 @@ impl App {
             rain: rain.map(|r| &mut *r as &mut dyn obc_render::RainOverlaySource),
             state,
             activity,
+            navigation,
             recorder,
             settings,
             routes: catalogs.routes(),
@@ -3358,10 +3395,10 @@ impl App {
             trips: catalogs.trips(),
             nav_profiles,
             route,
-            profile: ride.profile.as_ref(),
+            profile: navigator.profile(),
             ride_profile: catalogs.ride_profile_for(ride_key),
             climb,
-            waypoints: &ride.waypoints,
+            waypoints: navigator.waypoints(),
             breadcrumb: &recorder.breadcrumb,
             recording: recorder.recording(),
             nav_preview,
@@ -3389,7 +3426,7 @@ impl App {
             card_free_bytes: storage.free_bytes(),
             weather,
             weather_refreshing,
-            travel_deg: ride.travel_deg,
+            travel_deg: navigator.travel_deg(),
             backlight: backlight_available,
         };
         let mut rx = RenderFrame { scene, render: rx };
@@ -3675,7 +3712,7 @@ impl App {
         // the key's.
         let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
-            .then(|| self.catalogs.nav_preview_key(self.activity.active_route))
+            .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
             .flatten()
             .filter(|&key| !self.catalogs.nav_preview_answered(key));
         DerivedNeeds { ride_track, nav_preview }
@@ -4928,8 +4965,8 @@ mod tests {
 
         let mut app = App::new(AppState::new(0, 0, 1.0)); // base = the riding Map
         app.test_start_ride();
-        app.activity.active_route = Some(0);
-        app.activity.progress_m = 1_500;
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().progress_m = 1_500;
 
         // No `Next:` tile on the grid: nothing is ever asked for, wherever the rider is.
         app.advance_animations(InputClock(1_000));
@@ -4958,7 +4995,7 @@ mod tests {
         assert!(!app.corridor_snapshot_pending(), "a tile nobody is looking at costs nothing");
 
         // A route-less ride never asks either — there is no "ahead" to answer with.
-        app.activity.active_route = None;
+        app.navigator.route_state_mut().active_route = None;
         app.apply_gesture(Gesture::Back);
         app.advance_animations(InputClock(5_000));
         assert!(!app.corridor_snapshot_pending());
@@ -4974,8 +5011,8 @@ mod tests {
 
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.test_start_ride();
-        app.activity.active_route = Some(0);
-        app.activity.progress_m = 2_000;
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().progress_m = 2_000;
         let mut fields = StatFieldList::decode(0, &[]);
         assert!(fields.push(StatField::NextPharmacy));
         app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
@@ -5089,7 +5126,7 @@ mod tests {
 
         let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
         app.test_start_ride();
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         let mut fields = StatFieldList::decode(0, &[]);
         assert!(fields.push(StatField::NextWater));
         app.set_settings(crate::settings::Settings { stat_fields: fields, ..Default::default() });
@@ -5107,7 +5144,7 @@ mod tests {
 
         // Ride on inside the step: many frames, not one further query.
         for m in (100..500).step_by(50) {
-            app.activity.progress_m = m;
+            app.navigator.route_state_mut().progress_m = m;
             app.advance_animations(InputClock(2_000 + m));
             assert!(!app.base_needs_reader(), "no re-query inside the refresh step (at {m} m)");
             frame(&mut app);
@@ -5115,7 +5152,7 @@ mod tests {
         assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
 
         // Cross the step: exactly one re-take, and the answer is unchanged (nothing was passed).
-        app.activity.progress_m = crate::next_ahead::REFRESH_STEP_M;
+        app.navigator.route_state_mut().progress_m = crate::next_ahead::REFRESH_STEP_M;
         app.advance_animations(InputClock(9_000));
         assert!(app.base_needs_reader(), "crossing the step re-arms");
         frame(&mut app);
@@ -5123,7 +5160,7 @@ mod tests {
         assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
 
         // Ride past the cached fountain: the re-take hands the tile the next one along.
-        app.activity.progress_m = brunnen_m + 10;
+        app.navigator.route_state_mut().progress_m = brunnen_m + 10;
         app.advance_animations(InputClock(10_000));
         frame(&mut app);
         assert_eq!(
@@ -5247,7 +5284,7 @@ mod tests {
     // --- climb state tracking (C3, #509) ---
     //
     // The **pure** hysteresis resolvers (`resolve_active_climb` / `resolve_next_waypoint`) are
-    // pinned in `ride_engine.rs`, next to the policy they encode. Here the App-side wiring is
+    // pinned in `navigator/following.rs`, next to the policy they encode. Here the App-side wiring is
     // driven end-to-end — build-on-load, clear-on-unload, the once-per-entry `ClimbProfile::fill`,
     // and the C5 auto-switch — through `App::update_active_climb` and `App::tick` over the
     // committed `grimsel-climb.obcr` fixture (3 back-to-back climbs).
@@ -5336,11 +5373,11 @@ mod tests {
             let mut loc = OneFix(Some(Fix::at((lat * 1e6) as i32, (lon * 1e6) as i32)));
             app.tick(RideClock(step * 1_000 + 1), Sensors::new(&mut loc), Some(&route));
             trace.push((
-                app.activity.progress_m,
-                app.activity.off_route,
-                app.activity.dist_to_route_m,
-                app.activity.active_climb,
-                app.activity.next_waypoint,
+                app.navigator.route_state_mut().progress_m,
+                app.navigator.route_state_mut().off_route,
+                app.navigator.route_state_mut().dist_to_route_m,
+                app.navigator.route_state_mut().active_climb,
+                app.navigator.route_state_mut().next_waypoint,
             ));
         }
 
@@ -5398,19 +5435,23 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         app.test_start_ride();
         tick_without_fix(&mut app, Some(&route)); // establish route/session caches
 
-        app.activity.progress_m = 1_000;
+        app.navigator.route_state_mut().progress_m = 1_000;
         let session = app.ride_session();
         let mode = app.activity.mode;
-        app.activity.request_seam(0, 12_000); // lands on the fixture's second climb
+        app.navigator.request_seam(0, 12_000); // lands on the fixture's second climb
         tick_without_fix(&mut app, Some(&route));
-        assert_eq!(app.activity.progress_m, 12_000);
-        assert!(!app.activity.off_route);
-        assert_eq!(app.activity.active_climb, Some(1), "climb guidance re-derived at the new anchor");
-        assert!(app.activity.pending_seam().is_none());
+        assert_eq!(app.navigator.route_state_mut().progress_m, 12_000);
+        assert!(!app.navigator.route_state_mut().off_route);
+        assert_eq!(
+            app.navigator.route_state_mut().active_climb,
+            Some(1),
+            "climb guidance re-derived at the new anchor"
+        );
+        assert!(!app.navigator.pending_seam());
         assert_eq!(app.ride_session(), session);
         assert_eq!(app.activity.mode, mode);
 
@@ -5418,29 +5459,29 @@ mod tests {
         let p = route.position_at(2_000).unwrap();
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
         app.tick(RideClock(1_000), Sensors::new(&mut loc), Some(&route));
-        assert!(app.activity.off_route);
-        assert_eq!(app.activity.progress_m, 12_000);
+        assert!(app.navigator.route_state_mut().off_route);
+        assert_eq!(app.navigator.route_state_mut().progress_m, 12_000);
 
         // Removing/reloading the route resets the floor; an early fix on the reloaded geometry can
         // establish an early first lock again (the tracking session itself is still the same).
-        app.activity.active_route = None;
+        app.navigator.route_state_mut().active_route = None;
         tick_without_fix(&mut app, None);
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         tick_without_fix(&mut app, Some(&route));
         let mut loc = OneFix(Some(Fix { lon: p.lon, lat: p.lat, course: None, speed_mps: None }));
         app.tick(RideClock(2_000), Sensors::new(&mut loc), Some(&route));
-        assert!(!app.activity.off_route);
-        assert!(app.activity.progress_m < 3_000, "route reload cleared the old 12 km floor");
+        assert!(!app.navigator.route_state_mut().off_route);
+        assert!(app.navigator.route_state_mut().progress_m < 3_000, "route reload cleared the old 12 km floor");
 
         // A new session on the same route also clears every seam-derived anchor.
-        app.activity.request_seam(0, 8_000);
+        app.navigator.request_seam(0, 8_000);
         tick_without_fix(&mut app, Some(&route));
-        assert_eq!(app.activity.progress_m, 8_000);
+        assert_eq!(app.navigator.route_state_mut().progress_m, 8_000);
         app.test_end_ride();
         app.test_start_ride();
         tick_without_fix(&mut app, Some(&route));
-        assert_eq!(app.activity.progress_m, 0);
-        assert!(!app.activity.off_route);
+        assert_eq!(app.navigator.route_state_mut().progress_m, 0);
+        assert!(!app.navigator.route_state_mut().off_route);
     }
 
     #[test]
@@ -5449,21 +5490,25 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         app.test_start_ride();
         tick_without_fix(&mut app, Some(&route));
-        app.activity.progress_m = 1_000;
-        app.activity.request_seam(0, 4_000);
+        app.navigator.route_state_mut().progress_m = 1_000;
+        app.navigator.request_seam(0, 4_000);
 
         let empty = SliceSource(&[]);
         let unreadable = RouteReader::new(&idx, &empty);
         tick_without_fix(&mut app, Some(&unreadable));
-        assert_eq!(app.activity.progress_m, 1_000, "failed decode does not split Activity from matcher");
-        assert!(app.activity.pending_seam().is_some(), "transient failure remains retryable");
+        assert_eq!(
+            app.navigator.route_state_mut().progress_m,
+            1_000,
+            "failed decode does not split route state from matcher"
+        );
+        assert!(app.navigator.pending_seam(), "transient failure remains retryable");
 
         tick_without_fix(&mut app, Some(&route));
-        assert_eq!(app.activity.progress_m, 4_000);
-        assert!(app.activity.pending_seam().is_none());
+        assert_eq!(app.navigator.route_state_mut().progress_m, 4_000);
+        assert!(!app.navigator.pending_seam());
     }
 
     fn app_with_detour_chooser_on_beta() -> App {
@@ -5471,11 +5516,11 @@ mod tests {
         app.state.has_nav_graph = true;
         app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta"), summary("Gamma")], &[10, 20, 30]);
-        app.activity.active_route = Some(1);
-        app.activity.progress_m = 1_000;
-        app.activity.route_total_m = 5_000;
+        app.navigator.route_state_mut().active_route = Some(1);
+        app.navigator.route_state_mut().progress_m = 1_000;
+        app.navigator.route_state_mut().route_total_m = 5_000;
         app.test_start_ride();
-        let chooser = crate::screen::DetourScreen::new(&app.activity);
+        let chooser = crate::screen::DetourScreen::new(app.navigator.route_state());
         *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
         app
     }
@@ -5484,14 +5529,14 @@ mod tests {
     fn detour_chooser_and_queued_plan_follow_route_identity_across_rescans() {
         let mut app = app_with_detour_chooser_on_beta(); // Beta id 20 at index 1
         app.set_routes_with_ids(&[summary("Gamma"), summary("Alpha"), summary("Beta")], &[30, 10, 20]);
-        assert_eq!(app.activity.active_route, Some(2), "active navigation followed Beta to index 2");
+        assert_eq!(app.navigator.route_state_mut().active_route, Some(2), "active navigation followed Beta to index 2");
 
         app.apply_gesture(Gesture::Press);
         assert_eq!(app.navigator.pending_detour_request().unwrap().route, 2, "the open chooser followed Beta too");
 
         // Before the host drains the request, another rescan moves Beta again.
         app.set_routes_with_ids(&[summary("Beta"), summary("Gamma"), summary("Alpha")], &[20, 30, 10]);
-        assert_eq!(app.activity.active_route, Some(0));
+        assert_eq!(app.navigator.route_state_mut().active_route, Some(0));
         assert_eq!(app.navigator.pending_detour_request().unwrap().route, 0, "the queued plan request follows Beta");
     }
 
@@ -5499,7 +5544,7 @@ mod tests {
     fn vanished_detour_route_disables_the_chooser_and_clears_a_queued_plan() {
         let mut open = app_with_detour_chooser_on_beta();
         open.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
-        assert_eq!(open.activity.active_route, None, "vanished Beta unloads navigation");
+        assert_eq!(open.navigator.route_state_mut().active_route, None, "vanished Beta unloads navigation");
         open.apply_gesture(Gesture::Press);
         assert!(matches!(open.top_screen(), Screen::Detour(_)), "an unavailable chooser stays safely cancellable");
         assert!(open.navigator.pending_detour_request().is_none(), "it never retargets the route now at old index 1");
@@ -5520,25 +5565,31 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.ride.climbs = route.detect_climbs();
-        assert_eq!(app.ride.climbs.len(), 3, "the Grimsel fixture segments into 3 climbs");
+        *app.navigator.climbs_mut() = route.detect_climbs();
+        assert_eq!(app.navigator.climbs().len(), 3, "the Grimsel fixture segments into 3 climbs");
 
         // Sweep progress across the whole route in 250 m steps. Climb boundaries (from the fixture):
         // 501–11067, 11067–14472, 14472–18547 — three entries as the sweep crosses each base.
         let mut entries = 0;
         let mut prev = None;
         for p in (0..=18_725u32).step_by(250) {
-            app.activity.progress_m = p;
+            app.navigator.route_state_mut().progress_m = p;
             app.update_active_climb(&route);
-            if app.activity.active_climb != prev && app.activity.active_climb.is_some() {
+            if app.navigator.route_state_mut().active_climb != prev
+                && app.navigator.route_state_mut().active_climb.is_some()
+            {
                 entries += 1;
             }
-            prev = app.activity.active_climb;
+            prev = app.navigator.route_state_mut().active_climb;
         }
         // Exactly one refill per climb *entry* — never per fix on the same climb. Three climbs, and
         // because they're back-to-back the sweep enters all three: 3 entries ⇒ 3 fills.
         assert_eq!(entries, 3, "the sweep enters each of the 3 climbs once");
-        assert_eq!(app.ride.climb_fill_count, 3, "the detail buffer is rebuilt exactly on the 3 entries, not per fix");
+        assert_eq!(
+            app.navigator.climb_fill_count(),
+            3,
+            "the detail buffer is rebuilt exactly on the 3 entries, not per fix"
+        );
     }
 
     /// Off-route freezes the active climb: a stale (frozen) match must not strand the rider onto a
@@ -5549,21 +5600,21 @@ mod tests {
         let idx = grimsel_index();
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.ride.climbs = route.detect_climbs();
+        *app.navigator.climbs_mut() = route.detect_climbs();
 
         // On climb 0 (progress mid-first-climb).
-        app.activity.progress_m = 5000;
+        app.navigator.route_state_mut().progress_m = 5000;
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, Some(0));
-        let fills_on_climb = app.ride.climb_fill_count;
+        assert_eq!(app.navigator.route_state_mut().active_climb, Some(0));
+        let fills_on_climb = app.navigator.climb_fill_count();
 
         // Go off-route: progress freezes (the matcher holds it). Even a progress value that would
         // otherwise be past every climb must not change the active climb while off-route.
-        app.activity.off_route = true;
-        app.activity.progress_m = 99_999;
+        app.navigator.route_state_mut().off_route = true;
+        app.navigator.route_state_mut().progress_m = 99_999;
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, Some(0), "off-route holds the current climb");
-        assert_eq!(app.ride.climb_fill_count, fills_on_climb, "no refill while off-route");
+        assert_eq!(app.navigator.route_state_mut().active_climb, Some(0), "off-route holds the current climb");
+        assert_eq!(app.navigator.climb_fill_count(), fills_on_climb, "no refill while off-route");
     }
 
     // --- host auto-switch / auto-return (C5, #511) ---
@@ -5581,7 +5632,7 @@ mod tests {
         {
             let src = SliceSource(GRIMSEL);
             let route = RouteReader::new(&idx, &src);
-            app.ride.climbs = route.detect_climbs();
+            *app.navigator.climbs_mut() = route.detect_climbs();
         }
         (app, idx)
     }
@@ -5590,9 +5641,9 @@ mod tests {
     fn enter_first_climb(app: &mut App, idx: &RouteIndex) {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(idx, &src);
-        app.activity.progress_m = 5_000; // mid climb 0 (501–11067)
+        app.navigator.route_state_mut().progress_m = 5_000; // mid climb 0 (501–11067)
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, Some(0), "the fixture puts progress on climb 0");
+        assert_eq!(app.navigator.route_state_mut().active_climb, Some(0), "the fixture puts progress on climb 0");
     }
 
     /// Auto + on a riding view: entering a climb auto-switches the top to the Climb screen.
@@ -5651,13 +5702,13 @@ mod tests {
         app.set_routes_with_ids(&[summary("Road")], &[7]);
         app.state.has_nav_graph = true;
         app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
-        app.activity.active_route = Some(0);
-        app.activity.progress_m = 1_000;
-        app.activity.route_total_m = 20_000;
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().progress_m = 1_000;
+        app.navigator.route_state_mut().route_total_m = 20_000;
         app.test_start_ride();
 
         // Plan a detour and land its preview, exactly as the flow does.
-        let chooser = DetourScreen::new(&app.activity);
+        let chooser = DetourScreen::new(app.navigator.route_state());
         let preview =
             crate::host::DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None };
         app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
@@ -5688,11 +5739,11 @@ mod tests {
         let (mut app, idx) = climb_app(ClimbMode::Auto);
         app.state.has_nav_graph = true;
         app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
-        app.activity.active_route = Some(0);
-        app.activity.progress_m = 1_000;
-        app.activity.route_total_m = 20_000;
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().progress_m = 1_000;
+        app.navigator.route_state_mut().route_total_m = 20_000;
         app.test_start_ride();
-        let chooser = DetourScreen::new(&app.activity);
+        let chooser = DetourScreen::new(app.navigator.route_state());
         *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
         app.apply_gesture(Gesture::Step(2)); // selected distance = the 600 m minimum + 200 m
 
@@ -5727,9 +5778,9 @@ mod tests {
         // Jump progress past the last climb's exit band so the active climb clears (Some → None).
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.activity.progress_m = 50_000;
+        app.navigator.route_state_mut().progress_m = 50_000;
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, None, "past every climb → no active climb");
+        assert_eq!(app.navigator.route_state_mut().active_climb, None, "past every climb → no active climb");
         assert!(matches!(app.top_screen(), Screen::Map(_)), "the crest returns to the Map from the Climb screen");
     }
 
@@ -5745,8 +5796,8 @@ mod tests {
         // *crest* does to a hidden caller.
         app.test_start_ride();
         enter_first_climb(&mut app, &idx); // top = Climb
-        app.activity.active_route = Some(0);
-        app.activity.route_total_m = 50_000;
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().route_total_m = 50_000;
 
         assert!(app.apply_chord(crate::input::Chord::Context)); // [Home, Climb, ContextDrawer]
         app.apply_gesture(Gesture::Step(1)); // → the Detour row
@@ -5755,9 +5806,9 @@ mod tests {
 
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.activity.progress_m = 50_000;
+        app.navigator.route_state_mut().progress_m = 50_000;
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, None);
+        assert_eq!(app.navigator.route_state_mut().active_climb, None);
         assert!(matches!(app.top_screen(), Screen::Detour(_)), "crest does not dismiss the chooser");
         assert!(
             matches!(app.ui.stack[app.ui.stack.len() - 2], Screen::Map(_)),
@@ -5779,9 +5830,9 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new())); // now on a menu, mid-climb
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
-        app.activity.progress_m = 50_000;
+        app.navigator.route_state_mut().progress_m = 50_000;
         app.update_active_climb(&route);
-        assert_eq!(app.activity.active_climb, None);
+        assert_eq!(app.navigator.route_state_mut().active_climb, None);
         assert!(matches!(app.top_screen(), Screen::Menu(_)), "a crest never yanks a menu to the Map");
     }
 
@@ -5801,42 +5852,51 @@ mod tests {
             app.tick(RideClock(0), Sensors::new(&mut loc), route);
         };
         no_loc(&mut app, Some(&route));
-        assert!(app.ride.climbs.is_empty(), "no active route → no climbs, even with a reader present");
-        assert!(app.ride.climbs_route.is_none());
+        assert!(app.navigator.climbs().is_empty(), "no active route → no climbs, even with a reader present");
+        assert!(app.navigator.cache_keys().0.is_none());
         assert!(
-            app.ride.waypoints.is_empty() && app.ride.waypoints_route.is_none(),
+            app.navigator.waypoints().is_empty() && app.navigator.cache_keys().1.is_none(),
             "no active route → no waypoint table"
         );
-        assert_eq!(app.activity.waypoint_count, 0, "the gesture-side table length mirrors the empty cache");
+        assert_eq!(
+            app.navigator.route_state_mut().waypoint_count,
+            0,
+            "the gesture-side table length mirrors the empty cache"
+        );
 
         // Load the route (active_route = Some) and tick with the reader → climbs segmented once, and
         // the waypoint table loaded on the same edge (GRIMSEL carries none, so the table is empty but
         // the build key advances to Some(0) — the load ran).
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         no_loc(&mut app, Some(&route));
-        assert_eq!(app.ride.climbs.len(), 3, "an active route + reader segments the climbs on load");
-        assert_eq!(app.ride.climbs_route, Some(0));
-        assert_eq!(app.ride.waypoints_route, Some(0), "the waypoint table loads on the same route edge");
+        assert_eq!(app.navigator.climbs().len(), 3, "an active route + reader segments the climbs on load");
+        assert_eq!(app.navigator.cache_keys().0, Some(0));
+        assert_eq!(app.navigator.cache_keys().1, Some(0), "the waypoint table loads on the same route edge");
+        let waypoint_count = app.navigator.route_state().waypoint_count;
         assert_eq!(
-            app.activity.waypoint_count,
-            app.ride.waypoints.len(),
+            waypoint_count,
+            app.navigator.waypoints().len(),
             "the gesture-side table length mirrors the loaded resident cache"
         );
 
         // Unload (active_route → None) and tick → the climbs / waypoints and their derived indices clear.
-        app.activity.active_climb = Some(0); // pretend we were on a climb
-        app.activity.next_waypoint = Some(0); // …and had a next waypoint
-        app.activity.active_route = None;
+        app.navigator.route_state_mut().active_climb = Some(0); // pretend we were on a climb
+        app.navigator.route_state_mut().next_waypoint = Some(0); // …and had a next waypoint
+        app.navigator.route_state_mut().active_route = None;
         no_loc(&mut app, None);
-        assert!(app.ride.climbs.is_empty(), "unloading the route clears the climbs");
-        assert!(app.ride.climbs_route.is_none());
-        assert_eq!(app.activity.active_climb, None, "and the on-climb state is dropped");
+        assert!(app.navigator.climbs().is_empty(), "unloading the route clears the climbs");
+        assert!(app.navigator.cache_keys().0.is_none());
+        assert_eq!(app.navigator.route_state_mut().active_climb, None, "and the on-climb state is dropped");
         assert!(
-            app.ride.waypoints.is_empty() && app.ride.waypoints_route.is_none(),
+            app.navigator.waypoints().is_empty() && app.navigator.cache_keys().1.is_none(),
             "unloading clears the waypoint table"
         );
-        assert_eq!(app.activity.next_waypoint, None, "and the next-waypoint index is dropped");
-        assert_eq!(app.activity.waypoint_count, 0, "and the gesture-side table length clears with it");
+        assert_eq!(app.navigator.route_state_mut().next_waypoint, None, "and the next-waypoint index is dropped");
+        assert_eq!(
+            app.navigator.route_state_mut().waypoint_count,
+            0,
+            "and the gesture-side table length clears with it"
+        );
     }
 
     // --- idle-return timeout (Part B) ---
@@ -7218,7 +7278,7 @@ mod tests {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         assert_eq!(app.travel_deg(), None, "no fix yet → neutral");
 
         // A moving on-route fix: the travel direction is the route heading, not the (deliberately
@@ -7226,8 +7286,8 @@ mod tests {
         let p = route.position_at(1_000).unwrap();
         let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
         tick_route_fix(&mut app, &route, on_route, 1_000);
-        assert!(!app.activity.off_route);
-        let heading = crate::weather::route_heading_deg(&route, app.activity.progress_m).unwrap();
+        assert!(!app.navigator.route_state_mut().off_route);
+        let heading = crate::weather::route_heading_deg(&route, app.navigator.route_state_mut().progress_m).unwrap();
         let travel = app.travel_deg().expect("on-route: the route heading");
         assert!((travel - heading).abs() < 0.01, "travel {travel} == heading {heading}");
 
@@ -7240,7 +7300,7 @@ mod tests {
         // and it is exactly the claim a rider standing at a junction can't trust.
         let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
         tick_route_fix(&mut app, &route, far, 3_000);
-        assert!(app.activity.off_route);
+        assert!(app.navigator.route_state_mut().off_route);
         assert_eq!(app.travel_deg(), None, "off-route → neutral, course or no course");
 
         // Off the route and stationary: still neutral.
@@ -7251,7 +7311,7 @@ mod tests {
         // Unloading the route drops the heading with the rest of the derived state.
         tick_route_fix(&mut app, &route, on_route, 5_000);
         assert!(app.travel_deg().is_some());
-        app.activity.active_route = None;
+        app.navigator.route_state_mut().active_route = None;
         app.drop_route_derived_state();
         assert_eq!(app.travel_deg(), None, "route unload → neutral until re-derived");
     }
@@ -7267,26 +7327,26 @@ mod tests {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
 
         // On the route: a projection, anchored at the matched progress.
         let p = route.position_at(1_000).unwrap();
         let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
         tick_route_fix(&mut app, &route, on_route, 1_000);
-        assert!(!app.activity.off_route);
-        let progress = app.activity.progress_m;
+        assert!(!app.navigator.route_state_mut().off_route);
+        let progress = app.navigator.route_state_mut().progress_m;
         assert_eq!(app.ride_projection().map(|p| p.progress_m), Some(progress));
 
         // 20 km off it: the matcher keeps the stale progress, the projection refuses to use it.
         let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
         tick_route_fix(&mut app, &route, far, 2_000);
-        assert!(app.activity.off_route);
+        assert!(app.navigator.route_state_mut().off_route);
         assert_eq!(app.travel_deg(), None, "the wind arrows already went neutral off the line…");
         assert_eq!(app.ride_projection(), None, "…and the ride decision must switch off the route too");
 
         // Back on the line: the projection returns.
         tick_route_fix(&mut app, &route, on_route, 3_000);
-        assert!(!app.activity.off_route);
+        assert!(!app.navigator.route_state_mut().off_route);
         assert!(app.ride_projection().is_some(), "re-matching restores the projection");
     }
 
@@ -7300,7 +7360,7 @@ mod tests {
         let route = RouteReader::new(&idx, &src);
         let mut app = App::new(AppState::new(0, 0, 1.0));
         assert_eq!(app.ride_projection(), None, "no active route → no projection");
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         assert_eq!(app.ride_projection(), None, "route not matched yet → no projection");
 
         // A stationary lock: no moving sample yet → the touring fallback pace.
@@ -7308,7 +7368,7 @@ mod tests {
         tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: Some(0.0) }, 1_000);
         let proj = app.ride_projection().expect("matched route → projection");
         assert_eq!(proj.speed_cms, crate::weather::TOURING_FALLBACK_CMS, "stopped → touring fallback");
-        assert_eq!(proj.progress_m, app.activity.progress_m);
+        assert_eq!(proj.progress_m, app.navigator.route_state_mut().progress_m);
 
         // Moving samples: the median of 3/5/60 m/s — the 60 m/s teleport is capped to 15, and the
         // median (5 m/s) is immune to it anyway.
@@ -7337,7 +7397,7 @@ mod tests {
         for record in snap.hourly.iter_mut() {
             record.precipitation_tenth_mm = precip_tenth_mm;
         }
-        app.ride.travel_deg = travel;
+        app.navigator.set_travel_deg_for_test(travel);
         let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
         let bytes = build_min_obcm(1);
         let cache = MapCache::new();
@@ -7752,7 +7812,7 @@ mod tests {
     fn an_answer_that_lands_after_the_overview_closed_is_refused() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("Col")], &[10]);
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         let overview = || Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None));
         let _ = app.ui.stack.push(overview());
         let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
@@ -7772,7 +7832,7 @@ mod tests {
     fn a_replacing_upload_stales_the_nav_preview_under_the_same_route_id() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("Col")], &[10]);
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
 
         let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");

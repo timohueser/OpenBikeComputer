@@ -1,4 +1,4 @@
-//! The **Navigator** domain protocol: route planning, detour planning, preview and commit (#1436).
+//! The **Navigator** domain: route following, route planning, detour planning, preview and commit.
 //!
 //! Navigator owns the whole planning lifecycle — `Idle → Planning → PreviewReady → Committing →
 //! Active` (or `Failed`) — and the rules a platform executor must never decide: when a plan is
@@ -15,12 +15,18 @@
 //! never ride an effect or an outcome. What crosses is an identity, a bounded request, and the
 //! preview *figures* the HUD prints.
 
+mod following;
+
+pub use following::RouteState;
+
 use obc_route::nav::NavError;
+use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, Waypoints};
 
 use crate::activity::{DetourRequest, NavRequest};
 use crate::device_core::core_mode::CoreMode;
 use crate::device_core::{NavigatorTag, OperationToken, TokenSource};
 use crate::host::DetourPreview;
+use crate::placement::define_placement_constructors;
 use crate::CatalogObjectId;
 
 /// Which of the two planner flows a start/end edge belongs to.
@@ -218,7 +224,6 @@ pub(crate) enum PlanPhase {
 /// [`admit_intent`](Self::admit_intent), [`next_effect`](Self::next_effect),
 /// `App::apply_navigator_outcome` — so the legacy drain and the pass cannot disagree about what
 /// the rider asked for.
-#[derive(Debug, Default)]
 pub struct NavigatorMachine {
     /// The one operation token, and it is genuinely **one**:
     /// [`TokenSource::issue`](crate::device_core::TokenSource::issue) bumps a single generation, so
@@ -254,12 +259,35 @@ pub struct NavigatorMachine {
     detour_cancel: bool,
     /// The previewed detour's commit, until an executor takes it.
     detour_commit: bool,
+    /// The visible active-route identity and guidance result. Screens borrow this value directly;
+    /// no copied mirror exists in [`crate::Activity`].
+    following: RouteState,
+    /// Resident per-route caches. Their separate keys remain until epic slice N2.
+    profile: Option<Profile>,
+    profile_route: Option<usize>,
+    climbs: Climbs,
+    climbs_route: Option<usize>,
+    waypoints: Waypoints,
+    waypoints_route: Option<usize>,
+    climb_profile: ClimbProfile,
+    #[cfg(test)]
+    climb_fill_count: u32,
+    /// The one route matcher and the active-route key it last locked to.
+    route_match: RouteMatch,
+    matched_route: Option<usize>,
+    /// Route-relative travel heading and its progress key.
+    travel_deg: Option<f32>,
+    travel_at_m: Option<u32>,
 }
 
 impl NavigatorMachine {
-    /// The boot state: nothing planned, nothing running, nothing frozen.
-    pub(crate) const fn new() -> Self {
-        NavigatorMachine {
+    define_placement_constructors!(
+        /// The boot state: no active route, no derived cache, and no planning work.
+        pub(crate) fn new();
+        /// Initialize the Navigator in place. Its route caches are too large for a device stack
+        /// temporary, so the board and [`crate::App`] use this path.
+        pub(crate) unsafe fn init_in_place;
+        fields {
             ops: TokenSource::new(),
             live: None,
             route: PlanPhase::Idle,
@@ -269,8 +297,22 @@ impl NavigatorMachine {
             route_cancel: false,
             detour_cancel: false,
             detour_commit: false,
+            following: RouteState::new(),
+            profile: None,
+            profile_route: None,
+            climbs: Climbs::new(),
+            climbs_route: None,
+            waypoints: Waypoints::new(),
+            waypoints_route: None,
+            climb_profile: ClimbProfile::new(),
+            #[cfg(test)]
+            climb_fill_count: 0,
+            route_match: RouteMatch::new(),
+            matched_route: None,
+            travel_deg: None,
+            travel_at_m: None,
         }
-    }
+    );
 
     // ---- the operation seam ----
 
@@ -578,18 +620,41 @@ impl NavigatorMachine {
             route_cancel,
             detour_cancel,
             detour_commit,
+            following,
+            profile,
+            profile_route,
+            climbs,
+            climbs_route,
+            waypoints,
+            waypoints_route,
+            climb_profile,
+            climb_fill_count,
+            route_match,
+            matched_route,
+            travel_deg,
+            travel_at_m,
         } = self;
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no navigation operation has been issued");
         assert!(live.is_none(), "no operation is in flight");
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");
         assert!(route_request.is_none() && detour_request.is_none(), "no request waiting");
         assert!(!*route_cancel && !*detour_cancel && !*detour_commit, "no one-shot latched");
+        following.assert_boot_state();
+        assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
+        assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
+        assert!(waypoints.is_empty() && waypoints_route.is_none(), "no waypoints before a route loads");
+        assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
+        assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
+        assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
+        assert!(travel_deg.is_none() && travel_at_m.is_none(), "no route-relative travel direction");
     }
 }
 
-// Layout tripwire: two bounded requests, two phases, a token and a handful of one-shots — never a
-// route, a polyline or a screen.
-const _: () = assert!(core::mem::size_of::<NavigatorMachine>() <= 96, "two planner requests and their phases");
+impl Default for NavigatorMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod machine_tests {

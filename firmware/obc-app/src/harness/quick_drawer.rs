@@ -226,9 +226,9 @@ fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
     let mut f = Frames::new();
     app.test_mount_store();
     app.test_start_ride();
-    app.activity.active_route = Some(0);
+    app.navigator.route_state_mut().active_route = Some(0);
     // Four stops ahead, two of them Water and 3.6 km apart, so clamping and re-homing differ.
-    app.ride.waypoints = crate::harness::support::wpts_detailed(&[
+    *app.navigator.waypoints_mut() = crate::harness::support::wpts_detailed(&[
         (400, "Brunnen", Some(PoiCategory::Water), 0),
         (500, "Bakery", Some(PoiCategory::Resupply), 0),
         (600, "Camp", Some(PoiCategory::Campsite), 0),
@@ -260,10 +260,10 @@ fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
             panic!("the timeline is not on the stack")
         };
         s.test_cursor(
-            app.ride.waypoints.as_slice(),
+            app.navigator.waypoints().as_slice(),
             &[],
-            app.activity.active_route.is_some(),
-            app.activity.progress_m,
+            app.navigator.route_state().active_route.is_some(),
+            app.navigator.route_state().progress_m,
             app.up_ahead_scope(),
         )
     }

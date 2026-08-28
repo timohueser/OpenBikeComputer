@@ -365,12 +365,13 @@ impl UpAheadScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let route_loaded = cx.activity.active_route.is_some();
+        let route_loaded = cx.navigator.route_state().active_route.is_some();
         let scope = cx.up_ahead_scope();
-        let total = self.rows(cx.waypoints, cx.corridor, route_loaded, scope).count();
+        let waypoints = cx.navigator.waypoints().as_slice();
+        let total = self.rows(waypoints, cx.corridor, route_loaded, scope).count();
         let mut sel = self.cursor(
-            self.rows(cx.waypoints, cx.corridor, route_loaded, scope),
-            cx.activity.progress_m,
+            self.rows(waypoints, cx.corridor, route_loaded, scope),
+            cx.navigator.route_state().progress_m,
             total,
             scope,
         );
@@ -388,7 +389,7 @@ impl UpAheadScreen {
             // A POI row opens the existing detail screen, carrying its signed off-route offset so
             // the detail can spell the side out. A custom waypoint has no detail child yet — the
             // row stays inert rather than advertising a screen that doesn't exist (copy-tone rule).
-            Gesture::Press => match self.rows(cx.waypoints, cx.corridor, route_loaded, scope).nth(sel) {
+            Gesture::Press => match self.rows(waypoints, cx.corridor, route_loaded, scope).nth(sel) {
                 Some(Entry::Poi(p)) => Transition::Push(Screen::PoiDetail(
                     super::PoiDetailScreen::new(p.poi.clone()).off_route(p.offset_m),
                 )),
@@ -404,7 +405,7 @@ impl UpAheadScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        let route_loaded = rx.activity.active_route.is_some();
+        let route_loaded = rx.navigation.active_route.is_some();
         let scope = rx.up_ahead_scope();
         let total = self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded, scope).count();
         draw_list(
@@ -427,13 +428,13 @@ impl UpAheadScreen {
                 scope,
                 route_loaded,
                 settled: rx.corridor_settled,
-                progress_m: rx.activity.progress_m,
-                route_total_m: rx.activity.route_total_m,
+                progress_m: rx.navigation.progress_m,
+                route_total_m: rx.navigation.route_total_m,
                 profile: rx.profile,
                 units: rx.settings.units,
                 cursor: self.cursor(
                     self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded, scope),
-                    rx.activity.progress_m,
+                    rx.navigation.progress_m,
                     total,
                     scope,
                 ),
@@ -648,6 +649,7 @@ mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
     use crate::harness::support::wpts_detailed;
+    use crate::navigator::RouteState;
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
     use embedded_graphics::primitives::Rectangle;
@@ -1149,14 +1151,18 @@ mod tests {
     // --- Gesture pins ------------------------------------------------------
 
     fn ctx<'a>(
-        activity: &'a mut Activity,
+        navigation: &RouteState,
         recorder: &'a mut crate::RecorderMachine,
         waypoints: &'a Waypoints,
         corridor: &'a [CorridorPoi],
     ) -> Ctx<'a> {
         let state = std::boxed::Box::leak(std::boxed::Box::new(AppState::new(0, 0, 1.0)));
         let settings = std::boxed::Box::leak(std::boxed::Box::new(Settings::default()));
-        Ctx { waypoints: waypoints.as_slice(), corridor, recorder, ..test_ctx(state, activity, settings) }
+        let activity = std::boxed::Box::leak(std::boxed::Box::new(Activity::new(Mode::Riding)));
+        let navigator = std::boxed::Box::leak(std::boxed::Box::new(crate::navigator::NavigatorMachine::new()));
+        *navigator.route_state_mut() = *navigation;
+        navigator.waypoints_mut().clone_from(waypoints);
+        Ctx { corridor, recorder, navigator, ..test_ctx(state, activity, settings) }
     }
 
     /// The scope a fresh `Ctx` reads: the app-plane filter's default and the settings default.
@@ -1164,8 +1170,8 @@ mod tests {
         scope(AppState::new(0, 0, 1.0).up_ahead_filter, Settings::default().up_ahead_source)
     }
 
-    fn riding() -> Activity {
-        let mut a = Activity::new(Mode::Riding);
+    fn riding() -> RouteState {
+        let mut a = RouteState::new();
         a.active_route = Some(0);
         a.route_total_m = 10_000;
         a
@@ -1184,16 +1190,16 @@ mod tests {
         let rows = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL);
         assert_eq!(screen.cursor(rows, 200, 3, ctx_scope()), 1, "row 0 is passed; the Fountain is the first ahead");
 
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&act, &mut recorder, &w, &p));
         assert_eq!(screen.selected.map(|(s, _)| s), Some(2), "a turn steps on from the resolved home row");
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&act, &mut recorder, &w, &p));
         assert_eq!(screen.selected.map(|(s, _)| s), Some(0), "and wraps over the merged count, not either table's");
 
         // Before the first frame there is no snapshot and (on a fresh route load) no waypoint table
         // either: a turn then leaves the cursor *unresolved*, so the list still opens where it
         // should once the rows arrive.
         let mut fresh = UpAheadScreen::new(200);
-        fresh.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &Waypoints::new(), &[]));
+        fresh.handle(Gesture::Step(1), &mut ctx(&act, &mut recorder, &Waypoints::new(), &[]));
         assert_eq!(fresh.selected, None, "a step over an empty list keeps the homing");
     }
 
@@ -1203,21 +1209,20 @@ mod tests {
     fn press_opens_poi_rows_only() {
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, -220)]);
-        let mut act = riding();
+        let act = riding();
         let mut recorder = crate::RecorderMachine::new();
         recorder.test_open();
         let session = recorder.session();
         let mut screen = UpAheadScreen::new(0);
 
         screen.selected = Some((0, ctx_scope())); // the Fountain
-        match screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)) {
+        match screen.handle(Gesture::Press, &mut ctx(&act, &mut recorder, &w, &p)) {
             Transition::Push(Screen::PoiDetail(d)) => assert_eq!(d.off_route_m(), Some(-220)),
             _ => panic!("a POI row must open the detail"),
         }
         screen.selected = Some((1, ctx_scope())); // the waypoint
-        assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
-        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
-        assert_eq!(act.mode, Mode::Riding);
+        assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&act, &mut recorder, &w, &p)), Transition::None));
+        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&act, &mut recorder, &w, &p)), Transition::Pop));
         assert_eq!(recorder.session(), session);
     }
 
@@ -1228,14 +1233,14 @@ mod tests {
         let mut recorder = crate::RecorderMachine::new();
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        let mut act = riding();
+        let act = riding();
         let mut screen = UpAheadScreen::new(4_000);
         screen.selected = Some((0, ctx_scope()));
 
-        assert!(matches!(screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
+        assert!(matches!(screen.handle(Gesture::Hold, &mut ctx(&act, &mut recorder, &w, &p)), Transition::None));
         assert_eq!(screen.selected, Some((0, ctx_scope())), "the hold changed nothing at all");
         // …and the very next Back still leaves the screen rather than closing a mode first.
-        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
+        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&act, &mut recorder, &w, &p)), Transition::Pop));
     }
 
     /// **The scope in the cursor costs nothing**, which is what the resource baseline records — so
@@ -1272,12 +1277,12 @@ mod tests {
             (4_000, "Far water", Some(PoiCategory::Water), 0),
         ]);
         let p = corridor(&[]);
-        let mut act = riding();
+        let act = riding();
         let mut screen = UpAheadScreen::new(0);
 
         // The rider scrolls to the last row of the unfiltered list.
         for _ in 0..3 {
-            screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
+            screen.handle(Gesture::Step(1), &mut ctx(&act, &mut recorder, &w, &p));
         }
         let unfiltered = all();
         assert_eq!(screen.selected, Some((3, unfiltered)), "the cursor is on \"Far water\"");

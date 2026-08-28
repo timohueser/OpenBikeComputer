@@ -55,7 +55,6 @@ pub mod recorder;
 pub(crate) mod render_key;
 pub mod retention;
 pub mod ride;
-pub(crate) mod ride_engine;
 pub mod route;
 pub mod screen;
 pub mod sensors;

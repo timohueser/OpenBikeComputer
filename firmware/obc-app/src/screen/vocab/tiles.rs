@@ -157,7 +157,7 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
         let font = if i == 0 { Font::Body } else { Font::Label };
         let ry = y + HEAD + i as i32 * stride;
         // Distance-to-go, right-aligned at the far edge; the name is truncated clear of it.
-        let dist = super::fmt::distance_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), cx.units);
+        let dist = super::fmt::distance_short(wp.dist_along_m.saturating_sub(cx.navigation.progress_m), cx.units);
         cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
         let budget = w - 20 - text_width(&dist, font) as i32 - 8;
         let mut buf: heapless::String<24> = heapless::String::new();
@@ -224,8 +224,8 @@ pub(crate) fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::activity::{Activity, Mode};
     use crate::harness::support::wpts;
+    use crate::navigator::RouteState;
     use crate::settings::{DateTime, Units};
     use obc_render::rect;
     use obc_route::Waypoints;
@@ -266,14 +266,14 @@ mod tests {
     }
 
     fn readout<'a>(
-        activity: &'a Activity,
+        navigation: &'a RouteState,
         recorder: &'a crate::recorder::RecorderMachine,
         waypoints: &'a Waypoints,
         next: Option<usize>,
     ) -> crate::stat_fields::Readout<'a> {
         crate::stat_fields::Readout {
             fix: None,
-            activity,
+            navigation,
             recorder,
             units: Units::Metric,
             route: None,
@@ -299,7 +299,7 @@ mod tests {
     /// a left name; with only two remaining, the tail rows stay blank (nothing drawn).
     #[test]
     fn waypoint_panel_pins_the_next_four_and_blanks_the_tail() {
-        let act = Activity::new(Mode::Riding); // progress 0
+        let act = RouteState::new(); // progress 0
         let w = wpts(&[(1_000, "Brunnen"), (5_000, "Alp")]); // short names → verbatim, no truncation
         let cx = readout(&act, idle_recorder(), &w, Some(0));
         let mut rec = TextRec::default();
@@ -320,7 +320,7 @@ mod tests {
     /// can never run into the distance column — the panel row's version of the tile's `fit_caption`.
     #[test]
     fn waypoint_panel_truncates_a_long_name_before_the_distance() {
-        let act = Activity::new(Mode::Riding);
+        let act = RouteState::new();
         let w = wpts(&[(12_400, "Pass Summit Overlook")]); // 20 chars ≤ WAYPOINT_NAME_CAP, too wide for the row
         let cx = readout(&act, idle_recorder(), &w, Some(0));
         let mut rec = TextRec::default();
@@ -340,7 +340,7 @@ mod tests {
     /// distance clamps to `0m` via `saturating_sub` — the "you are here" readout the 2×1 tile shares.
     #[test]
     fn waypoint_panel_row_one_clamps_to_zero_in_the_linger() {
-        let mut act = Activity::new(Mode::Riding);
+        let mut act = RouteState::new();
         act.progress_m = 1_050; // 50 m past Brunnen, still its index (inside the linger)
         let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
         let cx = readout(&act, idle_recorder(), &w, Some(0));
@@ -354,7 +354,7 @@ mod tests {
     /// nothing ahead: no index resolved, a stale out-of-range index, and an empty table.
     #[test]
     fn waypoint_panel_empty_state_is_a_centred_dash() {
-        let act = Activity::new(Mode::Riding);
+        let act = RouteState::new();
         let w = wpts(&[(1_000, "Brunnen")]);
         let empty = Waypoints::new();
         for cx in [

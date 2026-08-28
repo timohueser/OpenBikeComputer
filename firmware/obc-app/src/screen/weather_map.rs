@@ -68,7 +68,8 @@ impl WeatherRainMapScreen {
                 Transition::None
             }
             Gesture::Hold => {
-                cx.state.enter_pan(cx.activity.active_route.is_some(), cx.activity.progress_m);
+                let navigation = cx.navigator.route_state();
+                cx.state.enter_pan(navigation.active_route.is_some(), navigation.progress_m);
                 Transition::None
             }
             Gesture::Back => {

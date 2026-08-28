@@ -94,7 +94,7 @@ impl RideControl {
     fn end_ride(&self, cx: &mut Ctx, intent: RecorderIntent) -> Transition {
         cx.recorder.request(intent);
         cx.activity.mode = Mode::Idle;
-        cx.activity.active_route = None;
+        cx.navigator.set_active_route(None);
         Transition::Home
     }
 

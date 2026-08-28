@@ -44,7 +44,7 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
     assert_eq!(
         app.recorder.continuation(),
         expected,
-        "RideEngine must consume the continuation edge instead of applying the fresh-session reset"
+        "Navigator must consume the continuation edge instead of applying the fresh-session reset"
     );
 }
 
