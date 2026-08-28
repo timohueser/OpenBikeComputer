@@ -17,10 +17,14 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{card_triangle, title_frame, wrapped};
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::weather_map::WeatherRainMapScreen;
 use super::{palette, Ctx, Render, Screen, Transition};
+
+const ACTION_GUARDS: [bool; 2] = [false; 2];
+const VIEW: usize = 0;
 
 /// What the alert is about — sets the title and body copy. The WX12 engine maps its classes onto
 /// these faces: heavy rain (≥ 10 mm/h reaching the corridor) → [`Rain`](WeatherAlertKind::Rain),
@@ -39,7 +43,7 @@ pub enum WeatherAlertKind {
 pub struct WeatherAlertScreen {
     kind: WeatherAlertKind,
     minutes: u16,
-    selected: usize,
+    actions: ActionRows,
     /// The screen this card was pushed over is already the rain map (recorded by
     /// [`App::show_weather_alert`](crate::App::show_weather_alert), which sees the stack) — VIEW
     /// RAIN MAP then simply pops back to it instead of stacking a second identical rain map
@@ -49,7 +53,7 @@ pub struct WeatherAlertScreen {
 
 impl WeatherAlertScreen {
     pub fn new(kind: WeatherAlertKind, minutes: u16, over_rain_map: bool) -> Self {
-        Self { kind, minutes, selected: 0, over_rain_map }
+        Self { kind, minutes, actions: ActionRows::new(0), over_rain_map }
     }
 
     /// Refresh the copy in place — how a re-fired alert updates an already-open card instead of
@@ -70,27 +74,23 @@ impl WeatherAlertScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => super::vocab::list::on_step(&mut self.selected, n, 2),
-            Gesture::Press => match self.selected {
-                0 => {
-                    // VIEW RAIN MAP answers the alert with the rain map, never parking the card
-                    // underneath: normally the card is *replaced*; when the rider was already on
-                    // the rain map the card simply pops back to it (review F4 — replacing would
-                    // stack two identical rain maps). Either way the view lands on the current
-                    // frame, inside the rain grid's zoom regime.
-                    cx.state.rain_step = 0;
-                    cx.state.clamp_rain_zoom(cx.weather.zoom_floor());
-                    if self.over_rain_map {
-                        Transition::Pop
-                    } else {
-                        Transition::Replace(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
-                    }
+        match self.actions.handle(g, &ACTION_GUARDS) {
+            CardEvent::Activate(VIEW) => {
+                // VIEW RAIN MAP answers the alert with the rain map, never parking the card
+                // underneath: normally the card is *replaced*; when the rider was already on
+                // the rain map the card simply pops back to it (review F4 — replacing would
+                // stack two identical rain maps). Either way the view lands on the current
+                // frame, inside the rain grid's zoom regime.
+                cx.state.rain_step = 0;
+                cx.state.clamp_rain_zoom(cx.weather.zoom_floor());
+                if self.over_rain_map {
+                    Transition::Pop
+                } else {
+                    Transition::Replace(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
                 }
-                _ => Transition::Pop, // DISMISS
-            },
-            Gesture::Back => Transition::Pop,
-            Gesture::Hold | Gesture::BackHold => Transition::None,
+            }
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -118,10 +118,10 @@ impl WeatherAlertScreen {
         cv.text(&timing, Point::new(w / 2, after + 10), Font::Display, TextAlign::Center, INK);
 
         let items = [
-            MenuItem { label: rx.t(Msg::WeatherViewRainMap), guard: false },
-            MenuItem { label: rx.t(Msg::WeatherDismiss), guard: false },
+            MenuItem { label: rx.t(Msg::WeatherViewRainMap), guard: ACTION_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::WeatherDismiss), guard: ACTION_GUARDS[1] },
         ];
         let top = h - 2 * (46 + 8) - 12;
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, GuardedRowsGeometry::card(w, top));
+        self.actions.draw(cv, &items, rx.hold_progress, WARNING, GuardedRowsGeometry::card(w, top));
     }
 }
