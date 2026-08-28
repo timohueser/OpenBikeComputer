@@ -814,11 +814,6 @@ fn replay() -> Vec<Step> {
     // The three halves, in order: the landing frame is reported, an idle map under a settled sheet
     // asks for nothing, and the close asks for exactly one repaint. The open itself, step by step,
     // is `the_drawer_open_damages_only_the_sheet_…` below.
-    // The pass before the squeeze has to be **close** to it: a chord is applied at recognition,
-    // before the pass sets `now_ms` (see `App::recognize`), so the sheet's `opened_ms` is the
-    // *previous* pass's clock. A long quiet gap in front of the squeeze would hand it a sheet
-    // already landed, and there would be no landing frame left to skip.
-    steps.push(step("a pass just before the squeeze", 191_900).expect("Map"));
     steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
     steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));
     steps.push(step("release the squeeze", 192_700).keys(&[release(Button::Select), release(Button::Up)]));
@@ -1295,35 +1290,43 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
 // The sheet-only open (#1559).
 // ---------------------------------------------------------------------------------------------
 
+/// When the squeeze lands, **a long way after the pass in front of it** (#1569).
+///
+/// The gap is the board's: its Map sleeps until something it asked for happens, so the pass before
+/// a squeeze is hundreds of milliseconds to whole seconds back, and 900 ms is already twice the
+/// sheet's whole open. A sheet stamped with that pass's clock is drawn landed on its first frame —
+/// the open cuts — which is what the board did while this replay, run at dense ticks, passed 9/9.
+/// The open has to start on the frame the squeeze woke.
+const SQUEEZE_MS: u32 = 8_900;
+
 /// The **quick drawer's open, step by step**, over a riding Map — the one base whose row says it is
 /// not recessed under a sheet.
 ///
-/// Sampled at the sheet's own step cadence so every intermediate position is a pass of its own.
+/// Sampled at the sheet's own step cadence so every intermediate position is a pass of its own,
+/// and squeezed a long way after the pass in front of it ([`SQUEEZE_MS`]), which is the board's.
 fn drawer_open_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
         step("the first fix", 200).fix(0).expect("Map"),
+        // **The board's cadence, and it is the point** — see [`SQUEEZE_MS`].
         step("quiet", 500).expect("Map"),
-        // A chord is applied at recognition, before the pass sets `now_ms`, so the sheet's
-        // `opened_ms` is the previous pass's clock — the pass in front of the squeeze has to be
-        // close to it or the sheet is already past its slide.
-        step("a pass just before the squeeze", 960).expect("Map"),
-        step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
+        step("the last wake the Map asked for", 8_000).expect("Map"),
+        step("squeeze the quick drawer open", SQUEEZE_MS).keys(&squeeze(Button::Up, Button::Select)),
     ];
     for i in 1..=9 {
-        steps.push(step("an open step", 1_000 + i * 32).expect("QuickDrawer"));
+        steps.push(step("an open step", SQUEEZE_MS + i * 32).expect("QuickDrawer"));
     }
     // The tail at four times the sheet's own rate — a device wakes on more than its own timers (a
     // fix, a notification, a card sweep), and a wake between two steps must not cost a render.
     for i in 0..30 {
-        steps.push(step("a wake between two steps", 1_292 + i * 4).expect("QuickDrawer"));
+        steps.push(step("a wake between two steps", SQUEEZE_MS + 292 + i * 4).expect("QuickDrawer"));
     }
-    steps.push(step("release the squeeze", 1_560).keys(&[release(Button::Select), release(Button::Up)]));
-    steps.push(step("quiet under the settled sheet", 1_700).expect("QuickDrawer"));
-    steps.push(step("quiet again", 1_800).expect("QuickDrawer"));
-    steps.push(step("close it", 1_900).keys(&tap(Button::Back)).expect("Map"));
-    steps.push(step("quiet on the uncovered map", 2_000).expect("Map"));
-    steps.push(step("and still quiet", 2_100).expect("Map"));
+    steps.push(step("release the squeeze", SQUEEZE_MS + 560).keys(&[release(Button::Select), release(Button::Up)]));
+    steps.push(step("quiet under the settled sheet", SQUEEZE_MS + 700).expect("QuickDrawer"));
+    steps.push(step("quiet again", SQUEEZE_MS + 800).expect("QuickDrawer"));
+    steps.push(step("close it", SQUEEZE_MS + 900).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", SQUEEZE_MS + 1_000).expect("Map"));
+    steps.push(step("and still quiet", SQUEEZE_MS + 1_100).expect("Map"));
     steps
 }
 
@@ -1356,7 +1359,8 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
     // The quick drawer's root sheet is 104 px tall on a 320 px panel; give the rounded lip a couple
     // of rows and nothing below that may move.
     const SHEET_ROWS: u32 = 110;
-    let open: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_000..=1_560).contains(&r.at_ms)).collect();
+    let open: Vec<&Repaint> =
+        candidate.damage.iter().filter(|r| (SQUEEZE_MS..=SQUEEZE_MS + 560).contains(&r.at_ms)).collect();
     assert!(open.len() >= 6, "the open should be many small steps, not a cut: {} repaint(s)", open.len());
     for r in &open {
         assert_eq!(
@@ -1378,13 +1382,13 @@ fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
 
     // Settled: the sheet is up and nothing under it asks for a pixel.
     assert!(
-        !candidate.damage.iter().any(|r| (1_700..1_900).contains(&r.at_ms)),
+        !candidate.damage.iter().any(|r| (SQUEEZE_MS + 700..SQUEEZE_MS + 900).contains(&r.at_ms)),
         "a settled sheet over a frozen base repaints nothing"
     );
 
     // The close: exactly one repaint, it renders the base once, and then quiet. With the map never
     // dimmed, even that repaint only has the sheet's own rows to put back.
-    let close: Vec<&Repaint> = candidate.damage.iter().filter(|r| r.at_ms >= 1_900).collect();
+    let close: Vec<&Repaint> = candidate.damage.iter().filter(|r| r.at_ms >= SQUEEZE_MS + 900).collect();
     assert_eq!(close.len(), 1, "the close is one repaint and no more: {close:?}");
     assert!(close[0].features_tried > 0, "the close is the one base re-render — its status-quo cost");
     let (lo, hi, _) = close[0].pixels.expect("the close restores the rows the sheet covered");

@@ -133,7 +133,17 @@ struct Slide {
 
 /// The quick drawer's whole state: which page, which icon, and the level the editor has staged.
 pub struct QuickDrawerScreen {
-    opened_ms: u32,
+    /// When the open slide started — the clock of the **first frame that could draw the sheet**,
+    /// and `None` until one has.
+    ///
+    /// The sheet is not handed a clock when it is built, and that is the fix for #1569. A chord is
+    /// resolved *above* the pass, before the pass sets its `now_ms`, so a sheet stamped at
+    /// construction carries the clock of the pass **before** the squeeze. On a host whose frames
+    /// gap — the board's Map sleeps until something happens — that is seconds old, the first frame
+    /// computes an elapsed far past [`OPEN_MS`], and the sheet is drawn already landed: the open
+    /// cuts. Starting the clock on the first tick makes the open begin where it can first be seen,
+    /// on every host and with no host having to say anything.
+    opened_ms: Option<u32>,
     slide: Option<Slide>,
     page: Page,
     selected: u8,
@@ -155,10 +165,11 @@ pub struct QuickDrawerScreen {
 }
 
 impl QuickDrawerScreen {
-    /// A freshly opened drawer, sliding down from `now_ms` with the first control selected.
-    pub fn new(now_ms: u32) -> Self {
+    /// A drawer that has begun to open, with the first control selected. Its slide starts on the
+    /// first frame that ticks it — see [`opened_ms`](Self::opened_ms).
+    pub fn opening() -> Self {
         QuickDrawerScreen {
-            opened_ms: now_ms,
+            opened_ms: None,
             slide: None,
             page: Page::Root,
             selected: 0,
@@ -286,17 +297,16 @@ impl QuickDrawerScreen {
 
     /// The sheet's animation: the open slide, then any page slide, at the panel's step cadence.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
+        // This frame is the open's origin if no frame has been one yet (#1569).
+        let opened_ms = *self.opened_ms.get_or_insert(now_ms);
         let settled = self.settle(now_ms);
         let sheet_h = self.sheet_height(now_ms);
         let visible = self.visible_height(now_ms, sheet_h);
         // The open is over when the sheet has **arrived**, not when its clock runs out: the
         // ease-out's last few per cent move no pixel, and the steps they would ask for are whole
         // renders that push nothing.
-        let opening = if sheet_h > 0 && visible >= sheet_h {
-            0
-        } else {
-            OPEN_MS.saturating_sub(now_ms.wrapping_sub(self.opened_ms))
-        };
+        let opening =
+            if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
         let sliding = self.slide.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s.started_ms)));
         let moved = visible != self.shown_h as i32;
         // Whether the frozen base has to be drawn under this frame — a page slide is running (see
@@ -306,7 +316,7 @@ impl QuickDrawerScreen {
         // The wake is the time to the **next step boundary**, not a whole step from wherever this
         // poll happened to land: the sheet advances on those boundaries, so asking for a full step
         // off one carries the offset to the end and finishes the open a step late.
-        let to_step = STEP_MS - now_ms.wrapping_sub(self.opened_ms) % STEP_MS;
+        let to_step = STEP_MS - now_ms.wrapping_sub(opened_ms) % STEP_MS;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
             // A page slide moves its two pages across a sheet that may not change height at all, so
             // it is a change whether or not the sheet grew.
@@ -402,8 +412,14 @@ impl QuickDrawerScreen {
     /// instead means the sheet moves exactly as often as it asked to be woken, and a wake between
     /// two steps draws the frame that is already there — which the tick then does not ask for.
     fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
-        let elapsed = now_ms.wrapping_sub(self.opened_ms);
-        let stepped = elapsed - elapsed % STEP_MS;
+        // Before the first tick the open has not started, so a host that draws a sheet it has not
+        // ticked draws no sheet — which is the frame the open begins from anyway.
+        let Some(opened_ms) = self.opened_ms else { return 0 };
+        let elapsed = now_ms.wrapping_sub(opened_ms);
+        // The frame the sheet opens on is its **first step**, not a frame that draws nothing: the
+        // chord costs the host a repaint whatever this returns, and #1559's rule is that no frame
+        // of the open is spent on nothing. So a step boundary is counted from one step in.
+        let stepped = (elapsed / STEP_MS + 1) * STEP_MS;
         (sheet_h as f32 * sheet::arrived(stepped, 0, OPEN_MS) + 0.5) as i32
     }
 
@@ -587,8 +603,11 @@ mod tests {
     use crate::{Activity, AppState, Settings};
 
     /// A drawer with its open + slide animations already finished, so `handle` acts immediately.
+    /// The first tick is the open's origin, so it is taken a whole [`OPEN_MS`] before `now_ms`.
     fn settled(now_ms: u32) -> QuickDrawerScreen {
-        QuickDrawerScreen::new(now_ms.saturating_sub(OPEN_MS))
+        let mut d = QuickDrawerScreen::opening();
+        d.tick_timers(now_ms.saturating_sub(OPEN_MS));
+        d
     }
 
     struct World {
@@ -718,7 +737,8 @@ mod tests {
     /// open a step late. The mutant is `STEP_MS.min(remaining)`.
     #[test]
     fn the_wake_lands_on_the_next_step_boundary() {
-        let mut d = QuickDrawerScreen::new(0);
+        let mut d = QuickDrawerScreen::opening();
+        d.tick_timers(0); // the frame the open starts on
         assert_eq!(d.tick_timers(STEP_MS + 5).next_wake_ms, Some(STEP_MS - 5), "five into a step, ask for the rest");
         assert_eq!(d.tick_timers(STEP_MS * 2).next_wake_ms, Some(STEP_MS), "on a boundary, ask for a whole step");
     }
@@ -742,14 +762,15 @@ mod tests {
     /// The sheet arrives monotonically and lands exactly on its page height.
     #[test]
     fn the_sheet_slides_in_monotonically_and_lands_exactly() {
-        let d = QuickDrawerScreen::new(1_000);
+        let mut d = QuickDrawerScreen::opening();
+        d.tick_timers(1_000); // the frame the open starts on
         let target = ROOT_H;
         let quarter = OPEN_MS / 4;
         let frames: heapless::Vec<i32, 8> = [0, quarter, quarter * 2, quarter * 3, OPEN_MS]
             .iter()
             .map(|dt| d.visible_height(1_000 + dt, target))
             .collect();
-        assert_eq!(frames[0], 0, "nothing is visible on the opening frame");
+        assert!(frames[0] > 0, "the sheet's first step is on the frame it opens on, not one step later");
         assert_eq!(frames[4], target, "and the sheet lands exactly on its height");
         assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
     }
@@ -760,7 +781,7 @@ mod tests {
     /// their being the tunables an on-glass round turns.
     #[test]
     fn the_open_takes_open_ms_in_steps_of_step_ms_and_every_step_moves_the_sheet() {
-        let mut d = QuickDrawerScreen::new(0);
+        let mut d = QuickDrawerScreen::opening();
         let (mut ms, mut heights) = (0u32, heapless::Vec::<i32, 32>::new());
         // Poll at 1 ms, the finest any host could: what the sheet asks for is what it gets, and a
         // poll between two steps must cost nothing.
@@ -783,11 +804,38 @@ mod tests {
         assert!(steps >= 8, "an open that reads as motion is many steps, not the four the panel used to show");
     }
 
+    /// **The open starts on the frame that can first draw it** (#1569), whatever the host was
+    /// doing before the squeeze. A chord is resolved above the pass, so the sheet is built with no
+    /// clock at all — and this is what that buys: a board whose Map slept for seconds still gets
+    /// the whole slide.
+    ///
+    /// The mutant is stamping the open at construction from the host's clock: with the first frame
+    /// eight seconds after the pass in front of it, the sheet is drawn landed on frame one and the
+    /// open is a cut.
+    #[test]
+    fn the_open_starts_on_the_first_frame_and_not_on_a_clock_from_before_the_squeeze() {
+        // The board's idle Map: the pass in front of the squeeze is seconds back, and the first
+        // frame of the open is the pass the chord woke.
+        let first_ms = 8_000;
+        let mut d = QuickDrawerScreen::opening();
+        let (mut ms, mut heights) = (first_ms, heapless::Vec::<i32, 32>::new());
+        while ms < first_ms + OPEN_MS * 2 {
+            if d.tick_timers(ms).changed {
+                let _ = heights.push(d.visible_height(ms, ROOT_H));
+            }
+            ms += 1;
+        }
+        let first = *heights.first().expect("the open reported at least one step");
+        assert!(first > 0 && first < ROOT_H, "the frame the squeeze woke draws the first step, not the landed sheet");
+        assert_eq!(heights.last(), Some(&ROOT_H), "and lands on its height");
+        assert!(heights.len() >= 8, "a sparsely woken host still gets the whole slide: {heights:?}");
+    }
+
     /// A settled sheet is **silent**: it asks for no wake and no repaint, however often it is
     /// polled. The frozen base under it depends on that.
     #[test]
     fn a_settled_sheet_asks_for_nothing() {
-        let mut d = QuickDrawerScreen::new(0);
+        let mut d = QuickDrawerScreen::opening();
         for ms in 0..OPEN_MS * 2 {
             d.tick_timers(ms);
         }
