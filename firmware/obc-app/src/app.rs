@@ -3408,15 +3408,9 @@ impl App {
         // rows on the panel are right, and drawing them again only puts back what is already there.
         // On a **resident** target the base's draw is therefore skipped altogether, and an open
         // step costs the sheet and nothing else — the map render the open used to pay for at each
-        // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all.
-        //
-        // Three things are excluded, and each says so itself. A host that composes every frame from
-        // nothing (the snapshot sweep) never claims a resident frame, and draws the base as always.
-        // A base that **recesses** takes its second draw, because the recess *is* that draw: the
-        // rows standing on the panel are the undimmed ones, and skipping the draw would leave them
-        // there for the life of the sheet. And a sheet that is not purely *covering* this frame
-        // asks for the base itself ([`Screen::needs_base`]) — a page slide is travelling through the
-        // margin either side of it.
+        // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all. The
+        // three exclusions, and why each is one, are on [`UiRuntime::sheet_only`] — which the
+        // frame's `Reader` need reads too, because a frame that skips this draw reads nothing.
         let sheet_only = ui.sheet_only();
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
