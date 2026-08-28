@@ -5265,6 +5265,105 @@ mod tests {
         RouteIndex::read(&src).unwrap()
     }
 
+    /// Pin the composed route-following result through the App tick. The route lives only in RAM
+    /// and carries the inputs that exercise each guidance layer together: elevation for one climb,
+    /// named waypoints, an off-route excursion, and a final fix at the route end.
+    #[test]
+    fn composed_guidance_trace_is_stable() {
+        use obc_formats::io::{ByteSink, Error};
+
+        #[derive(Default)]
+        struct VecSink(std::vec::Vec<u8>);
+        impl ByteSink for VecSink {
+            fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+                self.0.extend_from_slice(bytes);
+                Ok(())
+            }
+
+            fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+                let offset = offset as usize;
+                self.0[offset..offset + bytes.len()].copy_from_slice(bytes);
+                Ok(())
+            }
+        }
+
+        const LAT: f64 = 48.0;
+        const LON: f64 = 7.8;
+        let mut gpx = std::string::String::from(r#"<?xml version="1.0"?><gpx version="1.1">"#);
+        for (point, name) in [(6u32, "Bridge"), (14, "Pass"), (24, "Water"), (34, "Village")] {
+            let lon = LON + point as f64 * 0.002;
+            gpx.push_str(&std::format!(r#"<wpt lat="{LAT:.4}" lon="{lon:.4}"><name>{name}</name></wpt>"#));
+        }
+        gpx.push_str("<trk><trkseg>");
+        for point in 0u32..40 {
+            let lon = LON + point as f64 * 0.002;
+            let rise = point.clamp(12, 28) - 12;
+            let elevation = 200.0 + rise as f64 * (300.0 / 16.0);
+            gpx.push_str(&std::format!(r#"<trkpt lat="{LAT:.4}" lon="{lon:.4}"><ele>{elevation:.1}</ele></trkpt>"#));
+        }
+        gpx.push_str("</trkseg></trk></gpx>");
+
+        let mut sink = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "Guidance", &mut sink).unwrap();
+        let src = SliceSource(sink.0.as_slice());
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        assert_eq!(route.detect_climbs().len(), 1, "the in-memory route contains one detected climb");
+
+        let summary = RouteSummary::read(&src).unwrap();
+        let mut app = App::new(AppState::new((LON * 1e6) as i32, (LAT * 1e6) as i32, 1.0));
+        app.set_routes_with_ids(&[summary], &[1]);
+        app.activate_route(0);
+
+        let mut trace = std::vec::Vec::new();
+        for (step, off_route) in [
+            (0u32, false),
+            (5, false),
+            (6, false),
+            (7, false),
+            (12, false),
+            (15, true),
+            (16, false),
+            (24, false),
+            (25, false),
+            (28, false),
+            (34, false),
+            (35, false),
+            (39, false),
+        ] {
+            let lon = LON + step as f64 * 0.002;
+            let lat = if off_route { LAT + 0.02 } else { LAT };
+            let mut loc = OneFix(Some(Fix::at((lat * 1e6) as i32, (lon * 1e6) as i32)));
+            app.tick(RideClock(step * 1_000 + 1), Sensors::new(&mut loc), Some(&route));
+            trace.push((
+                app.activity.progress_m,
+                app.activity.off_route,
+                app.activity.dist_to_route_m,
+                app.activity.active_climb,
+                app.activity.next_waypoint,
+            ));
+        }
+
+        assert_eq!(
+            trace,
+            [
+                (0, false, 0, Some(0), Some(0)),
+                (744, false, 0, Some(0), Some(0)),
+                (893, false, 0, Some(0), Some(0)),
+                (1_042, false, 0, Some(0), Some(1)),
+                (1_787, false, 0, Some(0), Some(1)),
+                (1_787, true, 2_226, Some(0), Some(1)),
+                (2_383, false, 0, Some(0), Some(2)),
+                (3_575, false, 0, Some(0), Some(2)),
+                (3_724, false, 0, Some(0), Some(3)),
+                (4_171, false, 0, Some(0), Some(3)),
+                (5_065, false, 0, None, Some(3)),
+                (5_214, false, 0, None, None),
+                (5_810, false, 0, None, None),
+            ]
+        );
+    }
+
     /// Route-relative Inspect keeps a distance cursor in the input path, then resolves it to the
     /// streamed route exactly once at the pre-draw seam. That makes Up/Down follow real bends
     /// without giving gesture handling ownership of route I/O.
