@@ -12,7 +12,7 @@
 use obc_app::recorder::RideClose;
 use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta};
 use obc_formats::io::SliceSource;
-use obc_ports::TrackSink;
+use obc_ports::TrackPoint;
 use obc_route::{Profile, RideStats, RouteSummary};
 
 /// The route catalog + the one active route's bytes, plus the reserved nav-route commit slot the
@@ -82,10 +82,11 @@ pub trait RideRepository {
 
 /// The open ride object the app records into while riding — one method per
 /// [`RecorderEffect`](obc_app::recorder::RecorderEffect), plus the session edge that opens the
-/// object, and the [`TrackSink`] the ride appends through.
+/// object.
 ///
 /// There is no `reconcile`: the recorder lifecycle is Recorder's (#1398), and a store that
-/// reconstructed it from an action plus a session id would be deciding it a second time.
+/// reconstructed it from an action plus a session id would be deciding it a second time. There is
+/// no sink either: the app stages its own samples and this writes the ones it is handed (#1553).
 pub trait TrackRepository {
     /// Open a ride object for `session`, to be saved under `name`. Called on the session edge —
     /// Recorder opens exactly one ride at a time, so any previous object is already closed.
@@ -110,8 +111,15 @@ pub trait TrackRepository {
         true
     }
 
-    /// The [`TrackSink`] for the open ride, or `None` when nothing is recording.
-    fn sink(&mut self) -> Option<&mut dyn TrackSink>;
+    /// Append one staged sample to the open ride. `false` means the medium refused it: Recorder
+    /// keeps that sample and every sample behind it staged, and offers them again.
+    ///
+    /// A store with no log has nothing to write and says so by succeeding — the same shape
+    /// [`checkpoint`](Self::checkpoint) uses, and the reason a memory store needs no arm of its own.
+    fn append(&mut self, point: TrackPoint) -> bool {
+        let _ = point;
+        true
+    }
 }
 
 /// The `.obt` trip folders that group routes (sim-only; the web demo has none, the board reads its

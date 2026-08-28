@@ -6,7 +6,6 @@ use crate::{RideRepository, RouteRepository, TrackRepository};
 use obc_app::recorder::RideClose;
 use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
-use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
 
 /// The in-memory route store's reserved id for the computed nav route (out of the small
@@ -193,8 +192,9 @@ impl RideRepository for MemRideStore {
     }
 }
 
-/// An in-memory track store: no filesystem, so no on-disk ride object — the breadcrumb + ride stats
-/// come from the shared app state, not a sink. It mirrors whether a ride is active so
+/// An in-memory track store: no filesystem, so no on-disk ride object — the breadcrumb and the ride
+/// totals are the app's own. It takes the samples it is handed and keeps none of them, and mirrors
+/// whether a ride is active so
 /// `is_recording()` stays honest, and numbers the rides it closes so a finalize can answer with an
 /// identity like every other store.
 #[derive(Default)]
@@ -235,11 +235,6 @@ impl TrackRepository for MemTrackStore {
     fn discard(&mut self) -> bool {
         self.recording = false;
         true
-    }
-
-    /// No persistent sink in memory — the app still draws the live breadcrumb itself.
-    fn sink(&mut self) -> Option<&mut dyn TrackSink> {
-        None
     }
 }
 
@@ -284,11 +279,11 @@ mod tests {
 
     /// The lifecycle the shared suite pins, on the memory store: opening records, and either close
     /// stops. The memory store keeps no bytes, so its finalize still has to *name* what it closed —
-    /// "no identity" is how a failure is reported.
+    /// "nothing" is how "there was no ride" is reported, and it is not a failure.
     #[test]
     fn the_memory_store_mirrors_the_ride_and_names_what_it_closes() {
         let mut t = MemTrackStore::new();
-        crate::conformance::track_lifecycle(&mut t, false);
+        crate::conformance::track_lifecycle(&mut t);
         assert!(!t.is_recording());
     }
 }

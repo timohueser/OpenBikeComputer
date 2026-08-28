@@ -774,25 +774,44 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
             true => RecorderOutcome::Checkpointed { token },
             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        // The totals are read here, as the footer is written, so the wall-clock anchor pairs with
-        // the log's last points.
-        RecorderEffect::Finalize { token } => match tracks.finalize(app.ride_stats()) {
-            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
-            // The object was never created — a start this store refused, which already warned the
-            // rider. There is nothing to save, and saying so is **terminal**: answering `Failed`
-            // would retry a close against an object that does not exist, for ever.
-            RideClose::Nothing => RecorderOutcome::Discarded { token },
-            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
-        },
+        // The samples this ride staged and no append has taken yet go in **before** the footer:
+        // they belong to the ride being saved, and the totals the footer carries already count the
+        // distance and the moving time they cover. This is inside the close's own service, so it
+        // orders nothing against the append rank.
+        //
+        // The footer facts come from Recorder, which stamped its wall-clock anchor as it minted
+        // this close — nothing assembles them a second time on the way out.
+        RecorderEffect::Finalize { token } => {
+            for point in app.recorder.staged() {
+                if !tracks.append(*point) {
+                    break; // the medium refused; the footer is still the honest total
+                }
+            }
+            match tracks.finalize(app.recorder.ride_stats()) {
+                RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
+                // The object was never created — a start this store refused, which already warned
+                // the rider. There is nothing to save, and saying so is **terminal**: answering
+                // `Failed` would retry a close against an object that does not exist, for ever.
+                RideClose::Nothing => RecorderOutcome::Discarded { token },
+                RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
+            }
+        }
         RecorderEffect::Discard { token } => match tracks.discard() {
             true => RecorderOutcome::Discarded { token },
             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        // Sample assembly is #1553's; nothing produces an `Append` yet, so one arriving would be a
-        // change of who stages the samples with no executor behind it.
-        RecorderEffect::Append { token, .. } => {
-            debug_assert!(false, "sample assembly is part 2 of the recorder cutover");
-            RecorderOutcome::Failed { token, error: RecorderError::Write }
+        // The staged samples, in order, for as long as the medium keeps taking them. A short write
+        // is answered honestly: Recorder keeps the tail staged and offers it again next pass, so a
+        // refusal costs a delay rather than a hole in the ride log. Nothing written at all is a
+        // failure, which is what raises the recording warning.
+        RecorderEffect::Append { token, samples } => {
+            let staged = app.recorder.staged();
+            let want = (samples as usize).min(staged.len());
+            let written = staged[..want].iter().take_while(|point| tracks.append(**point)).count() as u16;
+            match written {
+                0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                _ => RecorderOutcome::Appended { token, samples: written },
+            }
         }
     }
 }
@@ -801,4 +820,139 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
 pub(crate) fn active_route_name(app: &App) -> Option<String> {
     let i = app.active_route_index()?;
     app.routes().get(i).map(|r| r.name.as_str().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_app::recorder::{RecorderIntent, RideClose};
+    use obc_app::AppState;
+    use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, TrackPoint};
+    use obc_route::RideStats;
+
+    /// A host that can do everything — none of it reached by the recording path under test.
+    const SUPPORT: PlatformSupport = PlatformSupport {
+        detour: true,
+        settings_persistence: true,
+        dfu: true,
+        weather: true,
+        bonding: true,
+        storage_space_report: true,
+        retention_metadata: true,
+    };
+
+    /// One scripted fix, taken once — the pass's location port.
+    struct OneFix(Option<Fix>);
+    impl LocationSource for OneFix {
+        fn poll(&mut self) -> Option<Fix> {
+            self.0.take()
+        }
+    }
+
+    /// A ride object that keeps what it was handed: every appended sample, in order, and the footer
+    /// the close wrote. Enough to ask whether the samples reached the object the rider saved.
+    #[derive(Default)]
+    struct RecordingTrackStore {
+        open: bool,
+        points: Vec<TrackPoint>,
+        footer: Option<RideStats>,
+    }
+
+    impl TrackRepository for RecordingTrackStore {
+        fn open(&mut self, _session: u32, _name: Option<&str>) {
+            self.open = true;
+        }
+
+        fn finalize(&mut self, stats: RideStats) -> RideClose {
+            if !self.open {
+                return RideClose::Nothing;
+            }
+            self.open = false;
+            self.footer = Some(stats);
+            RideClose::Committed(7)
+        }
+
+        fn discard(&mut self) -> bool {
+            self.open = false;
+            true
+        }
+
+        fn append(&mut self, point: TrackPoint) -> bool {
+            self.points.push(point);
+            true
+        }
+    }
+
+    /// A ride recording `fixes` samples, none of which any append has taken: every append this
+    /// executor is offered is refused, which is what leaves a tail staged for the close to find.
+    /// Fixes are one second and ~11 m apart, so each one is logged and none reads as a teleport.
+    fn ride_with_a_staged_tail(fixes: u32) -> (App, HostLoop) {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // the map-first app is `Mode::Riding`
+        let mut host = HostLoop::new();
+        host.note_store_commit(); // a ride needs somewhere to put it
+        for step in 0..=fixes + 2 {
+            if step == 2 {
+                app.recorder.request(RecorderIntent::Start);
+            }
+            let fix = (step > 2).then(|| Fix::at(0, 100 * step as i32));
+            let mut loc = OneFix(fix);
+            let now = step * 1_000;
+            let mut plan = host.pass(
+                &mut app,
+                PassClock { ride: RideClock(now), ui: InputClock(now) },
+                &[],
+                Sensors::new(&mut loc),
+                None,
+                None,
+                SUPPORT,
+            );
+            // Refuse every append, so the samples stay staged. A refusal is a delay, not a loss.
+            if let Some(effect) = plan.effects.recorder.take() {
+                assert!(matches!(effect, RecorderEffect::Append { .. }), "only appends here: {effect:?}");
+                let refused = RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
+                let _ = host.inbox.outcomes.recorder.try_put(refused);
+            }
+        }
+        assert_eq!(app.recorder.staged().len() as u32, fixes, "the ride is holding its whole tail");
+        (app, host)
+    }
+
+    /// **The close writes the samples it was holding.** A ride whose tail no append reached is
+    /// saved with that tail in the ride object, ahead of the footer — because the footer's distance
+    /// and moving time already count the ground those samples cover, and an object whose figures
+    /// describe track it does not contain is the inconsistency this exists to prevent.
+    #[test]
+    fn a_saved_ride_writes_the_samples_the_close_was_holding() {
+        let (mut app, mut host) = ride_with_a_staged_tail(4);
+        let mut store = RecordingTrackStore::default();
+        store.open(1, Some("ride"));
+
+        app.recorder.request(RecorderIntent::Save);
+        let mut loc = OneFix(None);
+        let mut plan = host.pass(
+            &mut app,
+            PassClock { ride: RideClock(9_000), ui: InputClock(9_000) },
+            &[],
+            Sensors::new(&mut loc),
+            None,
+            None,
+            SUPPORT,
+        );
+        let effect = plan.effects.recorder.take().expect("the rider's Save is a close");
+        assert!(matches!(effect, RecorderEffect::Finalize { .. }), "{effect:?}");
+
+        let outcome = serve_recorder(&app, effect, &mut store);
+        assert!(matches!(outcome, RecorderOutcome::Finalized { .. }), "{outcome:?}");
+
+        assert_eq!(store.points.len(), 4, "every staged sample reached the ride object");
+        let footer = store.footer.expect("the close wrote a footer");
+        let last = store.points.last().expect("…and the object is not empty");
+        assert_eq!(last.t_ms, 6_000, "the object's last sample is the ride's last fix");
+        assert!(footer.distance_m > 0, "the footer counts ground the object now contains");
+        assert_eq!(
+            footer.moving_time_s,
+            (last.t_ms - store.points[0].t_ms) / 1_000,
+            "and the moving time it reports is the span the samples cover"
+        );
+    }
 }

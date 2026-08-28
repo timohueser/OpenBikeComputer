@@ -1486,18 +1486,28 @@ pub(crate) async fn run_app(
                 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
                 let outcome = match effect {
                     RecorderEffect::Checkpoint { token } => {
-                        let stats = app.ride_stats();
-                        let continuation = app.activity.ride_continuation();
+                        let stats = app.recorder.ride_stats();
+                        let continuation = app.recorder.continuation();
                         match ride_recorder.checkpoint(now, &stats, continuation).await {
                             true => RecorderOutcome::Checkpointed { token },
                             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
                         }
                     }
                     RecorderEffect::Finalize { token } => {
-                        // The totals are read as the footer is written, so the wall-clock anchor
-                        // pairs with the log's last points. The save name is not read at all: it was
-                        // frozen when the ride opened.
-                        let stats = app.ride_stats();
+                        // The samples this ride staged and no append has taken yet go into the
+                        // bounded tail **before** the footer: they belong to the ride being saved,
+                        // and the totals the footer carries already count the distance and the
+                        // moving time they cover. This is inside the close's own service, so it
+                        // orders nothing against the append rank.
+                        for point in app.recorder.staged() {
+                            if !ride_recorder.append(*point) {
+                                break; // the tail refused it; the footer is still the honest total
+                            }
+                        }
+                        // The footer facts come from Recorder, which stamped its wall-clock anchor
+                        // as it minted this close. The save name is not read at all: it was frozen
+                        // when the ride opened.
+                        let stats = app.recorder.ride_stats();
                         match ride_recorder.finalize(&stats).await {
                             RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                             RideClose::Nothing => {
@@ -1511,10 +1521,22 @@ pub(crate) async fn run_app(
                         true => RecorderOutcome::Discarded { token },
                         false => RecorderOutcome::Failed { token, error: RecorderError::Write },
                     },
-                    // Sample assembly is #1553's; nothing produces an `Append` yet.
-                    RecorderEffect::Append { token, .. } => {
-                        defmt::error!("flat ride: an Append reached the board before #1553");
-                        RecorderOutcome::Failed { token, error: RecorderError::Write }
+                    // The staged samples into the bounded tail, in order, for as long as the
+                    // recorder keeps taking them. A short write is answered honestly: Recorder keeps
+                    // the tail staged and offers it again, so a refusal costs a delay rather than a
+                    // hole in the ride log. Nothing written at all is a failure, which is what
+                    // raises the recording warning.
+                    RecorderEffect::Append { token, samples } => {
+                        let staged = app.recorder.staged();
+                        let want = (samples as usize).min(staged.len());
+                        let mut written = 0u16;
+                        while (written as usize) < want && ride_recorder.append(staged[written as usize]) {
+                            written += 1;
+                        }
+                        match written {
+                            0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                            _ => RecorderOutcome::Appended { token, samples: written },
+                        }
                     }
                 };
                 if ride_recorder.take_warning() {
@@ -2294,14 +2316,10 @@ pub(crate) async fn run_app(
                         defmt::warn!("input: {=str} dropped — the frame's gesture batch is full", gesture_name(g));
                     }
                 }
-                // The flat recorder appends the exact final 20-byte sample bytes to its bounded tail.
-                // Card I/O happens only at the ~10 s checkpoint below, never inside the pass.
-                let track_dyn = ride_recorder.track_sink(app.ride_session());
-
                 // ═══ **One `App::run_pass` per frame** (#1433 §6, #1397 S6b) ═══
                 //
                 // Run here — in place of the `app.tick` this replaces — because this is the only point
-                // where the sensors, the recorder's track sink and the route reader are all live at once.
+                // where the sensors and the route reader are both live at once.
                 // Fourteen stages in, one bounded `PassPlan` out. Three builds: the VCOM-streamed GPS +
                 // altimeter + compass (`debug-uart`); the real SAM-M10Q + BMP581, coherent per fix
                 // (default); or the SynthLocation square loop, no other sensors (`synth`).
@@ -2337,7 +2355,6 @@ pub(crate) async fn run_app(
                     sensors: Sensors {
                         altimeter: Some(&mut debug_alt),
                         compass: Some(&mut debug_compass),
-                        track: track_dyn,
                         fuel: Some(&mut fuel),
                         // Host-injected `H`/`P`/`R` land in the shared hub mailboxes; on a
                         // `ble` + `debug-uart` build a real strap feeds the same ones (last-writer-wins).
@@ -2364,7 +2381,6 @@ pub(crate) async fn run_app(
                         temperature: Some(&mut consumer.temperature()),
                         clock: Some(&mut consumer.clock()), // SAM-M10Q UTC → the wall clock (always stamps; #641)
                         compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
-                        track: track_dyn,
                         fuel: Some(&mut fuel),
                         // The central manager (SE6) feeds the shared hub mailboxes.
                         hr: Some(&mut consumer.hr()),
@@ -2385,7 +2401,7 @@ pub(crate) async fn run_app(
                     now: clock,
                     gestures: &gestures,
                     // The synthetic loop has no sensors at all — not even a clock source.
-                    sensors: Sensors { track: track_dyn, fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
+                    sensors: Sensors { fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                     route: route.as_ref(),
                     weather: weather_snapshot.as_ref(),
                     support: BOARD_SUPPORT,
@@ -2476,8 +2492,8 @@ pub(crate) async fn run_app(
                 // ride doesn't flood the transport.
                 elev_fixes = elev_fixes.wrapping_add(1);
                 if elev_fixes.is_multiple_of(64) {
-                    let a = app.activity.altitude();
-                    let baro = app.activity.baro_elevation_m().unwrap_or(f32::NAN);
+                    let a = app.recorder.altitude();
+                    let baro = app.recorder.baro_elevation_m().unwrap_or(f32::NAN);
                     defmt::debug!(
                         "altfuse: raw={=f32} m offset={=f32} m fused={=f32} m p_ref={=f32} hPa acc={=u32} gated={=u32} reseeds={=u16}",
                         baro,

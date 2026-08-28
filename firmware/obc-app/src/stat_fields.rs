@@ -36,8 +36,10 @@ use obc_ports::Fix;
 pub struct Readout<'a> {
     /// The current GPS fix, `None` when there isn't one (acquiring / lost).
     pub fix: Option<Fix>,
-    /// The ride accumulators (distance, climb, moving time, live altitude…).
+    /// The route model — the match readouts and which route is loaded.
     pub activity: &'a Activity,
+    /// The ride itself: distance, climb, moving time, live altitude and the live sensor values.
+    pub recorder: &'a crate::recorder::RecorderMachine,
     /// The active unit system — captions and scales every readout.
     pub units: Units,
     /// The active route's geometry totals, or `None` when no route is loaded.
@@ -303,12 +305,12 @@ impl StatField {
                 StatCell::new(cap(units.speed_label(), ""), fmt::speed_figure(v), false)
             }
             StatField::AvgSpeed => {
-                let v = cx.activity.avg_kmh().map(|kmh| units.speed(kmh));
+                let v = cx.recorder.avg_kmh().map(|kmh| units.speed(kmh));
                 StatCell::new(cap(t(Msg::TileAvg, lang), units.speed_label()), fmt::speed_figure(v), false)
             }
             StatField::DistDone => StatCell::new(
                 cap(units.dist_label(), t(Msg::TileDone, lang)),
-                fmt::distance_figure(units.dist(cx.activity.ridden_m / 1000.0)),
+                fmt::distance_figure(units.dist(cx.recorder.ridden_m() / 1000.0)),
                 false,
             ),
             StatField::DistToGo => {
@@ -324,7 +326,7 @@ impl StatField {
             }
             StatField::Climbed => StatCell::new(
                 cap(t(Msg::TileClimbed, lang), ""),
-                fmt::integer(units.elev(cx.activity.climb_m()) as u32),
+                fmt::integer(units.elev(cx.recorder.climb_m()) as u32),
                 true,
             ),
             StatField::ToClimb => {
@@ -351,11 +353,11 @@ impl StatField {
                 // route loaded, and `--` until the first sample. Map-referenced once the EL8
                 // estimator has settled (`Activity::current_elevation_m`), raw barometric before
                 // that and on a terrain-less map: same tile, same presentation, no fake precision.
-                let v = cx.activity.current_elevation_m().map(|m| units.elev(m));
+                let v = cx.recorder.current_elevation_m().map(|m| units.elev(m));
                 StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt::elevation_rounded(v), false)
             }
             StatField::RideTime => {
-                StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt::duration_hms(cx.activity.moving_s), false)
+                StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt::duration_hms(cx.recorder.moving_s()), false)
             }
             // The two EL9 time tiles (#1077). Both read one number — the gradient-aware seconds
             // still to ride — and differ only in how they present it: TIME TO GO as a duration,
@@ -424,18 +426,18 @@ impl StatField {
                 // unit (like `CLIMBED`'s metres) — no unit glued to the value. `_display` judges
                 // freshness on the ride clock the sample recorded on, not this render's clock (they
                 // differ in the sim during a GPX replay), so the tile doesn't spuriously blank.
-                let v = cx.activity.live_hr_display().map(|bpm| bpm as u32);
+                let v = cx.recorder.live_hr_display().map(|bpm| bpm as u32);
                 StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt::integer_opt(v), false)
             }
             StatField::Power => {
                 // Live watts from the paired power meter, same 5 s staleness gate → `--`.
-                let v = cx.activity.live_power_display().map(|w| w as u32);
+                let v = cx.recorder.live_power_display().map(|w| w as u32);
                 StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt::integer_opt(v), false)
             }
             StatField::Cadence => {
                 // Live rpm, same gate. A fresh `0` (coasting) is a real reading and shows `0`; only
                 // an absent/stale value reads `--`.
-                let v = cx.activity.live_cadence_display().map(|rpm| rpm as u32);
+                let v = cx.recorder.live_cadence_display().map(|rpm| rpm as u32);
                 StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt::integer_opt(v), false)
             }
             // The six `Next: <category>` tiles (epic #946, U5) share one arm — the field's own
@@ -601,6 +603,7 @@ mod tests {
     use super::*;
     use crate::activity::Mode;
     use crate::harness::support::wpts;
+    use crate::recorder::RecorderMachine;
 
     /// The const default grid is byte-identical to the push-built list it replaced — the pin that
     /// keeps `StatFieldList::DEFAULT` honest against `push`'s semantics (#1197's const chain).
@@ -735,10 +738,23 @@ mod tests {
     /// A `static` (not a `&` temporary) so it outlives the borrowed `Readout`.
     static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
 
-    fn readout<'a>(activity: &'a Activity, units: Units, waypoints: &'a Waypoints) -> Readout<'a> {
+    /// A ride that has recorded nothing. A `static`, like the empty caches beside it, so the
+    /// borrowed `Readout` outlives the call without a leak per test.
+    fn idle_recorder() -> &'static RecorderMachine {
+        static IDLE: std::sync::LazyLock<RecorderMachine> = std::sync::LazyLock::new(RecorderMachine::new);
+        &IDLE
+    }
+
+    fn readout<'a>(
+        activity: &'a Activity,
+        recorder: &'a RecorderMachine,
+        units: Units,
+        waypoints: &'a Waypoints,
+    ) -> Readout<'a> {
         Readout {
             fix: None,
             activity,
+            recorder,
             units,
             route: None,
             profile: None,
@@ -800,6 +816,7 @@ mod tests {
     /// wiring (route + profile + bike profile in, the right two strings out), not the physics.
     #[test]
     fn time_tiles_render_the_gradient_aware_estimate() {
+        let rec = idle_recorder();
         with_pass_route(|route, profile| {
             let mut activity = Activity::new(Mode::Riding);
             activity.route_total_m = route.total_distance_m;
@@ -809,7 +826,7 @@ mod tests {
                 profile: Some(profile),
                 // 14:00 on the wall clock, so the ETA arithmetic is easy to read.
                 now: DateTime { hour: 14, minute: 0, ..DateTime::default() },
-                ..readout(&activity, Units::Metric, &empty)
+                ..readout(&activity, rec, Units::Metric, &empty)
             };
             assert_eq!(route.total_ascent_m, 300, "the fixture climbs 300 m");
 
@@ -828,8 +845,11 @@ mod tests {
             assert!((secs - flat).abs_diff(480) <= 2, "the climb term is {} s", secs - flat);
 
             // Unit-system independent: hours and minutes are the same in both systems.
-            let imperial =
-                Readout { route: Some(route), profile: Some(profile), ..readout(&activity, Units::Imperial, &empty) };
+            let imperial = Readout {
+                route: Some(route),
+                profile: Some(profile),
+                ..readout(&activity, rec, Units::Imperial, &empty)
+            };
             assert_eq!(StatField::TimeToGo.cell(&imperial).value, StatField::TimeToGo.cell(&cx).value);
         });
     }
@@ -839,6 +859,7 @@ mod tests {
     /// rule) rather than reading `--` or panicking.
     #[test]
     fn time_tiles_follow_the_bike_profile() {
+        let rec = idle_recorder();
         with_pass_route(|route, profile| {
             let mut activity = Activity::new(Mode::Riding);
             activity.route_total_m = route.total_distance_m;
@@ -848,7 +869,7 @@ mod tests {
                     route: Some(route),
                     profile: Some(profile),
                     bike_profile_idx: idx,
-                    ..readout(&activity, Units::Metric, &empty)
+                    ..readout(&activity, rec, Units::Metric, &empty)
                 };
                 time_to_go_s(&cx).unwrap()
             };
@@ -862,6 +883,7 @@ mod tests {
     /// At the finish both read the arrival instant: `0:00` and the current clock.
     #[test]
     fn time_tiles_count_down_as_the_ride_advances() {
+        let rec = idle_recorder();
         with_pass_route(|route, profile| {
             let total = route.total_distance_m;
             let empty = Waypoints::new();
@@ -875,7 +897,7 @@ mod tests {
                     route: Some(route),
                     profile: Some(profile),
                     now: DateTime { hour: 14, minute: 0, ..DateTime::default() },
-                    ..readout(&activity, Units::Metric, &empty)
+                    ..readout(&activity, rec, Units::Metric, &empty)
                 };
                 let secs = time_to_go_s(&cx).unwrap();
                 assert!(secs <= prev, "time-to-go rose from {prev} to {secs} s at {} m", activity.progress_m);
@@ -896,16 +918,18 @@ mod tests {
     /// first altimeter sample.
     #[test]
     fn elevation_tile_reads_live_barometric_altitude() {
-        let mut activity = Activity::new(Mode::Riding);
+        let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
-        let value = |a: &Activity, units: Units| StatField::Elevation.cell(&readout(a, units, &empty)).value;
+        let mut rec = RecorderMachine::new();
+        let value =
+            |rec: &RecorderMachine, units| StatField::Elevation.cell(&readout(&activity, rec, units, &empty)).value;
 
-        assert_eq!(value(&activity, Units::Metric).as_str(), "--", "no altimeter sample yet");
+        assert_eq!(value(&rec, Units::Metric).as_str(), "--", "no altimeter sample yet");
 
-        activity.record_altitude(144.0);
-        assert_eq!(value(&activity, Units::Metric).as_str(), "144", "metric shows whole metres");
+        rec.record_altitude(144.0, true);
+        assert_eq!(value(&rec, Units::Metric).as_str(), "144", "metric shows whole metres");
         // 144 m × 3.28084 ≈ 472.4 ft → rounds to 472.
-        assert_eq!(value(&activity, Units::Imperial).as_str(), "472", "imperial converts to feet");
+        assert_eq!(value(&rec, Units::Imperial).as_str(), "472", "imperial converts to feet");
     }
 
     /// …and switches to the **map-referenced** height once the EL8 estimator settles (#1076): same
@@ -913,32 +937,35 @@ mod tests {
     /// reading — the tile never shows a half-converged one.
     #[test]
     fn elevation_tile_switches_to_the_fused_height_once_settled() {
-        let mut activity = Activity::new(Mode::Riding);
+        let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
-        let value = |a: &Activity| StatField::Elevation.cell(&readout(a, Units::Metric, &empty)).value;
+        let mut rec = RecorderMachine::new();
+        let value =
+            |rec: &RecorderMachine| StatField::Elevation.cell(&readout(&activity, rec, Units::Metric, &empty)).value;
 
         // The barometer reads 62 m high all ride; the terrain under the fix says 1800 m.
-        activity.record_altitude(1862.0);
-        activity.record_map_elevation(1800);
-        assert_eq!(value(&activity).as_str(), "1862", "one residual is not settled → the raw reading");
+        rec.record_altitude(1862.0, true);
+        rec.record_map_elevation(1800);
+        assert_eq!(value(&rec).as_str(), "1862", "one residual is not settled → the raw reading");
 
         for _ in 1..crate::altitude::SETTLE_SAMPLES {
-            activity.record_altitude(1862.0);
-            activity.record_map_elevation(1800);
+            rec.record_altitude(1862.0, true);
+            rec.record_map_elevation(1800);
         }
-        assert_eq!(value(&activity).as_str(), "1800", "settled → the map-referenced height");
+        assert_eq!(value(&rec).as_str(), "1800", "settled → the map-referenced height");
         // The barometer then climbs a real 40 m; the fused tile follows it metre for metre.
-        activity.record_altitude(1902.0);
-        assert_eq!(value(&activity).as_str(), "1840", "baro supplies the dynamics, the map the frame");
+        rec.record_altitude(1902.0, true);
+        assert_eq!(value(&rec).as_str(), "1840", "baro supplies the dynamics, the map the frame");
     }
 
     /// With no fix, no route and a fresh ride, every field falls back to its documented idle
     /// reading — `--` for the live/averaged values, zeros for the accumulators.
     #[test]
     fn fields_fall_back_without_data() {
+        let rec = idle_recorder();
         let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
-        let cx = readout(&activity, Units::Metric, &empty);
+        let cx = readout(&activity, rec, Units::Metric, &empty);
         let val = |f: StatField| f.cell(&cx).value;
         assert_eq!(val(StatField::Speed).as_str(), "--", "no fix → no live speed");
         assert_eq!(val(StatField::AvgSpeed).as_str(), "--", "no moving time → no average");
@@ -960,14 +987,15 @@ mod tests {
     /// elevation) show their real values. This is the mid-route-less-ride grid.
     #[test]
     fn route_less_ride_shows_dashes_for_route_fields_but_real_data_otherwise() {
-        let mut activity = Activity::new(Mode::Riding);
+        let activity = Activity::new(Mode::Riding);
         // Accumulate some ridden distance, climb, and a live altitude — no route involved.
-        activity.record_motion(Fix::at(52_520_000, 13_405_000), 0);
-        activity.record_motion(Fix::at(52_520_100, 13_405_000), 2000);
-        activity.record_altitude(200.0);
-        activity.record_altitude(230.0); // +30 m climbed
+        let mut rec = RecorderMachine::new();
+        rec.record_fix(Fix::at(52_520_000, 13_405_000), 0, true);
+        rec.record_fix(Fix::at(52_520_100, 13_405_000), 2000, true);
+        rec.record_altitude(200.0, true);
+        rec.record_altitude(230.0, true); // +30 m climbed
         let empty = Waypoints::new();
-        let cx = readout(&activity, Units::Metric, &empty); // route: None, profile: None
+        let cx = readout(&activity, &rec, Units::Metric, &empty); // route: None, profile: None
         let val = |f: StatField| f.cell(&cx).value;
         // Route-relative → dashes.
         assert_eq!(val(StatField::DistToGo).as_str(), "--", "no route → to-go reads --");
@@ -984,11 +1012,12 @@ mod tests {
     /// The Speed tile reads the fix's ground speed and rescales per unit system.
     #[test]
     fn speed_tile_reads_the_fix() {
+        let rec = idle_recorder();
         let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
         let fix = Fix { speed_mps: Some(10.0), ..Fix::at(0, 0) };
         let value = |units: Units| {
-            StatField::Speed.cell(&Readout { fix: Some(fix), ..readout(&activity, units, &empty) }).value
+            StatField::Speed.cell(&Readout { fix: Some(fix), ..readout(&activity, rec, units, &empty) }).value
         };
         assert_eq!(value(Units::Metric).as_str(), "36.0", "10 m/s reads 36 km/h");
         assert_eq!(value(Units::Imperial).as_str(), "22.4", "…and 22.4 mph");
@@ -1021,11 +1050,13 @@ mod tests {
     /// so it sits at the wide tile's far edge.
     #[test]
     fn next_waypoint_tile_names_and_counts_down() {
+        let rec = idle_recorder();
         let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
         let mut activity = Activity::new(Mode::Riding);
         activity.progress_m = 1_200; // past Brunnen, 3.8 km before Pass Summit
-        let cell =
-            |units| StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(1), ..readout(&activity, units, &w) });
+        let cell = |units| {
+            StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(1), ..readout(&activity, rec, units, &w) })
+        };
 
         let m = cell(Units::Metric);
         assert_eq!(m.caption.as_str(), "Pass Summit", "caption is the waypoint's name");
@@ -1043,11 +1074,12 @@ mod tests {
     /// pins until the index advances.
     #[test]
     fn next_waypoint_tile_clamps_to_zero_in_the_linger() {
+        let rec = idle_recorder();
         let w = wpts(&[(1_000, "Brunnen")]);
         let mut activity = Activity::new(Mode::Riding);
         activity.progress_m = 1_050; // 50 m past Brunnen, still inside its 100 m linger band
-        let cell =
-            StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(0), ..readout(&activity, Units::Metric, &w) });
+        let cell = StatField::NextWaypoint
+            .cell(&Readout { next_waypoint: Some(0), ..readout(&activity, rec, Units::Metric, &w) });
         assert_eq!(cell.caption.as_str(), "Brunnen");
         assert_eq!(cell.value.as_str(), "0m", "saturating_sub clamps the passed distance to zero");
     }
@@ -1057,6 +1089,7 @@ mod tests {
     /// range index, and an empty table.
     #[test]
     fn next_waypoint_tile_empty_state() {
+        let rec = idle_recorder();
         let activity = Activity::new(Mode::Riding);
         let w = wpts(&[(1_000, "Brunnen")]);
         let empty = Waypoints::new();
@@ -1066,15 +1099,16 @@ mod tests {
             assert_eq!(cell.value_align, TextAlign::Right, "the fallback stays right-aligned too");
         };
         // next_waypoint = None (the readout default): no route, or nothing ahead.
-        check(StatField::NextWaypoint.cell(&readout(&activity, Units::Metric, &w)));
+        check(StatField::NextWaypoint.cell(&readout(&activity, rec, Units::Metric, &w)));
         // A stale index past the table's end (defensive against a lagging resolver).
         check(
-            StatField::NextWaypoint.cell(&Readout { next_waypoint: Some(9), ..readout(&activity, Units::Metric, &w) }),
+            StatField::NextWaypoint
+                .cell(&Readout { next_waypoint: Some(9), ..readout(&activity, rec, Units::Metric, &w) }),
         );
         // An index against an empty table (no route loaded).
         check(
             StatField::NextWaypoint
-                .cell(&Readout { next_waypoint: Some(0), ..readout(&activity, Units::Metric, &empty) }),
+                .cell(&Readout { next_waypoint: Some(0), ..readout(&activity, rec, Units::Metric, &empty) }),
         );
     }
 
@@ -1137,6 +1171,7 @@ mod tests {
     /// route-relative tile answer at all (the Up-ahead list's own guard).
     fn riding<'a>(
         activity: &'a mut Activity,
+        recorder: &'a RecorderMachine,
         waypoints: &'a Waypoints,
         next_ahead: &'a crate::next_ahead::NextAhead,
         units: Units,
@@ -1144,7 +1179,7 @@ mod tests {
     ) -> Readout<'a> {
         activity.active_route = Some(0);
         activity.progress_m = progress_m;
-        Readout { next_ahead, ..readout(activity, units, waypoints) }
+        Readout { next_ahead, ..readout(activity, recorder, units, waypoints) }
     }
 
     /// The six tiles sit **directly after** `Next waypoint` in catalogue order (the picker's order),
@@ -1223,7 +1258,7 @@ mod tests {
         let mut a = Activity::new(Mode::Riding);
 
         // Water: the waypoint at 2 km is nearer than the cached POI at 5 km.
-        let cx = riding(&mut a, &w, &c, Units::Metric, 0);
+        let cx = riding(&mut a, idle_recorder(), &w, &c, Units::Metric, 0);
         let cell = StatField::NextWater.cell(&cx);
         assert_eq!(cell.caption.as_str(), "Brunnen", "the rider's own waypoint is nearest");
         assert_eq!(cell.value.as_str(), "2.0km");
@@ -1234,13 +1269,13 @@ mod tests {
         assert_eq!(cell.value.as_str(), "4.0km");
 
         // Ride past the water waypoint: the tile hands over to the cached POI and counts down to it.
-        let cx = riding(&mut a, &w, &c, Units::Metric, 2_100);
+        let cx = riding(&mut a, idle_recorder(), &w, &c, Units::Metric, 2_100);
         let cell = StatField::NextWater.cell(&cx);
         assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Fontaine", "2.9km"));
 
         // A tie at the same metre goes to the waypoint (`Merge`'s tie-break).
         let tie = cat_wpts(&[(5_000, "Brunnen", Some(PoiCategory::Water))]);
-        let cx = riding(&mut a, &tie, &c, Units::Metric, 0);
+        let cx = riding(&mut a, idle_recorder(), &tie, &c, Units::Metric, 0);
         assert_eq!(StatField::NextWater.cell(&cx).caption.as_str(), "Brunnen", "a tie goes to the plan entry");
     }
 
@@ -1249,26 +1284,27 @@ mod tests {
     /// which must never render as a phantom `0m`.
     #[test]
     fn next_category_tile_empty_states() {
+        let rec = idle_recorder();
         let w = cat_wpts(&[(2_000, "Turn left", None), (3_000, "Camp", Some(PoiCategory::Campsite))]);
         let c = cache(&[(PoiCategory::Water, 1_000, "Fontaine")]);
         let mut a = Activity::new(Mode::Riding);
 
         // No route loaded: route-relative, so `--` — and no leak from the resident tables.
         let empty = crate::next_ahead::NextAhead::new();
-        let cx = Readout { next_ahead: &c, ..readout(&a, Units::Metric, &w) };
+        let cx = Readout { next_ahead: &c, ..readout(&a, rec, Units::Metric, &w) };
         let cell = StatField::NextWater.cell(&cx);
         assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Water", "--"), "no route ⇒ the category name + --");
         assert_eq!(cell.value_align, TextAlign::Right, "the fallback stays right-aligned too");
 
         // Nothing of this category anywhere (the generic waypoint doesn't answer a category question).
-        let cx = riding(&mut a, &w, &empty, Units::Metric, 0);
+        let cx = riding(&mut a, idle_recorder(), &w, &empty, Units::Metric, 0);
         assert_eq!(StatField::NextPharmacy.cell(&cx).value.as_str(), "--");
         assert_eq!(StatField::NextWater.cell(&cx).value.as_str(), "--", "an empty cache is just no answer yet");
         // …while a categorized waypoint of another kind still answers its own tile.
         assert_eq!(StatField::NextCampsite.cell(&cx).caption.as_str(), "Camp");
 
         // A cached entry the rider has passed is dropped, not clamped to `0m` (the scheduler re-arms).
-        let cx = riding(&mut a, &w, &c, Units::Metric, 1_500);
+        let cx = riding(&mut a, idle_recorder(), &w, &c, Units::Metric, 1_500);
         let cell = StatField::NextWater.cell(&cx);
         assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Water", "--"), "a passed cache line reads --");
     }
@@ -1280,8 +1316,14 @@ mod tests {
         let w = Waypoints::new();
         let c = cache(&[(PoiCategory::BikeShop, 12_400, "Cycles Monaco")]);
         let mut a = Activity::new(Mode::Riding);
-        assert_eq!(StatField::NextBikeShop.cell(&riding(&mut a, &w, &c, Units::Metric, 0)).value.as_str(), "12.4km");
-        assert_eq!(StatField::NextBikeShop.cell(&riding(&mut a, &w, &c, Units::Imperial, 0)).value.as_str(), "7.7mi");
+        assert_eq!(
+            StatField::NextBikeShop.cell(&riding(&mut a, idle_recorder(), &w, &c, Units::Metric, 0)).value.as_str(),
+            "12.4km"
+        );
+        assert_eq!(
+            StatField::NextBikeShop.cell(&riding(&mut a, idle_recorder(), &w, &c, Units::Imperial, 0)).value.as_str(),
+            "7.7mi"
+        );
     }
 
     /// The field names are the **category** catalog strings (epic #602 + the epic's one-word-per-
@@ -1491,9 +1533,10 @@ mod tests {
     /// house all-caps register the neighbouring built-in captions use.
     #[test]
     fn sensor_tiles_are_single_column_captioned() {
+        let rec = idle_recorder();
         let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
-        let cx = readout(&activity, Units::Metric, &empty);
+        let cx = readout(&activity, rec, Units::Metric, &empty);
         for f in [StatField::HeartRate, StatField::Power, StatField::Cadence] {
             assert_eq!(f.span(), 1, "{f:?} is a single column");
             assert_eq!(f.rows(), 1, "{f:?} is one row tall");
@@ -1505,46 +1548,47 @@ mod tests {
         assert_eq!(StatField::Cadence.cell(&cx).caption.as_str(), "RPM");
     }
 
-    /// The sensor tiles read raw ints through `Activity`'s `live_*_display` accessors, which gate
-    /// staleness on the last `tick`'s ride clock (`note_sensor_clock`) — not the `Readout`'s render
+    /// The sensor tiles read raw ints through Recorder's `live_*_display` accessors, which gate
+    /// staleness on the last pass's ride clock (`note_sensor_clock`) — not the `Readout`'s render
     /// clock — so the tile stays correct when a host's render clock differs from its ride clock (the
     /// sim, mid GPX replay). A fresh sample shows the number, an absent or 5 s-stale one reads `--`,
     /// and a fresh coasting `0` cadence shows `0` (distinct from the `--` no-sensor state).
     #[test]
     fn sensor_tiles_format_raw_ints_and_dash_when_stale() {
-        let mut activity = Activity::new(Mode::Riding);
+        let mut rec = RecorderMachine::new();
+        let activity = Activity::new(Mode::Riding);
         let empty = Waypoints::new();
         // The render clock passed to `Readout` is deliberately fixed and unrelated to the sensor
         // clock below — the tiles must ignore it and gate on `note_sensor_clock` instead.
-        let val = |a: &Activity, f: StatField| {
-            f.cell(&Readout { now_ms: 999_999, ..readout(a, Units::Metric, &empty) }).value
+        let val = |rec: &RecorderMachine, f: StatField| {
+            f.cell(&Readout { now_ms: 999_999, ..readout(&activity, rec, Units::Metric, &empty) }).value
         };
 
         // No sensor yet → all three read `--`.
-        activity.note_sensor_clock(0);
-        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "--", "no HR sensor → --");
-        assert_eq!(val(&activity, StatField::Power).as_str(), "--", "no power meter → --");
-        assert_eq!(val(&activity, StatField::Cadence).as_str(), "--", "no cadence sensor → --");
+        rec.note_sensor_clock(0);
+        assert_eq!(val(&rec, StatField::HeartRate).as_str(), "--", "no HR sensor → --");
+        assert_eq!(val(&rec, StatField::Power).as_str(), "--", "no power meter → --");
+        assert_eq!(val(&rec, StatField::Cadence).as_str(), "--", "no cadence sensor → --");
 
         // Fresh samples → the raw numbers, no glued unit.
-        activity.record_hr(152, 1_000);
-        activity.record_power(210, 1_000);
-        activity.record_cadence(88, 1_000);
-        activity.note_sensor_clock(1_000);
-        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "152");
-        assert_eq!(val(&activity, StatField::Power).as_str(), "210");
-        assert_eq!(val(&activity, StatField::Cadence).as_str(), "88");
+        rec.record_hr(152, 1_000);
+        rec.record_power(210, 1_000);
+        rec.record_cadence(88, 1_000);
+        rec.note_sensor_clock(1_000);
+        assert_eq!(val(&rec, StatField::HeartRate).as_str(), "152");
+        assert_eq!(val(&rec, StatField::Power).as_str(), "210");
+        assert_eq!(val(&rec, StatField::Cadence).as_str(), "88");
 
         // Ride clock just past the 5 s gate → stale → `--` (a dropped sensor never freezes its value).
-        activity.note_sensor_clock(6_001);
-        assert_eq!(val(&activity, StatField::HeartRate).as_str(), "--", "HR older than 5 s reads --");
-        assert_eq!(val(&activity, StatField::Power).as_str(), "--", "power older than 5 s reads --");
-        assert_eq!(val(&activity, StatField::Cadence).as_str(), "--", "cadence older than 5 s reads --");
+        rec.note_sensor_clock(6_001);
+        assert_eq!(val(&rec, StatField::HeartRate).as_str(), "--", "HR older than 5 s reads --");
+        assert_eq!(val(&rec, StatField::Power).as_str(), "--", "power older than 5 s reads --");
+        assert_eq!(val(&rec, StatField::Cadence).as_str(), "--", "cadence older than 5 s reads --");
 
         // A fresh coasting `0` cadence is a real reading — shows `0`, not `--`.
-        activity.record_cadence(0, 7_000);
-        activity.note_sensor_clock(7_000);
-        assert_eq!(val(&activity, StatField::Cadence).as_str(), "0", "a fresh coasting 0 shows 0, not --");
+        rec.record_cadence(0, 7_000);
+        rec.note_sensor_clock(7_000);
+        assert_eq!(val(&rec, StatField::Cadence).as_str(), "0", "a fresh coasting 0 shows 0, not --");
     }
 
     /// The sensor tiles' on-disk discriminants are 12 / 13 / 14 (append-only), decode through
