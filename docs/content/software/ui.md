@@ -690,7 +690,7 @@ An unknown route-use time starts a new retention period. It does not cause immed
 Input logic and drawing receive different data views.
 
 <figure class="fig">
-<svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state (camera, zoom, pan), the activity (ride mode), the route catalog, and the clock. On the right, draw receives Render, the read-only half: the map reader, the renderer, read-only state, the active route, its elevation profile, the breadcrumb, size, and hold-progress.">
+<svg viewBox="0 0 720 220" role="img" aria-label="Two side-by-side contexts. On the left, handle receives Ctx, the mutable half: app state, activity mode, Navigator route state, Recorder ride state, and settings. On the right, draw receives Render, the read-only half: the map reader, renderer, route guidance, route caches, breadcrumb, size, and hold-progress.">
   <text class="d-tag" x="20" y="24">Two halves of the world, handed to two methods</text>
 
   <!-- Ctx -->
@@ -699,10 +699,10 @@ Input logic and drawing receive different data views.
   <text class="d-tag" x="56" y="84">mutable — change the world</text>
   <g font-family="var(--mono)">
     <text class="d-sub" x="56" y="104">state &nbsp;&nbsp;— camera · zoom · pan</text>
-    <text class="d-sub" x="56" y="124">activity — ride mode · accumulators</text>
-    <text class="d-sub" x="56" y="144">settings — units · clock · intervals</text>
-    <text class="d-sub" x="56" y="164">routes &nbsp;— the catalog (read)</text>
-    <text class="d-sub" x="56" y="184">now_ms &nbsp;— the clock</text>
+    <text class="d-sub" x="56" y="124">activity — ride mode · UI requests</text>
+    <text class="d-sub" x="56" y="144">navigator — route · match · guidance</text>
+    <text class="d-sub" x="56" y="164">recorder — ride totals · sensors</text>
+    <text class="d-sub" x="56" y="184">settings — units · clock · intervals</text>
   </g>
 
   <!-- Render -->
@@ -711,7 +711,7 @@ Input logic and drawing receive different data views.
   <text class="d-tag" x="404" y="84">read-only — paint the world</text>
   <g font-family="var(--mono)">
     <text class="d-sub" x="404" y="106">reader · renderer — draw the map</text>
-    <text class="d-sub" x="404" y="126">state · route · profile · breadcrumb</text>
+    <text class="d-sub" x="404" y="126">state · guidance · route caches · breadcrumb</text>
     <text class="d-sub" x="404" y="146">w · h &nbsp;— panel size</text>
     <text class="d-sub" x="404" y="166">hold_progress — the confirm ring</text>
   </g>
@@ -878,7 +878,7 @@ The riding-view cycle contains Map and Statistics. It also contains Climb when a
 
 ### Waypoints
 
-The route file supplies route-ordered waypoints. The ride engine tracks the next waypoint from matched route progress.
+The route file supplies route-ordered waypoints. Navigator tracks the next waypoint from matched route progress.
 
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="Left, a device mock of the riding Map: a magenta route line down the middle, two small black diamonds on it marking named waypoints, a red heading arrow for the rider, and a bottom pill reading a diamond, the name Pass Summit and 299 m — the approach chip counting down. Right, the Statistics progress bar in close-up: an amber fill from the left with two black vertical ticks, one at the far left for a waypoint at the start and one near three-quarters for the pass, annotated: the fill sweeps toward the next tick, the ticks are ink not red so they survive the off-route red tint, and the chip hides off-route.">
