@@ -22,9 +22,9 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::settings::bike_icons;
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{title_frame, TITLE_BAR_H};
-use super::vocab::list;
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{palette, Ctx, Render, Transition};
 
 /// Top of the hero bike, just under the title bar.
@@ -48,32 +48,28 @@ const OPT_TOP: i32 = 222;
 
 /// The two option rows (Start ride / Back), neither guarded — labels looked up per language at draw
 /// time (see [`RideStartScreen::draw`]).
-const N_ITEMS: usize = 2;
+const ACTION_GUARDS: [bool; 2] = [false; 2];
 
 const START: usize = 0;
 
 /// The start card. State is just the highlighted option.
 #[derive(Debug, Default)]
 pub struct RideStartScreen {
-    selected: usize,
+    actions: ActionRows,
 }
 
 impl RideStartScreen {
     pub fn new() -> Self {
-        RideStartScreen { selected: 0 }
+        RideStartScreen { actions: ActionRows::new(0) }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
-            Gesture::Press => match self.selected {
-                // Begin a route-less tracking session and root the stack to [Home, Map] — the same
-                // clean landing the Route overview's START RIDE does, minus the route.
-                START => super::start_ride_routeless(cx),
-                _ => Transition::Pop, // Back
-            },
-            Gesture::Back => Transition::Pop, // back = Back (return to the browse map)
-            _ => Transition::None,
+        match self.actions.handle(g, &ACTION_GUARDS) {
+            // Begin a route-less tracking session and root the stack to [Home, Map] — the same
+            // clean landing the Route overview's START RIDE does, minus the route.
+            CardEvent::Activate(START) => super::start_ride_routeless(cx),
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -111,10 +107,10 @@ impl RideStartScreen {
         // Options: Start ride (amber primary) / Back — unchanged behaviour, anchored at the bottom.
         let geo = GuardedRowsGeometry { x: 12, w: w - 24, top: OPT_TOP, row_h: 42, gap: 8, label_dx: 16, label_dy: 10 };
         let items = [
-            MenuItem { label: rx.t(Msg::RideStartStartRide), guard: false },
-            MenuItem { label: rx.t(Msg::RideStartBack), guard: false },
+            MenuItem { label: rx.t(Msg::RideStartStartRide), guard: ACTION_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::RideStartBack), guard: ACTION_GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
 

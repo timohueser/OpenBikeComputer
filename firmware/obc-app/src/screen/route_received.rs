@@ -29,9 +29,9 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::vocab::band::TopStroke;
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{card_check, title_frame, TITLE_BAR_H};
-use super::vocab::list;
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{
     palette, Ctx, Render, RouteMenuScreen, RouteOverviewScreen, Screen, ScreenTick, Transition, UPLOAD_POPUP_TIMEOUT_MS,
 };
@@ -69,7 +69,7 @@ pub(crate) fn route_stats(route: &crate::route::RouteSummary) -> heapless::Strin
 /// language at draw time (see [`RouteReceivedScreen::draw`]). The primary row opens the **Route
 /// overview** (the same page pressing the route in the Routes list opens, where START RIDE is then
 /// one press away): the card no longer starts a ride directly (#682, locked Q2).
-const N_ITEMS: usize = 2;
+const ACTION_GUARDS: [bool; 2] = [false; 2];
 
 const VIEW: usize = 0;
 
@@ -87,7 +87,7 @@ const SPARK_TOP: i32 = 62;
 #[derive(Debug)]
 pub struct RouteReceivedScreen {
     route: Option<usize>,
-    selected: usize,
+    actions: ActionRows,
     /// Map-plane millis when the popup opened — the 30 s auto-close anchor.
     opened_ms: u32,
     /// The route's min–max-normalized elevation band ([`obc_route::elevation_sparkline`], 64
@@ -101,7 +101,7 @@ impl RouteReceivedScreen {
     /// A prompt for catalog route `route`, opened at `now_ms` (the auto-close anchor), carrying the
     /// route's `elevation` sparkline (`None` when it has none).
     pub fn new(route: usize, now_ms: u32, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>) -> Self {
-        RouteReceivedScreen { route: Some(route), selected: 0, opened_ms: now_ms, elevation }
+        RouteReceivedScreen { route: Some(route), actions: ActionRows::new(0), opened_ms: now_ms, elevation }
     }
 
     /// Re-point the received route after a live catalog rescan (#450): follow its identity to the
@@ -121,24 +121,22 @@ impl RouteReceivedScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
+        match self.actions.handle(g, &ACTION_GUARDS) {
             // View route — open the Route overview exactly as pressing the route in the Routes list
             // does (same screen, same `active_route` data path, so the host streams it open behind
             // the page), validated against the current catalog: a route deleted while the popup was
             // up (`route` remapped to `None`, or the index out of range) dismisses instead of
             // opening a stranger. The advisory popup gives way to the overview (`Replace`), so
             // backing out returns to whatever the card covered, not the card.
-            Gesture::Press if self.selected == VIEW => match self.route.filter(|&i| i < cx.routes.len()) {
+            CardEvent::Activate(VIEW) => match self.route.filter(|&i| i < cx.routes.len()) {
                 Some(i) => {
                     let prev = cx.navigator.replace_active_route(i);
                     Transition::Replace(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
                 }
                 None => Transition::Pop,
             },
-            Gesture::Press => Transition::Pop, // Dismiss
-            Gesture::Back => Transition::Pop,  // Back = Dismiss (advisory — the route is in the menu)
-            _ => Transition::None,
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -183,10 +181,10 @@ impl RouteReceivedScreen {
         let rows_top = TITLE_BAR_H + if drew_spark { SPARK_TOP + SPARK_H + 10 } else { 78 };
         let geo = GuardedRowsGeometry::card(w, rows_top);
         let items = [
-            MenuItem { label: rx.t(Msg::RouteReceivedViewRoute), guard: false },
-            MenuItem { label: rx.t(Msg::RouteReceivedDismiss), guard: false },
+            MenuItem { label: rx.t(Msg::RouteReceivedViewRoute), guard: ACTION_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::RouteReceivedDismiss), guard: ACTION_GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -234,7 +232,7 @@ fn draw_sparkline(cv: &mut impl Surface, x0: i32, y_top: i32, w_band: i32, h_ban
 #[derive(Debug)]
 pub struct TripReceivedScreen {
     trip_id: crate::CatalogObjectId,
-    selected: usize,
+    actions: ActionRows,
     /// Map-plane millis when the popup opened — the 30 s auto-close anchor.
     opened_ms: u32,
 }
@@ -242,7 +240,7 @@ pub struct TripReceivedScreen {
 impl TripReceivedScreen {
     /// A prompt for the trip with durable id `trip_id`, opened at `now_ms` (the auto-close anchor).
     pub fn new(trip_id: crate::CatalogObjectId, now_ms: u32) -> Self {
-        TripReceivedScreen { trip_id, selected: 0, opened_ms: now_ms }
+        TripReceivedScreen { trip_id, actions: ActionRows::new(0), opened_ms: now_ms }
     }
 
     /// Whether the 30 s auto-close deadline has passed — polled by the app's popup sweep.
@@ -256,23 +254,21 @@ impl TripReceivedScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
+        match self.actions.handle(g, &ACTION_GUARDS) {
             // View trip — open the trip's folder exactly as pressing its row in the Route menu
             // does (the same durable-id-scoped stage list), validated against the live trip
             // catalog: a trip deleted while the popup was up dismisses instead of opening an empty
             // stranger. The advisory popup gives way to the folder (`Replace`), so backing out
             // returns to whatever the card covered, not the card.
-            Gesture::Press if self.selected == VIEW => {
+            CardEvent::Activate(VIEW) => {
                 if cx.trips.iter().any(|t| t.id == self.trip_id) {
                     Transition::Replace(Screen::RouteMenu(RouteMenuScreen::trip(self.trip_id)))
                 } else {
                     Transition::Pop
                 }
             }
-            Gesture::Press => Transition::Pop, // Dismiss
-            Gesture::Back => Transition::Pop,  // Back = Dismiss (advisory — the trip is in the menu)
-            _ => Transition::None,
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -314,10 +310,10 @@ impl TripReceivedScreen {
         // shifted down by the extra count line.
         let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 96);
         let items = [
-            MenuItem { label: rx.t(Msg::TripReceivedViewTrip), guard: false },
-            MenuItem { label: rx.t(Msg::TripReceivedDismiss), guard: false },
+            MenuItem { label: rx.t(Msg::TripReceivedViewTrip), guard: ACTION_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::TripReceivedDismiss), guard: ACTION_GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
 
