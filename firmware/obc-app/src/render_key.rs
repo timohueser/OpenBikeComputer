@@ -332,7 +332,7 @@ impl App {
                 // live. D4a is what gave `page`/`staged`/`committed` something to say here.
                 let (page, selected, staged, committed, enabled) = d.key(&crate::screen::ContextFacts {
                     state: &self.state,
-                    activity: &self.activity,
+                    navigation: self.navigator.route_state(),
                     settings: self.settings(),
                     recording: self.recorder.recording(),
                 });
@@ -355,6 +355,7 @@ impl App {
     }
 
     fn map_key(&self, no_fix: bool, rain_overlay: bool) -> MapKey {
+        let navigation = self.navigator.route_state();
         MapKey {
             cam_lon: self.state.cam_lon,
             cam_lat: self.state.cam_lat,
@@ -362,11 +363,11 @@ impl App {
             course_rad: self.state.course_rad().to_bits(),
             pan: self.state.pan.map(|p| (p.basis, p.tool, p.route_progress_m)),
             fix: FixKey::of(self.state.user_fix),
-            active_route: self.activity.active_route.map(|i| i as u32),
-            progress_m: self.activity.progress_m,
-            off_route: self.activity.off_route,
-            dist_to_route_m: self.activity.dist_to_route_m,
-            next_waypoint: self.activity.next_waypoint.map(|i| i as u32),
+            active_route: navigation.active_route.map(|i| i as u32),
+            progress_m: navigation.progress_m,
+            off_route: navigation.off_route,
+            dist_to_route_m: navigation.dist_to_route_m,
+            next_waypoint: navigation.next_waypoint.map(|i| i as u32),
             no_fix,
             tracking: self.recorder.recording(),
             low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
@@ -377,13 +378,14 @@ impl App {
     fn stats_key(&self, no_fix: bool) -> StatsKey {
         use crate::stat_fields::StatField;
         let fields = &self.settings().stat_fields;
+        let navigation = self.navigator.route_state();
         StatsKey {
             fix: FixKey::of(self.state.user_fix),
-            progress_m: self.activity.progress_m,
-            off_route: self.activity.off_route,
+            progress_m: navigation.progress_m,
+            off_route: navigation.off_route,
             no_fix,
-            active_climb: self.activity.active_climb.map(|i| i as u32),
-            next_waypoint: self.activity.next_waypoint.map(|i| i as u32),
+            active_climb: navigation.active_climb.map(|i| i as u32),
+            next_waypoint: navigation.next_waypoint.map(|i| i as u32),
             live: (
                 fields.contains(StatField::HeartRate).then(|| self.recorder.live_hr_display()).flatten(),
                 fields.contains(StatField::Power).then(|| self.recorder.live_power_display()).flatten(),
@@ -394,9 +396,10 @@ impl App {
     }
 
     fn climb_key(&self) -> ClimbKey {
+        let navigation = self.navigator.route_state();
         ClimbKey {
-            active_climb: self.activity.active_climb.map(|i| i as u32),
-            progress_m: self.activity.progress_m,
+            active_climb: navigation.active_climb.map(|i| i as u32),
+            progress_m: navigation.progress_m,
             fix: FixKey::of(self.state.user_fix),
         }
     }
@@ -406,10 +409,11 @@ impl App {
     }
 
     fn up_ahead_key(&self) -> UpAheadKey {
+        let navigation = self.navigator.route_state();
         UpAheadKey {
-            progress_m: self.activity.progress_m,
-            route_total_m: self.activity.route_total_m,
-            active_route: self.activity.active_route.map(|i| i as u32),
+            progress_m: navigation.progress_m,
+            route_total_m: navigation.route_total_m,
+            active_route: navigation.active_route.map(|i| i as u32),
             corridor: (self.ui.corridor_scratch.len(), !self.ui.corridor_scratch.pending()),
         }
     }
@@ -488,7 +492,7 @@ mod tests {
         // Back to a map base, then sideways to a screen declaring the very same kind.
         app.ui.stack.truncate(2);
         let on_map = app.render_key();
-        app.ui.stack[1] = Screen::Detour(crate::screen::DetourScreen::new(&app.activity));
+        app.ui.stack[1] = Screen::Detour(crate::screen::DetourScreen::new(app.navigator.route_state()));
         assert_eq!(
             app.render_key().map,
             on_map.map,
@@ -650,7 +654,7 @@ mod tests {
         app.state.zoom = 3.0;
         app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
         app.state.device.battery_pct = 9;
-        app.activity.progress_m += 900;
+        app.navigator.route_state_mut().progress_m += 900;
         assert_eq!(app.render_key(), quiet, "a moving map under a sheet asks for no repaint");
     }
 
@@ -660,13 +664,13 @@ mod tests {
     fn a_row_going_inert_under_the_sheet_moves_the_key() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         app.test_start_ride();
-        app.activity.active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(0);
         app.state.has_nav_graph = true;
         assert!(app.apply_chord(crate::input::Chord::Context));
         let live = app.render_key();
-        app.activity.off_route = true;
+        app.navigator.route_state_mut().off_route = true;
         assert_ne!(app.render_key(), live, "the Detour row went recessed — the sheet must redraw");
-        app.activity.off_route = false;
+        app.navigator.route_state_mut().off_route = false;
         assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
     }
 
@@ -722,7 +726,7 @@ mod tests {
         // …and nothing under the sheet is, still.
         let quiet = app.render_key();
         app.state.cam_lon += 5_000;
-        app.activity.progress_m += 900;
+        app.navigator.route_state_mut().progress_m += 900;
         assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
     }
 

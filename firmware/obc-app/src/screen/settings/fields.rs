@@ -461,15 +461,15 @@ mod tests {
         use crate::next_ahead::NextAhead;
         use crate::settings::Language;
         use crate::stat_fields::{Readout, StatField};
-        let mut act = Activity::new(Mode::Riding);
+        let mut navigation = crate::navigator::RouteState::new();
         // A live-looking readout: a route is loaded and the cache holds a real POI name.
-        act.active_route = Some(0);
+        navigation.active_route = Some(0);
         let cache = NextAhead::new();
         let wpts = obc_route::Waypoints::new();
         let recorder = crate::recorder::RecorderMachine::new();
         let cx = Readout {
             fix: None,
-            activity: &act,
+            navigation: &navigation,
             recorder: &recorder,
             units: crate::Units::Metric,
             route: None,

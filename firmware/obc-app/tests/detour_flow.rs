@@ -155,7 +155,7 @@ fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     let idx = RouteIndex::read(&src).unwrap();
     let route = RouteReader::new(&idx, &src);
     tick(&mut app, 0, Some(road_at(0.31)), Some(&route));
-    assert!(app.activity.progress_m() > 900 && app.activity.progress_m() < 1_100, "matcher locked ~1 km along");
+    assert!(app.progress_m() > 900 && app.progress_m() < 1_100, "matcher locked ~1 km along");
     (app, obcr)
 }
 
@@ -190,7 +190,7 @@ fn open_chooser(app: &mut App) {
 fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     riding!(app, route, host);
     let session = app.ride_session();
-    let progress = app.activity.progress_m();
+    let progress = app.progress_m();
     open_chooser(&mut app);
 
     // Chooser: two steps past the 600 m minimum, then Press → the planning spinner + request.
@@ -225,9 +225,9 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     // The next route-aware tick installs the seam re-anchor: progress lands exactly at the
     // frozen anchor, and the forward-only floor holds against a fix back in the (now gone) span.
     tick(&mut app, 1_000, None, Some(&route));
-    assert_eq!(app.activity.progress_m(), progress, "the seam re-anchor lands at the frozen anchor");
+    assert_eq!(app.progress_m(), progress, "the seam re-anchor lands at the frozen anchor");
     tick(&mut app, 2_000, Some(road_at(0.06)), Some(&route));
-    assert!(app.activity.progress_m() >= progress, "the floor is forward-only — no re-lock behind the seam");
+    assert!(app.progress_m() >= progress, "the floor is forward-only — no re-lock behind the seam");
 }
 
 #[test]
@@ -566,11 +566,11 @@ fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
 fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
     riding!(app, route, host);
     frozen_over_the_chooser(&mut app, &mut host);
-    let held = app.activity.progress_m();
+    let held = app.progress_m();
 
     let ahead = road_at(0.62);
     tick(&mut app, 1_000, Some(ahead), Some(&route));
-    assert_eq!(app.activity.progress_m(), held, "the matcher did not advance under the freeze");
+    assert_eq!(app.progress_m(), held, "the matcher did not advance under the freeze");
     assert_eq!(
         app.state.user_fix.map(|f| (f.lon, f.lat)),
         Some((ahead.lon, ahead.lat)),
@@ -581,7 +581,7 @@ fn a_frozen_tick_holds_route_progress_but_still_records_the_fix() {
     assert!(host.took_release(&mut app));
     assert!(!app.reroute_freeze_active());
     tick(&mut app, 2_000, Some(road_at(0.62)), Some(&route));
-    assert!(app.activity.progress_m() > held, "the matcher resumes cleanly ({} m)", app.activity.progress_m());
+    assert!(app.progress_m() > held, "the matcher resumes cleanly ({} m)", app.progress_m());
 }
 
 /// …and it re-locks over the ground the rider covered *during* the search, not just the next fix's
@@ -598,19 +598,19 @@ fn the_matcher_relocks_over_the_ground_covered_during_the_freeze() {
     riding!(app, route, host, road_obcr_segs(400, 0.00002));
 
     frozen_over_the_chooser(&mut app, &mut host);
-    let held = app.activity.progress_m();
+    let held = app.progress_m();
     for (i, frac) in [0.40, 0.50, 0.60, 0.70].into_iter().enumerate() {
         tick(&mut app, 1_000 + 1_000 * i as u32, Some(road_at(frac)), Some(&route));
     }
-    assert_eq!(app.activity.progress_m(), held, "held still for the whole search, as designed");
+    assert_eq!(app.progress_m(), held, "held still for the whole search, as designed");
 
     assert!(host.took_release(&mut app));
     tick(&mut app, 9_000, Some(road_at(0.72)), Some(&route));
     // Progress advancing *is* the on-route assertion: an off-route match freezes it.
     assert!(
-        app.activity.progress_m() > 2_000,
+        app.progress_m() > 2_000,
         "the first fix after the freeze must re-lock where the rider is, not {} m back",
-        app.activity.progress_m()
+        app.progress_m()
     );
 }
 

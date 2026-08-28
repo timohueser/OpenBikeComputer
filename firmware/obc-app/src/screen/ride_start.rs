@@ -131,10 +131,11 @@ mod tests {
         st: &mut AppState,
         act: &mut Activity,
         rec: &mut crate::RecorderMachine,
+        navigator: &mut crate::navigator::NavigatorMachine,
         g: Gesture,
     ) -> Transition {
         let mut settings = Settings::default();
-        let mut cx = Ctx { recorder: rec, ..test_ctx(st, act, &mut settings) };
+        let mut cx = Ctx { recorder: rec, navigator, ..test_ctx(st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -145,12 +146,13 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         let mut scr = RideStartScreen::new(); // selection starts on "Start ride"
-        let t = run(&mut scr, &mut st, &mut act, &mut rec, Gesture::Press);
+        let t = run(&mut scr, &mut st, &mut act, &mut rec, &mut navigator, Gesture::Press);
         assert!(matches!(t, Transition::Root(Screen::Map(_))), "start roots to [Home, Map]");
         assert_eq!(act.mode, Mode::Riding, "start enters riding mode");
         assert_eq!(rec.test_take_intent(), Some(crate::RecorderIntent::Start), "the ride is named to Recorder");
-        assert_eq!(act.active_route, None, "no route is attached — this is a route-less ride");
+        assert_eq!(navigator.route_state().active_route, None, "no route is attached — this is a route-less ride");
     }
 
     /// The "Back" row (and the `back` gesture) pops to the browse map without starting anything.
@@ -159,15 +161,16 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         let mut scr = RideStartScreen::new();
-        run(&mut scr, &mut st, &mut act, &mut rec, Gesture::Step(1)); // highlight "Back"
-        let t = run(&mut scr, &mut st, &mut act, &mut rec, Gesture::Press);
+        run(&mut scr, &mut st, &mut act, &mut rec, &mut navigator, Gesture::Step(1)); // highlight "Back"
+        let t = run(&mut scr, &mut st, &mut act, &mut rec, &mut navigator, Gesture::Press);
         assert!(matches!(t, Transition::Pop), "Back pops");
         assert!(!rec.recording(), "nothing started");
 
         // The `back` gesture pops from any selection, too.
         let mut scr = RideStartScreen::new();
-        let t = run(&mut scr, &mut st, &mut act, &mut rec, Gesture::Back);
+        let t = run(&mut scr, &mut st, &mut act, &mut rec, &mut navigator, Gesture::Back);
         assert!(matches!(t, Transition::Pop));
         assert!(!rec.recording());
     }

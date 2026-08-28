@@ -195,7 +195,8 @@ impl MapScreen {
             }
             // hold = enter Pan mode: the camera detaches and the pan HUD appears.
             Gesture::Hold => {
-                cx.state.enter_pan(cx.activity.active_route.is_some(), cx.activity.progress_m);
+                let navigation = cx.navigator.route_state();
+                cx.state.enter_pan(navigation.active_route.is_some(), navigation.progress_m);
                 Transition::None
             }
             // `back`: while tracking, swap to the sibling Statistics view (its `back` swaps straight
@@ -247,7 +248,7 @@ impl MapScreen {
         // distance is meaningless. Suppressed while panning — the pan HUD's bottom chevron owns the
         // bottom-centre slot (they'd collide), and panning is deliberate map inspection anyway; the
         // chip returns the moment pan exits.
-        let warning_up = !panning && (rx.no_fix || rx.activity.off_route);
+        let warning_up = !panning && (rx.no_fix || rx.navigation.off_route);
         if warning_up {
             if rx.no_fix {
                 draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
@@ -256,7 +257,7 @@ impl MapScreen {
                 super::vocab::fmt::write_distance_coarse(
                     &mut s,
                     rx.t(Msg::MapOffRoute),
-                    rx.activity.dist_to_route_m,
+                    rx.navigation.dist_to_route_m,
                     rx.settings.units,
                 );
                 draw_status_chip(cv, rx.w, rx.h, &s);
@@ -271,10 +272,10 @@ impl MapScreen {
             rx.settings.waypoint_mode,
             panning,
             rx.no_fix,
-            rx.activity.off_route,
-            rx.activity.next_waypoint,
+            rx.navigation.off_route,
+            rx.navigation.next_waypoint,
             rx.waypoints.as_slice(),
-            rx.activity.progress_m,
+            rx.navigation.progress_m,
         );
         if let Some((k, dist_to_go)) = wpt_chip {
             let dist = super::vocab::fmt::distance_short(dist_to_go, rx.settings.units);
@@ -369,7 +370,7 @@ where
     // lease for a screen that doesn't want it.
     let rain = rx.rain.take();
     let mut stats = scratch.render_rain_timed(target, scene, vp, bg, cfg, rain, color_fn, rx.clock);
-    let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.activity.progress_m);
+    let arrows_at = (skip.is_none() && vp.meters_per_pixel() <= CHEVRON_MAX_MPP).then_some(rx.navigation.progress_m);
 
     if let Some(route) = rx.route {
         let (route_chunks, route_points, route_points_drawn) = scratch.draw_route(
@@ -410,7 +411,7 @@ where
     rx.stats = stats;
 
     draw_waypoint_diamonds(cv, vp, rx.waypoints.as_slice(), rx.w, rx.h);
-    let marker565 = if rx.activity.off_route { super::palette::WARNING } else { scene.marker_color() };
+    let marker565 = if rx.navigation.off_route { super::palette::WARNING } else { scene.marker_color() };
     if let Some(fix) = rx.state.user_fix {
         let (target, color_fn) = cv.split();
         scratch.draw_marker(target, vp, fix.lon, fix.lat, fix.course, color_fn(marker565));
@@ -460,9 +461,9 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 /// changes only an already-active Free axis, inert in Route and Zoom. `back` exits to Follow.
 /// Back-hold is the global escape (#1515 D3) and never arrives here.
 pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
-    let has_route = cx.activity.active_route.is_some();
+    let has_route = cx.navigator.route_state().active_route.is_some();
     match g {
-        Gesture::Step(n) => cx.state.pan_step(n, cx.activity.route_total_m),
+        Gesture::Step(n) => cx.state.pan_step(n, cx.navigator.route_state().route_total_m),
         Gesture::Press => cx.state.cycle_pan_mode(has_route),
         Gesture::Hold => cx.state.toggle_pan_free_axis(),
         Gesture::Back => cx.state.exit_pan(),

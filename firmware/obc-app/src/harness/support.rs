@@ -324,7 +324,7 @@ pub fn render_120(app: &mut App, bytes: &[u8]) -> Buf {
 // Route waypoint fixtures.
 
 /// A synthetic waypoint table from `(distance, name)` pairs: every entry on the line, uncategorised
-/// — the plain shape the ride-engine / stat-field / panel suites want.
+/// — the plain shape the Navigator / stat-field / panel suites want.
 pub fn wpts(items: &[(u32, &str)]) -> Waypoints {
     let full: Vec<_> = items.iter().map(|&(d, n)| (d, n, None, 0)).collect();
     wpts_detailed(&full)
@@ -607,7 +607,7 @@ impl<'r> Planner<'r> {
         }
     }
 
-    /// A planner riding `route` — every pass it runs carries the reader the ride engine needs.
+    /// A planner riding `route` — every pass it runs carries the reader Navigator needs.
     pub fn on(route: &'r RouteReader<'r>) -> Self {
         Planner { route: Some(route), ..Planner::at(0) }
     }
