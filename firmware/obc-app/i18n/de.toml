@@ -217,18 +217,18 @@ autodelete_sub = "Fahrten"
 # --- Display settings screen ---
 [display]
 title = "ANZEIGE"
-clock = "Uhr"
-clock_sub = "auf Karte"
-scale_bar = "Maßstab"
-scale_bar_sub = "auf Karte"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-# "Höhenlinien" is the term, but at 11 Body glyphs (154 px) it runs under the row's toggle slider,
-# which starts 148 px into the label column — "Konturen" is the reading that fits.
-contours = "Konturen"
-contours_sub = "auf Karte"
 idle = "Ruhe"
 idle_sub = "Timeout"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+# "Kartenanzeige" is the literal reading for the door, but at ~182 px it overruns the 164 px door
+# budget, so the row takes the short "Anzeige". The sheet it opens draws no title; its three rows
+# (Uhr, Maßstab, Konturen) are all map chrome, which is what keeps the short label unambiguous.
+map_display = "Anzeige"
+clock = "Uhr"
+scale_bar = "Maßstab"
+contours = "Konturen"
 
 # --- Power settings screen ---
 [power]

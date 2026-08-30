@@ -1299,11 +1299,13 @@ impl Screen {
     /// declare nothing, and an empty sheet is exactly what the issue forbids.
     pub(crate) fn context(&self) -> Option<&'static ContextMenu> {
         match self {
-            // The four riding views share one context — the ride's secondary actions do not change
-            // because the rider switched which readout they are looking at.
-            Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => {
-                Some(&context_drawer::RIDE)
-            }
+            // The Map declares its own table (#1515 D4c): the ride's four actions, in the same
+            // order and with the same predicates, plus the one row only it has a referent for — its
+            // display modifiers. A scale-bar switch means nothing on Statistics or the paused page.
+            Screen::Map(_) => Some(&context_drawer::MAP),
+            // The other three riding views share one context — the ride's secondary actions do not
+            // change because the rider switched which readout they are looking at.
+            Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
             // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
