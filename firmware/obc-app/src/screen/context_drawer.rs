@@ -1512,8 +1512,11 @@ mod tests {
         }
         // The bike binding's worst case is the §8.6 name field filled: 12 monospace `Body`
         // characters. It fits the same line the catalog choices do — and it is *exactly* the widest
-        // of them, so neither number below moves for it. If it ever exceeds `choice_room`, either a
-        // font tier or the format's name cap changed, and that is a finding rather than a re-pin.
+        // of them, so the `worst_choice` pin below does not move for it. The `worst_row` figure
+        // below is catalog-only (the loop skips map-data choices): the bike row's own label+name
+        // worst is 340 px, and it is governed by this editor-line check, not by the row figure.
+        // If it ever exceeds `choice_room`, either a font tier or the format's name cap changed,
+        // and that is a finding rather than a re-pin.
         let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
         assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
         assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
@@ -1528,7 +1531,7 @@ mod tests {
             "a label and its longest choice now fit one {area_w} px row ({worst_row} px) — \
              the row could state its value again; see `draw_root`"
         );
-        assert_eq!(worst_row, 284, "the measurement the row design rests on, pinned");
+        assert_eq!(worst_row, 284, "the widest catalog label+choice pair — the bike row's map-data worst is 340 px");
     }
 
     /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.

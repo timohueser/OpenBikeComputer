@@ -346,12 +346,13 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
 
         assert!(app.apply_chord(obc_app::Chord::Context), "the confirm card declares a context");
         assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
-        let buf = render_120(&mut app, &bytes);
-        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the route-plan sheet rendered blank in {lang:?}");
+        let root = render_120(&mut app, &bytes);
+        assert!(root.px.iter().any(|&p| p != Rgb888::BLACK), "the route-plan sheet rendered blank in {lang:?}");
 
         app.apply_gesture(Gesture::Press); // → the bike-type editor
         app.advance_animations(InputClock(400)); // let the page slide land
-        let buf = render_120(&mut app, &bytes);
-        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the bike-type editor rendered blank in {lang:?}");
+        let editor = render_120(&mut app, &bytes);
+        assert!(editor.px.iter().any(|&p| p != Rgb888::BLACK), "the bike-type editor rendered blank in {lang:?}");
+        assert!(editor.px != root.px, "the press must land on the editor, not re-render the sheet root, in {lang:?}");
     }
 }

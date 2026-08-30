@@ -822,7 +822,7 @@ for lang in de fr es; do
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
     # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
-    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Five** steps: the
+    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Four** steps: the
     # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a) and its Bike type row to
     # the create-route sheet (#1515 D4d), and one step too many here wraps the cursor back to row 0 and
     # quietly re-shoots `ride-settings-$lang.png` under this name.

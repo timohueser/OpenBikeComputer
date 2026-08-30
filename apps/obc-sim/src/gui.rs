@@ -455,7 +455,7 @@ impl SimGui {
         // arms the record's write, so the rider's dedup anchors survive the update.
         let (boot_marks, marks_provenance) = settings_store.load_alert_marks();
         app.set_alert_marks(boot_marks, marks_provenance);
-        // Mirror the map's §8.6 routing-profile names into the app for the Bike-type screen +
+        // Mirror the map's §8.6 routing-profile names into the app for the bike-type editor +
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).
         app.set_nav_profiles(map_tables.nav_profiles());
