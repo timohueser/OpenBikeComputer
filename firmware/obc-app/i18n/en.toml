@@ -247,16 +247,17 @@ autodelete_sub = "rides"
 # --- Display settings screen ---
 [display]
 title = "DISPLAY"
-clock = "Clock"
-clock_sub = "on map"
-scale_bar = "Scale bar"
-scale_bar_sub = "on map"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-contours = "Contours"
-contours_sub = "on map"
 idle = "Idle"
 idle_sub = "timeout"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+map_display = "Map display"
+clock = "Clock"
+scale_bar = "Scale bar"
+# Elevation EL10c (#1096), provisional: the contour switch migrated here rather than being
+# retired, and it still goes with #1097's verdict — drop this key from all four catalogs with it.
+contours = "Contours"
 
 # --- Power settings screen ---
 [power]

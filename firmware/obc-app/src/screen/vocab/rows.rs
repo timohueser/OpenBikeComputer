@@ -44,6 +44,24 @@ pub(crate) fn value_row_with_arrows(cv: &mut impl Surface, y: i32, w: i32, text:
     area
 }
 
+/// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
+/// track dark for off and green for on. The knob position and track colour carry the state.
+///
+/// Shared vocabulary since #1515 D4c, when the map's three display switches moved onto the map's own
+/// contextual sheet: a switch is a switch, so the settings screens' rows and the drawer's rows draw
+/// the same 50 × 28 control from one definition.
+pub(crate) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
+    let (tw, th) = (50, 28);
+    let tx = area.top_left.x + area.size.width as i32 - tw - 4;
+    let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
+    cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
+    // Knob at the on/off end, with an even margin.
+    let m = 4;
+    let k = th - 2 * m;
+    let kx = if on { tx + tw - m - k } else { tx + m };
+    cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
+}
+
 /// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
 /// unit suffix (baselines shared), and an optional climb/descent triangle just left of the value
 /// (`Some(true)` = up). All text sits on the parchment — no pane; that look is reserved for the
