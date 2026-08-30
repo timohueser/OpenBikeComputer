@@ -88,16 +88,12 @@ This repository contains all the software and hardware files needed to build the
 
 <table>
   <tr>
-    <td align="center" width="50%">
-      <img src="docs/assets/concept/front.webp" width="330" alt="Concept render of the enclosure in the Forest colourway, with the clock and battery on the display">
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/assets/concept/dash.webp" width="330" alt="The same enclosure at three quarters, with the ride dashboard on the display">
+    <td align="center">
+      <img src="docs/assets/concept/front.webp" width="560" alt="Concept render of the enclosure in the Forest colourway, with the clock and battery on the display">
     </td>
   </tr>
   <tr>
     <td align="center"><sub>A concept render of the enclosure.</sub></td>
-    <td align="center"><sub>The same device, showing the dashboard.</sub></td>
   </tr>
 </table>
 
