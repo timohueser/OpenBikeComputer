@@ -605,8 +605,11 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 # the cursor to the last row; there is **no settle token after the press**, because the swap is
 # instantaneous by design — a frame that needed one would be evidence the swap re-ran the open.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-sheet.png"
-# …and the Clock row flipped off: the slider moves and nothing else does, because the map behind the
-# sheet is frozen until it closes. The only difference from the frame above is that row's slider.
+# …and the Clock row flipped off, which is the pair that shows the switch working. The `HH:MM` pill
+# is gone from the map too, and that is the **headless** path being honest rather than the frozen
+# base failing: `--png` composes the whole frame from nothing, so it never claims a resident frame
+# and draws the base as always. On the device the map keeps the pill until the sheet closes, which
+# is the one repaint the rider pays for however many switches they flip.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
 # The **ride context** the other three riding views share — the unchanged four-row table, shot over
 # Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
