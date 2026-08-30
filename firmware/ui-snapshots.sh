@@ -28,10 +28,11 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
+# Coverage against the `screens!` table: 58 of the 59 screens have at least one frame here.
 # (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count was unchanged; D4a moved the
 # Up-ahead filter onto that same `ContextDrawer`, adding frames rather than rows; D4b deleted the
-# Weather settings screen outright, so both counts drop by one.)
+# Weather settings screen outright, so both counts drop by one; D4d deleted the Bike type screen
+# the same way.)
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -183,6 +184,15 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # the name): detail of a resupply POI ~600 m away → press.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
+# The confirm card's own context sheet (#1515 D4d) — the **only** home the routing profile has
+# since its settings screen was deleted. `C` is the Down+Back squeeze over the card above: one row,
+# `Bike type`, on the 68 px sheet the card recesses under. Then its nested editor, staged on Gravel
+# with the committed tick still under Road's notch — the mark the grammar promises while browsing.
+NAVCONFIRM="B d d w p d d d p f p p"
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$NAVCONFIRM C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$NAVCONFIRM C p w d" --expect-screen ContextDrawer --png "$OUT/route-plan-biketype-editor.png"
 # The computed-route overview (length only — no elevation band, no climb/descent rows; #685:
 # static NEW ROUTE title, the destination name as the first body line, metres below 1 km, and the
 # decimated route-shape preview polyline in the middle): confirm → Create route → `f` runs the
@@ -252,45 +262,40 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # now a *group* index, so the pre-group scripts landed several screens off their frame's name.
 "$SIM" "$MAP" --boot --script "B u p w"      --expect-screen Settings --png "$OUT/settings.png"
 
-# Ride (group 0) — everything you tune for a ride, in one scrolling seven-row group: Bike type,
-# Data fields, Pages, Climb, Waypoints, Up ahead, Auto-delete. It absorbed the old standalone Stats
-# and Auto-delete screens, so those two names are gone from the sweep. Only four rows fit the panel;
-# the cursor drives the window, so the frames below past row 3 show it scrolled.
+# Ride (group 0) — everything you tune for a ride, in one scrolling five-row group: Data fields,
+# Pages, Climb, Waypoints, Auto-delete. It absorbed the old standalone Stats and Auto-delete
+# screens, so those two names are gone from the sweep. Only four rows fit the panel; the cursor
+# drives the window, so the frames below past row 3 show it scrolled.
 "$SIM" "$MAP" --boot --script "B u p p w"    --expect-screen Ride --png "$OUT/ride-settings.png"
-# Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring,
-# each with its own name-matched pixel-art bike (Road/Gravel/MTB/Touring silhouettes). The default
-# selection (Road), then steps cycling through the other three — pinning the name list, the cycle,
-# and each hero sprite.
-"$SIM" "$MAP" --boot --script "B u p p p"     --expect-screen BikeType --png "$OUT/biketype.png"
-"$SIM" "$MAP" --boot --script "B u p p p d"   --expect-screen BikeType --png "$OUT/biketype-gravel.png"
-"$SIM" "$MAP" --boot --script "B u p p p d d" --expect-screen BikeType --png "$OUT/biketype-mtb.png"
-"$SIM" "$MAP" --boot --script "B u p p p u"   --expect-screen BikeType --png "$OUT/biketype-touring.png"
-# Data fields (row 1) — the WYSIWYG grid editor.
-"$SIM" "$MAP" --boot --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields.png"
+# The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
+# confirm card's own context sheet now — see `route-plan-context.png` below, which is its only home.
+# Its four hero-bike frames left with it, and the group's remaining rows shift up one slot.
+# Data fields (row 0) — the WYSIWYG grid editor.
+"$SIM" "$MAP" --boot --script "B u p p p" --expect-screen StatFields --png "$OUT/fields.png"
 # The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
 # six steps reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
 # five steps to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
 # its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
-"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d p" --expect-screen StatFields --png "$OUT/fields-wpt-panel.png"
-# The six `Next: <category>` fields (epic #946, U5). `B u p p d p` is Home -> Settings -> Ride ->
+"$SIM" "$MAP" --boot --script "B u p p p d d d d d d p d d d d d p" --expect-screen StatFields --png "$OUT/fields-wpt-panel.png"
+# The six `Next: <category>` fields (epic #946, U5). `B u p p p` is Home -> Settings -> Ride ->
 # Data fields (the Fields grid). (a) the Add-field picker scrolled onto the new group: six rows
 # wearing the category's own row icon in place of a span badge, directly under `Next waypoint`.
-"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d" --expect-screen AddField --png "$OUT/addfield-next-category.png"
+"$SIM" "$MAP" --boot --script "B u p p p d d d d d d p d d d d d" --expect-screen AddField --png "$OUT/addfield-next-category.png"
 # (b) three of them placed, drawn by the WYSIWYG editor's ghost: icon + the localized category word
 # + a per-category sample distance (the editor has no route, so the live cell would read `--`).
 "$SIM" "$MAP" --boot --stat-fields "next-water,next-campsite,next-lodging" \
-    --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields-next-category.png"
-# The Waypoints mode row (epic #523): the group's 5th row, under Climb. Four steps park the amber
+    --script "B u p p p" --expect-screen StatFields --png "$OUT/fields-next-category.png"
+# The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
-"$SIM" "$MAP" --boot --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
 # The "Up ahead shows" source row is **gone** from this group (#1515 D4a): it is a row of the
 # timeline's own context sheet now — see `up-ahead-context.png` below, which is its only home. Its
 # three frames left with it, and the group's remaining rows shift up one slot.
 # The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
-# synced-ride retention ring on the last row, defaulting to 1 week. Five steps park the cursor on it;
+# synced-ride retention ring on the last row, defaulting to 1 week. Four steps park the cursor on it;
 # one press cycles to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p p d d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
 # Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
 # #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
@@ -688,7 +693,7 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 # waypoint*, resupply and pharmacy to corridor POIs, so one frame pins both sources; the long names
 # pin the ellipsis. NOTE the U4 source setting deliberately does not scope these tiles.
 U5FIELDS="next-water,next-resupply,next-pharmacy,speed,dist-to-go"
-U5CLIMBOFF="B u p p d d d p b b b"
+U5CLIMBOFF="B u p p d d p b b b"
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --stat-fields "$U5FIELDS" \
     --script "$U5CLIMBOFF p p p p b f f f f f f" --expect-screen Statistics --png "$OUT/stats-next-category.png"
 # The empty state: a route-less ride, where nothing can be "ahead" — icon + the category's own word
@@ -812,22 +817,23 @@ QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B w"           --expect-screen Menu --png "$OUT/menu-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p w"       --expect-screen Settings --png "$OUT/settings-$lang.png"
-    # The Ride group per-language — the longest settings screen there is: six two-line rows, each
+    # The Ride group per-language — the longest settings screen there is: five two-line rows, each
     # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
     # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
     # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Five** steps: the
-    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a), and a sixth step here
-    # wrapped the cursor back to row 0 and quietly re-shot `ride-settings-$lang.png` under this name.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
+    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a) and its Bike type row to
+    # the create-route sheet (#1515 D4d), and one step too many here wraps the cursor back to row 0 and
+    # quietly re-shoots `ride-settings-$lang.png` under this name.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
     # and the icon-gutter picker row have to fit whole.
     "$SIM" "$MAP" --boot --lang "$lang" --stat-fields "next-campsite,next-lodging,next-bike-shop" \
-        --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields-next-category-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d p d d d d d d p d d d d d d d d d d" \
+        --script "B u p p p" --expect-screen StatFields --png "$OUT/fields-next-category-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p p d d d d d d p d d d d d d d d d d" \
         --expect-screen AddField --png "$OUT/addfield-next-category-$lang.png"
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
@@ -838,6 +844,13 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --expect-screen Map --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-$lang.png"
+    # The route-plan sheet's one row label per language (#1515 D4d). `fr`/`es` are re-authored for
+    # the sheet's 164 px row budget ("Type vélo" / "Tipo bici"), so these are the frames that show
+    # the shortened readings on-glass. No per-language *editor* frame: its choices are the map's own
+    # §8.6 names, byte-identical in every column.
+    "$SIM" "$MONACO" --boot --lang "$lang" --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 \
+        --clock "2025-01-06T12:00" --script "$NAVCONFIRM C" \
+        --expect-screen ContextDrawer --png "$OUT/route-plan-context-$lang.png"
     # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — a ≤5-day heads-up;
     # eyeball the label ("Auto-Lösch" / "Suppr. auto" / "Autoborrado") beside the ink "in 5 d".
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \

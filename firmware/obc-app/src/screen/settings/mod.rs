@@ -31,10 +31,10 @@ use super::{palette, Ctx, Render, Screen, Transition};
 
 mod about;
 mod add_field;
-/// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
-/// bike from the same sprites + colours the Bike-type screen uses.
+/// The route-less ride-start card's hero bike (T6, #684) — the only place these sprites are drawn
+/// since #1515 D4d moved the bike-type choice onto the route-plan sheet, whose editor is a names
+/// list.
 pub(crate) mod bike_icons;
-mod bike_type;
 mod bluetooth;
 mod connections;
 mod datetime;
@@ -51,7 +51,6 @@ mod units;
 
 pub use about::AboutScreen;
 pub use add_field::AddFieldScreen;
-pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
 pub use connections::ConnectionsScreen;
 pub use datetime::DateTimeScreen;
