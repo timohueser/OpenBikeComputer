@@ -380,9 +380,9 @@ impl QuickDrawerScreen {
         self.needs_base = true;
     }
 
-    /// Retire a finished slide. Returns whether this call is the one that retired it. The **tick**
-    /// calls this and nothing else does: the edge it returns is what arms the settling frame's
-    /// base draw (see [`slide_running`](Self::slide_running)).
+    /// Retire a finished slide. Returns whether this call is the one that retired it. In
+    /// production only the **tick** calls this: the edge it returns is what arms the settling
+    /// frame's base draw (see [`slide_running`](Self::slide_running)).
     fn settle(&mut self, now_ms: u32) -> bool {
         let done = self.slide.is_some_and(|s| now_ms.wrapping_sub(s.started_ms) >= SLIDE_MS);
         if done {
