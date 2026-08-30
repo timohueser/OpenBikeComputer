@@ -316,12 +316,12 @@ the weather requests the device makes on its own. The create-route card declares
 the routing profile the device plans with. These rows are the only place those controls are set.
 
 The bike-type row shows what a value row does when its choices come from the loaded map. The
-choices are the map's own routing-profile names, so a map built with a custom profile offers that
+choices are the map's own routing-profile names. A map built with a custom profile offers that
 profile with no change to the device software. A map with only one profile, or no map at all,
-offers no choice: the row is then drawn recessed and does nothing. The row is on the create-route
-card because that card is where the choice is used — the next press asks for a plan. The route
-overview shows the profile a route was planned with but does not let the rider change it, because
-that would make the page say something untrue about the route it shows.
+offers no choice. The row is then drawn recessed and does nothing. The row is on the create-route
+card because that card is where the choice is used: the next press asks for a plan. The route
+overview shows the profile a route was planned with. It does not let the rider change it, because
+a change would make the page say something untrue about the route it shows.
 
 A row can also be a **switch**. Such a row shows its own state and flips it in place: the sheet stays
 open and only that row changes. The three rows of the map display sheet are switches. What they
