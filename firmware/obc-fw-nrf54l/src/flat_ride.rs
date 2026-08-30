@@ -19,6 +19,8 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
+use obc_app::RideDamage;
+
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
 
 const RIDE_RESERVE: u64 = 32 * 1024 * 1024;
@@ -90,11 +92,13 @@ enum State {
     /// failed append + resume again. Once repair succeeds the footer moves to offset zero and the
     /// normal final checkpoint publishes it.
     FinaliseAfterRepair(Live),
-    /// A durable `RECORDING` object whose bytes are not a provable ride-v3 boundary. It remains
-    /// visible to recovery diagnostics but is never attached to a session or appended to.
+    /// A durable `RECORDING` object this executor could not attach to a session, carrying **which**
+    /// of the three refusals produced it. It stays visible to recovery diagnostics, is never
+    /// appended to, and its only exit is the rider-confirmed exact removal.
     Faulted {
         id: ObjectId,
         revision: Revision,
+        damage: RideDamage,
     },
     Finalising(Finalising),
     Discarding {
@@ -107,6 +111,11 @@ pub(crate) struct Recorder {
     state: State,
     writer: Writer,
     warning_pending: bool,
+    /// `debug-uart` only (#1591): the next exact removal answers as a media failure would, without
+    /// issuing the commit. A genuine media fault cannot be produced on a working board safely, and
+    /// the executor's answer is exactly where a real one surfaces.
+    #[cfg(feature = "debug-uart")]
+    repair_fail_once: bool,
 }
 
 impl Recorder {
@@ -126,9 +135,13 @@ impl Recorder {
                 if !store.entries_ok() || catalog_name.is_none() {
                     defmt::error!("flat ride: recovered catalog entry could not be read completely");
                     return Self {
-                        state: State::Faulted { id: recovered.id, revision: recovered.revision },
+                        state: faulted(recovered.id, recovered.revision, RideDamage::Catalog),
                         writer,
-                        warning_pending: true,
+                        // The card names the damage. A recording warning beside it would claim a
+                        // ride log went incomplete, which is not what happened.
+                        warning_pending: false,
+                        #[cfg(feature = "debug-uart")]
+                        repair_fail_once: false,
                     };
                 }
                 let catalog_name = catalog_name.unwrap_or_default();
@@ -156,6 +169,8 @@ impl Recorder {
                                     }),
                                     writer,
                                     warning_pending: false,
+                                    #[cfg(feature = "debug-uart")]
+                                    repair_fail_once: false,
                                 };
                             }
                         }
@@ -172,9 +187,11 @@ impl Recorder {
                     let Some((continuation, start_time)) = resumed else {
                         defmt::error!("flat ride: recovered samples have no valid continuation metadata");
                         return Self {
-                            state: State::Faulted { id: recovered.id, revision: recovered.revision },
+                            state: faulted(recovered.id, recovered.revision, RideDamage::Metadata),
                             writer,
-                            warning_pending: true,
+                            warning_pending: false,
+                            #[cfg(feature = "debug-uart")]
+                            repair_fail_once: false,
                         };
                     };
                     State::Live(Live {
@@ -199,11 +216,17 @@ impl Recorder {
                     // boundary. Keep the RECORDING object intact and loud; never append to or
                     // publish bytes whose domain format this executor cannot prove.
                     defmt::error!("flat ride: recovered payload is not a v3 sample/footer boundary");
-                    State::Faulted { id: recovered.id, revision: recovered.revision }
+                    faulted(recovered.id, recovered.revision, RideDamage::Payload)
                 }
             }
         };
-        Recorder { state, writer, warning_pending: false }
+        Recorder {
+            state,
+            writer,
+            warning_pending: false,
+            #[cfg(feature = "debug-uart")]
+            repair_fail_once: false,
+        }
     }
 
     /// Whether a durable `RECORDING` object is open, closing, or faulted — the DFU arm's refusal
@@ -228,8 +251,13 @@ impl Recorder {
         Some(continuation)
     }
 
-    pub(crate) fn recovery_faulted(&self) -> bool {
-        matches!(self.state, State::Faulted { .. })
+    /// What is wrong with the recovered object, or `None` when nothing is. The app decides from
+    /// this whether a repair may be offered at all.
+    pub(crate) fn recovery_damage(&self) -> Option<RideDamage> {
+        match self.state {
+            State::Faulted { damage, .. } => Some(damage),
+            _ => None,
+        }
     }
 
     pub(crate) fn take_warning(&mut self) -> bool {
@@ -239,7 +267,7 @@ impl Recorder {
     /// Service a terminal state left over from a reset — a footer-bearing recovered object whose
     /// clearing commit was cut. Run once at boot, before the first UI pass.
     pub(crate) async fn settle(&mut self) {
-        self.service_terminal().await;
+        let _ = self.service_terminal().await;
     }
 
     /// Open a ride object for `session`, saved as `name` — Recorder's session edge.
@@ -298,29 +326,50 @@ impl Recorder {
             // A faulted or discarding object is not this close's to commit.
             _ => return RideClose::Failed,
         };
-        self.service_terminal().await;
+        let _ = self.service_terminal().await;
         match self.state {
             State::Idle => RideClose::Committed(closing),
             _ => RideClose::Failed,
         }
     }
 
-    /// Delete the open ride and its journal. `false` is a failure and Recorder re-offers it.
+    /// Delete the open ride and its journal, and say **why** if the store refused. The typed error
+    /// is what separates a write that went wrong from a store that will take no mutation at all.
     ///
     /// Deletion deliberately does not repair a blocked checkpoint. `Remove` never enters storage's
     /// final-tail flush: the atomic catalog mutation first makes the ride/proof unreachable, then
     /// `settle_ride` clears its pending recovery state and invalidates the journal headers. Repair
-    /// would add fallible I/O to an object the rider explicitly asked to destroy.
-    pub(crate) async fn discard(&mut self) -> bool {
+    /// would add fallible I/O to an object the rider explicitly asked to destroy — and it is exactly
+    /// why a damaged object can be removed when it can be repaired no other way.
+    pub(crate) async fn discard(&mut self) -> Result<(), StoreError> {
         match self.state {
             State::Live(live) | State::FinaliseAfterRepair(live) => {
                 self.state = State::Discarding { id: live.id, revision: live.revision };
             }
-            State::Faulted { id, revision } => self.state = State::Discarding { id, revision },
+            State::Faulted { id, revision, .. } => self.state = State::Discarding { id, revision },
             _ => {}
         }
-        self.service_terminal().await;
-        matches!(self.state, State::Idle)
+        if let State::Discarding { id, .. } = self.state {
+            defmt::info!("flat ride: rider-confirmed exact removal of {=u64}", id.0);
+        }
+        #[cfg(feature = "debug-uart")]
+        if core::mem::take(&mut self.repair_fail_once) && matches!(self.state, State::Discarding { .. }) {
+            // No commit is issued, so the card is untouched — the injection sits exactly where a
+            // real media failure would reach Recorder. The state stays `Discarding`, so the rider's
+            // retry re-attempts the very same removal.
+            defmt::warn!("flat ride: exact removal refused: {}", defmt::Debug2Format(&StoreError::Media));
+            return Err(StoreError::Media);
+        }
+        match self.service_terminal().await {
+            Ok(()) => {
+                defmt::info!("flat ride: exact removal committed");
+                Ok(())
+            }
+            Err(error) => {
+                defmt::warn!("flat ride: exact removal refused: {}", defmt::Debug2Format(&error));
+                Err(error)
+            }
+        }
     }
 
     /// Append one staged sample to the bounded tail. `false` is a refusal, and Recorder keeps that
@@ -511,6 +560,57 @@ impl Recorder {
         }
     }
 
+    /// `debug-uart` only (#1591 on-device acceptance): fabricate a damaged `RECORDING` object
+    /// through the **production seam** — one `start` and one journalled checkpoint whose bytes fail
+    /// exactly one of the two logical recovery checks at the next mount. No card surgery, no block
+    /// editing, no card removal.
+    #[cfg(feature = "debug-uart")]
+    pub(crate) async fn debug_fabricate_damage(
+        &mut self,
+        store: &'static FlatStore<FlatCard>,
+        kind: obc_platform::debug_link::RideDamageKind,
+        now_ms: u32,
+    ) {
+        use obc_platform::debug_link::RideDamageKind;
+        if !matches!(self.state, State::Idle) {
+            defmt::warn!("flat ride: ride-damage refused -- an object is already open");
+            return;
+        }
+        if let Err(error) = self.start(store, None, "DAMAGED", now_ms).await {
+            defmt::error!("flat ride: ride-damage could not open an object: {}", defmt::Debug2Format(&error));
+            return;
+        }
+        let State::Live(mut live) = self.state else { return };
+        let (len, resume, name) = match kind {
+            // 7 is below `FOOTER_LEN` and is not a whole number of samples, so the mount takes the
+            // sample/footer-boundary refusal with a resume image that would otherwise decode.
+            RideDamageKind::Payload => (7usize, encode_resume(obc_app::RideContinuation::default(), None), "payload"),
+            // One whole sample keeps the boundary valid, so the refusal is the resume image's — which
+            // is exactly what separates this cause from the first.
+            RideDamageKind::Metadata => (SAMPLE_LEN, [0u8; RIDE_RESUME_LEN], "metadata"),
+        };
+        unsafe { delta_mut()[..len].fill(0) };
+        live.delta_len = len;
+        live.crc.update(unsafe { delta_slice(len) });
+        match self.journal(live, &resume).await {
+            Ok(()) => {
+                live.delta_len = 0;
+                self.state = State::Live(live);
+                defmt::info!("flat ride: fabricated a damaged RECORDING {=u64} ({=str})", live.id.0, name);
+            }
+            Err(error) => {
+                defmt::error!("flat ride: ride-damage journal failed: {}", defmt::Debug2Format(&error));
+            }
+        }
+    }
+
+    /// `debug-uart` only (#1591): arm the one-shot refusal of the next exact removal.
+    #[cfg(feature = "debug-uart")]
+    pub(crate) fn debug_arm_repair_failure(&mut self) {
+        self.repair_fail_once = true;
+        defmt::info!("flat ride: the next exact removal will be refused as a media failure");
+    }
+
     async fn journal(&self, live: Live, resume: &[u8; RIDE_RESUME_LEN]) -> Result<(), StoreError> {
         unsafe { resume_mut().copy_from_slice(resume) };
         let checkpoint = RideCheckpoint {
@@ -526,7 +626,13 @@ impl Recorder {
         }
     }
 
-    async fn service_terminal(&mut self) {
+    /// Run the state's own next step and say what the store answered.
+    ///
+    /// The typed error is load-bearing for exactly one caller — [`discard`](Self::discard), whose
+    /// answer decides whether the rider is offered another attempt. [`finalize`](Self::finalize) and
+    /// [`settle`](Self::settle) still read the resulting *state*, which is what "the close is over"
+    /// has always meant.
+    async fn service_terminal(&mut self) -> Result<(), StoreError> {
         match self.state {
             State::FinaliseAfterRepair(mut live) => {
                 // `RESUME` is the image staged by the failed ordinary checkpoint. The footer lives
@@ -553,10 +659,12 @@ impl Recorder {
                             payload_crc: crc.finalize(),
                             journaled: false,
                         });
+                        Ok(())
                     }
                     Err(error) => {
                         self.warning_pending = true;
                         defmt::warn!("flat ride: pre-finish checkpoint repair failed: {}", defmt::Debug2Format(&error));
+                        Err(error)
                     }
                 }
             }
@@ -574,11 +682,11 @@ impl Recorder {
                             finalising.journaled = true;
                             self.state = State::Finalising(finalising);
                         }
-                        Ok(_) => return,
+                        Ok(_) => return Err(StoreError::Invalid),
                         Err(error) => {
                             self.warning_pending = true;
                             defmt::warn!("flat ride: final checkpoint failed: {}", defmt::Debug2Format(&error));
-                            return;
+                            return Err(error);
                         }
                     }
                 }
@@ -597,11 +705,13 @@ impl Recorder {
                     Ok(Outcome::Committed(_)) => {
                         self.state = State::Idle;
                         defmt::info!("flat ride: finished {=u64} B with footer + one commit", finalising.payload_len);
+                        Ok(())
                     }
-                    Ok(_) => {}
+                    Ok(_) => Err(StoreError::Invalid),
                     Err(error) => {
                         self.warning_pending = true;
                         defmt::warn!("flat ride: final commit failed: {}", defmt::Debug2Format(&error));
+                        Err(error)
                     }
                 }
             }
@@ -609,17 +719,39 @@ impl Recorder {
                 let mut batch = Vec::new();
                 let _ = batch.push(Mutation::Remove { id, revision });
                 match self.writer.call(Request::Commit { batch }, &REPLY).await {
-                    Ok(Outcome::Committed(_)) => self.state = State::Idle,
-                    Ok(_) => {}
-                    Err(error) => {
-                        self.warning_pending = true;
-                        defmt::warn!("flat ride: discard failed: {}", defmt::Debug2Format(&error));
+                    // The catalog no longer holding the entry **is** the goal state: an earlier
+                    // attempt landed and only its answer was lost.
+                    Ok(Outcome::Committed(_)) | Err(StoreError::NotFound) => {
+                        self.state = State::Idle;
+                        Ok(())
                     }
+                    Ok(_) => Err(StoreError::Invalid),
+                    // No warning is raised here: the caller reports the typed refusal, and for a
+                    // damaged object the recovery card is the rider's one explanation.
+                    Err(error) => Err(error),
                 }
             }
-            _ => {}
+            _ => Ok(()),
         }
     }
+}
+
+/// The one place a `Faulted` state is built, so every classified refusal announces itself the same
+/// way: which object, which cause, and whether a repair may be offered for it at all.
+fn faulted(id: ObjectId, revision: Revision, damage: RideDamage) -> State {
+    let (name, repairable) = match damage {
+        RideDamage::Payload => ("payload", true),
+        RideDamage::Metadata => ("metadata", true),
+        RideDamage::Catalog => ("catalog", false),
+    };
+    defmt::error!(
+        "flat ride: damaged RECORDING {=u64} rev {=u64} -- {=str}, repairable={=bool}",
+        id.0,
+        revision.0,
+        name,
+        repairable
+    );
+    State::Faulted { id, revision, damage }
 }
 
 fn read_sample_time(store: &FlatStore<FlatCard>, offset: u64, total: u64) -> Option<u32> {

@@ -89,7 +89,7 @@ pub(crate) use quick_drawer::OPEN_MS as QUICK_OPEN_MS;
 pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
-pub use ride_recovery::RideRecoveryScreen;
+pub use ride_recovery::{RecoveryMode, RideRecoveryScreen};
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;

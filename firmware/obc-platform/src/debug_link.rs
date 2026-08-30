@@ -37,6 +37,16 @@
 //!   would (records the request *and* shows the spinning-compass planning screen), so a host can
 //!   drive the resumable router repeatably and read the per-phase `nav route:` RTT line without
 //!   navigating the POI browser. `debug-uart` + `has_nav` builds only.
+//! - `ride-damage payload` / `ride-damage metadata` — **fabricate a damaged `RECORDING` object**
+//!   (#1591): open a ride object through the production seam and journal one checkpoint whose bytes
+//!   fail exactly one of the two logical recovery checks, so the next boot reaches the classified
+//!   recovery card. The operator issues the reset — a self-reset would race the confirmation line
+//!   off the wire. `debug-uart` builds only.
+//! - `ride-repair-fail` — arm a **one-shot** refusal of the next exact removal, answered as a media
+//!   failure would be and **without issuing the commit**, so the failure path's typed terminal latch
+//!   can be driven on a card that is not actually failing. `debug-uart` builds only.
+//! - `store-census` — print one line per catalog entry plus the entry count and free extents: the
+//!   before/after proof that a repair moved exactly one object. `debug-uart` builds only.
 //! - `dfu-install` — **firmware-update trigger** (epic #615 S4, #619): post the same install
 //!   request the S5 UI will post, so the on-glass DFU gate runs over the VCOM harness before any
 //!   screen exists. The ride loop drains it, runs the armer (scan `UPDATE.BIN` → rollback
@@ -103,6 +113,23 @@ pub enum Msg {
     /// A firmware-update install trigger (epic #615 S4, #619): post the same request the S5 UI
     /// will post — scan `UPDATE.BIN`, snapshot the rollback, arm the boot-state page, reboot.
     DfuInstall,
+    /// Fabricate a damaged `RECORDING` object of this kind (#1591 on-device acceptance).
+    RideDamage(RideDamageKind),
+    /// Arm the one-shot refusal of the next exact removal (#1591 on-device acceptance).
+    RideRepairFail,
+    /// Print the catalog census (#1591 on-device acceptance).
+    StoreCensus,
+}
+
+/// Which of the two logical recovery refusals a `ride-damage` command fabricates. The third cause —
+/// a catalog that cannot be listed — is deliberately absent: it cannot be produced on a real card
+/// without risking it, and its whole behaviour is that no I/O happens at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RideDamageKind {
+    /// Bytes that are not a ride-v3 sample/footer boundary.
+    Payload,
+    /// A valid sample boundary with a continuation image that does not decode.
+    Metadata,
 }
 
 /// Parse one line into a [`Msg`], or `None` if the tag is unknown or the required fields are
@@ -139,6 +166,15 @@ pub fn parse_line(line: &str) -> Option<Msg> {
         // The one word-tag command (its name is the on-glass DFU gate's whole interface, so it
         // stays greppable over a cryptic letter). No arguments.
         "dfu-install" => Some(Msg::DfuInstall),
+        // The #1591 acceptance commands. Word tags for the same reason `dfu-install` is one: their
+        // names are the harness's whole interface.
+        "ride-damage" => match it.next()? {
+            "payload" => Some(Msg::RideDamage(RideDamageKind::Payload)),
+            "metadata" => Some(Msg::RideDamage(RideDamageKind::Metadata)),
+            _ => None,
+        },
+        "ride-repair-fail" => Some(Msg::RideRepairFail),
+        "store-census" => Some(Msg::StoreCensus),
         _ => None,
     }
 }
@@ -378,7 +414,7 @@ mod handoff {
     use embassy_sync::signal::Signal;
     use obc_ports::{AltimeterSource, CompassSource, Fix, InputEvent, InputSource, LocationSource};
 
-    use super::{LineReader, Msg, Telemetry};
+    use super::{LineReader, Msg, RideDamageKind, Telemetry};
     #[cfg(feature = "sensor-link")]
     use crate::sensor_hub::SampleInjector;
 
@@ -401,6 +437,11 @@ mod handoff {
     /// A pending `dfu-install` trigger (S4, #619), `try_take`-once like the `Z`/`N` commands.
     /// Drained by the ride loop → `App::request_dfu_install` (the same request the S5 UI posts).
     static DFU_INSTALL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+    /// The #1591 acceptance commands, `try_take`-once like the rest. Drained by the ride loop into
+    /// the flat recorder / the store census.
+    static RIDE_DAMAGE: Signal<CriticalSectionRawMutex, RideDamageKind> = Signal::new();
+    static RIDE_REPAIR_FAIL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+    static STORE_CENSUS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
     /// DFU status lines device→host (`D <text>`), queued in order — a `Channel`, not a latch,
     /// because one arm emits several phase lines back-to-back (scan / rollback / armed) and each
     /// must reach the host. Sized for one full arm's line budget; an overflowing push is dropped
@@ -475,6 +516,19 @@ mod handoff {
             // Pulse EVENT too: a parked device must wake its ride loop to drain the request.
             Msg::DfuInstall => {
                 DFU_INSTALL.signal(());
+                EVENT.signal(());
+            }
+            // Same rule: a parked device must wake its ride loop to drain the request.
+            Msg::RideDamage(kind) => {
+                RIDE_DAMAGE.signal(kind);
+                EVENT.signal(());
+            }
+            Msg::RideRepairFail => {
+                RIDE_REPAIR_FAIL.signal(());
+                EVENT.signal(());
+            }
+            Msg::StoreCensus => {
+                STORE_CENSUS.signal(());
                 EVENT.signal(());
             }
             // Drop on the (unreachable) overflow rather than block the RX task. No `EVENT` pulse —
@@ -558,6 +612,21 @@ mod handoff {
         DFU_INSTALL.try_take().is_some()
     }
 
+    /// Take a pending `ride-damage` fabrication request (#1591) — `try_take`-once.
+    pub fn take_ride_damage() -> Option<RideDamageKind> {
+        RIDE_DAMAGE.try_take()
+    }
+
+    /// Take a pending `ride-repair-fail` arming request (#1591) — `try_take`-once.
+    pub fn take_ride_repair_fail() -> bool {
+        RIDE_REPAIR_FAIL.try_take().is_some()
+    }
+
+    /// Take a pending `store-census` request (#1591) — `try_take`-once.
+    pub fn take_store_census() -> bool {
+        STORE_CENSUS.try_take().is_some()
+    }
+
     /// Queue one DFU status line for the host (sent as `D <text>`). Called by the ride loop's
     /// armer drain at each phase boundary; a full queue drops the line (the RTT log is the
     /// lossless record — this stream is the harness's convenience view).
@@ -596,8 +665,9 @@ mod handoff {
 // (`debug_link::DebugLocation`, `debug_link::feed_bytes`, …) are unchanged by the split.
 #[cfg(feature = "debug-link")]
 pub use handoff::{
-    dfu_status, dispatch, feed_bytes, set_telemetry, take_dfu_install, take_nav, take_zoom, wait_dfu_status,
-    wait_event, wait_telemetry, DebugAltimeter, DebugCompass, DebugInput, DebugLocation,
+    dfu_status, dispatch, feed_bytes, set_telemetry, take_dfu_install, take_nav, take_ride_damage,
+    take_ride_repair_fail, take_store_census, take_zoom, wait_dfu_status, wait_event, wait_telemetry, DebugAltimeter,
+    DebugCompass, DebugInput, DebugLocation,
 };
 
 #[cfg(test)]
@@ -699,6 +769,17 @@ mod tests {
         assert_eq!(parse_line("dfu-install now"), Some(Msg::DfuInstall));
         assert_eq!(parse_line("dfu-installx"), None, "the tag must match exactly");
         assert_eq!(parse_line("DFU-INSTALL"), None, "tags are case-sensitive, like F/A/C");
+    }
+
+    #[test]
+    fn parses_the_recovery_acceptance_commands() {
+        assert_eq!(parse_line("ride-damage payload"), Some(Msg::RideDamage(RideDamageKind::Payload)));
+        assert_eq!(parse_line("ride-damage metadata"), Some(Msg::RideDamage(RideDamageKind::Metadata)));
+        assert_eq!(parse_line("ride-damage"), None, "the kind is not optional — the two are different faults");
+        assert_eq!(parse_line("ride-damage catalog"), None, "catalog damage is deliberately not fabricable");
+        assert_eq!(parse_line("ride-repair-fail"), Some(Msg::RideRepairFail));
+        assert_eq!(parse_line("store-census"), Some(Msg::StoreCensus));
+        assert_eq!(parse_line("store-censusx"), None, "tags match exactly, like every other one");
     }
 
     #[test]

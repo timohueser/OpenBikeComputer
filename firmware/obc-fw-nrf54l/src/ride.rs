@@ -880,8 +880,10 @@ pub(crate) async fn run_app(
     let recovery_warning = ride_recorder.take_warning();
     if let Some(continuation) = ride_recorder.recovered_continuation() {
         let _ = app.offer_recovered_ride(continuation);
-    } else if ride_recorder.recovery_faulted() {
-        let _ = app.offer_damaged_ride();
+    } else if let Some(damage) = ride_recorder.recovery_damage() {
+        // The classified damage decides what the card may offer: a readable catalog earns the one
+        // guarded exact removal, an unreadable one earns none at all.
+        let _ = app.offer_damaged_ride(damage);
     } else if recovery_warning {
         exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
     }
@@ -1286,6 +1288,21 @@ pub(crate) async fn run_app(
         if obc_platform::debug_link::take_dfu_install() {
             app.debug_request_dfu_install();
         }
+        // The #1591 recovery acceptance commands, drained in the same guard-free block and for the
+        // same reason as `dfu-install`: they make an on-glass gate runnable over the VCOM harness.
+        // All three dead-strip from the release image.
+        #[cfg(feature = "debug-uart")]
+        if let Some(kind) = obc_platform::debug_link::take_ride_damage() {
+            ride_recorder.debug_fabricate_damage(flat, kind, now).await;
+        }
+        #[cfg(feature = "debug-uart")]
+        if obc_platform::debug_link::take_ride_repair_fail() {
+            ride_recorder.debug_arm_repair_failure();
+        }
+        #[cfg(feature = "debug-uart")]
+        if obc_platform::debug_link::take_store_census() {
+            crate::flat_store::debug_census(flat);
+        }
         if let Some(effect) = exec.effects.dfu.take() {
             use obc_app::dfu::{DfuEffect, DfuOutcome};
             match effect {
@@ -1489,6 +1506,7 @@ pub(crate) async fn run_app(
             // open and Recorder re-offers the same operation rather than the rider losing it.
             if let Some(effect) = exec.effects.recorder.take() {
                 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
+                use obc_storage::flat::StoreError;
                 let outcome = match effect {
                     RecorderEffect::Checkpoint { token } => {
                         let stats = app.recorder.ride_stats();
@@ -1522,9 +1540,13 @@ pub(crate) async fn run_app(
                             RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
                         }
                     }
+                    // The store's refusal is reported by kind. A card that will take no mutation at
+                    // all is the one answer a retry cannot help, so Recorder must be able to tell it
+                    // from a write that went wrong.
                     RecorderEffect::Discard { token } => match ride_recorder.discard().await {
-                        true => RecorderOutcome::Discarded { token },
-                        false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                        Ok(()) => RecorderOutcome::Discarded { token },
+                        Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
+                        Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
                     },
                     // The staged samples into the bounded tail, in order, for as long as the
                     // recorder keeps taking them. A short write is answered honestly: Recorder keeps

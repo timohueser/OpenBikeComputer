@@ -444,6 +444,11 @@ body = "Enregistrement récupéré"
 damaged = "Enregistrement endommagé"
 continue_ride = "Continuer la sortie"
 discard = "Abandonner"
+repair_failed = "Réparation échouée"
+discard_failed = "Abandon échoué"
+unrepairable = "Carte à remplacer"
+retry = "Réessayer"
+leave = "Retour"
 
 # --- Route-less ride start card ---
 [ride_start]
