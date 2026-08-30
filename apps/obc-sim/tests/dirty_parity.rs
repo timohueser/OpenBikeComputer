@@ -863,7 +863,7 @@ fn pages_replay() -> Vec<Step> {
         step("step to Settings", 1_000).keys(&[InputEvent::Step(-1)]).expect("Menu"),
         step("the needle settles", 1_400).expect("Menu"),
         step("open Settings", 1_800).keys(&tap(Button::Select)).expect("Settings"),
-        step("step to Connections", 2_000).keys(&[InputEvent::Step(1), InputEvent::Step(1), InputEvent::Step(1)]),
+        step("step to Connections", 2_000).keys(&[InputEvent::Step(1), InputEvent::Step(1)]),
         step("open Connections", 2_400).keys(&tap(Button::Select)).expect("Connections"),
         step("step to Sensors", 2_600).keys(&[InputEvent::Step(1)]),
         step("open the Sensors page", 3_000).keys(&tap(Button::Select)).expect("Sensors"),

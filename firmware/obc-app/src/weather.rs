@@ -1367,6 +1367,13 @@ impl WeatherDomain {
         self.refresh_requested
     }
 
+    /// Whether a question is already outstanding — in flight, or asked for and not yet sent. The
+    /// one predicate the weather sheet's *Refresh now* row is live by (#1515 D4b): while an answer
+    /// is on its way, or while a question waits for a link to carry it, there is nothing more to ask.
+    pub fn request_outstanding(&self) -> bool {
+        self.refresh_requested || self.refreshing()
+    }
+
     /// How the last completed refresh ended, or `None` when none has completed this boot.
     pub fn last_refresh(&self) -> Option<RefreshResult> {
         self.last_result
