@@ -445,6 +445,10 @@ body = "Aufzeichnung gerettet"
 damaged = "Aufzeichnung beschädigt"
 continue_ride = "Fahrt fortsetzen"
 discard = "Verwerfen"
+repair_failed = "Nicht repariert"
+unrepairable = "Karte defekt"
+retry = "Wiederholen"
+leave = "Zurück"
 
 # --- Route-less ride start card ---
 [ride_start]

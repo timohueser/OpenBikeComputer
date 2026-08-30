@@ -418,6 +418,13 @@ impl App {
                 crate::recorder::RecorderVerdict::Failed => {
                     self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
                 }
+                // The rider's one repair attempt on a damaged recovered object is over and Recorder
+                // has latched what it came to. Re-raise the card so its new mode is what the rider
+                // sees — the typed card **is** the explanation, so no `REC_ERROR` is raised beside
+                // it: that warning means a ride log is now incomplete, and no ride is being logged.
+                crate::recorder::RecorderVerdict::RecoveryLatched => {
+                    self.raise_ride_recovery();
+                }
                 crate::recorder::RecorderVerdict::Nothing => {}
             }
         }
@@ -775,6 +782,12 @@ impl App {
             // records nothing is the failure this raise exists to prevent.
             crate::recorder::RecorderAdvance::Refused => {
                 self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
+            }
+            // A damaged recovered object is still standing, so no session opened. Put the decision
+            // back rather than a warning: it is the one thing between the rider and recording, and
+            // it is the thing they can act on.
+            crate::recorder::RecorderAdvance::RecoveryOwed => {
+                self.raise_ride_recovery();
             }
             crate::recorder::RecorderAdvance::Nothing => {}
         }
