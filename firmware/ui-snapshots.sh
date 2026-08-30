@@ -213,11 +213,11 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # plan → preview (+cost line) → commit — the commit splices INTO the reserved `_nav.obcr` the
 # prefix planned (the self-splice case) and lands back on the riding map.
 DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
-# (a0) The ride context with **every row live** — the Monaco graph, a loaded route and an on-route
-# rider are exactly what the Detour row needs, so this is the arrangement `ride-context.png` cannot
+# (a0) The map context with **every row live** — the Monaco graph, a loaded route and an on-route
+# rider are exactly what the Detour row needs, so this is the arrangement `map-context.png` cannot
 # show on the graph-less Grimsel fixture.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/ride-context-live.png"
+    --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/map-context-live.png"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
@@ -292,10 +292,12 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --script "B u p p d d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
 "$SIM" "$MAP" --boot --script "B u p p d d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
-# Display (group 1): the two Map-overlay toggles + the idle-return picker moved from Power. The
-# picker in its open (editing) state is two rows down, press to open.
-"$SIM" "$MAP" --boot --script "B u p d p"       --expect-screen Display --png "$OUT/display.png"
-"$SIM" "$MAP" --boot --script "B u p d p d d p" --expect-screen Display --png "$OUT/display-idle-return.png"
+# Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
+# #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
+# — so the picker is row 0 and one press opens it. (The old recipe walked two rows down first and
+# pressed *Contours*, which is not the state this filename has always claimed.)
+"$SIM" "$MAP" --boot --script "B u p d p"   --expect-screen Display --png "$OUT/display.png"
+"$SIM" "$MAP" --boot --script "B u p d p p" --expect-screen Display --png "$OUT/display-idle-return.png"
 
 # The Weather group is **gone** (#1515 D4b): the refresh interval is a row of the weather screens'
 # own context sheet now — see `weather-context.png` below, its only home — and every recipe below
@@ -586,17 +588,32 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 "$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
-# The **ride context** (#1515 D3): a Down+Back squeeze (`C`) on the riding Map raises the bottom
-# sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes. It replaced the
-# compass RIDE menu, whose fifth station (Main menu) is now the global Back-hold escape. Same base
-# as the quick-drawer frames — a real map under the device-64 dim LUT — so the two sheets can be
-# judged against each other.
+# The **map context** (#1515 D3, extended by D4c): a Down+Back squeeze (`C`) on the riding Map
+# raises the bottom sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes
+# — plus the fifth row only the Map declares, Map display. It replaced the compass RIDE menu, whose
+# own fifth station (Main menu) is now the global Back-hold escape. Same base as the quick-drawer
+# frames — a real map under the device-64 dim LUT — so the two sheets can be judged against each
+# other.
 #
 # Grimsel carries **no routing graph**, so this frame is also the inert-row case: Detour draws
 # recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
 # compass dial's, which dimmed a station a press still opened. The all-live arrangement is
-# `ride-context-live.png`, shot on the Monaco graph down in the detour block.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
+# `map-context-live.png`, shot on the Monaco graph down in the detour block.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-context.png"
+# The **map display sheet** (#1515 D4c): the fifth row swaps the five-row sheet for the three
+# switches that are the only home the map's clock pill, scale bar and terrain layer have. `u` wraps
+# the cursor to the last row; there is **no settle token after the press**, because the swap is
+# instantaneous by design — a frame that needed one would be evidence the swap re-ran the open.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-sheet.png"
+# …and the Clock row flipped off, which is the pair that shows the switch working. The `HH:MM` pill
+# is gone from the map too, and that is the **headless** path being honest rather than the frozen
+# base failing: `--png` composes the whole frame from nothing, so it never claims a resident frame
+# and draws the base as always. On the device the map keeps the pill until the sheet closes, which
+# is the one repaint the rider pays for however many switches they flip.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
+# The **ride context** the other three riding views share — the unchanged four-row table, shot over
+# Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
@@ -874,8 +891,11 @@ for lang in de fr es; do
   # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
   # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
   # each of which has to fit the sheet's width in the longer translations.
-  # The ride context's four row labels at 240 px — the sheet is all copy, so this is its overflow check.
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/ride-context-$lang.png"
+  # The map context's five row labels at 240 px — the sheet is all copy, so this is its overflow
+  # check — and then its display sub-sheet, whose three labels have 36 px less room because the
+  # slider takes it (#1515 D4c).
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/map-context-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C u p"       --expect-screen ContextDrawer --png "$OUT/map-display-sheet-$lang.png"
   # The Up-ahead sheet (#1515 D4a): its two row labels, then the nested editor's title + the choice
   # it stages. `Campingplatz` / `Alojamiento` are the width constraint on the editor line.
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C p C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"

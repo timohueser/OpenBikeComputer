@@ -217,18 +217,17 @@ autodelete_sub = "salidas"
 # --- Display settings screen ---
 [display]
 title = "PANTALLA"
-clock = "Reloj"
-clock_sub = "en mapa"
-scale_bar = "Escala"
-scale_bar_sub = "en mapa"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-# "Curvas de nivel" does not fit the label column beside the toggle slider, so the term is split
-# across the row's two lines — the sub-caption carries "de nivel" instead of the usual "en mapa".
-contours = "Curvas"
-contours_sub = "de nivel"
 idle = "Reposo"
 idle_sub = "espera"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+map_display = "Pantalla"
+clock = "Reloj"
+scale_bar = "Escala"
+# "Curvas de nivel" needed the old settings row's two lines; a sheet row has one, so the
+# self-contained "Relieve" is the reading that fits beside the slider.
+contours = "Relieve"
 
 # --- Power settings screen ---
 [power]

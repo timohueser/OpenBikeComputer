@@ -675,6 +675,46 @@ mod tests {
         assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
     }
 
+    /// …and the twin on the **map display** sheet (#1515 D4c), where the moving fact is a switch's
+    /// own bit rather than a row's availability.
+    ///
+    /// This is the whole argument for `DrawerKey` gaining no field for it. All three switches are
+    /// device-only — no BLE adopt writes them — so under an open sheet only the rider can move one,
+    /// and only the selected row's. Every state change is therefore accompanied by a `committed`
+    /// change and every cursor move by a `selected` change, which the two existing bytes already
+    /// carry. The mutant is a `key` that reports 0 for a switch row: the flip below would move
+    /// nothing and the slider would sit still until the sheet closed.
+    #[test]
+    fn a_flip_under_the_sheet_moves_only_the_drawer_key() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(crate::input::Chord::Context), "the Map declares a context");
+        app.apply_gesture(crate::input::Gesture::Step(-1)); // → the Map display row
+        app.apply_gesture(crate::input::Gesture::Press); // → the display sheet
+
+        let quiet = app.render_key();
+        assert!(quiet.map.is_none(), "no map fact survives under either sheet");
+        assert_eq!(quiet.drawer.map(|d| d.enabled), Some(0b111), "all three switches are always live");
+        assert_eq!(quiet.drawer.map(|d| d.committed), Some(1), "the selected row reads its own bit");
+
+        // The base moving under the sheet is not a pixel either sheet draws.
+        app.state.cam_lon += 5_000;
+        app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
+        assert_eq!(app.render_key(), quiet, "a moving map under the display sheet asks for no repaint");
+
+        // A flip is, and it moves the key through `committed` alone.
+        app.apply_gesture(crate::input::Gesture::Press);
+        let flipped = app.render_key();
+        assert_ne!(flipped, quiet, "the slider moved — the sheet must redraw");
+        assert_eq!(flipped.drawer.map(|d| d.committed), Some(0));
+
+        // …and the close is exactly one invalidation, with the map back in the key.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, flipped);
+        assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "the base is back");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
     /// …the twin of the test above, on the **weather** sheet (#1515 D4b), where the row's live bit
     /// is the one thing under a sheet that is allowed to move.
     ///
@@ -699,11 +739,6 @@ mod tests {
         let fetching = app.render_key();
         assert_ne!(fetching, live, "the Refresh row went recessed — the sheet must redraw");
         assert_eq!(fetching.drawer.map(|d| d.enabled), Some(0b10), "…only the Refresh row");
-        assert_eq!(
-            RenderKey { drawer: live.drawer, ..fetching.clone() },
-            live,
-            "the drawer's own slot is the only difference"
-        );
 
         // New data landing under the sheet is not a pixel the sheet draws, so it moves nothing.
         let quiet = app.render_key();

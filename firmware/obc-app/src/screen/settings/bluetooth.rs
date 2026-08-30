@@ -23,7 +23,7 @@ use obc_render::{
 use crate::ble::BleLink;
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
-use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_X};
+use crate::screen::vocab::rows::{row_cursor, row_rect, toggle_slider, ROW_X};
 use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::{Language, Settings};
 use crate::Msg;
@@ -104,7 +104,7 @@ impl BluetoothScreen {
         let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
         row_cursor(cv, r0, selected == TOGGLE, false);
         super::row_label(cv, r0, rx.t(Msg::BluetoothRadio), Some(rx.t(Msg::BluetoothRadioSub)));
-        super::toggle_slider(cv, r0, rx.settings.ble_enabled);
+        toggle_slider(cv, r0, rx.settings.ble_enabled);
 
         // The read-only lines — stacked caption-over-value pairs (a right-aligned "Advertising"
         // would collide with its caption on the 240 px panel): status (Off / Advertising /

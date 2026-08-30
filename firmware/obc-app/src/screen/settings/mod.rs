@@ -164,20 +164,6 @@ pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub
     }
 }
 
-/// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
-/// track dark for off and green for on. The knob position and track colour carry the state.
-pub(super) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
-    let (tw, th) = (50, 28);
-    let tx = area.top_left.x + area.size.width as i32 - tw - 4;
-    let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
-    cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
-    // Knob at the on/off end, with an even margin.
-    let m = 4;
-    let k = th - 2 * m;
-    let kx = if on { tx + tw - m - k } else { tx + m };
-    cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
-}
-
 /// Draw a stepper field cell holding `text`. Inactive: just the text, no background. Active (the
 /// live field): an amber fill plus up/down triangles. `cell` must leave ~10 px clearance for the arrows.
 pub(super) fn stepper_field(cv: &mut impl Surface, cell: Rectangle, text: &str, active: bool, font: Font) {
