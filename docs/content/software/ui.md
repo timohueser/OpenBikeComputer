@@ -1,6 +1,7 @@
 ---
 title: UI system
 description: Screen state, navigation, input, repaint policy, and rider-facing data views.
+copy: ai
 ---
 
 # The UI system

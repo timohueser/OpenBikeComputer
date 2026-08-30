@@ -1,6 +1,7 @@
 ---
 title: Packer and routing
 description: How OpenBikeComputer builds maps, navigation graphs, routes, and route matches.
+copy: ai
 ---
 
 # Packer and routing

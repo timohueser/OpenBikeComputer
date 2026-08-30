@@ -1,6 +1,7 @@
 ---
 title: System architecture
 description: The shared runtime, host interfaces, event loop, routing flow, and input architecture.
+copy: ai
 ---
 
 # System architecture

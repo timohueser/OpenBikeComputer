@@ -1,6 +1,7 @@
 ---
 title: The companion link
 description: How protocol v4 moves flat-store objects over BLE and USB binding v5.
+copy: ai
 ---
 
 # The companion link
