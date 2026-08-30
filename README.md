@@ -22,16 +22,16 @@
 > generated will be replaced once we get closer to releasing this project. The goal is that all
 > user-facing text is 100% human-generated!
 
-OpenBikeComputer is a fully open source bikepacking focused GPS cycling computer.
+OpenBikeComputer is a fully open-source, bikepacking-focused GPS cycling computer.
 The main features and capabilities we are aiming for are the following (roughly in order of importance):
-- Reliable and simple map based tracking and navigation
-- Uploading a route from the companion app should work everytime (no BLE connection issues, no unreasonably low limit on pointcount in GPX  files etc.)
+- Reliable and simple map-based tracking and navigation
+- Uploading a route from the companion app should work every time (no BLE connection issues, no unreasonably low limit on point count in GPX files etc.)
 - No subscriptions or accounts required for any of the features of the device
 - Long battery life, ideally 4+ days between recharges, if you need to recharge it should work reliably with dynamo hubs that provide 5V
 - Helps you keep your phone in your pocket by providing all the info you frequently check on the bike:
     - POIS (Shops, water sources, campsites etc.) near you and along the route (including opening hours), with the ability to create a route there on the fly
-    - Weather and rain radar (this is the only one that will use BLE to talk to the phone
-    - And a fun one: Mountain peaks around you (PeakFinder style) 
+    - Weather and rain radar (this is the only one that will use BLE to talk to the phone)
+    - And a fun one: Mountain peaks around you (PeakFinder style)
 
 This repository contains all the software and hardware files needed to build the OBC and the goal is to eventually provide kits that allow you to build the OBC yourself. The project currently is an active prototype, not a finished product and you can read about the progress of development in our [Blog](https://openbikecomputer.com/blog/). Here are some peeks at the software and hardware designs:
 
@@ -185,7 +185,7 @@ OpenBikeComputer is not the only open source bike computer project! Here is a (n
 
 ## Contributing
 
-Contributions are always welcome! This project is in the very early stages and many things are still a little chaotic and not well documented in many areas. Code is written almost exclusively using AI coding agents, but all the hardware design is fully human powered. Help on that front would be especially appreciated. Please just get in contact with 
+Contributions are always welcome! This project is in the very early stages and many things are still a little chaotic and not well documented in many areas. Code is written almost exclusively using AI coding agents, but all the hardware design is fully human-powered. Help on that front would be especially appreciated. Please just get in contact with me if you want to contribute.
 
 ## License
 
