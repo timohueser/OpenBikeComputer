@@ -32,6 +32,7 @@ LANDMARKS = [
     "draw_guarded_rows",
     "tile",
     "waypoint_panel",
+    "toggle_slider",
     "needle_region",
     "distance_short",
     "duration_hms",
