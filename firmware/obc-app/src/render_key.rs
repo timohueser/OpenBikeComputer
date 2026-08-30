@@ -336,6 +336,7 @@ impl App {
                     settings: self.settings(),
                     recording: self.recorder.recording(),
                     weather_request_outstanding: self.weather.request_outstanding(),
+                    nav_profiles: self.nav_profiles(),
                 });
                 Some(DrawerKey { page, selected, staged, committed, enabled })
             }
@@ -811,6 +812,56 @@ mod tests {
         app.state.cam_lon += 5_000;
         app.navigator.route_state_mut().progress_m += 900;
         assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
+    }
+
+    /// …and the twin on the **route-plan** sheet (#1515 D4d), where the moving fact comes from
+    /// outside the app entirely: the host loading a map changes how many routing profiles exist,
+    /// and therefore whether the sheet's one row is live and which profile it marks.
+    ///
+    /// The confirm card under it is `RenderKeyKind::Static`, so there is no base fact in the key to
+    /// begin with; the whole question is that the two things the sheet *does* draw — `enabled` and
+    /// `committed` — still move when a `set_nav_profiles` lands under it, and that the close is one
+    /// invalidation.
+    #[test]
+    fn a_map_load_under_the_sheet_moves_the_row_and_nothing_else() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+        let _ = app.ui.stack.push(Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None)));
+        assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
+
+        // No map yet: the row is inert, and the frame holds no base fact of any kind.
+        let inert = app.render_key();
+        assert_eq!(inert.drawer.map(|d| d.enabled), Some(0), "with no map the row has no choice to offer");
+        assert!(inert.map.is_none() && inert.home.is_none() && inert.weather.is_none());
+
+        // The host loads a map under the open sheet — through the real mirror, from a real parsed
+        // §8.6 table. That is a pixel the *sheet* draws.
+        let bytes = crate::harness::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+        app.set_nav_profiles(tables.nav_profiles());
+        let live = app.render_key();
+        assert_ne!(live, inert, "the row went live — the sheet must redraw");
+        assert_eq!(live.drawer.map(|d| d.enabled), Some(1));
+
+        // The committed mark is the other half: a stale index resolved to profile 0 while the map
+        // was empty and resolves to itself now, which moves `committed` on its own.
+        app.set_settings(crate::settings::Settings { bike_profile_idx: 2, ..Default::default() });
+        let marked = app.render_key();
+        assert_ne!(marked, live, "the tick moved to the profile the router will use");
+        assert_eq!(marked.drawer.map(|d| d.committed), Some(2));
+
+        // …and the base under the sheet is still nothing at all.
+        let quiet = app.render_key();
+        app.state.cam_lon += 5_000;
+        app.state.device.battery_pct = 9;
+        assert_eq!(app.render_key(), quiet, "a moving base under the route-plan sheet asks for no repaint");
+
+        // The close is exactly one invalidation.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, quiet);
+        assert!(uncovered.drawer.is_none(), "the sheet is gone from the key");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
     /// The two sheets are **different frames**: the shape carries which drawer is up, so swapping

@@ -97,9 +97,9 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
-    FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
-    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen,
+    AboutScreen, AddFieldScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
+    LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
+    StatFieldsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -229,9 +229,10 @@ pub struct Ctx<'a> {
     /// level lists these above the unfiled routes and its long-press → confirm dialog cascade-deletes
     /// one; every other screen leaves it untouched.
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen cycles
-    /// [`Settings::bike_profile_idx`](crate::Settings) within [`NavProfiles::len`](crate::NavProfiles).
-    /// Empty before a map load / on a router-less image (the setting then cycles nowhere, inert).
+    /// The loaded map's routing-profile names (routing-v2 N5) — the route-plan sheet's bike-type row
+    /// edits [`Settings::bike_profile_idx`](crate::Settings) within
+    /// [`NavProfiles::len`](crate::NavProfiles). Empty before a map load / on a router-less image,
+    /// where the row is inert because there is no choice to offer.
     pub nav_profiles: &'a crate::NavProfiles,
     /// The App-owned POI-list snapshot, **read-only** here. The POI list's `Gesture::Press` reads
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
@@ -278,6 +279,7 @@ impl Ctx<'_> {
             settings: self.settings,
             recording: self.recorder.recording(),
             weather_request_outstanding: self.weather.request_outstanding(),
+            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -390,10 +392,10 @@ pub struct Render<'a> {
     /// its folder rows above the unfiled routes and, scoped to one trip, its member routes' stage
     /// list; every other screen leaves it untouched.
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen draws
-    /// the selected profile's name (a stale index renders profile 0's — the router's fallback) and the created-route
-    /// overview labels itself with it. Resident in the App because these frames draw without a
-    /// `Reader` on the board.
+    /// The loaded map's routing-profile names (routing-v2 N5) — the route-plan sheet's editor draws
+    /// them as its choices (a stale index resolves to profile 0's — the router's fallback) and the
+    /// created-route overview labels itself with one. Resident in the App because these frames draw
+    /// without a `Reader` on the board.
     pub nav_profiles: &'a crate::NavProfiles,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
@@ -548,6 +550,7 @@ impl Render<'_> {
             settings: self.settings,
             recording: self.recording,
             weather_request_outstanding: self.weather_request_outstanding,
+            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -1170,14 +1173,11 @@ screens! {
     /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
     WeatherAlert(WeatherAlertScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
-    /// The Ride settings screen: routing profile + the riding stats grid (page cycle, fields, climb,
-    /// waypoints) + the synced-ride retention ring. The one settings screen that scrolls (6 rows).
+    /// The Ride settings screen: the riding stats grid (fields, page cycle, climb, waypoints) + the
+    /// synced-ride retention ring. The one settings screen that scrolls (5 rows).
     Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
-    /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
-    /// from the loaded map (routing-v2 N5, epic #533).
-    BikeType(BikeTypeScreen) => Caps::settings(),
     StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
     AddField(AddFieldScreen) => Caps::settings(),
     /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
@@ -1311,6 +1311,11 @@ impl Screen {
             // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
             // scheduled *Interval*. The pushed alert card is `Caps::modal()` and declares nothing.
             Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_) => Some(&context_drawer::WEATHER),
+            // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
+            // *Create route* row records the request the host plans with. Not `NavPlanning` (the
+            // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
+            // promises the profile the route was planned *under*).
+            Screen::NavConfirm(_) => Some(&context_drawer::ROUTE_PLAN),
             _ => None,
         }
     }

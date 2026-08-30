@@ -152,9 +152,9 @@ fn map_turn_saturates_at_min_zoom() {
 }
 
 /// **Every riding view declares a context, the Up-ahead context is the timeline's, the weather
-/// context is the three weather surfaces', and nothing else declares anything** (#1515
-/// D3/D4a/D4b/D4c). It is the one declaration a screen makes; everything the sheet then does is
-/// the generic drawer's.
+/// context is the three weather surfaces', the route-plan context is the create-route confirm
+/// card's, and nothing else declares anything** (#1515 D3/D4a-d). It is the one declaration a
+/// screen makes; everything the sheet then does is the generic drawer's.
 #[test]
 fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     let declared = |s: &Screen| s.context().is_some();
@@ -188,6 +188,20 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         0,
         false
     ))));
+    // D4d's addition, and it is the **one** screen of the create-route flow that declares
+    // anything: the card whose next press consumes the routing profile.
+    let confirm = || Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None));
+    assert!(declared(&confirm()));
+    assert!(core::ptr::eq(
+        confirm().context().expect("the confirm card declares a context"),
+        &crate::screen::context_drawer::ROUTE_PLAN
+    ));
+    assert_eq!(confirm().context().map(|m| m.rows.len()), Some(1), "one row: there is no second route option");
+    // The rest of the flow declares nothing. `NavPlanning` because the planner already captured the
+    // profile; `RouteOverview` because its BIKE TYPE row promises the profile the route was planned
+    // *under* (the POI browser is covered below, with the other families).
+    assert!(!declared(&Screen::NavPlanning(crate::screen::NavPlanningScreen::new("Fontaine"))));
+    assert!(!declared(&Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(0, None))));
     // …and a representative of every other family declares nothing, so the chord does nothing.
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
@@ -1192,44 +1206,63 @@ fn pan_back_exits_and_recenters() {
 }
 
 // The Bike-type setting (routing-v2 N5, #538): the whole-App loop — profiles mirrored from a real
-// parsed map, the setting cycled by gesture, the debounced save fired on leaving the subtree, and
-// the persisted byte surviving a simulated reboot through the shared codec both stores write.
+// parsed map, the setting edited by gesture on the route-plan sheet (#1515 D4d), the save armed,
+// and the persisted byte surviving a simulated reboot through the shared codec both stores write.
 
-/// Cycle the Bike type on a 4-profile map, leave Settings (the save cue fires), then "reboot":
-/// encode → decode → a fresh App adopts the blob — the selected index survives. The store side is
-/// a trivial file/RRAM write of exactly these bytes, so the codec round-trip *is* the reboot.
+/// Pick the bike type on a 4-profile map from the **create-route sheet** — the only home it has
+/// since #1515 D4d — then "reboot": encode → decode → a fresh App adopts the blob and the selected
+/// index survives. The store side is a trivial file/RRAM write of exactly these bytes, so the codec
+/// round-trip *is* the reboot.
+///
+/// The save half **inverts** what this test used to assert. The deleted screen lived inside the
+/// settings subtree, so its edit was held until the rider climbed out; a drawer is `Caps::overlay()`
+/// and `top_is_settings()` is false over it, so the commit arms the save on its own pass.
 #[test]
-fn bike_type_cycles_and_persists_across_reboot() {
+fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     let bytes = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).expect("valid fixture");
 
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     app.test_mount_store();
-    // [Home]
     app.set_nav_profiles(tables.nav_profiles()); // the host's map-load mirror
     assert_eq!(app.nav_profiles().len(), 4, "all four §8.6 names resident");
     assert_eq!(app.nav_profiles().name(2), Some("MTB"));
 
-    // Home → Menu → Settings → Ride → the Bike type row (the first row of the Ride group).
-    app.apply_gesture(Gesture::BackHold); // → Menu
-    app.apply_gesture(Gesture::Step(-1)); // compass: one ccw step to Settings
-    app.apply_gesture(Gesture::Press); // → Settings list (Ride is the first row)
-    app.apply_gesture(Gesture::Press); // → Ride screen (Bike type is the first row)
-    app.apply_gesture(Gesture::Press); // → Bike type screen
-    assert!(matches!(app.top_screen(), crate::Screen::BikeType(_)), "navigated to the Bike type screen");
+    // The confirm card the rider would reach from a POI detail, seeded directly: the POI browse
+    // that gets there needs a fix, a corridor snapshot and a queried map, none of which this test
+    // is about.
+    app.ui.stack.truncate(1); // [Home]
+    let _ = app.ui.stack.push(crate::Screen::NavConfirm(crate::screen::NavConfirmScreen::new(
+        (7_420_000, 43_735_000),
+        "Fontaine",
+        None,
+    )));
 
-    // Two steps: Road → Gravel → MTB.
-    app.apply_gesture(Gesture::Step(1));
-    app.apply_gesture(Gesture::Step(1));
-    assert_eq!(app.settings().bike_profile_idx, 2, "two steps from Road land on MTB");
+    // A page slide owns the sheet's input while it runs, so each gesture waits for the last one's
+    // slide to land — on a clock that only ever moves forward, which the passes below share.
+    let mut ms = 0;
+    let owes_a_save = |app: &mut App, ms: u32| quiet_pass(app, ms).effects.settings.take().is_some();
 
-    // The save is debounced to leaving the settings subtree (Bike type → Ride → Settings list → Menu).
-    assert!(!settings_dirty(&mut app), "no save cue while still inside Settings");
-    app.apply_gesture(Gesture::Back); // Bike type → Ride
-    app.apply_gesture(Gesture::Back); // Ride → Settings list
-    app.apply_gesture(Gesture::Back); // → Menu (out of the subtree)
-    assert!(settings_dirty(&mut app), "leaving Settings fires the debounced save");
+    assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
+    assert!(matches!(app.top_screen(), crate::Screen::ContextDrawer(_)), "the sheet, over the card");
+    assert!(!owes_a_save(&mut app, ms), "opening a sheet changes no setting");
+
+    // Row 0 is the only row: press into its editor, browse two profiles on, commit.
+    app.apply_gesture(Gesture::Press);
+    ms += 400; // let the page slide land
+    app.advance_animations(obc_ports::InputClock(ms));
+    app.apply_gesture(Gesture::Step(2)); // Road → Gravel → MTB
+    assert_eq!(app.settings().bike_profile_idx, 0, "browsing commits nothing");
+    app.apply_gesture(Gesture::Press);
+    ms += 400;
+    app.advance_animations(obc_ports::InputClock(ms));
+    assert_eq!(app.settings().bike_profile_idx, 2, "Select wrote the profile the editor was on");
+    assert!(owes_a_save(&mut app, ms), "a drawer is not a settings subtree: the save is armed now");
+
+    // Back closes the sheet onto the card the rider squeezed from — not a navigation.
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), crate::Screen::NavConfirm(_)), "the card is still under it");
 
     // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
     let blob = crate::settings::encode(app.settings());
@@ -1447,8 +1480,7 @@ fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
         // pushing a fresh Menu, so it is asserted here instead of worked around.
         app.apply_gesture(Gesture::Press); // → the Settings list (Ride first)
         assert!(matches!(app.top_screen(), Screen::Settings(_)), "lap {lap}: the Menu kept its station");
-        app.apply_gesture(Gesture::Press); // → Ride
-        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // → Ride (Data fields is the first row)
         app.apply_gesture(Gesture::Press); // → Fields
         assert!(matches!(app.top_screen(), Screen::StatFields(_)), "lap {lap} reached the fields editor");
         deepest = deepest.max(app.ui.stack.len());

@@ -27,6 +27,10 @@
 //! home for a contextual setting" affordable: a context joins by naming a table, not by growing a
 //! page.
 //!
+//! A binding's choices need not be a fixed list: [`ContextValue::BikeProfile`] (#1515 D4d) counts
+//! and names the **loaded map's** §8.6 routing profiles, so how many choices it has and whether its
+//! row is live at all are read off [`ContextFacts`] like everything else a row draws.
+//!
 //! An **act** tells a domain something and leaves the sheet. It has to leave: a sheet's own frame
 //! shadows every base fact (see [`ContextDrawerScreen::key`]), so a cue raised from an open sheet
 //! could not be seen until it closed anyway.
@@ -126,6 +130,9 @@ pub(crate) struct ContextFacts<'a> {
     /// A weather request is outstanding — in flight, or asked for and not yet sent. The *Refresh
     /// now* row's one predicate ([`WeatherDomain::request_outstanding`](crate::weather::WeatherDomain::request_outstanding)).
     pub weather_request_outstanding: bool,
+    /// The loaded map's routing-profile names — how many choices the bike-type binding has, and
+    /// therefore whether its row is live at all. Read, never written.
+    pub nav_profiles: &'a crate::NavProfiles,
 }
 
 /// A typed value a context row edits in place of opening a screen. The binding owns **where the
@@ -154,26 +161,43 @@ pub enum ContextValue {
     /// deletes (#1515 D4b). Off / 15 / 30 / 60 / 120 minutes, default 30; the WX8 due scheduler
     /// re-reads the field at its next evaluation, so a commit needs no wake edge of its own.
     WeatherInterval,
+    /// The routing profile the on-device planner weights edges by —
+    /// [`Settings::bike_profile_idx`](crate::Settings), whose whole settings *screen* this slice
+    /// deletes (#1515 D4d). The **first binding whose choices are map data**: they are the loaded
+    /// map's §8.6 profile names ([`NavProfiles`](crate::NavProfiles)), so a custom web-builder
+    /// profile appears without a hardcoded list — and a map that offers no choice makes the row
+    /// inert rather than a control that walks a ring of one.
+    BikeProfile,
 }
 
 impl ContextValue {
-    /// How many choices this binding offers.
-    fn count(self) -> u8 {
+    /// How many choices this binding offers. Takes the facts because a binding's choices may be
+    /// map data rather than a compiled-in list.
+    fn count(self, f: &ContextFacts) -> u8 {
         match self {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
             ContextValue::WeatherInterval => WeatherRefresh::COUNT as u8,
+            // At most `NAV_MAX_PROFILES` (8), which is also the notch strip's own ceiling.
+            ContextValue::BikeProfile => f.nav_profiles.len() as u8,
         }
     }
 
-    /// Whether the row that binds this may be pressed. **Every binding always accepts**: a filter is
-    /// as meaningful over an empty list as over a full one (it is how the rider finds out the list
-    /// is empty *of that kind*), and a source scope or a refresh cadence is a preference no ride
-    /// state can invalidate. Stated as a predicate rather than left implicit so the one-predicate
-    /// rule has something to hold: the row is live exactly when the binding accepts.
-    fn accepts(self, _f: &ContextFacts) -> bool {
-        true
+    /// Whether the row that binds this may be pressed. Stated as a predicate rather than left
+    /// implicit so the one-predicate rule has something to hold: the row is live exactly when the
+    /// binding accepts.
+    ///
+    /// Three of the four always accept — a filter is as meaningful over an empty list as over a
+    /// full one (it is how the rider finds out the list is empty *of that kind*), and a source
+    /// scope or a refresh cadence is a preference no ride state can invalidate. The bike profile
+    /// needs a map that offers a choice: this is the deleted Bike-type screen's own `count > 1`
+    /// guard, which it expressed as a silent no-op on an empty-state page.
+    fn accepts(self, f: &ContextFacts) -> bool {
+        match self {
+            ContextValue::UpAheadFilter | ContextValue::UpAheadSource | ContextValue::WeatherInterval => true,
+            ContextValue::BikeProfile => f.nav_profiles.len() > 1,
+        }
     }
 
     /// The ordinal currently committed — where the editor opens, and the choice it keeps marked.
@@ -182,6 +206,10 @@ impl ContextValue {
             ContextValue::UpAheadFilter => filter_choice(f.state.up_ahead_filter),
             ContextValue::UpAheadSource => f.settings.up_ahead_source as u8,
             ContextValue::WeatherInterval => f.settings.weather_refresh as u8,
+            // The **effective** index, not the stored one: a stale index against a smaller map
+            // opens on profile 0 and marks profile 0, which is the profile the router will actually
+            // use (routing-v2 N3). The #538 truthful-label rule.
+            ContextValue::BikeProfile => f.nav_profiles.effective(f.settings.bike_profile_idx),
         }
     }
 
@@ -195,11 +223,16 @@ impl ContextValue {
             ContextValue::WeatherInterval => {
                 cx.settings.weather_refresh = WeatherRefresh::ALL[(ordinal as usize).min(WeatherRefresh::COUNT - 1)]
             }
+            // The ordinal came from the editor's ring, which is `count` long, so it is already an
+            // index the loaded map has.
+            ContextValue::BikeProfile => cx.settings.bike_profile_idx = ordinal,
         }
     }
 
-    /// What `ordinal` is called, in the rider's language.
-    fn choice_label(self, ordinal: u8, rx: &Render) -> &'static str {
+    /// What `ordinal` is called, in the rider's language — or, for the bike profile, in the map's
+    /// own words. The borrow is `rx`'s because those names live in
+    /// [`NavProfiles`](crate::NavProfiles) rather than in `.rodata`; every catalog arm coerces.
+    fn choice_label<'a>(self, ordinal: u8, rx: &'a Render) -> &'a str {
         match self {
             ContextValue::UpAheadFilter => match choice_category(ordinal) {
                 Some(cat) => rx.t(super::poi_menu::category_msg(cat)),
@@ -211,6 +244,10 @@ impl ContextValue {
             ContextValue::WeatherInterval => {
                 WeatherRefresh::ALL[(ordinal as usize).min(WeatherRefresh::COUNT - 1)].name(rx.settings.language)
             }
+            // The deleted screen's own name resolution. `write_label`'s generic `Profile N`
+            // fallback is deliberately not used: it exists for an empty table, and an empty table
+            // makes this row inert, so it has no reachable case in the sheet.
+            ContextValue::BikeProfile => rx.nav_profiles.name(ordinal).unwrap_or(""),
         }
     }
 
@@ -219,7 +256,9 @@ impl ContextValue {
     fn choice_icon(self, ordinal: u8) -> Option<PoiCategory> {
         match self {
             ContextValue::UpAheadFilter => choice_category(ordinal),
-            ContextValue::UpAheadSource | ContextValue::WeatherInterval => None,
+            // The hero bike sprite does not follow the setting into the sheet: `bike_icons` draws a
+            // 200 × 120 px art asset and the editor is 148 px tall. The names are the choice.
+            ContextValue::UpAheadSource | ContextValue::WeatherInterval | ContextValue::BikeProfile => None,
         }
     }
 }
@@ -461,6 +500,14 @@ pub static WEATHER: ContextMenu = ContextMenu {
     ],
 };
 
+/// The **route-plan context** (#1515 D4d): the profile the on-device planner will weight edges by,
+/// offered on the card that is about to ask for a plan — and the only home it has. One row, because
+/// there is one thing to say: `NavPlanner::new` takes the profile and nothing else, so a second
+/// "route options" row would be a label bound to nothing.
+pub static ROUTE_PLAN: ContextMenu = ContextMenu {
+    rows: &[ContextRow { label: Msg::RouteContextBikeType, action: ContextAction::Edit(ContextValue::BikeProfile) }],
+};
+
 // ---- The generic drawer ------------------------------------------------------------------------
 
 /// The sheet's two pages. The value being edited is the selected row's, so the page needs no
@@ -652,7 +699,8 @@ impl ContextDrawerScreen {
             // brightness clamps instead — a value axis has ends, and holding Up must not wrap the
             // panel from brightest to dimmest.)
             Gesture::Step(n) => {
-                self.staged = super::vocab::list::step_selection(self.staged as usize, n, value.count() as usize) as u8;
+                let count = value.count(&cx.context_facts()) as usize;
+                self.staged = super::vocab::list::step_selection(self.staged as usize, n, count) as u8;
                 Transition::None
             }
             Gesture::Press => {
@@ -884,8 +932,9 @@ impl ContextDrawerScreen {
         cv.text(choice, Point::new(name_x, top + 64), Font::Body, TextAlign::Left, palette::INK);
 
         let (x0, x1, y) = (x + 24, x + rx.w - 24, top + 112);
-        let count = value.count();
-        let committed = value.committed(&rx.context_facts());
+        let facts = rx.context_facts();
+        let count = value.count(&facts);
+        let committed = value.committed(&facts);
         cv.round(rect(x0, y - 2, x1 - x0, 5), 2, palette::PARCHMENT_SHADE);
         for i in 0..count {
             let px = sheet::notch_x(x0, x1, i, count);
@@ -922,6 +971,9 @@ mod tests {
         /// The weather domain the sheet's Refresh row talks to — the real one, so "exactly one
         /// request" is asserted against the coalescing the domain actually does.
         weather: crate::weather::WeatherDomain,
+        /// The loaded map's §8.6 profile names — the bike-type binding's whole choice list, and
+        /// the predicate its row is live by. Four by default, the fixture maps' own set.
+        nav_profiles: crate::NavProfiles,
         now_ms: u32,
     }
 
@@ -945,6 +997,7 @@ mod tests {
                 settings: Settings::default(),
                 recorder,
                 weather: crate::weather::WeatherDomain::new(),
+                nav_profiles: crate::NavProfiles::from_names(&["Road", "Gravel", "MTB", "Touring"]),
                 now_ms: 1_000,
             }
         }
@@ -957,6 +1010,7 @@ mod tests {
                     recorder: &mut self.recorder,
                     navigator: &mut self.navigator,
                     weather: &mut self.weather,
+                    nav_profiles: &self.nav_profiles,
                     now_ms,
                     ..test_ctx(&mut self.state, &mut self.activity, &mut self.settings)
                 },
@@ -973,6 +1027,7 @@ mod tests {
                 settings: &self.settings,
                 recording: self.recorder.recording(),
                 weather_request_outstanding: self.weather.request_outstanding(),
+                nav_profiles: &self.nav_profiles,
             }
         }
     }
@@ -1138,8 +1193,8 @@ mod tests {
         // The derivation itself, so a geometry change is read here rather than asserted twice.
         assert_eq!(MAX_ROWS, 5, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
 
-        // Five tables today; each remaining D4 slice adds its own to this list.
-        let declared: &[&ContextMenu] = &[&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &WEATHER];
+        // Every table the tree declares; each D4 slice added its own to this list.
+        let declared: &[&ContextMenu] = &[&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &WEATHER, &ROUTE_PLAN];
         for menu in declared {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             for page in [Page::Root, Page::Editor] {
@@ -1259,9 +1314,10 @@ mod tests {
         w.press(&mut d, Gesture::Step(1));
         assert_eq!(d.staged, 0, "…and forward off the last wraps home");
 
-        assert_eq!(ContextValue::UpAheadFilter.count(), 7);
-        assert_eq!(ContextValue::UpAheadSource.count(), UpAheadSource::COUNT as u8);
-        for ordinal in 0..ContextValue::UpAheadFilter.count() {
+        let facts = w.facts();
+        assert_eq!(ContextValue::UpAheadFilter.count(&facts), 7);
+        assert_eq!(ContextValue::UpAheadSource.count(&facts), UpAheadSource::COUNT as u8);
+        for ordinal in 0..ContextValue::UpAheadFilter.count(&facts) {
             assert_eq!(filter_choice(choice_filter(ordinal)), ordinal, "ordinal {ordinal} round-trips");
         }
         assert_eq!(choice_filter(0), PoiCategorySet::ALL, "ordinal 0 is Everything");
@@ -1269,21 +1325,31 @@ mod tests {
 
     /// **The one-predicate rule for value rows.** A binding that always accepts must give a row
     /// that is always live: a browse map with no route, no graph and no ride still lets the rider
-    /// see and change what the timeline is scoped to.
+    /// see and change what the timeline is scoped to. And a binding that *refuses* must give a row
+    /// that is recessed — [`ContextValue::BikeProfile`] is the first that ever answers `false`, so
+    /// this is where the rule is checked in both directions rather than in one.
     #[test]
     fn a_value_row_is_live_exactly_where_its_binding_accepts() {
         let mut w = World::riding();
         w.navigator.set_active_route(None);
         w.state.has_nav_graph = false;
         w.recorder.test_close();
+        w.nav_profiles = crate::NavProfiles::EMPTY; // …and no map, so the bike binding refuses
         let d = up_ahead_drawer();
         let facts = w.facts();
 
         assert_eq!(d.key(&facts).4, 0b11, "both value rows stay live on a bare browse map");
-        for row in UP_AHEAD.rows {
-            let ContextAction::Edit(v) = row.action else { panic!("the Up-ahead table is all value rows") };
-            assert_eq!(row.action.available(&facts), v.accepts(&facts), "the row reads the binding's own answer");
+        for menu in [&UP_AHEAD, &ROUTE_PLAN] {
+            for row in menu.rows {
+                let ContextAction::Edit(v) = row.action else { panic!("these tables are all value rows") };
+                assert_eq!(row.action.available(&facts), v.accepts(&facts), "the row reads the binding's own answer");
+            }
         }
+        assert_eq!(
+            ContextDrawerScreen::opening(&ROUTE_PLAN).key(&facts).4,
+            0,
+            "…and the one binding that refuses leaves its row out of the live mask"
+        );
 
         // And a press really does open the editor there, rather than drawing live and doing nothing.
         let mut d = up_ahead_drawer();
@@ -1396,8 +1462,14 @@ mod tests {
     /// It also **pins the measurement the row design rests on** — that a label plus its longest
     /// choice does not fit one row — so a future geometry pass sees the number rather than the
     /// conclusion.
+    ///
+    /// **[`ContextValue::BikeProfile`]'s choices are not catalog copy** (#1515 D4d): they are the
+    /// loaded map's §8.6 names, so the check on them is the format's own cap rather than four
+    /// columns of a string. That cap turns out to be exactly the widest catalog choice, which is
+    /// why the two numbers below do not move for it.
     #[test]
     fn every_label_and_choice_fits_the_sheet_in_every_language() {
+        use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
         // The draw's own geometry: the row area starts 14 px into the sheet and is `w - 36` wide;
@@ -1410,9 +1482,11 @@ mod tests {
         // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
         // sheet's own right inset is 12.
         let choice_room = W - 48 - 12;
+        let w = World::riding();
+        let facts = w.facts();
         let (mut worst_row, mut worst_choice) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in [&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &WEATHER] {
+            for menu in [&RIDE, &MAP, &MAP_DISPLAY, &UP_AHEAD, &WEATHER, &ROUTE_PLAN] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     let lw = text_width(label, Font::Body) as i32;
@@ -1422,7 +1496,11 @@ mod tests {
                     };
                     assert!(lw <= room, "{lang:?}: row label {label:?} ({lw} px) overruns {room} px");
                     let ContextAction::Edit(v) = row.action else { continue };
-                    for ordinal in 0..v.count() {
+                    // The map's names are not in the catalog; they are measured at their cap below.
+                    if v == ContextValue::BikeProfile {
+                        continue;
+                    }
+                    for ordinal in 0..v.count(&facts) {
                         let choice = choice_text(v, ordinal, lang);
                         let cw = text_width(choice, Font::Body) as i32;
                         assert!(cw <= choice_room, "{lang:?}: choice {choice:?} ({cw} px) overruns {choice_room} px");
@@ -1432,6 +1510,14 @@ mod tests {
                 }
             }
         }
+        // The bike binding's worst case is the §8.6 name field filled: 12 monospace `Body`
+        // characters. It fits the same line the catalog choices do — and it is *exactly* the widest
+        // of them, so neither number below moves for it. If it ever exceeds `choice_room`, either a
+        // font tier or the format's name cap changed, and that is a finding rather than a re-pin.
+        let widest_profile_name = NAV_PROFILE_NAME_LEN as i32 * Font::Body.char_width() as i32;
+        assert_eq!(widest_profile_name, 168, "12 §8.6 name bytes in Body, pinned");
+        assert!(widest_profile_name <= choice_room, "a full-length profile name overruns the editor line");
+
         // The widest choice on the editor line, and how little room is left over it. This is the
         // on-glass question the PR names, so the number is here rather than in prose.
         assert_eq!(worst_choice, 168, "de \"Campingplatz\" / \"Fahrradladen\" in Body, pinned");
@@ -1446,6 +1532,7 @@ mod tests {
     }
 
     /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.
+    /// [`ContextValue::BikeProfile`] has none — its choices are map data — so it is not a case here.
     fn choice_text(v: ContextValue, ordinal: u8, lang: Language) -> &'static str {
         match v {
             ContextValue::UpAheadFilter => match choice_category(ordinal) {
@@ -1454,6 +1541,7 @@ mod tests {
             },
             ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
             ContextValue::WeatherInterval => WeatherRefresh::ALL[ordinal as usize].name(lang),
+            ContextValue::BikeProfile => unreachable!("the map's own names are measured at their §8.6 cap"),
         }
     }
 
@@ -1517,7 +1605,7 @@ mod tests {
         assert_eq!(w.settings.weather_refresh, WeatherRefresh::Every30, "…and the field is untouched");
 
         // The whole ring is exactly the five named intervals, and the editor never leaves it.
-        assert_eq!(ContextValue::WeatherInterval.count(), WeatherRefresh::COUNT as u8);
+        assert_eq!(ContextValue::WeatherInterval.count(&w.facts()), WeatherRefresh::COUNT as u8);
         assert_eq!(WeatherRefresh::COUNT, 5);
     }
 
@@ -1598,5 +1686,82 @@ mod tests {
         }
         let last = MAP.rows[MAP.rows.len() - 1];
         assert_eq!(last.action, ContextAction::MapDisplay, "the fifth row is the door onto the display sheet");
+    }
+
+    // ---- D4d: the route-plan context ------------------------------------------------------------
+
+    fn route_plan_drawer() -> ContextDrawerScreen {
+        ContextDrawerScreen::opening(&ROUTE_PLAN)
+    }
+
+    /// **The bike-type row is live exactly where the loaded map offers a choice.** This is the
+    /// deleted Bike-type screen's own `count > 1` guard, restated as the binding's predicate: with
+    /// no map (a fresh boot, or a router-less `ble` image) and with a single-profile map the row is
+    /// out of the `enabled` mask and a press does nothing at all; from two profiles up it is live
+    /// and a press opens the editor.
+    ///
+    /// The mutant is an `accepts` that returns `true`: the row would draw live on a device with no
+    /// map and a press would open an editor over a ring of nothing.
+    #[test]
+    fn the_bike_type_row_is_live_exactly_where_a_map_offers_a_choice() {
+        for names in [&[][..], &["Road"][..]] {
+            let mut w = World::riding();
+            w.nav_profiles = crate::NavProfiles::from_names(names);
+            let mut d = route_plan_drawer();
+            assert_eq!(d.key(&w.facts()).4, 0, "{} profile(s): the row draws recessed", names.len());
+            assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "…and a press does nothing");
+            assert_eq!(d.page, Page::Root, "not even a page slide");
+        }
+
+        let mut w = World::riding(); // the fixture maps' four §8.6 profiles
+        let mut d = route_plan_drawer();
+        assert_eq!(d.key(&w.facts()).4, 1, "two or more profiles: the row is live");
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Editor, "…and a press opens its editor");
+        assert_eq!(ContextValue::BikeProfile.count(&w.facts()), 4, "the ring is the map's own name list");
+    }
+
+    /// **The editor opens on the *effective* profile and commits an index.** A stale stored index
+    /// against a smaller map opens on profile 0 and marks profile 0 — the profile the router will
+    /// actually route under (routing-v2 N3, the #538 truthful-label rule) — rather than on a
+    /// profile the map does not have. Staging writes nothing, Select writes
+    /// `Settings::bike_profile_idx`, Back out of a re-opened editor discards, and the key reports
+    /// the staged and the committed ordinal apart.
+    ///
+    /// The mutant is a `committed` that returns the stored index: the first assertion below would
+    /// open the editor on ordinal 7 of a four-profile ring.
+    #[test]
+    fn the_bike_type_editor_opens_on_the_effective_profile_and_commits_an_index() {
+        let mut w = World::riding();
+        w.settings.bike_profile_idx = 7; // stale: the map carries four
+        let mut d = route_plan_drawer();
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Editor);
+        assert_eq!(d.staged, 0, "a stale index opens on the profile the router falls back to");
+        assert_eq!(d.key(&w.facts()).3, 0, "…and marks that one, not the one stored");
+
+        w.press(&mut d, Gesture::Step(1)); // → Gravel
+        assert_eq!(w.settings.bike_profile_idx, 7, "staging commits nothing");
+        let (_, _, staged, committed, _) = d.key(&w.facts());
+        assert_eq!((staged, committed), (1, 0), "the key carries the browsed and the set profile apart");
+
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Root, "Select returns to the row table");
+        assert_eq!(w.settings.bike_profile_idx, 1, "…having written the settings field");
+
+        // Back out of a re-opened editor discards the staged choice.
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.staged, 1, "the editor re-opens on what is now committed");
+        w.press(&mut d, Gesture::Step(2)); // → Touring
+        w.press(&mut d, Gesture::Back);
+        assert_eq!(d.page, Page::Root, "Back closes the editor, not the sheet");
+        assert_eq!(w.settings.bike_profile_idx, 1, "…and the field is untouched");
+
+        // The ring wraps over exactly the map's profiles, and every ordinal names one of them.
+        w.press(&mut d, Gesture::Press);
+        w.press(&mut d, Gesture::Step(-1));
+        assert_eq!(d.staged, 0, "stepping back off Gravel lands on Road");
+        w.press(&mut d, Gesture::Step(-1));
+        assert_eq!(d.staged, 3, "…and off Road wraps to the last profile the map carries");
     }
 }

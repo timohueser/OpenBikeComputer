@@ -4771,9 +4771,9 @@ mod tests {
             ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
-            // → the Page-cycle row (index 2), open its stepper, +1 s (and leave it open — Back must
+            // → the Page-cycle row (index 1), open its stepper, +1 s (and leave it open — Back must
             // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(2), Gesture::Press, Gesture::Step(1)]),
+            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(1), Gesture::Press, Gesture::Step(1)]),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -4862,8 +4862,7 @@ mod tests {
         app.apply_gesture(Gesture::BackHold); // the global escape: Map → Menu (Push, ride caller kept)
         app.apply_gesture(Gesture::Step(-1)); // Routes → Settings
         app.apply_gesture(Gesture::Press); // Menu → Settings
-        app.apply_gesture(Gesture::Press); // Settings → Ride
-        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // Settings → Ride (Data fields is the first row)
         app.apply_gesture(Gesture::Press); // Ride → Fields
         let field_count = app.settings().stat_fields.len();
         app.apply_gesture(Gesture::Step(field_count as i32)); // first field → trailing Add tile
