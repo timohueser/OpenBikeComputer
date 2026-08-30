@@ -38,8 +38,8 @@ ALLOWED_SHARED_FIELDS = {"ble_enabled"}
 
 # The census floors. A slice that adds rows or drawer-written settings raises these; a parser that
 # went blind lowers them, which is the failure this guard could not otherwise report.
-MIN_ROW_LABELS = 6
-MIN_DRAWER_FIELDS = 3
+MIN_ROW_LABELS = 8
+MIN_DRAWER_FIELDS = 4
 
 # `cx.settings.<field> = …` — the one production write path a screen has into the persisted record.
 # `=(?!=)` so an equality test is not read as a write.

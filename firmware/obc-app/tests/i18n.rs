@@ -206,3 +206,46 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the filter editor rendered blank in {lang:?}");
     }
 }
+
+/// The **weather sheet's** own copy (#1515 D4b) is translated in all four columns, and both of its
+/// states render through each of them: the two-row table over the dashboard, and the nested Interval
+/// editor whose five choices are the `[weather_refresh]` names the deleted settings screen used to
+/// draw.
+#[test]
+fn the_weather_sheet_is_localized_and_every_state_renders() {
+    // Both row labels differ from English everywhere — unlike D4a's *Filter* / *Sources*, which are
+    // words their own languages already spell that way, these join the net rather than excepting
+    // themselves from it.
+    for (key, msg) in [
+        ("weather_context.refresh_now", Msg::WeatherContextRefreshNow),
+        ("weather_context.interval", Msg::WeatherContextInterval),
+    ] {
+        for lang in [Language::De, Language::Fr, Language::Es] {
+            assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
+        }
+    }
+
+    let bytes = build_min_obcm(0xF800);
+    for lang in LANGS {
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+        // Home → Menu → the Weather station → the dashboard.
+        app.apply_gesture(Gesture::Press);
+        for _ in 0..4 {
+            app.apply_gesture(Gesture::Step(1));
+        }
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Weather(_)));
+
+        assert!(app.apply_chord(obc_app::Chord::Context), "the dashboard declares a context");
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the weather sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Step(1)); // → the Interval row
+        app.apply_gesture(Gesture::Press); // → its editor
+        app.advance_animations(InputClock(400)); // let the page slide land
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the interval editor rendered blank in {lang:?}");
+    }
+}

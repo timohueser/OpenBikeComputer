@@ -19,7 +19,7 @@
 #
 #   1. It states its destination with `--expect-screen NAME` (the `screens!` table's own
 #      variant string). A scripted recipe is a hostage to the menus it walks: insert one
-#      station and `B u p d d d d d p` quietly snapshots a different screen under the old
+#      station and `B u p d d d d p` quietly snapshots a different screen under the old
 #      filename. Stating it turns that into a failed sweep. Add the flag to every new
 #      command; if you don't know the name, guess, and the error message names the
 #      screen the script actually reached.
@@ -28,9 +28,10 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 60 of the 61 screens have at least one frame here.
-# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count is unchanged; D4a moved the
-# Up-ahead filter off the list and onto that same `ContextDrawer`, adding frames rather than rows.)
+# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
+# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count was unchanged; D4a moved the
+# Up-ahead filter onto that same `ContextDrawer`, adding frames rather than rows; D4b deleted the
+# Weather settings screen outright, so both counts drop by one.)
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -296,59 +297,60 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --script "B u p d p"       --expect-screen Display --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B u p d p d d p" --expect-screen Display --png "$OUT/display-idle-return.png"
 
-# Weather (group 2) is the refresh-interval picker; it is shot with the rest of the weather
-# surfaces further down (`weather-settings.png`), which reach it from the Menu's Weather station.
+# The Weather group is **gone** (#1515 D4b): the refresh interval is a row of the weather screens'
+# own context sheet now — see `weather-context.png` below, its only home — and every recipe below
+# lost one `d` because the list is five rows.
 #
-# Connections (group 3): the two radios in one drawer — Phone (Bluetooth) then Sensors.
-"$SIM" "$MAP" --boot --script "B u p d d d p"  --expect-screen Connections --png "$OUT/connections.png"
+# Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
+"$SIM" "$MAP" --boot --script "B u p d d p"  --expect-screen Connections --png "$OUT/connections.png"
 # Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
 # the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
 # at the bottom anchor), the row selected (a step puts the shaded guarded base on it), the guarded
 # hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
 # Forget row isn't drawn at all (the round-1 only-when-possible grammar).
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p d"   --expect-screen Bluetooth --png "$OUT/bluetooth-forget-selected.png"
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p d H" --expect-screen Bluetooth --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot              --script "B u p d d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth-unpaired.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p d"   --expect-screen Bluetooth --png "$OUT/bluetooth-forget-selected.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p d H" --expect-screen Bluetooth --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B u p d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth-unpaired.png"
 # Sensors screen (BLE sensors epic #707, SE7) — the group's second row, under Phone. `--sensors screen`
 # drives the sim's fake central manager: the three-row list (Heart rate Connected · 78 %, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
 # list one press deeper (the HR-filtered discovered sensors, name/address + RSSI). A third run with no
 # fake manager pins the empty `Searching...` state while the scan finds nothing.
-"$SIM" "$MAP" --boot --sensors screen --script "B u p d d d p d p"   --expect-screen Sensors --png "$OUT/sensors.png"
-"$SIM" "$MAP" --boot --sensors screen --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scan.png"
-"$SIM" "$MAP" --boot                  --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scanning.png"
+"$SIM" "$MAP" --boot --sensors screen --script "B u p d d p d p"   --expect-screen Sensors --png "$OUT/sensors.png"
+"$SIM" "$MAP" --boot --sensors screen --script "B u p d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scan.png"
+"$SIM" "$MAP" --boot                  --script "B u p d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scanning.png"
 
-# Power (group 4): the GPS fix-interval stepper + the power-saver toggle.
-"$SIM" "$MAP" --boot --script "B u p d d d d p" --expect-screen Power --png "$OUT/power.png"
+# Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
+"$SIM" "$MAP" --boot --script "B u p d d d p" --expect-screen Power --png "$OUT/power.png"
 
-# System (group 5) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
+# System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
 # menu itself first, then each row's page.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p"     --expect-screen System --png "$OUT/system.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d p" --expect-screen DateTime --png "$OUT/datetime.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p"     --expect-screen System --png "$OUT/system.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d p" --expect-screen DateTime --png "$OUT/datetime.png"
 # The Language screen (epic #602): the endonym value picker. The default (English), then two
 # steps cycling to Français — pinning the ç glyph the Latin font (#601) adds.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p"     --expect-screen Language --png "$OUT/language.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p d d" --expect-screen Language --png "$OUT/language-french.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p"     --expect-screen Language --png "$OUT/language.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p d d" --expect-screen Language --png "$OUT/language-french.png"
 # The About page (#1149) — System row 4, above Reset: the read-only credits page.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d d p" --expect-screen About --png "$OUT/about.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d p" --expect-screen About --png "$OUT/about.png"
 # Factory Reset is the group's last row: five steps in, press to open, arm (press), then a
 # partial-hold to fill the bar. (Four steps stopped on About until this recipe was corrected.)
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d d d p p H" --expect-screen Reset --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d d p p H" --expect-screen Reset --png "$OUT/reset-hold.png"
 # The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload door ("Install update from
 # card") over the read-only device-info ledger.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware.png"
 # The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
 # is live), out to the Menu with the global escape (`B`), then Settings -> System -> Firmware. The
 # row loses its amber box and shows the "Recording" cue.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 \
-    --script "p p p p B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
+    --script "p p p p B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
 # The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu scan/error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
 # real obc-dfu scan). --dfu progress then presses Install so the "Preparing update..." spinner shows.
-DFU_PRE="B u p d d d d d p d d d p p"
+DFU_PRE="B u p d d d d p d d d p p"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --expect-screen DfuCheck --png "$OUT/dfu-check.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu scan=normal --expect-screen DfuConfirm --png "$OUT/dfu-confirm.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu scan=same   --expect-screen DfuConfirm --png "$OUT/dfu-confirm-same.png"
@@ -499,14 +501,29 @@ WXNAV="p d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-hourly-only.png"
 "$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-zoom-clamped.png"
-# The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
+# The alert card (locked VIEW RAIN MAP + DISMISS).
 # The pushed card is the *presentation* seam, so the bundle under it must not alert on its own:
 # with the engine live on every host (#1549) a `demo:storm` bundle fires its own card and updates
 # this one's minutes in place, which is the seam working, not the seam being tested. A dry bundle
 # leaves `--weather-alert` the only writer — byte-identical, because the card is full-screen.
 "$SIM" "$MAP" --boot --weather demo:dry --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --expect-screen WeatherAlert --png "$OUT/weather-alert-rain.png"
-"$SIM" "$MAP" --boot --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings.png"
+# The weather context sheet (#1515 D4b) — the only home either control has. `$WXNAV C w` squeezes
+# it up over the dashboard and lets the open land: two rows, Refresh now and Interval.
+#
+# `--ble connected+paired` is what makes the **Refresh row live**, and it is the honest reason
+# rather than a decoration. Opening the dashboard from the Menu raises the entry refresh; with no
+# link that request can never go out, so it stays outstanding and the row draws recessed for the
+# rest of the session. A link lets the request leave, the headless companion answers it, and the
+# row is free again — which is the state a rider with a phone is in.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context.png"
+# The honest inert state: with a fetch already running the Refresh row loses its chevron, draws in
+# the recessed ink and a press does nothing — the row is live exactly where its action can act.
+# The only difference from the frame above is that row and the title's UPDATING cue.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --weather-refreshing --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-refreshing.png"
+# The nested Interval editor, staged one notch off the committed 30 min — so the tick that marks
+# what the device is set to sits under a different notch from the knob.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor.png"
 # WX12 (#1197): the two-hour *ride* decision + engine-fired alerts. `stormahead`/`rainahead` are
 # stationary rings around the grid centre: parked at the centre the dashboard honestly reads DRY,
 # while `--weather-decide` samples the bundle **route-projected** (the app's own matched progress +
@@ -787,7 +804,7 @@ for lang in de fr es; do
     # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a), and a sixth step here
     # wrapped the cursor back to row 0 and quietly re-shot `ride-settings-$lang.png` under this name.
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
     # and the icon-gutter picker row have to fit whole.
@@ -798,7 +815,7 @@ for lang in de fr es; do
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
     # month glyphs against the active cell's amber border.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d p" --expect-screen DateTime --png "$OUT/datetime-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d p" --expect-screen DateTime --png "$OUT/datetime-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p b"    --expect-screen Statistics --png "$OUT/statistics-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
@@ -820,7 +837,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
-    "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
     # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
     "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d d w p p" --expect-screen RideStart --png "$OUT/ride-start-$lang.png"
@@ -833,8 +850,8 @@ for lang in de fr es; do
     # first-install confirm (the worst case for vertical fit — the two-row version table + the
     # no-undo note, which wraps to two Label lines), the progress spinner, an error card, and the
     # post-update toast — the text-heaviest DFU screens, to eyeball for clipped/overflowing copy.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p"         --expect-screen System --png "$OUT/system-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p"         --expect-screen System --png "$OUT/system-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu scan=first --expect-screen DfuConfirm --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu progress=normal --expect-screen DfuProgress --png "$OUT/dfu-progress-$lang.png"
     # The terminal installing card per-language — the wrapped Body headline (two lines in French)
@@ -850,7 +867,10 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --weather demo:dry --lang "$lang" --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-$lang.png"
   # WX12: the new STRONG WIND card copy, per language.
   "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --expect-screen WeatherAlert --png "$OUT/weather-alert-gust-$lang.png"
-  "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings-$lang.png"
+  # The weather sheet per language (#1515 D4b): its two row labels, then the Interval editor's
+  # title + the choice it stages. `Jetzt laden` is the width constraint on the row.
+  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor-$lang.png"
   # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
   # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
   # each of which has to fit the sheet's width in the longer translations.

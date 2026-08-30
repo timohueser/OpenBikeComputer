@@ -335,6 +335,7 @@ impl App {
                     navigation: self.navigator.route_state(),
                     settings: self.settings(),
                     recording: self.recorder.recording(),
+                    weather_request_outstanding: self.weather.request_outstanding(),
                 });
                 Some(DrawerKey { page, selected, staged, committed, enabled })
             }
@@ -672,6 +673,53 @@ mod tests {
         assert_ne!(app.render_key(), live, "the Detour row went recessed — the sheet must redraw");
         app.navigator.route_state_mut().off_route = false;
         assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
+    }
+
+    /// …the twin of the test above, on the **weather** sheet (#1515 D4b), where the row's live bit
+    /// is the one thing under a sheet that is allowed to move.
+    ///
+    /// The dashboard is the busiest base there is: a provider fetch can start, land and install new
+    /// data at any moment. Under the sheet none of that is in the frame's identity — except the
+    /// Refresh row's own cue, which is a pixel the *sheet* draws. So a fetch starting moves the key
+    /// through `enabled` and nothing else; new installed data moves nothing at all; and the close is
+    /// one invalidation.
+    #[test]
+    fn a_refresh_landing_under_the_sheet_moves_the_row_and_nothing_else() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.ui.stack.push(Screen::Weather(crate::screen::WeatherScreen::new()));
+        assert!(app.apply_chord(crate::input::Chord::Context), "the dashboard declares a context");
+
+        let live = app.render_key();
+        assert!(live.weather.is_none(), "no weather fact survives under the sheet");
+        assert_eq!(live.drawer.map(|d| d.enabled), Some(0b11), "both rows live over an idle domain");
+
+        // A provider-cadence fetch starts under the sheet: the row goes recessed, which is the one
+        // base-derived cue the sheet draws — and it moves *only* `enabled`.
+        app.weather.note_refreshing(true);
+        let fetching = app.render_key();
+        assert_ne!(fetching, live, "the Refresh row went recessed — the sheet must redraw");
+        assert_eq!(fetching.drawer.map(|d| d.enabled), Some(0b10), "…only the Refresh row");
+        assert_eq!(
+            RenderKey { drawer: live.drawer, ..fetching.clone() },
+            live,
+            "the drawer's own slot is the only difference"
+        );
+
+        // New data landing under the sheet is not a pixel the sheet draws, so it moves nothing.
+        let quiet = app.render_key();
+        app.weather.note_installed(crate::device_core::WeatherData {
+            data: crate::device_core::DataIdentity::new(7),
+            revision: crate::device_core::Revision::new(3),
+        });
+        app.state.cam_lon += 5_000;
+        assert_eq!(app.render_key(), quiet, "installed data under a sheet asks for no repaint");
+
+        // …and the close is exactly one invalidation, with the base back in the key.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, quiet);
+        assert!(uncovered.drawer.is_none() && uncovered.weather.is_some(), "the base is back");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
     /// **Closing the context sheet costs exactly one invalidation**, like closing the quick one.

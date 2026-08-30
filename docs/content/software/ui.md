@@ -303,7 +303,14 @@ A row can also hold a **value** in place of a screen. Such a row slides the shee
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
 and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
 becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
-two such rows, Filter and Sources, and they are the only place these two controls are set.
+two such rows, Filter and Sources; the three weather views declare one, Interval — the time between
+the weather requests the device makes on its own. These rows are the only place those controls are
+set.
+
+A row can also simply **act**. The weather views declare one such row, Refresh now. It asks for
+fresh weather and closes the sheet, because the answer and the cue for it are content of the screen
+below, which a sheet holds still. The row is drawn recessed while a request is already on its way,
+or while one waits for the phone to come back into range: a second request would change nothing.
 
 The drawer is the only home for a setting that belongs to one screen. A control that moves into a
 drawer is removed from the central settings tree in the same change. A check in the build fails if
