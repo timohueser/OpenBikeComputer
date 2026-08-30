@@ -9,7 +9,7 @@ use obc_render::{rect, text::Font, Surface};
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
-use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::vocab::rows::{row_cursor, row_rect, toggle_slider};
 use crate::screen::{Ctx, Render, Transition};
 use crate::settings::{FIX_INTERVAL_MAX, FIX_INTERVAL_MIN};
 use crate::Msg;
@@ -93,7 +93,7 @@ impl PowerScreen {
         let r1 = row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
         row_cursor(cv, r1, self.selected == POWER_SAVER, false);
         super::row_label(cv, r1, rx.t(Msg::PowerPowerSave), Some(rx.t(Msg::PowerPowerSaveSub)));
-        super::toggle_slider(cv, r1, rx.settings.power_saver);
+        toggle_slider(cv, r1, rx.settings.power_saver);
     }
 }
 

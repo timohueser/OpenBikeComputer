@@ -207,6 +207,42 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
     }
 }
 
+/// The **map sheet's** own copy (#1515 D4c) is translated in all four columns, and both of its
+/// states render through each of them: the five-row map table over the riding Map, and the
+/// three-switch display sheet its last row swaps in.
+#[test]
+fn the_map_sheet_is_localized_and_every_state_renders() {
+    // All four labels differ from English everywhere. The three switches lost the settings row's
+    // sub-caption line when they moved onto the sheet, so `fr`/`es` needed a one-line reading for
+    // "contours" — this is where a translation that quietly stayed English would show up.
+    for (key, msg) in [
+        ("map_context.map_display", Msg::MapContextMapDisplay),
+        ("map_context.clock", Msg::MapContextClock),
+        ("map_context.scale_bar", Msg::MapContextScaleBar),
+        ("map_context.contours", Msg::MapContextContours),
+    ] {
+        for lang in [Language::De, Language::Fr, Language::Es] {
+            assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
+        }
+    }
+
+    let bytes = build_min_obcm(0xF800);
+    for lang in LANGS {
+        let mut app = App::new(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+
+        assert!(app.apply_chord(obc_app::Chord::Context), "the Map declares a context");
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the map sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Step(-1)); // → the Map display row
+        app.apply_gesture(Gesture::Press); // → the display sheet, landed at once
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the map display sheet rendered blank in {lang:?}");
+    }
+}
+
 /// The **weather sheet's** own copy (#1515 D4b) is translated in all four columns, and both of its
 /// states render through each of them: the two-row table over the dashboard, and the nested Interval
 /// editor whose five choices are the `[weather_refresh]` names the deleted settings screen used to
