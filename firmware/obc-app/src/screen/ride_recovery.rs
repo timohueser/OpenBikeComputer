@@ -43,9 +43,14 @@ pub enum RecoveryMode {
     Resumable,
     /// Logical damage on a writable catalog: the one hold-guarded removal.
     Damaged,
-    /// That removal failed. Nothing happens automatically now; the rider may try once more.
+    /// The removal that would have repaired a damaged recording failed. Nothing happens
+    /// automatically now; the rider may try once more.
     RepairFailed,
-    /// There is no safe repair to offer at all.
+    /// The rider's Discard of a *whole* recovered ride failed. Same rows as
+    /// [`RepairFailed`](RecoveryMode::RepairFailed) and different copy: nothing was damaged, the
+    /// store simply refused the removal.
+    DiscardFailed,
+    /// There is no safe operation to offer at all.
     Unrepairable,
 }
 
@@ -77,15 +82,17 @@ impl Row {
 
 impl RecoveryMode {
     /// The card's mode for a recovery state, or `None` when there is no decision to put.
-    /// `Repairing` is an attempt in flight, not a mode: the card that ordered it has already
-    /// returned Home, and the answer re-raises it in whatever it becomes.
+    /// `Attempting` is an operation in flight, not a mode: the card that ordered it has already
+    /// returned Home, and the answer re-raises it in whatever it becomes — so it maps back to the
+    /// card that ordered it, which is what the rider would see if anything raised it meanwhile.
     pub(crate) fn of(state: RideRecoveryState) -> Option<Self> {
         match state {
             RideRecoveryState::None => None,
-            RideRecoveryState::Resumable => Some(RecoveryMode::Resumable),
-            RideRecoveryState::Repairable(_) | RideRecoveryState::Repairing(_) => Some(RecoveryMode::Damaged),
-            RideRecoveryState::RepairFailed(_) => Some(RecoveryMode::RepairFailed),
-            RideRecoveryState::Unrepairable(_) => Some(RecoveryMode::Unrepairable),
+            RideRecoveryState::Resumable | RideRecoveryState::Attempting(None) => Some(RecoveryMode::Resumable),
+            RideRecoveryState::Repairable(_) | RideRecoveryState::Attempting(Some(_)) => Some(RecoveryMode::Damaged),
+            RideRecoveryState::Latched(Some(_)) => Some(RecoveryMode::RepairFailed),
+            RideRecoveryState::Latched(None) => Some(RecoveryMode::DiscardFailed),
+            RideRecoveryState::Unrepairable => Some(RecoveryMode::Unrepairable),
         }
     }
 
@@ -93,7 +100,7 @@ impl RecoveryMode {
         match self {
             RecoveryMode::Resumable => &[Row::Continue, Row::Discard],
             RecoveryMode::Damaged => &[Row::Discard],
-            RecoveryMode::RepairFailed => &[Row::Retry, Row::Leave],
+            RecoveryMode::RepairFailed | RecoveryMode::DiscardFailed => &[Row::Retry, Row::Leave],
             RecoveryMode::Unrepairable => &[Row::Leave],
         }
     }
@@ -104,6 +111,7 @@ impl RecoveryMode {
             RecoveryMode::Resumable => Msg::RideRecoveryBody,
             RecoveryMode::Damaged => Msg::RideRecoveryDamaged,
             RecoveryMode::RepairFailed => Msg::RideRecoveryRepairFailed,
+            RecoveryMode::DiscardFailed => Msg::RideRecoveryDiscardFailed,
             RecoveryMode::Unrepairable => Msg::RideRecoveryUnrepairable,
         }
     }
@@ -299,10 +307,17 @@ mod tests {
         let mut activity = Activity::new(Mode::Idle);
         let mut nav = crate::navigator::NavigatorMachine::new();
 
-        // The four row tables, and which of them a tap could ever act on.
+        // The five row tables, and which of them a tap could ever act on.
         assert_eq!(RecoveryMode::Resumable.rows(), &[Row::Continue, Row::Discard]);
         assert_eq!(RecoveryMode::Damaged.rows(), &[Row::Discard]);
         assert_eq!(RecoveryMode::RepairFailed.rows(), &[Row::Retry, Row::Leave]);
+        // The two failed-removal modes share their rows and differ only in the line above them.
+        assert_eq!(RecoveryMode::DiscardFailed.rows(), &[Row::Retry, Row::Leave]);
+        assert_ne!(
+            crate::i18n::t(RecoveryMode::DiscardFailed.body(), crate::settings::Language::En),
+            crate::i18n::t(RecoveryMode::RepairFailed.body(), crate::settings::Language::En),
+            "a failed discard of a whole ride does not claim a repair was attempted"
+        );
         assert_eq!(RecoveryMode::Unrepairable.rows(), &[Row::Leave]);
         assert!(Row::Discard.guard() && Row::Retry.guard(), "everything that removes bytes is held");
         assert!(!Row::Continue.guard() && !Row::Leave.guard(), "and nothing that does not is");
@@ -332,8 +347,8 @@ mod tests {
         assert_eq!(rec.test_take_intent(), None);
     }
 
-    /// The two terminal modes' body lines and their two row labels fit the 240 px panel in all four
-    /// languages. A translation that does not fit fails here rather than being clipped on glass.
+    /// The three terminal modes' body lines and their two row labels fit the 240 px panel in all
+    /// four languages. A translation that does not fit fails here rather than being clipped on glass.
     ///
     /// It gates **this slice's copy**. The card's older lines — `body`, `damaged` and
     /// `continue_ride` — already exceed both budgets in de/fr (and `continue_ride` in es), so
@@ -357,7 +372,7 @@ mod tests {
 
         let (mut worst_body, mut worst_row) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for mode in [RecoveryMode::RepairFailed, RecoveryMode::Unrepairable] {
+            for mode in [RecoveryMode::RepairFailed, RecoveryMode::DiscardFailed, RecoveryMode::Unrepairable] {
                 let s = t(mode.body(), lang);
                 let px = text_width(s, Font::Label) as i32;
                 assert!(px <= body_room, "{lang:?}: body {s:?} ({px} px) overruns the {body_room} px card");
