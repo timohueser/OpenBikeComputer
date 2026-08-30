@@ -1,15 +1,17 @@
-//! The Ride screen — everything you tune for a ride, in one group. Two rows open their own rich
-//! pages (**Bike type**, the routing-profile hero picker; **Data fields**, the
-//! [`StatFields`](super::StatFieldsScreen) grid editor); the rest are simple controls edited in
-//! place: **Page cycle** (a stepper for how fast the [`Statistics`](crate::screen) grid auto-flips),
-//! **Climb** / **Waypoints** (press-to-cycle rows) and **Auto-delete** (the synced-ride retention
-//! ring — Never / 1 day / 1 week / 1 month, moved here from its old standalone page).
+//! The Ride screen — everything you tune for a ride, in one group. One row opens its own rich page
+//! (**Data fields**, the [`StatFields`](super::StatFieldsScreen) grid editor); the rest are simple
+//! controls edited in place: **Page cycle** (a stepper for how fast the
+//! [`Statistics`](crate::screen) grid auto-flips), **Climb** / **Waypoints** (press-to-cycle rows)
+//! and **Auto-delete** (the synced-ride retention ring — Never / 1 day / 1 week / 1 month, moved
+//! here from its old standalone page).
 //!
-//! The Up-ahead source scope used to be a seventh row here. It moved to the timeline's own
-//! contextual drawer in #1515 D4a — a screen-specific modifier has one home, and that home is the
-//! sheet on the screen it modifies, not a settings tree two levels away.
+//! Two rows have left this group for the sheet on the screen they modify — a screen-specific
+//! modifier has one home, and that home is not a settings tree two levels away. The Up-ahead source
+//! scope went to the timeline's own drawer (#1515 D4a); **Bike type**, the routing profile, went to
+//! the create-route confirm card's (#1515 D4d), which is the one screen whose next press consumes
+//! it.
 //!
-//! Six rows still overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
+//! Five rows still overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
 //! cursor drives the window ([`window_start`](crate::screen::vocab::list::window_start)) exactly like the
 //! nav lists, and a scrollbar tracks the position. The two-level Select model is otherwise the
 //! shared one — a step moves the cursor (or edits an open stepper), a press opens a page / flips a
@@ -29,7 +31,7 @@ use crate::retention::RideRetention;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
 use crate::screen::vocab::list::{scrollbar, window_start};
 use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_X};
-use crate::screen::{BikeTypeScreen, Ctx, Render, Screen, Transition};
+use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::settings::{STAT_CYCLE_MAX, STAT_CYCLE_MIN};
 use crate::Msg;
 
@@ -51,13 +53,12 @@ const VAL_INSET: i32 = 12;
 /// Fixed gap between a press-to-cycle `◄` cue and the value to its right (never glued to the word).
 const CUE_GAP: i32 = 6;
 
-const BIKE_TYPE: usize = 0;
-const DATA_FIELDS: usize = 1;
-const PAGE_CYCLE: usize = 2;
-const CLIMB: usize = 3;
-const WAYPOINTS: usize = 4;
-const AUTODELETE: usize = 5;
-const ROWS: usize = 6;
+const DATA_FIELDS: usize = 0;
+const PAGE_CYCLE: usize = 1;
+const CLIMB: usize = 2;
+const WAYPOINTS: usize = 3;
+const AUTODELETE: usize = 4;
+const ROWS: usize = 5;
 
 /// Step the page-cycle period by `n` steps (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
@@ -98,8 +99,6 @@ impl RideScreen {
                 Transition::None
             }
             Gesture::Press => match self.selected {
-                // Bike type → the routing-profile hero picker (its own page).
-                BIKE_TYPE => Transition::Push(Screen::BikeType(BikeTypeScreen::new())),
                 // Data fields → the panel-grid editor (its own page).
                 DATA_FIELDS => Transition::Push(Screen::StatFields(StatFieldsScreen::new())),
                 // The cycle row's single field: press toggles the stepper open/closed.
@@ -151,11 +150,6 @@ impl RideScreen {
             let selected = idx == self.selected;
 
             match idx {
-                BIKE_TYPE => {
-                    row_cursor(cv, row, selected, false);
-                    super::row_label(cv, row, rx.t(Msg::RideBikeType), None);
-                    chevron(cv, val_r, &row);
-                }
                 DATA_FIELDS => {
                     row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideFields), Some(rx.t(Msg::RideFieldsSub)));
@@ -201,7 +195,7 @@ impl RideScreen {
 }
 
 /// A right-pointing chevron parked on the value column — the "enters a sub-screen" cue for the
-/// Bike type and Data fields rows.
+/// Data fields row.
 fn chevron(cv: &mut impl Surface, val_r: i32, row: &embedded_graphics::primitives::Rectangle) {
     use crate::screen::palette::INK;
     let cx0 = val_r - 11;
@@ -241,15 +235,13 @@ mod tests {
         scr.handle(g, &mut cx)
     }
 
-    /// Bike type and Data fields open their own pages; the cursor starts on Bike type.
+    /// Data fields is the group's one page-opening row, and the cursor starts on it — the slot the
+    /// Bike type row held before it moved onto the route-plan sheet (#1515 D4d).
     #[test]
-    fn bike_type_and_fields_open_pages() {
+    fn data_fields_opens_its_page_from_the_first_row() {
         let mut s = Settings::default();
         let mut scr = RideScreen::new();
-        assert_eq!(scr.selected, BIKE_TYPE, "cursor starts on Bike type");
-        assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::BikeType(_))));
-        run(&mut scr, &mut s, Gesture::Step(1)); // → Data fields
-        assert_eq!(scr.selected, DATA_FIELDS);
+        assert_eq!(scr.selected, DATA_FIELDS, "cursor starts on Data fields");
         assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::Push(Screen::StatFields(_))));
     }
 
@@ -258,7 +250,7 @@ mod tests {
     fn cycle_stepper_edits_live_and_clamps() {
         let mut s = Settings { stat_cycle_s: 5, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(2)); // → Page cycle row
+        run(&mut scr, &mut s, Gesture::Step(1)); // → Page cycle row
         assert_eq!(scr.selected, PAGE_CYCLE);
         run(&mut scr, &mut s, Gesture::Press); // open stepper
         assert!(scr.editing_cycle);
@@ -278,7 +270,7 @@ mod tests {
         use crate::settings::ClimbMode;
         let mut s = Settings { climb_mode: ClimbMode::Auto, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(3)); // → Climb row
+        run(&mut scr, &mut s, Gesture::Step(2)); // → Climb row
         assert_eq!(scr.selected, CLIMB);
         for expect in [ClimbMode::Off, ClimbMode::Manual, ClimbMode::Auto] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -292,7 +284,7 @@ mod tests {
         use crate::settings::WaypointMode;
         let mut s = Settings { waypoint_mode: WaypointMode::Approach, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(4)); // → Waypoints row
+        run(&mut scr, &mut s, Gesture::Step(3)); // → Waypoints row
         assert_eq!(scr.selected, WAYPOINTS);
         for expect in [WaypointMode::Always, WaypointMode::Off, WaypointMode::Approach] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -306,7 +298,7 @@ mod tests {
     fn autodelete_row_cycles_retention() {
         let mut s = Settings { ride_retention: RideRetention::Never, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(5)); // → Auto-delete row (last)
+        run(&mut scr, &mut s, Gesture::Step(4)); // → Auto-delete row (last)
         assert_eq!(scr.selected, AUTODELETE);
         for expect in [RideRetention::Day1, RideRetention::Week1, RideRetention::Month1, RideRetention::Never] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -319,7 +311,7 @@ mod tests {
     fn back_closes_stepper_first() {
         let mut s = Settings::default();
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(2)); // → Page cycle
+        run(&mut scr, &mut s, Gesture::Step(1)); // → Page cycle
         run(&mut scr, &mut s, Gesture::Press); // open the stepper
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::None));
         assert!(!scr.editing_cycle, "back closed the stepper, not the screen");
@@ -327,8 +319,8 @@ mod tests {
     }
 
     /// Every row is reachable and *drawn*: the panel shows [`VISIBLE`] of the [`ROWS`] at a time, so
-    /// the scrolling window must always contain the cursor — the sixth row (Auto-delete, which the
-    /// migrated Up-ahead row used to push down) included. Mirrors the draw's `window_start` call.
+    /// the scrolling window must always contain the cursor — the last row (Auto-delete) included.
+    /// Mirrors the draw's `window_start` call.
     #[test]
     fn every_row_is_reachable_inside_the_scrolling_window() {
         let mut s = Settings::default();
@@ -343,7 +335,7 @@ mod tests {
             );
             run(&mut scr, &mut s, Gesture::Step(1));
         }
-        assert_eq!(scr.selected, 0, "and the cursor wraps over all six rows");
+        assert_eq!(scr.selected, 0, "and the cursor wraps over all five rows");
     }
 
     /// Every press-to-cycle row's sub-caption line clears its ◄value group by a **measured**

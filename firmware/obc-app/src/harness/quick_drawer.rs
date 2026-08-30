@@ -269,6 +269,63 @@ fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
     }
 }
 
+/// **The route-plan sheet reaches the plan and the save** (#1515 D4d), through a real chord and
+/// real passes: the bike-type row is the only writer of `Settings::bike_profile_idx` left in the
+/// tree, so this is the whole loop from the squeeze to the value the host reads at `nav_begin`.
+///
+/// Three things at once, because they are one property: the commit writes the field and leaves the
+/// pass owing a settings persist (a drawer is not a settings subtree, so nothing is debounced); the
+/// sheet closes onto the confirm card rather than navigating anywhere; and the *Create route* press
+/// after it records the plan request while the settings hold the profile that was just committed —
+/// which is what the host drains and plans with.
+#[test]
+fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
+    use crate::navigator::PlanFamily;
+
+    let mut app = lit();
+    let mut f = Frames::new();
+    app.test_mount_store();
+
+    // A map with four §8.6 profiles, and a fix — the confirm card routes from where the rider is.
+    let bytes = super::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
+    let src = obc_reader::SliceSource(&bytes);
+    let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+    app.set_nav_profiles(tables.nav_profiles());
+    app.state.user_fix = Some(obc_ports::Fix::at(7_420_000, 43_735_000));
+
+    // The card the POI detail would push, seeded directly: the browse that reaches it needs a
+    // queried map and a corridor snapshot, neither of which this test is about.
+    app.ui.stack.truncate(1); // [Home]
+    let _ = app.ui.stack.push(Screen::NavConfirm(crate::screen::NavConfirmScreen::new(
+        (7_421_000, 43_736_000),
+        "Fontaine",
+        None,
+    )));
+    let depth = app.debug_stack_len();
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)), "the confirm card declares a context");
+    assert_eq!(app.debug_stack_len(), depth + 1, "the sheet sits on top; the card is untouched");
+
+    let ms = at(&mut app, ms, Gesture::Press); // -> the bike-type editor, on Road
+    let ms = at(&mut app, ms, Gesture::Step(1)); // stage Gravel
+    assert_eq!(app.settings().bike_profile_idx, 0, "staging commits nothing");
+    let ms = at(&mut app, ms, Gesture::Press); // commit
+    assert_eq!(app.settings().bike_profile_idx, 1, "Select wrote the profile the router will use");
+    assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and the pass owes a persist at once");
+
+    let ms = at(&mut app, ms, Gesture::Back); // close the sheet
+    assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the card is still under it — not a navigation");
+    assert_eq!(app.debug_stack_len(), depth);
+
+    // The very next press is *Create route*, the card's first row.
+    assert!(!app.navigator.request_pending(PlanFamily::Route), "nothing asked for yet");
+    at(&mut app, ms, Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the card swapped itself for the wait");
+    assert!(app.navigator.request_pending(PlanFamily::Route), "…having recorded the plan request");
+    assert_eq!(app.settings().bike_profile_idx, 1, "and the host will plan it under the committed profile");
+}
+
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
 /// stack a second overlay on it.
 #[test]

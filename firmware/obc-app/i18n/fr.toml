@@ -199,10 +199,10 @@ day1 = "1 jour"
 week1 = "1 sem."
 month1 = "1 mois"
 
-# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
+# --- onto the route-plan sheet in #1515 D4d) ---
 [ride]
 title = "SORTIE"
-bike_type = "Type de vélo"
 fields = "Champs"
 fields_sub = "disposition"
 pages = "Pages"
@@ -296,13 +296,6 @@ saved_time = "& l'heure."
 confirm = "Confirmer"
 keep_holding = "Maintenez"
 hold_to_erase = "Tenez: effacer"
-
-# --- Bike-type settings screen ---
-[bike_type]
-title = "TYPE DE VÉLO"
-routing_uses = "Le routage utilise ce profil"
-no_profiles = "Aucun profil"
-no_profiles_sub = "Charger une carte"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -576,6 +569,10 @@ alert_gust = "VENT FORT"
 alert_gust_body = "Rafales dangereuses devant."
 view_rain_map = "CARTE PLUIE"
 dismiss = "FERMER"
+
+# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
+[route_context]
+bike_type = "Type vélo"
 
 # --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
 [weather_context]

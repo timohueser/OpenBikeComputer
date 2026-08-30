@@ -1352,7 +1352,7 @@ fn main() {
             }
             app.set_settings(settings);
         }
-        // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label (N5),
+        // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label (N5),
         // and whether it carries a nav graph at all (#882: gates the ride menu's Detour station).
         app.set_nav_profiles(tables.nav_profiles());
         app.set_map_nav_graph(tables.has_nav_graph());

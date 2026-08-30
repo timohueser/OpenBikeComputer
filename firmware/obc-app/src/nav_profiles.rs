@@ -3,7 +3,7 @@
 //! The map's §8.6 profile table (names + the highway/surface multiplier arrays) lives host-side in
 //! [`MapTables`](obc_reader::MapTables); the router reads it straight off the [`Reader`](obc_reader::Reader)
 //! at plan time. The **UI**, though, needs the profile *names* in two places the reader isn't handed
-//! to — the Bike-type settings screen (which cycles through them) and the created-route overview
+//! to — the create-route sheet's bike-type editor (which steps through them) and the created-route overview
 //! label — and on the board those frames are drawn without a `Reader` at all (see
 //! [`App::base_needs_reader`](crate::App::base_needs_reader)). So the App keeps this small resident
 //! mirror of just the **names**, refreshed by the host whenever it (re)loads a map via
@@ -27,7 +27,7 @@ use obc_reader::MapProfile;
 type ProfileName = heapless::String<NAV_PROFILE_NAME_LEN>;
 
 /// The loaded map's routing-profile names, in table order. Empty before the first map load (and in
-/// a router-less `ble` image, where the Bike-type screen still renders but is inert — the profile
+/// a router-less `ble` image, where the bike-type row still renders but is inert — the profile
 /// names are map metadata, present regardless of whether the router is compiled in).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NavProfiles {
@@ -72,13 +72,13 @@ impl NavProfiles {
         p
     }
 
-    /// The number of profiles the loaded map carries (0 before any map load). The Bike-type screen
-    /// cycles the index modulo this.
+    /// The number of profiles the loaded map carries (0 before any map load). The bike-type
+    /// editor steps the index modulo this.
     pub fn len(&self) -> usize {
         self.names.len()
     }
 
-    /// Whether no map profiles are resident yet — the inert state for the Bike-type screen.
+    /// Whether no map profiles are resident yet — the inert state for the bike-type row.
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
