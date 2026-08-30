@@ -33,21 +33,82 @@ The main features and capabilities we are aiming for are the following (roughly 
     - Weather and rain radar (this is the only one that will use BLE to talk to the phone
     - And a fun one: Mountain peaks around you (PeakFinder style) 
 
-This repository contains all the software and hardware files needed to build the OBC and the goal is to eventually provide kits that allow you to build the OBC yourself. The project currently is an active prototype, not a finished product and you can read about the progress of development in our [Blog](https://openbikecomputer.com/blog/)· Here are some peaks at the software and hardware designs:
+This repository contains all the software and hardware files needed to build the OBC and the goal is to eventually provide kits that allow you to build the OBC yourself. The project currently is an active prototype, not a finished product and you can read about the progress of development in our [Blog](https://openbikecomputer.com/blog/). Here are some peeks at the software and hardware designs:
 
 
 <table>
   <tr>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/map.webp" width="200" alt="The device follows a route over the offline vector map">
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/stats.webp" width="200" alt="The statistics screen shows speed, distance and climb over the route profile">
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/climb.webp" width="200" alt="The climb screen shows the gradient profile of the climb the rider is on">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Follow the route on the offline map.</sub></td>
+    <td align="center"><sub>Read your ride data as you go.</sub></td>
+    <td align="center"><sub>See the climb ahead of you.</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/menu.webp" width="200" alt="The main menu, a compass dial with the Routes station selected">
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/weather.webp" width="200" alt="The weather screen shows rain in 34 minutes and the next two hours">
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/assets/device/poi.webp" width="200" alt="A bakery point of interest with its distance, opening hours and an open badge">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Reach every screen from one dial.</sub></td>
+    <td align="center"><sub>Know when the rain arrives.</sub></td>
+    <td align="center"><sub>Find a shop, and when it opens.</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
     <td align="center" width="50%">
-      <img src="docs/assets/companion/route-on-device.webp" width="280" alt="The companion app confirms that a Grimsel Pass route is on the bike computer">
+      <img src="docs/assets/companion/route-on-device.webp" width="260" alt="The companion app confirms that a Grimsel Pass route is on the bike computer">
     </td>
     <td align="center" width="50%">
-      <img src="docs/assets/companion/ride-detail.webp" width="280" alt="A recorded Grimsel Pass ride in the companion app">
+      <img src="docs/assets/companion/ride-detail.webp" width="260" alt="A recorded Grimsel Pass ride in the companion app">
     </td>
   </tr>
   <tr>
     <td align="center"><sub>Send a route to the bike computer.</sub></td>
     <td align="center"><sub>Bring the recorded ride back.</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/assets/concept/front.webp" width="330" alt="Concept render of the enclosure in the Forest colourway, with the clock and battery on the display">
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/assets/concept/dash.webp" width="330" alt="The same enclosure at three quarters, with the ride dashboard on the display">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A concept render of the enclosure.</sub></td>
+    <td align="center"><sub>The same device, showing the dashboard.</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/assets/concept/colorways.webp" width="680" alt="The five colourways under consideration: Petrol, Forest, Wine, Aubergine, and Stealth">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Five colourways under consideration.</sub></td>
   </tr>
 </table>
 
