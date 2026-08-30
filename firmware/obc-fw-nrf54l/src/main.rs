@@ -1399,9 +1399,9 @@ async fn main(_spawner: Spawner) {
             let _ = flat_store::load_routes(flat, app);
             let _ = flat_store::load_trips(flat, app);
             let _ = flat_store::load_rides(flat, app);
-            // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
-            // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
-            // too — the setting renders there but is inert (no router in that build).
+            // Mirror the map's §8.6 routing-profile names into the app for the bike-type editor
+            // + created-route overview label (N5). Map metadata, so it runs on the `ble` image
+            // too — the row renders there but is inert (no router in that build).
             app.set_nav_profiles(map_tables.nav_profiles());
             // Device-info for the System settings screen (T8 item 6): the running firmware version
             // (the same `git describe` tag the GATT device-info + DFU confirm use) and the loaded

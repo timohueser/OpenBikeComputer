@@ -564,7 +564,7 @@ pub struct App {
     /// the host through the `set_*` façade methods below.
     pub(crate) catalogs: CatalogState,
     /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
-    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
+    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the bike-type editor
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
     /// Only the names are mirrored (≤ 8 × 12 B); the multiplier tables stay solely in `MapTables`.
     nav_profiles: crate::NavProfiles,
@@ -1249,9 +1249,9 @@ impl App {
     /// #538). The host calls this whenever it (re)loads a map's tables — pass
     /// [`Reader::nav_profiles`](obc_reader::Reader::nav_profiles) — exactly as it calls
     /// [`set_routes`](App::set_routes) when the route store changes. Copies only the display names
-    /// (the multiplier tables stay in `MapTables`); the Bike-type settings screen cycles them and the
+    /// (the multiplier tables stay in `MapTables`); the bike-type editor steps them and the
     /// created-route overview labels itself with the selected one. Safe to call on a router-less
-    /// (`ble`) image — the names are map metadata and the setting still renders (inert). Dirties the
+    /// (`ble`) image — the names are map metadata and the row still renders (inert). Dirties the
     /// map so an open settings screen picks up the new names.
     pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
         self.nav_profiles.set_from(profiles);
