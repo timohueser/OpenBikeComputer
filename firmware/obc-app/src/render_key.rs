@@ -686,10 +686,7 @@ mod tests {
     #[test]
     fn a_refresh_landing_under_the_sheet_moves_the_row_and_nothing_else() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        crate::screen::apply(
-            &mut app.ui.stack,
-            crate::screen::Transition::Push(Screen::Weather(crate::screen::WeatherScreen::new())),
-        );
+        let _ = app.ui.stack.push(Screen::Weather(crate::screen::WeatherScreen::new()));
         assert!(app.apply_chord(crate::input::Chord::Context), "the dashboard declares a context");
 
         let live = app.render_key();
