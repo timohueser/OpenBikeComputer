@@ -564,7 +564,7 @@ pub struct App {
     /// the host through the `set_*` façade methods below.
     pub(crate) catalogs: CatalogState,
     /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
-    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
+    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the bike-type editor
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
     /// Only the names are mirrored (≤ 8 × 12 B); the multiplier tables stay solely in `MapTables`.
     nav_profiles: crate::NavProfiles,
@@ -1249,9 +1249,9 @@ impl App {
     /// #538). The host calls this whenever it (re)loads a map's tables — pass
     /// [`Reader::nav_profiles`](obc_reader::Reader::nav_profiles) — exactly as it calls
     /// [`set_routes`](App::set_routes) when the route store changes. Copies only the display names
-    /// (the multiplier tables stay in `MapTables`); the Bike-type settings screen cycles them and the
+    /// (the multiplier tables stay in `MapTables`); the bike-type editor steps them and the
     /// created-route overview labels itself with the selected one. Safe to call on a router-less
-    /// (`ble`) image — the names are map metadata and the setting still renders (inert). Dirties the
+    /// (`ble`) image — the names are map metadata and the row still renders (inert). Dirties the
     /// map so an open settings screen picks up the new names.
     pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
         self.nav_profiles.set_from(profiles);
@@ -4771,9 +4771,9 @@ mod tests {
             ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
-            // → the Page-cycle row (index 2), open its stepper, +1 s (and leave it open — Back must
+            // → the Page-cycle row (index 1), open its stepper, +1 s (and leave it open — Back must
             // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(2), Gesture::Press, Gesture::Step(1)]),
+            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(1), Gesture::Press, Gesture::Step(1)]),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -4862,8 +4862,7 @@ mod tests {
         app.apply_gesture(Gesture::BackHold); // the global escape: Map → Menu (Push, ride caller kept)
         app.apply_gesture(Gesture::Step(-1)); // Routes → Settings
         app.apply_gesture(Gesture::Press); // Menu → Settings
-        app.apply_gesture(Gesture::Press); // Settings → Ride
-        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // Settings → Ride (Data fields is the first row)
         app.apply_gesture(Gesture::Press); // Ride → Fields
         let field_count = app.settings().stat_fields.len();
         app.apply_gesture(Gesture::Step(field_count as i32)); // first field → trailing Add tile
