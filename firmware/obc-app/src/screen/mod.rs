@@ -99,7 +99,7 @@ pub use route_swap::RouteSwapScreen;
 pub use settings::{
     AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
     FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
-    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen, WeatherSettingsScreen,
+    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -277,6 +277,7 @@ impl Ctx<'_> {
             navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
+            weather_request_outstanding: self.weather.request_outstanding(),
         }
     }
 
@@ -521,6 +522,13 @@ pub struct Render<'a> {
     /// The dashboard shows its one non-blocking cue off this — cached content stays visible
     /// (locked UX), so this is a title-slot caption, never a blocking spinner.
     pub weather_refreshing: bool,
+    /// A weather request is **outstanding** — the wider level: in flight, or asked for and not yet
+    /// sent because no companion could carry it. The weather sheet's *Refresh now* row draws off
+    /// this (#1515 D4b) rather than off [`weather_refreshing`](Render::weather_refreshing), so the
+    /// row a frame draws and the row a press resolves can never be two different rows: a request
+    /// raised with no phone in reach stays pending for many frames, and over all of them the cue is
+    /// honestly absent while the row is honestly inert.
+    pub weather_request_outstanding: bool,
     /// The rider's travel direction (degrees CW from north) for the route-relative wind arrows
     /// (WX12, epic #1185): active-route tangent at the matched progress, else the moving GPS
     /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
@@ -539,6 +547,7 @@ impl Render<'_> {
             navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
+            weather_request_outstanding: self.weather_request_outstanding,
         }
     }
 
@@ -1186,9 +1195,6 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
-    /// The Weather settings screen (WX11): the scheduled refresh interval picker
-    /// (Off / 15 / 30 / 60 / 120 min, default 30) the WX8 due scheduler consumes.
-    WeatherSettings(WeatherSettingsScreen) => Caps::settings(),
     /// The System settings menu: Units / Date & Time / Language / Firmware update / About / Reset —
     /// a thin nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
@@ -1300,6 +1306,9 @@ impl Screen {
             }
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
+            // scheduled *Interval*. The pushed alert card is `Caps::modal()` and declares nothing.
+            Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_) => Some(&context_drawer::WEATHER),
             _ => None,
         }
     }

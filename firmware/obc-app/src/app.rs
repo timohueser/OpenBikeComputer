@@ -3349,6 +3349,9 @@ impl App {
         // shape as `card_free_bytes: storage.free_bytes()` below. A `refreshing` bool crossing a
         // render signature is what let the platform's copy and the domain's answer disagree.
         let weather_refreshing = self.weather.refreshing();
+        // The wider level the weather sheet's *Refresh now* row draws off (#1515 D4b) — read from
+        // the same owner, on the same line, so the drawn row and the pressed row cannot part.
+        let weather_request_outstanding = self.weather.request_outstanding();
         let App {
             state,
             activity,
@@ -3426,6 +3429,7 @@ impl App {
             card_free_bytes: storage.free_bytes(),
             weather,
             weather_refreshing,
+            weather_request_outstanding,
             travel_deg: navigator.travel_deg(),
             backlight: backlight_available,
         };
@@ -4747,7 +4751,7 @@ mod tests {
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::{
             apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen, WeatherSettingsScreen,
+            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
         };
         use crate::settings::Units;
 
@@ -4759,7 +4763,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 12] = [
+        let cases: [Case; 11] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
@@ -4792,12 +4796,6 @@ mod tests {
             ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
-            // Open the refresh picker, step it once (and leave it open — Back closes it first).
-            (
-                "Weather",
-                || one(Screen::WeatherSettings(WeatherSettingsScreen::new())),
-                &[Gesture::Press, Gesture::Step(1)],
-            ),
         ];
 
         for (name, stack, edits) in cases {

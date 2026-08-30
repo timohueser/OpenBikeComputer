@@ -14,14 +14,19 @@
 //! four ride actions are four rows of a table and the sheet that draws them is the same sheet every
 //! later context gets.
 //!
-//! ## A row is a door or a value
+//! ## A row is a door, a value or an act
 //!
-//! D3 shipped doors only. D4a adds the other half of the grammar: a row may instead bind to a
-//! [`ContextValue`], and pressing it slides the sheet to a nested editor — Up/Down stages, Select
-//! commits, Back discards, and the choice already committed stays marked while the rider browses.
-//! The editor is generic: a binding says *where the value lives*, how many choices it has and what
-//! each is called, and the drawer does the rest. That is what makes "the drawer is the only home
-//! for a contextual setting" affordable — a context joins by naming a table, not by growing a page.
+//! D3 shipped doors only. D4a adds the second shape: a row may instead bind to a [`ContextValue`],
+//! and pressing it slides the sheet to a nested editor — Up/Down stages, Select commits, Back
+//! discards, and the choice already committed stays marked while the rider browses. The editor is
+//! generic: a binding says *where the value lives*, how many choices it has and what each is called,
+//! and the drawer does the rest. That is what makes "the drawer is the only home for a contextual
+//! setting" affordable — a context joins by naming a table, not by growing a page.
+//!
+//! D4b adds the third and last shape: a row that simply **acts** — no destination, no value. It
+//! tells a domain something and leaves the sheet, because a sheet's own frame shadows every base
+//! fact (see [`ContextDrawerScreen::key`]), so a cue raised from an open sheet could not be seen
+//! until it closed anyway.
 
 use embedded_graphics::prelude::Point;
 use obc_reader::{PoiCategory, PoiCategorySet};
@@ -33,7 +38,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::navigator::RouteState;
-use crate::settings::UpAheadSource;
+use crate::settings::{UpAheadSource, WeatherRefresh};
 use crate::{AppState, Msg, Settings};
 
 use super::vocab::sheet;
@@ -116,6 +121,9 @@ pub(crate) struct ContextFacts<'a> {
     /// Whether a ride is open — the level [`RecorderMachine`](crate::RecorderMachine) reports, not
     /// a copy of it.
     pub recording: bool,
+    /// A weather request is outstanding — in flight, or asked for and not yet sent. The *Refresh
+    /// now* row's one predicate ([`WeatherDomain::request_outstanding`](crate::weather::WeatherDomain::request_outstanding)).
+    pub weather_request_outstanding: bool,
 }
 
 /// A typed value a context row edits in place of opening a screen. The binding owns **where the
@@ -139,6 +147,11 @@ pub enum ContextValue {
     /// the field; [`App`](crate::App)'s one `==` diff over `Settings` is what arms the save, exactly
     /// as it does for a settings screen's edit.
     UpAheadSource,
+    /// How often the device asks the phone for a fresh bundle on its own —
+    /// [`Settings::weather_refresh`], the persisted cadence whose whole settings *screen* this slice
+    /// deletes (#1515 D4b). Off / 15 / 30 / 60 / 120 minutes, default 30; the WX8 due scheduler
+    /// re-reads the field at its next evaluation, so a commit needs no wake edge of its own.
+    WeatherInterval,
 }
 
 impl ContextValue {
@@ -148,14 +161,15 @@ impl ContextValue {
             // "Everything" plus the six categories.
             ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
+            ContextValue::WeatherInterval => WeatherRefresh::COUNT as u8,
         }
     }
 
-    /// Whether the row that binds this may be pressed. **Both bindings always accept**: a filter is
+    /// Whether the row that binds this may be pressed. **Every binding always accepts**: a filter is
     /// as meaningful over an empty list as over a full one (it is how the rider finds out the list
-    /// is empty *of that kind*), and the source scope is a preference no ride state can invalidate.
-    /// Stated as a predicate rather than left implicit so the one-predicate rule has something to
-    /// hold: the row is live exactly when the binding accepts.
+    /// is empty *of that kind*), and a source scope or a refresh cadence is a preference no ride
+    /// state can invalidate. Stated as a predicate rather than left implicit so the one-predicate
+    /// rule has something to hold: the row is live exactly when the binding accepts.
     fn accepts(self, _f: &ContextFacts) -> bool {
         true
     }
@@ -165,6 +179,7 @@ impl ContextValue {
         match self {
             ContextValue::UpAheadFilter => filter_choice(f.state.up_ahead_filter),
             ContextValue::UpAheadSource => f.settings.up_ahead_source as u8,
+            ContextValue::WeatherInterval => f.settings.weather_refresh as u8,
         }
     }
 
@@ -174,6 +189,9 @@ impl ContextValue {
             ContextValue::UpAheadFilter => cx.state.up_ahead_filter = choice_filter(ordinal),
             ContextValue::UpAheadSource => {
                 cx.settings.up_ahead_source = UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)]
+            }
+            ContextValue::WeatherInterval => {
+                cx.settings.weather_refresh = WeatherRefresh::ALL[(ordinal as usize).min(WeatherRefresh::COUNT - 1)]
             }
         }
     }
@@ -188,6 +206,9 @@ impl ContextValue {
             ContextValue::UpAheadSource => {
                 UpAheadSource::ALL[(ordinal as usize).min(UpAheadSource::COUNT - 1)].name(rx.settings.language)
             }
+            ContextValue::WeatherInterval => {
+                WeatherRefresh::ALL[(ordinal as usize).min(WeatherRefresh::COUNT - 1)].name(rx.settings.language)
+            }
         }
     }
 
@@ -196,7 +217,7 @@ impl ContextValue {
     fn choice_icon(self, ordinal: u8) -> Option<PoiCategory> {
         match self {
             ContextValue::UpAheadFilter => choice_category(ordinal),
-            ContextValue::UpAheadSource => None,
+            ContextValue::UpAheadSource | ContextValue::WeatherInterval => None,
         }
     }
 }
@@ -235,6 +256,11 @@ pub enum ContextAction {
     Routes,
     /// A value the sheet edits on a nested page instead of a screen it opens.
     Edit(ContextValue),
+    /// **Ask for fresh weather now** (#1515 D4b) — the only manual refresh the rider has. Neither a
+    /// door nor a value: it raises one [`WeatherIntent::RefreshRequested`](crate::weather::WeatherIntent)
+    /// and closes the sheet, because the cue and the data it asks for are base facts an open sheet
+    /// shadows.
+    RefreshWeather,
 }
 
 impl ContextAction {
@@ -255,6 +281,9 @@ impl ContextAction {
             // freezes).
             ContextAction::Detour => super::detour::reachable(f.navigation, f.recording, f.state.has_nav_graph),
             ContextAction::Edit(v) => v.accepts(f),
+            // There is a question to ask exactly when one is not already outstanding: the domain
+            // coalesces a repeat anyway, so a live row here would be a control with no effect.
+            ContextAction::RefreshWeather => !f.weather_request_outstanding,
         }
     }
 
@@ -263,6 +292,11 @@ impl ContextAction {
     /// drawer they are finished with — the same rule the quick drawer's settings icon follows.
     ///
     /// `None` for a value row: it edits in place and never leaves the sheet.
+    ///
+    /// The *Refresh now* row is neither — it acts and **pops**, so the base it was squeezed from is
+    /// still under it. It has to: a sheet's key shadows every weather fact and freezes the base's
+    /// timers, so the UPDATING cue, the freshness line and the data itself are all invisible until
+    /// the sheet closes. Closing is therefore the frame the press produced.
     fn open(self, cx: &mut Ctx) -> Option<Transition> {
         Some(Transition::Replace(match self {
             ContextAction::UpAhead => {
@@ -275,6 +309,10 @@ impl ContextAction {
             ContextAction::Detour => Screen::Detour(DetourScreen::new(cx.navigator.route_state())),
             ContextAction::Pois => Screen::PoiMenu(PoiMenuScreen::new()),
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
+            ContextAction::RefreshWeather => {
+                cx.weather.apply_intent(crate::weather::WeatherIntent::RefreshRequested);
+                return Some(Transition::Pop);
+            }
             ContextAction::Edit(_) => return None,
         }))
     }
@@ -312,6 +350,17 @@ pub static UP_AHEAD: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextFilter, action: ContextAction::Edit(ContextValue::UpAheadFilter) },
         ContextRow { label: Msg::RideContextSources, action: ContextAction::Edit(ContextValue::UpAheadSource) },
+    ],
+};
+
+/// The **weather context** (#1515 D4b): ask for a bundle now, and set how often the device asks on
+/// its own. The only home either control has — before this the interval was a whole settings screen
+/// and the manual refresh did not exist at all, so the only way to ask again was to leave the
+/// weather screens and come back in through the Menu.
+pub static WEATHER: ContextMenu = ContextMenu {
+    rows: &[
+        ContextRow { label: Msg::WeatherContextRefreshNow, action: ContextAction::RefreshWeather },
+        ContextRow { label: Msg::WeatherContextInterval, action: ContextAction::Edit(ContextValue::WeatherInterval) },
     ],
 };
 
@@ -728,6 +777,9 @@ mod tests {
         /// The ride the rider is on, so a row press can be held to leaving it alone (#1554 moved
         /// the session out of `Activity` and into this machine).
         recorder: RecorderMachine,
+        /// The weather domain the sheet's Refresh row talks to — the real one, so "exactly one
+        /// request" is asserted against the coalescing the domain actually does.
+        weather: crate::weather::WeatherDomain,
         now_ms: u32,
     }
 
@@ -744,7 +796,15 @@ mod tests {
             navigator.set_active_route(Some(0));
             let mut recorder = RecorderMachine::new();
             recorder.test_open();
-            World { state, activity, navigator, settings: Settings::default(), recorder, now_ms: 1_000 }
+            World {
+                state,
+                activity,
+                navigator,
+                settings: Settings::default(),
+                recorder,
+                weather: crate::weather::WeatherDomain::new(),
+                now_ms: 1_000,
+            }
         }
 
         fn press(&mut self, d: &mut ContextDrawerScreen, g: Gesture) -> Transition {
@@ -754,6 +814,7 @@ mod tests {
                 &mut Ctx {
                     recorder: &mut self.recorder,
                     navigator: &mut self.navigator,
+                    weather: &mut self.weather,
                     now_ms,
                     ..test_ctx(&mut self.state, &mut self.activity, &mut self.settings)
                 },
@@ -769,6 +830,7 @@ mod tests {
                 navigation: self.navigator.route_state(),
                 settings: &self.settings,
                 recording: self.recorder.recording(),
+                weather_request_outstanding: self.weather.request_outstanding(),
             }
         }
     }
@@ -779,6 +841,10 @@ mod tests {
 
     fn up_ahead_drawer() -> ContextDrawerScreen {
         ContextDrawerScreen::opening(&UP_AHEAD)
+    }
+
+    fn weather_drawer() -> ContextDrawerScreen {
+        ContextDrawerScreen::opening(&WEATHER)
     }
 
     /// The ride context is the compass menu's inventory minus its Main-menu station, and each row
@@ -926,8 +992,8 @@ mod tests {
         // The derivation itself, so a geometry change is read here rather than discovered in D4c.
         assert_eq!(MAX_ROWS, 4, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
 
-        // Two tables today; each remaining D4 slice adds its own to this list.
-        let declared: &[&ContextMenu] = &[&RIDE, &UP_AHEAD];
+        // Three tables today; each remaining D4 slice adds its own to this list.
+        let declared: &[&ContextMenu] = &[&RIDE, &UP_AHEAD, &WEATHER];
         for menu in declared {
             assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             for page in [Page::Root, Page::Editor] {
@@ -1190,7 +1256,7 @@ mod tests {
         let choice_room = W - 48 - 12;
         let (mut worst_row, mut worst_choice) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for menu in [&RIDE, &UP_AHEAD] {
+            for menu in [&RIDE, &UP_AHEAD, &WEATHER] {
                 for row in menu.rows {
                     let label = t(row.label, lang);
                     let lw = text_width(label, Font::Body) as i32;
@@ -1227,6 +1293,70 @@ mod tests {
                 None => t(Msg::UpAheadEverything, lang),
             },
             ContextValue::UpAheadSource => UpAheadSource::ALL[ordinal as usize].name(lang),
+            ContextValue::WeatherInterval => WeatherRefresh::ALL[ordinal as usize].name(lang),
         }
+    }
+
+    // ---- D4b: the weather context --------------------------------------------------------------
+
+    /// **The Refresh row asks once and leaves.** A live press raises exactly one intent and pops
+    /// the sheet; with a request already outstanding the row is out of the `enabled` mask, a press
+    /// does nothing at all, and nothing further is asked.
+    ///
+    /// The mutants: a row that returns `Transition::None` (a control whose whole effect is hidden
+    /// behind the frozen base), and an `available` that ignores the outstanding request (a live row
+    /// whose press the domain silently drops).
+    #[test]
+    fn the_refresh_row_asks_once_and_leaves_the_sheet() {
+        let mut w = World::riding();
+        let mut d = weather_drawer();
+        assert_eq!(d.key(&w.facts()).4 & 1, 1, "with nothing outstanding the row is live");
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Pop), "the row acts, then leaves the sheet");
+        assert!(w.weather.refresh_pending(), "…having raised exactly one request");
+        assert!(w.weather.request_outstanding());
+
+        // The row is now inert, and a second press is not a second question.
+        let mut d = weather_drawer();
+        assert_eq!(d.key(&w.facts()).4 & 1, 0, "a request outstanding draws the row recessed");
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "…and a press does nothing at all");
+        assert_eq!(d.page, Page::Root, "not even a page slide");
+
+        // The Interval row beside it is unaffected: availability is per row, not per sheet.
+        assert_eq!(d.key(&w.facts()).4 & 0b10, 0b10, "the value row stays live");
+    }
+
+    /// **The Interval editor is the D4a editor over the persisted field.** It opens on
+    /// `Settings::weather_refresh`, staging writes nothing, Select writes the field, Back out of a
+    /// re-opened editor discards, and the key reports the staged and the committed ordinal apart.
+    #[test]
+    fn the_interval_editor_opens_on_the_persisted_value_and_commits_it() {
+        let mut w = World::riding();
+        w.settings.weather_refresh = WeatherRefresh::Every60;
+        let mut d = weather_drawer();
+        w.press(&mut d, Gesture::Step(1)); // → the Interval row
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Editor);
+        assert_eq!(d.staged, WeatherRefresh::Every60 as u8, "the editor opens on the persisted value");
+
+        w.press(&mut d, Gesture::Step(-1)); // → 30 min
+        assert_eq!(w.settings.weather_refresh, WeatherRefresh::Every60, "staging commits nothing");
+        let (_, _, staged, committed, _) = d.key(&w.facts());
+        assert_eq!((staged, committed), (WeatherRefresh::Every30 as u8, WeatherRefresh::Every60 as u8));
+
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Root, "Select returns to the row table");
+        assert_eq!(w.settings.weather_refresh, WeatherRefresh::Every30, "…having written the settings field");
+
+        // Back out of a re-opened editor discards the staged choice.
+        w.press(&mut d, Gesture::Press);
+        assert_eq!(d.staged, WeatherRefresh::Every30 as u8, "re-opens on what is now committed");
+        w.press(&mut d, Gesture::Step(2));
+        w.press(&mut d, Gesture::Back);
+        assert_eq!(d.page, Page::Root, "Back closes the editor, not the sheet");
+        assert_eq!(w.settings.weather_refresh, WeatherRefresh::Every30, "…and the field is untouched");
+
+        // The whole ring is exactly the five named intervals, and the editor never leaves it.
+        assert_eq!(ContextValue::WeatherInterval.count(), WeatherRefresh::COUNT as u8);
+        assert_eq!(WeatherRefresh::COUNT, 5);
     }
 }

@@ -152,8 +152,9 @@ fn map_turn_saturates_at_min_zoom() {
 }
 
 /// **The ride context is declared by all four riding views, the Up-ahead context by the timeline,
-/// and nothing else declares anything** (#1515 D3/D4a). It is the one declaration a screen makes;
-/// everything the sheet then does is the generic drawer's.
+/// the weather context by the three weather surfaces, and nothing else declares anything**
+/// (#1515 D3/D4a/D4b). It is the one declaration a screen makes; everything the sheet then does is
+/// the generic drawer's.
 #[test]
 fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     let declared = |s: &Screen| s.context().is_some();
@@ -169,6 +170,16 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         Screen::Map(MapScreen::new()).context().map(|m| m.rows.len()),
         "the timeline declares its own table, not the ride's"
     );
+    // D4b's addition: the three weather surfaces share one table, and the pushed alert card — a
+    // modal — declares nothing, so the chord cannot squeeze a sheet out from under it.
+    assert!(declared(&Screen::Weather(crate::screen::WeatherScreen::new())));
+    assert!(declared(&Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new())));
+    assert!(declared(&Screen::WeatherRainMap(crate::screen::WeatherRainMapScreen::new())));
+    assert!(!declared(&Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
+        crate::screen::WeatherAlertKind::Rain,
+        0,
+        false
+    ))));
     // …and a representative of every other family declares nothing, so the chord does nothing.
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
