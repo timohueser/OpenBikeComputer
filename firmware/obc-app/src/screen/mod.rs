@@ -1247,19 +1247,33 @@ impl Screen {
         self.kind().is_overlay()
     }
 
-    /// Whether this overlay needs the screen below **drawn under it** on this frame (#1559).
+    /// Whether this overlay still **owes** the screen below a draw (#1559, #1515 D5).
     ///
-    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and one thing
-    /// stops a sheet doing only that: a **page slide**. Its two pages travel through the inset
-    /// margin either side of the sheet, where the base shows — and when the two pages differ in
-    /// height the slide also *shrinks* the sheet, whose given-back rows still hold sheet pixels.
-    /// One draw answers both: covering is cheap, uncovering is not. Only a drawer ever answers
-    /// anything but `false`.
+    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and two things
+    /// stop a sheet doing only that: a **page slide**, whose two pages travel through the inset
+    /// margin either side of the sheet and whose differing page heights shrink it, giving back rows
+    /// that still hold sheet pixels; and a **shorter sheet swapped in** for a taller one. One draw
+    /// answers both: covering is cheap, uncovering is not. Only a drawer ever answers anything but
+    /// `false`.
+    ///
+    /// The answer is a debt carried until a frame pays it, not a per-frame flag — see
+    /// [`clear_base_debt`](Screen::clear_base_debt).
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.needs_base(),
             Screen::ContextDrawer(s) => s.needs_base(),
             _ => false,
+        }
+    }
+
+    /// Discharge that debt — called on every overlay by the frame that actually drew the base
+    /// ([`UiRuntime::spend_base_draw`](crate::ui_runtime::UiRuntime::spend_base_draw)). A pass may
+    /// tick and then draw no frame at all, so nothing short of the draw itself may end it.
+    pub(crate) fn clear_base_debt(&mut self) {
+        match self {
+            Screen::QuickDrawer(s) => s.clear_base_debt(),
+            Screen::ContextDrawer(s) => s.clear_base_debt(),
+            _ => {}
         }
     }
 

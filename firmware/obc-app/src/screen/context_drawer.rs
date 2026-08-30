@@ -559,13 +559,8 @@ pub struct ContextDrawerScreen {
     /// pushing zero rows — and the frame the sheet lands on is reported exactly when it moves the
     /// sheet, which is what the old `landed` edge was approximating.
     shown_h: i16,
-    /// Whether this frame needs the screen below drawn under it — see
-    /// [`needs_base`](Self::needs_base).
+    /// The draw of the screen below that this sheet **owes** — see [`needs_base`](Self::needs_base).
     needs_base: bool,
-    /// A one-shot: this sheet took a **taller** one's place, so its first frame gives back a band
-    /// that still holds the other sheet's ink. [`tick_timers`](Self::tick_timers) consumes it into
-    /// `needs_base`, which is what makes the swap cost exactly one draw of the screen below.
-    uncovered: bool,
 }
 
 impl ContextDrawerScreen {
@@ -582,7 +577,6 @@ impl ContextDrawerScreen {
             staged: 0,
             shown_h: -1,
             needs_base: false,
-            uncovered: false,
         }
     }
 
@@ -591,15 +585,14 @@ impl ContextDrawerScreen {
     /// open to change tables would read as a stutter, so the open's clock is stamped as spent: the
     /// frame the press produced draws the new table at full height.
     ///
-    /// That frame, and only that frame, needs the screen below: the incoming sheet is shorter than
-    /// the one it replaced, so it gives back a band still holding the old sheet's ink. `needs_base`
-    /// is set here rather than left to the first tick, which would be one frame late — the same
-    /// reason [`slide_to`](Self::slide_to) sets it eagerly.
+    /// The sheet owes the screen below one draw from here: the incoming sheet is shorter than the
+    /// one it replaced, so it gives back a band still holding the old sheet's ink. The debt is
+    /// armed here rather than left to the first tick, which would be one frame late — the same
+    /// reason [`slide_to`](Self::slide_to) arms it eagerly — and it stands until a frame pays it.
     pub fn swapped_in(menu: &'static ContextMenu, now_ms: u32) -> Self {
         ContextDrawerScreen {
             opened_ms: Some(now_ms.wrapping_sub(OPEN_MS)),
             needs_base: true,
-            uncovered: true,
             ..ContextDrawerScreen::opening(menu)
         }
     }
@@ -640,15 +633,28 @@ impl ContextDrawerScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // A page transition owns the input while it runs: acting on a half-drawn page would let a
-        // fast double-press land on a row the rider cannot see yet.
-        self.settle(cx.now_ms);
-        if self.slide_ms.is_some() {
+        // fast double-press land on a row the rider cannot see yet. Asked, never retired — see
+        // [`slide_running`](Self::slide_running).
+        if self.slide_running(cx.now_ms) {
             return Transition::None;
         }
         match self.page {
             Page::Root => self.handle_root(g, cx),
             Page::Editor => self.handle_editor(g, cx),
         }
+    }
+
+    /// Whether a page slide is still in flight at `now_ms` — the input gate's question, asked
+    /// without answering the tick's (#1515 D5).
+    ///
+    /// Retiring a slide is [`settle`](Self::settle)'s edge, and that edge is what
+    /// [`tick_timers`](Self::tick_timers) reads to arm the base draw the settling frame owes. Input
+    /// runs first in a pass, so a gesture landing at or after the slide's end used to retire the
+    /// slide silently and leave the tick nothing to read: the sheet kept its two pages' ink in the
+    /// margin either side of it, or — with no render key moved — asked for no repaint at all and
+    /// stayed half-slid. The gate is a pure read, so the gesture is accepted exactly as before.
+    fn slide_running(&self, now_ms: u32) -> bool {
+        self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) < SLIDE_MS)
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -733,12 +739,10 @@ impl ContextDrawerScreen {
             if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
         let sliding = self.slide_ms.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s)));
         let moved = visible != self.shown_h as i32;
-        // Whether the frozen base has to be drawn under this frame — a page slide is running, or
-        // this is the one frame a swapped-in sheet uncovers a band of it (see
-        // [`needs_base`](Self::needs_base)). The one-shot is taken eagerly so it is spent on the
-        // first tick whatever else this frame is doing.
-        let uncovered = core::mem::take(&mut self.uncovered);
-        self.needs_base = sliding > 0 || settled || uncovered;
+        // The base draw this sheet owes is a **debt**, so this adds to it and never clears it: a
+        // pass may tick and then draw no frame at all, and only a frame that drew the base ends the
+        // obligation ([`needs_base`](Self::needs_base)).
+        self.needs_base |= sliding > 0 || settled;
         self.shown_h = visible as i16;
         // The wake is the time to the **next step boundary**, not a whole step from wherever this
         // poll happened to land: the sheet advances on those boundaries, so asking for a full step
@@ -758,19 +762,29 @@ impl ContextDrawerScreen {
         }
     }
 
-    /// Whether this frame needs the base drawn under the sheet (#1559).
+    /// Whether this sheet still **owes** the screen below a draw (#1559, #1515 D5).
     ///
-    /// A **page slide**, and only that: its two pages travel through the inset margin either side
-    /// of the sheet, where the base shows, so every frame of one — including the frame it settles
-    /// on, which is the last that can leave ink there — needs the base under it. A slide between
-    /// pages of different heights also *shrinks* the sheet, and the rows it gives back are put
-    /// back by the same draw. Everywhere else the frozen base's rows stand and the sheet is all
-    /// that is drawn.
+    /// A sheet owes one from the moment it stops purely covering the base. Two things do that. A
+    /// **page slide**: its two pages travel through the inset margin either side of the sheet,
+    /// where the base shows, so every frame of one — including the frame it settles on, which is
+    /// the last that can leave ink there — needs the base under it, and a slide between pages of
+    /// different heights also *shrinks* the sheet, whose given-back rows the same draw puts back.
+    /// And a **swapped-in** sheet ([`swapped_in`](Self::swapped_in)), which is shorter than the one
+    /// it replaced and gives a band back at once.
     ///
-    /// A **swapped-in** sheet ([`swapped_in`](Self::swapped_in)) uncovers the same way, for one
-    /// frame, which is why the two answers are one flag.
+    /// It is a **debt, not a flag**: nothing but
+    /// [`clear_base_debt`](Self::clear_base_debt) — called by the frame that actually drew the base
+    /// — ends it. A tick that decided it per frame could have the obligation stolen from under it
+    /// by a pass that ticked and drew nothing, or by input running first and retiring the slide
+    /// before the tick could see the edge.
     pub(crate) fn needs_base(&self) -> bool {
         self.needs_base
+    }
+
+    /// Discharge the debt: the frame that drew the base has put back everything this sheet was not
+    /// covering. Called at the frame boundary, which is the only place that answer exists.
+    pub(crate) fn clear_base_debt(&mut self) {
+        self.needs_base = false;
     }
 
     /// Begin a horizontal transition to `to`, which becomes the live page at once (so `handle` and
@@ -779,12 +793,14 @@ impl ContextDrawerScreen {
         self.slide_ms = Some(now_ms);
         self.page = to;
         // From this frame on the two pages travel outside the sheet's own footprint, so the base
-        // has to be under them — set here rather than waiting for the next tick, which would be one
-        // frame late.
+        // has to be under them — armed here rather than at the next tick, which would be one frame
+        // late.
         self.needs_base = true;
     }
 
-    /// Retire a finished slide. Returns whether this call is the one that retired it.
+    /// Retire a finished slide. Returns whether this call is the one that retired it. The **tick**
+    /// calls this and nothing else does: the edge it returns is what arms the settling frame's
+    /// base draw (see [`slide_running`](Self::slide_running)).
     fn settle(&mut self, now_ms: u32) -> bool {
         let done = self.slide_ms.is_some_and(|s| now_ms.wrapping_sub(s) >= SLIDE_MS);
         if done {
@@ -1649,9 +1665,15 @@ mod tests {
     }
 
     /// **The Map display row swaps one sheet for another**, and the swap is free of an entrance:
-    /// the shorter sheet is landed on the frame the press produced, that frame draws the screen
-    /// below (it uncovers a band the taller sheet held) and the next one does not, and Back leaves
-    /// the sheet family altogether rather than climbing to the table it came from.
+    /// the shorter sheet is landed on the frame the press produced, that frame owes the screen
+    /// below one draw (it uncovers a band the taller sheet held), and Back leaves the sheet family
+    /// altogether rather than climbing to the table it came from.
+    ///
+    /// **What ends the obligation is the draw, not the next tick** (#1515 D5). Ticking again does
+    /// not put the band back, so the debt survives every tick until
+    /// [`clear_base_debt`](ContextDrawerScreen::clear_base_debt) — which is what the frame that
+    /// drew the base calls — and no tick after that re-arms it: the swap still costs exactly one
+    /// map draw.
     #[test]
     fn the_display_row_swaps_the_sheet_and_back_lands_on_the_map() {
         let mut w = World::riding();
@@ -1669,9 +1691,98 @@ mod tests {
         assert_eq!(first.next_wake_ms, None, "…so it asks for no open steps");
         assert!(swapped.needs_base(), "its first frame uncovers the band the taller sheet held");
         swapped.tick_timers(w.now_ms + 16);
-        assert!(!swapped.needs_base(), "…and no frame after it does: the swap costs exactly one map draw");
+        assert!(swapped.needs_base(), "…and a tick that drew no frame does not put the band back");
+        swapped.clear_base_debt();
+        swapped.tick_timers(w.now_ms + 32);
+        assert!(!swapped.needs_base(), "the draw ends it, and nothing re-arms it: the swap costs exactly one");
 
         assert!(matches!(w.press(&mut swapped, Gesture::Back), Transition::Pop), "Back closes onto the Map");
+    }
+
+    /// **A gesture landing as the slide lands does not take the base draw with it** (#1515 D5).
+    ///
+    /// Input runs before the tick in one pass, so a gesture at or after `slide start + SLIDE_MS` —
+    /// well inside an ordinary double-tap — used to retire the slide itself, through the `settle`
+    /// call `handle` opened with. The tick then found no edge and *assigned* `needs_base = false`.
+    ///
+    /// This drives the sharper of the two faces. The sheet is D4d's one-row `ROUTE_PLAN`, where
+    /// `step_selection(0, n, 1) == 0`, so the stealing gesture moves no render key at all: the tick
+    /// went on to return [`ScreenTick::idle`] and the two pages stayed **half-slid** until something
+    /// else asked for a frame. The other face — a moved key, a repainted sheet, and the outgoing
+    /// page's ink left in the 4 px margin either side — is the same lost `settled` edge.
+    ///
+    /// Every frame of the slide is modelled as it really runs: it draws the base, so it discharges
+    /// the debt, and the next tick has to arm it again. The mutant is `self.settle(cx.now_ms)` back
+    /// at the top of `handle`: both halves below fail.
+    #[test]
+    fn a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes() {
+        let mut w = World::riding();
+        let mut d = route_plan_drawer();
+        d.tick_timers(w.now_ms.saturating_sub(OPEN_MS)); // the open's origin, so the sheet is landed
+        w.press(&mut d, Gesture::Press); // → the bike-type editor; `press` steps the clock past it
+        assert_eq!(d.page, Page::Editor);
+
+        // Back out: the sheet shrinks 148 -> 68, so this slide gives rows back as well as travelling
+        // through the margin.
+        let start = w.now_ms;
+        d.handle(
+            Gesture::Back,
+            &mut Ctx {
+                recorder: &mut w.recorder,
+                navigator: &mut w.navigator,
+                weather: &mut w.weather,
+                nav_profiles: &w.nav_profiles,
+                now_ms: start,
+                ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings)
+            },
+        );
+        for ms in start..start + SLIDE_MS {
+            assert!(d.tick_timers(ms).changed, "a frame of the slide is a frame the host renders");
+            assert!(d.needs_base(), "…and it is drawn over the base, at {ms} ms");
+            d.clear_base_debt();
+        }
+
+        // The settling frame, with a gesture landing on exactly it.
+        let landed = start + SLIDE_MS;
+        d.handle(
+            Gesture::Step(1),
+            &mut Ctx {
+                recorder: &mut w.recorder,
+                navigator: &mut w.navigator,
+                weather: &mut w.weather,
+                nav_profiles: &w.nav_profiles,
+                now_ms: landed,
+                ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings)
+            },
+        );
+        assert_eq!(d.selected, 0, "a one-row table: the gesture moves nothing the key can see");
+        let tick = d.tick_timers(landed);
+        assert!(d.needs_base(), "the settling frame still owes the margin the two pages travelled through");
+        assert!(tick.changed, "…and is still asked for, so the pages do not stay half-slid");
+    }
+
+    /// **A pass that ticks and draws no frame keeps the draw it owes** (#1515 D5).
+    ///
+    /// The board can tick and then drop the frame — the render scratch arena is held, or a weather
+    /// bind failed — and the retry pass must still draw the base the sheet uncovered. Expressed
+    /// where it can be tested: only [`clear_base_debt`](ContextDrawerScreen::clear_base_debt), which
+    /// the frame that drew the base calls, ends the obligation.
+    ///
+    /// The mutant is the tick *assigning* `needs_base` instead of adding to it: the first tick after
+    /// the swap clears a debt no frame has paid.
+    #[test]
+    fn the_base_draw_a_sheet_owes_outlives_a_pass_that_drew_no_frame() {
+        let mut swapped = ContextDrawerScreen::swapped_in(&MAP_DISPLAY, 1_000);
+        assert!(swapped.needs_base(), "the shorter sheet owes the band the taller one held");
+
+        swapped.tick_timers(1_000);
+        swapped.tick_timers(1_016);
+        assert!(swapped.needs_base(), "two passes that rendered nothing put no pixel back");
+
+        swapped.clear_base_debt();
+        assert!(!swapped.needs_base(), "the draw is what pays it");
+        swapped.tick_timers(1_032);
+        assert!(!swapped.needs_base(), "…and a settled sheet does not ask a second time");
     }
 
     /// The map's table is the ride's four actions **plus** one door, and the Map is the only screen

@@ -155,8 +155,7 @@ pub struct QuickDrawerScreen {
     /// pushing zero rows — and the frame the sheet lands on is reported exactly when it moves the
     /// sheet, which is what the old `landed` edge was approximating.
     shown_h: i16,
-    /// Whether this frame needs the screen below drawn under it — see
-    /// [`needs_base`](Self::needs_base).
+    /// The draw of the screen below that this sheet **owes** — see [`needs_base`](Self::needs_base).
     needs_base: bool,
     /// The brightness level the editor is previewing. Meaningful only on [`Page::Brightness`] —
     /// off that page every reader falls back to the committed settings row, which is why Back
@@ -205,9 +204,9 @@ impl QuickDrawerScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         // A page transition owns the input while it runs: acting on a half-drawn page would let a
-        // fast double-press land on a row the rider cannot see yet.
-        self.settle(cx.now_ms);
-        if self.slide.is_some() {
+        // fast double-press land on a row the rider cannot see yet. Asked, never retired — see
+        // [`slide_running`](Self::slide_running).
+        if self.slide_running(cx.now_ms) {
             return Transition::None;
         }
         match self.page {
@@ -217,6 +216,20 @@ impl QuickDrawerScreen {
             // The device is going away; nothing here has a meaning any more.
             Page::PoweringOff => Transition::None,
         }
+    }
+
+    /// Whether a page slide is still in flight at `now_ms` — the input gate's question, asked
+    /// without answering the tick's (#1515 D5).
+    ///
+    /// Retiring a slide is [`settle`](Self::settle)'s edge, and that edge is what
+    /// [`tick_timers`](Self::tick_timers) reads to arm the base draw the settling frame owes. Input
+    /// runs first in a pass, so a gesture landing at or after the slide's end used to retire the
+    /// slide silently and leave the tick nothing to read: the sheet kept its two pages' ink in the
+    /// margin either side of it — and the 32 rows the editor gives back going 136 → 104 — or, with
+    /// no render key moved, asked for no repaint at all and stayed half-slid. The gate is a pure
+    /// read, so the gesture is accepted exactly as before.
+    fn slide_running(&self, now_ms: u32) -> bool {
+        self.slide.is_some_and(|s| now_ms.wrapping_sub(s.started_ms) < SLIDE_MS)
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -309,9 +322,10 @@ impl QuickDrawerScreen {
             if sheet_h > 0 && visible >= sheet_h { 0 } else { OPEN_MS.saturating_sub(now_ms.wrapping_sub(opened_ms)) };
         let sliding = self.slide.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s.started_ms)));
         let moved = visible != self.shown_h as i32;
-        // Whether the frozen base has to be drawn under this frame — a page slide is running (see
-        // [`needs_base`](Self::needs_base)).
-        self.needs_base = sliding > 0 || settled;
+        // The base draw this sheet owes is a **debt**, so this adds to it and never clears it: a
+        // pass may tick and then draw no frame at all, and only a frame that drew the base ends the
+        // obligation ([`needs_base`](Self::needs_base)).
+        self.needs_base |= sliding > 0 || settled;
         self.shown_h = visible as i16;
         // The wake is the time to the **next step boundary**, not a whole step from wherever this
         // poll happened to land: the sheet advances on those boundaries, so asking for a full step
@@ -331,16 +345,28 @@ impl QuickDrawerScreen {
         }
     }
 
-    /// Whether this frame needs the base drawn under the sheet (#1559).
+    /// Whether this sheet still **owes** the screen below a draw (#1559, #1515 D5).
     ///
-    /// A **page slide**, and only that: its two pages travel through the inset margin either side
-    /// of the sheet, where the base shows, so every frame of one — including the frame it settles
-    /// on, which is the last that can leave ink there — needs the base under it. A slide between
-    /// pages of different heights also *shrinks* the sheet, and the rows it gives back are put
-    /// back by the same draw. Everywhere else the frozen base's rows stand and the sheet is all
+    /// A **page slide**, and only that on this sheet: its two pages travel through the inset margin
+    /// either side of the sheet, where the base shows, so every frame of one — including the frame
+    /// it settles on, which is the last that can leave ink there — needs the base under it. A slide
+    /// between pages of different heights also *shrinks* the sheet, and the rows it gives back are
+    /// put back by the same draw. Everywhere else the frozen base's rows stand and the sheet is all
     /// that is drawn.
+    ///
+    /// It is a **debt, not a flag**: nothing but
+    /// [`clear_base_debt`](Self::clear_base_debt) — called by the frame that actually drew the base
+    /// — ends it. A tick that decided it per frame could have the obligation stolen from under it
+    /// by a pass that ticked and drew nothing, or by input running first and retiring the slide
+    /// before the tick could see the edge.
     pub(crate) fn needs_base(&self) -> bool {
         self.needs_base
+    }
+
+    /// Discharge the debt: the frame that drew the base has put back everything this sheet was not
+    /// covering. Called at the frame boundary, which is the only place that answer exists.
+    pub(crate) fn clear_base_debt(&mut self) {
+        self.needs_base = false;
     }
 
     /// Begin a horizontal transition to `to`, which becomes the live page at once (so `handle`
@@ -349,12 +375,14 @@ impl QuickDrawerScreen {
         self.slide = Some(Slide { from: self.page, started_ms: now_ms });
         self.page = to;
         // From this frame on the two pages travel outside the sheet's own footprint, so the base
-        // has to be under them — set here rather than waiting for the next tick, which would be one
-        // frame late.
+        // has to be under them — armed here rather than at the next tick, which would be one frame
+        // late.
         self.needs_base = true;
     }
 
-    /// Retire a finished slide. Returns whether this call is the one that retired it.
+    /// Retire a finished slide. Returns whether this call is the one that retired it. The **tick**
+    /// calls this and nothing else does: the edge it returns is what arms the settling frame's
+    /// base draw (see [`slide_running`](Self::slide_running)).
     fn settle(&mut self, now_ms: u32) -> bool {
         let done = self.slide.is_some_and(|s| now_ms.wrapping_sub(s.started_ms) >= SLIDE_MS);
         if done {
@@ -847,6 +875,10 @@ mod tests {
 
     /// A page slide **asks for the base under it**, both ways: its two pages travel through the
     /// margin either side of the sheet, and coming back out of a taller page gives rows back.
+    ///
+    /// What stops it asking is the **draw**, not the next tick (#1515 D5): a tick puts no pixel
+    /// back, so the debt outlives every one of them until
+    /// [`clear_base_debt`](QuickDrawerScreen::clear_base_debt), and no tick after that re-arms it.
     #[test]
     fn a_page_slide_asks_for_the_base_and_a_settled_page_stops_asking() {
         let mut w = World::new();
@@ -864,6 +896,9 @@ mod tests {
         }
         assert!(d.needs_base(), "the frame the slide settles on is still the slide");
         d.tick_timers(now_ms + SLIDE_MS + 2);
+        assert!(d.needs_base(), "…and a tick that drew nothing still owes it");
+        d.clear_base_debt();
+        d.tick_timers(now_ms + SLIDE_MS + 3);
         assert!(!d.needs_base(), "…and the settled editor covers what it covers again");
 
         // Back out: the same, and this slide also shrinks the sheet 136 -> 104, so the 32 rows it
@@ -876,7 +911,113 @@ mod tests {
         }
         d.tick_timers(now_ms + SLIDE_MS);
         assert!(d.needs_base(), "…including the frame it settles on, the last that can leave ink in the margin");
+        d.clear_base_debt();
         d.tick_timers(now_ms + SLIDE_MS + 1);
         assert!(!d.needs_base(), "and the shorter root page covers what it covers");
+    }
+
+    /// **A press landing as the slide lands does not take the base draw with it** (#1515 D5).
+    ///
+    /// Input runs before the tick in one pass, so a gesture at or after `slide start + SLIDE_MS` —
+    /// well inside an ordinary double-tap — used to retire the slide itself, through the `settle`
+    /// call `handle` opened with. The tick then found no edge and *assigned* `needs_base = false`,
+    /// so the settling frame lost the base draw it owed: the outgoing page's ink stayed in the 4 px
+    /// margin either side of the sheet, and the 32 rows the editor gives back going 136 → 104 stayed
+    /// parchment.
+    ///
+    /// Every frame of the slide is modelled as it really runs — it draws the base, so it discharges
+    /// the debt, and the next tick has to arm it again. The mutant is `self.settle(cx.now_ms)` back
+    /// at the top of `handle`: both halves below fail.
+    #[test]
+    fn a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes() {
+        let mut w = World::new();
+        w.settings.brightness = 2; // room to step in both directions
+        let mut d = settled(w.now_ms);
+        let start = w.now_ms;
+        d.handle(
+            Gesture::Press,
+            &mut Ctx { now_ms: start, ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings) },
+        ); // → the brightness editor, 104 -> 136
+
+        // The slide's own frames. Each draws the base and therefore pays what it owed.
+        for ms in start..start + SLIDE_MS {
+            assert!(d.tick_timers(ms).changed, "a frame of the slide is a frame the host renders");
+            assert!(d.needs_base(), "…and it is drawn over the base, at {ms} ms");
+            d.clear_base_debt();
+        }
+
+        // The settling frame, with a gesture landing on exactly it.
+        let landed = start + SLIDE_MS;
+        d.handle(
+            Gesture::Step(1),
+            &mut Ctx { now_ms: landed, ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings) },
+        );
+        let tick = d.tick_timers(landed);
+        assert!(d.needs_base(), "the settling frame still owes the margin the two pages travelled through");
+        assert!(tick.changed, "…and is still asked for, so the pages do not stay half-slid");
+        assert_eq!(d.staged_brightness(), Some(3), "the gesture itself is accepted exactly as before");
+    }
+
+    /// **Every string this sheet draws fits it, in all four languages** (#1515 D5).
+    ///
+    /// The context sheet's copy has been measured since D4a; this one's has been measured by nobody,
+    /// and it is the sheet with the least room — its captions are centred on a 232 px card, so an
+    /// overrun is clipped at both ends rather than running into a control.
+    ///
+    /// Two constraints have almost nothing left, and they are pinned by name below rather than left
+    /// in PR prose: `es "BLUETOOTH INACTIVO"` is **exactly** the 216 px budget, and the terminal
+    /// power line is 210 px of it in the wider `Font::Body`. A longer translation of any of the
+    /// eight fails here instead of on the panel.
+    #[test]
+    fn every_quick_drawer_string_fits_the_sheet_in_every_language() {
+        use crate::i18n::t;
+        use crate::settings::Language;
+        use obc_render::text::text_width;
+
+        const W: i32 = 240;
+        const MIN_CLEAR: i32 = 8;
+        // `draw` lays the sheet out as `rect(4, .., w - 8, ..)`: a 232 px card inset 4 px each side.
+        let card_w = W - 8;
+        // A centred line has to clear both edges, so it loses the clearance twice.
+        let centred_room = card_w - MIN_CLEAR * 2;
+        // `draw_brightness` writes its title left-aligned at x + 14, and the card ends at 236.
+        let title_room = W - 4 - 14 - MIN_CLEAR;
+        assert_eq!((centred_room, title_room), (216, 214), "the sheet's two budgets, pinned");
+
+        let (mut worst_label, mut worst_body) = (0, 0);
+        for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+            // The root row's caption line, both BLE states, and the two lines of the guarded
+            // confirmation — every one of them centred in `Font::Label`.
+            for msg in [
+                Msg::QuickBrightness,
+                Msg::QuickBluetoothOn,
+                Msg::QuickBluetoothOff,
+                Msg::QuickSettings,
+                Msg::QuickPower,
+                Msg::QuickPowerConfirm,
+                Msg::QuickPowerHold,
+            ] {
+                let s = t(msg, lang);
+                let px = text_width(s, Font::Label) as i32;
+                assert!(px <= centred_room, "{lang:?}: {s:?} ({px} px) overruns the {centred_room} px sheet");
+                worst_label = worst_label.max(px);
+            }
+            // The terminal frame's one line is the sheet's only `Font::Body` string, and Body is the
+            // wider tier — so it is measured on its own budget rather than assumed to be safer.
+            let off = t(Msg::QuickPoweringOff, lang);
+            let px = text_width(off, Font::Body) as i32;
+            assert!(px <= centred_room, "{lang:?}: {off:?} ({px} px in Body) overruns the {centred_room} px sheet");
+            worst_body = worst_body.max(px);
+            // The brightness editor's title is that caption again plus the ` 100%` the `write!`
+            // glues on, left-aligned at the page's own inset.
+            let title =
+                text_width(t(Msg::QuickBrightness, lang), Font::Label) as i32 + text_width(" 100%", Font::Label) as i32;
+            assert!(title <= title_room, "{lang:?}: the brightness title ({title} px) overruns {title_room} px");
+        }
+
+        assert_eq!(worst_label, 216, "es \"BLUETOOTH INACTIVO\" in Label, pinned");
+        assert_eq!(centred_room - worst_label, 0, "…with nothing left: one more glyph does not fit the sheet");
+        assert_eq!(worst_body, 210, "en \"POWERING OFF...\" / de \"SCHALTET AUS...\" in Body, pinned");
+        assert_eq!(centred_room - worst_body, 6, "…with 6 px to spare");
     }
 }
