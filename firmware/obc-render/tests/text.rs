@@ -5,7 +5,7 @@
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_reader::{rgb565_to_device64, rgb565_to_rgb888};
-use obc_render::text::{draw_text, text_width, Font, TextAlign};
+use obc_render::text::{draw_text, draw_text_ccw, text_width, Font, TextAlign};
 
 mod common;
 use common::Buf;
@@ -32,6 +32,16 @@ fn empty_string_draws_nothing() {
     let mut b = Buf::new(32, 16);
     draw_text(&mut b, "", Point::new(0, 0), Font::Label, TextAlign::Left, RED);
     assert_eq!(b.count(RED), 0);
+}
+
+#[test]
+fn compact_ccw_text_grows_up_from_its_anchor() {
+    let mut b = Buf::new(32, 48);
+    let anchor = Point::new(4, 44);
+    draw_text_ccw(&mut b, "AB", anchor, Font::Label, 2, RED);
+    let (min_x, min_y, max_x, max_y) = b.bbox(RED).expect("rotated label should draw");
+    assert!(min_x >= anchor.x && max_x < anchor.x + 12, "half-size Label is at most 12 px wide");
+    assert!(min_y >= anchor.y - 12 && max_y < anchor.y, "two 6 px cells grow upward from the anchor");
 }
 
 #[test]

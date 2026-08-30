@@ -1,5 +1,6 @@
 //! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the six entries (Routes / Rides / POIs / Map / Weather / Settings) and keep
+//! switch. Both show the normal six entries plus Peak View when a platform installed a panorama,
+//! and keep
 //! the list semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to
 //! the caller. Most stations open a menu; the **Map** station opens the Map screen directly (see
 //! [`open_map`]) — the live riding map while tracking, else a route-less browse map — and the
@@ -26,37 +27,69 @@ use crate::Msg;
 use super::vocab::chrome::title_frame_ble;
 use super::vocab::list;
 use super::{
-    palette, Ctx, MapScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
-    Transition,
+    palette, Ctx, MapScreen, PeakViewScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick,
+    SettingsScreen, Transition,
 };
 
-/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The shared
-/// [`CompassDial`] takes the count per call rather than reading this, which is what let a second
-/// ring exist beside it; since #1515 D3 deleted the ride compass there is one ring and one caller.
-const N_ITEMS: usize = 6;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuItem {
+    Routes,
+    Rides,
+    Pois,
+    Map,
+    Peaks,
+    Weather,
+    Settings,
+}
 
-/// The menu's per-language copy, resolved once per frame — the bar caption plus the six entry
-/// labels in ring order. Built fresh each draw because the language is a runtime value (the old
-/// `const ITEMS` array couldn't stay `const`); bundled so the layout helpers take one param, not
-/// seven.
+const BASE_ITEMS: [MenuItem; 6] =
+    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Weather, MenuItem::Settings];
+const PEAK_ITEMS: [MenuItem; 7] = [
+    MenuItem::Routes,
+    MenuItem::Rides,
+    MenuItem::Pois,
+    MenuItem::Map,
+    MenuItem::Peaks,
+    MenuItem::Weather,
+    MenuItem::Settings,
+];
+
+fn menu_items(state: &crate::AppState) -> &'static [MenuItem] {
+    if state.peak_view_profile.is_some() {
+        &PEAK_ITEMS
+    } else {
+        &BASE_ITEMS
+    }
+}
+
+/// The menu's per-language copy, resolved once per frame — the bar caption plus the active entry
+/// labels in ring order. Built fresh each draw because both language and Peak View availability
+/// are runtime values.
 struct MenuText {
     title: &'static str,
-    items: [&'static str; N_ITEMS],
+    items: [&'static str; PEAK_ITEMS.len()],
+    len: usize,
 }
 
 impl MenuText {
-    fn resolve(rx: &Render) -> Self {
-        Self {
-            title: rx.t(Msg::MenuTitle),
-            items: [
-                rx.t(Msg::MenuRoutes),
-                rx.t(Msg::MenuRides),
-                rx.t(Msg::MenuPois),
-                rx.t(Msg::MenuMap),
-                rx.t(Msg::MenuWeather),
-                rx.t(Msg::MenuSettings),
-            ],
+    fn resolve(rx: &Render, kinds: &[MenuItem]) -> Self {
+        let mut items = [""; PEAK_ITEMS.len()];
+        for (slot, kind) in items.iter_mut().zip(kinds) {
+            *slot = match kind {
+                MenuItem::Routes => rx.t(Msg::MenuRoutes),
+                MenuItem::Rides => rx.t(Msg::MenuRides),
+                MenuItem::Pois => rx.t(Msg::MenuPois),
+                MenuItem::Map => rx.t(Msg::MenuMap),
+                MenuItem::Peaks => rx.t(Msg::MenuPeaks),
+                MenuItem::Weather => rx.t(Msg::MenuWeather),
+                MenuItem::Settings => rx.t(Msg::MenuSettings),
+            };
         }
+        Self { title: rx.t(Msg::MenuTitle), items, len: kinds.len() }
+    }
+
+    fn labels(&self) -> &[&'static str] {
+        &self.items[..self.len]
     }
 }
 
@@ -83,9 +116,7 @@ const SWEEP_MIN_DEG_S: f32 = 180.0;
 /// The frame cadence the sweep asks the host for while in flight.
 const SWEEP_FRAME_MS: u32 = 16;
 
-/// The shared five-station compass state. Both the main Menu and the mid-ride Menu own one of these,
-/// so the selection wrap, needle easing and frame cadence are one implementation rather than two
-/// lookalikes that can drift.
+/// The main-menu compass state: selection plus the eased needle sweep.
 #[derive(Debug, Default)]
 pub(super) struct CompassDial {
     selected: usize,
@@ -133,21 +164,6 @@ impl CompassDial {
         self.needle_deg += if diff > 0.0 { step } else { -step };
         ScreenTick { changed: step > 0.0, next_wake_ms: Some(SWEEP_FRAME_MS), region: None }
     }
-
-    /// Draw this dial through the one compass renderer. The station count is `items.len()`.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw(
-        &self,
-        cv: &mut impl Surface,
-        w: i32,
-        h: i32,
-        ble_connected: bool,
-        battery: &str,
-        title: &str,
-        items: &[&str],
-    ) {
-        draw_compass(cv, w, h, self.selected, self.needle_deg, ble_connected, battery, title, items);
-    }
 }
 
 /// The main menu. Its selection and sweep are the shared [`CompassDial`]; only Press dispatch and
@@ -164,23 +180,26 @@ impl MenuScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => self.dial.step(n, N_ITEMS),
-            Gesture::Press => match self.dial.selected() {
-                0 => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())), // Routes
-                1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
-                2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
-                3 => open_map(cx),                                                // Map
-                // Weather (WX11). Opening the dashboard is worth a radio trip, so the row that
-                // opens it says so — the same way the System row names its free-space refresh.
-                // This is the **only** push site of `Screen::Weather`, which is what makes it the
-                // entry edge: Back from Hourly or the rain map does not pass through here, so it
-                // cannot manufacture a second urgent request.
-                4 => {
-                    cx.weather.apply_intent(crate::weather::WeatherIntent::RefreshRequested);
-                    Transition::Push(Screen::Weather(super::WeatherScreen::new()))
+            Gesture::Step(n) => self.dial.step(n, menu_items(cx.state).len()),
+            Gesture::Press => {
+                match menu_items(cx.state).get(self.dial.selected()).copied().unwrap_or(MenuItem::Settings) {
+                    MenuItem::Routes => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
+                    MenuItem::Rides => Transition::Push(Screen::Rides(RidesScreen::new())),
+                    MenuItem::Pois => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
+                    MenuItem::Map => open_map(cx),
+                    MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::new())),
+                    // Weather (WX11). Opening the dashboard is worth a radio trip, so the row that
+                    // opens it says so — the same way the System row names its free-space refresh.
+                    // This is the **only** push site of `Screen::Weather`, which is what makes it the
+                    // entry edge: Back from Hourly or the rain map does not pass through here, so it
+                    // cannot manufacture a second urgent request.
+                    MenuItem::Weather => {
+                        cx.weather.apply_intent(crate::weather::WeatherIntent::RefreshRequested);
+                        Transition::Push(Screen::Weather(super::WeatherScreen::new()))
+                    }
+                    MenuItem::Settings => Transition::Push(Screen::Settings(SettingsScreen::new())),
                 }
-                _ => Transition::Push(Screen::Settings(SettingsScreen::new())), // Settings
-            },
+            }
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,
             Gesture::BackHold => Transition::None, // Shutdown prompt — later slice
@@ -194,14 +213,26 @@ impl MenuScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let device = rx.state.device;
         let ble = device.ble_connected();
-        let txt = MenuText::resolve(rx);
+        let kinds = menu_items(rx.state);
+        let txt = MenuText::resolve(rx, kinds);
         // The title bar's right readout: the battery percentage, in Home's `NN%` formatting.
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", device.battery_pct);
         if COMPASS {
-            self.dial.draw(cv, rx.w, rx.h, ble, &batt, txt.title, &txt.items);
+            draw_compass(
+                cv,
+                rx.w,
+                rx.h,
+                self.dial.selected().min(kinds.len() - 1),
+                self.dial.needle_deg,
+                ble,
+                &batt,
+                txt.title,
+                kinds,
+                txt.labels(),
+            );
         } else {
-            draw_grid(cv, rx.w, rx.h, self.dial.selected, ble, &batt, &txt);
+            draw_grid(cv, rx.w, rx.h, self.dial.selected().min(kinds.len() - 1), ble, &batt, kinds, &txt);
         }
     }
 }
@@ -241,6 +272,7 @@ fn draw_compass(
     ble_connected: bool,
     battery: &str,
     title: &str,
+    kinds: &[MenuItem],
     items: &[&str],
 ) {
     use palette::*;
@@ -270,7 +302,7 @@ fn draw_compass(
     // Stations: amber-filled when selected, a thin tan ring otherwise. Evenly spaced around the ring
     // by `station_dir`, so the five entries sit at 72° steps starting from N.
     let n = items.len();
-    for i in 0..n {
+    for (i, item) in kinds.iter().copied().enumerate() {
         let (dx, dy) = station_dir(i, n);
         let sc = Point::new(c.x + si(1.0, dx * 72.0), c.y + si(1.0, dy * 72.0));
         let is_sel = i == selected;
@@ -281,7 +313,7 @@ fn draw_compass(
             cv.disc(sc, 21, PARCHMENT);
         }
         let (ink, bg) = if is_sel { (INK, AMBER) } else { (SUBTEXT, PARCHMENT) };
-        draw_icon(cv, i, sc, 1.2, ink, bg);
+        draw_icon(cv, item, sc, 1.2, ink, bg);
     }
 
     // The selected entry's name, plain Display type — the A2 amber underline was tried and
@@ -317,6 +349,7 @@ pub(super) fn draw_needle(cv: &mut impl Surface, c: Point, deg: f32, r: f32, hal
 /// The two-column card-grid layout under the standard title bar: amber fill on the selected card,
 /// a tan outline on the rest, each with its icon over a centred label. Card height derives from
 /// the row count so six entries still fit the 320-px panel.
+#[allow(clippy::too_many_arguments)] // one flat layout function; the kind/label slices stay pairwise
 fn draw_grid(
     cv: &mut impl Surface,
     w: i32,
@@ -324,13 +357,14 @@ fn draw_grid(
     selected: usize,
     ble_connected: bool,
     battery: &str,
+    kinds: &[MenuItem],
     txt: &MenuText,
 ) {
     use palette::*;
     title_frame_ble(cv, w, h, txt.title, battery, ble_connected);
-    let rows = txt.items.len().div_ceil(2) as i32;
+    let rows = txt.len.div_ceil(2) as i32;
     let card_h = ((h - 51 - 6 - (rows - 1) * 8) / rows).min(124);
-    for (i, label) in txt.items.iter().enumerate() {
+    for (i, label) in txt.labels().iter().enumerate() {
         let col = (i % 2) as i32;
         let row = (i / 2) as i32;
         let (x, y) = (14 + col * 110, 51 + row * (card_h + 8));
@@ -345,22 +379,45 @@ fn draw_grid(
         }
         let ink = if is_sel { INK } else { SUBTEXT };
         let bg = if is_sel { AMBER } else { PARCHMENT };
-        draw_icon(cv, i, Point::new(x + 51, y + card_h * 2 / 5), 1.5, ink, bg);
+        draw_icon(cv, kinds[i], Point::new(x + 51, y + card_h * 2 / 5), 1.5, ink, bg);
         cv.text(label, Point::new(x + 51, y + card_h - 32), Font::Label, TextAlign::Center, INK);
     }
 }
 
 /// Dispatch a station's icon, centred at `c` and scaled by `k` (`1.0` fits a station disc, the
 /// grid uses `1.5`). `bg` is the surface behind the icon, for punched-out details.
-fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
-    match i {
-        0 => icon_route(cv, c, k, color),
-        1 => icon_rides(cv, c, k, color, bg),
-        2 => icon_poi(cv, c, k, color, bg),
-        3 => icon_map(cv, c, k, color),
-        4 => icon_weather(cv, c, k, color, bg),
-        _ => icon_sliders(cv, c, k, color),
+fn draw_icon(cv: &mut impl Surface, item: MenuItem, c: Point, k: f32, color: u16, bg: u16) {
+    match item {
+        MenuItem::Routes => icon_route(cv, c, k, color),
+        MenuItem::Rides => icon_rides(cv, c, k, color, bg),
+        MenuItem::Pois => icon_poi(cv, c, k, color, bg),
+        MenuItem::Map => icon_map(cv, c, k, color),
+        MenuItem::Peaks => icon_peaks(cv, c, k, color, bg),
+        MenuItem::Weather => icon_weather(cv, c, k, color, bg),
+        MenuItem::Settings => icon_sliders(cv, c, k, color),
     }
+}
+
+/// Two mountain ridges with small punched snow caps.
+fn icon_peaks(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    cv.triangle(
+        Point::new(c.x - si(k, 13.0), c.y + si(k, 10.0)),
+        Point::new(c.x - si(k, 3.0), c.y - si(k, 11.0)),
+        Point::new(c.x + si(k, 6.0), c.y + si(k, 10.0)),
+        color,
+    );
+    cv.triangle(
+        Point::new(c.x - si(k, 2.0), c.y + si(k, 10.0)),
+        Point::new(c.x + si(k, 7.0), c.y - si(k, 5.0)),
+        Point::new(c.x + si(k, 14.0), c.y + si(k, 10.0)),
+        color,
+    );
+    cv.triangle(
+        Point::new(c.x - si(k, 6.0), c.y - si(k, 5.0)),
+        Point::new(c.x - si(k, 3.0), c.y - si(k, 11.0)),
+        Point::new(c.x, c.y - si(k, 4.0)),
+        bg,
+    );
 }
 
 /// The Weather station glyph: a sun disc peeking over a simple cloud silhouette — the dial's
@@ -465,6 +522,21 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
+    static PEAK_LAYER: [i16; 1] = [0];
+    static PEAK_PROFILE: crate::PeakViewProfile = crate::PeakViewProfile {
+        id: 250,
+        name: "test",
+        observer_lat: 0,
+        observer_lon: 0,
+        observer_elevation_m: 0,
+        default_heading_q4: 0,
+        sample_step_q4: 1440,
+        angle_bottom_q4: -4,
+        angle_top_q4: 4,
+        layers_q4: [&PEAK_LAYER, &PEAK_LAYER, &PEAK_LAYER],
+        peaks: &[],
+    };
+
     fn run(scr: &mut MenuScreen, act: &mut Activity, rec: &mut crate::RecorderMachine, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
@@ -498,5 +570,20 @@ mod tests {
             matches!(t, Transition::Root(Screen::Map(_))),
             "tracking → root to [Home, Map] (the idle-return ride-base normalization), not a stacked Map"
         );
+    }
+
+    #[test]
+    fn peak_station_exists_only_when_a_profile_is_installed() {
+        let mut state = AppState::new(0, 0, 1.0);
+        assert_eq!(menu_items(&state), &BASE_ITEMS);
+        state.peak_view_profile = Some(&PEAK_PROFILE);
+        assert_eq!(menu_items(&state), &PEAK_ITEMS);
+
+        let mut activity = Activity::new(Mode::Idle);
+        let mut settings = Settings::default();
+        let mut screen = MenuScreen::new();
+        screen.dial.selected = 4;
+        let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
+        assert!(matches!(screen.handle(Gesture::Press, &mut cx), Transition::Push(Screen::PeakView(_))));
     }
 }

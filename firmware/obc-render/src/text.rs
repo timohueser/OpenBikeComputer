@@ -9,7 +9,9 @@
 //! and stays true-color in the simulator.
 
 use embedded_graphics::{
+    image::GetPixel,
     mono_font::{MonoFont, MonoTextStyle},
+    pixelcolor::BinaryColor,
     prelude::*,
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
@@ -35,7 +37,7 @@ pub enum Font {
 impl Font {
     /// The backing Terminus [`MonoFont`] — the single point the typeface is chosen.
     #[inline]
-    fn mono(self) -> &'static MonoFont<'static> {
+    pub(crate) fn mono(self) -> &'static MonoFont<'static> {
         match self {
             Font::Label => &font_data::TER_U24B,
             Font::Body => &font_data::TER_U28B,
@@ -126,4 +128,47 @@ where
     let character_style = MonoTextStyle::new(font.mono(), color);
     let text_style = TextStyleBuilder::new().alignment(align.to_eg()).baseline(Baseline::Top).build();
     Text::with_text_style(s, anchor, character_style, text_style).draw(target).unwrap_or(anchor)
+}
+
+/// Draw a text run counter-clockwise from `bottom_left`, optionally downsampling the source bitmap
+/// by an integer `divisor`. Peak View uses the Label face at 2:1, yielding a compact 6x12 label
+/// without shipping a fourth font strip. Each output pixel is on when any source pixel in its
+/// `divisor` square is on, so the thin Terminus strokes remain legible after reduction.
+pub fn draw_text_ccw<D>(target: &mut D, s: &str, bottom_left: Point, font: Font, divisor: u32, color: D::Color)
+where
+    D: DrawTarget,
+{
+    let divisor = divisor.max(1);
+    let mono = font.mono();
+    let cell_w = mono.character_size.width;
+    let cell_h = mono.character_size.height;
+    let out_w = cell_w.div_ceil(divisor);
+    let out_h = cell_h.div_ceil(divisor);
+    let glyphs_per_row = mono.image.size().width / cell_w;
+    let image = mono.image;
+
+    let pixels = s.chars().enumerate().flat_map(move |(char_i, c)| {
+        let glyph = mono.glyph_mapping.index(c) as u32;
+        let glyph_x = glyph % glyphs_per_row * cell_w;
+        let glyph_y = glyph / glyphs_per_row * cell_h;
+        (0..out_w).flat_map(move |out_x| {
+            (0..out_h).filter_map(move |out_y| {
+                let on = (0..divisor).any(|dx| {
+                    let source_x = out_x * divisor + dx;
+                    source_x < cell_w
+                        && (0..divisor).any(|dy| {
+                            let source_y = out_y * divisor + dy;
+                            source_y < cell_h
+                                && image.pixel(Point::new((glyph_x + source_x) as i32, (glyph_y + source_y) as i32))
+                                    == Some(BinaryColor::On)
+                        })
+                });
+                on.then(|| {
+                    let run_x = char_i as i32 * out_w as i32 + out_x as i32;
+                    Pixel(Point::new(bottom_left.x + out_y as i32, bottom_left.y - 1 - run_x), color)
+                })
+            })
+        })
+    });
+    let _ = target.draw_iter(pixels);
 }

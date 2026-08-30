@@ -451,6 +451,7 @@ mod tests {
                 ("Map", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
+                ("PeakView", RenderKeyKind::Statistics),
                 ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),

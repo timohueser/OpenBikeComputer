@@ -39,6 +39,7 @@ mod map_transfer;
 mod menu;
 mod nav_route;
 mod passkey;
+mod peak_view;
 mod poi_detail;
 mod poi_list;
 pub(crate) mod poi_menu;
@@ -79,6 +80,7 @@ pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
+pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
@@ -1082,6 +1084,9 @@ screens! {
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill().blocks_escape(),
     Menu(MenuScreen) => Caps::nav().timed(),
+    /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
+    /// platform-fed, so the row is unreachable when no panorama data is installed.
+    PeakView(PeakViewScreen) => Caps::riding(),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
     /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and

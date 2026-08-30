@@ -45,6 +45,12 @@ makes no chord.
 - `--center LON,LAT` sets the headless camera centre in integer microdegrees.
 - `--zoom MULT` multiplies the headless bbox-fit zoom.
 - `--heading DEG` starts heading-up at the given clockwise course.
+- `--peak-view gornergrat|scheidegg|glockner` installs one real-location, host-only panorama and
+  adds Peaks to the main menu. The shared screen follows GPS course while moving and compass
+  heading while stopped; drag **Compass (heading when stopped)** in the Controls window to turn a
+  live panorama. Its three terrain layers and named summits are independent from the loaded map
+  while the UI is being evaluated; no OBCM data is required yet. For a deterministic frame, use
+  `--script "B d d d d p" --expect-screen PeakView`.
 
 ## Ride and storage fixtures
 

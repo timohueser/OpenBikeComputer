@@ -13,8 +13,13 @@ routes = "Parcours"
 rides = "Sorties"
 pois = "POIs"
 map = "Carte"
+peaks = "Sommets"
 weather = "Météo"
 settings = "Réglages"
+
+[peak_view]
+manual = "MANUEL"
+no_peaks = "AUCUN SOMMET NOMMÉ"
 
 # --- Le contexte de sortie (le panneau du bas), la liste À venir et le sélecteur de détour ---
 [ride_context]

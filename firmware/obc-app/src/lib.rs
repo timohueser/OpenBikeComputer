@@ -50,6 +50,7 @@ pub mod map_catalog;
 pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
+pub mod peak_view;
 pub(crate) mod placement;
 pub mod recorder;
 pub(crate) mod render_key;
@@ -98,6 +99,7 @@ pub use map_catalog::{
 };
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
+pub use peak_view::{PeakViewPeak, PeakViewProfile};
 pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
