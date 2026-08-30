@@ -181,7 +181,6 @@ ride = "Sortie"
 display = "Affichage"
 connections = "Connexions"
 power = "Énergie"
-weather = "Météo"
 system = "Système"
 
 # --- Date & Time settings screen ---
@@ -579,19 +578,18 @@ alert_gust_body = "Rafales dangereuses devant."
 view_rain_map = "CARTE PLUIE"
 dismiss = "FERMER"
 
-# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
+[weather_context]
+refresh_now = "Actualiser"
+interval = "Intervalle"
+
+# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
 [weather_refresh]
 off = "Non"
 m15 = "15 min"
 m30 = "30 min"
 m60 = "60 min"
 m120 = "120 min"
-
-# --- The Weather settings screen ---
-[weather_settings]
-title = "MÉTÉO"
-refresh = "Mise à jour"
-refresh_sub = "via téléphone"
 
 # --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]
