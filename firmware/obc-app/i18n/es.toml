@@ -444,6 +444,10 @@ body = "Grabación recuperada"
 damaged = "Grabación dañada"
 continue_ride = "Continuar salida"
 discard = "Descartar"
+repair_failed = "Reparación fallida"
+unrepairable = "Tarjeta averiada"
+retry = "Reintentar"
+leave = "Atrás"
 
 # --- Route-less ride start card ---
 [ride_start]

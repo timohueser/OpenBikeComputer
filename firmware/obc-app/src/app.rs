@@ -2231,35 +2231,43 @@ impl App {
     /// Returns `true` exactly when the card was raised. An already-tracking app refuses the offer;
     /// recovery is a boot decision, never something that can replace a live session.
     pub fn offer_recovered_ride(&mut self, continuation: crate::RideContinuation) -> bool {
-        if !self.recorder.offer_recovery() {
+        if !self.recorder.offer_recovery(crate::recorder::RideRecoveryState::Resumable) {
             return false;
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
         self.navigator.set_active_route(None);
-        screen::apply(
-            &mut self.ui.stack,
-            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new())),
-        );
-        self.ui.map_dirty = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
-        true
+        self.raise_ride_recovery()
     }
 
-    /// Surface a durable recording whose journal bytes or continuation metadata failed domain
-    /// validation. The fail-closed card has no Continue action; the rider may only hold-to-Discard,
-    /// and Back cannot silently strand the object behind Home.
-    pub fn offer_damaged_ride(&mut self) -> bool {
-        if !self.recorder.offer_recovery() {
+    /// Surface a durable recording an executor could not attach to a session, named by what is
+    /// wrong with it. Logical damage on a readable catalog offers the one hold-guarded Discard;
+    /// [`RideDamage::Catalog`](crate::RideDamage::Catalog) offers no action at all. Back cannot
+    /// silently strand the object behind Home in either case.
+    pub fn offer_damaged_ride(&mut self, damage: crate::RideDamage) -> bool {
+        if !self.recorder.offer_recovery(crate::recorder::RideRecoveryState::for_damage(damage)) {
             return false;
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
         self.navigator.set_active_route(None);
+        self.raise_ride_recovery()
+    }
+
+    /// Root the UI at the recovery card in whatever mode Recorder's state names, and cancel any hold
+    /// in flight so the card's guarded row starts from zero.
+    ///
+    /// **The one place the card is raised**, so the two boot offers and the pass's re-raise cannot
+    /// drift. Re-rooting is also what repaints it: the card is `Static`-keyed, so a newly latched
+    /// mode reaches the panel through the stack change rather than through a render key.
+    /// `false` means the state names no decision to put.
+    pub(crate) fn raise_ride_recovery(&mut self) -> bool {
+        let Some(mode) = crate::screen::RecoveryMode::of(self.recorder.recovery()) else {
+            return false;
+        };
         screen::apply(
             &mut self.ui.stack,
-            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::damaged())),
+            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new(mode))),
         );
         self.ui.map_dirty = true;
         self.ui.input.cancel_holds();
