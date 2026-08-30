@@ -318,7 +318,9 @@ set.
 A row can also be a **switch**. Such a row shows its own state and flips it in place: the sheet stays
 open and only that row changes. The three rows of the map display sheet are switches. What they
 change is not visible until the sheet closes, because the screen below a sheet is held still — so the
-rider sets all three in one visit and the map is drawn again once, when the sheet goes away.
+rider sets all three in one visit and the flips themselves cost no map render. The map is drawn once
+when the shorter display sheet replaces the taller sheet, and once more, with all three answers,
+when the sheet goes away.
 
 A row can also simply **act**. The weather views declare one such row, Refresh now. It asks for
 fresh weather and closes the sheet, because the answer and the cue for it are content of the screen
