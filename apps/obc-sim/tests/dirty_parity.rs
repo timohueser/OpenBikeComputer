@@ -1425,7 +1425,17 @@ fn drawer_pages_replay() -> Vec<Step> {
     }
     // …and back out: the sheet shrinks 136 -> 104, uncovering 32 rows of map.
     steps.push(step("back out of the editor", 1_900).keys(&tap(Button::Back)).expect("QuickDrawer"));
-    for i in 1..=7 {
+    for i in 1..=5 {
+        steps.push(step("the page slides back", 1_900 + i * 32).expect("QuickDrawer"));
+    }
+    // **A gesture landing on exactly the frame the slide settles on** (#1515 D5): 1_900 + SLIDE_MS.
+    // Input runs before the tick in one pass, so this is the pass that used to retire the slide
+    // itself and leave the tick no edge to arm the base draw from — and the settling frame is the
+    // last that can leave the outgoing page's ink in the 4 px margin either side of the sheet. The
+    // tap moves the icon selection, so the frame is asked for either way; what the reference catches
+    // is *what* it drew.
+    steps.push(step("a step lands exactly as the slide does", 2_080).keys(&tap(Button::Up)).expect("QuickDrawer"));
+    for i in 6..=7 {
         steps.push(step("the page slides back", 1_900 + i * 32).expect("QuickDrawer"));
     }
     steps.push(step("quiet on the root page", 2_200).expect("QuickDrawer"));
@@ -1444,7 +1454,13 @@ fn drawer_pages_replay() -> Vec<Step> {
 /// before an assertion below runs. The assertions state which frames paid for the base and which
 /// did not.
 ///
-/// The mutant: make [`Screen::needs_base`] return `false` and the parity comparison fails inside
+/// One step of the replay lands a gesture on **exactly** the frame the second slide settles on
+/// (#1515 D5) — the pixel proof of the drawers' own
+/// `a_press_as_the_slide_lands_does_not_spend_the_base_draw_it_owes`. The mutant is `settle` back at
+/// the top of `handle`: the frame is still asked for (the tap moved the selection) but is drawn
+/// sheet-only, and the reference names the ink the outgoing page left in the margin.
+///
+/// The other mutant: make `Screen::needs_base` return `false` and the parity comparison fails inside
 /// the first page slide, naming the pixel the outgoing page left in the margin.
 #[test]
 fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
@@ -1470,9 +1486,95 @@ fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
     };
     assert_eq!(rendered_base(1_000, 1_600), 0, "the open renders the base on no step at all");
     assert!(rendered_base(1_600, 1_900) > 0, "a page slide travels outside the sheet, so the base is under it");
-    assert!(rendered_base(1_900, 2_300) > 0, "and the slide back puts the rows the sheet gave up back");
+    assert!(rendered_base(1_900, 2_080) > 0, "and the slide back puts the rows the sheet gave up back");
+    assert_eq!(
+        rendered_base(2_080, 2_081),
+        1,
+        "the frame the slide settles on draws the base, even with a gesture landing on exactly it"
+    );
     assert_eq!(rendered_base(2_200, 2_300), 0, "…but the settled root page is a frozen base again");
     assert_eq!(rendered_base(2_300, 2_500), 1, "the close renders the base once, and once only");
+}
+
+/// The **context sheet's swap**: the riding Map's five-row sheet (244 px) replaced by the map
+/// display sheet (156 px), which is the one path in the two-drawer grammar that gives a band of the
+/// screen below back without any slide at all.
+fn drawer_swap_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on the Map", 0).expect("Map"),
+        step("the first fix", 200).fix(0).expect("Map"),
+        step("quiet", 960).expect("Map"),
+        step("squeeze the map context open", 1_000).keys(&squeeze(Button::Down, Button::Back)),
+        step("release the squeeze", 1_100).keys(&[release(Button::Back), release(Button::Down)]),
+    ];
+    // The context sheet's own cadence: OPEN_MS 440 in STEP_MS 48 steps.
+    for i in 1..=10 {
+        steps.push(step("the sheet arrives", 1_100 + i * 48).expect("ContextDrawer"));
+    }
+    steps.push(step("quiet on the settled sheet", 1_700).expect("ContextDrawer"));
+    // One step back wraps to the fifth row — Map display, the row only the Map declares.
+    steps.push(step("wrap to the Map display row", 1_800).keys(&tap(Button::Up)).expect("ContextDrawer"));
+    steps.push(
+        step("the shorter sheet takes the taller one's place", 1_900)
+            .keys(&tap(Button::Select))
+            .expect("ContextDrawer"),
+    );
+    for i in 1..=4 {
+        steps.push(step("quiet on the swapped-in sheet", 1_900 + i * 48).expect("ContextDrawer"));
+    }
+    steps.push(step("close it", 2_200).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", 2_300).expect("Map"));
+    steps
+}
+
+/// **The swap puts back the band the taller sheet held, once** (#1515 D4c's review note, closed by
+/// D5). The sheet-to-sheet swap had no parity coverage at all: the two drawer replays above are both
+/// the quick drawer's, and both reach the base only through a page *slide*.
+///
+/// A sheet that is already on the panel makes no entrance, so the swap is a single frame — and that
+/// frame owes the screen below the 88 rows the 244 px sheet held and the 156 px one does not. The
+/// full-frame reference is the oracle for those rows: `drive_replay` compares the two panels after
+/// every pass, so parchment left standing over the map fails before any assertion here runs.
+///
+/// The mutant is dropping `needs_base: true` from `ContextDrawerScreen::swapped_in`: the swap frame
+/// draws the sheet alone and the band above it keeps the taller sheet's parchment.
+#[test]
+fn the_sheet_swap_puts_back_the_band_the_taller_sheet_held() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = drawer_swap_replay();
+    let (candidate, _) = drive_replay("drawer swap", || riding_device(camera), &steps, None, &reader);
+
+    // The Map's sheet is 244 px on a 320 px panel, so its top edge is row 76; the display sheet is
+    // 156 px, top edge row 164. Those 88 rows are what the swap gives back.
+    const TALLER_TOP: u32 = 76;
+    const SHORTER_TOP: u32 = 164;
+
+    let swap: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_900..2_200).contains(&r.at_ms)).collect();
+    let paid: Vec<&&Repaint> = swap.iter().filter(|r| r.features_tried > 0).collect();
+    assert_eq!(paid.len(), 1, "the swap draws the screen below exactly once: {swap:?}");
+    assert_eq!(paid[0].at_ms, 1_900, "…on the frame the press produced, not one frame later");
+    let (lo, hi, count) = paid[0].pixels.expect("a swap that moved no pixel did not put the band back");
+    assert!(
+        (TALLER_TOP..SHORTER_TOP).contains(&lo),
+        "the swap frame moved rows {lo}..={hi} ({count} px) — it must reach into the band above \
+         row {SHORTER_TOP} that only the taller sheet covered"
+    );
+
+    // …and once only: a landed sheet over a frozen base asks for nothing.
+    assert!(
+        !candidate.damage.iter().any(|r| (1_948..2_200).contains(&r.at_ms)),
+        "the swapped-in sheet is landed on arrival, so no frame after it repaints anything"
+    );
+
+    let close: Vec<&Repaint> = candidate.damage.iter().filter(|r| r.at_ms >= 2_200).collect();
+    assert_eq!(close.len(), 1, "the close is one repaint and no more: {close:?}");
+    assert!(close[0].features_tried > 0, "…and it is the base's one re-render");
 }
 
 /// The quick drawer opened over **Home** — a chrome base, which is the class that keeps the recess.
