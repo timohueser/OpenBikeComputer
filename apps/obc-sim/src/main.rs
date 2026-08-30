@@ -23,6 +23,7 @@ mod gui;
 mod map_file;
 mod palette;
 mod panel_power;
+mod peak_view;
 mod present;
 mod rides;
 mod routes;
@@ -108,6 +109,8 @@ struct Args {
     png: Option<String>,
     /// Start in heading-up orientation with this course (degrees CW from north).
     heading: Option<f32>,
+    /// Install one host-only real-location panorama and expose Peak View in the main menu.
+    peak_view: Option<peak_view::Preset>,
     /// Preload this GPX track for replay.
     gpx: Option<String>,
     /// With `--gpx --png`, the playback time (seconds) to render the fix at; defaults
@@ -245,6 +248,7 @@ impl Default for Args {
             scale: 1,
             png: None,
             heading: None,
+            peak_view: None,
             gpx: None,
             at: None,
             center: None,
@@ -613,6 +617,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--scale" => a.scale = it.next().and_then(|s| s.parse().ok()).ok_or("bad --scale")?,
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
             "--heading" => a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?),
+            "--peak-view" => {
+                a.peak_view = Some(peak_view::Preset::parse(&it.next().ok_or("--peak-view needs a preset")?)?);
+            }
             "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
             "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
             "--center" => {
@@ -1044,6 +1051,7 @@ Map and output:
   --center LON,LAT        Headless camera centre in microdegrees
   --zoom MULT             Headless bbox-fit zoom multiplier
   --heading DEG           Start in heading-up mode at this course
+  --peak-view PLACE       Peak panorama: gornergrat|scheidegg|glockner
 
 Ride and storage fixtures:
   --gpx PATH              Replay a GPX track
@@ -1196,6 +1204,12 @@ fn main() {
         }
         zoom *= args.zoom_mul;
         let mut state = AppState::new(cx, cy, zoom);
+        if let Some(profile) = args.peak_view.map(peak_view::Preset::profile) {
+            state.peak_view_profile = Some(profile);
+            state.compass_deg = Some(profile.default_heading_q4 as f32 / 4.0);
+            state.user_fix =
+                Some(Fix { lat: profile.observer_lat, lon: profile.observer_lon, course: None, speed_mps: Some(0.0) });
+        }
         if let Some(b) = args.battery {
             state.device.battery_pct = b;
         }
@@ -2020,6 +2034,7 @@ mod cli_tests {
 
     #[test]
     fn grouped_flags_parse_typed_states() {
+        assert_eq!(parse(&["--peak-view", "scheidegg"]).unwrap().peak_view, Some(peak_view::Preset::KleineScheidegg));
         assert_eq!(parse(&["--ble", "passkey=42"]).unwrap().ble.unwrap().passkey, Some(42));
         let linked_bond = parse(&["--ble", "connected+paired"]).unwrap().ble.unwrap();
         assert!(linked_bond.connected);
@@ -2105,6 +2120,7 @@ mod cli_tests {
             "--scale",
             "--png",
             "--heading",
+            "--peak-view",
             "--gpx",
             "--at",
             "--center",

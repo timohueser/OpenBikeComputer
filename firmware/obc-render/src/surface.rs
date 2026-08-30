@@ -17,7 +17,7 @@ use embedded_graphics::{
 };
 
 use crate::canvas::{rect, Canvas};
-use crate::text::{draw_text, text_width, Font, TextAlign};
+use crate::text::{draw_text, draw_text_ccw, text_width, Font, TextAlign};
 
 /// The bounding box of a point set — for the primitives given as vertices (line, triangle).
 fn points_bbox(pts: &[Point]) -> Rectangle {
@@ -68,6 +68,14 @@ pub trait Surface {
     /// Text anchored at `at`, aligned `align`, top baseline. Returns the position
     /// just past the string (see [`draw_text`]).
     fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, color: u16) -> Point;
+
+    /// Draw text counter-clockwise from a bottom-left anchor. `divisor = 2` halves both glyph
+    /// dimensions while retaining any lit source pixel in each 2x2 block.
+    fn text_ccw(&mut self, s: &str, bottom_left: Point, font: Font, divisor: u32, color: u16) {
+        // Recording/test surfaces that do not care about orientation still see the text event.
+        let _ = divisor;
+        self.text(s, bottom_left, font, TextAlign::Left, color);
+    }
 
     /// [`text`](Surface::text) vertically centred in the `v_span = (top, height)` span: the
     /// anchor's y is computed from the font's [`cap_height`](Font::cap_height)
@@ -187,5 +195,16 @@ where
         }
         let (target, c) = self.split();
         draw_text(target, s, at, font, align, c(color))
+    }
+
+    fn text_ccw(&mut self, s: &str, bottom_left: Point, font: Font, divisor: u32, color: u16) {
+        let divisor = divisor.max(1);
+        let width = text_width(s, font).div_ceil(divisor) as i32;
+        let height = font.line_height().div_ceil(divisor) as i32;
+        if self.rejects(&rect(bottom_left.x, bottom_left.y - width, height, width)) {
+            return;
+        }
+        let (target, c) = self.split();
+        draw_text_ccw(target, s, bottom_left, font, divisor, c(color));
     }
 }

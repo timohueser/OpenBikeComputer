@@ -149,9 +149,14 @@ pub struct AppState {
     pub pan: Option<Pan>,
     /// Latest electronic-compass heading (degrees CW from north), or `None` until one
     /// arrives. Stands in for the GPS course when the rider is stopped on a heading-up
-    /// map, so the orientation follows the compass instead of snapping to north; only
-    /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
+    /// map, so the orientation follows the compass instead of snapping to north. Peak View uses
+    /// the same fallback even when the map preference is north-up. It is adopted only on ticks
+    /// where one of those views would use it (see [`App::tick`]).
     pub compass_deg: Option<f32>,
+    /// Renderer-ready panorama installed by the platform, or `None` when Peak View data is not
+    /// available. The simulator supplies independent real-location fixtures while the UI is being
+    /// evaluated; the device can later point this same seam at its chosen durable store.
+    pub peak_view_profile: Option<&'static crate::PeakViewProfile>,
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
@@ -200,6 +205,7 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
+            peak_view_profile: None,
             device: DeviceStatus {
                 // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
                 battery_pct: 75,
@@ -985,14 +991,20 @@ impl App {
         }
         // Electronic compass → the heading when the GPS can't give a course. Polled after the fix so
         // it sees this tick's movement state, and adopted *only* when it would actually drive the
-        // orientation: heading-up, not panning, and the latest fix has no course (stopped). Storing
-        // it in any other state (where `course_rad` ignores it) would change `state` on every
-        // reading and force a needless map redraw.
+        // orientation: a heading-up map that is not panning, or Peak View, and the latest fix has
+        // no course (stopped). Peak View deliberately uses the same effective-heading chain as the
+        // map, independent of the map's current north-up/heading-up preference.
         if let Some(compass) = compass {
             if let Some(heading) = compass.poll() {
                 let stopped = self.state.user_fix.and_then(|f| f.course).is_none();
-                if stopped && self.state.heading_up && self.state.pan.is_none() {
+                let peak_view_active = matches!(self.ui.stack.last(), Some(Screen::PeakView(_)));
+                let map_uses_compass = self.state.heading_up && self.state.pan.is_none();
+                if stopped && (map_uses_compass || peak_view_active) {
+                    let changed = self.state.compass_deg != Some(heading);
                     self.state.compass_deg = Some(heading);
+                    if changed && peak_view_active {
+                        self.ui.map_dirty = true;
+                    }
                 }
             }
         }
@@ -4341,6 +4353,17 @@ mod tests {
         app.state.heading_up = false; // north-up never consults the compass
         tick_with(&mut app, Fix::at(0, 0), 200.0);
         assert_eq!(app.state.compass_deg, None);
+    }
+
+    #[test]
+    fn peak_view_adopts_the_stopped_compass_even_when_the_map_is_north_up() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.heading_up = false;
+        assert!(app.ui.stack.push(Screen::PeakView(crate::screen::PeakViewScreen::new())).is_ok());
+        app.ui.map_dirty = false;
+        tick_with(&mut app, Fix::at(0, 0), 215.0);
+        assert_eq!(app.state.compass_deg, Some(215.0));
+        assert!(app.ui.map_dirty, "a stopped compass turn repaints the visible panorama");
     }
 
     // --- in-place placement into the reserved region ---

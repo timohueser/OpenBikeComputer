@@ -306,7 +306,7 @@ struct SimGui {
     /// cadence (asynchronous to the GPS fix).
     baro: BaroSensor,
     /// Simulated compass (device magnetometer stand-in) — the panel's "Compass" slider, orienting
-    /// a heading-up map while stopped when the GPS has no course.
+    /// a heading-up map or Peak View while stopped when the GPS has no course.
     compass: SimCompass,
     /// Synthetic BLE sensors (HR / power / cadence) — the panel's "Sensors" section drives them, and
     /// their three source fields feed `Sensors::{hr,power,cadence}` each tick, honouring the ~1 Hz
@@ -371,6 +371,11 @@ impl SimGui {
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
+        let peak_profile = args.peak_view.map(crate::peak_view::Preset::profile);
+        if let Some(profile) = peak_profile {
+            state.peak_view_profile = Some(profile);
+            state.compass_deg = Some(profile.default_heading_q4 as f32 / 4.0);
+        }
         if let Some(b) = args.battery {
             state.device.battery_pct = b;
         }
@@ -378,15 +383,26 @@ impl SimGui {
         // so the loop and user marker have something to track.
         state.mode = CameraMode::Free;
         state.heading_up = args.heading.is_some();
-        let loc = SimLocationSource::new(Some(Fix { lat: cy, lon: cx, course: args.heading, speed_mps: None }));
+        let (fix_lat, fix_lon) =
+            peak_profile.map(|profile| (profile.observer_lat, profile.observer_lon)).unwrap_or((cy, cx));
+        let loc = SimLocationSource::new(Some(Fix {
+            lat: fix_lat,
+            lon: fix_lon,
+            course: args.heading,
+            speed_mps: args.heading.map(|_| 5.0).or(Some(0.0)),
+        }));
 
         // Seed the panel mirrors from the initial fix so the widgets open at the real position.
         let panel = match loc.current() {
             Some(f) => PanelState {
                 lat_deg: f.lat as f64 / 1e6,
                 lon_deg: f.lon as f64 / 1e6,
-                heading_deg: f.course.unwrap_or(0.0),
-                compass_deg: f.course.unwrap_or(0.0),
+                heading_deg: f.course.unwrap_or_else(|| {
+                    peak_profile.map(|profile| profile.default_heading_q4 as f32 / 4.0).unwrap_or(0.0)
+                }),
+                compass_deg: f.course.unwrap_or_else(|| {
+                    peak_profile.map(|profile| profile.default_heading_q4 as f32 / 4.0).unwrap_or(0.0)
+                }),
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,

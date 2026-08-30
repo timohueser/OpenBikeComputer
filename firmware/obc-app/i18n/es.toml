@@ -13,8 +13,13 @@ routes = "Rutas"
 rides = "Salidas"
 pois = "POIs"
 map = "Mapa"
+peaks = "Cumbres"
 weather = "Tiempo"
 settings = "Ajustes"
+
+[peak_view]
+manual = "MANUAL"
+no_peaks = "SIN CUMBRES CON NOMBRE"
 
 # --- El contexto de ruta (la hoja inferior), la lista Próximo y el selector de desvío ---
 [ride_context]

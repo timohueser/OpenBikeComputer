@@ -26,8 +26,13 @@ routes = "Routes"
 rides = "Rides"
 pois = "POIs"
 map = "Map"
+peaks = "Peaks"
 weather = "Weather"
 settings = "Settings"
+
+[peak_view]
+manual = "MANUAL"
+no_peaks = "NO NAMED PEAKS"
 
 # --- The context sheets' row labels (the Down+Back sheet on a riding view and on the Up-ahead
 # --- timeline), plus the Detour chooser's copy. The mid-ride compass that used to own this section
