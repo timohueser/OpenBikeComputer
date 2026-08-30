@@ -1,13 +1,12 @@
 # Concept renders
 
-Three WebP files cut from the enclosure colourway sheets. The repository README uses them to show
+Two WebP files cut from the enclosure colourway sheets. The repository README uses them to show
 the hardware direction. The sheets themselves are not in the repository, so these files cannot be
 rebuilt from it — keep the sheets if you want to re-cut.
 
 | File | Content |
 | --- | --- |
 | `front.webp` | The Forest sheet's large render, cropped to the studio panel. |
-| `dash.webp` | The Forest sheet's `DASH` thumbnail, the same device at three quarters. |
 | `colorways.webp` | All five `DASH` thumbnails, composed into one grid. |
 
 Each crop stops inside the panel's rounded corners, so no corner of the page background survives.
