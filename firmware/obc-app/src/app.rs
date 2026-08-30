@@ -3479,7 +3479,17 @@ impl App {
                 recess.set(false);
             }
         }
-        rx.stats
+        // Read out before the debt is discharged, so `rx`'s borrow of `ui` ends first.
+        let stats = rx.stats;
+        // **The frame pays what the sheets above the base owed** (#1515 D5). A sheet arms a base
+        // draw when it stops purely covering the screen below — a page slide, a shorter sheet
+        // swapped in — and carries it until a frame draws that screen. This is that frame, and
+        // `!sheet_only` is the only place the answer exists: a pass may tick and then render
+        // nothing at all.
+        if !sheet_only {
+            ui.spend_base_draw();
+        }
+        stats
     }
 
     /// Render **only the overlay plane** — the transient always-on-top chrome (the global
