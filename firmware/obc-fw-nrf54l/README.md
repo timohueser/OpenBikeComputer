@@ -898,3 +898,24 @@ rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs
 same way and the device keeps running. The trigger is
 refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
 is what S5's on-device menu entry will post.
+
+### Driving the ride-recovery acceptance over the VCOM (#1591)
+
+Four more `debug-uart`-only word-tag commands, sent over the same pyserial link as `dfu-install`
+above. They exist so the damaged-`RECORDING` recovery path can be run on a real card without card
+surgery; all four `#[cfg(feature = "debug-uart")]` out of the release image.
+
+| Command | What it does |
+| :-- | :-- |
+| `ride-damage payload` | Opens a `RECORDING` object through the production seam and journals a **7-byte** append. On the next mount the bytes are not a ride-v3 sample/footer boundary, so recovery classifies `payload` damage. |
+| `ride-damage metadata` | The same with a **20-byte** zeroed sample and an all-zero resume image. The sample boundary stays valid, so the refusal is the continuation metadata's — `metadata` damage. |
+| `ride-repair-fail` | Arms a **one-shot**: the next exact removal answers as a media failure would, **without issuing the commit**. The card is never touched. |
+| `store-census` | Prints one RTT line per catalog entry (`id`, `revision`, `kind`, `flags`, `payload_len`, `payload_crc`, `name`), then the entry count, listing completeness and free extents — the before/after proof that a repair moved exactly one object. |
+
+`ride-damage` deliberately does **not** self-reset: the reset would race the confirmation line off
+the UART. Issue `probe-rs reset` after you see
+`flat ride: fabricated a damaged RECORDING <id> (<kind>)`.
+
+There is no `ride-damage catalog`. That third cause needs a real catalog read failure, which cannot
+be fabricated on a working card without risking it — and its whole behaviour is that no store
+operation ever happens, which is pinned host-side instead.
