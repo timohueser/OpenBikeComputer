@@ -2,6 +2,7 @@
 title: The site has a log now
 date: 2026-07-21
 description: A place for build notes and field reports — plus the toys that come with it, from a before/after slider to an interactive 3D viewer for CAD parts.
+copy: ai
 ---
 
 The docs explain how OpenBikeComputer *works*. What they can't hold is the story of
