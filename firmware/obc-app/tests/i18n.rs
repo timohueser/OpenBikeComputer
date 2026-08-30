@@ -107,8 +107,9 @@ fn fixed_buffer_captions_fit() {
         // to ~7 bytes ("9999km" / "5279ft"), so the prefix must clear ≤ 13 (map.rs).
         (Msg::MapOffRoute, 13, "map.rs off-route pill (String<20>, ≤7-byte distance follows)"),
         // The quick drawer's brightness title: `draw_brightness` writes this plus " 100%" into a
-        // `String<24>` and discards the result, so an over-length caption blanks the whole title
-        // rather than truncating. Current worst is de "HELLIGKEIT" at 10 — a guard, not a fix.
+        // `String<24>` and discards the result, so a caption past the budget silently loses its
+        // trailing fragments (the write is atomic per fragment, not per call). Current worst is
+        // de "HELLIGKEIT" at 10 — a guard, not a fix.
         (Msg::QuickBrightness, 19, "quick_drawer.rs draw_brightness title (String<24>, ' 100%' follows)"),
     ];
 
