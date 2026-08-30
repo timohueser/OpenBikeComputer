@@ -1349,6 +1349,7 @@ mod tests {
 
         // Back out of a re-opened editor discards the staged choice.
         w.press(&mut d, Gesture::Press);
+        assert_eq!(d.page, Page::Editor, "the press re-opened the editor");
         assert_eq!(d.staged, WeatherRefresh::Every30 as u8, "re-opens on what is now committed");
         w.press(&mut d, Gesture::Step(2));
         w.press(&mut d, Gesture::Back);
