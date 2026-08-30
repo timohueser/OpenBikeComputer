@@ -1620,6 +1620,12 @@ mod tests {
         rec.apply_outcome(RecorderOutcome::Cancelled { token: retry.token() });
         assert_eq!(rec.recovery(), RideRecoveryState::Repairable(RideDamage::Payload), "nothing was attempted");
         assert!(rec.next_effect(CAN_RECORD, at(60_002)).is_none(), "and the rider has not asked again");
+
+        // A confirmation after the Cancel is a fresh rider action and buys exactly one attempt.
+        rec.request(RecorderIntent::Discard);
+        let after_cancel = rec.next_effect(CAN_RECORD, at(60_003)).expect("a confirm after a cancel is honoured");
+        assert!(matches!(after_cancel, RecorderEffect::Discard { .. }));
+        assert!(rec.next_effect(CAN_RECORD, at(60_004)).is_none(), "and again, one is all it is");
     }
 
     /// A store that refuses every mutation is a different answer from a write that went wrong: the
