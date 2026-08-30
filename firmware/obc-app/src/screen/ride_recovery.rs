@@ -372,7 +372,10 @@ mod tests {
             }
         }
         // Pinned, so copy that merely *fits* cannot grow toward the edge unnoticed.
-        assert_eq!(worst_body, 216, "en \"Card needs service\" / es \"Reparación fallida\" in Label, pinned");
+        assert_eq!(
+            worst_body, 216,
+            "en \"Card needs service\" / fr \"Réparation échouée\" / es \"Reparación fallida\" in Label, pinned"
+        );
         assert_eq!(body_room - worst_body, 8, "…with 8 px to spare");
         assert_eq!(worst_row, 154, "de \"Wiederholen\" in Body, pinned");
         assert_eq!(row_room - worst_row, 38, "…with 38 px to spare");
