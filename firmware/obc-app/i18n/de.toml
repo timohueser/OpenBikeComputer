@@ -222,8 +222,9 @@ idle_sub = "Timeout"
 
 # --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
 [map_context]
-# "Kartenanzeige" is the literal reading for the door; a sheet row is one line, so it takes the
-# short "Anzeige" — the sheet it opens says which display it is about.
+# "Kartenanzeige" is the literal reading for the door, but at ~182 px it overruns the 164 px door
+# budget, so the row takes the short "Anzeige". The sheet it opens draws no title; its three rows
+# (Uhr, Maßstab, Konturen) are all map chrome, which is what keeps the short label unambiguous.
 map_display = "Anzeige"
 clock = "Uhr"
 scale_bar = "Maßstab"
