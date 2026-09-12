@@ -1112,9 +1112,8 @@ pub(crate) async fn run_app(
         }
 
         // ── Sensor presence → warning (issue #504), real-sensor build, once ──
-        // The sensor task publishes its boot I²C probe result a moment after boot; map any chip that
-        // didn't answer to a dismissable warning card. `try_take` yields once, so this fires a single
-        // pass; an empty flag set is a no-op.
+        // The sensor task publishes once GPS responds or its startup deadline passes. Map chips
+        // absent at that point to a dismissable warning; this is not a live-availability stream.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::WarningFlags::NONE;

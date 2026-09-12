@@ -182,6 +182,14 @@ nothing to wire on the GPS-21834.
 the receiver's RTC + ephemeris across a power-off, turning every cold ~30 s fix into a hot/warm fix
 in seconds — the biggest UX win for a device switched off at each stop.
 
+If GPS does not answer the first startup probe, the sensor task retries at the normal DDC poll
+interval during the existing 150-second boot acquisition window. On the first response, it sends
+the GPS configuration before it reads fixes. The startup sensor-warning bundle is published then,
+or at the deadline if GPS remains absent. This can delay the altimeter and compass warnings too;
+their original probe results are retained. A successful first GPS probe publishes immediately.
+This is a one-time startup result, not a report of live sensor availability. Intentional idle
+backup sleep still produces no DDC polling.
+
 ## Build & flash
 
 **One-time prerequisite (#617): flash the bootloader.** The app is linked at `0x8000` —

@@ -56,7 +56,7 @@ use obc_ports::{
 /// run on different executors / priorities on the board.
 type Sig<T> = Signal<CriticalSectionRawMutex, T>;
 
-/// Which sensors answered the boot I²C probe — the sensor task's probe results, carried to the app
+/// Which sensors answered during startup — the sensor task's results, carried to the app
 /// so a missing module surfaces as a dismissable warning rather than only an RTT line. A missing
 /// GPS is distinct from "no fix yet" (the receiver is there, just no sky): this is the *module*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,7 +262,7 @@ impl SensorTaskLink<'_> {
         self.0.publish(&self.0.heading, deg);
     }
 
-    /// Publish the boot probe result (once, after the sensor task probes all three chips). Pulses the
+    /// Publish the startup result once, after GPS responds or its acquisition deadline passes. Pulses the
     /// event so the ride loop wakes and drains it via [`SensorConsumer::take_presence`].
     pub fn dispatch_presence(&self, p: SensorPresence) {
         self.0.publish(&self.0.presence, p);
@@ -380,7 +380,7 @@ impl<'a> SensorConsumer<'a> {
         SensorCadence(&self.0.cadence)
     }
 
-    /// Drain the boot probe result — `Some` exactly once, on the pass after the task publishes it,
+    /// Drain the startup result — `Some` exactly once, on the pass after the task publishes it,
     /// then `None`. The ride loop maps any absent sensor to a warning flag (issue #504).
     pub fn take_presence(&self) -> Option<SensorPresence> {
         self.0.presence.try_take()

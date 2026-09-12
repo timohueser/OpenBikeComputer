@@ -158,7 +158,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
     // --- Boot probe: loud RTT so a wiring/power fault is obvious before anything else. ---
     let baro_addr = probe_bmp581(&mut twim).await;
     let icm_addr = probe_icm20948(&mut twim).await;
-    let gps_ok = probe_m10(&mut twim).await;
+    let mut gps_ok = probe_m10(&mut twim).await;
 
     if let Some(addr) = baro_addr {
         configure_bmp581(&mut twim, addr).await;
@@ -169,17 +169,19 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
     if gps_ok {
         configure_m10(&mut twim, DEFAULT_INTERVAL_S).await;
     } else {
-        warn!("sensors: GPS not answering — the loop will keep polling so a late-powered module is picked up");
+        warn!("sensors: GPS not answering — retrying during boot acquisition");
     }
 
     // Whether the compass is live — the AK09916 magnetometer is read at AK_ADDR through the ICM's
     // bypass, so only its *presence* (a successful ICM probe + config) matters at read time.
     let compass_ok = icm_addr.is_some();
 
-    // Surface the probe result on glass (issue #504): any chip that didn't answer becomes a
-    // dismissable warning the ride loop raises. Published once — a missing module is a wiring/power
-    // fault, not a transient. (A missing GPS *module* is distinct from "no fix yet".)
-    link.dispatch_presence(SensorPresence { gps: gps_ok, altimeter: baro_addr.is_some(), compass: compass_ok });
+    // The warning bundle is published once: immediately when GPS responds, otherwise after the
+    // bounded startup window. A receiver still starting must not leave a stale missing-GPS warning.
+    let mut presence = SensorPresence { gps: gps_ok, altimeter: baro_addr.is_some(), compass: compass_ok };
+    if gps_ok {
+        link.dispatch_presence(presence);
+    }
 
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
@@ -192,8 +194,23 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
     info!("sensors: boot acquisition — holding awake for the first fix (≤ {=u64}s)", BOOT_ACQUIRE_TIMEOUT_S);
     let boot_deadline = Instant::now() + Duration::from_secs(BOOT_ACQUIRE_TIMEOUT_S);
     loop {
-        wait_data_event(&mut txready, interval_s, &mut st).await;
-        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await {
+        if gps_ok {
+            wait_data_event(&mut txready, interval_s, &mut st).await;
+        } else {
+            // An absent receiver cannot supply a useful TX-Ready edge. Keep its probes at the
+            // normal poll cadence even if that unconnected input is noisy.
+            Timer::at((Instant::now() + poll_deadline(interval_s)).min(boot_deadline)).await;
+            if Instant::now() >= boot_deadline {
+                break;
+            }
+            gps_ok = probe_m10(&mut twim).await;
+            if gps_ok {
+                configure_m10(&mut twim, interval_s).await;
+                presence.gps = true;
+                link.dispatch_presence(presence);
+            }
+        }
+        if gps_ok && drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await {
             break; // got the boot fix
         }
         if Instant::now() >= boot_deadline {
@@ -203,6 +220,10 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
             );
             break;
         }
+    }
+    if !gps_ok {
+        error!("sensors: GPS did not answer during boot acquisition — check wiring / power");
+        link.dispatch_presence(presence);
     }
 
     // --- Phase 2: power-managed steady state. Honour the app's requested GpsPower — deep-sleep when
@@ -479,14 +500,13 @@ async fn probe_bmp581(twim: &mut Twim<'static>) -> Option<u8> {
     None
 }
 
-/// Probe the SAM-M10Q by reading its DDC byte-count register; log whether it answers.
+/// Probe the SAM-M10Q by reading its DDC byte-count register. Absence is reported at the deadline.
 async fn probe_m10(twim: &mut Twim<'static>) -> bool {
     let mut cnt = [0u8; 2];
     if twim.write_read(M10_ADDR, &[DDC_COUNT_REG], &mut cnt).await.is_ok() {
         info!("SAM-M10Q alive @ {=u8:#04x} ({=u16} DDC bytes pending)", M10_ADDR, u16::from_be_bytes(cnt));
         true
     } else {
-        error!("SAM-M10Q no ACK on DDC {=u8:#04x} — check Qwiic wiring / 3V3 / V_BCKP", M10_ADDR);
         false
     }
 }
