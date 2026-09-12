@@ -653,7 +653,7 @@ Settings screens use two focus levels. The row cursor selects a setting. Edit fo
 <figcaption>A press moves focus between the row and its value. Up and Down change the focused value.</figcaption>
 </figure>
 
-The application marks settings dirty when the user leaves the Settings subtree. The host then saves the settings through `SettingsStore`.
+The application marks settings dirty when a value changes. `SettingsMachine` waits until the user leaves the Settings subtree before it requests a write. The host writes the snapshot through `SettingsStore` and reports the result.
 
 The weather alert cooldown is not a setting. It is device state, and it has its own record with its own lifecycle. A firing alert writes only that record, and it writes it immediately: an open settings screen does not hold it back, and a change to a setting does not touch it.
 
