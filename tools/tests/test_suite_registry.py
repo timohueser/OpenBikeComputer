@@ -791,6 +791,11 @@ class ShippedRoutingTests(unittest.TestCase):
                 [".github/workflows/ci.yml"],
                 ["boot", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
             ),
+            (
+                "nextest configuration",
+                [".config/nextest.toml"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
+            ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
             ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),

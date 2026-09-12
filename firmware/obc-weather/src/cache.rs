@@ -52,6 +52,8 @@ pub struct WeatherCache {
     frame_generation: u32,
     frame_bundle_crc: u32,
     frame_index: u16,
+    /// Positive freshness cap for the frame key's bundle; zero until its full sweep succeeds.
+    frame_cap_s: u16,
     frame: FrameDescriptor,
     directory_valid: bool,
     directory_generation: u32,
@@ -75,6 +77,7 @@ impl WeatherCache {
             frame_generation: 0,
             frame_bundle_crc: 0,
             frame_index: 0,
+            frame_cap_s: 0,
             frame: EMPTY_FRAME,
             directory_valid: false,
             directory_generation: 0,
@@ -94,6 +97,7 @@ impl WeatherCache {
 
     pub fn clear(&mut self) {
         self.frame_valid = false;
+        self.frame_cap_s = 0;
         self.directory_valid = false;
         self.tile_valid = false;
     }
@@ -161,8 +165,8 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
     /// No synthetic validity is invented beyond the cap; whether missing rain may be *claimed*
     /// dry is decision logic (WX12), not rendering.
     ///
-    /// Cost: one descriptor sweep (`frame_count` 32-byte reads, contiguous — a DWD table is one
-    /// SD block) on top of the binary search, once per adapter construction.
+    /// Cost: one descriptor sweep (`frame_count` 48-byte reads) per cached bundle identity, on top
+    /// of each lookup's binary search. Changing frames within that bundle retains the cap.
     pub fn current_frame(&self, now: i64, cache: &mut WeatherCache) -> Result<Option<(usize, FrameDescriptor)>, Error> {
         if now < self.header.valid_from || now > self.header.valid_until {
             return Ok(None);
@@ -170,17 +174,20 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
         let Some((index, frame)) = self.frame_at_or_before(now, cache)? else {
             return Ok(None);
         };
-        let mut cap = FRAME_CURRENT_CAP_S;
-        if self.header.frame_count > 1 {
-            let mut previous = self.frame(0)?.valid_at;
-            for i in 1..self.header.frame_count as usize {
-                let at = self.frame(i)?.valid_at;
-                // Validated strictly increasing, so every spacing is positive.
-                cap = cap.min(at.saturating_sub(previous));
-                previous = at;
+        if cache.frame_cap_s == 0 {
+            let mut cap = FRAME_CURRENT_CAP_S;
+            if self.header.frame_count > 1 {
+                let mut previous = self.frame(0)?.valid_at;
+                for i in 1..self.header.frame_count as usize {
+                    let at = self.frame(i)?.valid_at;
+                    // Validated strictly increasing, so every spacing is positive.
+                    cap = cap.min(at.saturating_sub(previous));
+                    previous = at;
+                }
             }
+            cache.frame_cap_s = cap as u16;
         }
-        if now.saturating_sub(frame.valid_at) > cap {
+        if now.saturating_sub(frame.valid_at) > i64::from(cache.frame_cap_s) {
             return Ok(None);
         }
         Ok(Some((index, frame)))
@@ -306,6 +313,9 @@ impl<'a, S: ByteSource + ?Sized> WeatherReader<'a, S> {
             return Ok(cache.frame);
         }
         let frame = self.frame(frame_index)?;
+        if cache.frame_generation != self.header.generation || cache.frame_bundle_crc != self.header.crc32 {
+            cache.frame_cap_s = 0;
+        }
         cache.frame_generation = self.header.generation;
         cache.frame_bundle_crc = self.header.crc32;
         cache.frame_index = frame_index_u16;
@@ -407,16 +417,26 @@ mod tests {
         calls: Cell<usize>,
         bytes_read: Cell<usize>,
         blocks_touched: Cell<usize>,
+        fail_at: Cell<Option<u64>>,
     }
 
     impl<'a> CountingSource<'a> {
         fn new(bytes: &'a [u8]) -> Self {
-            Self { bytes, calls: Cell::new(0), bytes_read: Cell::new(0), blocks_touched: Cell::new(0) }
+            Self {
+                bytes,
+                calls: Cell::new(0),
+                bytes_read: Cell::new(0),
+                blocks_touched: Cell::new(0),
+                fail_at: Cell::new(None),
+            }
         }
     }
 
     impl ByteSource for CountingSource<'_> {
         fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
+            if self.fail_at.get() == Some(offset) {
+                return Err(SourceError::BadOffset);
+            }
             let start = offset as usize;
             let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
             out.copy_from_slice(self.bytes.get(start..end).ok_or(SourceError::BadOffset)?);
@@ -552,6 +572,62 @@ mod tests {
         assert_eq!(reader.current_frame(last + cadence + 1, &mut cache).unwrap(), None);
         // Past the bundle's own validity nothing renders, whatever the frames say.
         assert_eq!(reader.current_frame(header.valid_until + 1, &mut cache).unwrap(), None);
+    }
+
+    #[test]
+    fn freshness_sweep_is_reused_across_frames_until_clear() {
+        let source = CountingSource::new(DWD);
+        let reader = WeatherReader::open(&source).unwrap();
+        let mut cache = WeatherCache::new();
+        let first = reader.frame(0).unwrap().valid_at;
+        source.calls.set(0);
+        reader.current_frame(first, &mut cache).unwrap().unwrap();
+        let cold_reads = source.calls.replace(0);
+        reader.current_frame(first, &mut cache).unwrap().unwrap();
+        let warm_reads = source.calls.replace(0);
+        assert_eq!(cold_reads - warm_reads, reader.header.frame_count as usize);
+        assert!(warm_reads <= 5, "only the binary search remains");
+
+        assert_eq!(reader.current_frame(first + 901, &mut cache).unwrap().unwrap().0, 1);
+        assert!(source.calls.replace(0) <= 5, "changing frame does not repeat the sweep");
+        reader.current_frame(first, &mut cache).unwrap().unwrap();
+        assert_eq!(source.calls.replace(0), warm_reads);
+        cache.clear();
+        reader.current_frame(first, &mut cache).unwrap().unwrap();
+        assert_eq!(source.calls.get(), cold_reads, "clear discards the derived cap too");
+    }
+
+    #[test]
+    fn freshness_cap_changes_with_bundle_identity_and_failed_sweeps_retry() {
+        let original = WeatherReader::open(&SliceSource(DWD)).unwrap();
+        let first = original.frame(0).unwrap().valid_at;
+        let frame_base = obcw::HEADER_LEN + HOURLY_COUNT * obcw::HOURLY_RECORD_LEN;
+        let mut changed = DWD.to_vec();
+        let second_time = frame_base + obcw::FRAME_DESCRIPTOR_LEN + obcw::FRAME_VALID_AT;
+        changed[second_time..second_time + 8].copy_from_slice(&(first + 60).to_le_bytes());
+        changed[obcw::HDR_CRC32..obcw::HDR_CRC32 + 4].fill(0);
+        let crc = Crc32::checksum(&changed);
+        changed[obcw::HDR_CRC32..obcw::HDR_CRC32 + 4].copy_from_slice(&crc.to_le_bytes());
+        let source = CountingSource::new(&changed);
+        let reader = WeatherReader::open(&source).unwrap();
+        assert_eq!(reader.header.generation, original.header.generation);
+        let mut cache = WeatherCache::new();
+        assert!(original.current_frame(first + 500, &mut cache).unwrap().is_some());
+        assert!(reader.current_frame(first + 500, &mut cache).unwrap().is_none(), "new CRC has a 60-second cap");
+        assert!(
+            original.current_frame(first + 500, &mut cache).unwrap().is_some(),
+            "switching back restores 900 seconds"
+        );
+
+        // The first-frame binary search does not visit descriptor three. Fail there after the
+        // sweep has already seen the shorter spacing; a partial result must not become a hit.
+        source.fail_at.set(Some((frame_base + 3 * obcw::FRAME_DESCRIPTOR_LEN) as u64));
+        assert!(reader.current_frame(first, &mut cache).is_err());
+        source.fail_at.set(None);
+        source.calls.set(0);
+        assert!(reader.current_frame(first, &mut cache).unwrap().is_some());
+        assert!(source.calls.get() >= reader.header.frame_count as usize, "retry completes the sweep");
+        assert!(reader.current_frame(first + 500, &mut cache).unwrap().is_none());
     }
 
     #[test]

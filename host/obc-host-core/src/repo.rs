@@ -63,12 +63,9 @@ pub trait RideRepository {
     fn ids(&self) -> &[CatalogObjectId];
     /// Delete the ride with durable id `id` (the hold-to-delete). `true` = removed.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
-    /// The ride's recorded-track elevation [`Profile`] — the Ride detail's band fill (answers the
-    /// keyed ride-track need). `None` = unknown/unreadable.
-    fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile>;
-    /// The ride's decimated recorded-track shape polyline (the detail's track page). Empty =
-    /// unknown/unreadable.
-    fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)>;
+    /// Fill the keyed ride's profile in place and return its preview from one track read.
+    /// `None` = unknown/unreadable; the caller must not publish the profile on failure.
+    fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>>;
     /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
     /// in-memory catalog is a no-op.
     fn refresh(&mut self) {}
