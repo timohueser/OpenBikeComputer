@@ -12,20 +12,6 @@ import OBCTransport
 /// "in-flight transfers are never dropped" guarantee.
 @MainActor
 struct TransferActivityTests {
-    private func eventually(
-        _ what: String,
-        timeout: Duration = .seconds(30),
-        _ condition: @MainActor () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                Issue.record("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
 
     // MARK: The ledger itself
 
@@ -108,7 +94,7 @@ struct TransferActivityTests {
         )
     }
 
-    @Test func uploadClaimsWhileMovingAndReleasesOnDone() async {
+    @Test func uploadClaimsWhileMovingAndReleasesOnDone() async throws {
         let activity = TransferActivity()
         let model = makeUpload(.happyPath, activity: activity)
         #expect(!activity.isActive)
@@ -116,11 +102,11 @@ struct TransferActivityTests {
         model.start()
         #expect(activity.isActive, "the claim opens with the transfer")
 
-        await eventually("F₂") { model.phase == .done }
+        try await waitFor("F₂") { model.phase == .done }
         #expect(!activity.isActive, "a committed upload releases the claim")
     }
 
-    @Test func interruptedUploadReleasesItsClaim() async {
+    @Test func interruptedUploadReleasesItsClaim() async throws {
         let activity = TransferActivity()
         let model = makeUpload(.uploadDrop, activity: activity)
         model.start()
@@ -129,7 +115,7 @@ struct TransferActivityTests {
         // The scenario drops the link mid-transfer: stalled-resumable is NOT
         // in flight — the background drain must not wait on a transfer whose
         // link is already gone.
-        await eventually("interrupted") { model.phase == .interrupted }
+        try await waitFor("interrupted") { model.phase == .interrupted }
         #expect(!activity.isActive)
     }
 
@@ -141,7 +127,7 @@ struct TransferActivityTests {
     /// (flipping back to `.uploading` and re-claiming the ledger for a transfer
     /// whose link is already gone, permanently, since the parked transfer emits
     /// nothing further), and it must not move the parked bar either.
-    @Test func staleTickDeliveredAfterTheDropDoesNotReclaim() async {
+    @Test func staleTickDeliveredAfterTheDropDoesNotReclaim() async throws {
         let activity = TransferActivity()
         let transport = HandDrivenUploadTransport()
         let model = UploadSheetModel(
@@ -164,11 +150,11 @@ struct TransferActivityTests {
 
         // A live tick moves the bar (and proves the tick watcher is consuming).
         transport.progress.yield(TransferProgress(bytesDone: 10_000, total: 100_000))
-        await eventually("first tick") { model.progress.bytesDone == 10_000 }
+        try await waitFor("first tick") { model.progress.bytesDone == 10_000 }
 
         // The link drops — the sheet parks and releases its claim.
         transport.states.send(.outOfRange)
-        await eventually("interrupted") { model.phase == .interrupted }
+        try await waitFor("interrupted") { model.phase == .interrupted }
         #expect(!activity.isActive)
 
         // A tick that was in flight before the drop lands late. Sequencing it
@@ -187,24 +173,24 @@ struct TransferActivityTests {
         model.resume()
         #expect(activity.isActive, "resume re-claims the ledger")
         transport.progress.yield(TransferProgress(bytesDone: 30_000, total: 100_000))
-        await eventually("post-resume tick") { model.progress.bytesDone == 30_000 }
+        try await waitFor("post-resume tick") { model.progress.bytesDone == 30_000 }
         #expect(model.phase == .uploading)
     }
 
-    @Test func dismissedSheetReleasesItsClaim() async {
+    @Test func dismissedSheetReleasesItsClaim() async throws {
         let activity = TransferActivity()
         let model = makeUpload(.happyPath, activity: activity, payloadBytes: 10_000_000)
         model.start()
         #expect(activity.isActive)
 
-        await eventually("progress movement") { model.progress.bytesDone > 0 }
+        try await waitFor("progress movement") { model.progress.bytesDone > 0 }
         model.sheetDismissed()  // cancels the unresolved transfer
         #expect(!activity.isActive, "a torn-down sheet must not hold the grace window open")
     }
 
     // MARK: The sync coordinator's claim
 
-    @Test func syncClaimsWhileSyncingAndReleasesOnDone() async {
+    @Test func syncClaimsWhileSyncingAndReleasesOnDone() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.throughputBytesPerSec = 200_000_000
@@ -218,13 +204,13 @@ struct TransferActivityTests {
                 syncDoneHold: .seconds(300), syncedLineHold: .seconds(300)),
             activity: activity
         )
-        await eventually("link up") { coordinator.connection == .connected }
+        try await waitFor("link up") { coordinator.connection == .connected }
         #expect(!activity.isActive)
 
         coordinator.sync()
-        await eventually("claim while syncing") { activity.isActive }
+        try await waitFor("claim while syncing") { activity.isActive }
 
-        await eventually("batch done") { coordinator.syncState == .done }
+        try await waitFor("batch done") { coordinator.syncState == .done }
         #expect(!activity.isActive, "the `.done` hold is UI pacing, not an in-flight transfer")
     }
 }

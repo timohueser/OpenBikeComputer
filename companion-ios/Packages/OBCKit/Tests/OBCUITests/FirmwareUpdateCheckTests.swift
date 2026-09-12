@@ -54,25 +54,6 @@ struct FirmwareUpdateCheckTests {
         )
     }
 
-    /// Spin until `condition` holds, or **throw** — the rationale is spelled out
-    /// on `FirmwareUpdateModelTests.waitFor`: returning quietly on a timeout
-    /// turned one starved wait into a cascade of unrelated failures, and the
-    /// deadline is sized to catch a genuine hang rather than to police the
-    /// scheduler latency of a loaded, concurrently-scheduled runner.
-    private func waitFor(
-        _ condition: () -> Bool,
-        within timeout: Duration = .seconds(30),
-        line: Int = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                throw WaitTimedOut(timeout: timeout, line: line)
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
     /// A model wired to a stubbed network + an in-memory cache.
     private func makeModel(
         running: String = "1.3.0",
@@ -116,7 +97,7 @@ struct FirmwareUpdateCheckTests {
         #expect(model.latestRelease?.version == "1.4.0")
         #expect(model.lastCheckedAt == cached.checkedAt)
 
-        try await waitFor { model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.runningVersion != nil }
         #expect(model.updateStatus == .available)
         #expect(fetcher.requested.isEmpty, "a fresh cached answer must not re-ask the network")
     }
@@ -134,7 +115,7 @@ struct FirmwareUpdateCheckTests {
         model.start()
         #expect(model.latestRelease == nil, "the stale answer is still shown until a better one lands")
 
-        try await waitFor { model.latestRelease != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil }
         #expect(model.latestRelease?.version == "1.4.0")
         #expect(fetcher.requested == [UpdateChecker.manifestURL])
         #expect(store.loadCheck()?.release?.version == "1.4.0", "the refreshed answer is cached")
@@ -154,7 +135,7 @@ struct FirmwareUpdateCheckTests {
         #expect(fetcher.requested.isEmpty)
 
         model.checkForUpdate(manual: true)
-        try await waitFor { model.latestRelease?.version == "1.5.0" }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease?.version == "1.5.0" }
         #expect(model.latestRelease?.version == "1.5.0")
         #expect(model.checkState == .idle)
     }
@@ -170,11 +151,11 @@ struct FirmwareUpdateCheckTests {
         // The automatic check always leaves `.checking` (the stub 500s) — this is
         // an ordinary positive wait, so it gets the ordinary deadline rather than
         // a one-second bound that only ever measured the scheduler.
-        try await waitFor { model.checkState != .checking }
+        try await waitFor(interval: .milliseconds(5)) { model.checkState != .checking }
         #expect(model.checkState == .idle, "the automatic check fails silently")
 
         model.checkForUpdate(manual: true)
-        try await waitFor { model.checkState != .checking }
+        try await waitFor(interval: .milliseconds(5)) { model.checkState != .checking }
         guard case .failed(let message) = model.checkState else {
             Issue.record("a manual check must surface its failure")
             return
@@ -191,12 +172,12 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.latestRelease != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil }
 
         // DIS may land after the manifest; until it does the screen must not claim this is a
         // development build — it simply has no answer yet.
         #expect(model.hasUpdateAnswer == (model.runningVersion != nil))
-        try await waitFor { model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.runningVersion != nil }
         #expect(model.hasUpdateAnswer)
         #expect(!model.developmentBuild)
         #expect(model.updateStatus == .available)
@@ -209,7 +190,7 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(running: "abc1234", published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.latestRelease != nil && model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil && model.runningVersion != nil }
 
         #expect(model.updateStatus == .unknown)
         #expect(model.developmentBuild)
@@ -228,7 +209,7 @@ struct FirmwareUpdateCheckTests {
         let (model, _, fetcher, _) = makeModel(running: "abc1234")
         fetcher.stub(UpdateChecker.manifestURL, status: 404)
         model.start()
-        try await waitFor { model.lastCheckedAt != nil && model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.lastCheckedAt != nil && model.runningVersion != nil }
 
         #expect(model.latestRelease == nil)
         #expect(model.updateStatus == .unknown)
@@ -249,7 +230,7 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(running: "1.5.0", published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.latestRelease != nil && model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil && model.runningVersion != nil }
 
         #expect(model.updateStatus == .ahead)
         #expect(!model.canDownloadUpdate)
@@ -259,7 +240,7 @@ struct FirmwareUpdateCheckTests {
         let (model, _, fetcher, _) = makeModel()
         fetcher.stub(UpdateChecker.manifestURL, status: 404)
         model.start()
-        try await waitFor { model.lastCheckedAt != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.lastCheckedAt != nil }
 
         #expect(model.updateStatus == .noRelease)
         #expect(model.latestRelease == nil)
@@ -270,7 +251,7 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, _, _, _) = makeModel(running: "1.4.0+deadbee", published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.latestRelease != nil && model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease != nil && model.runningVersion != nil }
 
         #expect(model.updateStatus == .current)
         #expect(!model.canDownloadUpdate)
@@ -284,7 +265,7 @@ struct FirmwareUpdateCheckTests {
             published: ("1.4.0", payload, "https://example.com/notes")
         )
         model.start()
-        try await waitFor { model.canDownloadUpdate && model.connection == .connected }
+        try await waitFor(interval: .milliseconds(5)) { model.canDownloadUpdate && model.connection == .connected }
         #expect(model.releaseNotesURL?.absoluteString == "https://example.com/notes")
 
         model.downloadUpdate()
@@ -293,7 +274,7 @@ struct FirmwareUpdateCheckTests {
         // The verified container goes through the *same* staging gate a picked file does, and
         // then straight out to the device — where the on-glass confirm is still the only thing
         // that installs anything.
-        try await waitFor { model.phase == .transferring }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .transferring }
         #expect(model.staged?.version == "1.4.0")
         #expect(model.progress.total == payload.count)
         #expect(model.downloadState == .idle)
@@ -304,12 +285,12 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, transport, _, _) = makeModel(published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.canDownloadUpdate }
+        try await waitFor(interval: .milliseconds(5)) { model.canDownloadUpdate }
         transport.push(.outOfRange)
-        try await waitFor { model.connection == .outOfRange }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .outOfRange }
 
         model.downloadUpdate()
-        try await waitFor { model.phase == .staged }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .staged }
         #expect(model.phase == .staged, "the file waits, validated, for the link to come back")
         #expect(!model.canSend)
     }
@@ -320,13 +301,13 @@ struct FirmwareUpdateCheckTests {
         let payload = container(version: "1.4.0")
         let (model, _, fetcher, _) = makeModel(published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.canDownloadUpdate }
+        try await waitFor(interval: .milliseconds(5)) { model.canDownloadUpdate }
 
         // The server hands back something else entirely (a redirect page, a truncated object).
         fetcher.stub(Self.containerURL, body: Data(repeating: 0x7F, count: payload.count))
 
         model.downloadUpdate()
-        try await waitFor { model.downloadState != .downloading }
+        try await waitFor(interval: .milliseconds(5)) { model.downloadState != .downloading }
         guard case .failed(let message) = model.downloadState else {
             Issue.record("a mismatched download must surface a failure")
             return
@@ -345,10 +326,10 @@ struct FirmwareUpdateCheckTests {
         let payload = Data(repeating: 0x42, count: 200)
         let (model, _, _, _) = makeModel(published: ("1.4.0", payload, nil))
         model.start()
-        try await waitFor { model.canDownloadUpdate }
+        try await waitFor(interval: .milliseconds(5)) { model.canDownloadUpdate }
 
         model.downloadUpdate()
-        try await waitFor { model.importError != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.importError != nil }
         #expect(model.importError != nil)
         #expect(model.staged == nil)
         #expect(model.phase == .idle)
@@ -365,11 +346,11 @@ struct FirmwareUpdateCheckTests {
             body: manifest(version: "1.5.0-rc1", payload: rc)
         )
         model.start()
-        try await waitFor { model.latestRelease?.version == "1.4.0" }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease?.version == "1.4.0" }
         #expect(!model.includePrereleases)
 
         model.setIncludePrereleases(true)
-        try await waitFor { model.latestRelease?.version == "1.5.0-rc1" }
+        try await waitFor(interval: .milliseconds(5)) { model.latestRelease?.version == "1.5.0-rc1" }
         #expect(model.includePrereleases)
         #expect(store.loadIncludePrereleases())
     }
@@ -379,7 +360,7 @@ struct FirmwareUpdateCheckTests {
     @Test func aWiringWithoutACheckerIsTheOldFilesOnlyScreen() async throws {
         let model = FirmwareUpdateModel(transport: StubTransport(), deviceName: "Trailhead")
         model.start()
-        try await waitFor { model.runningVersion != nil }
+        try await waitFor(interval: .milliseconds(5)) { model.runningVersion != nil }
 
         #expect(!model.supportsUpdateCheck)
         #expect(model.latestRelease == nil)
@@ -467,16 +448,4 @@ private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendabl
 
     func connect() async throws {}
     func disconnect() async {}
-}
-
-/// A `waitFor` that gave up. Thrown rather than swallowed, so the wait that blew
-/// names itself — `line` is the call site, which is what tells a reader which of
-/// several waits in one test actually timed out.
-private struct WaitTimedOut: Error, CustomStringConvertible {
-    let timeout: Duration
-    let line: Int
-
-    var description: String {
-        "timed out after \(timeout) waiting for the condition at line \(line)"
-    }
 }

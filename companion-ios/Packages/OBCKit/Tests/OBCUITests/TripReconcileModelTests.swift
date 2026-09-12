@@ -13,12 +13,12 @@ struct TripReconcileModelTests {
     private let tripID = TripID("driftless-weekender")
     private static let fastTiming = TripUploadModel.Timing(doneAutoDismiss: .milliseconds(20))
 
-    private func makeMain() async -> (MainScreenModel, MockControl) {
-        let (model, control, _) = await makeMainWithLibrary()
+    private func makeMain() async throws -> (MainScreenModel, MockControl) {
+        let (model, control, _) = try await makeMainWithLibrary()
         return (model, control)
     }
 
-    private func makeMainWithLibrary() async -> (MainScreenModel, MockControl, InMemoryLibraryStore) {
+    private func makeMainWithLibrary() async throws -> (MainScreenModel, MockControl, InMemoryLibraryStore) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.throughputBytesPerSec = 40_000_000
@@ -27,7 +27,7 @@ struct TripReconcileModelTests {
         control.seedLibrary(into: library)
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()
-        await poll("loaded") { model.loadState == .loaded }
+        try await waitFor("loaded", timeout: .seconds(20), interval: .milliseconds(5)) { model.loadState == .loaded }
         return (model, control, library)
     }
 
@@ -41,24 +41,13 @@ struct TripReconcileModelTests {
         library.saveTrip(trip)
     }
 
-    private func poll(
-        _ what: String, timeout: Duration = .seconds(20), _ cond: @MainActor () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !cond() {
-            #expect(ContinuousClock.now <= deadline, "timed out waiting for \(what)")
-            if ContinuousClock.now > deadline { return }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
     /// Upload the whole trip and wait for it to land — the shared setup for the
     /// on-device transitions.
-    private func uploadTrip(_ model: MainScreenModel) async {
+    private func uploadTrip(_ model: MainScreenModel) async throws {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
-        await poll("trip landed") { upload.phase == .done }
+        try await waitFor("trip landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
     }
 
     /// Land a fresh loose route in the library + on the device, returning its id.
@@ -98,9 +87,9 @@ struct TripReconcileModelTests {
     // MARK: Adoption rule
 
     @Test
-    func uploadingARouteFiledInAnOnDeviceTripPushesTheTrip() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func uploadingARouteFiledInAnOnDeviceTripPushesTheTrip() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
         #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
 
@@ -112,13 +101,13 @@ struct TripReconcileModelTests {
 
         // The adoption push runs in the background — wait for the page to read up
         // to date again (the commit lands after the device records the copy).
-        await poll("trip adopted the route") { model.tripOnDeviceState(tripID) == .upToDate }
+        try await waitFor("trip adopted the route", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .upToDate }
         #expect(control.deviceTripStageIDs(deviceTripID).count == 3)
     }
 
     @Test
-    func uploadingARouteFiledInAnOfflineTripLandsItStandalone() async {
-        let (model, control) = await makeMain()
+    func uploadingARouteFiledInAnOfflineTripLandsItStandalone() async throws {
+        let (model, control) = try await makeMain()
         // The driftless trip is NOT on the device. File a new route into it and
         // upload the route — no trip object is pushed (the route lands standalone).
         let newRoute = await importAndUploadRoute(model, control: control, name: "Loose")
@@ -133,22 +122,22 @@ struct TripReconcileModelTests {
     // MARK: Reconcile transitions
 
     @Test
-    func aDeviceSideTripDeleteClearsTheLink() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func aDeviceSideTripDeleteClearsTheLink() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
         let deviceTripID = control.deviceTripObjectIDs.first!
 
         // The device forgets the trip (a trip-only delete) and notifies — the
         // reconcile clears the link, so the badge drops.
         control.deviceDeletesTrip(deviceTripID)
-        await poll("link cleared") { model.tripOnDeviceState(tripID) == .notOnDevice }
+        try await waitFor("link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .notOnDevice }
     }
 
     @Test
-    func aDeviceSideCascadeDeleteClearsTripAndStageLinks() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func aDeviceSideCascadeDeleteClearsTripAndStageLinks() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         let stageA = RouteID("devils-lake-overnighter")
         #expect(model.onDeviceState(stageA) == .upToDate)
         let deviceTripID = control.deviceTripObjectIDs.first!
@@ -159,8 +148,8 @@ struct TripReconcileModelTests {
         // clear a beat before the trip reconcile lands, so poll both (asserting
         // the trip state right after the stage poll raced the second reload).
         control.deviceDeletesTripCascade(deviceTripID)
-        await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
-        await poll("trip link cleared") { model.tripOnDeviceState(tripID) == .notOnDevice }
+        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
+        try await waitFor("trip link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .notOnDevice }
     }
 
     /// The on-glass regression (2026-07-13): the device deletes ONE member route
@@ -168,9 +157,9 @@ struct TripReconcileModelTests {
     /// missing stage and **replace the existing trip object in place** — never
     /// mint a second device trip.
     @Test
-    func reUploadAfterADeviceSideStageDeleteReplacesTheTripInPlace() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func reUploadAfterADeviceSideStageDeleteReplacesTheTripInPlace() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
         let stageA = RouteID("devils-lake-overnighter")
         let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
@@ -178,7 +167,7 @@ struct TripReconcileModelTests {
         // The device-side route delete → storeChanged(route) → the app's
         // reconcile drops the stage link (trip badge goes off).
         control.deviceDeletesRoute(stageDeviceID)
-        await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
+        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
         #expect(model.tripOnDeviceState(tripID) != .upToDate)
 
         // The re-upload plan: the missing stage is fresh, the trip object is a
@@ -190,10 +179,10 @@ struct TripReconcileModelTests {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
-        await poll("re-upload landed") { upload.phase == .done }
+        try await waitFor("re-upload landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "the re-upload must not mint a second device trip")
         #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
-        await poll("trip back up to date") { model.tripOnDeviceState(tripID) == .upToDate }
+        try await waitFor("trip back up to date", timeout: .seconds(20), interval: .milliseconds(5)) { model.tripOnDeviceState(tripID) == .upToDate }
     }
 
     /// The root cause behind the on-glass duplicate: a **transient `listTrips`
@@ -201,9 +190,9 @@ struct TripReconcileModelTests {
     /// Before the fix it dropped every trip's device link, and the next "Upload
     /// trip" minted a second device trip instead of replacing in place.
     @Test
-    func aFailedTripCatalogReadKeepsTheLinkAndTheNextUploadStillReplaces() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func aFailedTripCatalogReadKeepsTheLinkAndTheNextUploadStillReplaces() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
         let stageA = RouteID("devils-lake-overnighter")
         let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
@@ -212,7 +201,7 @@ struct TripReconcileModelTests {
         // The route catalog succeeds but the trip catalog fails (a flaky link mid-read).
         control.failNextTripCatalog(.readFailed)
         control.deviceDeletesRoute(stageDeviceID)
-        await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
+        try await waitFor("stage link cleared", timeout: .seconds(20), interval: .milliseconds(5)) { model.onDeviceState(stageA) == .notOnDevice }
 
         // The trip's link survived the failed read — the plan still replaces.
         #expect(model.trip(tripID)?.deviceLink != nil, "a failed trip catalog read must not drop the link")
@@ -222,7 +211,7 @@ struct TripReconcileModelTests {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
-        await poll("re-upload landed") { upload.phase == .done }
+        try await waitFor("re-upload landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a failed trip catalog read must never cause a duplicate trip")
     }
 
@@ -233,14 +222,14 @@ struct TripReconcileModelTests {
     /// on-device trip by content — the trip twin of the #770 route rule — so the
     /// badge lights and a later push replaces in place.
     @Test
-    func aLostTripCommitAckHealsByAdoptionOnTheNextReconcile() async {
-        let (model, control, library) = await makeMainWithLibrary()
-        await uploadTrip(model)
+    func aLostTripCommitAckHealsByAdoptionOnTheNextReconcile() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
 
         stripTripLink(library, model)
         model.reload()
-        await poll("trip re-adopted") { model.trip(tripID)?.deviceLink?.objectID == deviceTripID }
+        try await waitFor("trip re-adopted", timeout: .seconds(20), interval: .milliseconds(5)) { model.trip(tripID)?.deviceLink?.objectID == deviceTripID }
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
         let plan = model.planTripUpload(tripID)!
         #expect(plan.tripObject == .replace(deviceTripID))
@@ -252,9 +241,9 @@ struct TripReconcileModelTests {
     /// is what makes the stored bytes reconstructible — without it the app reads
     /// the trip as absent and the next send mints a twin.
     @Test
-    func aRenamedTripAdoptsItsDeviceCopyAndReplacesIt() async {
-        let (model, control, library) = await makeMainWithLibrary()
-        await uploadTrip(model)
+    func aRenamedTripAdoptsItsDeviceCopyAndReplacesIt() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
 
         // Rename first, then drop the link: `renameTrip` saves the model's cached
@@ -267,7 +256,7 @@ struct TripReconcileModelTests {
             "precondition: the model reads the trip as unlinked before the reconcile")
 
         model.reload()
-        await poll("the renamed trip adopts its device copy") {
+        try await waitFor("the renamed trip adopts its device copy", timeout: .seconds(20), interval: .milliseconds(5)) {
             model.trip(tripID)?.deviceLink?.objectID == deviceTripID
         }
         #expect(
@@ -278,7 +267,7 @@ struct TripReconcileModelTests {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the Auto-delete confirm (capable device)
-        await poll("the renamed send landed") { upload.phase == .done }
+        try await waitFor("the renamed send landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a renamed send replaces by id — never a duplicate")
         #expect(
             control.deviceTripObjectIDs.first == deviceTripID,
@@ -290,9 +279,9 @@ struct TripReconcileModelTests {
     /// the catalogs first, the reconcile adopts what actually landed, and the
     /// retry converges — one device trip, never a same-name twin.
     @Test
-    func retryAfterALostTripAckDoesNotMintADuplicate() async {
-        let (model, control, library) = await makeMainWithLibrary()
-        await uploadTrip(model)
+    func retryAfterALostTripAckDoesNotMintADuplicate() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
         #expect(control.deviceTripCount == 1)
 
         stripTripLink(library, model)
@@ -300,7 +289,7 @@ struct TripReconcileModelTests {
         let upload = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
-        await poll("retry landed") { upload.phase == .done }
+        try await waitFor("retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "the retry must never mint a second device trip")
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
     }
@@ -310,9 +299,9 @@ struct TripReconcileModelTests {
     /// converges on the stored copy. The device answers with the existing id and
     /// stores nothing new.
     @Test
-    func aBlindFreshReUploadOfIdenticalBytesConvergesOnTheStoredTrip() async {
-        let (model, control, library) = await makeMainWithLibrary()
-        await uploadTrip(model)
+    func aBlindFreshReUploadOfIdenticalBytesConvergesOnTheStoredTrip() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
 
         stripTripLink(library, model)
@@ -322,7 +311,7 @@ struct TripReconcileModelTests {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
-        await poll("blind retry landed") { upload.phase == .done }
+        try await waitFor("blind retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "identical bytes must dedup onto the stored trip")
         #expect(model.trip(tripID)?.deviceLink?.objectID == deviceTripID,
             "the commit links back to the existing object id")
@@ -331,9 +320,9 @@ struct TripReconcileModelTests {
     // MARK: Delete trip & routes while connected
 
     @Test
-    func deleteTripAndRoutesWhileConnectedDeletesDeviceCopies() async {
-        let (model, control) = await makeMain()
-        await uploadTrip(model)
+    func deleteTripAndRoutesWhileConnectedDeletesDeviceCopies() async throws {
+        let (model, control) = try await makeMain()
+        try await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
         let stageObjectIDs = control.deviceTripStageIDs(deviceTripID)
         #expect(stageObjectIDs.count == 2)
@@ -341,7 +330,7 @@ struct TripReconcileModelTests {
         model.deleteTripAndRoutes(tripID)
 
         // The device-side cascade: both member routes deleted, then the trip.
-        await poll("device cascade landed") {
+        try await waitFor("device cascade landed", timeout: .seconds(20), interval: .milliseconds(5)) {
             control.deletedTripObjectIDs.contains(deviceTripID)
                 && stageObjectIDs.allSatisfy { control.deletedRouteObjectIDs.contains($0) }
         }
