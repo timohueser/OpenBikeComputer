@@ -332,6 +332,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
             coordinator.onRideLanded = { landed.append($0.id) }
             try await startConnected(coordinator)
             coordinator.sync()
+            try await waitFor("first ride saved") { landed == [first.summary.id] }
             try await waitFor("local failure settles") {
                 coordinator.syncState == .idle && coordinator.syncProgress == nil
             }
