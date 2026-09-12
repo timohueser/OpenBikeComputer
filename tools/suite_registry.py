@@ -10,6 +10,7 @@ temporary repositories without contacting GitHub or any other live service.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import os
@@ -417,6 +418,20 @@ def _validate_issue_block(suite_id: str, field: str, value: Any, errors: list[st
         errors.append(f"{suite_id}: {field} requires an open GitHub issue reference")
 
 
+def _has_real_sleep(source: Path) -> bool:
+    text = source.read_text(encoding="utf-8")
+    if source.suffix != ".py":
+        return bool(REAL_SLEEP_RE.search(text))
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "time"
+        and node.func.attr == "sleep"
+        for node in ast.walk(ast.parse(text, filename=str(source)))
+    )
+
+
 def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str], errors: list[str]) -> None:
     suite_id = suite.get("id", "<missing-id>")
     command = suite.get("command")
@@ -578,9 +593,10 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
                 source = root / item.path
                 if source.is_file() and source.suffix in {".rs", ".py", ".swift", ".ts", ".js"}:
                     try:
-                        has_real_sleep = bool(REAL_SLEEP_RE.search(source.read_text(encoding="utf-8")))
-                    except UnicodeDecodeError:
-                        has_real_sleep = False
+                        has_real_sleep = _has_real_sleep(source)
+                    except (OSError, UnicodeError, SyntaxError) as exc:
+                        errors.append(f"{owners[0].get('id')}: cannot inspect {item.path}: {exc}")
+                        continue
                     if has_real_sleep and "sleep_exception" not in owners[0]:
                         errors.append(f"{owners[0].get('id')}: real sleep in {item.path} needs an approved exception")
     for suite_id, owned in matches.items():
