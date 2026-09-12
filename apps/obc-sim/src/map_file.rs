@@ -1,120 +1,83 @@
-//! Opening a map from disk: one `.obcm` file, read once and held for the process lifetime.
-//!
-//! One map is one file. [`MapSource`] is its bytes plus the path it came from — the anchor the
-//! `.obcd` terrain sidecar is resolved against (EL7) — and [`LoadedMap`] pairs that file with the
-//! tables, chunk cache and reader parsed once at startup, exactly as the device parses them once
-//! at boot.
-//!
-//! Failure is fatal at load time: a file that cannot be read, or that does not parse as OBCM, exits
-//! the caller non-zero rather than rendering a partial map.
-//!
-//! `obc-app` consumes the map through its generic `MapScene` map-plane seam; POI, hours and routing
-//! take the same [`LoadedMap::reader`].
+//! Importing a native OBCM into an owned temporary flat card.
+//! The original path remains the anchor for the terrain sidecar and display name.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use embedded_graphics::prelude::*;
-use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+use obc_host_core::flat_map::{FlatMap, MapError};
+use obc_reader::{MapTables, Reader};
 use obc_render::RenderStats;
 
-/// Why a map could not be opened. Both variants are fatal.
 #[derive(Debug)]
 pub enum LoadError {
-    /// The map file could not be read.
     Read(PathBuf, std::io::Error),
-    /// The file is not a parseable OBCM.
     NotObcm(obc_reader::Error),
+    Import(PathBuf, MapError),
 }
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::Read(path, err) => write!(f, "cannot read {}: {err}", path.display()),
-            LoadError::NotObcm(err) => write!(f, "invalid OBCM file: {err:?}"),
+            Self::Read(path, err) => write!(f, "cannot read {}: {err}", path.display()),
+            Self::NotObcm(err) => write!(f, "invalid OBCM file: {err:?}"),
+            Self::Import(path, err) => write!(f, "cannot import {}: {err}", path.display()),
         }
     }
 }
 
-/// A map's bytes: one `.obcm` file, read whole.
+/// The open input and its path. Import reads through a bounded buffer.
 pub struct MapSource {
-    /// The file's bytes.
-    file: Vec<u8>,
-    /// The filename it was read from — for the display name and honest error text.
+    file: std::fs::File,
     name: String,
-    /// The path the map was opened from — what [`terrain`](obc_host_core::terrain) resolves the
-    /// `.obcd` sidecar against (EL7).
     path: PathBuf,
 }
 
 impl MapSource {
-    /// Read a `.obcm` map.
-    pub fn load_single(path: &str) -> Result<MapSource, LoadError> {
+    pub fn load_single(path: &str) -> Result<Self, LoadError> {
         let path = Path::new(path);
-        let bytes = std::fs::read(path).map_err(|err| LoadError::Read(path.to_path_buf(), err))?;
-        Ok(MapSource { file: bytes, name: file_name(path), path: path.to_path_buf() })
+        let file = std::fs::File::open(path).map_err(|err| LoadError::Read(path.to_path_buf(), err))?;
+        Ok(Self { file, name: file_name(path), path: path.to_path_buf() })
     }
 
-    /// The path this map was opened from — the anchor the terrain sidecar is resolved against.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// The map's bytes as a [`SliceSource`]. Keep it alive for as long as the readers built over
-    /// it — they borrow the source, not the bytes.
-    pub fn source(&self) -> SliceSource<'_> {
-        SliceSource(&self.file)
-    }
-
-    /// The name to show as "the map": the file's stem.
     pub fn display_name(&self) -> String {
         Path::new(&self.name).file_stem().map_or_else(|| self.name.clone(), |s| s.to_string_lossy().into_owned())
     }
 }
 
-/// A map opened once and held for the process lifetime: its bytes and the readers' inputs.
-///
-/// Everything here is leaked on purpose. The simulator owns its map for the whole run either way,
-/// and `'static` is what lets the parsed tables and the session-long chunk cache live in struct
-/// fields rather than be rebuilt inside every borrow — the borrow chain (bytes → source → tables)
-/// is otherwise self-referential.
 pub struct LoadedMap {
-    pub source: &'static MapSource,
-    slice: &'static SliceSource<'static>,
-    tables: &'static MapTables,
-    cache: &'static MapCache,
+    name: String,
+    path: PathBuf,
+    map: FlatMap,
 }
 
 impl LoadedMap {
-    /// Parse the map's tables — before a single frame renders.
-    pub fn open(source: MapSource) -> Result<LoadedMap, LoadError> {
-        let source: &'static MapSource = Box::leak(Box::new(source));
-        let slice: &'static SliceSource<'static> = Box::leak(Box::new(source.source()));
-        let tables: &'static MapTables = Box::leak(Box::new(MapTables::parse(slice).map_err(LoadError::NotObcm)?));
-        let cache: &'static MapCache = Box::leak(Box::new(MapCache::new()));
-        Ok(LoadedMap { source, slice, tables, cache })
+    pub fn open(source: MapSource) -> Result<Self, LoadError> {
+        let name = source.display_name();
+        let map = FlatMap::from_file(source.file).map_err(|err| match err {
+            MapError::Format(err) => LoadError::NotObcm(err),
+            other => LoadError::Import(source.path.clone(), other),
+        })?;
+        Ok(Self { name, path: source.path, map })
     }
 
-    /// Immutable bytes of the selected map, shared with background terrain generation.
-    pub fn bytes(&self) -> &'static [u8] {
-        &self.source.file
+    pub fn display_name(&self) -> &str {
+        &self.name
     }
 
-    /// The map's parsed tables — the style table and the LOD pyramid.
-    pub fn tables(&self) -> &'static MapTables {
-        self.tables
+    pub fn map_source(&self) -> obc_host_core::flat_map::MapSource {
+        self.map.source()
+    }
+    pub fn tables(&self) -> &MapTables {
+        self.map.tables()
     }
 
-    /// The map's terrain (EL7): its `.obcd` sidecar mounted through the shared host resolver, or
-    /// the null source when there is none. Called **once** per run, right after the map opens —
-    /// the simulator holds one elevation source for the session exactly as the device does.
     pub fn elevation(&self) -> Box<dyn obc_route::ElevationSource> {
-        obc_host_core::terrain::resolve(self.source.path())
+        obc_host_core::terrain::resolve(&self.path)
     }
 
-    /// The reader the whole app path takes — map plane, nav, POI, hours and routing alike.
     pub fn reader(&self) -> Reader<'_> {
-        Reader::new(self.slice, self.tables, self.cache)
+        self.map.reader()
     }
 }
 

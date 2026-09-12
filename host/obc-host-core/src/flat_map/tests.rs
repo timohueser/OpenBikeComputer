@@ -1,0 +1,199 @@
+use super::*;
+use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
+use obc_formats::io::SliceSource;
+use obcm_testkit::{build_file, pack_line, seal, LodSpec};
+use std::cell::Cell;
+
+fn map_bytes() -> Vec<u8> {
+    let chunk = seal(pack_line(1, 100, 100, &[(50, 50), (50, -50)]), 4096);
+    build_file(
+        (0, 0, 4000, 4000),
+        &[(1, 0, 0x07E0, 1, 1, false, None)],
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 4096 }],
+    )
+}
+
+struct Counted<'a> {
+    source: &'a dyn ByteSource,
+    reads: Cell<usize>,
+    bytes: Cell<usize>,
+}
+impl ByteSource for Counted<'_> {
+    fn len(&self) -> u64 {
+        self.source.len()
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.reads.set(self.reads.get() + 1);
+        self.bytes.set(self.bytes.get() + buf.len());
+        self.source.read_at(offset, buf)
+    }
+}
+
+fn render(source: &dyn ByteSource) -> (Vec<u8>, usize, usize) {
+    let source = Counted { source, reads: Cell::new(0), bytes: Cell::new(0) };
+    let tables = MapTables::parse(&source).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&source, &tables, &cache);
+    let mut frame = crate::RgbaFrame::new(64, 64);
+    let mut scratch = Box::new(obc_render::RenderScratch::new());
+    let stats = scratch.render(
+        &mut frame,
+        &reader,
+        &obc_render::Viewport::new(64.0, 64.0, 150, 125, 0.2),
+        Rgb888::BLACK,
+        obc_render::RenderConfig::default(),
+        |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            Rgb888::new(r, g, b)
+        },
+    );
+    assert_eq!(stats.features_drawn, 1);
+    assert!(frame.as_rgba().chunks_exact(4).any(|pixel| pixel[..3] == [0, 255, 0]));
+    (frame.as_rgba().to_vec(), source.reads.get(), source.bytes.get())
+}
+
+#[test]
+fn native_and_memory_maps_render_and_read_like_the_original_bytes() {
+    let bytes = map_bytes();
+    let memory = FlatMap::from_bytes(&bytes).unwrap();
+    let mut input = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut input, &bytes).unwrap();
+    let native = FlatMap::from_file(std::fs::File::open(input.path()).unwrap()).unwrap();
+    let oracle = render(&SliceSource(&bytes));
+    assert_eq!(render(&memory.source()), oracle);
+    assert_eq!(render(&native.source()), oracle);
+    assert_ne!(memory.source.0.owner.lock().unwrap().store_id(), native.source.0.owner.lock().unwrap().store_id());
+    assert_eq!(memory.source.id(), ObjectId(1));
+    assert_eq!(memory.source.revision(), Revision(1));
+    assert_eq!(std::fs::read(input.path()).unwrap(), bytes);
+}
+
+fn publish(store: &FlatStore<HostMedia>, id: ObjectId, revision: Revision, bytes: &[u8]) {
+    let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+    store.write(&mut allocation, bytes).unwrap();
+    let put = Mutation::Put {
+        meta: EntryMeta {
+            id,
+            revision,
+            kind: ObjectKind::MapShard,
+            flags: EntryFlags::NONE,
+            payload_len: bytes.len() as u64,
+            payload_crc: obc_crc::crc32(bytes),
+            name: DisplayName::default(),
+        },
+        source: PutSource::Fresh(allocation),
+    };
+    if revision == Revision(1) {
+        store.commit(&[put]).unwrap();
+    } else {
+        store.commit(&[Mutation::Remove { id, revision: Revision(revision.0 - 1) }, put]).unwrap();
+    }
+}
+
+#[test]
+fn clones_pin_the_full_identity_and_revision_until_the_last_drop() {
+    let identity = StoreId([0x91, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0xfa]);
+    let store = FlatStore::initialize(HostMedia::Memory(RefCell::default()), identity).unwrap();
+    let id = ObjectId((1 << 48) + 7);
+    publish(&store, id, Revision(1), b"old map");
+    let owner = Arc::new(Mutex::new(store));
+    let first = MapSource::open(owner.clone(), id, None).unwrap();
+    let worker = first.clone();
+    assert_eq!(owner.lock().unwrap().store_id(), identity);
+    assert_eq!(worker.id(), id);
+    let free = owner.lock().unwrap().free_extents();
+    publish(&owner.lock().unwrap(), id, Revision(2), b"new");
+    let head = MapSource::open(owner.clone(), id, None).unwrap();
+    assert_eq!(head.revision(), Revision(2));
+    let mut new = [0; 3];
+    head.read_at(0, &mut new).unwrap();
+    assert_eq!(&new, b"new");
+    drop(first);
+    let mut old = [0; 7];
+    worker.read_at(0, &mut old).unwrap();
+    assert_eq!(&old, b"old map");
+    assert_eq!(worker.revision(), Revision(1));
+    assert_eq!(owner.lock().unwrap().free_extents(), free - 1);
+    drop(worker);
+    assert_eq!(owner.lock().unwrap().free_extents(), free);
+    owner.lock().unwrap().commit(&[Mutation::Remove { id, revision: Revision(2) }]).unwrap();
+    head.read_at(0, &mut new).unwrap();
+    drop(head);
+    assert_eq!(owner.lock().unwrap().free_extents(), free + 1);
+}
+
+#[test]
+fn background_reader_owns_the_temporary_card_and_exact_bounds() {
+    let bytes = map_bytes();
+    let mut input = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(&mut input, &bytes).unwrap();
+    let map = FlatMap::from_file(std::fs::File::open(input.path()).unwrap()).unwrap();
+    let path = match map.source.0.owner.lock().unwrap().device() {
+        HostMedia::File(file) => file.borrow().path().to_path_buf(),
+        HostMedia::Memory(_) => unreachable!(),
+    };
+    let worker = map.source();
+    drop(map);
+    assert!(path.exists());
+    let worker_path = path.clone();
+    std::thread::spawn(move || {
+        let len = worker.len();
+        assert_eq!(worker.read_at(len, &mut []), Ok(()));
+        assert_eq!(worker.read_at(len + 1, &mut []), Err(Error::BadOffset));
+        assert_eq!(worker.read_at(len, &mut [0]), Err(Error::BadOffset));
+        assert_eq!(worker.read_at(u64::MAX, &mut [0]), Err(Error::BadOffset));
+        let mut prefix = [0; 4];
+        worker.read_at(0, &mut prefix).unwrap();
+        assert_eq!(&prefix, b"OBCM");
+        std::fs::OpenOptions::new().write(true).open(worker_path).unwrap().set_len(0).unwrap();
+        assert_eq!(worker.read_at(0, &mut prefix), Err(Error::Io));
+        assert_eq!(worker.read_at(len, &mut [0]), Err(Error::BadOffset));
+    })
+    .join()
+    .unwrap();
+    assert!(!path.exists());
+    assert!(input.path().exists());
+}
+
+#[test]
+fn import_is_bounded_and_refuses_short_or_growing_inputs() {
+    struct Bounded<'a>(&'a [u8]);
+    impl Read for Bounded<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            assert!(buffer.len() <= IMPORT_BUFFER_BYTES);
+            self.0.read(buffer)
+        }
+    }
+    let mut bytes = map_bytes();
+    bytes.resize(IMPORT_BUFFER_BYTES * 3 + 7, 0);
+    let make = |len| FlatMap::import(HostMedia::Memory(RefCell::default()), &mut Bounded(&bytes), len);
+    assert!(make(bytes.len() as u64).is_ok());
+    assert!(
+        matches!(make(bytes.len() as u64 + 1), Err(MapError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof)
+    );
+    assert!(
+        matches!(make(bytes.len() as u64 - 1), Err(MapError::Io(error)) if error.kind() == io::ErrorKind::InvalidData)
+    );
+    assert!(matches!(FlatMap::from_bytes(b"invalid map"), Err(MapError::Format(_))));
+}
+
+#[test]
+fn browser_card_allocates_written_pages_only() {
+    let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+    let map = FlatMap::from_bytes(bytes).unwrap();
+    let store = map.source.0.owner.lock().unwrap();
+    let HostMedia::Memory(pages) = store.device() else { unreachable!() };
+    let page_bytes = pages.borrow().len() * PAGE;
+    // Two catalog copies, headers and the imported map, independent of the 32 GiB capacity.
+    assert!(page_bytes < bytes.len() + 1024 * 1024);
+    let fixed =
+        std::mem::size_of::<FlatStore<HostMedia>>() + std::mem::size_of::<Lease>() + std::mem::size_of::<FlatMap>();
+    eprintln!(
+        "flat map memory: input={} pages={} page_bytes={} fixed={} existing_cache={}",
+        bytes.len(),
+        pages.borrow().len(),
+        page_bytes,
+        fixed,
+        std::mem::size_of::<MapCache>()
+    );
+}
