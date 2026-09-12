@@ -75,9 +75,9 @@ fn terrain_root() -> PathBuf {
         .unwrap_or_else(|| obc_fixtures::root().join("sim-peak-view"))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Input {
-    Map { bytes: &'static [u8], offset: u64, len: u64 },
+    Map { source: obc_host_core::flat_map::MapSource, offset: u64, len: u64 },
     Fixture(Preset),
 }
 
@@ -87,7 +87,7 @@ impl Input {
             return Some(Self::Fixture(preset));
         }
         let region = map.tables().terrain()?;
-        let source = obc_formats::io::SliceSource(map.bytes());
+        let source = map.map_source();
         let window = obc_formats::io::WindowSource::new(&source, region.offset, region.len)?;
         let mut header = [0; obc_formats::obct::HEADER_LEN];
         window.read_at(0, &mut header).ok()?;
@@ -95,10 +95,10 @@ impl Input {
         if header[4] != obc_formats::obct::SURFACE_VERSION || header[7] & obc_formats::obct::SURFACE_FLAG == 0 {
             return None;
         }
-        Some(Self::Map { bytes: map.bytes(), offset: region.offset, len: region.len })
+        Some(Self::Map { source, offset: region.offset, len: region.len })
     }
 
-    fn profile(self) -> PeakViewProfile<'static> {
+    fn profile(&self) -> PeakViewProfile<'static> {
         match self {
             Self::Fixture(preset) => preset.profile().detached(),
             Self::Map { .. } => PeakViewProfile::at(0, 0, 0),
@@ -107,14 +107,14 @@ impl Input {
 }
 
 fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<Builder>, String> {
+    let profile = input.profile();
     match input {
-        Input::Map { bytes, offset, len } => {
-            let source = obc_formats::io::SliceSource(bytes);
+        Input::Map { source, offset, len } => {
             let tables = obc_reader::MapTables::parse(&source).map_err(|e| format!("map: {e:?}"))?;
             let cache = Box::new(obc_reader::MapCache::new());
             let reader = obc_reader::Reader::new(&source, &tables, &cache);
             let window = obc_formats::io::WindowSource::new(&source, offset, len).ok_or("terrain outside map")?;
-            generate_surface(&window, Some(&reader), input.profile(), position, worker)
+            generate_surface(&window, Some(&reader), profile, position, worker)
         }
         Input::Fixture(preset) => {
             let key = match preset {
@@ -252,7 +252,7 @@ impl Runtime {
     }
 
     pub fn profile(&self) -> Option<PeakViewProfile<'static>> {
-        self.input.map(Input::profile)
+        self.input.as_ref().map(Input::profile)
     }
 
     pub fn panorama(&self) -> Option<&Panorama> {
@@ -302,7 +302,7 @@ impl Runtime {
             let (sender, receiver) = mpsc::channel();
             self.cancel = Arc::new(AtomicBool::new(false));
             let worker = Worker { heading: Arc::clone(&self.heading), cancel: Arc::clone(&self.cancel), sender };
-            let Some(input) = self.input else {
+            let Some(input) = self.input.clone() else {
                 app.set_peak_view_loading(false, true);
                 return;
             };

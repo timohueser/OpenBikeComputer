@@ -14,12 +14,15 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::{App, AppState, CameraMode, Gesture};
+use obc_host_core::flat_map::FlatMap;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, HostLoop, MemRideStore, MemRouteStore, MemTrackStore,
     ReplaySensors, RgbaFrame,
 };
 use obc_ports::InputClock;
-use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
+use obc_reader::rgb565_to_device64;
+#[cfg(test)]
+use obc_reader::{MapTables, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
@@ -147,15 +150,7 @@ pub enum Baseline {
 }
 
 pub struct Demo {
-    /// Map file bytes; `Reader` is a cheap view rebuilt over them per use.
-    bytes: &'static [u8],
-    /// The immutable map tables (style table + LOD pyramid), parsed once at startup — mirroring
-    /// the device, which parses them once at boot.
-    tables: MapTables,
-    /// The streamed-map cache, kept for the whole session (as the device holds one in its
-    /// reserved region), so a settled view warms to full hit rate. **Boxed**: ~278 KB inline —
-    /// like the app below, far too big for wasm's default stack to carry as a temporary.
-    cache: Box<MapCache>,
+    map: FlatMap,
     /// The shared app (~136 KB — heap-allocated: a by-value `App` temporary is exactly the kind
     /// of silent wasm stack trap the NavScratch gotcha is about).
     app: Box<App>,
@@ -217,13 +212,11 @@ pub struct Demo {
 
 impl Demo {
     /// Build the whole embedded device and stage the ambient baseline (the state the page opens
-    /// on: live ride from the start, controls enabled). **Boxed**: `Demo` embeds two six-figure
-    /// structs (map cache + app) — returning it by value would put ~430 KB temporaries on wasm's
-    /// default stack.
+    /// on: live ride from the start, controls enabled). The app, map cache and render scratch
+    /// stay on the heap.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Box<Self> {
-        let bytes: &'static [u8] = DEMO_MAP;
-        let tables = MapTables::parse(&SliceSource(bytes)).expect("embedded demo map is a valid OBCM");
+        let map = FlatMap::from_bytes(DEMO_MAP).expect("embedded demo map imports into the flat store");
         let routes = MemRouteStore::new(&[DEMO_ROUTE]);
         let rides = MemRideStore::new(demo_rides());
         let track = Track::parse(DEMO_RIDE_GPX).expect("embedded demo GPX parses");
@@ -231,9 +224,7 @@ impl Demo {
         player.set_speed(DEMO_SPEED);
 
         let mut demo = Box::new(Demo {
-            bytes,
-            tables,
-            cache: MapCache::new_boxed(),
+            map,
             // Placeholder app; `reset(Ambient)` below builds the real baseline (the one seam).
             app: Box::new(App::new(AppState::new(0, 0, 1.0))),
             scratch: Box::new(obc_render::RenderScratch::new()),
@@ -333,8 +324,7 @@ impl Demo {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            let src = SliceSource(self.bytes);
-            let reader = Reader::new(&src, &self.tables, &self.cache);
+            let reader = self.map.reader();
             self.app.render_frame(
                 Some(&mut self.scratch),
                 &mut self.frame,
@@ -390,8 +380,7 @@ impl Demo {
         // token-carrying outcomes for the next pass. The demo has no trips (`&mut ()`) and no
         // platform work of its own (`&mut ()` — no card scan, bond, settings store or DFU on the
         // page), so the whole loop is repository sequencing that lives once in `obc-host-core`.
-        let src = SliceSource(self.bytes);
-        let reader = Reader::new(&src, &self.tables, &self.cache);
+        let reader = self.map.reader();
         self.host.execute(
             &mut self.app,
             &mut plan,
@@ -461,8 +450,7 @@ impl Demo {
         self.tour_active = baseline != Baseline::Ambient;
 
         let (cx, cy, zoom) = {
-            let src = SliceSource(self.bytes);
-            let reader = Reader::new(&src, &self.tables, &self.cache);
+            let reader = self.map.reader();
             initial_camera(&reader, FRAME_W)
         };
         let mut state = AppState::new(cx, cy, zoom * DEMO_ZOOM);
@@ -474,8 +462,8 @@ impl Demo {
         // draws (#1559).
         app.set_resident_frame(true);
         // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label.
-        app.set_nav_profiles(self.tables.nav_profiles());
-        app.set_map_nav_graph(self.tables.has_nav_graph());
+        app.set_nav_profiles(self.map.tables().nav_profiles());
+        app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
         app.set_rides(self.rides.catalog());
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a

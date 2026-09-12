@@ -494,8 +494,8 @@ impl SimGui {
             app.show_peak_view();
         }
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        let map_name = map.source.display_name();
-        app.set_map_info(&map_name, map_tables.version);
+        let map_name = map.display_name();
+        app.set_map_info(map_name, map_tables.version);
         // `--physical` only takes effect with a saved calibration; the panel opens calibration.
         let points_per_mm = crate::calib::load();
         let physical = args.physical && points_per_mm.is_some();
