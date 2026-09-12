@@ -77,7 +77,7 @@ fn terrain_root() -> PathBuf {
 
 #[derive(Clone)]
 enum Input {
-    Map { source: obc_host_core::flat_map::MapSource, offset: u64, len: u64 },
+    Map { source: obc_host_core::flat_store::ObjectSource, offset: u64, len: u64 },
     Fixture(Preset),
 }
 

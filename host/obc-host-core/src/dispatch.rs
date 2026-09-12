@@ -536,7 +536,7 @@ impl HostLoop {
                 }
                 let started = session.index().and_then(|index| {
                     let src = routes.active_source()?;
-                    let orig = obc_route::RouteReader::new(index, &src);
+                    let orig = obc_route::RouteReader::new(index, src);
                     DetourPlan::start(&request, app.settings().bike_profile_idx, &orig)
                 });
                 match started {
@@ -624,7 +624,7 @@ impl HostLoop {
                 // so it can trim the rejoin to first tail contact (#882); the source binding must
                 // outlive the call, so it's bound here rather than inside a closure.
                 let src = routes.active_source();
-                let orig = session.index().zip(src.as_ref()).map(|(i, s)| obc_route::RouteReader::new(i, s));
+                let orig = session.index().zip(src).map(|(i, s)| obc_route::RouteReader::new(i, s));
                 let (ready, result) = plan_detour_preview(app, terminal, plan, orig.as_ref(), &mut NoTrace);
                 self.detour_ready = ready;
                 match result {
@@ -709,7 +709,7 @@ impl HostLoop {
             // overview would settle with no shape at all.
             session.sync(app, routes);
             let src = routes.active_source();
-            let pts = session.index().zip(src.as_ref()).map(|(index, s)| {
+            let pts = session.index().zip(src).map(|(index, s)| {
                 obc_route::RouteReader::new(index, s).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
             });
             // Answered either way, exactly as the ride-track arm above it is: a failure *is* an
@@ -852,7 +852,7 @@ mod tests {
         }
 
         let token = obc_app::device_core::TokenSource::<CatalogTag>::new().issue();
-        let mut routes = crate::MemRouteStore::new(&[]);
+        let mut routes = crate::FlatRouteStore::from_bytes(&[]).unwrap();
         assert_eq!(
             remove_object(token, 7, &mut routes, &mut FailedRide, &mut UnreachedTrip),
             CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },

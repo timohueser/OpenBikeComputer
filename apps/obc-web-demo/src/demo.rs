@@ -15,8 +15,9 @@ use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::flat_map::FlatMap;
+use obc_host_core::RouteRepository;
 use obc_host_core::{
-    initial_camera, replay_advance, ActiveRouteSession, HostLoop, MemRideStore, MemRouteStore, MemTrackStore,
+    initial_camera, replay_advance, ActiveRouteSession, FlatRouteStore, HostLoop, MemRideStore, MemTrackStore,
     ReplaySensors, RgbaFrame,
 };
 use obc_ports::InputClock;
@@ -158,7 +159,7 @@ pub struct Demo {
     /// render call. **Boxed** for the same reason as the app: a by-value temporary of this size is
     /// the wasm stack trap.
     scratch: Box<obc_render::RenderScratch>,
-    routes: MemRouteStore,
+    routes: FlatRouteStore,
     rides: MemRideStore,
     tracks: MemTrackStore,
     player: GpxPlayer,
@@ -216,8 +217,9 @@ impl Demo {
     /// stay on the heap.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Box<Self> {
-        let map = FlatMap::from_bytes(DEMO_MAP).expect("embedded demo map imports into the flat store");
-        let routes = MemRouteStore::new(&[DEMO_ROUTE]);
+        let owner = obc_host_core::flat_store::HostStore::memory().expect("session card initializes");
+        let map = FlatMap::from_bytes_in(&owner, DEMO_MAP).expect("embedded demo map imports into the flat store");
+        let routes = FlatRouteStore::new(owner, &[DEMO_ROUTE]).expect("embedded routes import into the flat store");
         let rides = MemRideStore::new(demo_rides());
         let track = Track::parse(DEMO_RIDE_GPX).expect("embedded demo GPX parses");
         let mut player = GpxPlayer::new(track);
@@ -320,7 +322,7 @@ impl Demo {
             // planned route, a spliced detour), and the frame must draw what is there now.
             self.session.sync(&self.app, &mut self.routes);
             let route_src = self.routes.active_source();
-            let route = match (self.session.index(), route_src.as_ref()) {
+            let route = match (self.session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
@@ -359,7 +361,7 @@ impl Demo {
         self.session.sync(&self.app, &mut self.routes);
         let mut plan = {
             let route_src = self.routes.active_source();
-            let route = match (self.session.index(), route_src.as_ref()) {
+            let route = match (self.session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
