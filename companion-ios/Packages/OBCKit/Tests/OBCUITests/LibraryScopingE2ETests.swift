@@ -276,8 +276,8 @@ import OBCTransport
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let library = FileLibraryStore(directory: directory)
-        library.saveRide(archive)
-        library.saveRide(trashed)
+        try library.saveRide(archive)
+        try library.saveRide(trashed)
         library.markRideSynced(archive.id)
         library.markRideDeleted(deletedID)
         library.markRideTrashed(trashed.id, at: trashDate)
