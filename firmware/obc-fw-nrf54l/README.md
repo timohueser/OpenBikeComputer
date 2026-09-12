@@ -933,14 +933,15 @@ Open Peak View from the menu after a GPS fix. Before the first fix, the screen s
 60° horizontal width and expands upward when nearby summit elevations require more headroom.
 The device generates the current viewing direction first in the existing 128 KiB scratch arena.
 The compass animation stops when that view is ready. Three static dots show that the remaining
-panorama is still being built. Turning gives the new direction priority; an unfinished direction
-shows the compass animation until ready. Work yields between 50 ms slices. Back cancels and
+panorama is still being built. Background work extends both edges in about 17-degree batches.
+Turning gives the new direction priority. After the first view appears, completed terrain stays
+visible and follows the heading; a light hatch marks pending parts until they fill in.
+Work yields between 50 ms slices. Back cancels and
 releases the arena before navigation, map rendering, or USB can use it.
 
 Ready directions use the RAM image without more terrain reads. Up/Down selects visible summits; Select switches
 between Browse and Live. A displacement above 20 m starts another job after the current job
-finishes. Missing distant data produces a "Limited terrain" notice and dashed marks over affected
-bearings. Missing observer terrain or a read error produces "Terrain unavailable".
+finishes. Missing distant data produces dashed marks over affected bearings. Missing observer terrain or a read error produces "Terrain unavailable".
 
 For an indoor test, build from this crate directory and inject GPS/compass data through VCOM:
 

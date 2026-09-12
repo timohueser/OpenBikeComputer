@@ -56,11 +56,12 @@ explicit simulated fix. Use the menu and `f` to complete generation before savin
   opens Peak View in the GUI. This overrides the selected map's terrain for that test. It generates a
   panorama from geographic terrain, with the current direction first. The compass spinner stops
   when that view is ready; three static dots indicate background work on the remaining directions.
-  Turning prioritizes the new direction. Ready directions use the RAM image; an unfinished view
-  shows the spinner until ready. Back cancels. Drag **Compass (heading when
+  Background work extends both edges in about 17-degree batches. Turning prioritizes the new
+  direction. After the first view appears, completed terrain stays visible and follows the
+  heading; a light hatch marks pending parts until they fill in. Back cancels. Drag **Compass (heading when
   stopped)** in Controls to turn. Changing the GPS position by more than 20 m rebuilds the view;
   smaller changes keep the current panorama to limit GPS jitter. The fixture has a limited area
-  of fine terrain around each preset. Missing distant coverage shows "Limited terrain" and
+  of fine terrain around each preset. Missing distant coverage shows
   dashed marks over affected bearings. Moving outside observer coverage shows Terrain unavailable.
   Each geographic terrain file contains heights, lower-resolution levels and baked height
   bounds. The renderer skips hidden blocks and shades visible terrain slopes under fixed
