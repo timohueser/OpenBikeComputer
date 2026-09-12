@@ -23,6 +23,7 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(info.name, "Trailhead")
         XCTAssertEqual(info.firmwareVersion, "0.4.2")
         XCTAssertEqual(info.protocolVersion, OBCProtocol.version)
+        XCTAssertEqual(info.libraryScope?.storeID, FixtureSet.defaultStoreID)
     }
 
     func testControlOverridesDeviceInfo() async throws {
@@ -65,6 +66,8 @@ final class MockTransportTests: XCTestCase {
         XCTAssertEqual(config.name, "Ridgeline")
         XCTAssertEqual(config.units, .imperial)
         XCTAssertEqual(info.name, "Ridgeline")
+        XCTAssertEqual(info.libraryScope?.storeID, FixtureSet.defaultStoreID)
+        XCTAssertEqual(info.featureBits, FixtureSet.defaultFeatureBits)
     }
 
     /// Spec §11.8, write direction: an absent refresh field means **leave the stored value

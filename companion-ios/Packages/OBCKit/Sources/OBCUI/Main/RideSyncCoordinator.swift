@@ -168,7 +168,7 @@ public final class RideSyncCoordinator {
                 connection = state
                 // The possession ack no longer fires from this raw edge — the
                 // model triggers `reconcilePossession()` strictly downstream of
-                // the identity read (#764), which is what lets the store-epoch
+                // the identity read (#764), which is what lets the store-identity
                 // gate close it. Only the truncation reset stays edge-driven:
                 if state == .connected, !wasConnected {
                     // A fresh link is a fresh device truth: drop the previous
@@ -193,7 +193,7 @@ public final class RideSyncCoordinator {
     /// identity read settles — an id-keyed write must never race the #303
     /// protocol-version verdict, and the `scope` it settles on is the write's
     /// key (#769): only synced ids minted under the **connected device's
-    /// current (serial, epoch)** are sent. Another device's ids, a previous
+    /// current (serial, StoreId)** are sent. Another device's ids, a previous
     /// era's ids, and unclaimed flat legacy ids all stay home — acking those
     /// is exactly the checkmark-stamping the 2026-07-12 incident produced. The
     /// fail-closed half lives upstream: a failed identity read never produces

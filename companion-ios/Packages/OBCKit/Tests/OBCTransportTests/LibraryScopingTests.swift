@@ -3,19 +3,15 @@ import Testing
 import OBCDomain
 import OBCTransport
 
-/// The (serial, epoch) composite keys (#769): the id encoding itself, and the
-/// **era matrix as key-validity tests** — the whole point of scope-in-the-key
-/// is that a device wipe, an app reinstall, a device switch, or a torn-marks
-/// epoch mint needs *zero* migration code, because the outcome is decided by
-/// whether strings match, not by any mutate-on-mismatch flow.
+/// Store identity is part of each current device key; old keys stay archival.
 @Suite struct LibraryScopingTests {
-    private let deviceA = LibraryScope(serial: "OBC-24-000317", epoch: 0x1111_1111)
+    private let deviceA = LibraryScope(serial: "OBC-24-000317", storeID: "1111111111111111111111110bc00001")
 
     // MARK: The id encoding
 
     @Test func scopedIDRoundTripsItsParts() {
         let id = RideID(deviceObjectID: DeviceObjectID(42), scope: deviceA)
-        #expect(id.rawValue == "v2:286331153:42:OBC-24-000317")
+        #expect(id.rawValue == "v4:1111111111111111111111110bc00001:42:OBC-24-000317")
         #expect(id.scope == deviceA)
         #expect(id.deviceObjectID == DeviceObjectID(42))
     }
@@ -33,7 +29,7 @@ import OBCTransport
     /// The serial rides last so a serial containing the separator needs no
     /// escaping — the encoding stays injective.
     @Test func serialContainingColonsRoundTrips() {
-        let odd = LibraryScope(serial: "OBC:rev:B:00 17", epoch: 7)
+        let odd = LibraryScope(serial: "OBC:rev:B:00 17", storeID: "00000000000000000000000000000007")
         let id = RideID(deviceObjectID: DeviceObjectID(3), scope: odd)
         #expect(id.scope == odd)
         #expect(id.deviceObjectID == DeviceObjectID(3))
@@ -52,23 +48,24 @@ import OBCTransport
         #expect(id.deviceObjectID == nil)
     }
 
-    /// A malformed `v2:` prefix (non-numeric epoch/object id) is not silently
-    /// half-parsed — it reads as an opaque unscoped id.
-    @Test(arguments: ["v2:notanumber:3:S", "v2:1:notanumber:S", "v2:1:18446744073709551616:S", "v2:1:3"])
+    @Test(arguments: ["v2:1:3:S", "v4:short:3:S",
+                      "v4:1111111111111111111111110bc00001:notanumber:S",
+                      "v4:1111111111111111111111110bc00001:18446744073709551616:S"])
     func malformedScopedIDsReadAsUnscoped(raw: String) {
         let id = RideID(raw)
         #expect(id.scope == nil)
+        #expect(id.rawValue == raw)
     }
 
     // MARK: The era matrix (key validity)
 
     /// Device wiped, app kept: the same object ids come back under a fresh
-    /// epoch — every old key stops matching (no suppression of the new era's
+    /// StoreId — every old key stops matching (no suppression of the new era's
     /// rides, no resurrection *into* the new era's sets), and the old entries
     /// stay browsable under their old keys.
     @Test func deviceWipedAppKept() {
         let oldEra = deviceA
-        let newEra = LibraryScope(serial: deviceA.serial, epoch: 0x2222_2222)
+        let newEra = LibraryScope(serial: deviceA.serial, storeID: "2222222222222222222222220bc00001")
 
         let library = InMemoryLibraryStore()
         let oldID = RideID(deviceObjectID: DeviceObjectID(3), scope: oldEra)
@@ -88,7 +85,7 @@ import OBCTransport
     }
 
     /// App reinstalled, device kept: rides land under the exact same
-    /// (serial, epoch, id) keys the lost library used — identity is derived
+    /// (serial, StoreId, id) keys the lost library used — identity is derived
     /// from the device, so nothing app-local is needed to reproduce it.
     @Test func appReinstallDeviceKept() {
         let mintedBeforeReinstall = RideID(deviceObjectID: DeviceObjectID(7), scope: deviceA)
@@ -100,8 +97,8 @@ import OBCTransport
     /// is two distinct keys — no shared rows, no cross-device suppression,
     /// device B's tombstones say nothing about device A.
     @Test func serialSwitchHasNoCrossTalk() {
-        let dk = LibraryScope(serial: "OBC-DK-000001", epoch: 1)
-        let lm20 = LibraryScope(serial: "OBC-24-000317", epoch: 1)
+        let dk = LibraryScope(serial: "OBC-DK-000001", storeID: "00000000000000000000000000000001")
+        let lm20 = LibraryScope(serial: "OBC-24-000317", storeID: "00000000000000000000000000000001")
 
         let library = InMemoryLibraryStore()
         let dkRide = RideID(deviceObjectID: DeviceObjectID(3), scope: dk)
@@ -117,55 +114,37 @@ import OBCTransport
         #expect(!library.deletedRideIDs().contains(dkRide))
     }
 
-    /// A torn id-marks write mints a fresh epoch (the firmware's mint rule,
-    /// V3): from the app's side that is indistinguishable from any other era
-    /// change — new scope, empty sets, old keys archival. Same assertion
-    /// shape as the wipe, pinned separately because the *device state* differs
-    /// (the card kept its rides; only RRAM tore).
-    @Test func tornMarksMintedEpochIsANewScope() {
-        let before = deviceA
-        let after = LibraryScope(serial: deviceA.serial, epoch: 0x3333_3333)
-        let library = InMemoryLibraryStore()
-        library.markRideSynced(RideID(deviceObjectID: DeviceObjectID(12), scope: before))
-
-        // The card survived, so ride 12 still exists on the device — under the
-        // new epoch it re-syncs once (resurrection is the accepted, safe
-        // direction) because the old synced mark no longer matches.
-        #expect(!library.syncedRideIDs().contains(
-            RideID(deviceObjectID: DeviceObjectID(12), scope: after)))
-    }
-
     // MARK: The route-link validity predicate
 
     @Test func linkMatchesOnlyItsOwnScope() {
-        let link = DeviceRouteLink(serial: deviceA.serial, epoch: deviceA.epoch,
+        let link = DeviceRouteLink(serial: deviceA.serial, storeID: deviceA.storeID,
                                    objectID: DeviceObjectID(5))
         #expect(link.matches(deviceA))
-        #expect(!link.matches(LibraryScope(serial: deviceA.serial, epoch: 999)),
+        #expect(!link.matches(LibraryScope(serial: deviceA.serial, storeID: "2222222222222222222222220bc00001")),
                 "an era change invalidates the link")
-        #expect(!link.matches(LibraryScope(serial: "OBC-DK-000001", epoch: deviceA.epoch)),
+        #expect(!link.matches(LibraryScope(serial: "OBC-DK-000001", storeID: deviceA.storeID)),
                 "another device never matches")
     }
 
     // MARK: The scope's fail-closed inputs
 
-    @Test func deviceInfoWithoutEpochYieldsNoScope() {
+    @Test func deviceInfoWithoutStoreIDYieldsNoScope() {
         let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", serial: "OBC-24-000317",
-                              storeEpoch: nil)
+                              storeID: nil)
         #expect(info.libraryScope == nil)
     }
 
     @Test func deviceInfoWithEmptySerialYieldsNoScope() {
-        let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", serial: "", storeEpoch: 7)
+        let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", serial: "", storeID: "00000000000000000000000000000007")
         #expect(info.libraryScope == nil)
     }
 
-    /// `0` is a legal epoch — a device whose TRNG minted zero must scope
-    /// normally, which is exactly why a missing epoch is `nil`, never `0`.
-    @Test func zeroIsALegalEpoch() {
-        let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", serial: "OBC-24-000317",
-                              storeEpoch: 0)
-        #expect(info.libraryScope == LibraryScope(serial: "OBC-24-000317", epoch: 0))
+    @Test(arguments: ["", "1234", "0000000000000000000000000000000g",
+                      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"])
+    func malformedStoreIDYieldsNoScope(storeID: String) {
+        let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", serial: deviceA.serial,
+                              storeID: storeID)
+        #expect(info.libraryScope == nil)
     }
 
     // MARK: Helpers

@@ -70,7 +70,7 @@ final class MainScreenModelTests: XCTestCase {
     /// seeded with it behave like uploads committed against the mock device.
     private func mockLink(_ objectID: UInt16) -> DeviceRouteLink {
         DeviceRouteLink(
-            serial: "OBC-24-000317", epoch: FixtureSet.defaultStoreEpoch,
+            serial: "OBC-24-000317", storeID: FixtureSet.defaultStoreID,
             objectID: DeviceObjectID(objectID))
     }
 
@@ -879,7 +879,7 @@ final class MainScreenModelTests: XCTestCase {
     func testDeviceBCatalogNeverTouchesDeviceALinks() async throws {
         let library = InMemoryLibraryStore()
         let foreignLink = DeviceRouteLink(
-            serial: "OBC-OTHER-DEVICE", epoch: FixtureSet.defaultStoreEpoch, objectID: DeviceObjectID(7))
+            serial: "OBC-OTHER-DEVICE", storeID: FixtureSet.defaultStoreID, objectID: DeviceObjectID(7))
         var record = importedRecord(id: "lib-deviceB")
         record.deviceLink = foreignLink
         record.uploadedCRC32 = 0xAAAA_BBBB

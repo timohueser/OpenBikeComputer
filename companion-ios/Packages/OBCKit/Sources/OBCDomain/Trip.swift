@@ -34,7 +34,7 @@ public struct TripRecord: Identifiable, Equatable, Sendable {
     /// whose route record is gone.
     public var stageIDs: [RouteID]
     /// The device copy this trip was assigned on upload — the durable
-    /// `{serial, epoch, id}` link between a library trip and its copy on **one
+    /// `{serial, StoreId, id}` link between a library trip and its copy on **one
     /// device in one id era**, the same ``DeviceRouteLink`` routes use (#769: a
     /// bare object id silently matched every connected device, and trip ids come
     /// from the device's own per-store counter). `nil` until an upload commits;
