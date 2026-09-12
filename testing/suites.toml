@@ -554,7 +554,6 @@ ownership = [
   { kind = "workflow", pattern = "python3 tools/suite_registry.py *" },
   { kind = "workflow", pattern = "python3 tools/ci_aggregate.py" },
 ]
-sleep_exception = { reason = "The registry checker test contains a literal sleep example used only inside an isolated rejection fixture.", issue = "#1236" }
 
 [[suite]]
 id = "python.firmware-tools"
