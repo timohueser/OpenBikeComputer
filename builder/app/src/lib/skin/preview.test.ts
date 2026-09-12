@@ -114,8 +114,12 @@ describe("live preview skin admission", () => {
             .rejects.toThrow(/at least 24/);
         expect(bridge.open).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
-        await expect(openLiveSkinPreview(JSON.stringify({ ...canonicalSchema, id: "unknown" }), JSON.stringify(canonicalSkin), { fetchImpl }))
-            .rejects.toThrow(/unavailable for this map schema/);
+        for (const unknown of [{ ...canonicalSchema, id: "unknown" }, { ...canonicalSchema, revision: 2 }]) {
+            await expect(openLiveSkinPreview(JSON.stringify(unknown), JSON.stringify(canonicalSkin), { fetchImpl }))
+                .rejects.toThrow(/unavailable for this map schema/);
+        }
+        expect(bridge.open).not.toHaveBeenCalled();
+        expect(fetchImpl).not.toHaveBeenCalled();
     });
 
     it("uses the canonical band for each draft update and keeps the last accepted skin on refusal", async () => {

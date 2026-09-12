@@ -19,6 +19,7 @@ const styles = Object.entries(preset.features).flatMap(([tag, values]) =>
 export const canonicalSchema: SchemaEntry = {
     ...exampleCatalog.schema,
     id: "bikepacking",
+    revision: 1,
     styles: styles.map((style, index) => ({ id: index + 1, feature_type: style.feature_type })),
 };
 
