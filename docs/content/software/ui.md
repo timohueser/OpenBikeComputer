@@ -1070,6 +1070,8 @@ else, the cursor is the first row still ahead; it comes back if the rider sets t
 Without this a rider who scrolls and then filters lands on the last match instead of the nearest
 one.
 
+Replacing active route geometry clears the corridor snapshot. The open view keeps its frozen progress anchor and requests new rows from the replacement route. A card that covers the view does not by itself clear the snapshot.
+
 Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
 
 ## Main rider flow
