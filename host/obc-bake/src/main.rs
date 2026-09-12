@@ -274,7 +274,7 @@ fn run_cell_bake(
         };
         let sources = match flags.get("dem-sources") {
             Some(dir) => PathBuf::from(dir),
-            None => ensure_dem_sources(&regions, source.as_ref(), &cache)?,
+            None => ensure_dem_sources(&regions, source.as_ref(), &cache, doc.cell_log2)?,
         };
         let dem = obc_bake::terrain::DemCutter::open(&sources)?;
         println!("{} source DEM tile(s) from {}", dem.tiles(), sources.display());
@@ -420,46 +420,22 @@ fn run_planet_bake(
     }
 }
 
-/// `obc-bake terrain` — the terrain artifact class, baked on its own track.
-///
-/// A separate command from `bake` rather than a phase of it, which is the CLI saying what
-/// `OBCC_Spec.md` §13.2 says: these are two stores with two revisions, and one is not a step of
-/// the other. It needs no OSM extract — only the `.poly` outlines, to know which squares the
-/// curated coverage touches.
-/// Download the GLO-30 tiles the curated coverage touches into `<cache>/dem`, and answer that
-/// directory — the automatic replacement for a hand-run `obc-dem fetch`.
-///
-/// The bbox is the union of the regions' `.poly` coverages, converted from the packer's
-/// `(min_lon, min_lat, max_lon, max_lat)` µdeg order into `obc-dem`'s latitude-first box — the
-/// one conversion in this file where the axes swap, so it is done in named fields rather than
-/// positionally. Tiles already in the cache are left alone, so a re-bake costs a directory scan.
+/// Fetch source posts for the complete terrain cells selected by the region polygons.
 fn ensure_dem_sources(
     regions: &[obc_bake::regions::Region],
     source: &dyn obc_bake::source::ExtractSource,
     cache: &Path,
+    cell_log2: u8,
 ) -> Result<PathBuf, String> {
     let progress = obc_pack::progress::Progress::stdout();
-    let mut bbox: Option<(i64, i64, i64, i64)> = None;
+    let mut coverages = Vec::new();
     for region in regions {
         let poly = source.fetch_poly(region, &progress)?;
         let coverage =
             obc_bake::coverage::Coverage::parse_poly(&poly).map_err(|e| format!("{}.poly: {e}", region.id))?;
-        let b = coverage.bbox();
-        bbox = Some(match bbox {
-            None => b,
-            Some(u) => (u.0.min(b.0), u.1.min(b.1), u.2.max(b.2), u.3.max(b.3)),
-        });
+        coverages.push(coverage);
     }
-    let (min_lon, min_lat, max_lon, max_lat) = bbox.ok_or("no region resolved to a coverage polygon")?;
-    let clamp = |v: i64, what: &str| -> Result<i32, String> {
-        i32::try_from(v).map_err(|_| format!("coverage {what} {v} µdeg does not fit an i32 — a broken .poly"))
-    };
-    let bbox = obc_dem::BboxUdeg {
-        min_lat: clamp(min_lat, "min_lat")?,
-        min_lon: clamp(min_lon, "min_lon")?,
-        max_lat: clamp(max_lat, "max_lat")?,
-        max_lon: clamp(max_lon, "max_lon")?,
-    };
+    let bbox = terrain_source_bbox(&coverages, cell_log2)?;
     let dir = cache.join("dem");
     println!("Fetching GLO-30 tiles for the curated coverage into {}...", dir.display());
     let mut downloaded = 0u64;
@@ -474,6 +450,25 @@ fn ensure_dem_sources(
     })?;
     println!("{} tile(s) present ({cached} cached, {:.1} MB fetched)", paths.len(), downloaded as f64 / 1e6);
     Ok(dir)
+}
+
+/// Surface bounds also sample the cell's north/east edge. Keep those edges inclusive;
+/// `fetch_tiles` adds the source-post interpolation padding beyond this box.
+fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
+    let log2 = u32::from(cell_log2);
+    obc_pack::grid::CellId::new(log2, 0, 0)?;
+    let (min_lon, min_lat, max_lon, max_lat) = coverages
+        .iter()
+        .flat_map(|coverage| coverage.cells(log2))
+        .map(|cell| cell.square())
+        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+        .ok_or("no region resolved to a terrain cell")?;
+    Ok(obc_dem::BboxUdeg {
+        min_lat: min_lat.clamp(-90_000_000, 90_000_000) as i32,
+        min_lon: min_lon.clamp(-180_000_000, 180_000_000) as i32,
+        max_lat: max_lat.clamp(-90_000_000, 90_000_000) as i32,
+        max_lon: max_lon.clamp(-180_000_000, 180_000_000) as i32,
+    })
 }
 
 fn run_terrain(args: &[String]) -> Result<(), String> {
@@ -535,7 +530,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     // No --sources: fetch the curated coverage's GLO-30 tiles ourselves, exactly as `bake` does.
     let sources = match flags.get("sources") {
         Some(dir) => PathBuf::from(dir),
-        None => ensure_dem_sources(&regions, source.as_ref(), &cache)?,
+        None => ensure_dem_sources(&regions, source.as_ref(), &cache, doc.cell_log2)?,
     };
     let cutter = obc_bake::terrain::DemCutter::open(&sources)?;
     println!("{} source DEM tile(s) from {}", cutter.tiles(), sources.display());
@@ -683,4 +678,49 @@ fn default_cache_dir() -> PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".cache/obcm/geofabrik")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terrain_source_bbox;
+    use obc_bake::coverage::Coverage;
+    use obc_dem::fetch::{tiles_for, TileId};
+
+    fn rectangle(w: f64, s: f64, e: f64, n: f64) -> Coverage {
+        Coverage::parse_poly(&format!("test\n1\n {w} {s}\n {e} {s}\n {e} {n}\n {w} {n}\n {w} {s}\nEND\nEND\n")).unwrap()
+    }
+
+    #[test]
+    fn dem_fetch_covers_cell_overhang_at_the_configured_grid_size() {
+        let coverages = [rectangle(10.50, 48.40, 10.51, 48.41)];
+        let bbox = terrain_source_bbox(&coverages, 19).unwrap();
+        assert_eq!(
+            (bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat),
+            (10_485_760, 48_234_496, 11_010_048, 48_758_784)
+        );
+        assert!(tiles_for(bbox).contains(&TileId { lat: 48, lon: 11 }));
+        let finer = terrain_source_bbox(&coverages, 18).unwrap();
+        assert_eq!(finer.max_lon, 10_747_904);
+        assert!(!tiles_for(finer).contains(&TileId { lat: 48, lon: 11 }));
+    }
+
+    #[test]
+    fn dem_fetch_keeps_closed_cell_edges_and_combines_regions() {
+        let west = rectangle(-0.01, -0.01, -0.009, -0.009);
+        let bbox = terrain_source_bbox(std::slice::from_ref(&west), 14).unwrap();
+        assert_eq!((bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat), (-16_384, -16_384, 0, 0));
+        let tiles = tiles_for(bbox);
+        for lat in [-1, 0] {
+            for lon in [-1, 0] {
+                assert!(tiles.contains(&TileId { lat, lon }), "source stencil across the closed cell edge");
+            }
+        }
+        let combined = terrain_source_bbox(&[west, rectangle(10.50, 48.40, 10.51, 48.41)], 19).unwrap();
+        assert_eq!(
+            (combined.min_lon, combined.min_lat, combined.max_lon, combined.max_lat),
+            (-524_288, -524_288, 11_010_048, 48_758_784)
+        );
+        assert!(terrain_source_bbox(&[], 19).is_err());
+        assert!(terrain_source_bbox(&[], 255).is_err());
+    }
 }
