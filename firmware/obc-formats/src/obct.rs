@@ -19,6 +19,13 @@
 
 use crate::io::{validate_prefix, DecodeError};
 
+#[path = "obct_surface.rs"]
+mod surface;
+pub use surface::{
+    approximation_error, approximation_offset, CellIndexLayout, SurfaceLayout, SurfaceLevel, CELL_INDEX_FLAG,
+    MAX_GROUP_BYTES, MAX_LEAF_LOG2, MAX_SURFACE_LEVELS, SURFACE_FLAG, SURFACE_VERSION,
+};
+
 pub const MAGIC: [u8; 4] = *b"OBCT";
 pub const VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 32;
@@ -129,7 +136,11 @@ pub const fn tile_offset_in_cell(ti: u32, tj: u32, tiles_log2: u8) -> u32 {
 /// Validate the five-byte `magic + version` prefix (spec §4.2). Layout policy beyond this — the
 /// directory bounds, the cell-rectangle sanity, the posting/cell pairing — is the reader's.
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
-    validate_prefix(bytes, &MAGIC, VERSION, VERSION).map(|_| ())
+    let version = validate_prefix(bytes, &MAGIC, VERSION, SURFACE_VERSION)?;
+    if version != VERSION && version != SURFACE_VERSION {
+        return Err(DecodeError::Version);
+    }
+    Ok(())
 }
 
 const _: () = assert!(TILE_BYTES == 512);
@@ -199,6 +210,8 @@ mod tests {
         assert!(validate_header_prefix(b"OBCT\x01").is_ok());
         assert!(validate_header_prefix(b"OBCM\x01").is_err());
         assert!(validate_header_prefix(b"OBCT\x02").is_err());
+        assert!(validate_header_prefix(b"OBCT\x03").is_ok());
+        assert!(validate_header_prefix(b"OBCT\x04").is_err());
         assert!(validate_header_prefix(b"OBC").is_err());
     }
 }

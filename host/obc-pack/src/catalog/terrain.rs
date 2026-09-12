@@ -1,7 +1,5 @@
 //! Terrain-store traversal, validation, and lookup.
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -129,6 +127,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     let known_empty = read_terrain_known_empty(&dir.join(KNOWN_EMPTY_STATE_NAME), &doc)?;
     let mut cells = Vec::new();
     let mut pinned_artifacts = Vec::new();
+    let mut surface = None;
     if dir.is_dir() {
         for i_dir in sorted_entries(&dir)? {
             let name = file_name(&i_dir)?;
@@ -141,7 +140,8 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
                     i_dir.display()
                 ));
             }
-            read_terrain_row(&i_dir, &name, &doc, tree, base_url, &mut cells, &mut pinned_artifacts)?;
+            let row = read_terrain_row(&i_dir, &name, &doc, tree, base_url, &mut cells, &mut pinned_artifacts)?;
+            check_surface_encoding(&mut surface, row, &i_dir)?;
         }
     }
     cells.sort_by(|a, b| a.id.cmp(&b.id));
@@ -176,9 +176,10 @@ fn read_terrain_row(
     base_url: &str,
     out: &mut Vec<TerrainCellEntry>,
     pinned_artifacts: &mut Vec<PinnedArtifact>,
-) -> Result<(), String> {
+) -> Result<Option<bool>, String> {
     let mut sidecars: Vec<String> = Vec::new();
     let mut artifacts: Vec<(String, PathBuf)> = Vec::new();
+    let mut surface = None;
     for entry in sorted_entries(dir)? {
         let name = file_name(&entry)?;
         if name.starts_with('.') {
@@ -266,6 +267,7 @@ fn read_terrain_row(
                 header.min_j
             ));
         }
+        check_surface_encoding(&mut surface, Some(header.surface), &path)?;
 
         let (bytes, sha256) = hash_file(&path)?;
         let rel = path
@@ -288,6 +290,19 @@ fn read_terrain_row(
             "{}: sidecar with no terrain cell — `{orphan}{TERRAIN_EXT}` is missing",
             dir.join(format!("{orphan}{TERRAIN_SIDECAR_EXT}")).display()
         ));
+    }
+    Ok(surface)
+}
+
+fn check_surface_encoding(expected: &mut Option<bool>, current: Option<bool>, path: &Path) -> Result<(), String> {
+    if let Some(current) = current {
+        if *expected.get_or_insert(current) != current {
+            return Err(format!(
+                "{}: terrain store mixes native and indexed cell blocks; re-bake all published terrain cells \
+                 with the same baker before publishing",
+                path.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -363,9 +378,7 @@ fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<Terrain
     Ok(state.known_empty)
 }
 
-/// What a terrain container states about itself (`OBCT_Spec.md` §4.2). Read directly
-/// rather than through `obc-elevation`'s reader: the generator's job is to check the
-/// header against the id, and the whole 2 MiB block is not needed to do it.
+/// The container's identity, after validation through the device's terrain reader.
 struct ObctHeader {
     posting_log2: u8,
     cell_log2: u8,
@@ -373,30 +386,21 @@ struct ObctHeader {
     min_j: u32,
     rows: u16,
     cols: u16,
+    surface: bool,
 }
 
 fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
-    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut header = [0u8; obct::HEADER_LEN];
-    file.read_exact(&mut header).map_err(|e| {
-        format!("{}: {e} — too short to be an OBCT artifact ({}-byte header)", path.display(), obct::HEADER_LEN)
-    })?;
-    obct::validate_header_prefix(&header)
-        .map_err(|e| format!("{}: not an OBCT v{} artifact ({e:?})", path.display(), obct::VERSION))?;
-    if header[obct::HDR_FLAGS] != 0 || header[obct::HDR_RESERVED..].iter().any(|&b| b != 0) {
-        return Err(format!(
-            "{}: OBCT flags/reserved bytes are not zero — a v1 reader MUST refuse the file (OBCT_Spec.md §4.5)",
-            path.display()
-        ));
-    }
-    let u32_at = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().expect("4 bytes"));
-    let u16_at = |at: usize| u16::from_le_bytes(header[at..at + 2].try_into().expect("2 bytes"));
+    let source = crate::terrain::FileSource::open(path)?;
+    let reader = obc_elevation::TerrainReader::parse(&source)
+        .map_err(|e| format!("{}: not a usable OBCT artifact ({e:?})", path.display()))?;
+    let header = reader.header();
     Ok(ObctHeader {
-        posting_log2: header[obct::HDR_POSTING_LOG2],
-        cell_log2: header[obct::HDR_CELL_LOG2],
-        min_i: u32_at(obct::HDR_CELL_MIN_I),
-        min_j: u32_at(obct::HDR_CELL_MIN_J),
-        rows: u16_at(obct::HDR_CELL_ROWS),
-        cols: u16_at(obct::HDR_CELL_COLS),
+        posting_log2: header.posting_log2,
+        cell_log2: header.cell_log2,
+        min_i: header.cell_min_i,
+        min_j: header.cell_min_j,
+        rows: header.cell_rows,
+        cols: header.cell_cols,
+        surface: header.flags & obct::SURFACE_FLAG != 0,
     })
 }

@@ -1,8 +1,8 @@
 //! `obc-dem` — the CLI over [`obc_dem`]: fetch source DEM tiles, bake OBCT terrain.
 //!
-//! Two subcommands, and the split between them is the design: `fetch` is the only thing that
-//! touches the network, `bake` is a pure function of a tile directory and a box. See the crate
-//! docs for the determinism contract that split exists to protect.
+//! `fetch` downloads source tiles; `bake` resamples them to native terrain; `surface` adds
+//! geographic levels and bounds. Only `fetch` uses the network. See the crate docs for the
+//! determinism contract that split exists to protect.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -17,6 +17,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("fetch") => fetch(&args[1..]),
         Some("bake") => bake(&args[1..]),
+        Some("surface") => surface(&args[1..]),
         Some("--help") | Some("-h") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
 
 const USAGE: &str = "\
 usage:
+  obc-dem surface <input.obcd> <output.obcd>
   obc-dem fetch --bbox <min_lat,min_lon,max_lat,max_lon> --out <dir>
   obc-dem bake  --sources <dir> --bbox <min_lat,min_lon,max_lat,max_lon>
                 (--out <dir> | --shard <file.obcd>)
@@ -52,6 +54,21 @@ usage:
 
 `fetch` downloads Copernicus GLO-30 tiles from the AWS Open Data mirror; `bake`
 never touches the network.";
+
+fn surface(args: &[String]) -> Result<(), String> {
+    let [input, output] = args else {
+        return Err("surface: expected input.obcd output.obcd".into());
+    };
+    if input == output {
+        return Err("surface: input and output must differ".into());
+    }
+    let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
+    let file = std::fs::File::create(output).map_err(|e| format!("{output}: {e}"))?;
+    obc_dem::surface::convert(&bytes, std::io::BufWriter::new(file))?;
+    let size = std::fs::metadata(output).map_err(|e| e.to_string())?.len();
+    println!("{output}: {size} bytes (source {} bytes)", bytes.len());
+    Ok(())
+}
 
 /// `--flag value` parsing, in the shape `obc-mkimage` established: no argument crate, and an
 /// unknown flag is an error rather than something silently ignored.

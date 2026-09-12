@@ -2176,6 +2176,53 @@ fn a_mixed_terrain_store_is_refused() {
 }
 
 #[test]
+fn indexed_terrain_is_published_with_its_exact_bytes_and_validated_encoding() {
+    let t = TempTree::new("terrain-surface");
+    example_tree(t.path());
+    let native_path = terrain_path(t.path(), terrain_ne(), TERRAIN_EXT);
+    let native = fs::read(&native_path).unwrap();
+    for id in [terrain_nw(), terrain_ne()] {
+        let path = terrain_path(t.path(), id, TERRAIN_EXT);
+        let mut converted = std::io::Cursor::new(Vec::new());
+        obc_dem::surface::convert(&fs::read(&path).unwrap(), &mut converted).unwrap();
+        fs::write(&path, converted.into_inner()).unwrap();
+    }
+    let path = terrain_path(t.path(), terrain_nw(), TERRAIN_EXT);
+    let surface = fs::read(&path).unwrap();
+    for flags in [obct::SURFACE_FLAG, obct::SURFACE_FLAG | obct::CELL_INDEX_FLAG] {
+        let mut bytes = surface.clone();
+        bytes[obct::HDR_FLAGS] = flags;
+        fs::write(&path, &bytes).unwrap();
+        let catalog = generate(t.path(), &opts()).expect("surface terrain is publishable");
+        let artifact = catalog
+            .pinned_artifacts
+            .iter()
+            .find(|a| t.path().join(&a.rel_path) == path)
+            .expect("the terrain artifact is pinned");
+        assert_eq!(artifact.bytes, bytes.len() as u64);
+        assert_eq!(artifact.sha256, hash_file(&path).unwrap().1);
+    }
+
+    for (at, value) in
+        [(obct::HDR_VERSION, obct::VERSION), (obct::HDR_FLAGS, 0), (obct::HDR_FLAGS, 7), (obct::HDR_RESERVED, 1)]
+    {
+        let mut bytes = surface.clone();
+        bytes[at] = value;
+        fs::write(&path, bytes).unwrap();
+        let err = generate(t.path(), &opts()).expect_err("unsupported encoding must not reach the catalog");
+        assert!(err.contains("not a usable OBCT artifact"), "{err}");
+    }
+    fs::write(&path, &surface[..surface.len() - 1]).unwrap();
+    let err = generate(t.path(), &opts()).expect_err("a truncated surface block must not reach the catalog");
+    assert!(err.contains("not a usable OBCT artifact"), "{err}");
+
+    fs::write(&path, surface).unwrap();
+    fs::write(native_path, native).unwrap();
+    let err = generate(t.path(), &opts()).expect_err("a partial terrain upgrade must not be published");
+    assert!(err.contains("re-bake all published terrain cells"), "{err}");
+}
+
+#[test]
 fn a_terrain_container_must_be_the_one_by_one_cell_its_id_names() {
     // A container covering a different square than its path says.
     let t = TempTree::new("terrain-square");
@@ -2191,6 +2238,8 @@ fn a_terrain_container_must_be_the_one_by_one_cell_its_id_names() {
     let path = terrain_path(u.path(), terrain_nw(), TERRAIN_EXT);
     let mut bytes = obct_bytes(TERRAIN_POSTING_LOG2, terrain_nw(), 0x11);
     bytes[obct::HDR_CELL_COLS..obct::HDR_CELL_COLS + 2].copy_from_slice(&2u16.to_le_bytes());
+    bytes.splice(obct::HEADER_LEN + obct::DIR_ENTRY_LEN..obct::HEADER_LEN + obct::DIR_ENTRY_LEN, [0; 4]);
+    bytes[obct::HEADER_LEN..obct::HEADER_LEN + 4].copy_from_slice(&40u32.to_le_bytes());
     fs::write(&path, bytes).expect("cell");
     let err = generate(u.path(), &opts()).expect_err("a shard is not a cell");
     assert!(err.contains("1 × 1"), "{err}");
@@ -2199,8 +2248,7 @@ fn a_terrain_container_must_be_the_one_by_one_cell_its_id_names() {
     let v = TempTree::new("terrain-pairing");
     example_tree(v.path());
     let path = terrain_path(v.path(), terrain_nw(), TERRAIN_EXT);
-    let mut bytes = obct_bytes(TERRAIN_POSTING_LOG2, terrain_nw(), 0x11);
-    bytes[obct::HDR_POSTING_LOG2] = TERRAIN_POSTING_LOG2 - 1;
+    let bytes = obct_bytes(TERRAIN_POSTING_LOG2 - 1, terrain_nw(), 0x11);
     fs::write(&path, bytes).expect("cell");
     let err = generate(v.path(), &opts()).expect_err("one lattice per terrain revision");
     assert!(err.contains("one lattice per terrain revision"), "{err}");

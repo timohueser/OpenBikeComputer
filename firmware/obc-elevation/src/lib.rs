@@ -35,6 +35,7 @@ pub mod grid;
 pub mod integrator;
 pub mod reader;
 pub mod source;
+pub mod surface;
 
 pub use cache::TileCache;
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};

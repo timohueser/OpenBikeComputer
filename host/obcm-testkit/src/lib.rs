@@ -629,12 +629,15 @@ pub fn build_poi_map_with_hours(
     // 1..=6. Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
     // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's
     // one rounding step. 512 is a multiple of `U`, so whole chunks leave the cursor aligned.
+    let category_count =
+        pois_by_cat.iter().map(|(id, _)| *id).max().unwrap_or(POI_CATEGORY_COUNT).max(POI_CATEGORY_COUNT);
+    let directory_len = 3 + category_count as usize * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN;
     let mut payload = Vec::new(); // everything after the directory
     let mut cats: Vec<PoiCat> = Vec::new();
-    let dir_gap = filler_len(poi_off + poi_dir_len());
+    let dir_gap = filler_len(poi_off + directory_len);
     payload.resize(dir_gap, FILLER);
-    let mut cursor = poi_off + poi_dir_len() + dir_gap; // absolute offset of the next category's index
-    for id in 1..=POI_CATEGORY_COUNT {
+    let mut cursor = poi_off + directory_len + dir_gap; // absolute offset of the next category's index
+    for id in 1..=category_count {
         let pois = pois_by_cat.iter().find(|(c, _)| *c == id).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
         if pois.is_empty() {
             // Empty category: its (zero-length) index "starts" at the cursor, no chunks.

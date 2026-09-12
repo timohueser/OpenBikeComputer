@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use obc_formats::obcm::{
-    poi_category_of, CHUNK_END, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN,
-    POI_HOURS_REF_NONE, POI_RECORD_LEN,
+    poi_directory_category_of, CHUNK_END, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN,
+    POI_HOURS_REF_NONE, POI_RECORD_LEN, SUMMIT_CATEGORY_ID, SUMMIT_SUBTYPE_ID,
 };
 
 use crate::emit::{place, scaled, MapWriter};
@@ -25,7 +25,11 @@ use crate::{Error, Result};
 /// Directory length: count byte + shared chunk size + one entry per category + the v7 pool fields.
 pub const POI_DIR_LEN: usize = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN + 4 + 2;
 
-/// One merged POI: the record's own bytes minus its `HoursRef`, which is remapped at write time.
+fn directory_len(categories: usize) -> usize {
+    1 + 2 + categories * POI_CAT_ENTRY_LEN + 4 + 2
+}
+
+/// One merged record, with service hours references remapped to the shared pool.
 pub struct MergedPoi {
     pub lat: i32,
     pub lon: i32,
@@ -33,8 +37,8 @@ pub struct MergedPoi {
     /// Bytes 9..34 of the source record (`Name Len` + the 24-byte name), copied verbatim so the
     /// assembler never re-folds a name.
     name: [u8; 25],
-    /// Index into the rebuilt pool, or [`POI_HOURS_REF_NONE`].
-    hours_ref: u16,
+    /// Service hours reference, or the original signed summit height.
+    payload: u16,
 }
 
 impl Point for MergedPoi {
@@ -65,7 +69,7 @@ pub struct MergedPois {
 /// same cells produce the same bytes whatever order the cells arrived in.
 pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
     /// One deduplicated record's payload: its name bytes and the hours blob it referenced.
-    type Payload = ([u8; 25], Option<[u8; POI_HOURS_BLOB_LEN]>);
+    type Payload = ([u8; 25], Option<[u8; POI_HOURS_BLOB_LEN]>, u16);
     // (lat, lon, subtype) → payload. A BTreeMap keeps the output ordered by the §4.5.5 key without a
     // separate sort.
     let mut by_key: BTreeMap<(i32, i32, u8), Payload> = BTreeMap::new();
@@ -88,16 +92,16 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                     if subtype == CHUNK_END {
                         break; // the §7.3 end-of-records sentinel
                     }
-                    if poi_category_of(subtype).is_none() {
+                    if poi_directory_category_of(subtype) != Some(entry.category_id) {
                         return Err(Error::Format(format!(
-                            "cell {}: POI subtype {subtype} is not in the §7.4 table",
+                            "cell {}: POI subtype {subtype} does not match its §7.4 category",
                             cell.id
                         )));
                     }
                     let lat = i32::from_le_bytes(rec[0..4].try_into().expect("4 bytes"));
                     let lon = i32::from_le_bytes(rec[4..8].try_into().expect("4 bytes"));
                     let hours_ref = u16::from_le_bytes(rec[34..36].try_into().expect("2 bytes"));
-                    let blob = if hours_ref == POI_HOURS_REF_NONE {
+                    let blob = if subtype == SUMMIT_SUBTYPE_ID || hours_ref == POI_HOURS_REF_NONE {
                         None
                     } else {
                         Some(*pool.get(hours_ref as usize).ok_or_else(|| {
@@ -106,7 +110,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                     };
                     let mut name = [0u8; 25];
                     name.copy_from_slice(&rec[9..34]);
-                    if by_key.insert((lat, lon, subtype), (name, blob)).is_some() {
+                    if by_key.insert((lat, lon, subtype), (name, blob, hours_ref)).is_some() {
                         duplicates += 1;
                     }
                 }
@@ -116,7 +120,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 
     // Rebuild the pool: distinct blobs, ordered by content.
     let mut pool_index: BTreeMap<[u8; POI_HOURS_BLOB_LEN], u16> = BTreeMap::new();
-    for (_, blob) in by_key.values() {
+    for (_, blob, _) in by_key.values() {
         if let Some(b) = blob {
             pool_index.entry(*b).or_insert(0);
         }
@@ -135,12 +139,16 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 
     let pois = by_key
         .into_iter()
-        .map(|((lat, lon, subtype), (name, blob))| MergedPoi {
+        .map(|((lat, lon, subtype), (name, blob, raw_payload))| MergedPoi {
             lat,
             lon,
             subtype,
             name,
-            hours_ref: blob.map_or(POI_HOURS_REF_NONE, |b| pool_index[&b]),
+            payload: if subtype == SUMMIT_SUBTYPE_ID {
+                raw_payload
+            } else {
+                blob.map_or(POI_HOURS_REF_NONE, |b| pool_index[&b])
+            },
         })
         .collect();
     Ok(MergedPois { pois, pool, duplicates })
@@ -183,6 +191,15 @@ impl PoiSection {
         self.len as u64
     }
 
+    /// Bytes added by the optional summit directory entry, index and chunks, including filler.
+    pub fn summit_bytes(&self) -> u64 {
+        let Some(block) = self.blocks.iter().find(|b| b.cat_id == SUMMIT_CATEGORY_ID) else { return 0 };
+        let aligned = crate::emit::align_up;
+        aligned(directory_len(self.blocks.len()) as u64) - aligned(directory_len(self.blocks.len() - 1) as u64)
+            + aligned(block.index.len() as u64)
+            + block.chunks.len() as u64
+    }
+
     /// POI records the chunk-capacity guard dropped.
     pub fn dropped(&self) -> usize {
         self.dropped
@@ -193,17 +210,22 @@ impl PoiSection {
 /// at the directory's shared `Chunk Size` (§4.5.4). Records inside a chunk come out ordered by
 /// `(lat, lon, subtype)` — the merge's own key — so the output is deterministic (§4.5.5).
 pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
-    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=POI_CATEGORY_COUNT as usize).map(|_| Vec::new()).collect();
+    let category_count = if merged.pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
+        SUMMIT_CATEGORY_ID
+    } else {
+        POI_CATEGORY_COUNT
+    };
+    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=category_count as usize).map(|_| Vec::new()).collect();
     for p in &merged.pois {
         // Validated at merge time, so the category is known.
-        let cat = poi_category_of(p.subtype).expect("subtype validated at merge").id() as usize;
+        let cat = poi_directory_category_of(p.subtype).expect("subtype validated at merge") as usize;
         by_cat[cat].push(p);
     }
 
     let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN * POI_RECORD_LEN; // 14 records
-    let mut blocks = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+    let mut blocks = Vec::with_capacity(category_count as usize);
     let mut dropped = 0usize;
-    for cat_id in 1..=POI_CATEGORY_COUNT {
+    for cat_id in 1..=category_count {
         let pts = std::mem::take(&mut by_cat[cat_id as usize]);
         if pts.is_empty() {
             blocks.push(Block { cat_id, index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0 });
@@ -224,7 +246,8 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
     // every structure inside it is placed at the next boundary past the one before, and 512 is a
     // multiple of `U` at every legal scale (§1.1) — so no gap here depends on the absolute offset,
     // which is the property the planner needs and used to have to be told.
-    section.len = place(0, |w| walk(&section, &[0u8; POI_DIR_LEN], w).map(|_| w.at()))? as usize;
+    section.len =
+        place(0, |w| walk(&section, &vec![0u8; directory_len(section.blocks.len())], w).map(|_| w.at()))? as usize;
     Ok(section)
 }
 
@@ -233,7 +256,7 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
 /// name what comes next.
 pub fn emit(section: &PoiSection, w: &mut MapWriter<'_>) -> Result<()> {
     let start = w.at();
-    let dir = place(start, |p| walk(section, &[0u8; POI_DIR_LEN], p))?.encode()?;
+    let dir = place(start, |p| walk(section, &vec![0u8; directory_len(section.blocks.len())], p))?.encode()?;
     walk(section, &dir, w)?;
     debug_assert_eq!(w.at() - start, section.section_len(), "the projection is the write");
     Ok(())
@@ -248,8 +271,8 @@ struct Directory {
 
 impl Directory {
     fn encode(&self) -> Result<Vec<u8>> {
-        let mut dir = Vec::with_capacity(POI_DIR_LEN);
-        dir.push(POI_CATEGORY_COUNT);
+        let mut dir = Vec::with_capacity(directory_len(self.entries.len()));
+        dir.push(self.entries.len() as u8);
         dir.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
         for &(cat_id, index_offset, node_count, chunk_count) in &self.entries {
             dir.push(cat_id);
@@ -259,7 +282,7 @@ impl Directory {
         }
         dir.extend_from_slice(&scaled(self.hours_pool_offset)?.to_le_bytes());
         dir.extend_from_slice(&(self.pool_blobs as u16).to_le_bytes());
-        debug_assert_eq!(dir.len(), POI_DIR_LEN);
+        debug_assert_eq!(dir.len(), directory_len(self.entries.len()));
         Ok(dir)
     }
 }
@@ -275,12 +298,11 @@ impl Directory {
 /// and never a zero offset (§7.1). An empty category's `Index Offset` still points at where its
 /// zero-length index would start, so it is a boundary too.
 fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result<Directory> {
-    debug_assert_eq!(directory.len(), POI_DIR_LEN);
+    debug_assert_eq!(directory.len(), directory_len(section.blocks.len()));
     debug_assert_eq!(w.at(), crate::emit::align_up(w.at()), "the POI section starts on a boundary");
-    // The 87-byte directory does not end on a unit boundary, so the first category's index begins at
-    // the first one past it and the bytes between are filler.
+    // The first category index starts on a unit boundary after the directory.
     w.put(directory)?;
-    let mut entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+    let mut entries = Vec::with_capacity(section.blocks.len());
     for b in &section.blocks {
         entries.push((b.cat_id, scaled(w.begin_section()?)?, b.node_count, b.chunk_count));
         w.put(&b.index)?;
@@ -310,7 +332,7 @@ fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     rec[4..8].copy_from_slice(&p.lon.to_le_bytes());
     rec[8] = p.subtype;
     rec[9..34].copy_from_slice(&p.name);
-    rec[34..36].copy_from_slice(&p.hours_ref.to_le_bytes());
+    rec[34..36].copy_from_slice(&p.payload.to_le_bytes());
     rec
 }
 
@@ -336,6 +358,32 @@ mod tests {
                 .expect("the section serialises");
         }
         bytes
+    }
+
+    #[test]
+    fn summit_overhead_equals_the_emitted_section_difference() {
+        let mut pois: Vec<_> = (0..70)
+            .map(|i| MergedPoi {
+                lat: 10_000 + i * 10_000,
+                lon: 20_000 + i * 11_000,
+                subtype: SUMMIT_SUBTYPE_ID,
+                name: [0; 25],
+                payload: i as u16,
+            })
+            .collect();
+        pois.push(MergedPoi { lat: 100, lon: 100, subtype: 1, name: [0; 25], payload: 0 });
+        let mut merged = MergedPois { pois, pool: vec![[0; POI_HOURS_BLOB_LEN]], duplicates: 0 };
+        let with_summits = layout(&merged, (0, 0, 1_000_000, 1_000_000)).unwrap();
+        merged.pois.retain(|p| p.subtype != SUMMIT_SUBTYPE_ID);
+        let services = layout(&merged, (0, 0, 1_000_000, 1_000_000)).unwrap();
+        for at in [0, 96, 512] {
+            assert_eq!(
+                with_summits.summit_bytes(),
+                (serialize(&with_summits, at).len() - serialize(&services, at).len()) as u64
+            );
+        }
+        assert!(with_summits.summit_bytes() > POI_CHUNK_SIZE as u64, "the index must actually split");
+        assert_eq!(services.summit_bytes(), 0);
     }
 
     /// The section a shard with no POIs writes, at a unit-aligned offset — the six empty entries,

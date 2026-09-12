@@ -39,6 +39,7 @@ mod map_transfer;
 mod menu;
 mod nav_route;
 mod passkey;
+mod peak_view;
 mod poi_detail;
 mod poi_list;
 pub(crate) mod poi_menu;
@@ -79,6 +80,7 @@ pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
+pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
@@ -347,6 +349,7 @@ pub struct ActiveClimb<'a> {
 /// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
+    pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
     /// wants a presentation switch to stick states it per frame in an
@@ -1094,6 +1097,9 @@ screens! {
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
     RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill().blocks_escape(),
     Menu(MenuScreen) => Caps::nav().timed(),
+    /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
+    /// platform-fed, so the row is unreachable when no panorama data is installed.
+    PeakView(PeakViewScreen) => Caps::riding(),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
     /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and
@@ -1442,6 +1448,7 @@ impl Screen {
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
             // region-cheap (#500 follow-up).
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
+            Screen::PeakView(s) => s.tick_timers(now_ms, w, h),
             // The DFU wait spinners (epic #615 S5): free-run at frame cadence, reporting the
             // needle disc as their dirty region like the nav planner, until the board's answer /
             // reboot replaces them.

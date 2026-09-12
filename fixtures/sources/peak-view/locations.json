@@ -1,0 +1,345 @@
+[
+  {
+    "key": "gornergrat",
+    "id": 1,
+    "name": "Gornergrat",
+    "observer_lat": 45983400,
+    "observer_lon": 7785400,
+    "observer_elevation_m": 3095,
+    "default_heading_q4": 940,
+    "angle_bottom_q4": -44,
+    "angle_top_q4": 113,
+    "vertical_scale_q8": 320,
+    "peaks": [
+      {
+        "name": "Rimpfischhorn",
+        "elevation_m": 4198,
+        "distance_m": 8804,
+        "azimuth_q4": 240,
+        "score": 64100
+      },
+      {
+        "name": "Hohtälli",
+        "elevation_m": 3286,
+        "distance_m": 1442,
+        "azimuth_q4": 257,
+        "score": 5445
+      },
+      {
+        "name": "Strahlhorn",
+        "elevation_m": 4190,
+        "distance_m": 9610,
+        "azimuth_q4": 279,
+        "score": 7507
+      },
+      {
+        "name": "Rote Nase",
+        "elevation_m": 3247,
+        "distance_m": 2131,
+        "azimuth_q4": 315,
+        "score": 2653
+      },
+      {
+        "name": "Stockhorn",
+        "elevation_m": 3532,
+        "distance_m": 4058,
+        "azimuth_q4": 346,
+        "score": 12422
+      },
+      {
+        "name": "Cima di Jazzi",
+        "elevation_m": 3803,
+        "distance_m": 8435,
+        "azimuth_q4": 368,
+        "score": 12068
+      },
+      {
+        "name": "Torre Castelfranco",
+        "elevation_m": 3627,
+        "distance_m": 7361,
+        "azimuth_q4": 397,
+        "score": 3934
+      },
+      {
+        "name": "Grosses Fillarh.",
+        "elevation_m": 3676,
+        "distance_m": 7724,
+        "azimuth_q4": 428,
+        "score": 4486
+      },
+      {
+        "name": "Dufourspitze",
+        "elevation_m": 4634,
+        "distance_m": 8138,
+        "azimuth_q4": 518,
+        "score": 216500
+      },
+      {
+        "name": "Liskamm East",
+        "elevation_m": 4527,
+        "distance_m": 7806,
+        "azimuth_q4": 601,
+        "score": 37600
+      },
+      {
+        "name": "Castor",
+        "elevation_m": 4228,
+        "distance_m": 6982,
+        "azimuth_q4": 700,
+        "score": 16500
+      },
+      {
+        "name": "Pollux",
+        "elevation_m": 4092,
+        "distance_m": 6182,
+        "azimuth_q4": 720,
+        "score": 3653
+      },
+      {
+        "name": "Breithorn East",
+        "elevation_m": 4139,
+        "distance_m": 5296,
+        "azimuth_q4": 782,
+        "score": 3360
+      },
+      {
+        "name": "Breithorn Central",
+        "elevation_m": 4159,
+        "distance_m": 5433,
+        "azimuth_q4": 816,
+        "score": 3086
+      },
+      {
+        "name": "Breithorn West",
+        "elevation_m": 4164,
+        "distance_m": 5539,
+        "azimuth_q4": 847,
+        "score": 17105
+      },
+      {
+        "name": "Furggen",
+        "elevation_m": 3492,
+        "distance_m": 8572,
+        "azimuth_q4": 999,
+        "score": 9052
+      },
+      {
+        "name": "Punta Giordano",
+        "elevation_m": 3878,
+        "distance_m": 15136,
+        "azimuth_q4": 1016,
+        "score": 10755
+      },
+      {
+        "name": "Matterhorn",
+        "elevation_m": 4478,
+        "distance_m": 9828,
+        "azimuth_q4": 1062,
+        "score": 103800
+      }
+    ]
+  },
+  {
+    "key": "scheidegg",
+    "id": 2,
+    "name": "Kleine Scheidegg",
+    "observer_lat": 46585000,
+    "observer_lon": 7961000,
+    "observer_elevation_m": 2056,
+    "default_heading_q4": 565,
+    "angle_bottom_q4": -20,
+    "angle_top_q4": 172,
+    "vertical_scale_q8": 320,
+    "peaks": [
+      {
+        "name": "Indri Sägissa",
+        "elevation_m": 2462,
+        "distance_m": 9333,
+        "azimuth_q4": 5,
+        "score": 4990
+      },
+      {
+        "name": "Reeti",
+        "elevation_m": 2757,
+        "distance_m": 9692,
+        "azimuth_q4": 94,
+        "score": 13106
+      },
+      {
+        "name": "Schwarzhoren",
+        "elevation_m": 2927,
+        "distance_m": 14249,
+        "azimuth_q4": 152,
+        "score": 15483
+      },
+      {
+        "name": "Läuber",
+        "elevation_m": 2491,
+        "distance_m": 29992,
+        "azimuth_q4": 208,
+        "score": 16210
+      },
+      {
+        "name": "Mittelhorn",
+        "elevation_m": 3704,
+        "distance_m": 13694,
+        "azimuth_q4": 264,
+        "score": 17091
+      },
+      {
+        "name": "Eiger",
+        "elevation_m": 3970,
+        "distance_m": 3496,
+        "azimuth_q4": 414,
+        "score": 36400
+      },
+      {
+        "name": "Chlyne Eiger",
+        "elevation_m": 3467,
+        "distance_m": 3064,
+        "azimuth_q4": 477,
+        "score": 3458
+      },
+      {
+        "name": "Mönch",
+        "elevation_m": 4107,
+        "distance_m": 4045,
+        "azimuth_q4": 547,
+        "score": 58900
+      },
+      {
+        "name": "Jungfrau",
+        "elevation_m": 4158,
+        "distance_m": 5364,
+        "azimuth_q4": 715,
+        "score": 68700
+      },
+      {
+        "name": "Silberhorn",
+        "elevation_m": 3690,
+        "distance_m": 4873,
+        "azimuth_q4": 763,
+        "score": 4161
+      },
+      {
+        "name": "Blüemlisalphorn",
+        "elevation_m": 3663,
+        "distance_m": 17936,
+        "azimuth_q4": 934,
+        "score": 29675
+      },
+      {
+        "name": "Lauberhorn",
+        "elevation_m": 2472,
+        "distance_m": 1297,
+        "azimuth_q4": 1241,
+        "score": 2135
+      },
+      {
+        "name": "Tschuggen",
+        "elevation_m": 2520,
+        "distance_m": 1905,
+        "azimuth_q4": 1331,
+        "score": 9239
+      }
+    ]
+  },
+  {
+    "key": "glockner",
+    "id": 3,
+    "name": "Kaiser-Franz-Josefs-Höhe",
+    "observer_lat": 47074500,
+    "observer_lon": 12753000,
+    "observer_elevation_m": 2402,
+    "default_heading_q4": 1000,
+    "angle_bottom_q4": -24,
+    "angle_top_q4": 152,
+    "vertical_scale_q8": 320,
+    "peaks": [
+      {
+        "name": "Freiwandkopf",
+        "elevation_m": 2854,
+        "distance_m": 685,
+        "azimuth_q4": 74,
+        "score": 2155
+      },
+      {
+        "name": "Magernigspitz",
+        "elevation_m": 2640,
+        "distance_m": 22289,
+        "azimuth_q4": 498,
+        "score": 5340
+      },
+      {
+        "name": "Erster Leiterkopf",
+        "elevation_m": 2483,
+        "distance_m": 2701,
+        "azimuth_q4": 606,
+        "score": 3733
+      },
+      {
+        "name": "Karlkamp",
+        "elevation_m": 3114,
+        "distance_m": 9355,
+        "azimuth_q4": 630,
+        "score": 11406
+      },
+      {
+        "name": "Leiterkopf",
+        "elevation_m": 2891,
+        "distance_m": 2190,
+        "azimuth_q4": 741,
+        "score": 2735
+      },
+      {
+        "name": "Schwertkopf",
+        "elevation_m": 3099,
+        "distance_m": 2452,
+        "azimuth_q4": 831,
+        "score": 3622
+      },
+      {
+        "name": "Schwerteck",
+        "elevation_m": 3247,
+        "distance_m": 2972,
+        "azimuth_q4": 920,
+        "score": 3544
+      },
+      {
+        "name": "Kellerskopf",
+        "elevation_m": 3239,
+        "distance_m": 2684,
+        "azimuth_q4": 972,
+        "score": 1556
+      },
+      {
+        "name": "Kellersberg",
+        "elevation_m": 3265,
+        "distance_m": 2924,
+        "azimuth_q4": 1006,
+        "score": 1842
+      },
+      {
+        "name": "Großglockner",
+        "elevation_m": 3798,
+        "distance_m": 4477,
+        "azimuth_q4": 1080,
+        "score": 242800
+      },
+      {
+        "name": "Johannisberg",
+        "elevation_m": 3453,
+        "distance_m": 7173,
+        "azimuth_q4": 1211,
+        "score": 5748
+      },
+      {
+        "name": "Mittlerer Burgstall",
+        "elevation_m": 2933,
+        "distance_m": 4466,
+        "azimuth_q4": 1250,
+        "score": 6735
+      }
+    ]
+  }
+]

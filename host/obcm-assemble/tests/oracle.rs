@@ -165,7 +165,15 @@ fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
 }
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
-    Poi { subtype, lon_udeg: lon as i32, lat_udeg: lat as i32, name: Some(name.into()), from_node: true, hours: None }
+    Poi {
+        subtype,
+        lon_udeg: lon as i32,
+        lat_udeg: lat as i32,
+        name: Some(name.into()),
+        from_node: true,
+        hours: None,
+        elevation_m: None,
+    }
 }
 
 /// A POI **with opening hours**, so the §4.5.3 pool rebuild has something to rebuild. `HoursRef` is
@@ -254,6 +262,9 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         poi_with_hours(5, LAT + 5_000, SEAM - 15_000, "West camp", "Mo-Fr 08:00-18:00"),
         poi_with_hours(13, LAT + 25_000, SEAM_E + 10_000, "Far shop", "Mo-Sa 09:00-12:00,14:00-19:00"),
         poi(1, SEAM_N + 10_000, SEAM + 100_000, "North water"),
+        Poi { elevation_m: Some(4107), ..poi(19, LAT + 12_345, SEAM - 23_456, "Mönch") },
+        Poi { elevation_m: Some(-25), ..poi(19, LAT + 22_345, SEAM + 23_456, "Below sea level") },
+        poi(19, LAT + 23_456, SEAM_E + 12_345, "Unknown summit"),
     ];
     (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
 }
@@ -880,6 +891,30 @@ fn pois_and_hours_survive_the_merge() {
         out.sort_unstable();
         out
     };
+    let summits = |map: &[u8]| {
+        let src = SliceSource(map);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut out = Vec::new();
+        reader
+            .visit_summits_within((SEAM as i32, LAT as i32), 100_000, |p| {
+                out.push((p.lat, p.lon, p.name.to_string(), p.elevation_m));
+            })
+            .unwrap();
+        out.sort();
+        out
+    };
+    let peaks = summits(&grafted);
+    assert_eq!(peaks, summits(&packed), "summit metadata survives normal cut and full assembly");
+    assert_eq!(
+        peaks,
+        vec![
+            ((LAT + 12_345) as i32, (SEAM - 23_456) as i32, "Mönch".into(), Some(4107)),
+            ((LAT + 22_345) as i32, (SEAM + 23_456) as i32, "Below sea level".into(), Some(-25)),
+            ((LAT + 23_456) as i32, (SEAM_E + 12_345) as i32, "Unknown summit".into(), None),
+        ]
+    );
     let (a, b) = (list(&grafted), list(&packed));
     assert_eq!(a, b, "the assembled POI set — schedules included — must equal the monolithic one");
     assert!(a.iter().filter(|r| r.4.is_some()).count() >= 3, "the fixture must carry POIs with hours: {a:?}");
@@ -1001,7 +1036,13 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     use obcm_assemble::{assemble_full, MemoryScratch, TerrainCellInput, TerrainJob, TerrainParams};
 
     let cfg = config();
-    let (ing, ways) = fixture(&cfg);
+    let (mut ing, ways) = fixture(&cfg);
+    // Give this small map enough geometry to exercise a successful whole-map surface budget.
+    let residential = style_id(&cfg, "highway", "residential");
+    for row in 0..64 {
+        let points: Vec<_> = (0..16).map(|x| (LAT + row * 200 + (x % 2) * 80, SEAM + 20_000 + x * 200)).collect();
+        ing.features.push(line(residential, 1, &points));
+    }
     let dir = scratch("terrain-splice");
     let summary = cut(&dir, &cfg, &ing, &ways);
     let sources: Vec<MemorySource> = summary
@@ -1047,12 +1088,12 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     assert_eq!(&plain_bytes[41..49], &[0u8; 8], "…which is both header fields written zero");
 
     // --- with one: build a published cell covering the assembly square, at a lattice that tiles it
-    //     exactly (a `2^(cell-5)` posting is 32 samples an edge, OBCT §4.5). ---
+    //     exactly (a `2^(cell-4)` posting is 16 samples an edge, OBCT §4.5). ---
     // A cell no larger than the schema's `S_MAX`, which is what the assembly corner is snapped to
     // (§4.2) — the terrain grid is a second lattice, and only cells at or below `S_MAX` tile the box.
     let cell_log2 = 19u8;
     assert!(u32::from(cell_log2) <= plain.assembly_box.span_log2);
-    let params = TerrainParams { posting_log2: cell_log2 - 5, cell_log2 };
+    let params = TerrainParams { posting_log2: cell_log2 - 4, cell_log2 };
     let side = 1i64 << cell_log2;
     let (ci, cj) = (
         ((plain.assembly_box.min_lat - GRID_ORIGIN) / side) as u32,
@@ -1115,6 +1156,29 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     let (lat, lon) = (plain.assembly_box.min_lat + side / 2, plain.assembly_box.min_lon + side / 2);
     let sampled = reader.sample(&mut cache, lat as i32, lon as i32).expect("a sample inside the present cell");
     assert!((1000..1500).contains(&sampled), "the ramp we baked, read back through the window: {sampled}");
+
+    let mut accelerated = std::io::Cursor::new(Vec::new());
+    obc_dem::surface::convert(&cell_bytes, &mut accelerated).unwrap();
+    let accelerated = MemorySource(accelerated.into_inner());
+    let (_, surface_bytes) = run(
+        inputs(),
+        Some(TerrainJob {
+            params,
+            cells: vec![TerrainCellInput {
+                id: obcm_assemble::grid::CellId::new(u32::from(cell_log2), ci as i64, cj as i64).unwrap(),
+                src: &accelerated,
+                sha256: None,
+            }],
+        }),
+    );
+    assert!(surface_bytes.len() <= with_bytes.len() + with_bytes.len() / 10);
+    let surface_source = SliceSource(&surface_bytes);
+    let surface_region = MapTables::parse(&surface_source).unwrap().terrain().unwrap();
+    assert_eq!(surface_region.offset % 512, 0);
+    let surface_window = SliceSource(&surface_bytes[surface_region.offset as usize..]);
+    let surface_reader = TerrainReader::parse(&surface_window).unwrap();
+    assert_eq!(surface_reader.header().flags, obc_formats::obct::SURFACE_FLAG | obc_formats::obct::CELL_INDEX_FLAG);
+    assert_eq!(surface_reader.sample(&mut TileCache::<4>::new(), lat as i32, lon as i32), Some(sampled));
 
     // Splicing moved no other offset (§1.3's reason for putting terrain last): the map with a raster
     // is the map without one, byte for byte, up to the nav section's end.
