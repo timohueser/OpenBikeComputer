@@ -707,8 +707,7 @@ pub fn clock_region(w: i32) -> Rectangle {
 /// alerts). "Small and simple, just readable."
 fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
     use super::palette::*;
-    let mut s: heapless::String<8> = heapless::String::new();
-    let _ = write!(s, "{:02}:{:02}", now.hour, now.minute);
+    let s = super::vocab::fmt::clock_hm(now.hour, now.minute);
     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
         cv.text(&s, Point::new(w / 2 + dx, CLOCK_TOP + dy), Font::Body, TextAlign::Center, PARCHMENT);
     }

@@ -1,9 +1,5 @@
 //! Every **quantity readout** a screen prints — one formatter per quantity and output style.
 //!
-//! Before this module the same distance appeared through six code paths and two functions named
-//! `fmt_int` formatted two different things. A quantity now has exactly one formatter here, and
-//! every screen imports it, so two screens can never round the same number differently.
-//!
 //! Each function is named `<quantity>_<style>`: the quantity it prints, then the shape it prints
 //! it in. Two styles of one quantity are two functions ([`distance_short`] compacts to `12.4km`,
 //! [`write_distance_coarse`] to a whole `12km`) because their thresholds genuinely differ; they
@@ -11,11 +7,6 @@
 //! — the form a screen needs when the figure joins a longer line.
 //!
 //! Everything here is allocation-free: a bounded [`heapless::String`] out, or an append into one.
-//!
-//! **Semantic owner.** This module holds the *shapes* the device prints today, byte for byte.
-//! The quantity *policy* behind them — the [`Units`] conversion table, the unit labels, and which
-//! named distance style a given readout should use — belongs to #1399 slice T7, which changes the
-//! rules in place here rather than moving them again.
 
 use core::fmt::Write;
 
@@ -249,8 +240,16 @@ pub(crate) fn elevation_delta(delta_m: Option<i32>, units: Units) -> heapless::S
 }
 
 // ---------------------------------------------------------------------------------------------
-// Durations and dates
+// Clocks, durations and dates
 // ---------------------------------------------------------------------------------------------
+
+/// Clock components as `HH:MM`, without date or timezone conversion. Hours are not wrapped:
+/// an opening-hours endpoint can be `24:00`.
+pub(crate) fn clock_hm(hour: u8, minute: u8) -> heapless::String<8> {
+    let mut s = heapless::String::new();
+    let _ = write!(s, "{hour:02}:{minute:02}");
+    s
+}
 
 /// A duration in seconds as `H:MM` — hours uncapped, minutes zero-padded. Hours and minutes are
 /// hours and minutes in every catalog language and both unit systems, so this is not localised.
@@ -535,6 +534,13 @@ mod tests {
         assert_eq!(elevation_delta(Some(-40), Units::Metric).as_str(), "-40m");
         assert_eq!(elevation_delta(Some(-40), Units::Imperial).as_str(), "-131ft");
         assert_eq!(elevation_delta(None, Units::Metric).as_str(), "--");
+    }
+
+    #[test]
+    fn clock_hm_boundaries() {
+        for (hour, minute, expected) in [(0, 0, "00:00"), (9, 5, "09:05"), (23, 59, "23:59"), (24, 0, "24:00")] {
+            assert_eq!(clock_hm(hour, minute).as_str(), expected);
+        }
     }
 
     /// `H:MM` at the minute and hour boundaries — minutes zero-padded, hours uncapped.
