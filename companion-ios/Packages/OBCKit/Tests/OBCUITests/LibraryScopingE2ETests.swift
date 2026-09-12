@@ -182,7 +182,7 @@ import OBCTransport
         model.sync.sync()
         try await waitFor("old-era ride lands") { library.rideSummaries().count == 1 }
 
-        // Chip-erase: new storeID, a NEW ride recycles object id 1.
+        // A replacement store recycles object id 1 for a new ride.
         device.setIdentity(storeID: store2)
         device.setRides([deviceRide(1, name: "New era ride", start: 1_800_000_000)])
         device.bounce()
@@ -205,9 +205,8 @@ import OBCTransport
         #expect(postEraAcks.allSatisfy { batch in batch.allSatisfy { $0.scope?.storeID == store1 } })
     }
 
-    /// A phone-side tombstone dies with its era: after the wipe the (kept
-    /// card's) ride under a matching object id re-syncs once — resurrection
-    /// is the accepted safe direction, silent suppression the incident.
+    /// A tombstone belongs to one store. A replacement store can reuse its
+    /// object ID without the old tombstone suppressing that ride.
     @Test func tombstonesDoNotCarryAcrossEras() async throws {
         let device = ScopedStubDevice(
             serial: serial, storeID: store1,
@@ -226,7 +225,7 @@ import OBCTransport
         model.deleteRideForever(oldID)
         #expect(library.deletedRideIDs() == [oldID])
 
-        // RRAM-only wipe: new storeID, the card kept the ride.
+        // A replacement store contains the same ride under a different StoreId.
         device.setIdentity(storeID: store2)
         device.bounce()
         try await waitFor("the new era's scope") {
