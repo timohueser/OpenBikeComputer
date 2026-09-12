@@ -113,7 +113,7 @@ pub struct Profile {
 
 impl Profile {
     /// Empty storage for hosts that build a profile directly into their resident cache.
-    /// [`ride_elevation_profile_into`] resets every field before filling it.
+    /// [`ride_track_into`] resets every field before filling it.
     pub const EMPTY: Self = Profile {
         cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
         cum_ascent: [0; ASCENT_COLS],
@@ -322,7 +322,7 @@ impl RouteReader<'_> {
     }
 }
 
-/// Build a recorded ride's elevation [`Profile`] by streaming its verbatim 20-byte samples once.
+/// Fill a recorded ride's elevation [`Profile`] and preview from one pass over its 20-byte samples.
 ///
 /// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
 /// pyramid downsample, cumulative ascent, peak) and differs only in the sweep:
@@ -334,25 +334,25 @@ impl RouteReader<'_> {
 /// - the y-range is the sweep's own min/max (the ride header stores none) and the ascent curve
 ///   normalizes to the header's `climb` total.
 ///
-/// Reads at most one 32-record block per `read_at` (640 B) and holds no whole-track
-/// buffer, so the board can run it inside its pass without a stack spike beyond the returned
-/// `Profile` itself. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version,
-/// torn length).
-pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
-    let mut out = Profile::EMPTY;
-    ride_elevation_profile_into(src, &mut out)?;
-    Ok(out)
-}
-
-/// Build a recorded ride's elevation profile directly into caller-owned resident storage.
+/// Fill the caller's profile and preview together, reading the footer once and each 32-record
+/// block (640 B) once. The preview keeps at most `N` uniformly spaced point indices, including
+/// both endpoints, as `(lon, lat)` microdegrees. No whole-track buffer or by-value profile is
+/// allocated: the board fills its resident profile without growing its task frame.
 ///
-/// This is the board path: returning the ~5 KiB [`Profile`] by value while a flat-store source is
-/// live makes both values part of one async task frame. Filling the app's existing cache in place
-/// keeps the shipping frame below its 16 KiB guard without allocating a second resident buffer.
-pub fn ride_elevation_profile_into(src: &dyn ByteSource, out: &mut Profile) -> Result<(), Error> {
+/// On error, the preview is empty and the partially filled profile must not be published.
+/// Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn length).
+pub fn ride_track_into<const N: usize>(
+    src: &dyn ByteSource,
+    out: &mut Profile,
+    preview: &mut Vec<(i32, i32), N>,
+) -> Result<(), Error> {
     use obc_formats::ride::SAMPLE_LEN;
 
+    preview.clear();
     let info = crate::RideInfo::read(src)?;
+    let total_points = info.point_count as usize;
+    let keep = N.min(total_points);
+    let mut next = 0usize;
 
     // Build the band **into the result value**, not a separate `cols` scratch: the array is
     // `TOTAL_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
@@ -376,12 +376,22 @@ pub fn ride_elevation_profile_into(src: &dyn ByteSource, out: &mut Profile) -> R
     while done < info.point_count {
         let n = ((info.point_count - done) as usize).min(BLOCK);
         let bytes = &mut buf[..n * SAMPLE_LEN];
-        src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
-        for rec in bytes.as_chunks::<SAMPLE_LEN>().0 {
+        if let Err(error) = src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes) {
+            preview.clear();
+            return Err(error);
+        }
+        for (i, rec) in bytes.as_chunks::<SAMPLE_LEN>().0.iter().enumerate() {
             let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
             let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
             let ele = i16::from_le_bytes([rec[8], rec[9]]);
             let p = (lon, lat);
+            if preview.len() < keep && done as usize + i == next {
+                let _ = preview.push(p);
+                if preview.len() < keep {
+                    // Uniform point indices, including both endpoints (keep >= 2 here).
+                    next = preview.len() * (total_points - 1) / (keep - 1);
+                }
+            }
             if let Some(pr) = prev {
                 dist += ground_dist_m(pr, p) as f64;
             }
@@ -411,54 +421,6 @@ pub fn ride_elevation_profile_into(src: &dyn ByteSource, out: &mut Profile) -> R
     out.min_ele_m = min_ele;
     out.max_ele_m = max_ele;
     Ok(())
-}
-
-/// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
-/// index, the first and last point always kept — the Ride detail's track-shape preview seam
-/// (#678 rework 3, the recorded twin of [`RouteReader::preview_polyline`]). Points come back as
-/// `(lon, lat)` microdegrees, matching the route preview's unit so the one screen drawer serves
-/// both.
-///
-/// Mirrors [`ride_elevation_profile`]'s streaming exactly: the same 32-record blocks (strictly
-/// forward — no whole-track buffer and no backward seeks), one pass over the 20-byte records.
-pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec<(i32, i32), N>, Error> {
-    use obc_formats::ride::SAMPLE_LEN;
-
-    let info = crate::RideInfo::read(src)?;
-
-    let mut out: Vec<(i32, i32), N> = Vec::new();
-    let total = info.point_count as usize;
-    if total == 0 || N == 0 {
-        return Ok(out);
-    }
-    let keep = N.min(total);
-    let mut kept = 0usize; // points pushed so far
-    let mut next = 0usize; // point index of the next kept point
-    const BLOCK: usize = 32;
-    let mut buf = [0u8; BLOCK * SAMPLE_LEN];
-    let mut done: u32 = 0;
-    while done < info.point_count {
-        let n = ((info.point_count - done) as usize).min(BLOCK);
-        let bytes = &mut buf[..n * SAMPLE_LEN];
-        src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
-        for (i, rec) in bytes.as_chunks::<SAMPLE_LEN>().0.iter().enumerate() {
-            if done as usize + i != next {
-                continue;
-            }
-            let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
-            let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
-            let _ = out.push((lon, lat));
-            kept += 1;
-            if kept == keep {
-                return Ok(out);
-            }
-            // The j-th kept point sits at j × (total−1) / (keep−1): endpoints exact, the rest
-            // an even stride (keep ≥ 2 here — keep == 1 returned above).
-            next = kept * (total - 1) / (keep - 1);
-        }
-        done += n as u32;
-    }
-    Ok(out)
 }
 
 /// Buckets in the received-route card's mini elevation sparkline (#682): one min–max-normalized

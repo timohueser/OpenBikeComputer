@@ -8,10 +8,7 @@ use obc_formats::{
     track::encode_record,
 };
 use obc_ports::TrackPoint;
-use obc_route::{
-    encode_summary_footer, ride_elevation_profile, ride_elevation_profile_into, ride_preview_polyline, Profile,
-    RideInfo, RideStats,
-};
+use obc_route::{encode_summary_footer, ride_track_into, Profile, RideInfo, RideStats};
 
 const STATS: RideStats = RideStats {
     distance_m: 2_224,
@@ -125,18 +122,13 @@ fn profile_and_preview_stream_the_v3_samples() {
     let points = [pt(0, 0, 100, 0, true), pt(0, 10_000, 300, 60_000, false), pt(0, 20_000, 200, 120_000, false)];
     let ride = ride_of(&points, "Bergtour", &STATS);
 
-    let profile = ride_elevation_profile(&SliceSource(&ride)).unwrap();
+    let mut profile = Profile::EMPTY;
+    let mut preview = heapless::Vec::<_, 3>::new();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut preview).unwrap();
     assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 300));
     assert_eq!(profile.peak_ele_m(), 300);
     assert_eq!(profile.ascent_to(1.0), 200);
 
-    let mut in_place = Profile::EMPTY;
-    ride_elevation_profile_into(&SliceSource(&ride), &mut in_place).unwrap();
-    assert_eq!(in_place.cols(), profile.cols());
-    assert_eq!(in_place.ascent_to(1.0), profile.ascent_to(1.0));
-    assert_eq!(in_place.peak_ele_m(), profile.peak_ele_m());
-
-    let preview = ride_preview_polyline::<3>(&SliceSource(&ride)).unwrap();
     assert_eq!(preview.as_slice(), &[(0, 0), (0, 10_000), (0, 20_000)]);
 }
 
@@ -144,8 +136,46 @@ fn profile_and_preview_stream_the_v3_samples() {
 fn preview_keeps_exact_endpoints_when_decimating() {
     let points: Vec<_> = (0..100).map(|i| pt(i * 10, 42, 100, i as u32 * 1_000, i == 0)).collect();
     let ride = ride_of(&points, "Shape", &STATS);
-    let preview = ride_preview_polyline::<8>(&SliceSource(&ride)).unwrap();
+    let spy = ReadSpy { bytes: &ride, reads: RefCell::new(Vec::new()) };
+    let mut profile = Profile::EMPTY;
+    let mut preview = heapless::Vec::<_, 8>::new();
+    ride_track_into(&spy, &mut profile, &mut preview).unwrap();
+    assert_eq!(&*spy.reads.borrow(), &[(2_000, FOOTER_LEN), (0, 640), (640, 640), (1_280, 640), (1_920, 80)]);
+    assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 100));
     assert_eq!(preview.len(), 8);
     assert_eq!(preview[0], (0, 42));
     assert_eq!(preview[7], (990, 42));
+}
+
+#[test]
+fn track_fill_handles_empty_rides_small_previews_and_read_failure() {
+    let points: Vec<_> = (0..40).map(|i| pt(i, 42, 100, i as u32 * 1_000, i == 0)).collect();
+    let ride = ride_of(&points, "Track", &STATS);
+    let mut profile = Profile::EMPTY;
+    let mut no_preview = heapless::Vec::<_, 0>::new();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut no_preview).unwrap();
+    assert_eq!((profile.min_ele_m, profile.max_ele_m), (100, 100));
+    let mut preview = heapless::Vec::<_, 1>::new();
+    ride_track_into(&SliceSource(&ride), &mut profile, &mut preview).unwrap();
+    assert_eq!(preview.as_slice(), &[(0, 42)]);
+
+    struct FailSecondBlock<'a>(&'a [u8]);
+    impl ByteSource for FailSecondBlock<'_> {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+            if offset == 640 {
+                return Err(Error::Io);
+            }
+            SliceSource(self.0).read_at(offset, out)
+        }
+    }
+    assert_eq!(ride_track_into(&FailSecondBlock(&ride), &mut profile, &mut preview), Err(Error::Io));
+    assert!(preview.is_empty(), "an error after the first preview point cannot return a partial track");
+
+    let empty = ride_of(&[], "Empty", &STATS);
+    ride_track_into(&SliceSource(&empty), &mut profile, &mut preview).unwrap();
+    assert!(preview.is_empty());
+    assert_eq!((profile.min_ele_m, profile.max_ele_m), (0, 0));
 }
