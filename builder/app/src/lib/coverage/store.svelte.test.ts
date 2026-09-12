@@ -12,6 +12,8 @@ import { parseRegionCells } from "../catalog/satellites";
 import { EXAMPLE_REGION_CELLS, EXAMPLE_ROOT, exampleCatalog, fixtureIndices } from "../catalog/testdata";
 import { CoverageStore } from "./store.svelte";
 import { degreesToUbox } from "./shape";
+import { canonicalCatalogBody } from "../skin/testdata";
+import { cloneSkin, CUSTOM_SKINS_KEY } from "../skin/custom";
 
 const ROOT_URL = "https://maps.example.org/catalog/catalog.json";
 
@@ -348,5 +350,28 @@ describe("refusals arrive as sentences", () => {
         expect(store.resolution).toBeNull();
         expect(store.resolutionError).toMatch(/18\/1204\/1053/);
         expect(store.ledger).toBeNull();
+    });
+});
+
+
+describe("custom skin admission", () => {
+    it("keeps the selected saved skin and storage unchanged when an edit crosses the rain band", () => {
+        let saved: string | null = null;
+        const storage = {
+            getItem: (key: string) => key === CUSTOM_SKINS_KEY ? saved : null,
+            setItem: (_key: string, value: string) => { saved = value; },
+        };
+        const client = CatalogClient.fromBody(canonicalCatalogBody, ROOT_URL, { fetchImpl: offline });
+        const store = new CoverageStore(client, canonicalCatalogBody, storage);
+        const skin = store.saveCustomSkin(store.catalog.skins[0], "Mine", "default");
+        const before = saved;
+        const draft = cloneSkin(skin);
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 16;
+        expect(() => store.saveCustomSkin(draft, "Bad edit", "default")).toThrow(/at least 24/);
+        expect(store.skinId).toBe(skin.id);
+        expect(store.customSkinRecords).toEqual([{ skin, based_on: "default" }]);
+        expect(saved).toBe(before);
+        const reopened = new CoverageStore(client, canonicalCatalogBody, storage);
+        expect(reopened.customSkinRecords).toEqual(store.customSkinRecords);
     });
 });

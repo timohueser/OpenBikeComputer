@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { SkinEntry } from "../catalog/manifest";
-import { renderSkinPreviewFrames, type LiveSkinPreview } from "./preview";
+import { openLiveSkinPreview, renderSkinPreviewFrames, type LiveSkinPreview } from "./preview";
+import { canonicalSchema, canonicalSkin } from "./testdata";
+import { cloneSkin } from "./custom";
+
+const bridge = vi.hoisted(() => ({ open: vi.fn(), setSkin: vi.fn() }));
+vi.mock("./pkg/obc_skin_preview.js", () => ({
+    default: vi.fn(),
+    SkinPreview: class {
+        width = 2;
+        height = 2;
+        constructor() { bridge.open(); }
+        set_skin = bridge.setSkin;
+    },
+}));
 
 function skin(id: string): SkinEntry {
     return { id } as SkinEntry;
@@ -87,5 +100,39 @@ describe("renderSkinPreviewFrames", () => {
             /bad saved skin/,
         );
         expect(preview.free).toHaveBeenCalledTimes(1);
+    });
+});
+
+
+describe("live preview skin admission", () => {
+    it("rejects an invalid initial draft before opening the renderer or fetching a map", async () => {
+        bridge.open.mockClear();
+        const fetchImpl = vi.fn();
+        const draft = cloneSkin(canonicalSkin);
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 16;
+        await expect(openLiveSkinPreview(JSON.stringify(canonicalSchema), JSON.stringify(draft), { fetchImpl }))
+            .rejects.toThrow(/at least 24/);
+        expect(bridge.open).not.toHaveBeenCalled();
+        expect(fetchImpl).not.toHaveBeenCalled();
+        await expect(openLiveSkinPreview(JSON.stringify({ ...canonicalSchema, id: "unknown" }), JSON.stringify(canonicalSkin), { fetchImpl }))
+            .rejects.toThrow(/unavailable for this map schema/);
+    });
+
+    it("uses the canonical band for each draft update and keeps the last accepted skin on refusal", async () => {
+        bridge.setSkin.mockClear();
+        const preview = await openLiveSkinPreview(JSON.stringify({ schema: canonicalSchema }), JSON.stringify(canonicalSkin), { map: new Uint8Array() });
+        const draft = cloneSkin(canonicalSkin);
+        const water = draft.styles.find((style) => style.feature_type === "natural.water")!;
+        water.z_index = 16;
+        preview.setSkin(JSON.stringify(draft));
+        expect(bridge.setSkin).toHaveBeenCalledTimes(1);
+        for (const z of [17, 23, 24]) {
+            water.z_index = z;
+            expect(() => preview.setSkin(JSON.stringify(draft))).toThrow(/drawing order/);
+        }
+        expect(bridge.setSkin).toHaveBeenCalledTimes(1);
+        water.z_index = -128;
+        preview.setSkin(JSON.stringify(draft));
+        expect(bridge.setSkin).toHaveBeenCalledTimes(2);
     });
 });
