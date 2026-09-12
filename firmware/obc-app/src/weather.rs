@@ -77,10 +77,8 @@ pub const MOVING_MIN_CMS: u32 = 100;
 /// [`sample_along`](WeatherSnapshot::sample_along)); warnings keep the one-cell rule.
 pub const PACE_SPREAD_CMS: u32 = 125;
 
-/// Ceiling on the pace-spread corridor's half-width in cells — an I/O guard, not a decision. At
-/// the shipped 1 km radar cell the ladder reaches 10 at the +2 h horizon, so this never binds
-/// there; it exists so a hypothetical sub-hectometre grid can't turn one snapshot sample into
-/// thousands of tile probes.
+/// Maximum half-width on each axis. Fine ground pitch, including longitude cells near a pole,
+/// can exceed this I/O bound. A capped corridor refuses the dry claim.
 pub const CORRIDOR_MAX_HALF_CELLS: u32 = 12;
 
 /// One rain frame's timestamp plus the nearest-cell intensity sampled at the rider's position for
@@ -211,17 +209,10 @@ impl WeatherSnapshot {
     ///   [`spread_uncertain`](FrameSample::spread_uncertain) and the frame stops supporting the
     ///   dry claim (it produces no warning of its own — warn early, claim dry conservatively).
     ///
-    /// Bounded I/O through the WX7 fixed cache: 24 hourly reads, one descriptor sweep, and a
-    /// handful of tile decodes per kept frame — plus, **only for frames that are otherwise dry and
-    /// covered** (the claim corridor short-circuits on the first blocker and is skipped entirely
-    /// when the frame already can't claim), `4 · half_width` further cell probes. Worst case on
-    /// the shipped 1 km/15 min radar dataset (a wholly clean nine-frame sky, the one case that
-    /// pays in full): 45 centre/warning probes + 148 further claim probes = 193 `intensity_at`
-    /// calls per pass against a *single-entry* tile cache. The claim corridor reuses the warning
-    /// sweep's four first-step results; most remaining probes are same-tile hits, since 16
-    /// consecutive cells along an arm share one tile. Run at refresh/fix cadence by the host,
-    /// never per rendered frame; the SD-read figure behind it is on the WX8 mount-time
-    /// measurement list.
+    /// Bounded I/O: six hourly windows, one descriptor sweep, and cached tile reads. Each claim
+    /// arm stops at its own geometric half-width or the first blocker, and neither axis exceeds
+    /// [`CORRIDOR_MAX_HALF_CELLS`]. The claim reuses the warning sweep's four first-step results.
+    /// Consecutive cells along an arm share tiles. Sample at refresh/fix cadence, never per frame.
     pub fn sample_along<S: ByteSource + ?Sized>(
         reader: &WeatherReader<'_, S>,
         cache: &mut WeatherCache,
