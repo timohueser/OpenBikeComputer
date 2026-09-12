@@ -48,7 +48,7 @@ impl RideStore {
     }
 
     /// Re-read the folder's `ride-{id}.obcr` files into the catalog (newest first by `start_time`),
-    /// each stamped with this simulator process's synced fact.
+    /// with larger durable IDs first for equal times. Each carries this process's synced fact.
     pub fn rescan(&mut self) {
         self.catalog.clear();
         self.ids.clear();
@@ -67,7 +67,7 @@ impl RideStore {
                 }
             }
         }
-        rows.sort_by_key(|r| std::cmp::Reverse(r.2.start_time)); // newest first
+        rows.sort_by_key(|r| std::cmp::Reverse((r.2.start_time, r.0)));
         for (id, path, sum) in rows {
             self.ids.push(id);
             self.paths.push(path);
@@ -240,6 +240,12 @@ mod tests {
 
         let mut store = RideStore::open(&dir);
         assert_eq!(store.catalog().len(), 2, "two saved rides scanned");
+        assert_eq!(store.catalog()[0].start_time, store.catalog()[1].start_time, "the records tie on time");
+        for _ in 0..2 {
+            assert_eq!(store.ids(), &[obc_host_core::RIDE_ID_BASE + 1, obc_host_core::RIDE_ID_BASE]);
+            assert_eq!(store.catalog().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Ride Two", "Ride One"]);
+            store.rescan();
+        }
         obc_host_core::conformance::ride_repository_suite(&mut store, true);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -45,32 +45,6 @@ final class UploadSheetModelTests: XCTestCase {
         return (model, control)
     }
 
-    /// Poll until `condition` holds, or **throw**. Recording a failure and
-    /// returning would let the test fall through into assertions that were never
-    /// going to hold, turning one timeout into a cascade of downstream failures
-    /// that hide which wait actually blew (the shape this suite failed in CI).
-    ///
-    /// The deadline is generous for the reason spelled out in
-    /// `WeatherSettingsModelTests`: Swift Testing schedules its suites
-    /// concurrently in the same process as these `@MainActor` XCTest cases, so on
-    /// a loaded runner a continuation can wait a long time for its turn on the
-    /// main actor. The bound is here to catch a genuine hang, not to police
-    /// latency. Prefer ``fulfillment(of:timeout:)`` on a signal the model itself
-    /// fires for anything spanning a whole transfer — see the happy path.
-    private func waitFor(
-        _ what: String,
-        timeout: Duration = .seconds(30),
-        _ condition: () -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                throw WaitTimedOut(what: what, timeout: timeout)
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: Happy path (F → F₂ → dismiss)
 
     func testHappyPathMovesThroughDoneAndAutoDismisses() async throws {
@@ -304,17 +278,6 @@ final class UploadSheetModelTests: XCTestCase {
             model.failedMessage,
             "Trailhead didn't answer. Check that it's awake and nearby, then try again."
         )
-    }
-}
-
-/// A `waitFor` that gave up. Thrown rather than recorded, so the test that was
-/// waiting stops instead of falling through into assertions it has already lost.
-private struct WaitTimedOut: Error, CustomStringConvertible {
-    let what: String
-    let timeout: Duration
-
-    var description: String {
-        "timed out after \(timeout) waiting for \(what)"
     }
 }
 
