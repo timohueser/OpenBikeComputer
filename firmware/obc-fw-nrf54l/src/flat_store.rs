@@ -340,24 +340,8 @@ pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
     Card::FlatBroken(obc_app::BootFault::StorageFault)
 }
 
-/// **Which boot fault a card carrying a flat store earns in c1** — the honesty rule, *bound* here
-/// rather than decided here.
-///
-/// The decision is `obc_app::flat_boot_fault`, beside the FAT scan's `boot_fault` and tested where
-/// tests run: the board crate is bare metal and CI runs none in it, so a rule written at this call
-/// site would be a rule nothing checks. All this does is reduce the catalog to the two facts that
-/// rule takes — how many entries are map objects, and whether the walk finished.
-///
-/// It takes the counts rather than the store, because [`report`] has already walked the catalog once
-/// and a second walk is not free: a listing re-reads the live prefix off the card — at 1,027 entries
-/// that is ~69 read commands and about a tenth of a second of the boot this slice exists to measure.
-/// One walk, both consumers.
-///
-/// Not a new `BootFault` variant, and that is a decision rather than an omission: the screen would
-/// have to say "this firmware cannot read this card yet", which is true for exactly the length of the
-/// dev window and would then be a dead string with a translation, a repertoire-test row and a
-/// `copy()` arm to delete. The truth that *is* durable — mode, entry count, sequence, free extents,
-/// what the mount cost — goes to RTT, where a dev-window fact belongs.
+/// Classify a missing or unreadable map from the catalog facts already collected by [`report`].
+/// The host-tested app rule consumes the map count and listing completeness without another scan.
 pub(crate) fn boot_fault_for(catalog: Catalog) -> obc_app::BootFault {
     obc_app::flat_boot_fault(catalog.maps, catalog.listing_complete)
 }
@@ -368,9 +352,8 @@ pub(crate) fn boot_fault_for(catalog: Catalog) -> obc_app::BootFault {
 pub(crate) struct Catalog {
     /// Entries whose kind is a map (§3.1's `MapShard` / `MapSetManifest`).
     pub(crate) maps: usize,
-    /// False when the walk stopped short because a commit moved the catalog under its cursor
-    /// (`flat::source`'s stale-listing rule) — the flat twin of the FAT scan's `unlistable`, and
-    /// evidence of a map rather than of an empty card.
+    /// False when a commit moved the catalog under the listing cursor, so the walk cannot prove
+    /// that the card is empty.
     pub(crate) listing_complete: bool,
 }
 
@@ -1618,10 +1601,9 @@ pub(crate) fn map_name() -> &'static str {
 /// **Open the card's map object and hand back a `'static` [`ByteSource`] over it** — the read
 /// cutover's one new boot step (FS7.5-c2, #1420).
 ///
-/// `None` when the catalog holds no map object at all, which is the flat twin of a FAT card with no
-/// `.obcm` in the root: `flat_boot_fault` then says NO MAP, and it is the *only* input that makes it
-/// say so. Everything else — an object that will not open, a map whose header will not parse — is
-/// MAP UNREADABLE, decided further up exactly as it is on the FAT arm.
+/// `None` when no map object can be opened. [`boot_fault_for`] distinguishes an empty, complete
+/// catalog from an unreadable map or incomplete listing. A header parse failure is also reported
+/// as MAP UNREADABLE by the caller.
 ///
 /// **The active map is the lowest-`ObjectId` `MapShard`.** Catalog iteration is ordered by
 /// `(ObjectId, Revision)`, and `first_of` resolves that object's head, so selection is deterministic
