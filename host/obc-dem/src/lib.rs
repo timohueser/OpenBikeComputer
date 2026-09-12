@@ -60,6 +60,7 @@ pub mod container;
 pub mod fetch;
 #[cfg(feature = "geotiff")]
 pub mod geotiff;
+pub mod surface;
 
 /// The credit the Copernicus DEM licence requires on any product derived from the dataset, verbatim.
 ///

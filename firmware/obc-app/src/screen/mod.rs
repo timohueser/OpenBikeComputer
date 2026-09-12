@@ -346,6 +346,7 @@ pub struct ActiveClimb<'a> {
 /// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
+    pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
     /// wants a presentation switch to stick states it per frame in an
@@ -1417,6 +1418,7 @@ impl Screen {
             // region — the spinning needle's disc — so the multi-second plan's repaints stay
             // region-cheap (#500 follow-up).
             Screen::NavPlanning(s) => s.tick_timers(now_ms, w, h),
+            Screen::PeakView(s) => s.tick_timers(now_ms, w, h),
             // The DFU wait spinners (epic #615 S5): free-run at frame cadence, reporting the
             // needle disc as their dirty region like the nav planner, until the board's answer /
             // reboot replaces them.

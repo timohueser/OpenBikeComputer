@@ -1,11 +1,8 @@
-//! Peak View: a heading-relative panorama with three terrain depths, restrained summit labels,
+//! Peak View: a heading-relative relief panorama with restrained summit labels,
 //! and one permanent selected-peak ledger. The horizontal window follows each profile's vertical
-//! span (see [`fov_q4`]) so mountains keep near-true proportions instead of stretching into
-//! needles.
+//! span (see [`fov_q4`]) with mild vertical exaggeration.
 //!
-//! The draw order is deliberately explicit: compass, terrain, peak annotations, ledger. Sun and
-//! route overlays can later become sibling annotation passes without changing the terrain contract
-//! or the interaction state. This first slice contains peaks only.
+//! The draw order is compass, terrain, peak annotations, then the selected-peak ledger.
 
 use core::fmt::Write as _;
 
@@ -16,24 +13,15 @@ use crate::input::Gesture;
 use crate::peak_view::PeakViewProfile;
 use crate::Msg;
 
+use super::vocab::spinner::Spinner;
 use super::{palette, vocab::fmt::distance_short, Ctx, Render, Transition};
 
 const FULL_Q4: i32 = 360 * 4;
 const HALF_Q4: i32 = FULL_Q4 / 2;
 const COMPASS_H: i32 = 34;
 const LEDGER_H: i32 = 64;
-/// Accept a summit whose calculated elevation angle reaches its DEM ridge to within two
-/// quarter-degrees. The stored ridge is a max over each 4-degree window, so it can legitimately
-/// sit a rounding step above the summit's own angle without the summit being hidden.
-const RIDGE_TOLERANCE_Q4: i16 = 2;
-/// A farther band whose ridge is within one quarter-degree of a nearer band still counts as
-/// peeking over it: the sampling cannot distinguish the two, and real summits are sharper than
-/// the pooled ridge line.
-const EXPOSURE_SLACK_Q4: i16 = 1;
-
-const TERRAIN_NEAR: u16 = palette::rgb565(0, 85, 0); // device-64: dark green
-const TERRAIN_MIDDLE: u16 = palette::rgb565(85, 170, 85); // device-64: middle green
-const TERRAIN_FAR: u16 = palette::rgb565(170, 255, 170); // device-64: pale green
+const LABEL_GAP: i32 = 12;
+mod terrain;
 
 /// Live mode follows [`crate::AppState::effective_heading_deg`]. Stepping selects a summit and
 /// enters Browse, which freezes the panorama so every selection continues to refer to the terrain
@@ -43,15 +31,62 @@ const TERRAIN_FAR: u16 = palette::rgb565(170, 255, 170); // device-64: pale gree
 pub struct PeakViewScreen {
     browse_heading_q4: Option<u16>,
     selected: u8,
+    spin: Spinner,
+    loading: bool,
+    failed: bool,
+    waiting: bool,
+    building: bool,
 }
 
 impl PeakViewScreen {
     pub fn new() -> Self {
-        Self::default()
+        Self { loading: true, ..Self::default() }
+    }
+
+    pub fn set_loading(&mut self, loading: bool, failed: bool) -> bool {
+        let changed = self.loading != loading || self.failed != failed || self.waiting;
+        self.waiting = false;
+        self.loading = loading;
+        self.failed = failed;
+        if loading {
+            self.browse_heading_q4 = None;
+        }
+        changed
+    }
+
+    pub fn set_waiting(&mut self) -> bool {
+        let changed = !self.waiting;
+        self.waiting = true;
+        self.loading = false;
+        self.failed = false;
+        changed
+    }
+
+    pub fn set_building(&mut self, building: bool) -> bool {
+        let changed = self.building != building;
+        self.building = building;
+        changed
+    }
+
+    pub fn heading_q4(&self, state: &crate::AppState) -> u16 {
+        self.browse_heading_q4.unwrap_or_else(|| {
+            state.peak_view_profile.as_ref().map(|profile| live_heading_q4(state, profile)).unwrap_or(0)
+        })
+    }
+
+    pub fn tick_timers(&mut self, now_ms: u32, w: i32, h: i32) -> super::ScreenTick {
+        if self.loading || self.waiting {
+            self.spin.tick_at_cadence(now_ms, w, h, 166)
+        } else {
+            super::ScreenTick::idle()
+        }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let Some(profile) = cx.state.peak_view_profile else {
+        if self.loading || self.failed || self.waiting {
+            return if matches!(g, Gesture::Back) { Transition::Pop } else { Transition::None };
+        }
+        let Some(ref profile) = current_profile(cx.state) else {
             return if matches!(g, Gesture::Back) { Transition::Pop } else { Transition::None };
         };
         match g {
@@ -86,7 +121,27 @@ impl PeakViewScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         cv.clear(palette::PARCHMENT);
-        let Some(profile) = rx.state.peak_view_profile else {
+        if self.loading || self.failed || self.waiting {
+            super::vocab::chrome::title_frame(cv, rx.w, rx.h, rx.t(Msg::MenuPeaks), "");
+            if self.loading || self.waiting {
+                self.spin.draw_needle(cv, rx.w, rx.h);
+            }
+            cv.text(
+                rx.t(if self.waiting {
+                    Msg::PeakViewWaitingGps
+                } else if self.failed {
+                    Msg::PeakViewUnavailable
+                } else {
+                    Msg::PeakViewPreparing
+                }),
+                Point::new(rx.w / 2, rx.h / 2 + 65),
+                Font::Label,
+                TextAlign::Center,
+                palette::SUBTEXT,
+            );
+            return;
+        }
+        let Some(ref profile) = current_profile(rx.state) else {
             cv.text(
                 rx.t(Msg::PeakViewNoPeaks),
                 Point::new(rx.w / 2, rx.h / 2 - 12),
@@ -104,12 +159,38 @@ impl PeakViewScreen {
             nearest_visible_peak(profile, heading_q4)
         };
 
-        draw_compass(cv, rx.w, heading_q4, fov_q4(profile));
+        let mode = self.browse_heading_q4.map(|_| rx.t(Msg::PeakViewManual));
+        draw_compass(cv, rx.w, heading_q4, fov_q4(profile), mode);
+        if self.building {
+            for x in [rx.w - 18, rx.w - 13, rx.w - 8] {
+                cv.fill(rect(x, COMPASS_H - 8, 2, 2), palette::PARCHMENT);
+            }
+        }
         let chart_bottom = rx.h - LEDGER_H;
-        draw_terrain(cv, profile, heading_q4, rx.w, chart_bottom);
+        if let Some(terrain) = rx.peak_view {
+            terrain::draw(cv, terrain, profile, heading_q4, rx.w, chart_bottom);
+        }
         draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
-        draw_ledger(cv, rx, profile, selected, self.browse_heading_q4.is_some());
+        if rx.peak_view.is_some_and(|terrain| terrain.has_incomplete_coverage()) {
+            cv.fill(rect(0, chart_bottom - 24, rx.w, 24), palette::PARCHMENT);
+            cv.text(
+                rx.t(Msg::PeakViewLimitedTerrain),
+                Point::new(rx.w / 2, chart_bottom - 24),
+                Font::Label,
+                TextAlign::Center,
+                palette::SUBTEXT,
+            );
+        }
+        draw_ledger(cv, rx, profile, selected);
     }
+}
+
+fn current_profile(state: &crate::AppState) -> Option<PeakViewProfile<'_>> {
+    let mut profile = state.peak_view_profile?;
+    if state.peak_view_peak_count > 0 {
+        profile.peaks = &state.peak_view_peaks[..state.peak_view_peak_count as usize];
+    }
+    Some(profile)
 }
 
 fn live_heading_q4(state: &crate::AppState, profile: &PeakViewProfile) -> u16 {
@@ -119,12 +200,9 @@ fn live_heading_q4(state: &crate::AppState, profile: &PeakViewProfile) -> u16 {
         .unwrap_or(profile.default_heading_q4)
 }
 
-/// The horizontal window, derived from the profile's vertical span so vertical exaggeration is
-/// a constant 1.8 on the 240-wide, 222-tall panorama chart (`fov = span * 240 * 1.8 / 222`).
-/// A big-relief scene such as Kleine Scheidegg gets a wide window; a distant-relief scene such
-/// as Gornergrat gets a narrower, zoomed one where a horn still looks like a horn.
+/// Wide relief gets a wider window; distant relief gets a closer view.
 fn fov_q4(profile: &PeakViewProfile) -> i32 {
-    (profile.angle_top_q4 - profile.angle_bottom_q4).max(1) as i32 * 72 / 37
+    profile.horizontal_fov_q4()
 }
 
 fn normalize_q4(angle: i32) -> i32 {
@@ -145,13 +223,9 @@ fn nearest_visible_peak(profile: &PeakViewProfile, heading_q4: u16) -> Option<us
         .peaks
         .iter()
         .enumerate()
-        .filter_map(|(index, _)| {
-            let anchor = peak_anchor_q4(profile, index)?;
-            let delta = bearing_delta_q4(anchor, heading_q4).abs();
-            peak_is_visible(profile, index, heading_q4).then_some((index, delta, profile.peaks[index].layer))
-        })
-        .min_by_key(|(index, delta, layer)| (*delta, *layer, *index))
-        .map(|(index, _, _)| index)
+        .filter(|(index, _)| peak_is_visible(profile, *index, heading_q4))
+        .min_by_key(|(index, peak)| (bearing_delta_q4(peak.azimuth_q4, heading_q4).abs(), peak.distance_m, *index))
+        .map(|(index, _)| index)
 }
 
 /// Select by left-to-right ridge order without allocating a second peak list. Named summits on
@@ -171,8 +245,9 @@ fn stepped_visible_peak(
     Some(current)
 }
 
-fn peak_order_key(profile: &PeakViewProfile, index: usize, heading_q4: u16) -> Option<(i32, u8, usize)> {
-    Some((bearing_delta_q4(peak_anchor_q4(profile, index)?, heading_q4), profile.peaks.get(index)?.layer, index))
+fn peak_order_key(profile: &PeakViewProfile, index: usize, heading_q4: u16) -> Option<(i32, u32, usize)> {
+    let peak = profile.peaks.get(index)?;
+    Some((bearing_delta_q4(peak.azimuth_q4, heading_q4), peak.distance_m, index))
 }
 
 fn adjacent_visible_peak(profile: &PeakViewProfile, heading_q4: u16, current: usize, forward: bool) -> Option<usize> {
@@ -195,89 +270,14 @@ fn adjacent_visible_peak(profile: &PeakViewProfile, heading_q4: u16, current: us
     }
 }
 
-/// Find the crest in the summit's own distance band: the nearest local maximum within 1.5
-/// samples, enough to absorb angular downsampling without attaching a name to a distant
-/// neighbouring summit. A summit on a monotone stretch of its band's skyline has no local
-/// maximum; it anchors at the sample nearest its azimuth instead, and [`peak_reaches_ridge`]
-/// still rejects a name that sits below the drawn silhouette.
-fn peak_anchor_q4(profile: &PeakViewProfile, index: usize) -> Option<u16> {
-    let peak = profile.peaks.get(index)?;
-    let layer = *profile.layers_q4.get(peak.layer as usize)?;
-    let count = layer.len();
-    if count < 3 || profile.sample_step_q4 == 0 {
-        return None;
-    }
-    let search_q4 = profile.sample_step_q4 as i32 * 3 / 2;
-    (0..count)
-        .filter_map(|sample| {
-            let bearing = (sample * profile.sample_step_q4 as usize) as u16;
-            let delta = bearing_delta_q4(bearing, peak.azimuth_q4).abs();
-            if delta > search_q4 {
-                return None;
-            }
-            let previous = ((sample + count - 1) % count * profile.sample_step_q4 as usize) as u16;
-            let next = ((sample + 1) % count * profile.sample_step_q4 as usize) as u16;
-            let (left, center, right) = (
-                horizon_q4(layer, profile.sample_step_q4, previous),
-                horizon_q4(layer, profile.sample_step_q4, bearing),
-                horizon_q4(layer, profile.sample_step_q4, next),
-            );
-            let is_crest = center >= left && center >= right && (center > left || center > right);
-            Some((bearing, !is_crest, delta, center))
-        })
-        .min_by_key(|(_, slope, delta, height)| (*slope, *delta, -*height))
-        .map(|(bearing, _, _, _)| bearing)
-}
-
-fn peak_ridge_q4(profile: &PeakViewProfile, peak: &crate::PeakViewPeak, bearing_q4: u16) -> Option<i16> {
-    let layer = *profile.layers_q4.get(peak.layer as usize)?;
-    Some(horizon_q4(layer, profile.sample_step_q4, bearing_q4))
-}
-
-fn peak_reaches_ridge(profile: &PeakViewProfile, peak: &crate::PeakViewPeak) -> bool {
-    peak_ridge_q4(profile, peak, peak.azimuth_q4).is_some_and(|ridge| peak.angle_q4 + RIDGE_TOLERANCE_Q4 >= ridge)
-}
-
-/// A farther ridge line is covered when a nearer band rises clearly above it. Near ridges are
-/// always exposed because they are drawn last.
-fn peak_ridge_is_exposed(profile: &PeakViewProfile, peak: &crate::PeakViewPeak, anchor_q4: u16) -> bool {
-    let layer = peak.layer as usize;
-    let Some(ridge) = peak_ridge_q4(profile, peak, anchor_q4) else { return false };
-    profile.layers_q4[..layer]
-        .iter()
-        .all(|nearer| ridge + EXPOSURE_SLACK_Q4 >= horizon_q4(nearer, profile.sample_step_q4, anchor_q4))
-}
-
 fn peak_is_visible(profile: &PeakViewProfile, index: usize, heading_q4: u16) -> bool {
-    let Some(peak) = profile.peaks.get(index) else { return false };
-    let Some(anchor) = peak_anchor_q4(profile, index) else { return false };
-    if bearing_delta_q4(anchor, heading_q4).abs() > fov_q4(profile) / 2
-        || !peak_reaches_ridge(profile, peak)
-        || !peak_ridge_is_exposed(profile, peak, anchor)
-    {
-        return false;
-    }
-
-    // A coarse crest in one distance band may attract several nearby peak nodes. Keep one stable
-    // name for that rendered summit, without collapsing stacked near/middle/far ridges that share
-    // a bearing.
-    !profile.peaks.iter().enumerate().any(|(other_index, other)| {
-        if other_index == index
-            || other.layer != peak.layer
-            || !peak_reaches_ridge(profile, other)
-            || peak_anchor_q4(profile, other_index) != Some(anchor)
-        {
-            return false;
-        }
-        let distance = bearing_delta_q4(peak.azimuth_q4, anchor).abs();
-        let other_distance = bearing_delta_q4(other.azimuth_q4, anchor).abs();
-        other.score > peak.score
-            || (other.score == peak.score && other_distance < distance)
-            || (other.score == peak.score && other_distance == distance && other_index < index)
-    })
+    profile
+        .peaks
+        .get(index)
+        .is_some_and(|peak| peak.visible && bearing_delta_q4(peak.azimuth_q4, heading_q4).abs() <= fov_q4(profile) / 2)
 }
 
-fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32) {
+fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32, mode: Option<&str>) {
     cv.fill(rect(0, 0, w, COMPASS_H), palette::WOOD);
     for bearing_deg in (0..360).step_by(15) {
         let bearing_q4 = (bearing_deg * 4) as u16;
@@ -305,61 +305,17 @@ fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32) {
         Point::new(w / 2 + 5, COMPASS_H - 8),
         palette::AMBER,
     );
-}
-
-fn draw_terrain(cv: &mut impl Surface, profile: &PeakViewProfile, heading_q4: u16, w: i32, bottom: i32) {
-    let colors = [TERRAIN_NEAR, TERRAIN_MIDDLE, TERRAIN_FAR];
-    let fov = fov_q4(profile);
-    for layer in (0..3).rev() {
-        for x in 0..w {
-            let bearing = normalize_q4(heading_q4 as i32 - fov / 2 + x * fov / (w - 1).max(1));
-            let angle = horizon_q4(profile.layers_q4[layer], profile.sample_step_q4, bearing as u16);
-            let y = angle_y(profile, angle, bottom);
-            cv.vline(x, y, bottom - y, 1, colors[layer]);
-        }
-        trace_horizon(cv, profile, profile.layers_q4[layer], heading_q4, fov, w, bottom, palette::INK);
+    if let Some(mode) = mode {
+        cv.fill(rect(0, 0, w / 2 - 28, 24), palette::WOOD);
+        cv.text(mode, Point::new(4, 1), Font::Label, TextAlign::Left, palette::PARCHMENT);
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn trace_horizon(
-    cv: &mut impl Surface,
-    profile: &PeakViewProfile,
-    samples: &[i16],
-    heading_q4: u16,
-    fov: i32,
-    w: i32,
-    bottom: i32,
-    color: u16,
-) {
-    let mut previous = None;
-    for x in 0..w {
-        let bearing = normalize_q4(heading_q4 as i32 - fov / 2 + x * fov / (w - 1).max(1));
-        let angle = horizon_q4(samples, profile.sample_step_q4, bearing as u16);
-        let y = angle_y(profile, angle, bottom);
-        if let Some((last_x, last_y)) = previous {
-            cv.line(Point::new(last_x, last_y), Point::new(x, y), color);
-        }
-        previous = Some((x, y));
-    }
-}
-
-fn horizon_q4(samples: &[i16], step_q4: u16, bearing_q4: u16) -> i16 {
-    if samples.is_empty() || step_q4 == 0 {
-        return 0;
-    }
-    let whole = bearing_q4 as usize / step_q4 as usize;
-    let next = (whole + 1) % samples.len();
-    let rem = bearing_q4 as i32 % step_q4 as i32;
-    let a = samples[whole % samples.len()] as i32;
-    let b = samples[next] as i32;
-    (a + (b - a) * rem / step_q4 as i32) as i16
 }
 
 fn angle_y(profile: &PeakViewProfile, angle_q4: i16, bottom: i32) -> i32 {
     let height = bottom - COMPASS_H;
-    let span = (profile.angle_top_q4 - profile.angle_bottom_q4).max(1) as i32;
-    let above_bottom = (angle_q4 - profile.angle_bottom_q4) as i32;
+    let (angle_bottom, angle_top) = profile.vertical_bounds_q4();
+    let span = angle_top - angle_bottom;
+    let above_bottom = i32::from(angle_q4) - angle_bottom;
     (bottom - above_bottom * height / span).clamp(COMPASS_H, bottom - 1)
 }
 
@@ -397,17 +353,17 @@ fn draw_peak_annotations(
             break;
         }
         let peak = &profile.peaks[candidate.0];
-        let anchor = peak_anchor_q4(profile, candidate.0).unwrap_or(peak.azimuth_q4);
+        let anchor = peak.azimuth_q4;
         let x = bearing_x(anchor, heading_q4, w, fov_q4(profile)).unwrap_or(0);
         if label_x[..labels].iter().any(|old| (x - *old).abs() < 15) {
             continue;
         }
-        let summit_y = angle_y(profile, peak_ridge_q4(profile, peak, anchor).unwrap_or(peak.angle_q4), bottom);
-        let run_h = peak.name.chars().count() as i32 * 6;
-        if summit_y - 4 - run_h >= COMPASS_H + 2 {
+        let summit_y = angle_y(profile, peak.angle_q4, bottom);
+        let run_h = peak.name.as_str().chars().count() as i32 * 6;
+        if summit_y - LABEL_GAP - run_h >= COMPASS_H + 2 {
             let color = if Some(candidate.0) == selected { palette::WOOD } else { palette::INK };
-            cv.vline(x, summit_y - 5, 5, 1, color);
-            cv.text_ccw(peak.name, Point::new(x - 6, summit_y - 5), Font::Label, 2, color);
+            cv.vline(x, summit_y - LABEL_GAP + 1, LABEL_GAP - 1, 1, color);
+            cv.text_ccw(peak.name.as_str(), Point::new(x - 6, summit_y - LABEL_GAP), Font::Label, 2, color);
             label_x[labels] = x;
             labels += 1;
         }
@@ -415,15 +371,16 @@ fn draw_peak_annotations(
 
     if let Some(i) = selected {
         let peak = &profile.peaks[i];
-        let anchor = peak_anchor_q4(profile, i).unwrap_or(peak.azimuth_q4);
+        let anchor = peak.azimuth_q4;
         if let Some(x) = bearing_x(anchor, heading_q4, w, fov_q4(profile)) {
-            let y = angle_y(profile, peak_ridge_q4(profile, peak, anchor).unwrap_or(peak.angle_q4), bottom);
+            let y = angle_y(profile, peak.angle_q4, bottom);
+            cv.triangle(Point::new(x, y + 1), Point::new(x - 7, y - 11), Point::new(x + 7, y - 11), palette::INK);
             cv.triangle(Point::new(x, y - 1), Point::new(x - 5, y - 9), Point::new(x + 5, y - 9), palette::AMBER);
         }
     }
 }
 
-fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, selected: Option<usize>, manual: bool) {
+fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, selected: Option<usize>) {
     let top = rx.h - LEDGER_H;
     cv.fill(rect(0, top, rx.w, LEDGER_H), palette::PARCHMENT);
     cv.hline(0, top, rx.w, palette::WOOD);
@@ -432,32 +389,17 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
         return;
     };
 
-    cv.text(peak.name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
+    let mut caption = heapless::String::new();
+    let name = super::vocab::tiles::fit_caption(peak.name.as_str(), rx.w - 20, &mut caption, Font::Label);
+    cv.text(name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
     let mut details: heapless::String<40> = heapless::String::new();
-    let elevation = (rx.settings.units.elev(peak.elevation_m as f32) + 0.5) as u32;
+    if let Some(meters) = peak.elevation_m {
+        let elevation = libm::roundf(rx.settings.units.elev(meters as f32)) as i32;
+        let _ = write!(details, "{}{}  ", elevation, rx.settings.units.elev_label());
+    }
     let distance = distance_short(peak.distance_m, rx.settings.units);
-    if manual {
-        let _ = write!(details, "{}{}  {}", elevation, rx.settings.units.elev_label(), distance);
-    } else {
-        let _ = write!(
-            details,
-            "{}{}  {}  {}",
-            elevation,
-            rx.settings.units.elev_label(),
-            distance,
-            cardinal(peak.azimuth_q4)
-        );
-    }
+    let _ = write!(details, "{}  {}", distance, cardinal(peak.azimuth_q4));
     cv.text(&details, Point::new(10, top + 34), Font::Label, TextAlign::Left, palette::SUBTEXT);
-    if manual {
-        cv.text(
-            rx.t(Msg::PeakViewManual),
-            Point::new(rx.w - 10, top + 34),
-            Font::Label,
-            TextAlign::Right,
-            palette::WOOD,
-        );
-    }
 }
 
 fn cardinal(azimuth_q4: u16) -> &'static str {
@@ -469,99 +411,102 @@ fn cardinal(azimuth_q4: u16) -> &'static str {
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
-    use crate::peak_view::PeakViewPeak;
+    use crate::peak_view::{PeakName, PeakViewPeak};
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
-    static LAYER: [i16; 12] = [0, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 4];
-    static INTERPOLATION_LAYER: [i16; 4] = [0, 4, 8, 4];
     static PEAKS: [PeakViewPeak; 3] = [
         PeakViewPeak {
-            name: "A",
-            elevation_m: 1000,
+            name: PeakName::new("A"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(1000),
             distance_m: 1000,
             azimuth_q4: 112,
             angle_q4: 4,
-            layer: 0,
+            visible: true,
             score: 1,
         },
         PeakViewPeak {
-            name: "C",
-            elevation_m: 1500,
+            name: PeakName::new("C"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(1500),
             distance_m: 3000,
             azimuth_q4: 720,
             angle_q4: 4,
-            layer: 0,
+            visible: true,
             score: 2,
         },
         PeakViewPeak {
-            name: "B",
-            elevation_m: 2000,
+            name: PeakName::new("B"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(2000),
             distance_m: 2000,
             azimuth_q4: 1328,
             angle_q4: 4,
-            layer: 0,
+            visible: true,
             score: 3,
         },
     ];
     // The wide angle range gives this profile a ~104-degree derived window, so the three peaks
     // spread across the circle stay selectable from the headings the tests use.
-    static PROFILE: PeakViewProfile = PeakViewProfile {
+    static PROFILE: PeakViewProfile<'static> = PeakViewProfile {
         id: 99,
         name: "test",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 0,
-        sample_step_q4: 120,
         angle_bottom_q4: -40,
         angle_top_q4: 200,
-        layers_q4: [&LAYER, &LAYER, &LAYER],
         peaks: &PEAKS,
     };
-    static STACKED_NEAR: [i16; 12] = [0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    static STACKED_MIDDLE: [i16; 12] = [0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    static STACKED_FAR: [i16; 12] = [0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     static STACKED_PEAKS: [PeakViewPeak; 3] = [
         PeakViewPeak {
-            name: "Near",
-            elevation_m: 1000,
+            name: PeakName::new("Near"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(1000),
             distance_m: 1000,
             azimuth_q4: 120,
             angle_q4: 4,
-            layer: 0,
+            visible: true,
             score: 1,
         },
         PeakViewPeak {
-            name: "Middle",
-            elevation_m: 2000,
+            name: PeakName::new("Middle"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(2000),
             distance_m: 4000,
             azimuth_q4: 120,
             angle_q4: 8,
-            layer: 1,
+            visible: true,
             score: 2,
         },
         PeakViewPeak {
-            name: "Far",
-            elevation_m: 3000,
+            name: PeakName::new("Far"),
+            lat: 0,
+            lon: 0,
+            elevation_m: Some(3000),
             distance_m: 8000,
             azimuth_q4: 120,
             angle_q4: 12,
-            layer: 2,
+            visible: true,
             score: 3,
         },
     ];
-    static STACKED_PROFILE: PeakViewProfile = PeakViewProfile {
+    static STACKED_PROFILE: PeakViewProfile<'static> = PeakViewProfile {
         id: 100,
         name: "stacked",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 120,
-        sample_step_q4: 120,
         angle_bottom_q4: -4,
         angle_top_q4: 16,
-        layers_q4: [&STACKED_NEAR, &STACKED_MIDDLE, &STACKED_FAR],
         peaks: &STACKED_PEAKS,
     };
 
@@ -573,51 +518,13 @@ mod tests {
     }
 
     #[test]
-    fn horizon_interpolation_wraps_to_the_first_sample() {
-        assert_eq!(horizon_q4(&INTERPOLATION_LAYER, 360, 180), 2);
-        assert_eq!(horizon_q4(&INTERPOLATION_LAYER, 360, 1350), 1);
-    }
-
-    #[test]
-    fn a_summit_without_a_nearby_crest_anchors_at_its_nearest_sample() {
-        static SHOULDER: [PeakViewPeak; 1] = [PeakViewPeak {
-            name: "Shoulder",
-            elevation_m: 900,
-            distance_m: 2000,
-            azimuth_q4: 470,
-            angle_q4: 0,
-            layer: 0,
-            score: 1,
-        }];
-        static SLOPE_PROFILE: PeakViewProfile = PeakViewProfile {
-            id: 101,
-            name: "slope",
-            observer_lat: 0,
-            observer_lon: 0,
-            observer_elevation_m: 0,
-            default_heading_q4: 470,
-            sample_step_q4: 120,
-            angle_bottom_q4: -4,
-            angle_top_q4: 12,
-            layers_q4: [&LAYER, &LAYER, &LAYER],
-            peaks: &SHOULDER,
-        };
-        assert_eq!(peak_anchor_q4(&SLOPE_PROFILE, 0), Some(480), "no crest within 1.5 samples of 470");
-        assert!(peak_is_visible(&SLOPE_PROFILE, 0, 470), "the summit sits on its band's skyline");
-    }
-
-    #[test]
-    fn a_named_summit_below_its_rendered_ridge_is_not_selectable() {
-        let occluded = PeakViewPeak {
-            name: "Hidden",
-            elevation_m: 900,
-            distance_m: 4000,
-            azimuth_q4: 112,
-            angle_q4: -1,
-            layer: 0,
-            score: 10,
-        };
-        assert!(!peak_reaches_ridge(&PROFILE, &occluded));
+    fn an_occluded_summit_is_neither_selected_nor_stepped_to() {
+        static PEAKS_WITH_HIDDEN: [PeakViewPeak; 3] =
+            [PEAKS[0], PeakViewPeak { visible: false, azimuth_q4: 0, ..PEAKS[1] }, PEAKS[2]];
+        let profile = PeakViewProfile { peaks: &PEAKS_WITH_HIDDEN, ..PROFILE };
+        assert!(!peak_is_visible(&profile, 1, 0));
+        assert_eq!(nearest_visible_peak(&profile, 0), Some(0));
+        assert_eq!(stepped_visible_peak(&profile, 0, Some(0), 1), Some(2));
     }
 
     #[test]
@@ -631,11 +538,12 @@ mod tests {
     #[test]
     fn browse_freezes_the_profile_and_steps_only_through_its_visible_peaks() {
         let mut state = AppState::new(0, 0, 1.0);
-        state.peak_view_profile = Some(&PROFILE);
+        state.peak_view_profile = Some(PROFILE);
         state.compass_deg = Some(0.0);
         let mut activity = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
         let mut screen = PeakViewScreen::new();
+        screen.set_loading(false, false);
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
 
         assert!(matches!(screen.handle(Gesture::Step(1), &mut cx), Transition::None));
@@ -645,5 +553,27 @@ mod tests {
         screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(0));
         assert_eq!(screen.selected, 0, "selection wraps among the peaks visible in the frozen profile");
+    }
+    #[test]
+    fn loading_animates_cancels_and_stops_waking_when_ready() {
+        let mut screen = PeakViewScreen::new();
+        let mut state = AppState::new(0, 0, 1.0);
+        state.peak_view_profile = Some(PROFILE);
+        let mut activity = Activity::new(Mode::Idle);
+        let mut settings = Settings::default();
+        let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
+        screen.tick_timers(0, 240, 320);
+        assert!(!screen.tick_timers(100, 240, 320).changed);
+        let tick = screen.tick_timers(166, 240, 320);
+        assert!(tick.changed && tick.next_wake_ms.is_some());
+        assert!(matches!(screen.handle(Gesture::Step(1), &mut cx), Transition::None));
+        assert!(screen.browse_heading_q4.is_none());
+        assert!(matches!(screen.handle(Gesture::Back, &mut cx), Transition::Pop));
+        screen.set_loading(false, false);
+        assert!(screen.set_building(true));
+        assert!(!screen.set_building(true), "background progress does not request another redraw");
+        assert!(screen.tick_timers(200, 240, 320).next_wake_ms.is_none());
+        screen.set_loading(false, true);
+        assert!(matches!(screen.handle(Gesture::Back, &mut cx), Transition::Pop));
     }
 }

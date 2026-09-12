@@ -206,13 +206,13 @@ fn collect_obcd(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 /// workers and every one of their samplers borrows the *same* handle, so the seek/read pair has to
 /// be atomic. The lock is held for one ≤ 512-byte read and each sampler's 32 KB tile cache keeps
 /// those rare, so the contention is nothing next to the GEOS work the same threads are doing.
-struct FileSource {
+pub(crate) struct FileSource {
     file: Mutex<File>,
     len: u64,
 }
 
 impl FileSource {
-    fn open(path: &Path) -> Result<FileSource, String> {
+    pub(crate) fn open(path: &Path) -> Result<FileSource, String> {
         let file = File::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
         let len = file.metadata().map_err(|e| format!("--terrain {}: {e}", path.display()))?.len();
         // **OBCT's own** wall, not the read seam's: the container's directory entries and cell

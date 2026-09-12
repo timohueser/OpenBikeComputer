@@ -55,10 +55,10 @@
 //! comparing every present block against its source object, which is a stronger claim than a hash
 //! of the assembler\'s own output agreeing with itself.
 
-use obc_dem::container::{container_prefix, CellRect};
+use obc_dem::container::{container_prefix_with_surface, fill_cell_index, CellRect};
 use obc_elevation::TerrainReader;
 use obc_formats::io::ByteSource;
-use obc_formats::obct::{cell_block_len, cell_samples_log2, DIR_ENTRY_LEN, HEADER_LEN};
+use obc_formats::obct::{cell_block_len, cell_samples_log2, SurfaceLayout, DIR_ENTRY_LEN, HEADER_LEN, SURFACE_FLAG};
 use sha2::{Digest, Sha256};
 
 use crate::grid::{AlignedBox, CellId, GRID_ORIGIN};
@@ -179,13 +179,17 @@ impl TerrainPlan {
 
 /// Where a present cell's block lives inside a published `1 × 1` container: straight after the
 /// 32-byte header and its single directory entry.
-const CELL_BLOCK_OFFSET: u32 = HEADER_LEN as u32 + DIR_ENTRY_LEN as u32;
+struct CellLayout {
+    offset: u32,
+    bytes: u32,
+    surface: bool,
+}
 
 /// Check one published cell against the catalog and against `OBCC_Spec.md` §13.1, and return its
 /// block offset. Everything here is a property of the downloaded bytes, so it runs **before** a
 /// single one is copied — a bad cell must never reach the shard, not even to be caught on the way
 /// out.
-fn check_cell(cell: &TerrainCellInput<'_>, params: TerrainParams, block_len: u32) -> Result<u32> {
+fn check_cell(cell: &TerrainCellInput<'_>, params: TerrainParams) -> Result<CellLayout> {
     let bad = |what: String| Error::Format(format!("terrain cell {}: {what}", cell.id));
 
     // The container itself, through the real reader: magic, version, flags, the posting/cell
@@ -243,11 +247,22 @@ fn check_cell(cell: &TerrainCellInput<'_>, params: TerrainParams, block_len: u32
 
     // The block has to be wholly inside the object. `TerrainReader::parse` already asserted it for
     // the directory entry it read; restated here because this is where the copy's bounds come from.
-    let end = CELL_BLOCK_OFFSET as u64 + block_len as u64;
-    if end > cell.src.len() {
+    let surface = header.flags & SURFACE_FLAG != 0;
+    let block_len = if surface {
+        SurfaceLayout::new(params.posting_log2, params.cell_log2)
+            .ok_or_else(|| bad("invalid surface layout".into()))?
+            .cell_bytes()
+    } else {
+        cell_block_len(params.posting_log2, params.cell_log2).ok_or_else(|| bad("invalid native layout".into()))?
+    };
+    let mut entry = [0; 4];
+    cell.src.read_at(header.directory_offset.into(), &mut entry).map_err(Error::Io)?;
+    let offset = u32::from_le_bytes(entry);
+    let end = u64::from(offset) + u64::from(block_len);
+    if offset == 0 || end > cell.src.len() {
         return Err(bad(format!("is {} bytes; a {block_len}-byte block needs {end}", cell.src.len())));
     }
-    Ok(CELL_BLOCK_OFFSET)
+    Ok(CellLayout { offset, bytes: block_len, surface })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -269,6 +284,7 @@ pub struct TerrainRegion<'a> {
     /// The header and offset directory, from the one OBCT layout (`obc_dem::container`).
     prefix: Vec<u8>,
     block_len: usize,
+    input_offsets: Vec<u32>,
     bytes: u64,
 }
 
@@ -312,23 +328,70 @@ impl<'a> TerrainRegion<'a> {
 
         // Check every input before any of it is placed, so a bad cell aborts before the map's header
         // has committed to a region length.
-        for cell in cells {
-            check_cell(cell, plan.params, block_len)?;
+        let layouts = cells.iter().map(|cell| check_cell(cell, plan.params)).collect::<Result<Vec<_>>>()?;
+        let surface = layouts.first().is_some_and(|layout| layout.surface);
+        if layouts.iter().any(|layout| layout.surface != surface) {
+            return Err(Error::Format("terrain cells use different surface encodings".into()));
         }
+        let block_len = layouts.first().map_or(block_len, |layout| layout.bytes);
+        let input_offsets = layouts.iter().map(|layout| layout.offset).collect();
 
         let slots: Vec<Option<usize>> = plan.rect.cells().map(|key| by_square.get(&key).copied()).collect();
         let present: Vec<bool> = slots.iter().map(Option::is_some).collect();
-        let prefix = container_prefix(plan.params.posting_log2, plan.params.cell_log2, plan.rect, &present)
-            .map_err(Error::Format)?;
+        let mut prefix = container_prefix_with_surface(
+            plan.params.posting_log2,
+            plan.params.cell_log2,
+            plan.rect,
+            &present,
+            surface,
+        )
+        .map_err(Error::Format)?;
+        if surface {
+            let level = SurfaceLayout::new(plan.params.posting_log2, plan.params.cell_log2)
+                .expect("validated surface")
+                .level(0)
+                .unwrap();
+            let root = level.bound_offset(0, 0, level.samples_log2).expect("native cell root");
+            let mut maxima = vec![i16::MAX; slots.len()];
+            for (slot, input) in slots.iter().enumerate() {
+                if let Some(k) = input {
+                    let mut value = [0; 2];
+                    cells[*k]
+                        .src
+                        .read_at(u64::from(layouts[*k].offset) + u64::from(root), &mut value)
+                        .map_err(Error::Io)?;
+                    maxima[slot] = i16::from_le_bytes(value);
+                }
+            }
+            fill_cell_index(&mut prefix, plan.rect, &maxima).map_err(Error::Format)?;
+        }
         let bytes = prefix.len() as u64 + by_square.len() as u64 * block_len as u64;
-        debug_assert_eq!(bytes, plan.projected_bytes(by_square.len() as u64), "the projection is the layout");
-        Ok(TerrainRegion { plan, cells, slots, prefix, block_len: block_len as usize, bytes })
+        Ok(TerrainRegion { plan, cells, slots, prefix, block_len: block_len as usize, input_offsets, bytes })
     }
 
     /// The container's exact byte length — what §1.3's `Terrain Length` rounds up from, and what the
     /// map's layout reserves.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// Equivalent terrain size with only the original native height lattice.
+    pub fn native_bytes(&self) -> u64 {
+        self.plan.projected_bytes(self.cells() as u64)
+    }
+
+    pub fn has_surface(&self) -> bool {
+        self.prefix[obc_formats::obct::HDR_FLAGS] & SURFACE_FLAG != 0
+    }
+
+    /// Check the complete map against native heights without added summit metadata.
+    pub fn check_map_budget(&self, map_bytes: u64, extra_prefix: u64) -> Result<()> {
+        let native_map = map_bytes
+            .checked_sub(crate::emit::align_up(self.bytes))
+            .and_then(|geometry| geometry.checked_sub(extra_prefix))
+            .and_then(|geometry| geometry.checked_add(crate::emit::align_up(self.native_bytes())))
+            .ok_or_else(|| Error::Capacity("terrain size exceeds the map layout".into()))?;
+        check_surface_budget(native_map, map_bytes)
     }
 
     /// Squares with a block. The rest of the rectangle is directory `0`.
@@ -352,7 +415,7 @@ impl<'a> TerrainRegion<'a> {
         let mut block = vec![0u8; self.block_len];
         for &slot in &self.slots {
             let Some(k) = slot else { continue };
-            self.cells[k].src.read_at(CELL_BLOCK_OFFSET.into(), &mut block).map_err(Error::Io)?;
+            self.cells[k].src.read_at(self.input_offsets[k].into(), &mut block).map_err(Error::Io)?;
             w.put(&block)?;
         }
         let written = w.at() - start;
@@ -378,6 +441,9 @@ impl<'a> TerrainRegion<'a> {
         let header = *reader.header();
         if header.posting_log2 != self.plan.params.posting_log2 || header.cell_log2 != self.plan.params.cell_log2 {
             return Err(Error::Verify("the terrain region's lattice is not the catalog's".into()));
+        }
+        if header.flags != self.prefix[obc_formats::obct::HDR_FLAGS] {
+            return Err(Error::Verify("the terrain surface encoding differs from its sources".into()));
         }
         if header.cell_min_i != self.plan.rect.min_i
             || header.cell_min_j != self.plan.rect.min_j
@@ -414,7 +480,7 @@ impl<'a> TerrainRegion<'a> {
                         )));
                     }
                     window.read_at(offset.into(), &mut mine).map_err(Error::Io)?;
-                    self.cells[k].src.read_at(CELL_BLOCK_OFFSET.into(), &mut theirs).map_err(Error::Io)?;
+                    self.cells[k].src.read_at(self.input_offsets[k].into(), &mut theirs).map_err(Error::Io)?;
                     if mine != theirs {
                         return Err(Error::Verify(format!(
                             "terrain cell {}'s block in the map is not the block the catalog served",
@@ -424,8 +490,24 @@ impl<'a> TerrainRegion<'a> {
                 }
             }
         }
+        let mut actual_prefix = vec![0; self.prefix.len()];
+        window.read_at(0, &mut actual_prefix).map_err(Error::Io)?;
+        if actual_prefix != self.prefix {
+            return Err(Error::Verify(
+                "the terrain directory or cell maximum index differs from the prepared map".into(),
+            ));
+        }
         Ok(())
     }
+}
+
+fn check_surface_budget(native_map: u64, surface_map: u64) -> Result<()> {
+    if surface_map.saturating_sub(native_map) > native_map / 10 {
+        return Err(Error::Capacity(format!(
+            "Peak View would grow the map from {native_map} to {surface_map} bytes, above the 10% map-size limit"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -436,6 +518,34 @@ mod tests {
     use obc_formats::io::SliceSource;
 
     use super::*;
+
+    #[test]
+    fn surface_budget_counts_the_whole_map_and_checks_the_exact_boundary() {
+        assert!(check_surface_budget(850_824_480, 935_906_928).is_ok());
+        assert!(check_surface_budget(850_824_480, 935_906_929).is_err());
+        assert!(check_surface_budget(109, 119).is_ok());
+        assert!(check_surface_budget(109, 120).is_err());
+    }
+
+    #[test]
+    fn surface_cells_are_placed_with_all_levels_and_verified() {
+        let bytes = published(602, 526, 37);
+        let mut converted = Cursor::new(Vec::new());
+        obc_dem::surface::convert(&bytes, &mut converted).unwrap();
+        let source = SliceSource(converted.get_ref());
+        let cells = [TerrainCellInput { id: CellId::new(CELL as u32, 602, 526).unwrap(), src: &source, sha256: None }];
+        let region = TerrainRegion::prepare(plan(), &cells).unwrap();
+        assert!(region.bytes() > region.native_bytes());
+        let mut assembled = region.prefix.clone();
+        assembled.extend_from_slice(&converted.get_ref()[region.input_offsets[0] as usize..]);
+        region.verify(&SliceSource(&assembled)).unwrap();
+        assert!(region.check_map_budget(region.bytes() * 20, 0).is_ok());
+        assert!(region.check_map_budget(region.bytes(), 0).is_err());
+        let index = obc_formats::obct::CellIndexLayout::new(plan().rect.rows, plan().rect.cols, 32).unwrap();
+        assembled[index.offset as usize] ^= 1;
+        let error = region.verify(&SliceSource(&assembled)).unwrap_err();
+        assert!(error.to_string().contains("cell maximum index"));
+    }
 
     const POSTING: u8 = 14;
     const CELL: u8 = 19;

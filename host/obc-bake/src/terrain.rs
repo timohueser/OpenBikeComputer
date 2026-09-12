@@ -218,11 +218,16 @@ impl TerrainCutter for DemCutter {
     fn recipe(&self) -> String {
         // The tile *set* is not in the recipe: the cells it produces are, through their digests,
         // and a source directory that grew a tile outside the coverage must not re-bake the world.
-        format!("obc-dem bake tiles={} from={}", self.mosaic.len(), self.sources.display())
+        format!("obc-dem surface-v3 tiles={} from={}", self.mosaic.len(), self.sources.display())
     }
 
     fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<Option<Vec<u8>>, String> {
-        Ok(obc_dem::bake::bake_cell(&self.mosaic, ci, cj, posting_log2, cell_log2))
+        obc_dem::surface::bake_cell(ci, cj, posting_log2, cell_log2, |lat, lon| {
+            self.mosaic
+                .height(f64::from(lat) / 1e6, f64::from(lon) / 1e6)
+                .map(obc_dem::bake::quantise)
+                .unwrap_or(obc_formats::obct::NODATA)
+        })
     }
 }
 

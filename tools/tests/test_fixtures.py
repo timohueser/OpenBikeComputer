@@ -1,9 +1,11 @@
 from pathlib import Path
+from argparse import Namespace
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from tools.fixtures import Catalog, FixtureError, Store, build_package, resolve_path, sha256_file
+from tools.fixtures import Catalog, FixtureError, Store, build_package, command_publish, resolve_path, sha256_file
 
 
 def catalog_text(base_url: str, digest: str, size: int) -> str:
@@ -32,6 +34,35 @@ scenarios = ["sample"]
 
 
 class FixtureRegistryTests(unittest.TestCase):
+    def test_publish_probes_separate_url_then_verifies_canonical_download(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            source = root / "source"
+            source.mkdir()
+            (source / "map.obcm").write_bytes(b"map bytes")
+            archive = root / "sample.tar.gz"
+            size, digest = build_package("sample", source, archive)
+            path = root / "catalog.toml"
+            path.write_text(catalog_text("https://fixtures.example/", digest, size))
+            catalog = Catalog(path)
+            with (
+                patch("tools.fixtures._verify_public_object", side_effect=[FixtureError("404"), None]) as verify,
+                patch("tools.fixtures.shutil.which", return_value="rclone"),
+                patch("tools.fixtures.subprocess.run", return_value=Namespace(returncode=0)) as upload,
+                patch.dict("os.environ", {
+                    "OBC_FIXTURE_R2_BUCKET": "test",
+                    "OBC_FIXTURE_R2_ACCESS_KEY_ID": "test",
+                    "OBC_FIXTURE_R2_SECRET_ACCESS_KEY": "test",
+                    "OBC_FIXTURE_R2_ENDPOINT": "https://storage.example/",
+                }),
+            ):
+                command_publish(catalog, Store(catalog, root / "cache"), Namespace(package="sample", archive=archive))
+            public_url = f"https://fixtures.example/packages/{digest}.tar.gz"
+            self.assertEqual(verify.call_count, 2)
+            self.assertTrue(verify.call_args_list[0].args[0].startswith(public_url + "?probe="))
+            self.assertEqual(verify.call_args_list[1].args, (public_url, size, digest))
+            upload.assert_called_once()
+
     def test_package_build_is_deterministic_and_tree_verifies(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

@@ -99,7 +99,7 @@ pub use map_catalog::{
 };
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
-pub use peak_view::{PeakViewPeak, PeakViewProfile};
+pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
 pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,

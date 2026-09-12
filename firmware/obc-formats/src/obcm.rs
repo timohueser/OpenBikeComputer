@@ -393,6 +393,10 @@ pub fn nav_edge_record_range(chunk: &[u8], ordinal: u32) -> Option<(usize, usize
 }
 
 pub const POI_CATEGORY_COUNT: u8 = 6;
+/// Geographic landmarks share the POI spatial index, outside the six service categories.
+pub const SUMMIT_CATEGORY_ID: u8 = 7;
+pub const SUMMIT_SUBTYPE_ID: u8 = 19;
+pub const SUMMIT_ELEVATION_UNKNOWN: i16 = i16::MIN;
 pub const POI_RECORD_LEN: usize = 36;
 pub const POI_NAME_LEN: usize = 24;
 pub const POI_HOURS_REF_NONE: u16 = 0xFFFF;
@@ -570,9 +574,23 @@ pub fn poi_category_of(subtype_id: u8) -> Option<PoiCategory> {
     poi_subtype_row(subtype_id).map(|row| row.category)
 }
 
+/// Directory category for a service or geographic landmark record.
+#[inline]
+pub fn poi_directory_category_of(subtype_id: u8) -> Option<u8> {
+    if subtype_id == SUMMIT_SUBTYPE_ID {
+        Some(SUMMIT_CATEGORY_ID)
+    } else {
+        poi_category_of(subtype_id).map(PoiCategory::id)
+    }
+}
+
 #[inline]
 pub fn poi_label_of(subtype_id: u8) -> Option<&'static str> {
-    poi_subtype_row(subtype_id).map(|row| row.label)
+    if subtype_id == SUMMIT_SUBTYPE_ID {
+        Some("Summit")
+    } else {
+        poi_subtype_row(subtype_id).map(|row| row.label)
+    }
 }
 
 pub fn validate_header_prefix(bytes: &[u8]) -> Result<(), DecodeError> {
@@ -971,5 +989,9 @@ mod tests {
         assert!(poi_subtype_row(19).is_none());
         assert_eq!(PoiCategory::from_id(0), None);
         assert_eq!(PoiCategory::from_id(7), None);
+        assert_eq!(poi_directory_category_of(SUMMIT_SUBTYPE_ID), Some(SUMMIT_CATEGORY_ID));
+        assert_eq!(poi_category_of(SUMMIT_SUBTYPE_ID), None);
+        assert_eq!(poi_label_of(SUMMIT_SUBTYPE_ID), Some("Summit"));
+        assert_eq!(poi_directory_category_of(20), None);
     }
 }

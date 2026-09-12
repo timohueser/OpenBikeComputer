@@ -1034,6 +1034,8 @@ pub(crate) async fn run_app(
     #[cfg(feature = "debug-uart")]
     let mut prev_transferring = false;
 
+    let mut peak_view = crate::peak_view::Runtime::new(app, flat_map, map_tables);
+
     loop {
         let now = Instant::now().as_millis() as u32;
         let hw = stackmeter::used(now);
@@ -1211,6 +1213,7 @@ pub(crate) async fn run_app(
                 map_uploading = receiving && map_card_shown;
             }
 
+            peak_view.reconcile(app);
             let wants_stage = crate::usb::stage_requested();
             if wants_stage && usb_stage_guard.is_none() {
                 if let Some(ready) = app.usb_stage_precondition() {
@@ -2346,6 +2349,7 @@ pub(crate) async fn run_app(
                     store: BOARD_STORE,
                     revision: obc_app::device_core::Revision::new(flat.sequence()),
                 });
+                peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
                 // temporaries**, exactly as they were at the `app.tick` sites this replaces: they are
@@ -2428,8 +2432,13 @@ pub(crate) async fn run_app(
             // three fields the tail needs are copied out here and the plan is dropped inside the
             // store phase. Only the staged `EffectSlots` and the small executor state survive to the
             // present and sleep phases.
-            let obc_app::device_core::PassPlan { render, next_wake_ms, derived_needs, sources, effects, immediate } =
+            let obc_app::device_core::PassPlan { mut render, next_wake_ms, derived_needs, sources, effects, immediate } =
                 plan;
+            peak_view.reconcile(app);
+            if peak_view.refresh_view(app) {
+                render.map = true;
+                render.region = None;
+            }
             exec.needs = derived_needs;
             debug_assert!(
                 !exec.effects.has_pending(),
@@ -2797,15 +2806,18 @@ pub(crate) async fn run_app(
                                 // used to sit beside this — `render_scene_map_rain_timed` with a
                                 // `MountedSet` as the scene and the core `Reader` for everything else
                                 // — is gone with the set mount (FS7.5-c2, #1420).
-                                app.render_map_rain_timed(
+                                let panorama = peak_view.panorama();
+                                app.render_scene_map_rain_timed(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
+                                    reader.as_ref(),
                                     reader.as_ref(),
                                     route.as_ref(),
                                     rain_adapter
                                         .as_mut()
                                         .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
                                     weather_snapshot_ref,
+                                    panorama,
                                     FRAME_W as f32,
                                     FRAME_H as f32,
                                     color_fn,
@@ -2855,6 +2867,9 @@ pub(crate) async fn run_app(
             let exclude = if exec.arm_pending.is_some() { None } else { overlay_span };
             let (ok, push_us) = display.present_frame(exclude).await;
             presented_ok = ok;
+            if ok {
+                peak_view.note_frame_presented(&app);
+            }
 
             // Snapshot this frame's render stats for the host telemetry line — the same numbers as
             // the RTT `map frame` log. The nRF reader isn't `TimedSource`-wrapped, so the SD/cache
@@ -3097,6 +3112,7 @@ pub(crate) async fn run_app(
         // covers it. An outstanding store round trip takes the short animation cadence instead,
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
+        let immediate = immediate || peak_view.busy();
         let next_ms = if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
         } else if immediate || exec.owed(app.has_pending_residual_command()) {
@@ -3104,6 +3120,7 @@ pub(crate) async fn run_app(
         } else {
             next_wake_ms
         };
+        let next_ms = if peak_view.busy() { Some(0) } else { next_ms };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
         // responsive even on an otherwise-quiet screen (well under the WDT feed cap).
         #[cfg(feature = "debug-uart")]

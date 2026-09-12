@@ -47,6 +47,9 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # unused) since Cargo can't disable a default feature. See issue #218.
 synth = []
 
+# Seed a Kleine Scheidegg test fix and open the selected map's Peak View at boot.
+peak-view-demo = []
+
 # On-device SD read profiler. Adds relaxed counters at the concrete BlockDevice boundary and one
 # RTT line per map redraw, splitting the renderer's logical ByteSource requests from the physical
 # sEMMC command shape and wall time. Off in every shipping build; use with `synth` so a moving

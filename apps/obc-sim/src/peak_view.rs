@@ -1,16 +1,9 @@
-//! Real-location Peak View fixtures for fast simulator UI iteration.
-//!
-//! Generated 2026-08-30 from AWS Terrarium elevation tiles (zoom 13 within 5 km, 12 within 40 km,
-//! 11 to the 100 km ray limit) and OSM Overpass peak nodes. Each distance band casts 1440 rays
-//! (0.25-degree spacing, starting 200 m out so the observer's own DEM cell cannot form a phantom
-//! foreground) with earth curvature at refraction k = 0.13, then max-pools into the stored
-//! 2-degree samples so narrow summits such as the Matterhorn keep their full apparent height
-//! and silhouettes keep their shoulders instead of turning into linear-interpolation facets.
-//! Each named summit's catalog angle is spliced into its band so a catalog peak is never below
-//! its own rendered ridge. The screen interpolates the samples linearly. These fixtures are
-//! host-only and intentionally define no device storage or OBCM contract.
+//! Simulator lifecycle for runtime panoramas. Terrain I/O runs off the UI thread.
 
-use obc_app::{PeakViewPeak, PeakViewProfile};
+use obc_app::PeakViewProfile;
+
+#[path = "../../../fixtures/sources/peak-view/catalog.rs"]
+mod data;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Preset {
@@ -29,213 +22,429 @@ impl Preset {
         }
     }
 
-    pub(crate) fn profile(self) -> &'static PeakViewProfile {
+    pub(crate) fn profile(self) -> &'static PeakViewProfile<'static> {
         match self {
-            Self::Gornergrat => &GORNERGRAT,
-            Self::KleineScheidegg => &KLEINE_SCHEIDEGG,
-            Self::Grossglockner => &GROSSGLOCKNER,
+            Self::Gornergrat => &data::GORNERGRAT,
+            Self::KleineScheidegg => &data::SCHEIDEGG,
+            Self::Grossglockner => &data::GLOCKNER,
         }
     }
 }
 
-static GORNERGRAT_NEAR: [i16; 180] = [
-    -57, -54, -51, -49, -45, -43, -40, -37, -35, -32, -30, -28, -26, -24, -22, -20, -18, -16, -14, -12, -10, -8, -6,
-    -4, -2, 0, 2, 5, 9, 14, 19, 23, 30, 25, 23, 19, 18, 15, 14, 16, 18, 21, 21, 18, 13, 7, 1, -4, -9, -16, -17, -16,
-    -16, -16, -16, -16, -16, -16, -17, -18, -18, -17, -18, -20, -23, -30, -35, -38, -39, -39, -41, -41, -40, -39, -38,
-    -37, -36, -35, -35, -35, -35, -35, -35, -29, -23, -22, -22, -23, -23, -21, -17, -17, -18, -22, -27, -29, -29, -30,
-    -32, -33, -32, -33, -34, -35, -35, -37, -38, -37, -37, -38, -37, -35, -35, -35, -36, -37, -39, -41, -43, -44, -49,
-    -52, -52, -49, -46, -42, -39, -36, -34, -32, -30, -29, -27, -27, -26, -26, -26, -26, -27, -28, -29, -30, -31, -33,
-    -36, -38, -40, -41, -42, -42, -42, -42, -42, -42, -42, -43, -43, -43, -43, -44, -44, -44, -47, -50, -51, -55, -56,
-    -56, -56, -56, -57, -58, -58, -58, -58, -59, -59, -60, -60, -59,
-];
-static GORNERGRAT_MIDDLE: [i16; 180] = [
-    -17, -14, -11, -7, -3, 1, 4, 3, 3, 5, 7, 11, 11, 9, 6, 5, 4, 5, 7, 7, 5, 2, 1, 3, 4, 4, 6, 8, 8, 7, 3, 0, 3, 3, -1,
-    0, 0, 5, 9, 13, 17, 21, 22, 25, 20, 14, 13, 14, 14, 14, 14, 13, 12, 12, 13, 13, 12, 16, 29, 33, 34, 34, 26, 27, 28,
-    28, 27, 25, 20, 21, 16, 14, 14, 14, 12, 14, 23, 31, 37, 38, 37, 31, 25, 21, 23, 24, 25, 27, 27, 31, 37, 34, 28, 25,
-    32, 37, 37, 39, 45, 38, 37, 39, 44, 42, 40, 41, 44, 40, 32, 24, 21, 20, 20, 18, 12, 5, 3, 3, 3, 3, 2, 2, 2, 1, 0,
-    -1, -3, -4, -5, -6, -7, -8, -8, -10, -13, -16, -16, -15, -15, -16, -19, -21, -22, -24, -26, -29, -33, -37, -37,
-    -29, -21, -17, -16, -16, -16, -16, -17, -19, -25, -31, -29, -23, -21, -22, -23, -25, -31, -37, -39, -41, -41, -46,
-    -45, -44, -41, -37, -32, -29, -25, -21,
-];
-static GORNERGRAT_FAR: [i16; 180] = [
-    1, 0, 0, 3, 1, 3, 4, 6, 9, 12, 16, 18, 23, 24, 22, 18, 21, 23, 23, 19, 17, 16, 16, 16, 15, 18, 17, 16, 22, 25, 28,
-    21, 18, 22, 24, 26, 19, 18, 15, 10, 10, 12, 12, 12, 15, 18, 19, 15, 15, 16, 16, 15, 14, 16, 17, 15, 16, 18, 26, 33,
-    37, 38, 40, 41, 39, 43, 38, 36, 30, 29, 28, 28, 30, 33, 35, 41, 40, 42, 43, 43, 39, 36, 34, 32, 31, 30, 33, 35, 37,
-    31, 26, 24, 23, 22, 20, 18, 17, 15, 15, 17, 17, 16, 19, 22, 25, 25, 25, 24, 22, 23, 24, 23, 21, 19, 12, 9, 8, 7, 8,
-    10, 9, 9, 10, 9, 8, 10, 9, 12, 11, 11, 11, 14, 25, 32, 24, 14, 8, 7, 6, 7, 6, 6, 8, 9, 12, 14, 18, 18, 11, 11, 11,
-    15, 18, 15, 16, 13, 11, 10, 14, 15, 19, 18, 14, 12, 12, 13, 14, 13, 18, 21, 17, 13, 10, 8, 9, 9, 4, 2, 1, 1,
-];
-static GORNERGRAT_PEAKS: [PeakViewPeak; 18] = [
-    peak("Rimpfischhorn", 4198, 8804, 240, 28, 64100, 2),
-    peak("Hohtälli", 3286, 1442, 257, 30, 5445, 0),
-    peak("Strahlhorn", 4190, 9610, 279, 26, 7507, 2),
-    peak("Rote Nase", 3247, 2131, 315, 16, 2653, 0),
-    peak("Stockhorn", 3532, 4058, 346, 25, 12422, 1),
-    peak("Cima di Jazzi", 3803, 8435, 368, 19, 12068, 2),
-    peak("Torre Castelfranco", 3627, 7361, 397, 16, 3934, 2),
-    peak("Grosses Fillarh.", 3676, 7724, 428, 17, 4486, 2),
-    peak("Dufourspitze", 4634, 8138, 518, 43, 216500, 2),
-    peak("Liskamm East", 4527, 7806, 601, 41, 37600, 2),
-    peak("Castor", 4228, 6982, 700, 37, 16500, 2),
-    peak("Pollux", 4092, 6182, 720, 37, 3653, 1),
-    peak("Breithorn East", 4139, 5296, 782, 45, 3360, 1),
-    peak("Breithorn Central", 4159, 5433, 816, 44, 3086, 1),
-    peak("Breithorn West", 4164, 5539, 847, 44, 17105, 1),
-    peak("Furggen", 3492, 8572, 999, 10, 9052, 2),
-    peak("Punta Giordano", 3878, 15136, 1016, 12, 10755, 2),
-    peak("Matterhorn", 4478, 9828, 1062, 32, 103800, 2),
-];
-static GORNERGRAT: PeakViewProfile = PeakViewProfile {
-    id: 1,
-    name: "Gornergrat",
-    observer_lat: 45_983_400,
-    observer_lon: 7_785_400,
-    observer_elevation_m: 3095,
-    default_heading_q4: 940,
-    sample_step_q4: 8,
-    angle_bottom_q4: -44,
-    angle_top_q4: 113,
-    layers_q4: [&GORNERGRAT_NEAR, &GORNERGRAT_MIDDLE, &GORNERGRAT_FAR],
-    peaks: &GORNERGRAT_PEAKS,
+use obc_app::{
+    peak_view::{surface::Builder, terrain::Terrain, Panorama},
+    screen::Screen,
+    App,
+};
+use obc_formats::io::{ByteSource, Error};
+use std::{
+    cell::{Cell, RefCell},
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, AtomicU16, Ordering},
+        mpsc, Arc,
+    },
+    time::Instant,
 };
 
-static SCHEIDEGG_NEAR: [i16; 180] = [
-    17, 15, 13, 10, 8, 6, 4, 3, 1, 0, -2, -5, -7, -9, -11, -14, -16, -19, -21, -23, -24, -25, -26, -26, -29, -29, -30,
-    -29, -29, -29, -28, -27, -24, -18, -14, -9, -1, 9, 17, 25, 32, 39, 40, 44, 51, 56, 66, 77, 87, 97, 108, 112, 115,
-    112, 109, 106, 102, 98, 95, 93, 99, 94, 92, 92, 92, 94, 97, 102, 107, 105, 104, 101, 96, 90, 86, 78, 74, 71, 70,
-    71, 71, 72, 74, 74, 74, 76, 79, 82, 82, 86, 83, 81, 76, 72, 69, 74, 70, 68, 64, 60, 56, 51, 42, 33, 29, 29, 28, 28,
-    27, 25, 23, 19, 16, 13, 16, 19, 22, 24, 27, 29, 32, 34, 35, 37, 38, 40, 42, 43, 45, 47, 48, 49, 50, 51, 52, 54, 55,
-    55, 56, 57, 58, 59, 61, 62, 62, 63, 64, 64, 64, 65, 65, 66, 66, 66, 66, 71, 61, 58, 53, 52, 51, 50, 49, 47, 46, 48,
-    55, 49, 46, 41, 38, 36, 35, 33, 31, 29, 27, 25, 22, 20,
-];
-static SCHEIDEGG_MIDDLE: [i16; 180] = [
-    7, 11, 12, 12, 12, 10, 11, 11, 13, 12, 13, 15, 16, 13, 10, 10, 11, 11, 12, 14, 11, 9, 6, 3, 2, -1, -1, -1, 1, 11,
-    22, 25, 25, 27, 25, 24, 22, 23, 24, 24, 29, 28, 32, 34, 36, 33, 32, 26, 25, 23, 23, 26, 29, 31, 37, 41, 44, 50, 50,
-    49, 46, 43, 42, 42, 41, 43, 45, 47, 50, 50, 49, 47, 45, 43, 40, 34, 31, 30, 31, 35, 39, 43, 49, 51, 51, 51, 51, 51,
-    50, 50, 49, 48, 49, 48, 46, 44, 41, 40, 38, 32, 31, 29, 24, 24, 27, 27, 21, 19, 23, 21, 16, 14, 19, 20, 20, 20, 22,
-    21, 18, 16, 16, 12, 11, 14, 15, 17, 20, 19, 17, 17, 17, 20, 20, 17, 16, 16, 14, 14, 14, 13, 8, 9, 9, 7, 6, 6, 7, 8,
-    8, 5, 0, 0, 0, -3, -6, -6, -4, -2, -2, -1, -1, -1, -1, -2, -2, -2, -1, -1, -2, -3, -2, -1, -1, 1, 2, 2, 2, 4, 5, 7,
-];
-static SCHEIDEGG_FAR: [i16; 180] = [
-    -1, -1, -2, -3, -4, -2, -1, -1, -1, 0, 1, 0, 1, -1, -1, -3, -4, -4, -2, -1, -1, 0, 1, 2, 3, 3, 3, 2, 3, 4, 5, 4, 4,
-    6, 5, 7, 8, 8, 9, 9, 9, 9, 8, 8, 7, 6, 7, 6, 6, 5, 6, 7, 7, 6, 5, 4, 4, 5, 5, 7, 7, 8, 9, 7, 7, 7, 7, 5, 5, 5, 4,
-    4, 6, 6, 5, 7, 5, 5, 7, 6, 6, 7, 7, 7, 5, 5, 4, 6, 8, 7, 5, 5, 6, 6, 9, 9, 7, 5, 6, 8, 8, 8, 10, 10, 10, 8, 4, 4,
-    4, 4, 5, 9, 10, 8, 13, 13, 11, 8, 6, 6, 6, 4, 6, 6, 3, 4, 3, 3, 3, 2, 1, 3, 3, 2, 2, 2, 1, 2, 1, 2, 2, 2, 0, 2, 0,
-    0, -1, -3, -4, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -3, -4, -4, -4, -4, -4,
-    -4, -4, -4, -4, -4, -1,
-];
-static SCHEIDEGG_PEAKS: [PeakViewPeak; 13] = [
-    peak("Indri Sägissa", 2462, 9333, 5, 10, 4990, 1),
-    peak("Reeti", 2757, 9692, 94, 16, 13106, 1),
-    peak("Schwarzhoren", 2927, 14249, 152, 14, 15483, 1),
-    peak("Läuber", 2491, 29992, 208, 3, 16210, 2),
-    peak("Mittelhorn", 3704, 13694, 264, 27, 17091, 1),
-    peak("Eiger", 3970, 3496, 414, 115, 36400, 0),
-    peak("Chlyne Eiger", 3467, 3064, 477, 99, 3458, 0),
-    peak("Mönch", 4107, 4045, 547, 107, 58900, 0),
-    peak("Jungfrau", 4158, 5364, 715, 86, 68700, 0),
-    peak("Silberhorn", 3690, 4873, 763, 74, 4161, 0),
-    peak("Blüemlisalphorn", 3663, 17936, 934, 20, 29675, 1),
-    peak("Lauberhorn", 2472, 1297, 1241, 71, 2135, 0),
-    peak("Tschuggen", 2520, 1905, 1331, 55, 9239, 0),
-];
-static KLEINE_SCHEIDEGG: PeakViewProfile = PeakViewProfile {
-    id: 2,
-    name: "Kleine Scheidegg",
-    observer_lat: 46_585_000,
-    observer_lon: 7_961_000,
-    observer_elevation_m: 2056,
-    default_heading_q4: 565,
-    sample_step_q4: 8,
-    angle_bottom_q4: -20,
-    angle_top_q4: 172,
-    layers_q4: [&SCHEIDEGG_NEAR, &SCHEIDEGG_MIDDLE, &SCHEIDEGG_FAR],
-    peaks: &SCHEIDEGG_PEAKS,
-};
+struct FileSource {
+    file: RefCell<File>,
+    len: u64,
+    reads: Cell<u32>,
+    bytes: Cell<u64>,
+}
+impl ByteSource for FileSource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
+        file.read_exact(buf).map_err(|_| Error::Io)?;
+        self.reads.set(self.reads.get() + 1);
+        self.bytes.set(self.bytes.get() + buf.len() as u64);
+        Ok(())
+    }
+}
 
-static GLOCKNER_NEAR: [i16; 180] = [
-    110, 114, 118, 119, 120, 124, 127, 130, 132, 134, 136, 138, 141, 142, 143, 144, 142, 139, 137, 137, 140, 143, 143,
-    142, 139, 136, 136, 136, 136, 136, 135, 134, 133, 130, 127, 123, 117, 112, 107, 103, 99, 95, 91, 87, 81, 76, 72,
-    68, 65, 62, 56, 50, 44, 39, 34, 28, 22, 20, 18, 16, 12, 7, 4, 0, -4, -8, -13, -20, -26, -26, -23, -16, -9, -1, 4,
-    6, 7, 5, 6, 9, 12, 16, 18, 20, 23, 26, 32, 36, 39, 42, 44, 47, 50, 50, 48, 48, 48, 50, 52, 53, 55, 57, 60, 63, 63,
-    63, 62, 60, 59, 58, 57, 58, 62, 63, 63, 63, 64, 63, 63, 66, 68, 69, 69, 68, 63, 65, 66, 62, 58, 57, 57, 56, 57, 58,
-    57, 56, 53, 50, 38, 29, 23, 21, 17, 12, 11, 11, 10, 3, -4, -4, -4, -4, -4, -3, 6, 13, 16, 17, 18, 19, 25, 29, 33,
-    36, 39, 44, 48, 52, 56, 62, 68, 72, 77, 83, 88, 92, 98, 101, 100, 104,
-];
-static GLOCKNER_MIDDLE: [i16; 180] = [
-    28, 28, 22, 15, 11, 9, 4, -1, -6, -3, 0, 3, 10, 14, 14, 18, 17, 14, 10, 6, 4, 9, 14, 16, 16, 20, 25, 29, 36, 37,
-    35, 33, 30, 24, 20, 17, 16, 17, 17, 14, 15, 15, 14, 21, 22, 20, 22, 22, 22, 20, 13, 8, 3, -2, -5, 1, 1, -2, -5, -9,
-    -12, -14, -15, -18, -11, -5, -2, 1, 2, 3, 5, 5, 8, 9, 10, 12, 14, 16, 17, 17, 16, 15, 13, 12, 13, 15, 15, 15, 17,
-    19, 20, 17, 18, 19, 19, 19, 18, 18, 18, 15, 14, 14, 15, 15, 16, 14, 13, 16, 18, 20, 21, 24, 25, 24, 24, 29, 31, 32,
-    33, 31, 31, 30, 31, 32, 34, 36, 41, 42, 43, 49, 57, 59, 60, 61, 66, 69, 65, 60, 58, 56, 53, 47, 43, 41, 37, 33, 29,
-    24, 25, 28, 30, 33, 33, 29, 25, 25, 27, 27, 22, 27, 29, 30, 30, 32, 32, 34, 33, 32, 34, 34, 36, 38, 36, 34, 32, 32,
-    33, 32, 27, 27,
-];
-static GLOCKNER_FAR: [i16; 180] = [
-    12, 17, 16, 13, 12, 9, 7, 5, 1, 0, 0, 0, 0, 0, 1, 2, 2, 2, 3, 6, 5, 2, -1, -3, -2, -1, -2, 0, 4, 5, 5, 7, 6, 6, 4,
-    2, 3, 2, 5, 8, 7, 7, 9, 13, 13, 14, 12, 10, 11, 9, 9, 9, 11, 11, 10, 9, 6, 5, 4, 5, 5, 4, 3, 2, 1, 3, 2, 1, 1, 0,
-    1, 1, 1, 0, 1, 3, 4, 7, 11, 9, 10, 10, 13, 13, 11, 15, 15, 11, 12, 13, 9, 11, 12, 10, 12, 14, 10, 12, 12, 11, 10,
-    7, 7, 6, 6, 4, 3, 3, 2, 3, 3, 2, 2, 3, 5, 4, 2, 3, 2, 1, 2, 3, 2, 3, 5, 9, 12, 11, 12, 11, 8, 11, 12, 13, 14, 15,
-    12, 10, 12, 12, 10, 9, 6, 7, 9, 12, 11, 11, 10, 11, 8, 8, 8, 8, 6, 4, 3, 2, 0, -2, -2, 1, 2, 3, 5, 7, 8, 9, 9, 13,
-    12, 7, 4, 2, -1, -1, -1, 3, 8, 12,
-];
-static GLOCKNER_PEAKS: [PeakViewPeak; 12] = [
-    peak("Freiwandkopf", 2854, 685, 74, 134, 2155, 0),
-    peak("Magernigspitz", 2640, 22289, 498, 2, 5340, 2),
-    peak("Erster Leiterkopf", 2483, 2701, 606, 7, 3733, 0),
-    peak("Karlkamp", 3114, 9355, 630, 17, 11406, 1),
-    peak("Leiterkopf", 2891, 2190, 741, 50, 2735, 0),
-    peak("Schwertkopf", 3099, 2452, 831, 63, 3622, 0),
-    peak("Schwerteck", 3247, 2972, 920, 63, 3544, 0),
-    peak("Kellerskopf", 3239, 2684, 972, 69, 1556, 0),
-    peak("Kellersberg", 3265, 2924, 1006, 66, 1842, 0),
-    peak("Großglockner", 3798, 4477, 1080, 69, 242800, 1),
-    peak("Johannisberg", 3453, 7173, 1211, 33, 5748, 1),
-    peak("Mittlerer Burgstall", 2933, 4466, 1250, 27, 6735, 1),
-];
-static GROSSGLOCKNER: PeakViewProfile = PeakViewProfile {
-    id: 3,
-    name: "Kaiser-Franz-Josefs-Höhe",
-    observer_lat: 47_074_500,
-    observer_lon: 12_753_000,
-    observer_elevation_m: 2402,
-    default_heading_q4: 1000,
-    sample_step_q4: 8,
-    angle_bottom_q4: -24,
-    angle_top_q4: 152,
-    layers_q4: [&GLOCKNER_NEAR, &GLOCKNER_MIDDLE, &GLOCKNER_FAR],
-    peaks: &GLOCKNER_PEAKS,
-};
+fn terrain_root() -> PathBuf {
+    std::env::var_os("OBC_PEAK_TERRAIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| obc_fixtures::root().join("sim-peak-view"))
+}
 
-const fn peak(
-    name: &'static str,
-    elevation_m: u16,
-    distance_m: u32,
-    azimuth_q4: u16,
-    angle_q4: i16,
-    score: u32,
-    layer: u8,
-) -> PeakViewPeak {
-    PeakViewPeak { name, elevation_m, distance_m, azimuth_q4, angle_q4, layer, score }
+#[derive(Clone, Copy)]
+enum Input {
+    Map { bytes: &'static [u8], offset: u64, len: u64 },
+    Fixture(Preset),
+}
+
+impl Input {
+    fn selected(map: &crate::map_file::LoadedMap, preset: Option<Preset>) -> Option<Self> {
+        if let Some(preset) = preset {
+            return Some(Self::Fixture(preset));
+        }
+        let region = map.tables().terrain()?;
+        let source = obc_formats::io::SliceSource(map.bytes());
+        let window = obc_formats::io::WindowSource::new(&source, region.offset, region.len)?;
+        let mut header = [0; obc_formats::obct::HEADER_LEN];
+        window.read_at(0, &mut header).ok()?;
+        obc_formats::obct::validate_header_prefix(&header).ok()?;
+        if header[4] != obc_formats::obct::SURFACE_VERSION || header[7] & obc_formats::obct::SURFACE_FLAG == 0 {
+            return None;
+        }
+        Some(Self::Map { bytes: map.bytes(), offset: region.offset, len: region.len })
+    }
+
+    fn profile(self) -> PeakViewProfile<'static> {
+        match self {
+            Self::Fixture(preset) => preset.profile().detached(),
+            Self::Map { .. } => PeakViewProfile::at(0, 0, 0),
+        }
+    }
+}
+
+fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<Builder>, String> {
+    match input {
+        Input::Map { bytes, offset, len } => {
+            let source = obc_formats::io::SliceSource(bytes);
+            let tables = obc_reader::MapTables::parse(&source).map_err(|e| format!("map: {e:?}"))?;
+            let cache = Box::new(obc_reader::MapCache::new());
+            let reader = obc_reader::Reader::new(&source, &tables, &cache);
+            let window = obc_formats::io::WindowSource::new(&source, offset, len).ok_or("terrain outside map")?;
+            generate_surface(&window, Some(&reader), input.profile(), position, worker)
+        }
+        Input::Fixture(preset) => {
+            let key = match preset {
+                Preset::Gornergrat => "gornergrat",
+                Preset::KleineScheidegg => "scheidegg",
+                Preset::Grossglockner => "glockner",
+            };
+            let path = terrain_root().join(format!("{key}.obcd"));
+            let file = File::open(&path)
+                .map_err(|e| format!("{}: {e}. Run obc fixtures sync sim-peak-view first.", path.display()))?;
+            let len = file.metadata().map_err(|e| e.to_string())?.len();
+            let source = FileSource { file: RefCell::new(file), len, reads: Cell::new(0), bytes: Cell::new(0) };
+            let result = generate_surface(&source, None, *preset.profile(), position, worker);
+            eprintln!("peak-view: {} terrain reads / {} bytes", source.reads.get(), source.bytes.get());
+            result
+        }
+    }
+}
+
+fn generate_surface(
+    source: &dyn ByteSource,
+    reader: Option<&obc_reader::Reader<'_>>,
+    mut profile: PeakViewProfile<'_>,
+    position: (i32, i32),
+    worker: &Worker,
+) -> Result<Box<Builder>, String> {
+    let started = Instant::now();
+    let mut terrain = Terrain::parse(source).map_err(|e| format!("terrain: {e:?}"))?;
+    let ground = terrain.ground_height(position.0, position.1).ok_or("no terrain at observer")?;
+    let mut candidates = Default::default();
+    if let Some(reader) = reader {
+        obc_app::peak_view::collect_summits(reader, position, &mut candidates)
+            .map_err(|e| format!("summits: {e:?}"))?;
+    } else {
+        candidates.extend_from_slice(profile.peaks).map_err(|_| "too many fixture summits")?;
+        for peak in &mut candidates {
+            peak.project(position.0, position.1);
+        }
+    }
+    profile.observer_lat = position.0;
+    profile.observer_lon = position.1;
+    let mut profile = PeakViewProfile { peaks: &candidates, ..profile };
+    profile.set_ground(ground);
+    profile.default_heading_q4 = worker.heading.load(Ordering::Relaxed);
+    let mut builder = Box::new(Builder::new(&profile));
+    let mut published = [0u8; 180];
+    let mut first_ready = false;
+    while !builder.complete() {
+        if worker.cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let heading = worker.heading.load(Ordering::Relaxed) % 1440;
+        builder.set_heading(heading);
+        builder.step(&mut terrain, 64);
+        if !terrain.failed() && builder.view_ready(heading) {
+            if !first_ready {
+                first_ready = true;
+                eprintln!("peak-view: view ready in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+            }
+            if !builder.complete() && published[heading as usize / 8] & (1 << (heading % 8)) == 0 {
+                let preview = Preview::from_builder(&builder);
+                published = preview.ready;
+                if worker.sender.send(Ok(Frame { preview, complete: false })).is_err() {
+                    return Err("cancelled".into());
+                }
+            }
+        }
+    }
+    eprintln!(
+        "peak-view: generated in {:.0} ms; {} samples, {} missing; core+cache {} bytes",
+        started.elapsed().as_secs_f64() * 1000.0,
+        builder.samples,
+        builder.missing,
+        std::mem::size_of::<Builder>() + std::mem::size_of::<Terrain<'_>>()
+    );
+    if terrain.failed() {
+        return Err("terrain read failed".into());
+    }
+    Ok(builder)
+}
+
+struct Preview {
+    panorama: Panorama,
+    profile: PeakViewProfile<'static>,
+    peaks: Vec<obc_app::PeakViewPeak>,
+    ready: [u8; 180],
+}
+impl Preview {
+    fn from_builder(builder: &Builder) -> Box<Self> {
+        let mut result = Box::new(Self {
+            panorama: builder.panorama.clone(),
+            profile: builder.profile(),
+            peaks: builder.peaks.to_vec(),
+            ready: [0; 180],
+        });
+        for heading in 0..1440 {
+            if builder.view_ready(heading as u16) {
+                result.ready[heading / 8] |= 1 << (heading % 8);
+            }
+        }
+        result
+    }
+    fn view_ready(&self, heading: u16) -> bool {
+        let heading = heading as usize % 1440;
+        self.ready[heading / 8] & (1 << (heading % 8)) != 0
+    }
+}
+struct Frame {
+    preview: Box<Preview>,
+    complete: bool,
+}
+struct Worker {
+    heading: Arc<AtomicU16>,
+    cancel: Arc<AtomicBool>,
+    sender: mpsc::Sender<Result<Frame, String>>,
+}
+
+/// One cancellable worker publishes immutable ready views while completing the panorama.
+pub(crate) struct Runtime {
+    input: Option<Input>,
+    receiver: Option<mpsc::Receiver<Result<Frame, String>>>,
+    cancel: Arc<AtomicBool>,
+    heading: Arc<AtomicU16>,
+    result: Option<Box<Preview>>,
+    failed: bool,
+    position: Option<(i32, i32)>,
+    started: Instant,
+    first_presented: bool,
+}
+impl Runtime {
+    pub fn new(map: &crate::map_file::LoadedMap, preset: Option<Preset>) -> Self {
+        Self {
+            input: Input::selected(map, preset),
+            receiver: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            heading: Arc::new(AtomicU16::new(0)),
+            result: None,
+            failed: false,
+            position: None,
+            started: Instant::now(),
+            first_presented: false,
+        }
+    }
+
+    pub fn profile(&self) -> Option<PeakViewProfile<'static>> {
+        self.input.map(Input::profile)
+    }
+
+    pub fn panorama(&self) -> Option<&Panorama> {
+        self.result.as_ref().filter(|_| !self.failed).map(|b| &b.panorama)
+    }
+
+    pub fn note_frame_presented(&mut self, app: &App) {
+        if !self.first_presented
+            && !self.failed
+            && matches!(app.top_screen(), Screen::PeakView(_))
+            && self.result.as_ref().is_some_and(|result| result.view_ready(app.peak_view_heading_q4()))
+        {
+            self.first_presented = true;
+            eprintln!("peak-view: first view in {:.0} ms", self.started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    pub fn update(&mut self, app: &mut App) {
+        let active = matches!(app.top_screen(), Screen::PeakView(_));
+        if !active {
+            self.cancel.store(true, Ordering::Relaxed);
+            self.receiver = None;
+            self.result = None;
+            self.failed = false;
+            self.position = None;
+            self.first_presented = false;
+            return;
+        }
+        let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
+            app.set_peak_view_waiting();
+            return;
+        };
+        if self.position.is_none_or(|old| obc_app::peak_view::moved(old, position)) && self.receiver.is_none() {
+            self.result = None;
+            self.failed = false;
+            self.position = Some(position);
+            self.first_presented = false;
+            app.state.peak_view_peak_count = 0;
+        }
+        let heading = app.peak_view_heading_q4();
+        self.heading.store(heading, Ordering::Relaxed);
+        if self.result.is_none() && self.receiver.is_none() && !self.failed {
+            self.started = Instant::now();
+            let (sender, receiver) = mpsc::channel();
+            self.cancel = Arc::new(AtomicBool::new(false));
+            let worker = Worker { heading: Arc::clone(&self.heading), cancel: Arc::clone(&self.cancel), sender };
+            let Some(input) = self.input else {
+                app.set_peak_view_loading(false, true);
+                return;
+            };
+            let position = self.position.unwrap();
+            let mut profile = input.profile();
+            profile.observer_lat = position.0;
+            profile.observer_lon = position.1;
+            profile.default_heading_q4 = heading;
+            app.state.peak_view_profile = Some(profile);
+            std::thread::spawn(move || {
+                let result = generate(input, position, &worker)
+                    .map(|builder| Frame { preview: Preview::from_builder(&builder), complete: true });
+                let _ = worker.sender.send(result);
+            });
+            self.receiver = Some(receiver);
+        }
+        while let Some(receiver) = &self.receiver {
+            match receiver.try_recv() {
+                Ok(result) => self.accept(app, result),
+                Err(mpsc::TryRecvError::Disconnected) => self.accept(app, Err("terrain worker stopped".into())),
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        let view_ready = self.result.as_ref().is_some_and(|result| result.view_ready(heading));
+        app.set_peak_view_loading(!view_ready && !self.failed, self.failed);
+        app.set_peak_view_building(view_ready && self.receiver.is_some());
+    }
+
+    fn accept(&mut self, app: &mut App, result: Result<Frame, String>) {
+        match result {
+            Ok(frame) => {
+                if frame.complete {
+                    self.receiver = None;
+                }
+                app.state.peak_view_profile = Some(frame.preview.profile);
+                app.state.peak_view_peaks[..frame.preview.peaks.len()].copy_from_slice(&frame.preview.peaks);
+                app.state.peak_view_peak_count = frame.preview.peaks.len() as u8;
+                self.result = Some(frame.preview);
+            }
+            Err(error) => {
+                self.receiver = None;
+                eprintln!("peak-view: {error}");
+                self.failed = true;
+            }
+        }
+    }
+
+    /// Deterministic headless frames finish the full job, not just its first ready view.
+    pub fn finish(&mut self, app: &mut App) {
+        self.update(app);
+        while let Some(receiver) = &self.receiver {
+            let result = receiver.recv().unwrap_or_else(|_| Err("terrain worker stopped".into()));
+            self.accept(app, result);
+        }
+        self.update(app);
+    }
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_working_set_fits_the_device_arena() {
+        assert!(std::mem::size_of::<Builder>() + std::mem::size_of::<Terrain<'_>>() <= 128 * 1024);
+        for preset in [Preset::Gornergrat, Preset::KleineScheidegg, Preset::Grossglockner] {
+            assert!(preset.profile().peaks.len() <= 32);
+        }
+    }
 
     #[test]
-    fn presets_have_three_complete_horizons_and_sorted_peaks() {
-        for preset in [Preset::Gornergrat, Preset::KleineScheidegg, Preset::Grossglockner] {
-            let profile = preset.profile();
-            assert_eq!(profile.sample_step_q4 as usize * profile.layers_q4[0].len(), 360 * 4);
-            assert!(profile.layers_q4.iter().all(|layer| layer.len() == profile.layers_q4[0].len()));
-            assert!(profile.peaks.windows(2).all(|pair| pair[0].azimuth_q4 <= pair[1].azimuth_q4));
-            assert!((0..3).all(|layer| profile.peaks.iter().any(|peak| peak.layer == layer)));
-            assert!(profile.peaks.iter().any(|peak| {
-                let delta =
-                    (i32::from(peak.azimuth_q4) - i32::from(profile.default_heading_q4) + 720).rem_euclid(1440) - 720;
-                delta.abs() > 60 * 4
-            }));
-        }
+    fn selected_map_terrain_waits_for_gps_cancels_and_reloads_only_after_movement() {
+        use obc_formats::{obcm, obct};
+        use obcm_testkit::{build_file, pack_line, seal, LodSpec};
+        let cell = 19;
+        let layout = obct::SurfaceLayout::new(15, cell).unwrap();
+        let prefix = obct::CellIndexLayout::new(1, 1, 32).unwrap().end() as usize;
+        let mut terrain = vec![0; prefix + layout.cell_bytes() as usize];
+        terrain[..4].copy_from_slice(&obct::MAGIC);
+        terrain[4..8].copy_from_slice(&[obct::SURFACE_VERSION, 15, cell, obct::SURFACE_FLAG | obct::CELL_INDEX_FLAG]);
+        terrain[8..12].copy_from_slice(&512u32.to_le_bytes());
+        terrain[12..16].copy_from_slice(&512u32.to_le_bytes());
+        terrain[16..18].copy_from_slice(&1u16.to_le_bytes());
+        terrain[18..20].copy_from_slice(&1u16.to_le_bytes());
+        terrain[20..24].copy_from_slice(&32u32.to_le_bytes());
+        terrain[32..36].copy_from_slice(&(prefix as u32).to_le_bytes());
+        let chunk = seal(pack_line(1, 100, 100, &[(50, 50)]), 4096);
+        let mut bytes = build_file(
+            (0, 0, 1 << cell, 1 << cell),
+            &[(1, 0, 0x07e0, 1, 1, false, None)],
+            &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 4096 }],
+        );
+        let offset = (bytes.len() + 511) & !511;
+        bytes.resize(offset, 0);
+        let shift = bytes[40];
+        bytes[41..45].copy_from_slice(&((offset >> shift) as u32).to_le_bytes());
+        bytes[45..49].copy_from_slice(&((terrain.len() >> shift) as u32).to_le_bytes());
+        bytes.extend_from_slice(&terrain);
+        assert!(bytes.len() >= obcm::HEADER_LEN);
+        let dir = obcm_testkit::scratch::scratch_dir("obc-sim-peak", "map-runtime");
+        let path = dir.join("region.obcm");
+        std::fs::write(&path, bytes).unwrap();
+        let map =
+            crate::map_file::LoadedMap::open(crate::map_file::MapSource::load_single(path.to_str().unwrap()).unwrap())
+                .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        let mut runtime = Runtime::new(&map, None);
+        let mut app = App::new(obc_app::AppState::new(200_000, 200_000, 1.0));
+        app.state.peak_view_profile = runtime.profile();
+        assert!(app.show_peak_view());
+        runtime.update(&mut app);
+        assert!(runtime.receiver.is_none(), "no fabricated observer before GPS");
+        app.state.user_fix = Some(obc_ports::Fix { lat: 200_000, lon: 200_000, course: None, speed_mps: Some(0.0) });
+        runtime.update(&mut app);
+        let cancelled = Arc::clone(&runtime.cancel);
+        assert!(runtime.receiver.is_some());
+        app.apply_gesture(obc_app::Gesture::Back);
+        runtime.update(&mut app);
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(runtime.receiver.is_none() && runtime.result.is_none());
+        assert!(app.show_peak_view());
+        runtime.finish(&mut app);
+        assert!(runtime.panorama().is_some(), "embedded terrain generated without any fixture source");
+        assert!(runtime.panorama().unwrap().has_incomplete_coverage());
+        let completed = Arc::clone(&runtime.cancel);
+        app.state.compass_deg = Some(210.0);
+        runtime.update(&mut app);
+        assert!(Arc::ptr_eq(&completed, &runtime.cancel));
+        assert!(runtime.receiver.is_none(), "turning reuses the panorama");
+        app.state.user_fix.as_mut().unwrap().lat += 1000;
+        runtime.finish(&mut app);
+        assert!(!Arc::ptr_eq(&completed, &runtime.cancel));
+        assert!(runtime.panorama().is_some());
+        assert_eq!(app.state.peak_view_profile.unwrap().observer_lat, 201_000);
     }
 }

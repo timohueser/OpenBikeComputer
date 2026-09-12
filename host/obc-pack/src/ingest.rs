@@ -1040,7 +1040,7 @@ fn push_node_poi<'a, I>(id: i64, tags: I, decimicro_lon: i32, decimicro_lat: i32
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    if let Some((subtype, name, raw_hours)) = poi::classify(tags) {
+    if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) = poi::classify(tags) {
         out.push(
             id,
             Poi {
@@ -1050,6 +1050,7 @@ where
                 name,
                 from_node: true,
                 hours: raw_hours.and_then(hours::parse),
+                elevation_m,
             },
         );
     }
@@ -1121,7 +1122,10 @@ fn process_way(
     // all). The building-tagged supermarket way and the area campsite are the
     // motivating cases; relations are out of scope (#115).
     if is_closed {
-        if let Some((subtype, name, raw_hours)) = poi::classify(tags.iter().map(|(&k, &v)| (k, v))) {
+        if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) =
+            poi::classify(tags.iter().map(|(&k, &v)| (k, v)))
+                .filter(|p| p.subtype != obc_formats::obcm::SUMMIT_SUBTYPE_ID)
+        {
             let (cx, cy) = poi::ring_centroid(coords);
             pois.push(
                 w.id(),
@@ -1132,6 +1136,7 @@ fn process_way(
                     name,
                     from_node: false,
                     hours: raw_hours.and_then(hours::parse),
+                    elevation_m,
                 },
             );
         }

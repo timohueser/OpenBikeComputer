@@ -1607,7 +1607,15 @@ pub(crate) fn map_name() -> &'static str {
 /// it silently.
 #[inline(never)]
 pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static dyn obc_formats::io::ByteSource> {
-    let meta = first_of(store, ObjectKind::MapShard)?;
+    #[cfg(feature = "peak-view-demo")]
+    let requested =
+        option_env!("OBC_TEST_MAP_OBJECT_ID").map(|value| value.parse::<u64>().map(ObjectId)).transpose().ok()?;
+    #[cfg(not(feature = "peak-view-demo"))]
+    let requested: Option<ObjectId> = None;
+    let meta = match requested {
+        Some(id) => store.entries().find(|entry| entry.id == id && entry.kind == ObjectKind::MapShard),
+        None => first_of(store, ObjectKind::MapShard),
+    }?;
     match store.source(meta.id, None) {
         Ok(source) => {
             defmt::info!(

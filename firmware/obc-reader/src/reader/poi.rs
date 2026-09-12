@@ -14,7 +14,8 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
-/// POI directory categories in v7 (spec §7.1): category ids `1..=6`. The parsed `MapTables::pois`
+/// POI directory categories (spec §7.1): services 1..6 and optional summit landmarks 7.
+/// The parsed `MapTables::pois`
 /// bounds its `heapless::Vec` at this so a corrupt `category_count` can't request an unbounded
 /// allocation; a directory declaring more categories than this is rejected.
 pub const POI_MAX_CATEGORIES: usize = 8;
@@ -49,7 +50,7 @@ const POI_SCAN_WINDOW: usize = 512;
 /// reuses the same convention.
 #[derive(Debug, Clone, Copy)]
 pub struct PoiCatEntry {
-    /// Canonical category id (1..=6; spec §7.4).
+    /// Canonical category id (services 1..6, summit landmarks 7; spec §7.4).
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
     pub index_offset: u64,
@@ -292,6 +293,9 @@ impl<'a> Reader<'a> {
     ) -> Result<(), Error> {
         self.scan_poi_leaves(entry, chunk_size, search, |start, record_cap| {
             self.stream_poi_records(start, record_cap, |win, off, lat, lon, subtype| {
+                if obc_formats::obcm::poi_directory_category_of(subtype) != Some(entry.category_id) {
+                    return;
+                }
                 let distance_m = ground_dist_m_cl(pos, (lon, lat), cl) as u32;
                 consider_poi(out, PoiCand { lat, lon, subtype, distance_m }, win, off);
             })
@@ -312,7 +316,7 @@ impl<'a> Reader<'a> {
     /// silently drop a leaf however dense the category. A leaf whose chunk id is out of range or
     /// whose extent runs past EOF is skipped; the first read failure stops the walk and is replayed
     /// as the return value (a `walk_leaves` callback cannot itself fail).
-    fn scan_poi_leaves(
+    pub(super) fn scan_poi_leaves(
         &self,
         entry: &PoiCatEntry,
         chunk_size: usize,
@@ -353,7 +357,7 @@ impl<'a> Reader<'a> {
     /// `POI_RECORD_LEN` divides the window so a record never straddles two reads. `start` is the
     /// chunk's byte offset, already bounds-checked by the caller. Terminates on the `0xFF` subtype
     /// sentinel or after `record_cap` records (a sentinel-less full chunk).
-    fn stream_poi_records(
+    pub(super) fn stream_poi_records(
         &self,
         start: u64,
         record_cap: usize,
@@ -373,7 +377,7 @@ impl<'a> Reader<'a> {
                     return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
                 }
                 // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
-                if obc_formats::obcm::poi_subtype_row(subtype).is_none() {
+                if obc_formats::obcm::poi_directory_category_of(subtype).is_none() {
                     continue;
                 }
                 visit(win, off, rd_i32(win, off), rd_i32(win, off + 4), subtype);
@@ -506,6 +510,9 @@ impl<'a> Reader<'a> {
     ) -> Result<(), Error> {
         self.scan_poi_leaves(entry, chunk_size, search, |start, record_cap| {
             self.stream_poi_records(start, record_cap, |win, off, lat, lon, subtype| {
+                if obc_formats::obcm::poi_directory_category_of(subtype) != Some(entry.category_id) {
+                    return;
+                }
                 // The corridor half-width is handed to the projection so it can prune segments as it
                 // walks (a chunk is up to 256 points); `None` **is** the outside-the-corridor reject.
                 let Some(proj) = project_onto_chunk(pts, chunk_start_m, (lon, lat), CORRIDOR_HALF_WIDTH_M) else {

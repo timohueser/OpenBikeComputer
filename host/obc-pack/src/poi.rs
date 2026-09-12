@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use obc_formats::obcm::{poi_category_of, poi_label_of};
+use obc_formats::obcm::{poi_directory_category_of, poi_label_of, POI_NAME_LEN, SUMMIT_SUBTYPE_ID};
 use obc_map_scene::M_PER_DEG;
 
 use crate::hours::Schedule;
@@ -36,7 +36,7 @@ impl PoiKind {
     /// table. Every `POI_TABLE` subtype is valid there, so the unwrap never trips (the pinning test
     /// guarantees it for every row).
     pub fn category(&self) -> u8 {
-        poi_category_of(self.subtype).expect("POI_TABLE subtype is in obc-formats' canonical table").id()
+        poi_directory_category_of(self.subtype).expect("POI_TABLE subtype has a directory category")
     }
 
     /// The device fallback label for this subtype, from `obc-formats`' canonical table (shown when
@@ -54,7 +54,7 @@ const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
 /// append-only, never renumber). The subtype→category/label half of the table lives
 /// in `obc-formats` (spec §7.4); this half is the OSM tag mapping the
 /// packer owns. First match in table order wins (see [`classify`]).
-pub const POI_TABLE: [PoiKind; 18] = [
+pub const POI_TABLE: [PoiKind; 19] = [
     kind(1, "amenity", "drinking_water"),
     kind(2, "natural", "spring"),
     kind(3, "man_made", "water_tap"),
@@ -73,10 +73,12 @@ pub const POI_TABLE: [PoiKind; 18] = [
     kind(16, "amenity", "marketplace"),
     kind(17, "amenity", "pharmacy"),
     kind(18, "shop", "bicycle"),
+    kind(SUMMIT_SUBTYPE_ID, "natural", "peak"),
 ];
 
 /// Category display names for the pack log, indexed by category id (0 unused).
-pub const CATEGORY_NAMES: [&str; 7] = ["", "water", "campsite", "accommodation", "resupply", "pharmacy", "bike shop"];
+pub const CATEGORY_NAMES: [&str; 8] =
+    ["", "water", "campsite", "accommodation", "resupply", "pharmacy", "bike shop", "summit"];
 
 /// A classified POI candidate. Coordinates are µdeg (`round(deg * 1e6)`), the
 /// same grid the serializer's chunk coords live on.
@@ -85,7 +87,7 @@ pub struct Poi {
     pub subtype: u8,
     pub lon_udeg: i32,
     pub lat_udeg: i32,
-    /// Normalized (ASCII-folded, ≤ 24 bytes) — `None` shows the subtype label.
+    /// At most 24 bytes: ASCII-folded service names or UTF-8 summit names.
     pub name: Option<String>,
     /// Nodes mark entrances; way-centroids are derived. Drives dedup priority.
     pub from_node: bool,
@@ -93,11 +95,22 @@ pub struct Poi {
     /// POI has no (parseable) hours. In-memory only in P1 (#440) — P2 pools these
     /// and stores a `hours_ref` on the POI record.
     pub hours: Option<Schedule>,
+    /// Summit height in metres, from OSM `ele` or the shared DEM when the tag is absent.
+    pub elevation_m: Option<i16>,
 }
 
 /// Look up a subtype's table row (subtype ids are 1-based and dense).
 pub fn table_row(subtype: u8) -> &'static PoiKind {
     &POI_TABLE[subtype as usize - 1]
+}
+
+/// Classified OSM point metadata before schedule parsing and DEM height lookup.
+#[derive(Debug, PartialEq)]
+pub struct Classification<'a> {
+    pub subtype: u8,
+    pub name: Option<String>,
+    pub raw_hours: Option<&'a str>,
+    pub elevation_m: Option<i16>,
 }
 
 /// Classify a tag set against [`POI_TABLE`] — first match in **table order**
@@ -106,13 +119,14 @@ pub fn table_row(subtype: u8) -> &'static PoiKind {
 /// no-match path. The `opening_hours` string is returned unparsed (a borrowed
 /// slice) so the fast path stays alloc-free; the caller parses it into a
 /// [`Schedule`] via [`crate::hours::parse`] only on a match.
-pub fn classify<'a, I>(tags: I) -> Option<(u8, Option<String>, Option<&'a str>)>
+pub fn classify<'a, I>(tags: I) -> Option<Classification<'a>>
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
     let mut best: Option<usize> = None;
     let mut raw_name: Option<&str> = None;
     let mut raw_hours: Option<&str> = None;
+    let mut elevation_m = None;
     for (k, v) in tags {
         if k == "name" {
             raw_name = Some(v);
@@ -120,6 +134,12 @@ where
         }
         if k == "opening_hours" {
             raw_hours = Some(v);
+            continue;
+        }
+        if k == "ele" {
+            let value = v.trim().strip_suffix('m').unwrap_or(v).trim().parse::<f64>().ok();
+            elevation_m =
+                value.filter(|v| v.is_finite() && (-32767.0..=32767.0).contains(&v.round())).map(|v| v.round() as i16);
             continue;
         }
         for (i, kind) in POI_TABLE.iter().enumerate() {
@@ -132,7 +152,31 @@ where
             }
         }
     }
-    best.map(|i| (POI_TABLE[i].subtype, raw_name.and_then(normalize_name), raw_hours))
+    let subtype = POI_TABLE[best?].subtype;
+    if subtype == SUMMIT_SUBTYPE_ID {
+        let name = raw_name?.trim();
+        let mut end = name.len().min(POI_NAME_LEN);
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let name = &name[..end];
+        return (!name.is_empty() && !name.chars().any(char::is_control)).then(|| Classification {
+            subtype,
+            name: Some(name.into()),
+            raw_hours: None,
+            elevation_m,
+        });
+    }
+    Some(Classification { subtype, name: raw_name.and_then(normalize_name), raw_hours, elevation_m: None })
+}
+
+/// Fill missing summit heights from the shared geographic terrain lattice.
+pub fn fill_summit_elevations(pois: &mut [Poi], terrain: &mut dyn obc_elevation::ElevationSource) {
+    for poi in pois {
+        if poi.subtype == SUMMIT_SUBTYPE_ID && poi.elevation_m.is_none() {
+            poi.elevation_m = terrain.sample(poi.lat_udeg, poi.lon_udeg);
+        }
+    }
 }
 
 /// Convert exact-osmium degrees to the µdeg grid.
@@ -318,7 +362,12 @@ pub fn dedupe(mut candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
                         continue;
                     }
                     let (qx, qy) = meters(q);
-                    if (x - qx).hypot(y - qy) < DEDUP_RADIUS_M {
+                    let same = if p.subtype == SUMMIT_SUBTYPE_ID {
+                        (p.lat_udeg, p.lon_udeg) == (q.lat_udeg, q.lon_udeg)
+                    } else {
+                        (x - qx).hypot(y - qy) < DEDUP_RADIUS_M
+                    };
+                    if same {
                         dropped += 1;
                         continue 'cand;
                     }
@@ -385,7 +434,7 @@ mod tests {
     fn table_is_pinned() {
         // (subtype, key, value, expected category id, expected fallback label). The category + label
         // columns are what `obc-formats` must return for this subtype — the cross-crate guard.
-        let expect: [(u8, &str, &str, u8, &str); 18] = [
+        let expect: [(u8, &str, &str, u8, &str); 19] = [
             (1, "amenity", "drinking_water", 1, "Drinking water"),
             (2, "natural", "spring", 1, "Spring"),
             (3, "man_made", "water_tap", 1, "Water tap"),
@@ -404,6 +453,7 @@ mod tests {
             (16, "amenity", "marketplace", 4, "Marketplace"),
             (17, "amenity", "pharmacy", 5, "Pharmacy"),
             (18, "shop", "bicycle", 6, "Bike shop"),
+            (19, "natural", "peak", 7, "Summit"),
         ];
         for (row, &(sub, k, v, cat, label)) in POI_TABLE.iter().zip(expect.iter()) {
             assert_eq!((row.subtype, row.key, row.value), (sub, k, v), "packer classification pinned");
@@ -422,21 +472,52 @@ mod tests {
         // regardless of tag iteration order.
         let fwd = [("amenity", "drinking_water"), ("natural", "spring")];
         let rev = [("natural", "spring"), ("amenity", "drinking_water")];
-        assert_eq!(classify(fwd).unwrap().0, 1);
-        assert_eq!(classify(rev).unwrap().0, 1);
+        assert_eq!(classify(fwd).unwrap().subtype, 1);
+        assert_eq!(classify(rev).unwrap().subtype, 1);
         // Cross-category: supermarket (row 12) beats pharmacy (row 16).
         let mixed = [("amenity", "pharmacy"), ("shop", "supermarket")];
-        assert_eq!(classify(mixed).unwrap().0, 13);
+        assert_eq!(classify(mixed).unwrap().subtype, 13);
+    }
+
+    #[test]
+    fn summit_names_heights_and_close_twins_are_preserved() {
+        let Classification { subtype, name, raw_hours: hours, elevation_m: height } =
+            classify([("natural", "peak"), ("name", "Mönch"), ("ele", "4107.4 m"), ("opening_hours", "24/7")]).unwrap();
+        assert_eq!((subtype, name.as_deref(), hours, height), (19, Some("Mönch"), None, Some(4107)));
+        assert!(classify([("natural", "peak")]).is_none());
+        let tags = |height| classify([("natural", "peak"), ("name", "Hill"), ("ele", height)]).unwrap().elevation_m;
+        assert_eq!(tags("-25.7"), Some(-26));
+        for value in ["NaN", "32768", "-32768", "unknown"] {
+            assert_eq!(tags(value), None);
+        }
+        let name = classify([("natural", "peak"), ("name", "abcdefghijklmnopqrstuvwé")]).unwrap().name.unwrap();
+        assert_eq!(name, "abcdefghijklmnopqrstuvw", "UTF-8 truncation keeps whole characters");
+        let a = poi(19, 48.0, 7.8, Some("West summit"), true);
+        let b = poi(19, 48.0001, 7.8, Some("East summit"), true);
+        let (mut summits, dropped) = dedupe(vec![a.clone(), a, b]);
+        assert_eq!((summits.len(), dropped), (2, 1), "distinct nearby summits are not merged");
+        summits[0].elevation_m = Some(100);
+        struct Terrain;
+        impl obc_elevation::ElevationSource for Terrain {
+            fn sample(&mut self, _: i32, _: i32) -> Option<i16> {
+                Some(-20)
+            }
+        }
+        fill_summit_elevations(&mut summits, &mut Terrain);
+        assert_eq!(summits[0].elevation_m, Some(100), "OSM elevation wins");
+        assert_eq!(summits[1].elevation_m, Some(-20), "missing elevation uses the DEM");
     }
 
     #[test]
     fn classify_no_match_and_name_capture() {
         assert_eq!(classify([("amenity", "parking"), ("name", "P1")]), None);
         assert_eq!(classify([("shop", "butcher")]), None);
-        let (sub, name, hours) = classify([("name", "Alte Quelle"), ("natural", "spring")]).unwrap();
+        let Classification { subtype: sub, name, raw_hours: hours, .. } =
+            classify([("name", "Alte Quelle"), ("natural", "spring")]).unwrap();
         assert_eq!((sub, name.as_deref(), hours), (2, Some("Alte Quelle"), None));
         // opening_hours captured raw alongside the match (parsed by the caller).
-        let (sub, _, hours) = classify([("shop", "supermarket"), ("opening_hours", "Mo-Fr 08:00-18:00")]).unwrap();
+        let Classification { subtype: sub, raw_hours: hours, .. } =
+            classify([("shop", "supermarket"), ("opening_hours", "Mo-Fr 08:00-18:00")]).unwrap();
         assert_eq!((sub, hours), (13, Some("Mo-Fr 08:00-18:00")));
         // Key and value must both match — near misses don't classify.
         assert_eq!(classify([("natural", "water")]), None);
@@ -502,6 +583,7 @@ mod tests {
             name: name.map(String::from),
             from_node,
             hours: None,
+            elevation_m: None,
         }
     }
 
@@ -565,7 +647,7 @@ mod tests {
         ];
         assert_eq!(
             format_counts(&pois, 3),
-            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0 (dedup dropped 3)"
+            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0, summit 0 (dedup dropped 3)"
         );
     }
 }

@@ -399,3 +399,48 @@ fn monaco_water_query_smoke() {
     // Sanity: the closest is well under the initial ring, so the query resolved in the first pass.
     assert!(out[0].distance_m < 1_000, "the nearest water POI is close");
 }
+
+/// A regional summit tree must return every in-radius candidate for the app's angular
+/// selection, even when there are more than 32, without mixing service POIs into it.
+#[test]
+fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
+    let pos = (7_500_000, 43_500_000);
+    let peaks: Vec<PoiSpec> = (0..80)
+        .map(|i| PoiSpec {
+            lat: pos.1 + (i % 8 - 4) * 140_000,
+            lon: pos.0 + (i / 8 - 5) * 140_000,
+            subtype: 19,
+            name: format!("Mönch {i}"),
+            hours_ref: if i % 3 == 0 { i16::MIN as u16 } else { (i as i16 - 25) as u16 },
+        })
+        .collect();
+    let mut records = peaks.clone();
+    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 19, name: String::new(), hours_ref: 10 });
+    records.push(PoiSpec { lat: pos.1, lon: pos.0, subtype: 1, name: "Wrong category".into(), hours_ref: 0xFFFF });
+    let bytes = build_poi_map((6_000_000, 42_000_000, 9_000_000, 45_000_000), CS, &[(7, records)]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    for radius in [0, 20_000, 70_000, u32::MAX] {
+        let mut found = Vec::new();
+        reader.visit_summits_within(pos, radius, |p| found.push(p)).unwrap();
+        let mut expected: Vec<_> = peaks
+            .iter()
+            .filter(|p| dist_m(pos, p.lat, p.lon) <= radius.min(100_000) as f32)
+            .map(|p| (p.lat, p.lon, p.name.clone(), (p.hours_ref != i16::MIN as u16).then_some(p.hours_ref as i16)))
+            .collect();
+        let mut actual: Vec<_> = found.iter().map(|p| (p.lat, p.lon, p.name.to_string(), p.elevation_m)).collect();
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected);
+        if radius == u32::MAX {
+            assert!(actual.len() > 32, "caller, not reader, selects the 32 labels");
+        }
+    }
+    assert!(query(&bytes, PoiCategory::Water, pos).is_empty());
+    let empty = build_poi_map(BBOX, CS, &[]);
+    let src = SliceSource(&empty);
+    let tables = MapTables::parse(&src).unwrap();
+    Reader::new(&src, &tables, &cache).visit_summits_within(pos, 100_000, |_| panic!("absent category")).unwrap();
+}

@@ -18,6 +18,11 @@ weather = "Tiempo"
 settings = "Ajustes"
 
 [peak_view]
+waiting_gps = "Buscando GPS..."
+limited_terrain = "Relieve incompleto"
+preparing = "Preparando panorama..."
+unavailable = "Terreno no disponible"
+
 manual = "MANUAL"
 no_peaks = "SIN CUMBRES CON NOMBRE"
 
