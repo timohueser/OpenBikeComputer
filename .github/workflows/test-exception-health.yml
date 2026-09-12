@@ -1,0 +1,21 @@
+name: Test exception issue health
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 7 * * 1'
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  exception-issues:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exception issue state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/suite_registry.py check-issues --repo "${{ github.repository }}"

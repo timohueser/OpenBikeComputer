@@ -46,6 +46,8 @@ DERIVED_FIELDS = {
     "test_count",
 }
 SAFETY_COMPONENTS = {"format-protocol-codecs", "crc", "storage", "dfu", "boot"}
+ISSUE_FIELDS = ("budget_exception", "quarantine", "cadence_conflict", "sleep_exception")
+REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ISSUE_RE = re.compile(r"^(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)$")
 SWIFT_TARGET_RE = re.compile(r"\.testTarget\s*\(\s*name:\s*\"([^\"]+)\"", re.MULTILINE)
 REAL_SLEEP_RE = re.compile(r"(?:Task\.sleep|time\.sleep|std::thread::sleep)\s*\(")
@@ -415,7 +417,7 @@ def _validate_issue_block(suite_id: str, field: str, value: Any, errors: list[st
     if not isinstance(reason, str) or not reason.strip():
         errors.append(f"{suite_id}: {field} requires a reason")
     if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
-        errors.append(f"{suite_id}: {field} requires an open GitHub issue reference")
+        errors.append(f"{suite_id}: {field} requires a GitHub issue reference")
 
 
 def _has_real_sleep(source: Path) -> bool:
@@ -546,7 +548,7 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
             for owner in owners:
                 if not isinstance(owner, dict) or owner.get("kind") not in OWNERSHIP_KINDS:
                     errors.append(f"{suite_id}: invalid ownership rule {owner!r}")
-        for field in ("budget_exception", "quarantine", "cadence_conflict", "sleep_exception"):
+        for field in ISSUE_FIELDS:
             if field in suite:
                 _validate_issue_block(suite_id, field, suite[field], errors)
         _validate_command(root, suite, rust_packages, errors)
@@ -1392,6 +1394,63 @@ def command_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def check_issue_states(suites: Sequence[dict[str, Any]], repository: str) -> int:
+    """Online maintenance only: one bounded request per distinct exception issue."""
+    if not REPOSITORY_RE.fullmatch(repository):
+        raise RegistryError("--repo must be OWNER/REPO")
+    references: dict[tuple[str, int], list[str]] = {}
+    errors: list[str] = []
+    for suite in suites:
+        for field in ISSUE_FIELDS:
+            if field not in suite:
+                continue
+            before = len(errors)
+            _validate_issue_block(suite["id"], field, suite[field], errors)
+            if len(errors) != before:
+                continue
+            reference = suite[field]["issue"]
+            if reference.startswith("#"):
+                repo, number = repository, reference[1:]
+            else:
+                repo, number = reference.removeprefix("https://github.com/").rsplit("/issues/", 1)
+            if not REPOSITORY_RE.fullmatch(repo):
+                errors.append(f"{suite['id']}: {field} has an invalid issue repository")
+                continue
+            references.setdefault((repo.lower(), int(number)), []).append(f"{suite['id']}.{field}")
+    if errors:
+        raise RegistryError("\n".join(errors))
+
+    for (repo, number), owners in sorted(references.items()):
+        label = f"{', '.join(owners)}: {repo}#{number}"
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repo}/issues/{number}"],
+                check=True, capture_output=True, text=True, timeout=20,
+            )
+            issue = json.loads(result.stdout)
+            if not isinstance(issue, dict) or issue.get("state") not in ("open", "closed"):
+                errors.append(f"{label}: API returned an invalid issue response")
+            elif "pull_request" in issue:
+                errors.append(f"{label}: references a pull request, not an issue")
+            elif issue["state"] != "open":
+                errors.append(f"{label}: issue is closed")
+        except subprocess.CalledProcessError as exc:
+            errors.append(f"{label}: GitHub API failed: {(exc.stderr or str(exc)).strip()}")
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            errors.append(f"{label}: could not check issue: {exc}")
+    if errors:
+        raise RegistryError("\n".join(errors))
+    return len(references)
+
+
+def command_check_issues(args: argparse.Namespace) -> int:
+    root = args.root or repository_root()
+    suites = _read_toml(root / "testing/suites.toml")["suite"]
+    count = check_issue_states(suites, args.repo)
+    print(f"exception issue state OK: {count} distinct open issues")
+    return 0
+
+
 def command_list(args: argparse.Namespace) -> int:
     inventory = load_inventory(args.root)
     rows = [_suite_summary(suite, inventory.matches[suite["id"]]) for suite in inventory.suites]
@@ -1542,6 +1601,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action", required=True)
     check = subparsers.add_parser("check", help="validate registries, discovery, commands, and CI routes")
     check.set_defaults(func=command_check)
+    issues = subparsers.add_parser("check-issues", help="check exception issue state online (requires gh authentication)")
+    issues.add_argument("--repo", required=True, help="OWNER/REPO for local #issue references")
+    issues.set_defaults(func=command_check_issues)
     listing = subparsers.add_parser("list", help="derive and print the current suite inventory")
     listing.add_argument("--json", action="store_true", help="emit JSON")
     listing.set_defaults(func=command_list)
