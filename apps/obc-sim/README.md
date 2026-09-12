@@ -38,6 +38,12 @@ makes no chord.
 
 ## Map and output
 
+The OBCM path is an import input. Startup streams it through a 16 KiB buffer into a temporary
+sparse flat-store card. Map and Peak View readers share the committed object; the final reader
+releases the temporary card. The input OBCM and its terrain sidecar remain unchanged. Import adds
+one startup write of the map payload and store metadata; the complete map is not held in RAM.
+
+
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
 - `--png PATH` renders one device-gamut frame and exits. This is the screenshot-test interface.
