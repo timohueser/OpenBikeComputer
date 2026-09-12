@@ -1742,16 +1742,13 @@ impl App {
     /// Drop **everything derived from the active route's geometry** — the whole-App seam, and the
     /// only thing route-replacing paths should call.
     ///
-    /// Navigator drops its matcher, caches, and visible route state; the UI's
-    /// [`NextAhead`](crate::next_ahead::NextAhead) cache is the other half and lives on the far
-    /// side of the domain/UI split, so it cannot be reached from there. It is invalidated for
-    /// exactly the same reason as the rest: its entries are **along-route distances**, and a
-    /// same-index/new-bytes replace leaves the catalog index untouched — so the cache's own
-    /// route-identity check sees nothing change, and an entry measured on the old geometry would
-    /// name a different place on the new.
+    /// Navigator drops its matcher, caches, and visible route state. The UI also drops its
+    /// next-category cache and corridor snapshot: their along-route distances belong to the old
+    /// geometry even when the catalog index, filter, and frozen progress anchor stay unchanged.
     pub(crate) fn drop_route_derived_state(&mut self) {
         self.navigator.drop_route_derived_state();
         self.ui.next_ahead.invalidate();
+        self.ui.corridor_scratch.invalidate();
     }
 
     /// Hand one rider request to Navigator, and repaint.
@@ -5216,16 +5213,16 @@ mod tests {
 
         // One rendered frame with both inputs — the shape the board produces when
         // `base_needs_reader` says it must.
-        let frame = |app: &mut App| {
+        let frame = |app: &mut App, geometry: Option<&[u8]>| {
             let cache = MapCache::new();
             let map_src = SliceSource(&map);
             let tables = MapTables::parse(&map_src).expect("valid .obcm");
             let reader = Reader::new(&map_src, &tables, &cache);
-            let route_src = SliceSource(&obcr);
+            let route_src = SliceSource(geometry.unwrap_or(&obcr));
             let idx = RouteIndex::read(&route_src).expect("valid .obcr");
             let route = RouteReader::new(&idx, &route_src);
             let mut scratch = Box::new(RenderScratch::new());
-            app.render_frame(Some(&mut scratch), &mut Sink, &reader, Some(&route), 240.0, 320.0, |_| {
+            app.render_frame(Some(&mut scratch), &mut Sink, &reader, geometry.map(|_| &route), 240.0, 320.0, |_| {
                 Rgb888::new(0, 0, 0)
             });
         };
@@ -5241,7 +5238,7 @@ mod tests {
 
         app.advance_animations(InputClock(1_000));
         assert!(app.base_needs_reader(), "the armed refresh keeps the Reader built");
-        frame(&mut app);
+        frame(&mut app, Some(&obcr));
         assert!(!app.base_needs_reader(), "…exactly until the snapshot lands, then it stops");
         let first = app.ui.next_ahead.poi(PoiCategory::Water).expect("the nearest water ahead is cached");
         assert_eq!(first.name.as_str(), "Brunnen", "entry 0 of a single-category query is the nearest");
@@ -5253,7 +5250,7 @@ mod tests {
             app.navigator.route_state_mut().progress_m = m;
             app.advance_animations(InputClock(2_000 + m));
             assert!(!app.base_needs_reader(), "no re-query inside the refresh step (at {m} m)");
-            frame(&mut app);
+            frame(&mut app, Some(&obcr));
         }
         assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
 
@@ -5261,19 +5258,63 @@ mod tests {
         app.navigator.route_state_mut().progress_m = crate::next_ahead::REFRESH_STEP_M;
         app.advance_animations(InputClock(9_000));
         assert!(app.base_needs_reader(), "crossing the step re-arms");
-        frame(&mut app);
+        frame(&mut app, Some(&obcr));
         assert!(!app.base_needs_reader(), "and settles again on the very next eligible frame");
         assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.dist_along_m), Some(brunnen_m));
 
         // Ride past the cached fountain: the re-take hands the tile the next one along.
         app.navigator.route_state_mut().progress_m = brunnen_m + 10;
         app.advance_animations(InputClock(10_000));
-        frame(&mut app);
+        frame(&mut app, Some(&obcr));
         assert_eq!(
             app.ui.next_ahead.poi(PoiCategory::Water).map(|p| p.name.as_str().into()),
             Some(std::string::String::from("Spring")),
             "a passed entry re-arms out of turn and the next one takes its place"
         );
+        // Keep Up Ahead open while new bytes replace the active route at the same identity.
+        app.set_routes_with_ids(&[summary("East"), summary("Other")], &[10, 20]);
+        app.activate_route(0);
+        app.navigator.route_state_mut().progress_m = 100;
+        assert!(app.apply_chord(crate::input::Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        frame(&mut app, Some(&obcr));
+        let held = app.corridor_snapshot().to_vec();
+        assert!(!held.is_empty());
+        let key = app.ui.corridor_scratch.armed();
+        assert_eq!(key.unwrap().anchor_m, 100);
+        app.apply_gesture(Gesture::Step(1));
+
+        // An unrelated replacement covers the list with a card but preserves its snapshot.
+        app.on_route_uploaded(20, true, None);
+        app.advance_animations(InputClock(11_000));
+        assert_eq!(app.corridor_snapshot(), held);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        assert!(!app.base_needs_reader());
+
+        app.on_route_uploaded(10, true, None);
+        assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)));
+        assert!(app.corridor_snapshot().is_empty(), "old geometry rows drop at commit");
+        assert!(app.corridor_snapshot_pending());
+        app.advance_animations(InputClock(12_000));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        assert_eq!(app.ui.corridor_scratch.armed(), key, "the list keeps its frozen anchor");
+        assert!(app.base_needs_reader());
+        frame(&mut app, None);
+        assert!(app.corridor_snapshot_pending(), "missing new geometry must keep the reader request live");
+
+        // The replacement runs well north of the old water points, so its real query is empty.
+        let north_gpx = gpx.replace("48.0000", "48.1000");
+        let mut north = VecSink::default();
+        obc_route::gpx_to_obcr(&SliceSource(north_gpx.as_bytes()), "North", &mut north).unwrap();
+        frame(&mut app, Some(&north.0));
+        assert!(app.corridor_snapshot().is_empty(), "the new route cannot reuse old projected POIs");
+        assert!(!app.corridor_snapshot_pending());
+        assert!(!app.base_needs_reader());
+        frame(&mut app, Some(&obcr));
+        assert!(app.corridor_snapshot().is_empty(), "a settled snapshot does not query again each frame");
     }
 
     /// A **same-index / new-bytes** route replace invalidates the `Next: <category>` cache (epic
