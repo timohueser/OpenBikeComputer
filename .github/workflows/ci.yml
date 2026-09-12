@@ -859,7 +859,17 @@ jobs:
         with:
           persist-credentials: false
       - name: swift test (OBCKit package, host)
-        run: swift test --package-path companion-ios/Packages/OBCKit
+        id: swift-tests
+        run: |
+          rm -f "$RUNNER_TEMP/ios-unit.xml" "$RUNNER_TEMP/ios-unit-swift-testing.xml"
+          swift test --package-path companion-ios/Packages/OBCKit --xunit-output "$RUNNER_TEMP/ios-unit.xml"
+      - name: Upload Swift Testing results
+        if: ${{ !cancelled() && (steps.swift-tests.outcome == 'success' || steps.swift-tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-swift-testing-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-unit-swift-testing.xml
+          if-no-files-found: error
 
   # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
   # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
