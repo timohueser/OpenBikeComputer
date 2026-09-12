@@ -1431,6 +1431,34 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
     store.entries().find(|entry| entry.kind == kind)
 }
 
+/// `debug-uart` only (#1591 on-device acceptance): print the whole catalog, one line per entry,
+/// plus the entry count, whether the listing ran to the end, and the free extents.
+///
+/// The before/after comparison of two of these is what proves a repair removed exactly one object
+/// and left every other one byte-identical — `EntryMeta` already carries the per-object CRC, so
+/// "unchanged" is a comparison rather than a claim.
+#[cfg(feature = "debug-uart")]
+pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
+    for entry in store.entries() {
+        defmt::info!(
+            "store census: id={=u64} rev={=u64} kind={=u16} flags={=u16} len={=u64} crc={=u32} name={=str}",
+            entry.id.0,
+            entry.revision.0,
+            entry.kind as u16,
+            entry.flags.bits(),
+            entry.payload_len,
+            entry.payload_crc,
+            entry.name.as_str().unwrap_or("<invalid>")
+        );
+    }
+    defmt::info!(
+        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32}",
+        store.entry_count(),
+        store.entries_ok(),
+        store.free_extents()
+    );
+}
+
 // ═══════════════════════════════ weather ═══════════════════════════════
 
 /// One fully validated flat-store weather head.

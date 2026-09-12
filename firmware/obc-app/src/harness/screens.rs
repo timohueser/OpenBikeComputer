@@ -1439,7 +1439,7 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
     // A sheet the rider opened *over* the recovery card is not consent to walk away from it: the
     // refusal is asked of the base, not of whatever is on top.
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    assert!(app.offer_damaged_ride(), "the recovery card is offered");
+    assert!(app.offer_damaged_ride(crate::RideDamage::Payload), "the recovery card is offered");
     assert!(app.apply_chord(crate::input::Chord::Quick), "…and a quick sheet over it is harmless");
     app.apply_gesture(Gesture::BackHold);
     assert!(
@@ -1448,7 +1448,7 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
     );
 
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    assert!(app.offer_damaged_ride());
+    assert!(app.offer_damaged_ride(crate::RideDamage::Payload));
     app.apply_gesture(Gesture::BackHold);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the recovery decision stays put");
 }
