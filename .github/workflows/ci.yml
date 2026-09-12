@@ -977,7 +977,10 @@ jobs:
       - name: svelte-check
         run: npm run check
       - name: vitest
-        run: npm test
+        id: builder-vitest
+        run: |
+          rm -f "$RUNNER_TEMP/web-builder-junit.xml"
+          npm test -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
       # The standalone rain-radar viewer's suite. It is maintained and selectable but had no CI
@@ -985,8 +988,25 @@ jobs:
       # error. This is the job that already provisions Node, so the route lands here rather than
       # in a job of its own.
       - name: rain-radar demo tests
+        id: rain-radar-vitest
         working-directory: tools/rain-radar-demo
-        run: npm ci && npm test
+        run: |
+          rm -f "$RUNNER_TEMP/web-rain-radar-junit.xml"
+          npm ci && npm test -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-rain-radar-junit.xml"
+      - name: Upload builder test results
+        if: ${{ !cancelled() && (steps.builder-vitest.outcome == 'success' || steps.builder-vitest.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-builder-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/web-builder-junit.xml
+          if-no-files-found: error
+      - name: Upload rain-radar test results
+        if: ${{ !cancelled() && (steps.rain-radar-vitest.outcome == 'success' || steps.rain-radar-vitest.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-rain-radar-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/web-rain-radar-junit.xml
+          if-no-files-found: error
 
   # The Tauri desktop shell (apps/obc-desktop, #906). Workspace-excluded like the
   # board crate and the bootloader, and for the same kind of reason: Tauri drags in
