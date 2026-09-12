@@ -98,11 +98,6 @@ admits, and `model`, the reference state a recovered card is compared against by
 `cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
 after), the decoder fuzz, and both specs' vectors.
 
-The superseded Device Object System v2 vector files remain for the v3 contract suites in
-`obc-link` and the builder. Their OBC2 storage records are frozen artifacts; the storage crate no
-longer contains their producer or decoder. The active flat-store crash tests and vectors use their
-own card model and the flat-store specifications.
-
 ## Test
 
 ```sh
