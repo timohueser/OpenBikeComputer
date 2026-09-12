@@ -3108,15 +3108,14 @@ pub(crate) async fn run_app(
         // edge (`ble::wait_status_change` — connect/disconnect *and* the pairing passkey, so the
         // passkey card wakes the loop from warm sleep), or the soonest screen animation deadline the
         // app reports.
-        // The body's reconciles are all edge-gated,
-        // so running them only on a wake is correct — a parked Home screen wakes ~once a minute (the
-        // clock minute-tick) instead of 125×/s, and an idle device with the GPS asleep wakes only on a
-        // button or that minute tick.
+        // A wake does not itself require a repaint. Even with GPS asleep and no screen deadline,
+        // the watchdog feed cap below bounds the timer; input, sensor/store and BLE events can wake
+        // the loop sooner. Pending effects and store work also affect the next pass's cadence.
         // While something is **actively animating** — a live hold bulge (`overlay_*`, incl. its retract),
         // a charging hold on either button (`charging`), a redraw a flaky SD glitch couldn't service
         // (`pending_map_redraw`) — keep the short cadence so
-        // it stays fluid; otherwise arm the app's single next-wake deadline, or sleep indefinitely
-        // until input/sensor.
+        // it stays fluid; otherwise use the app's next-wake deadline, bounded by the watchdog cap
+        // and the build/transfer pacing rules below.
         let charging = hold_p > 0.0 || display.hold_charging();
         // "A search is live" is the app's fact, never the board's run handle: `CoreMode` is set when
         // the plan command drains and cleared by the answer, which brackets `nav_run` on both sides.
