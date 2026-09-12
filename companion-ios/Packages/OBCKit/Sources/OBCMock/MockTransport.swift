@@ -156,16 +156,6 @@ public struct MockTransport: DeviceTransport {
         return RideCatalog(rides: control.fixtures.rides.map(\.summary))
     }
 
-    public func ackRides(_ ids: [RideID]) async throws {
-        // The possession ack (spec §4.4 cmd 2). The mock keeps no device-side
-        // synced state; recording the batch is the observable effect the
-        // coordinator tests assert. Same prelude as every control-plane op, so
-        // an unreachable link or an armed fault behaves like the real write.
-        guard !ids.isEmpty else { return }
-        try await preludeThrowing()
-        control.recordAckedRides(ids)
-    }
-
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
         // `setClock` (spec §4.4 cmd 5, epic #638). Same prelude as every
         // control-plane op, so an unreachable link or armed fault behaves like the

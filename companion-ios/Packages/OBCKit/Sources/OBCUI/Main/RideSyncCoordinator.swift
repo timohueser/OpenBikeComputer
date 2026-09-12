@@ -166,10 +166,6 @@ public final class RideSyncCoordinator {
             for await state in transport.state {
                 guard let self else { return }
                 connection = state
-                // The possession ack no longer fires from this raw edge — the
-                // model triggers `reconcilePossession()` strictly downstream of
-                // the identity read (#764), which is what lets the store-identity
-                // gate close it. Only the truncation reset stays edge-driven:
                 if state == .connected, !wasConnected {
                     // A fresh link is a fresh device truth: drop the previous
                     // session's truncation count (see `hiddenRideCount` — it may
@@ -179,39 +175,6 @@ public final class RideSyncCoordinator {
                 }
                 wasConnected = state == .connected
             }
-        }
-    }
-
-    /// Possession-ack reconciliation (spec §4.4 `ackRides`): send the device the
-    /// ride ids the library holds, so its per-ride "synced" flag trues up
-    /// against the phone's ground truth. This is what heals rides synced before
-    /// the device tracked the flag, a sidecar lost with a reflashed card, or an
-    /// app reinstall — cases a download-completion event can never reach,
-    /// because an already-held ride is never re-downloaded.
-    ///
-    /// Called by the owning model once per established connection, **after** the
-    /// identity read settles — an id-keyed write must never race the #303
-    /// protocol-version verdict, and the `scope` it settles on is the write's
-    /// key (#769): only synced ids minted under the **connected device's
-    /// current (serial, StoreId)** are sent. Another device's ids, a previous
-    /// era's ids, and unclaimed flat legacy ids all stay home — acking those
-    /// is exactly the checkmark-stamping the 2026-07-12 incident produced. The
-    /// fail-closed half lives upstream: a failed identity read never produces
-    /// a scope, so this is never called for that connection. Deliberately no
-    /// link guard: the model calls on a live connection, and a send into a
-    /// dying link just throws into the dropped error. Fire-and-forget (the
-    /// `DeviceNameReconciler` pattern: a failed send self-heals on the next
-    /// connect by construction — the whole list is re-sent every time — so the
-    /// error is deliberately dropped rather than surfaced). Captures only the
-    /// transport and the id snapshot, never `self`. Tombstoned/trashed rides
-    /// stay in `syncedRideIDs()` (they landed once), which is exactly the
-    /// flag's meaning — "downloaded at least once".
-    public func reconcilePossession(for scope: LibraryScope) {
-        guard canSync() else { return }
-        let ids = library.syncedRideIDs().filter { $0.scope == scope }
-        guard !ids.isEmpty else { return }
-        Task { [transport] in
-            try? await transport.ackRides(Array(ids))
         }
     }
 

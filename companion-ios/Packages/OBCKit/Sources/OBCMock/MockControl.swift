@@ -78,9 +78,6 @@ public final class MockControl: @unchecked Sendable {
     /// boundary — the flat-store/menu distinction XCUITest hook
     /// (`-OBCDeviceRoutesFull`).
     private var _routesNearlyFull = false
-    /// Every `ackRides` batch the transport sent, in order — the coordinator
-    /// tests assert the connect-time possession ack lands here.
-    private var _ackedRideBatches: [[RideID]] = []
     /// How many `forgetBond` commands (#756) the transport sent — the forget
     /// tests assert a connected forget reaches the device before clearing.
     private var _forgetBondCount = 0
@@ -448,18 +445,6 @@ public final class MockControl: @unchecked Sendable {
     /// The stored copy behind a device object id (`routeDetail` on the mock).
     func deviceRouteEntry(_ id: DeviceObjectID) -> RouteEntry? {
         lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == id } }
-    }
-
-    /// Record an `ackRides` possession batch (the mock's stand-in for the
-    /// device's sidecar reconcile — the mock models no device-side synced
-    /// state, so recording is the observable effect).
-    func recordAckedRides(_ ids: [RideID]) {
-        lock.withLocked { _ackedRideBatches.append(ids) }
-    }
-
-    /// The `ackRides` batches sent so far, in send order (test hook).
-    public var ackedRideBatches: [[RideID]] {
-        lock.withLocked { _ackedRideBatches }
     }
 
     /// Record a `setClock` stamp (epic #638). `unsupported` on the old-firmware

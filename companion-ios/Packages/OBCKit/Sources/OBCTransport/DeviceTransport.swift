@@ -106,7 +106,7 @@ public protocol DeviceBonding: Sendable {
 public protocol DeviceRetention: Sendable {
     /// Stamp the device's **trusted wall clock** (`setClock`, spec §4.4 cmd 5,
     /// epic #638). Sent on **every connect, after encryption and before the first
-    /// `ackRides` / reconcile write** — the device has no RTC, and this (or a GPS
+    /// reconcile write** — the device has no RTC, and this (or a GPS
     /// fix) is what marks its clock trusted for the boot, the retention sweep's
     /// safety gate. Returns ``ClockSyncOutcome/unsupported`` for a device that
     /// predates expiry (`commandResult(unknownCommand)`): a supported peer, not an
@@ -195,13 +195,6 @@ public protocol DeviceObjects: Sendable {
     /// compact-binary payload as it lands; `handle` carries batch progress /
     /// cancel / restart (whole rides are the resume granularity).
     func downloadRides(_ ids: [RideID]) -> RideDownload
-    /// Ack the rides the phone's library holds (`ackRides`, spec §4.4 cmd 2) —
-    /// the device reconciles its per-ride "synced" flag from this possession
-    /// list (monotonic: it only ever *sets* flags). Idempotent and order-free,
-    /// so callers re-send the whole list on every connect; the transport chunks
-    /// a long list across writes. Ids outside the device namespace (mock/test
-    /// ids that never came from a catalog) are skipped.
-    func ackRides(_ ids: [RideID]) async throws
 }
 
 /// Firmware delivery and install requests, without link lifecycle, device
@@ -280,12 +273,6 @@ extension DeviceObjects {
     /// Default: no local catalog edge stream.
     public var catalogChanges: AsyncStream<CatalogChange> { AsyncStream { $0.finish() } }
 
-    /// Default: no possession ack — for preview/test stand-ins that model no
-    /// device-side synced state. `BLETransport` sends the real command;
-    /// `MockTransport` records the ack for tests. Safe as a no-op because the
-    /// ack is pure reconciliation — skipping it only leaves the device's
-    /// synced flags where they were.
-    public func ackRides(_ ids: [RideID]) async throws {}
 }
 
 extension DeviceUpdates {
@@ -356,6 +343,6 @@ extension DeviceObjects {
         .immediatelyFinished(.failed(.notConnected))
     }
     /// Default: nothing to delete (no trip store) — a best-effort no-op, like
-    /// `forgetBond` / `ackRides`.
+    /// `forgetBond`.
     public func deleteTrip(_ id: DeviceObjectID) async throws {}
 }
