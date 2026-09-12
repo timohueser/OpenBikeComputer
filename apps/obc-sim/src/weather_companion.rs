@@ -103,14 +103,14 @@ impl SimCompanion {
         // default before it reaches the context would misreport the rider's cadence to the phone.
         let refresh_raw = app.settings().weather_refresh as u8;
         let fallback = (app.state.cam_lat, app.state.cam_lon);
-        self.run(&app.weather_snapshot(), refresh_raw, store.and_then(held_of), fallback, live, now)
+        self.run(&app.weather_request_inputs(), refresh_raw, store.and_then(held_of), fallback, live, now)
     }
 
     /// The lifecycle without the `App`: the scheduler's levels, the context fill, the fetch and
     /// the upload verdict. Split out so the §11.7 no-storage arm is testable on its own.
     pub fn run(
         &mut self,
-        snapshot: &obc_app::ble::WeatherSnapshot,
+        inputs: &obc_app::ble::WeatherRequestInputs,
         refresh_raw: u8,
         held: Option<RequestContextBundle>,
         fallback_position: (i32, i32),
@@ -134,16 +134,16 @@ impl SimCompanion {
             None => BundleFacts::NONE,
         };
         let now_s = now.max(0) as u64;
-        let raise = self.scheduler.poll(now_s, refresh, snapshot.ride_active, self.store_ready, facts);
+        let raise = self.scheduler.poll(now_s, refresh, inputs.ride_active, self.store_ready, facts);
         self.state.pending_request_id = self.scheduler.pending_request_id();
-        self.state.next_wake_s = self.scheduler.next_wake_s(refresh, snapshot.ride_active, self.store_ready);
+        self.state.next_wake_s = self.scheduler.next_wake_s(refresh, inputs.ride_active, self.store_ready);
         let raise = raise?;
         self.state.raises += 1;
         self.state.last_reason = raise.reason;
 
         // 1-2. The phone reads the request context and disconnects. Building it for real is the
         //      point: the context is what tells the companion *where* and *what for*.
-        let context = WeatherRequestContext::raised(refresh_raw, raise, request_context_facts(snapshot, held));
+        let context = WeatherRequestContext::raised(refresh_raw, raise, request_context_facts(inputs, held));
         let position = if context.has(VALID_POSITION) {
             (context.lat_udeg, context.lon_udeg)
         } else {
@@ -199,18 +199,18 @@ fn held_from_bytes(bytes: &[u8]) -> Option<RequestContextBundle> {
 }
 
 fn request_context_facts(
-    snapshot: &obc_app::ble::WeatherSnapshot,
+    inputs: &obc_app::ble::WeatherRequestInputs,
     bundle: Option<RequestContextBundle>,
 ) -> RequestContextFacts {
     RequestContextFacts {
-        fix: snapshot.position.map(|fix| RequestContextFix {
+        fix: inputs.position.map(|fix| RequestContextFix {
             lat_udeg: fix.lat_udeg,
             lon_udeg: fix.lon_udeg,
             fix_utc: fix.fix_utc,
         }),
-        bearing_deg: snapshot.bearing_deg,
-        speed_deci_ms: snapshot.speed_deci_ms,
-        route_id: snapshot.route_id,
+        bearing_deg: inputs.bearing_deg,
+        speed_deci_ms: inputs.speed_deci_ms,
+        route_id: inputs.route_id,
         bundle,
     }
 }
@@ -235,16 +235,16 @@ mod tests {
         })
     }
 
-    fn riding() -> obc_app::ble::WeatherSnapshot {
-        obc_app::ble::WeatherSnapshot {
+    fn riding() -> obc_app::ble::WeatherRequestInputs {
+        obc_app::ble::WeatherRequestInputs {
             ride_active: true,
             position: Some(obc_app::ble::WeatherFix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, fix_utc: 1_800_000 }),
             ..Default::default()
         }
     }
 
-    fn parked() -> obc_app::ble::WeatherSnapshot {
-        obc_app::ble::WeatherSnapshot {
+    fn parked() -> obc_app::ble::WeatherRequestInputs {
+        obc_app::ble::WeatherRequestInputs {
             position: Some(obc_app::ble::WeatherFix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, fix_utc: 0 }),
             ..Default::default()
         }
