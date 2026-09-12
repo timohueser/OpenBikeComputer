@@ -89,10 +89,7 @@ pub use host::{DetourPreview, DrainStatus, HostCommand, HostMailbox};
 pub use i18n::{t, Msg};
 pub use input::{Chord, Gesture, Gestures, DEFAULT_CHORD_MS, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
-pub use map_catalog::{
-    boot_fault, choose_map, classify_map_entry, flat_boot_fault, is_superseded_upload, newest_set,
-    set_retirement_keeper, MapChoice, MapEntry,
-};
+pub use map_catalog::flat_boot_fault;
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
