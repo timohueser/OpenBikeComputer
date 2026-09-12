@@ -636,7 +636,8 @@ A cell whose LOD `L` region is empty contributes an empty leaf, exactly like an 
 2. Deduplicate by `(lat, lon, subtype)`. Duplicates are possible only through operator error
    (§3.6 gives each POI exactly one cell), so a duplicate is dropped and SHOULD be reported.
 3. Rebuild the hours pool: collect each source blob, deduplicate the 29-byte blobs, and remap every
-   record's `HoursRef` to the new index. `0xFFFF` stays `0xFFFF`.
+   service record's `HoursRef` to the new index. `0xFFFF` stays `0xFFFF`. Summit records
+   (subtype 19) keep their signed elevation trailer; they do not reference the hours pool.
 4. Re-bin each category into a fresh quadtree over the **assembly** bbox and re-chunk at the
    directory's shared `Chunk Size`, per `OBCM_Spec.md` §7.1–§7.3.
 5. Order records within a chunk by `(lat, lon, subtype)` so the output is deterministic.

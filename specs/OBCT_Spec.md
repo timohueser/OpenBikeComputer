@@ -1,4 +1,7 @@
-# OBCT — OpenBikeComputer Terrain Tiles (v1)
+# OBCT — OpenBikeComputer Terrain Tiles (v1 and v3)
+
+Version 3 adds the geographic surface index in section 8. Sections 1–7 describe the native
+v1 raster, which remains the base height plane of v3.
 
 OBCT is the terrain artifact: a raster of ground heights on the [OBCA](OBCA_Spec.md) cell grid,
 carried **beside** the map rather than inside it. It defines four things:
@@ -549,3 +552,120 @@ metre samples with `i16::MIN` as `NODATA`, 512-byte 16 × 16 tiles, power-of-two
 container for cells and shards with a row-major `uint32` offset directory, and the bilinear sampling
 rules of §5. Posting and cell size are header data; compression is not defined and is what the
 reserved `Flags` byte exists for.
+
+## 8. Version 3: geographic surface index
+
+Version 3 adds terrain data for arbitrary-viewpoint panoramas. It stores no observer position,
+view direction, panorama pixels, or baked lighting. Sections 1–5 still define the native height
+lattice and ordinary elevation sampling. This section overrides the v1 container layout where
+specified below.
+
+### 8.1 Header and cells
+
+The header remains 32 bytes. `Version` MUST be `3`, flag bit 0 MUST be set, and bytes `24..32`
+MUST be zero. Flag bit 1 indicates the cross-cell maximum index in section 8.3. Other flag bits
+MUST be zero. Producers MUST set both bits (`Flags = 3`); readers also accept `Flags = 1`
+without that index. The directory retains one little-endian `uint32` offset per geographic cell.
+Zero means absent. Every present cell MUST start at a multiple of 512 bytes relative to the
+container. The producer MUST pad the header and directory to that boundary with zero bytes.
+When flag bit 1 is set, the cross-cell index starts at that boundary and precedes all cell blocks.
+The complete container MUST fit within `uint32` byte addressing.
+
+A cell contains a complete height pyramid. Level `i` has posting `posting_log2 + i`.
+The last level has 16 posts along each axis, so the level count is
+`cell_log2 - posting_log2 - 3`. Derived postings can exceed the native header's posting limit.
+All cells in one container have the same levels and byte length. A reader MUST reject version 2;
+its reserved group bytes do not carry the approximation contract below.
+
+Each level contains, in this order:
+
+1. Its signed 16-bit heights, using the 16×16 tile order of section 2.
+2. Its maximum-height groups, as specified in section 8.2.
+3. Zero padding to the next 512-byte boundary.
+
+The next level starts at that boundary. The native level starts at cell offset zero. Its height
+bytes MUST be identical to the equivalent v1 cell. Coarser levels select the corresponding
+native lattice posts; they MUST NOT average heights or shift the lattice. Ordinary elevation
+consumers continue to read the native level only.
+
+For posting 9 and cell size 19, the seven levels have postings 9 through 15. The complete cell is
+3,149,824 bytes, compared with 2,097,152 bytes for its native heights alone.
+
+### 8.2 Maximum-height groups
+
+A maximum node covers `2^b × 2^b` interpolation intervals, where `b` starts at 2 and ends at
+that level's samples-per-cell exponent. Its signed 16-bit value MUST be at least every height
+at the intervals' vertices, including the north and east edge vertices. A producer MUST include
+vertices across a geographic cell seam. A vertex whose height is unknown makes the node value
+`32767`; a consumer MUST treat that value as an unbounded maximum. The maximum is conservative
+for bilinear interpolation because its weights are non-negative inside each interval.
+
+Four consecutive node levels share one 256-byte group:
+
+| Byte offset | Nodes | Order |
+|---|---:|---|
+| 0 | 8×8 | Row-major, latitude first |
+| 128 | 4×4 | Row-major |
+| 160 | 2×2 | Row-major |
+| 168 | 1 | Group root |
+| 170 | 85 error bytes | Same node order as the maxima |
+| 255 | 1 byte | Zero padding |
+
+The first group plane starts at `b = 2`; subsequent planes start at `b = 6, 10, …`, while
+`b` does not exceed the samples-per-cell exponent. A plane's groups are row-major. It has
+`2^max(0, samples_log2 - b - 3)` groups along each axis. An incomplete group retains its full
+256 bytes. Nodes outside the cell or above its root MUST be zero and MUST NOT be queried.
+All group planes are concatenated in increasing `b` order after the height tiles.
+
+Each error byte describes the bilinear patch through the node's four inclusive corner heights.
+Its low nibble bounds the maximum absolute height residual, in metres. Its high nibble bounds
+the maximum absolute residual of each gradient component, in metres per interval of this level.
+Code 0 means exact; code 15 means unknown. For codes 1 through 14, the bound is
+`2^(code-1) * unit`, where `unit` is0.25 m for height and0.0625 m per interval for gradient.
+The producer MUST round each bound upward. Any unknown vertex MUST produce code 15 for both.
+
+Height residuals MUST cover every source vertex in the node. Gradient residuals MUST cover
+both endpoints of every source grid edge. These bounds apply throughout the bilinear source
+patches: height differences are bilinear, and each gradient difference is affine along an edge.
+A consumer MUST use the same true corner heights; it MUST NOT substitute a clamped boundary
+corner while retaining these bounds. Coarser stored levels may supply the same exact vertices.
+A consumer MUST bound both projected height error and physical gradient error before merging
+cells into that patch. These bounds do not guarantee identical intersection depths or outlines
+near tangencies. Rendering tolerances and measured visual differences are separate from the format.
+
+The exact layout arithmetic is implemented by `SurfaceLayout` and `SurfaceLevel` in
+[`obct_surface.rs`](../firmware/obc-formats/src/obct_surface.rs).
+
+### 8.3 Cross-cell maximum index
+
+The index starts at `align512(directory_offset + cell_rows * cell_cols * 4)`. It contains
+little-endian signed 16-bit maximum heights, in consecutive row-major planes. Plane 0 has
+`cell_rows × cell_cols` nodes. Each node is the corresponding native cell's inclusive root
+maximum from section 8.2, or `32767` when that cell is absent. A plane's node coordinates are
+relative to the container rectangle, not to the world grid.
+
+Each next plane takes the maximum of each 2×2 group in the preceding plane. Its dimensions
+are `ceil(rows / 2) × ceil(cols / 2)`. Children outside the rectangle are omitted; unknown
+children inside the rectangle remain `32767` and propagate to the root. The last plane is
+1×1. The producer MUST pad the index end to 512 bytes with zeros. No cell block may overlap
+the index or its padding. A reader MUST reject a truncated index.
+
+One index serves all surface levels. Native cell bounds include the high-edge vertices, and
+every coarser level selects a subset of those vertices. Thus the native maximum also bounds
+all coarser bilinear surfaces. An 8×8 cell rectangle needs 170 index bytes plus 342 padding
+bytes. The assembler builds this index once for the selected rectangle.
+
+### 8.4 Assembly and size limit
+
+The assembler MUST preserve each published cell's complete block. It MUST NOT combine native
+and indexed cells in one container. An embedded v3 terrain region MUST also start on a 512-byte
+boundary in the complete OBCM file. Bytes used to reach this outer boundary are OBCM filler;
+bytes inside the OBCT prefix and cell blocks are zero padding.
+
+The assembler MUST compare the final map size with the equivalent map containing only v1 native
+heights over the same coverage and without the Peak View summit POI category. Other geometry,
+service POIs, navigation, and native height values remain the same. Include the summit category's
+directory, spatial tree and chunk bytes, and both formats' region and outer alignment bytes. The new size MUST satisfy
+`new_bytes <= native_map_bytes + floor(native_map_bytes / 10)`. A map that exceeds this limit
+MUST be rejected before emission, with both sizes reported. This is a whole-map limit, not a
+percentage of the terrain region.
