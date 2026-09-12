@@ -175,6 +175,100 @@ pub enum RecorderError {
     Write,
     /// No writable store is mounted — recording cannot proceed at all.
     NoStore,
+    /// The store itself will take no further mutation this boot — a revision or sequence space that
+    /// is exhausted, not a write that went wrong. Retrying it is the one thing that cannot help,
+    /// which is why it is a variant rather than a [`Write`](RecorderError::Write).
+    ReadOnly,
+}
+
+/// What is wrong with a durable `RECORDING` object no session could be attached to.
+///
+/// Three facts, not one, because two of them are a ride's own bytes going bad on a healthy card and
+/// the third is the card's index failing to read. The first two have a repair — the exact removal of
+/// that one entry. The third has none this domain may attempt: a catalog it could not read
+/// completely is not one it may mutate (#1557).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RideDamage {
+    /// The recovered bytes are not a ride-v3 sample/footer boundary.
+    Payload,
+    /// The recovered samples carry no decodable continuation image.
+    Metadata,
+    /// The catalog could not be listed completely, or does not hold the recovered key.
+    Catalog,
+}
+
+/// What the boot-recovered object is, and how far the rider has got with deciding about it.
+///
+/// It replaces a bare "the executor holds something recovered" flag, because the terminal answers a
+/// rider can end a boot on differ in exactly one thing that matters: **which effects this machine
+/// may still mint**. [`Unrepairable`](RideRecoveryState::Unrepairable) may mint none, ever.
+///
+/// **The removal is one operation with two subjects**, so the attempt and its latch carry *what the
+/// object was* rather than being duplicated per subject: `Some(damage)` is a damaged recording being
+/// repaired, `None` a whole recovered ride the rider chose to throw away. Nothing about the attempt
+/// differs; only the copy on the card that comes back if it fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RideRecoveryState {
+    /// Nothing was recovered, or the decision is over.
+    #[default]
+    None,
+    /// A whole recovered ride, waiting on Continue or Discard.
+    Resumable,
+    /// Logical damage on a catalog this executor read completely. One rider-confirmed exact removal
+    /// repairs it, and the rider gets exactly one attempt per confirmation.
+    Repairable(RideDamage),
+    /// The rider's one confirmed removal is with the executor now.
+    Attempting(Option<RideDamage>),
+    /// That attempt failed and nothing further happens automatically this boot. A fresh rider
+    /// confirmation buys exactly one more.
+    Latched(Option<RideDamage>),
+    /// There is no safe object-level operation left: an unreadable catalog, or a store that will
+    /// take no mutation at all. The card names it and this machine writes nothing.
+    ///
+    /// It carries no cause, because nothing reads one. What a *repair* is offered for is decided by
+    /// [`Repairable`](RideRecoveryState::Repairable), and a store that refuses every mutation ends a
+    /// whole ride's discard here too — where there is no damage to name.
+    Unrepairable,
+}
+
+impl RideRecoveryState {
+    /// The state a boot-classified damage is offered in. Logical damage on a readable catalog is
+    /// repairable; damage *to* the catalog is the one cause with no repair to offer.
+    pub(crate) fn for_damage(damage: RideDamage) -> Self {
+        match damage {
+            RideDamage::Catalog => RideRecoveryState::Unrepairable,
+            RideDamage::Payload | RideDamage::Metadata => RideRecoveryState::Repairable(damage),
+        }
+    }
+
+    /// Whether an object the executor holds may still be acted on. `Unrepairable` answers `false`,
+    /// which is how "never risk the map" is enforced by the owner rather than by the executor.
+    fn holds_object(self) -> bool {
+        matches!(
+            self,
+            RideRecoveryState::Resumable
+                | RideRecoveryState::Repairable(_)
+                | RideRecoveryState::Attempting(_)
+                | RideRecoveryState::Latched(_)
+        )
+    }
+
+    /// Whether an undecided object is still standing between the rider and recording. A session
+    /// opened against one records nothing — including a *whole* recovered ride whose discard failed,
+    /// because that object still owns the store's ride state.
+    pub(crate) fn blocks_recording(self) -> bool {
+        !matches!(self, RideRecoveryState::None | RideRecoveryState::Resumable)
+    }
+
+    /// The rider's confirmation becomes the one attempt, whichever object it is about.
+    fn attempting(self) -> Self {
+        match self {
+            RideRecoveryState::Resumable => RideRecoveryState::Attempting(None),
+            RideRecoveryState::Repairable(damage) => RideRecoveryState::Attempting(Some(damage)),
+            RideRecoveryState::Latched(damage) => RideRecoveryState::Attempting(damage),
+            other => other,
+        }
+    }
 }
 
 /// The result of one [`RecorderEffect`].
@@ -227,6 +321,12 @@ pub(crate) enum RecorderAdvance {
     /// believe is recording and is not is the failure this exists to prevent: they would ride it,
     /// end it, and find nothing saved with nothing having said so.
     Refused,
+    /// A damaged recovered object is still standing, so **no session opened**. The request is kept,
+    /// exactly as a [`Refused`](RecorderAdvance::Refused) one is, and the recovery decision is put
+    /// back to the rider — it is the one thing between them and recording.
+    ///
+    /// Reported once per ask, on the same [`refusal_told`](RecorderMachine::refusal_told) latch.
+    RecoveryOwed,
 }
 
 /// A ride session opened this pass, and what starts fresh with it.
@@ -249,6 +349,10 @@ pub(crate) enum RecorderVerdict {
     Dropped,
     /// The operation failed. The ride is untouched and the rider must be told.
     Failed,
+    /// The rider's one repair attempt on a damaged recovered object failed, and Recorder has latched
+    /// the terminal state for it. Nothing more is attempted automatically; the card comes back in
+    /// the mode the latch names, which is the rider's one explanation and their way to try again.
+    RecoveryLatched,
 }
 
 /// The **one owner** of the ride lifecycle (#1398 R1/R2): the session identity and its monotonic
@@ -294,11 +398,15 @@ pub struct RecorderMachine {
     /// Whether a boot-recovered ride has already been put to the rider this boot. A recorder may
     /// report the same resumable object every pass; the rider sees one decision card.
     recovery_offered: bool,
-    /// The executor holds a recovered ride the rider has not decided about yet. It belongs to no
-    /// session — that is what recovery *is* — so it is what lets a `Discard` become an effect with
-    /// no session open: the object is on the store either way, and refusing to act on it would
+    /// What the executor recovered and where the rider's decision about it has got to. It belongs to
+    /// no session — that is what recovery *is* — so it is what lets a `Discard` become an effect
+    /// with no session open: the object is on the store either way, and refusing to act on it would
     /// strand it there for the rest of the card's life.
-    recovered_held: bool,
+    ///
+    /// It is also the **bound on automatic writes**: each rider confirmation buys exactly one
+    /// removal attempt — for a damaged recording and for a whole recovered ride alike — and
+    /// `Unrepairable` admits none at all.
+    recovery: RideRecoveryState,
     /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix and drawn on the Map.
     /// Per-session: a new ride starts with an empty trail.
     pub(crate) breadcrumb: Breadcrumb,
@@ -401,7 +509,7 @@ impl RecorderMachine {
             restart_after_close: false,
             checkpoint_owed: false,
             recovery_offered: false,
-            recovered_held: false,
+            recovery: RideRecoveryState::None,
             breadcrumb: Breadcrumb::new() => Breadcrumb::init_in_place,
             speed_win: SpeedWindow::new(),
             samples: heapless::Vec::new(),
@@ -483,16 +591,22 @@ impl RecorderMachine {
         self.session.is_some()
     }
 
-    /// Put a boot-recovered ride to the rider, once per boot. `false` means the decision was already
-    /// offered or a ride is already open — recovery is a boot decision and can never replace a live
-    /// session.
-    pub(crate) fn offer_recovery(&mut self) -> bool {
+    /// Put a boot-recovered ride to the rider in `state`, once per boot. `false` means the decision
+    /// was already offered or a ride is already open — recovery is a boot decision and can never
+    /// replace a live session.
+    pub(crate) fn offer_recovery(&mut self, state: RideRecoveryState) -> bool {
         if self.recovery_offered || self.session.is_some() {
             return false;
         }
         self.recovery_offered = true;
-        self.recovered_held = true;
+        self.recovery = state;
         true
+    }
+
+    /// What the boot recovery has come to — the card's mode, and the bound on what may still be
+    /// minted for it.
+    pub(crate) fn recovery(&self) -> RideRecoveryState {
+        self.recovery
     }
 
     /// Advance the domain one pass: turn the rider's [`Start`](RecorderIntent::Start) into a session.
@@ -517,13 +631,25 @@ impl RecorderMachine {
             }
             return RecorderAdvance::Refused;
         }
+        // An undecided object still owns the store's ride state, so a session opened against it
+        // would accept fixes, refuse every write, and save nothing at the end — silently. That is
+        // true of a damaged recording and of a whole recovered ride whose discard failed alike. The
+        // request is kept, like a refused one, and the decision that stands between the rider and
+        // recording is put back to them instead.
+        if self.recovery.blocks_recording() {
+            if core::mem::replace(&mut self.refusal_told, true) {
+                return RecorderAdvance::Nothing;
+            }
+            return RecorderAdvance::RecoveryOwed;
+        }
         self.pending = None;
         self.refusal_told = false;
         let resume = core::mem::take(&mut self.resume_next);
         self.seq = self.seq.wrapping_add(1);
         self.session = Some(self.seq);
         self.checkpoint_owed = false;
-        self.recovered_held = false; // adopted by this session, or never there to begin with
+        // Adopted by this session, or never there to begin with.
+        self.recovery = RideRecoveryState::None;
         RecorderAdvance::Opened(if resume { SessionStart::Recovered } else { SessionStart::Fresh })
     }
 
@@ -568,8 +694,8 @@ impl RecorderMachine {
         if !caps.record || self.inflight.is_some() {
             return None;
         }
-        if self.session.is_none() && !self.recovered_held {
-            return None; // nothing open and nothing recovered — there is no ride to act on
+        if self.session.is_none() && !self.recovery.holds_object() {
+            return None; // nothing open and nothing actionable recovered — there is no ride to act on
         }
         match self.pending {
             Some(RecorderIntent::Save) => {
@@ -577,12 +703,20 @@ impl RecorderMachine {
                 return Some(RecorderEffect::Finalize { token: self.ops.issue() });
             }
             Some(RecorderIntent::Discard) => {
+                // The rider's confirmation becomes **the** attempt. A removal that then fails latches
+                // its terminal state instead of re-offering, so this is the whole cost of one
+                // confirmation — for a recovered object of either kind.
+                self.recovery = self.recovery.attempting();
                 self.inflight = Some(InFlight::Close);
                 return Some(RecorderEffect::Discard { token: self.ops.issue() });
             }
             // `Start` is spent by `advance`; a stale one here would open nothing.
             Some(RecorderIntent::Start) | None => {}
         }
+        // Everything below is a **session's**: the cadence keeps a ride recoverable and the append
+        // writes its samples. A recovered object has neither, so a pass that reached here would be
+        // minting physical work against an object nobody has asked anything of.
+        self.session?;
         if self.checkpoint_due(now_ms) {
             self.last_checkpoint_ms = now_ms;
             self.checkpoint_owed = false;
@@ -638,12 +772,39 @@ impl RecorderMachine {
                 if was == Some(InFlight::Checkpoint) && error == RecorderError::Write {
                     self.checkpoint_owed = true;
                 }
+                // **The rider's one attempt is over.** A removal that failed latches what the store
+                // answered and retires the request, so this machine mints nothing further of its own
+                // accord: anything else is a failure the rider may confirm past. Keeping the close
+                // pending here is what made a failed removal a per-pass loop.
+                //
+                // A store that refuses every mutation ends the decision outright, for either object.
+                // Nothing is lost by that for a *whole* recovered ride: a store that will not take
+                // the removal will not take a continued ride's writes either, so there is no
+                // continuation left to protect — only a card that says the card needs service.
+                if let RideRecoveryState::Attempting(damage) = self.recovery {
+                    self.recovery = match error {
+                        RecorderError::ReadOnly => RideRecoveryState::Unrepairable,
+                        RecorderError::Write | RecorderError::NoStore => RideRecoveryState::Latched(damage),
+                    };
+                    self.pending = None;
+                    return RecorderVerdict::RecoveryLatched;
+                }
                 // A close stays pending, so it re-offers: the ride is still on the store.
                 RecorderVerdict::Failed
             }
             RecorderOutcome::Cancelled { .. } => {
                 if was == Some(InFlight::Checkpoint) {
                     self.checkpoint_owed = true;
+                }
+                // Nothing was attempted, so nothing is latched — the object goes back to being
+                // exactly what it was, whole card included — but the confirmation went with the
+                // abandoned operation, and the rider may give another.
+                if let RideRecoveryState::Attempting(damage) = self.recovery {
+                    self.recovery = match damage {
+                        Some(damage) => RideRecoveryState::Repairable(damage),
+                        None => RideRecoveryState::Resumable,
+                    };
+                    self.pending = None;
                 }
                 RecorderVerdict::Nothing
             }
@@ -682,7 +843,9 @@ impl RecorderMachine {
     fn close(&mut self) {
         self.session = None;
         self.checkpoint_owed = false;
-        self.recovered_held = false;
+        // A committed removal is the repair: the object is gone, so the decision is over and the
+        // next Start opens a fresh ride in this same boot.
+        self.recovery = RideRecoveryState::None;
         // The "save & start new" second half, if the rider asked for one. Stage 1 lands the verdict
         // and stage 7 opens the new ride, so both halves of the gesture complete in one pass.
         self.pending = core::mem::take(&mut self.restart_after_close).then_some(RecorderIntent::Start);
@@ -1085,7 +1248,7 @@ impl RecorderMachine {
             restart_after_close,
             checkpoint_owed,
             recovery_offered,
-            recovered_held,
+            recovery,
             breadcrumb,
             speed_win,
             samples,
@@ -1121,7 +1284,7 @@ impl RecorderMachine {
         assert!(!*resume_next && !*restart_after_close, "no continuation and no restart armed");
         assert!(!*refusal_told, "the rider has not been refused a ride");
         assert!(!*checkpoint_owed, "no checkpoint owed");
-        assert!(!*recovery_offered && !*recovered_held, "no recovered ride offered this boot");
+        assert!(!*recovery_offered && *recovery == RideRecoveryState::None, "no recovered ride offered this boot");
         assert!(breadcrumb.is_empty(), "no trail");
         assert!(speed_win.median_cms().is_none(), "no moving speeds recorded");
         assert!(samples.is_empty(), "no sample is waiting to be written");
@@ -1226,7 +1389,7 @@ mod tests {
     #[test]
     fn a_refused_continue_keeps_the_continuation_edge() {
         let mut rec = RecorderMachine::new();
-        assert!(rec.offer_recovery());
+        assert!(rec.offer_recovery(RideRecoveryState::Resumable));
         rec.continue_recovered();
         assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused);
         assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered), "still a continuation");
@@ -1241,7 +1404,7 @@ mod tests {
     #[test]
     fn a_discarded_recovery_does_not_continue_into_the_next_ride() {
         let mut rec = RecorderMachine::new();
-        assert!(rec.offer_recovery());
+        assert!(rec.offer_recovery(RideRecoveryState::Resumable));
         rec.continue_recovered(); // armed…
         rec.request(RecorderIntent::Discard); // …and the rider changes their mind
 
@@ -1397,7 +1560,7 @@ mod tests {
     #[test]
     fn a_recovered_ride_can_be_discarded_without_a_session() {
         let mut rec = RecorderMachine::new();
-        assert!(rec.offer_recovery());
+        assert!(rec.offer_recovery(RideRecoveryState::Resumable));
         rec.request(RecorderIntent::Discard);
         let effect = rec.next_effect(CAN_RECORD, at(1)).expect("the recovered object is discardable");
         assert!(matches!(effect, RecorderEffect::Discard { .. }));
@@ -1410,8 +1573,8 @@ mod tests {
     #[test]
     fn a_recovered_ride_continues_without_resetting_its_totals() {
         let mut rec = RecorderMachine::new();
-        assert!(rec.offer_recovery(), "the decision is put to the rider");
-        assert!(!rec.offer_recovery(), "once per boot");
+        assert!(rec.offer_recovery(RideRecoveryState::Resumable), "the decision is put to the rider");
+        assert!(!rec.offer_recovery(RideRecoveryState::Resumable), "once per boot");
 
         rec.continue_recovered();
         assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered));
@@ -1426,6 +1589,186 @@ mod tests {
             RecorderAdvance::Opened(SessionStart::Fresh),
             "the continuation edge was one-shot"
         );
+    }
+
+    // ══ The recovered object the rider decided about ═══════════════════════════════════════════
+
+    /// Offer a recovered object in `offered` and take the one effect the rider's confirmation buys.
+    /// Used for both subjects of the removal — a damaged recording and a whole recovered ride —
+    /// because the operation is the same one.
+    fn confirmed_removal(offered: RideRecoveryState) -> (RecorderMachine, RecorderEffect) {
+        let mut rec = RecorderMachine::new();
+        assert!(rec.offer_recovery(offered));
+        rec.request(RecorderIntent::Discard);
+        let effect = rec.next_effect(CAN_RECORD, at(1)).expect("the rider's confirmation buys one attempt");
+        assert!(matches!(effect, RecorderEffect::Discard { .. }), "the removal is the exact one: {effect:?}");
+        (rec, effect)
+    }
+
+    /// Offer a damaged recovered object and take its one confirmed repair attempt.
+    fn repairing(damage: RideDamage) -> (RecorderMachine, RecorderEffect) {
+        confirmed_removal(RideRecoveryState::for_damage(damage))
+    }
+
+    /// **One attempt per rider action, never one per pass.** A failed repair latches its terminal
+    /// state, retires the request, and mints nothing further of its own accord; a fresh confirmation
+    /// buys exactly one more attempt, with no reboot in between.
+    ///
+    /// The middle assertion is the whole finding: keeping the close pending on a failed repair is
+    /// what made every pass re-issue a full catalog commit.
+    #[test]
+    fn a_failed_repair_costs_one_attempt_and_waits_for_the_rider() {
+        let (mut rec, effect) = repairing(RideDamage::Payload);
+        let verdict = rec.apply_outcome(RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write });
+        assert_eq!(verdict, RecorderVerdict::RecoveryLatched, "the failure is latched, not re-offered");
+        assert_eq!(rec.recovery(), RideRecoveryState::Latched(Some(RideDamage::Payload)));
+
+        for pass in 0..5 {
+            assert!(
+                rec.next_effect(CAN_RECORD, at(2 + pass * CHECKPOINT_MS)).is_none(),
+                "pass {pass}: a latched failure mints nothing — not the removal, and not a cadence either"
+            );
+        }
+
+        // The rider confirms again. That is not automatic, and it buys exactly one more attempt.
+        rec.request(RecorderIntent::Discard);
+        let retry = rec.next_effect(CAN_RECORD, at(60_000)).expect("a fresh confirmation is a fresh attempt");
+        assert!(matches!(retry, RecorderEffect::Discard { .. }));
+        assert!(rec.next_effect(CAN_RECORD, at(60_001)).is_none(), "and one is all it is");
+
+        // An executor that abandoned the work without performing it costs the confirmation and
+        // nothing else: the object is repairable again, and still nothing happens by itself.
+        rec.apply_outcome(RecorderOutcome::Cancelled { token: retry.token() });
+        assert_eq!(rec.recovery(), RideRecoveryState::Repairable(RideDamage::Payload), "nothing was attempted");
+        assert!(rec.next_effect(CAN_RECORD, at(60_002)).is_none(), "and the rider has not asked again");
+
+        // A confirmation after the Cancel is a fresh rider action and buys exactly one attempt.
+        rec.request(RecorderIntent::Discard);
+        let after_cancel = rec.next_effect(CAN_RECORD, at(60_003)).expect("a confirm after a cancel is honoured");
+        assert!(matches!(after_cancel, RecorderEffect::Discard { .. }));
+        assert!(rec.next_effect(CAN_RECORD, at(60_004)).is_none(), "and again, one is all it is");
+    }
+
+    /// A store that refuses every mutation is a different answer from a write that went wrong: the
+    /// decision ends, and no confirmation can buy another attempt against it.
+    ///
+    /// It ends the same way for a **whole** recovered ride, and nothing is lost by that: a store
+    /// that will not take the removal will not take a continued ride's writes either.
+    #[test]
+    fn a_read_only_store_ends_the_decision_rather_than_offering_a_retry() {
+        for offered in [RideRecoveryState::for_damage(RideDamage::Metadata), RideRecoveryState::Resumable] {
+            let (mut rec, effect) = confirmed_removal(offered);
+            let verdict =
+                rec.apply_outcome(RecorderOutcome::Failed { token: effect.token(), error: RecorderError::ReadOnly });
+            assert_eq!(verdict, RecorderVerdict::RecoveryLatched, "{offered:?}");
+            assert_eq!(rec.recovery(), RideRecoveryState::Unrepairable, "{offered:?}");
+            rec.request(RecorderIntent::Discard);
+            assert!(
+                rec.next_effect(CAN_RECORD, at(2)).is_none(),
+                "{offered:?}: a store that takes no mutation is asked for none"
+            );
+        }
+    }
+
+    /// **The bound is the rider's action, not the object's condition** (#1557, owner ruling on M1).
+    /// A whole recovered ride the rider chose to throw away latches exactly like a damaged one when
+    /// the removal fails: one attempt, then silence, then one more per fresh confirmation.
+    ///
+    /// Its card is the one thing that differs — the terminal mode maps to *Discard failed*, not
+    /// *Repair failed* — and a `Cancelled` returns the rider to the **full** Continue/Discard card,
+    /// because nothing was attempted and the ride is still whole.
+    #[test]
+    fn a_failed_discard_of_a_whole_recovered_ride_costs_one_attempt_too() {
+        let (mut rec, effect) = confirmed_removal(RideRecoveryState::Resumable);
+        let verdict = rec.apply_outcome(RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write });
+        assert_eq!(verdict, RecorderVerdict::RecoveryLatched, "no REC_ERROR, and no re-offer");
+        assert_eq!(rec.recovery(), RideRecoveryState::Latched(None), "latched with no damage to name");
+
+        for pass in 0..5 {
+            assert!(
+                rec.next_effect(CAN_RECORD, at(2 + pass * CHECKPOINT_MS)).is_none(),
+                "pass {pass}: a latched discard re-attempts nothing"
+            );
+        }
+
+        // A Start against it opens no session either: the object still owns the store's ride state.
+        rec.request(RecorderIntent::Start);
+        assert_eq!(
+            rec.advance(CAN_RECORD),
+            RecorderAdvance::RecoveryOwed,
+            "no phantom session behind a failed discard"
+        );
+        assert!(!rec.recording());
+
+        // Retry, with no reboot: one fresh confirmation, one attempt.
+        rec.request(RecorderIntent::Discard);
+        let retry = rec.next_effect(CAN_RECORD, at(60_000)).expect("a fresh confirmation is a fresh attempt");
+        assert!(rec.next_effect(CAN_RECORD, at(60_001)).is_none(), "and one is all it is");
+
+        // Abandoned rather than performed: the ride is whole, so the whole card comes back.
+        rec.apply_outcome(RecorderOutcome::Cancelled { token: retry.token() });
+        assert_eq!(rec.recovery(), RideRecoveryState::Resumable, "an untouched ride is still continuable");
+        assert!(rec.next_effect(CAN_RECORD, at(60_002)).is_none(), "and the rider has not asked again");
+
+        // …and it can still be continued, which is what "still Resumable" has to mean.
+        rec.continue_recovered();
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered));
+    }
+
+    /// The successful repair restores recording **in the same boot**: the removal committed, the
+    /// recovery state is over, and the very next Start opens a fresh ride with no reboot between.
+    #[test]
+    fn a_repaired_recording_lets_the_next_ride_open_in_the_same_boot() {
+        let (mut rec, effect) = repairing(RideDamage::Payload);
+        assert_eq!(rec.apply_outcome(RecorderOutcome::Discarded { token: effect.token() }), RecorderVerdict::Dropped);
+        assert_eq!(rec.recovery(), RideRecoveryState::None, "the decision is over");
+
+        rec.request(RecorderIntent::Start);
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh), "recording is available now");
+        assert!(rec.recording());
+    }
+
+    /// **Never risk the map**, expressed as an absence: a catalog this executor could not read is
+    /// one it never asks the store to mutate — not on the rider's confirmation, and not on any pass.
+    #[test]
+    fn an_unrepairable_recording_is_never_offered_to_the_store() {
+        let mut rec = RecorderMachine::new();
+        assert!(rec.offer_recovery(RideRecoveryState::for_damage(RideDamage::Catalog)));
+        assert_eq!(rec.recovery(), RideRecoveryState::Unrepairable, "catalog damage has no repair");
+
+        rec.request(RecorderIntent::Discard);
+        for pass in 0..20 {
+            assert!(
+                rec.next_effect(CAN_RECORD, at(1 + pass * CHECKPOINT_MS)).is_none(),
+                "pass {pass}: no effect is ever minted against an unreadable catalog"
+            );
+        }
+    }
+
+    /// **P4**: a Start against a standing damaged object opens no session at all. The request is
+    /// kept, the decision is put back once per ask, and a fresh ask is answered again — so a rider
+    /// who presses START is shown the one thing between them and recording rather than a riding view
+    /// that records nothing.
+    #[test]
+    fn a_start_against_a_damaged_recording_re_raises_the_decision_once_per_ask() {
+        let mut rec = RecorderMachine::new();
+        assert!(rec.offer_recovery(RideRecoveryState::for_damage(RideDamage::Payload)));
+
+        rec.request(RecorderIntent::Start);
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::RecoveryOwed, "the decision is owed, not a session");
+        assert!(!rec.recording(), "and nothing opened");
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Nothing, "one card per ask, not one per pass");
+
+        rec.request(RecorderIntent::Start);
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::RecoveryOwed, "a fresh ask gets a fresh answer");
+
+        // The rider answers the card instead. Their Discard replaces the pending Start, so nothing
+        // auto-starts behind them once the repair lands.
+        rec.request(RecorderIntent::Discard);
+        let effect = rec.next_effect(CAN_RECORD, at(1)).expect("the confirmed repair");
+        rec.apply_outcome(RecorderOutcome::Discarded { token: effect.token() });
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Nothing, "no ride follows the repair on its own");
+        assert!(!rec.recording());
     }
 
     // ══ Sample assembly ════════════════════════════════════════════════════════════════════════
