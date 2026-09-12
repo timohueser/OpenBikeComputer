@@ -19,7 +19,6 @@ settings = "Einstellungen"
 
 [peak_view]
 waiting_gps = "GPS wird gesucht..."
-limited_terrain = "Geländedaten fehlen"
 preparing = "Panorama wird erstellt..."
 unavailable = "Gelände nicht verfügbar"
 

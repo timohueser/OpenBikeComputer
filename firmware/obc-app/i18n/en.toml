@@ -32,7 +32,6 @@ settings = "Settings"
 
 [peak_view]
 waiting_gps = "Waiting for GPS..."
-limited_terrain = "Limited terrain"
 preparing = "Preparing panorama..."
 unavailable = "Terrain unavailable"
 

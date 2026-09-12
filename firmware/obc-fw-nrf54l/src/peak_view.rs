@@ -48,6 +48,7 @@ pub(crate) struct Runtime {
     failed: bool,
     first_presented: bool,
     view_ready: bool,
+    view_progress: u8,
     active: bool,
     work_us: u64,
     reported: u8,
@@ -73,6 +74,7 @@ impl Runtime {
             failed: false,
             first_presented: false,
             view_ready: false,
+            view_progress: 0,
             active: false,
             work_us: 0,
             reported: 0,
@@ -87,6 +89,7 @@ impl Runtime {
             self.arm = None;
             self.first_presented = false;
             self.view_ready = false;
+            self.view_progress = 0;
             self.failed = false;
             self.position = None;
         }
@@ -118,10 +121,15 @@ impl Runtime {
         let arm = self.arm.as_deref_mut().unwrap();
         arm.builder.set_heading(heading);
         let ready = arm.builder.view_ready(heading) && !self.failed;
-        let changed = self.view_ready != ready;
+        let progress = arm.builder.panorama.view_progress(heading, arm.builder.profile().horizontal_fov_q4());
+        let changed = self.view_ready != ready || (self.first_presented && self.view_progress != progress);
         self.view_ready = ready;
-        app.set_peak_view_loading(!ready && !self.failed, self.failed);
-        app.set_peak_view_building(ready && self.busy());
+        self.view_progress = progress;
+        app.set_peak_view_loading(!ready && !self.first_presented && !self.failed, self.failed);
+        app.set_peak_view_building(self.busy());
+        if changed {
+            app.redraw_peak_view();
+        }
         changed
     }
 
@@ -164,6 +172,7 @@ impl Runtime {
             self.arm = None;
             self.first_presented = false;
             self.view_ready = false;
+            self.view_progress = 0;
             self.failed = false;
             self.position = Some(position);
             app.state.peak_view_peak_count = 0;
@@ -199,7 +208,9 @@ impl Runtime {
                 );
             }
             self.failed = arm.terrain.failed();
-            app.state.peak_view_peaks[..arm.builder.peaks.len()].copy_from_slice(&arm.builder.peaks);
+            for (out, peak) in app.state.peak_view_peaks.iter_mut().zip(arm.builder.display_peaks()) {
+                *out = peak;
+            }
             app.state.peak_view_peak_count = arm.builder.peaks.len() as u8;
             if arm.builder.complete() {
                 defmt::info!(

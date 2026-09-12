@@ -160,7 +160,7 @@ fn generate_surface(
     profile.set_ground(ground);
     profile.default_heading_q4 = worker.heading.load(Ordering::Relaxed);
     let mut builder = Box::new(Builder::new(&profile));
-    let mut published = [0u8; 180];
+    let mut published = 0;
     let mut first_ready = false;
     while !builder.complete() {
         if worker.cancel.load(Ordering::Relaxed) {
@@ -169,14 +169,15 @@ fn generate_surface(
         let heading = worker.heading.load(Ordering::Relaxed) % 1440;
         builder.set_heading(heading);
         builder.step(&mut terrain, 64);
-        if !terrain.failed() && builder.view_ready(heading) {
-            if !first_ready {
+        if !terrain.failed() {
+            if !first_ready && builder.view_ready(heading) {
                 first_ready = true;
                 eprintln!("peak-view: view ready in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
             }
-            if !builder.complete() && published[heading as usize / 8] & (1 << (heading % 8)) == 0 {
+            let progress = builder.progress();
+            if first_ready && !builder.complete() && progress != published {
                 let preview = Preview::from_builder(&builder);
-                published = preview.ready;
+                published = progress;
                 if worker.sender.send(Ok(Frame { preview, complete: false })).is_err() {
                     return Err("cancelled".into());
                 }
@@ -200,26 +201,17 @@ struct Preview {
     panorama: Panorama,
     profile: PeakViewProfile<'static>,
     peaks: Vec<obc_app::PeakViewPeak>,
-    ready: [u8; 180],
 }
 impl Preview {
     fn from_builder(builder: &Builder) -> Box<Self> {
-        let mut result = Box::new(Self {
+        Box::new(Self {
             panorama: builder.panorama.clone(),
             profile: builder.profile(),
-            peaks: builder.peaks.to_vec(),
-            ready: [0; 180],
-        });
-        for heading in 0..1440 {
-            if builder.view_ready(heading as u16) {
-                result.ready[heading / 8] |= 1 << (heading % 8);
-            }
-        }
-        result
+            peaks: builder.display_peaks().collect(),
+        })
     }
     fn view_ready(&self, heading: u16) -> bool {
-        let heading = heading as usize % 1440;
-        self.ready[heading / 8] & (1 << (heading % 8)) != 0
+        self.panorama.view_ready(heading, self.profile.horizontal_fov_q4())
     }
 }
 struct Frame {
@@ -335,13 +327,17 @@ impl Runtime {
             }
         }
         let view_ready = self.result.as_ref().is_some_and(|result| result.view_ready(heading));
-        app.set_peak_view_loading(!view_ready && !self.failed, self.failed);
-        app.set_peak_view_building(view_ready && self.receiver.is_some());
+        app.set_peak_view_loading(!view_ready && !self.first_presented && !self.failed, self.failed);
+        app.set_peak_view_building(self.receiver.is_some());
     }
 
     fn accept(&mut self, app: &mut App, result: Result<Frame, String>) {
         match result {
             Ok(frame) => {
+                let heading = app.peak_view_heading_q4();
+                let progress =
+                    |preview: &Preview| preview.panorama.view_progress(heading, preview.profile.horizontal_fov_q4());
+                let changed = self.result.as_ref().is_none_or(|old| progress(old) != progress(&frame.preview));
                 if frame.complete {
                     self.receiver = None;
                 }
@@ -349,6 +345,9 @@ impl Runtime {
                 app.state.peak_view_peaks[..frame.preview.peaks.len()].copy_from_slice(&frame.preview.peaks);
                 app.state.peak_view_peak_count = frame.preview.peaks.len() as u8;
                 self.result = Some(frame.preview);
+                if changed {
+                    app.redraw_peak_view();
+                }
             }
             Err(error) => {
                 self.receiver = None;

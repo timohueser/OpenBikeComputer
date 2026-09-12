@@ -1,4 +1,4 @@
-//! Draw a window from the completed RAM panorama without accessing elevation storage.
+//! Draw completed bearings from RAM and mark pending bearings without inventing terrain.
 use super::{fov_q4, palette, COMPASS_H};
 use crate::peak_view::{panorama::ROWS, Panorama, PeakViewProfile};
 use obc_render::Surface;
@@ -19,6 +19,12 @@ pub(super) fn draw(
     let fov = fov_q4(profile);
     for x in 0..w {
         let bearing = (i32::from(heading) - fov / 2 + x * fov / (w - 1)).rem_euclid(1440) as u16;
+        if !terrain.ready_at_bearing_q4(bearing) {
+            for y in (COMPASS_H + (24 - x % 24) % 24..bottom).step_by(24) {
+                cv.vline(x, y, 1, 1, TONES[1]);
+            }
+            continue;
+        }
         let mut start = 0;
         while start < ROWS {
             let tone = terrain.tone_at_bearing_q4(bearing, start);
