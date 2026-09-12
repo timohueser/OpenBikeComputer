@@ -209,6 +209,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
             name: Some(format!("POI {k}")),
             from_node: true,
             hours: None,
+            elevation_m: None,
         })
         .collect();
     (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)

@@ -208,6 +208,8 @@ pub struct MapPlan {
     /// rectangle and the present-cell count alone — which is what lets the header state the region's
     /// offset without anything being back-patched.
     pub terrain_bytes: u64,
+    /// Surface tiles start on SD block boundaries in the complete map.
+    pub surface_terrain: bool,
     /// Total bytes, computable before the write and re-checked after it (§5.7).
     pub bytes: u64,
     /// Filled by [`write`].
@@ -256,7 +258,7 @@ impl MapPlan {
         let (terrain_offset, terrain_len, total) = if self.terrain_bytes == 0 {
             (0, 0, nav_end)
         } else {
-            let at = align_up(nav_end);
+            let at = if self.surface_terrain { (nav_end + 511) & !511 } else { align_up(nav_end) };
             let end = at.checked_add(self.terrain_bytes).ok_or_else(|| self.past_u64())?;
             let total = align_up(end);
             (at, total - at, total)
@@ -300,6 +302,23 @@ struct Layout {
 /// own output so an over-size file is refused rather than emitted.
 pub fn projected_bytes(plan: &MapPlan, style_len: usize, poi_len: u64, nav: crate::nav::NavProjection) -> Result<u64> {
     Ok(plan.layout(style_len, poi_len, nav)?.total)
+}
+
+/// Bytes added before terrain by summit metadata and the surface sector alignment.
+pub fn peak_view_prefix_bytes(
+    plan: &MapPlan,
+    style_len: usize,
+    poi_len: u64,
+    summit_bytes: u64,
+    nav: crate::nav::NavProjection,
+) -> Result<u64> {
+    let layout = plan.layout(style_len, poi_len, nav)?;
+    let native_nav = layout
+        .nav_offset
+        .checked_sub(summit_bytes)
+        .ok_or_else(|| Error::Capacity("summit section exceeds the map layout".into()))?;
+    let native_start = align_up(native_nav + nav.bytes_at(native_nav));
+    Ok(layout.terrain_offset - native_start)
 }
 
 /// The nav section's exact bytes in `plan`, for the assembly report. Kept beside
@@ -434,7 +453,11 @@ pub fn write(
         // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
         //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
         if let Some(region) = terrain {
-            w.begin_section()?;
+            w.pad(
+                l.terrain_offset
+                    .checked_sub(w.at())
+                    .ok_or_else(|| Error::Verify("terrain starts before the current map cursor".into()))?,
+            )?;
             region.emit(&mut w)?;
             w.begin_section()?;
         }
@@ -674,7 +697,7 @@ mod tests {
     }
 
     fn plan() -> MapPlan {
-        MapPlan { box_: bx(), lods: Vec::new(), terrain_bytes: 0, bytes: 1234, sha256: [0; 32] }
+        MapPlan { box_: bx(), lods: Vec::new(), terrain_bytes: 0, surface_terrain: false, bytes: 1234, sha256: [0; 32] }
     }
 
     /// **One wall, and it is the format's.** Three others stood here at various times — FAT32's

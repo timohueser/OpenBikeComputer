@@ -13,8 +13,17 @@ routes = "Routen"
 rides = "Fahrten"
 pois = "POIs"
 map = "Karte"
+peaks = "Gipfel"
 weather = "Wetter"
 settings = "Einstellungen"
+
+[peak_view]
+waiting_gps = "GPS wird gesucht..."
+preparing = "Panorama wird erstellt..."
+unavailable = "Gelände nicht verfügbar"
+
+manual = "MANUELL"
+no_peaks = "KEINE BENANNTEN GIPFEL"
 
 # --- Der Fahrt-Kontext (das Blatt von unten), die Voraus-Liste und die Umleitungs-Auswahl ---
 [ride_context]

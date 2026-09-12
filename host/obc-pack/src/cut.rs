@@ -368,7 +368,7 @@ pub fn cut_ingested(
                 if progress.is_cancelled() {
                     return Err("cancelled".into());
                 }
-                let pois: Vec<Poi> = poi_cells
+                let mut pois: Vec<Poi> = poi_cells
                     .get(&(cell.i, cell.j))
                     .map(|ix| ix.iter().map(|&k| ing.pois[k as usize].clone()).collect())
                     .unwrap_or_default();
@@ -391,6 +391,7 @@ pub fn cut_ingested(
                     Some(s) => s,
                     None => &mut null,
                 };
+                crate::poi::fill_summit_elevations(&mut pois, terrain);
                 write_cell(
                     cell,
                     band,

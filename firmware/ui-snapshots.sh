@@ -28,7 +28,7 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 58 of the 59 screens have at least one frame here.
+# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
 # (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count was unchanged; D4a moved the
 # Up-ahead filter onto that same `ContextDrawer`, adding frames rather than rows; D4b deleted the
 # Weather settings screen outright, so both counts drop by one; D4d deleted the Bike type screen
@@ -124,6 +124,20 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # warning-red hold-guarded "Delete all" + "Cancel" card, naming the trip. Entry selects Cancel.
 "$SIM" "$MAP" --boot --script "p p h" --routes-dir "$TRIPDIR" --expect-screen TripDelete --png "$OUT/trip-delete-confirm.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --expect-screen Menu --png "$OUT/menu.png"
+# Peak View's geographic fixture: Live follows the preset's stopped-compass heading;
+# Select freezes that panorama and keeps the current summit in the MANUAL ledger.
+# Geographic fixture files are independent from MAP. `f` finishes the full panorama before capture or Browse input.
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f p" --expect-screen PeakView --png "$OUT/peak-view-browse.png"
+# A heading outside the initial west-facing crop proves that Live mode discovers a different set
+# of named ridge summits from the fixture's full-circle peak catalog.
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
+# Two Up steps select Rote Nase on the inner ridge below Stockhorn at a nearby bearing.
+# Both distance bands must remain Browse targets instead of collapsing into one outer-silhouette name.
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
+# One Down step enters Browse and selects Matterhorn. Generic labels are selection-independent:
+# selecting it keeps the other labels in place.
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
 # synced/retention metadata boundary lands.

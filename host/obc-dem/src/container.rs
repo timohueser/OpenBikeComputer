@@ -25,9 +25,9 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use obc_formats::obct::{
-    cell_block_len, cell_samples_log2, DIR_ABSENT, DIR_ENTRY_LEN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I,
-    HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET, HDR_FLAGS, HDR_MAGIC, HDR_POSTING_LOG2, HDR_VERSION,
-    HEADER_LEN, MAGIC, VERSION,
+    cell_block_len, cell_samples_log2, CellIndexLayout, SurfaceLayout, SurfaceLevel, CELL_INDEX_FLAG, DIR_ABSENT,
+    DIR_ENTRY_LEN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I, HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET,
+    HDR_FLAGS, HDR_MAGIC, HDR_POSTING_LOG2, HDR_VERSION, HEADER_LEN, MAGIC, SURFACE_FLAG, SURFACE_VERSION, VERSION,
 };
 
 use obc_elevation::grid::axis_cells;
@@ -72,6 +72,9 @@ pub struct ShardWriter<W: Write + Seek> {
     next_slot: usize,
     /// Absolute offset the next block will start at.
     cursor: u32,
+    cell_index: Option<(CellIndexLayout, SurfaceLevel)>,
+    cell_maxima: Vec<i16>,
+    rect: CellRect,
 }
 
 /// Everything about a container that is decided before a byte is written: the pairing is one OBCT
@@ -108,13 +111,13 @@ fn validate(posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<u32, Stri
 }
 
 /// The 32-byte OBCT header (`OBCT_Spec.md` §4.2). The one transcription of that table in the tree.
-fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect) -> [u8; HEADER_LEN] {
+fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect, surface: bool) -> [u8; HEADER_LEN] {
     let mut header = [0u8; HEADER_LEN];
     header[HDR_MAGIC..HDR_MAGIC + 4].copy_from_slice(&MAGIC);
-    header[HDR_VERSION] = VERSION;
+    header[HDR_VERSION] = if surface { SURFACE_VERSION } else { VERSION };
     header[HDR_POSTING_LOG2] = posting_log2;
     header[HDR_CELL_LOG2] = cell_log2;
-    header[HDR_FLAGS] = 0; // v1 defines no encoding flags; a reader must refuse any bit set
+    header[HDR_FLAGS] = if surface { SURFACE_FLAG | CELL_INDEX_FLAG } else { 0 };
     header[HDR_CELL_MIN_I..HDR_CELL_MIN_I + 4].copy_from_slice(&rect.min_i.to_le_bytes());
     header[HDR_CELL_MIN_J..HDR_CELL_MIN_J + 4].copy_from_slice(&rect.min_j.to_le_bytes());
     header[HDR_CELL_ROWS..HDR_CELL_ROWS + 2].copy_from_slice(&rect.rows.to_le_bytes());
@@ -141,14 +144,37 @@ fn header_bytes(posting_log2: u8, cell_log2: u8, rect: CellRect) -> [u8; HEADER_
 /// have left behind. `the_streamed_prefix_is_what_the_shard_writer_patches` pins that byte-for-byte
 /// rather than leaving it as a claim.
 pub fn container_prefix(posting_log2: u8, cell_log2: u8, rect: CellRect, present: &[bool]) -> Result<Vec<u8>, String> {
-    let block_len = validate(posting_log2, cell_log2, rect)?;
+    container_prefix_with_surface(posting_log2, cell_log2, rect, present, false)
+}
+
+/// A surface container aligns its height blocks and stores the fixed v2 cell layout.
+pub fn container_prefix_with_surface(
+    posting_log2: u8,
+    cell_log2: u8,
+    rect: CellRect,
+    present: &[bool],
+    surface: bool,
+) -> Result<Vec<u8>, String> {
+    let native_len = validate(posting_log2, cell_log2, rect)?;
+    let block_len = if surface {
+        SurfaceLayout::new(posting_log2, cell_log2).ok_or("surface cell exceeds OBCT offsets")?.cell_bytes()
+    } else {
+        native_len
+    };
     let slots = rect.slots() as usize;
     if present.len() != slots {
         return Err(format!("the presence plan has {} entries for a {slots}-slot rectangle", present.len()));
     }
     let mut out = Vec::with_capacity(HEADER_LEN + slots * DIR_ENTRY_LEN);
-    out.extend_from_slice(&header_bytes(posting_log2, cell_log2, rect));
-    let mut cursor = (HEADER_LEN + slots * DIR_ENTRY_LEN) as u64;
+    out.extend_from_slice(&header_bytes(posting_log2, cell_log2, rect, surface));
+    let prefix_bytes = HEADER_LEN + slots * DIR_ENTRY_LEN;
+    let padded = if surface {
+        CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).ok_or("cell index exceeds OBCT offsets")?.end()
+            as usize
+    } else {
+        prefix_bytes
+    };
+    let mut cursor = padded as u64;
     for &here in present {
         if !here {
             out.extend_from_slice(&DIR_ABSENT.to_le_bytes());
@@ -165,18 +191,79 @@ pub fn container_prefix(posting_log2: u8, cell_log2: u8, rect: CellRect, present
         out.extend_from_slice(&(cursor as u32).to_le_bytes());
         cursor += block_len as u64;
     }
+    out.resize(padded, 0);
+    if surface {
+        fill_cell_index(&mut out, rect, &vec![i16::MAX; slots])?;
+    }
     Ok(out)
+}
+
+/// Populate the prefix from inclusive native cell maxima; missing cells are unbounded.
+pub fn fill_cell_index(prefix: &mut [u8], rect: CellRect, maxima: &[i16]) -> Result<(), String> {
+    if maxima.len() != rect.slots() as usize {
+        return Err("cell maxima do not match the terrain rectangle".into());
+    }
+    let layout =
+        CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).ok_or("cell index exceeds OBCT offsets")?;
+    if prefix.len() < layout.end() as usize {
+        return Err("cell index prefix is truncated".into());
+    }
+    let (mut rows, mut cols) = (rect.rows as usize, rect.cols as usize);
+    let mut plane: Vec<i16> = maxima.iter().map(|&h| if h == i16::MIN { i16::MAX } else { h }).collect();
+    let mut at = layout.offset as usize;
+    loop {
+        for &height in &plane {
+            prefix[at..at + 2].copy_from_slice(&height.to_le_bytes());
+            at += 2;
+        }
+        if rows == 1 && cols == 1 {
+            break;
+        }
+        let (next_rows, next_cols) = (rows.div_ceil(2), cols.div_ceil(2));
+        let mut next = Vec::with_capacity(next_rows * next_cols);
+        for y in 0..next_rows {
+            for x in 0..next_cols {
+                let mut maximum = i16::MIN;
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        if y * 2 + dy < rows && x * 2 + dx < cols {
+                            maximum = maximum.max(plane[(y * 2 + dy) * cols + x * 2 + dx]);
+                        }
+                    }
+                }
+                next.push(maximum);
+            }
+        }
+        plane = next;
+        rows = next_rows;
+        cols = next_cols;
+    }
+    Ok(())
 }
 
 impl<W: Write + Seek> ShardWriter<W> {
     /// Open a container over `out` for a `posting_log2` / `cell_log2` pairing and a cell rectangle,
     /// writing the header and a fully-absent directory.
-    pub fn new(mut out: W, posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<Self, String> {
-        let block_len = validate(posting_log2, cell_log2, rect)?;
+    pub fn new(out: W, posting_log2: u8, cell_log2: u8, rect: CellRect) -> Result<Self, String> {
+        Self::with_surface(out, posting_log2, cell_log2, rect, false)
+    }
 
-        out.write_all(&header_bytes(posting_log2, cell_log2, rect)).map_err(|e| format!("writing OBCT header: {e}"))?;
+    pub fn with_surface(
+        mut out: W,
+        posting_log2: u8,
+        cell_log2: u8,
+        rect: CellRect,
+        surface: bool,
+    ) -> Result<Self, String> {
+        let native_len = validate(posting_log2, cell_log2, rect)?;
+        let block_len = if surface {
+            SurfaceLayout::new(posting_log2, cell_log2).ok_or("surface cell exceeds OBCT offsets")?.cell_bytes()
+        } else {
+            native_len
+        };
         let slots = rect.slots() as usize;
-        out.write_all(&vec![0u8; slots * DIR_ENTRY_LEN]).map_err(|e| format!("writing OBCT directory: {e}"))?;
+        let prefix = container_prefix_with_surface(posting_log2, cell_log2, rect, &vec![false; slots], surface)?;
+        out.write_all(&prefix).map_err(|e| format!("writing OBCT prefix: {e}"))?;
 
         Ok(ShardWriter {
             out,
@@ -184,7 +271,17 @@ impl<W: Write + Seek> ShardWriter<W> {
             cell_log2,
             directory: vec![DIR_ABSENT; slots],
             next_slot: 0,
-            cursor: HEADER_LEN as u32 + (slots * DIR_ENTRY_LEN) as u32,
+            cursor: prefix.len() as u32,
+            cell_index: if surface {
+                Some((
+                    CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).expect("validated prefix"),
+                    SurfaceLayout::new(posting_log2, cell_log2).expect("validated surface").level(0).unwrap(),
+                ))
+            } else {
+                None
+            },
+            cell_maxima: if surface { vec![i16::MAX; slots] } else { Vec::new() },
+            rect,
         })
     }
 
@@ -205,6 +302,10 @@ impl<W: Write + Seek> ShardWriter<W> {
         let Some(block) = block else { return Ok(()) };
         if block.len() != self.block_len as usize {
             return Err(format!("cell block is {} bytes, expected {}", block.len(), self.block_len));
+        }
+        if let Some((_, level)) = self.cell_index {
+            let at = level.bound_offset(0, 0, level.samples_log2).expect("native cell root") as usize;
+            self.cell_maxima[slot] = i16::from_le_bytes([block[at], block[at + 1]]);
         }
         // The directory is made of `uint32` offsets, so this block's *end* has to be addressable —
         // checked here, where the actual file length is known, rather than pessimistically at open.
@@ -233,6 +334,12 @@ impl<W: Write + Seek> ShardWriter<W> {
         let bytes: Vec<u8> = self.directory.iter().flat_map(|e| e.to_le_bytes()).collect();
         self.out.seek(SeekFrom::Start(HEADER_LEN as u64)).map_err(|e| format!("seeking to the OBCT directory: {e}"))?;
         self.out.write_all(&bytes).map_err(|e| format!("patching the OBCT directory: {e}"))?;
+        if let Some((layout, _)) = self.cell_index {
+            let mut prefix = vec![0; layout.end() as usize];
+            fill_cell_index(&mut prefix, self.rect, &self.cell_maxima)?;
+            self.out.seek(SeekFrom::Start(layout.offset.into())).map_err(|e| format!("seeking to cell maxima: {e}"))?;
+            self.out.write_all(&prefix[layout.offset as usize..]).map_err(|e| format!("writing cell maxima: {e}"))?;
+        }
         self.out.flush().map_err(|e| format!("flushing OBCT output: {e}"))?;
         Ok(self.out)
     }
@@ -308,6 +415,40 @@ mod tests {
         assert!(container_prefix(9, 13, rect, &[false; 5]).is_err(), "one entry per slot");
         // The pairing and rectangle refusals are the writer's own, reached through the same `validate`.
         assert!(container_prefix(9, 12, rect, &[false; 6]).is_err(), "not a pairing OBCT permits");
+    }
+
+    #[test]
+    fn surface_cell_index_matches_both_writers_and_preserves_unknowns() {
+        let rect = CellRect { min_i: 3, min_j: 5, rows: 3, cols: 5 };
+        let layout = SurfaceLayout::new(9, 13).unwrap();
+        let level = layout.level(0).unwrap();
+        let root = level.bound_offset(0, 0, level.samples_log2).unwrap() as usize;
+        let mut maxima: Vec<i16> = (0..15).map(|n| 100 + n).collect();
+        maxima[0] = i16::MAX;
+        let present: Vec<bool> = maxima.iter().map(|&h| h != i16::MAX).collect();
+        let mut streamed = container_prefix_with_surface(9, 13, rect, &present, true).unwrap();
+        fill_cell_index(&mut streamed, rect, &maxima).unwrap();
+        let mut writer = ShardWriter::with_surface(Cursor::new(Vec::new()), 9, 13, rect, true).unwrap();
+        for (&height, &here) in maxima.iter().zip(&present) {
+            if here {
+                let mut cell = vec![0; layout.cell_bytes() as usize];
+                cell[root..root + 2].copy_from_slice(&height.to_le_bytes());
+                writer.push(Some(&cell)).unwrap();
+                streamed.extend_from_slice(&cell);
+            } else {
+                writer.push(None).unwrap();
+            }
+        }
+        assert_eq!(writer.finish().unwrap().into_inner(), streamed);
+        let index = CellIndexLayout::new(rect.rows, rect.cols, HEADER_LEN as u32).unwrap();
+        let read = |y, x, log| {
+            let at = index.node_offset(y, x, log).unwrap() as usize;
+            i16::from_le_bytes(streamed[at..at + 2].try_into().unwrap())
+        };
+        assert_eq!(read(0, 0, 1), i16::MAX);
+        assert_eq!(read(1, 2, 1), 114, "partial edge parent excludes cells outside coverage");
+        assert_eq!(read(0, 0, 3), i16::MAX, "missing data stays unbounded through the root");
+        assert!(streamed[index.offset as usize + index.bytes as usize..index.end() as usize].iter().all(|&b| b == 0));
     }
 
     /// An absent cell costs its four directory bytes and nothing else, and the blocks that *are*

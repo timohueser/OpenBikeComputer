@@ -149,9 +149,15 @@ pub struct AppState {
     pub pan: Option<Pan>,
     /// Latest electronic-compass heading (degrees CW from north), or `None` until one
     /// arrives. Stands in for the GPS course when the rider is stopped on a heading-up
-    /// map, so the orientation follows the compass instead of snapping to north; only
-    /// adopted on ticks where it would actually drive the rotation (see [`App::tick`]).
+    /// map, so the orientation follows the compass instead of snapping to north. Peak View uses
+    /// the same fallback even when the map preference is north-up. It is adopted only on ticks
+    /// where one of those views would use it (see [`App::tick`]).
     pub compass_deg: Option<f32>,
+    /// Installed terrain availability, captured observer framing, and current summit projections.
+    /// The large panorama remains host-owned and is borrowed only while drawing.
+    pub peak_view_profile: Option<crate::PeakViewProfile<'static>>,
+    pub peak_view_peaks: [crate::PeakViewPeak; 32],
+    pub peak_view_peak_count: u8,
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
@@ -200,6 +206,9 @@ impl AppState {
             user_fix: None,
             pan: None,
             compass_deg: None,
+            peak_view_profile: None,
+            peak_view_peaks: [crate::PeakViewPeak::EMPTY; 32],
+            peak_view_peak_count: 0,
             device: DeviceStatus {
                 // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
                 battery_pct: 75,
@@ -985,14 +994,20 @@ impl App {
         }
         // Electronic compass → the heading when the GPS can't give a course. Polled after the fix so
         // it sees this tick's movement state, and adopted *only* when it would actually drive the
-        // orientation: heading-up, not panning, and the latest fix has no course (stopped). Storing
-        // it in any other state (where `course_rad` ignores it) would change `state` on every
-        // reading and force a needless map redraw.
+        // orientation: a heading-up map that is not panning, or Peak View, and the latest fix has
+        // no course (stopped). Peak View deliberately uses the same effective-heading chain as the
+        // map, independent of the map's current north-up/heading-up preference.
         if let Some(compass) = compass {
             if let Some(heading) = compass.poll() {
                 let stopped = self.state.user_fix.and_then(|f| f.course).is_none();
-                if stopped && self.state.heading_up && self.state.pan.is_none() {
+                let peak_view_active = matches!(self.ui.stack.last(), Some(Screen::PeakView(_)));
+                let map_uses_compass = self.state.heading_up && self.state.pan.is_none();
+                if stopped && (map_uses_compass || peak_view_active) {
+                    let changed = self.state.compass_deg != Some(heading);
                     self.state.compass_deg = Some(heading);
+                    if changed && peak_view_active {
+                        self.ui.map_dirty = true;
+                    }
                 }
             }
         }
@@ -2269,6 +2284,64 @@ impl App {
         true
     }
 
+    /// Open the platform's installed Peak View. Generation starts when the host sees this screen.
+    pub fn show_peak_view(&mut self) -> bool {
+        if self.state.peak_view_profile.is_none() {
+            return false;
+        }
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::PeakView(screen::PeakViewScreen::new())));
+        self.ui.map_dirty = true;
+        true
+    }
+
+    pub fn set_peak_view_loading(&mut self, loading: bool, failed: bool) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_loading(loading, failed) {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn set_peak_view_waiting(&mut self) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_waiting() {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn set_peak_view_building(&mut self, building: bool) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_building(building) {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn redraw_peak_view(&mut self) {
+        if matches!(self.ui.stack.last(), Some(Screen::PeakView(_))) {
+            self.ui.map_dirty = true;
+        }
+    }
+
+    pub fn peak_view_heading_q4(&self) -> u16 {
+        match self.peak_view_base() {
+            Some(screen) => screen.heading_q4(&self.state),
+            None => self.state.peak_view_profile.map(|profile| profile.default_heading_q4).unwrap_or(0),
+        }
+    }
+
+    pub fn peak_view_is_base(&self) -> bool {
+        self.peak_view_base().is_some()
+    }
+
+    fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
+        match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
+            Some(Screen::PeakView(screen)) => Some(screen),
+            _ => None,
+        }
+    }
+
     pub fn top_screen(&self) -> &Screen {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
@@ -3152,6 +3225,7 @@ impl App {
             route,
             rain,
             weather,
+            None,
             w,
             h,
             &color_fn,
@@ -3231,7 +3305,9 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.render_scene_map_rain_timed(scratch, target, reader, reader, route, rain, weather, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch, target, reader, reader, route, rain, weather, None, w, h, color_fn, clock,
+        )
     }
 
     /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
@@ -3255,7 +3331,20 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, None, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            None,
+            None,
+            None,
+            w,
+            h,
+            color_fn,
+            clock,
+        )
     }
 
     /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
@@ -3276,6 +3365,7 @@ impl App {
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
         weather: Option<&crate::weather::WeatherSnapshot>,
+        peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -3385,6 +3475,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
+            peak_view,
             scratch,
             // Reborrow so the lease's trait-object lifetime shrinks to this frame's `Render`
             // borrow (a `&mut dyn` is invariant without the explicit coercion).
@@ -4357,6 +4448,17 @@ mod tests {
         app.state.heading_up = false; // north-up never consults the compass
         tick_with(&mut app, Fix::at(0, 0), 200.0);
         assert_eq!(app.state.compass_deg, None);
+    }
+
+    #[test]
+    fn peak_view_adopts_the_stopped_compass_even_when_the_map_is_north_up() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.state.heading_up = false;
+        assert!(app.ui.stack.push(Screen::PeakView(crate::screen::PeakViewScreen::new())).is_ok());
+        app.ui.map_dirty = false;
+        tick_with(&mut app, Fix::at(0, 0), 215.0);
+        assert_eq!(app.state.compass_deg, Some(215.0));
+        assert!(app.ui.map_dirty, "a stopped compass turn repaints the visible panorama");
     }
 
     // --- in-place placement into the reserved region ---

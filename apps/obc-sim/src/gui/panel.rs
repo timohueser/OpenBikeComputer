@@ -128,9 +128,9 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        // Compass — the magnetometer heading, always live but only effective on a
-                        // heading-up map with no GPS course (so it rotates the map during a replay pause,
-                        // no-op otherwise).
+                        // Compass — the magnetometer heading, effective while the GPS has no course.
+                        // It rotates a heading-up map during a replay pause and always drives a
+                        // stopped Peak View.
                         ui.label("Compass (heading when stopped)");
                         ui.add(egui::Slider::new(&mut self.panel.compass_deg, 0.0..=360.0).suffix("°").step_by(1.0));
 
@@ -251,7 +251,8 @@ impl SimGui {
 
         // Push the mirrors into the location + compass sources (the app reads them next tick).
         self.loc.set_position((self.panel.lat_deg * 1e6).round() as i32, (self.panel.lon_deg * 1e6).round() as i32);
-        self.loc.set_course(self.panel.heading_deg);
+        let moving = self.loc.current().and_then(|fix| fix.speed_mps).is_some_and(|speed| speed > 0.5);
+        self.loc.set_course(moving.then_some(self.panel.heading_deg));
         self.compass.set(self.panel.compass_deg);
     }
 

@@ -56,6 +56,8 @@ pub enum ArenaOwner {
     Nav,
     /// The USB write-combining buffer, held for one map upload.
     Usb,
+    /// Runtime panorama and terrain cache, held while Peak View is open.
+    PeakView,
 }
 
 /// Why a claim (or a release) was refused. The board maps this to a debug `panic!` and a release
@@ -203,6 +205,11 @@ impl ArenaGate {
         self.take(ArenaOwner::Usb).map(|_| ())
     }
 
+    /// Claim the panorama arm while its opaque screen owns the display.
+    pub fn claim_peak_view(&mut self) -> Result<(), ArenaError> {
+        self.take(ArenaOwner::PeakView).map(|_| ())
+    }
+
     /// Release the arena — **only** the arm that holds it. Releasing anything else is an
     /// [`ArenaError::NotHeld`], because with one owner-switcher there is no benign reason for it.
     pub fn release(&mut self, owner: ArenaOwner) -> Result<(), ArenaError> {
@@ -233,6 +240,20 @@ impl ArenaGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panorama_excludes_other_arms_and_invalidates_render_scratch() {
+        let mut gate = ArenaGate::new();
+        gate.claim_render().unwrap();
+        assert_eq!(gate.claim_peak_view(), Err(ArenaError::Busy(ArenaOwner::Render)));
+        gate.release(ArenaOwner::Render).unwrap();
+        gate.claim_peak_view().unwrap();
+        assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::PeakView)));
+        assert_eq!(gate.claim_nav(MapQuiesced::mint()), Err(ArenaError::Busy(ArenaOwner::PeakView)));
+        assert_eq!(gate.claim_usb(TransferReady::mint()), Err(ArenaError::Busy(ArenaOwner::PeakView)));
+        gate.release(ArenaOwner::PeakView).unwrap();
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
+    }
 
     #[test]
     fn a_fresh_gate_is_idle_and_a_render_may_take_it() {

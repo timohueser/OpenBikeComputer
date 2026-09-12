@@ -139,6 +139,7 @@ pub(crate) struct NavArm {
 union ScratchArena {
     /// The per-frame render scratch.
     render: ManuallyDrop<obc_render::RenderScratch>,
+    peak_view: ManuallyDrop<PeakArm>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
     /// USB upload bytes; written before read during one transfer grant.
@@ -493,4 +494,58 @@ pub(crate) fn usb_stage_contains(address: usize, len: usize) -> bool {
     }
     let start = arena_ptr() as usize;
     address >= start && address.checked_add(len).is_some_and(|end| end <= start + crate::usb::STAGE_LEN)
+}
+
+// The opaque panorama screen holds this arm across passes. Leaving it releases the
+// guard before navigation, map rendering, or USB staging can claim the arena.
+pub(crate) struct PeakArm {
+    pub builder: obc_app::peak_view::surface::Builder,
+    pub terrain: obc_app::peak_view::terrain::Terrain<'static>,
+}
+const _: () = assert!(core::mem::size_of::<PeakArm>() <= RENDER_ARM_BYTES);
+
+pub(crate) struct PeakGuard {
+    _not_send: PhantomData<*mut ()>,
+}
+impl Deref for PeakGuard {
+    type Target = PeakArm;
+    fn deref(&self) -> &PeakArm {
+        // SAFETY: this guard is the sole owner, and claim_peak initializes both fields.
+        unsafe { &*(arena_ptr() as *const PeakArm) }
+    }
+}
+impl DerefMut for PeakGuard {
+    fn deref_mut(&mut self) -> &mut PeakArm {
+        // SAFETY: exclusive guard borrow; no reference survives it.
+        unsafe { &mut *(arena_ptr() as *mut PeakArm) }
+    }
+}
+impl Drop for PeakGuard {
+    fn drop(&mut self) {
+        release(ArenaOwner::PeakView);
+    }
+}
+pub(crate) fn claim_peak(
+    profile: &mut obc_app::PeakViewProfile<'_>,
+    source: &'static dyn obc_formats::io::ByteSource,
+) -> Option<PeakGuard> {
+    // SAFETY: the ride loop is the only owner-switcher.
+    unsafe { gate() }.claim_peak_view().ok()?;
+    let arm = arena_ptr() as *mut PeakArm;
+    // SAFETY: successful exclusive claim; initialize in place without large stack copies.
+    let ready = unsafe { obc_app::peak_view::terrain::Terrain::init_at(addr_of_mut!((*arm).terrain), source) };
+    if ready.is_err() {
+        release(ArenaOwner::PeakView);
+        return None;
+    }
+    // SAFETY: the terrain field was initialized above; no Builder reference exists yet.
+    let ground = unsafe { (*arm).terrain.ground_height(profile.observer_lat, profile.observer_lon) };
+    let Some(ground) = ground else {
+        release(ArenaOwner::PeakView);
+        return None;
+    };
+    profile.set_ground(ground);
+    // SAFETY: the guard owns the whole arm; the final observer/framing is now known.
+    unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), profile) };
+    Some(PeakGuard { _not_send: PhantomData })
 }

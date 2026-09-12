@@ -1,6 +1,6 @@
 //! The simulator's [`CompassSource`] — a manually-set heading the control panel edits, the
-//! host-side mirror of the device's magnetometer. Read through the same trait; the app only
-//! consults it while stopped on a heading-up map.
+//! host-side mirror of the device's magnetometer. Read through the same trait; the app consults it
+//! while stopped on a heading-up map or in Peak View.
 
 use obc_ports::CompassSource;
 

@@ -115,7 +115,7 @@ use crate::util::{human_bytes, write_json};
 
 /// Bumped when a cutter change alters cell bytes for unchanged inputs, forcing a
 /// re-cut that content hashing alone would not.
-pub const CELL_RECIPE_VERSION: u32 = 1;
+pub const CELL_RECIPE_VERSION: u32 = 2;
 
 /// Bumped only when the in-process bbox selection changes. Planet leaves do not crop
 /// in the cutter, so folding this into [`CELL_RECIPE_VERSION`] would force a re-cut

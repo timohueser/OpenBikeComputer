@@ -31,10 +31,11 @@ impl SimLocationSource {
         }
     }
 
-    /// Set the simulated course over ground in degrees (clockwise from north).
-    pub fn set_course(&mut self, deg: f32) {
+    /// Set or clear the simulated course over ground in degrees clockwise from north. A stationary
+    /// manual fix clears it so the compass, rather than a stale GPS course, owns heading.
+    pub fn set_course(&mut self, deg: Option<f32>) {
         if let Some(f) = &mut self.fix {
-            f.course = Some(deg);
+            f.course = deg;
         }
     }
 }
@@ -46,5 +47,19 @@ impl LocationSource for SimLocationSource {
     // (dropped), both acceptable. Ride recording exercises the fresh-fix path via the GPX player.
     fn poll(&mut self) -> Option<Fix> {
         self.fix
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_course_can_be_cleared_for_the_stopped_compass() {
+        let mut source = SimLocationSource::new(Some(Fix { lat: 0, lon: 0, course: Some(90.0), speed_mps: Some(0.0) }));
+        source.set_course(None);
+        assert_eq!(source.current().and_then(|fix| fix.course), None);
+        source.set_course(Some(225.0));
+        assert_eq!(source.current().and_then(|fix| fix.course), Some(225.0));
     }
 }

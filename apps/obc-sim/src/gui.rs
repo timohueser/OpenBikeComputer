@@ -219,6 +219,7 @@ struct DeviceHit {
 }
 
 struct SimGui {
+    peak_view: crate::peak_view::Runtime,
     /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
     /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
     /// (style table + LOD pyramid, parsed once at startup as the device parses them once at boot)
@@ -306,7 +307,7 @@ struct SimGui {
     /// cadence (asynchronous to the GPS fix).
     baro: BaroSensor,
     /// Simulated compass (device magnetometer stand-in) — the panel's "Compass" slider, orienting
-    /// a heading-up map while stopped when the GPS has no course.
+    /// a heading-up map or Peak View while stopped when the GPS has no course.
     compass: SimCompass,
     /// Synthetic BLE sensors (HR / power / cadence) — the panel's "Sensors" section drives them, and
     /// their three source fields feed `Sensors::{hr,power,cadence}` each tick, honouring the ~1 Hz
@@ -371,6 +372,12 @@ impl SimGui {
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
+        let peak_view = crate::peak_view::Runtime::new(&map, args.peak_view);
+        state.peak_view_profile = peak_view.profile();
+        let peak_profile = args.peak_view.map(crate::peak_view::Preset::profile);
+        if let Some(profile) = peak_profile {
+            state.compass_deg = Some(profile.default_heading_q4 as f32 / 4.0);
+        }
         if let Some(b) = args.battery {
             state.device.battery_pct = b;
         }
@@ -378,15 +385,26 @@ impl SimGui {
         // so the loop and user marker have something to track.
         state.mode = CameraMode::Free;
         state.heading_up = args.heading.is_some();
-        let loc = SimLocationSource::new(Some(Fix { lat: cy, lon: cx, course: args.heading, speed_mps: None }));
+        let (fix_lat, fix_lon) =
+            peak_profile.map(|profile| (profile.observer_lat, profile.observer_lon)).unwrap_or((cy, cx));
+        let loc = SimLocationSource::new(Some(Fix {
+            lat: fix_lat,
+            lon: fix_lon,
+            course: args.heading,
+            speed_mps: args.heading.map(|_| 5.0).or(Some(0.0)),
+        }));
 
         // Seed the panel mirrors from the initial fix so the widgets open at the real position.
         let panel = match loc.current() {
             Some(f) => PanelState {
                 lat_deg: f.lat as f64 / 1e6,
                 lon_deg: f.lon as f64 / 1e6,
-                heading_deg: f.course.unwrap_or(0.0),
-                compass_deg: f.course.unwrap_or(0.0),
+                heading_deg: f.course.unwrap_or_else(|| {
+                    peak_profile.map(|profile| profile.default_heading_q4 as f32 / 4.0).unwrap_or(0.0)
+                }),
+                compass_deg: f.course.unwrap_or_else(|| {
+                    peak_profile.map(|profile| profile.default_heading_q4 as f32 / 4.0).unwrap_or(0.0)
+                }),
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,
@@ -472,6 +490,9 @@ impl SimGui {
         // The window draws into one resident device-64 plane and presents it by self-diff, exactly
         // as the board does — so the frozen base's rows survive between frames (#1559).
         app.set_resident_frame(true);
+        if peak_profile.is_some() {
+            app.show_peak_view();
+        }
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
@@ -484,6 +505,7 @@ impl SimGui {
         let weather = wx_source.store;
         let live_weather = wx_source.live;
         let mut gui = SimGui {
+            peak_view,
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
             weather,
@@ -811,6 +833,9 @@ impl SimGui {
             _ => None,
         };
 
+        self.peak_view.update(&mut self.app);
+        let panorama = self.peak_view.panorama();
+
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
         // fills it; the device uses the DWT cycle counter). Render the whole frame straight into the
         // backend's resident device-64 plane — the device's own color path (`Rgb565` → device-64
@@ -830,9 +855,17 @@ impl SimGui {
                       app: &mut App,
                       scratch: &mut obc_render::RenderScratch,
                       fbdev: &mut FbDevice64<'_>| {
-            crate::map_file::render_frame(app, scratch, fbdev, scene, rain, feed, (dev_w as f32, dev_h as f32), |c| {
-                Rgb565::from(RawU16::new(c))
-            })
+            crate::map_file::render_frame(
+                app,
+                scratch,
+                fbdev,
+                scene,
+                rain,
+                feed,
+                panorama,
+                (dev_w as f32, dev_h as f32),
+                |c| Rgb565::from(RawU16::new(c)),
+            )
         };
         let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather {
@@ -856,6 +889,7 @@ impl SimGui {
         // assert. `present_now` is the same engine the display-contract impls delegate to (the
         // contracts type geometry at compile time; the GUI's device size is the `--size` knob).
         self.present.present_now(&self.fb, None);
+        self.peak_view.note_frame_presented(&self.app);
         // The backlight, applied where a panel's brightness is actually visible: the pixels the
         // window blits. Driven every frame from the app's own answer, which is the drawer's staged
         // preview while its editor is open and the committed setting otherwise — so previewing,

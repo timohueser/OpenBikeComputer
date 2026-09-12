@@ -45,6 +45,54 @@ makes no chord.
 - `--center LON,LAT` sets the headless camera centre in integer microdegrees.
 - `--zoom MULT` multiplies the headless bbox-fit zoom.
 - `--heading DEG` starts heading-up at the given clockwise course.
+Peak View appears in the normal menu when the loaded map contains indexed terrain. It uses the
+simulator's current GPS position and the selected map's summit records. The background job reads
+the same immutable map bytes as the map screen. Without a GPS fix it waits; it does not use the
+camera centre as an observer. Normal framing widens when a nearby summit requires more vertical
+headroom. Low-relief observers receive up to 3× vertical exaggeration, fixed while turning;
+steep views keep 1.25×. The summit candidates reserve a slot for each bearing sector's tallest
+landmark. Explicit fixture frames retain their configured bounds. In a headless test,
+`--center LON,LAT --heading DEG` supplies an explicit simulated fix. Use the menu and `f` to complete generation before saving the frame.
+
+- `--peak-view gornergrat|scheidegg|glockner` selects an explicit geographic test fixture and
+  opens Peak View in the GUI. This overrides the selected map's terrain for that test. It generates a
+  panorama from geographic terrain, with the current direction first. The compass spinner stops
+  when that view is ready; three static dots indicate background work on the remaining directions.
+  Background work extends both edges in about 17-degree batches. Turning prioritizes the new
+  direction. After the first view appears, completed terrain stays visible and follows the
+  heading; a light hatch marks pending parts until they fill in. Back cancels. Drag **Compass (heading when
+  stopped)** in Controls to turn. Changing the GPS position by more than 20 m rebuilds the view;
+  smaller changes keep the current panorama to limit GPS jitter. The fixture has a limited area
+  of fine terrain around each preset. Missing distant coverage shows
+  dashed marks over affected bearings. Moving outside observer coverage shows Terrain unavailable.
+  Each geographic terrain file contains heights, lower-resolution levels and baked height
+  bounds. The renderer skips hidden blocks and shades visible terrain slopes under fixed
+  illustration lighting. It does not store viewpoints or show snow and current sunlight.
+  Named summits are aligned and checked for visibility during generation.
+  Browse freezes the heading; Select returns to Live.
+
+  Fetch the checksummed terrain package once:
+
+  ```sh
+  obc fixtures sync sim-peak-view
+  target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --peak-view scheidegg
+  ```
+
+  Files use the standard fixture cache and its `OBC_FIXTURE_ROOT` / `OBC_FIXTURE_CACHE` overrides.
+  For a local bake, first run `cargo build --release -p obc-dem`, then
+  `python3 fixtures/generate_peak_view.py --download --terrain-dir PATH`. This writes one
+  indexed OBCT file per site. Run with `OBC_PEAK_TERRAIN_DIR=PATH`; the sim never downloads terrain.
+  See the [fixture notes](../../fixtures/sources/peak-view/README.md) for provenance.
+  Headless scripts start on the normal screen. Use `f` to finish generation before Browse input:
+
+  ```sh
+  target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --peak-view scheidegg \
+    --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
+  ```
+
+  The log separates generation time and storage reads from the final cached frame's drawing time.
+  These are host measurements. See the [board README](../../firmware/obc-fw-nrf54l/README.md)
+  for device setup and timing checks.
 
 ## Ride and storage fixtures
 

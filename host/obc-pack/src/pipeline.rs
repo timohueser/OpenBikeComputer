@@ -187,6 +187,7 @@ fn run(
         Some(s) => s,
         None => &mut null,
     };
+    crate::poi::fill_summit_elevations(&mut ingested.pois, terrain);
     // Shared by the coverage tiers: they dissolve the same classes over the same fills, and only
     // the decimation below that differs per tier (see `crate::coverage::PredissolveCache`). It is
     // cleared at the first tier that does not want the pass — the coarse tiers come first, and the
@@ -544,7 +545,7 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
     progress.log(line);
 }
 
-/// Total bounds over features + coastlines, then truncate `v*1e6` toward zero. The
+/// Total bounds over geometry and point records. Geometry truncates `v*1e6` toward zero. The
 /// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
 /// pulls the max edges (and, for negative coordinates, the min edges) inward by
 /// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
@@ -567,5 +568,12 @@ pub(crate) fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
         }
     }
     // `as i64` truncates toward zero — NOT a floor for negatives; see the doc above.
-    ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64)
+    let mut bounds = ((minx * 1e6) as i64, (miny * 1e6) as i64, (maxx * 1e6) as i64, (maxy * 1e6) as i64);
+    for poi in &ing.pois {
+        bounds.0 = bounds.0.min(i64::from(poi.lon_udeg));
+        bounds.1 = bounds.1.min(i64::from(poi.lat_udeg));
+        bounds.2 = bounds.2.max(i64::from(poi.lon_udeg));
+        bounds.3 = bounds.3.max(i64::from(poi.lat_udeg));
+    }
+    bounds
 }
