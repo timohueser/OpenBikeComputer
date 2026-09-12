@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use obc_app::catalog_state::CatalogError;
 use obc_app::{App, CatalogObjectId, TripInput};
 use obc_formats::io::SliceSource;
 use obc_route::TripMeta;
@@ -113,24 +114,25 @@ impl TripStore {
         id
     }
 
-    /// Delete the trip with session id `id` (the on-device trip delete): remove its `.obt` from the
-    /// folder and rescan. `true` = a file was deleted. Non-cascading — member routes are untouched
-    /// (spec §7.7); the caller then re-feeds [`App::set_trips`](obc_app::App::set_trips).
-    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+    /// Remove only the trip file and refresh the catalog; member routes stay untouched.
+    /// `Ok(true)` means removed, `Ok(false)` means absent, and `Err` means storage failure.
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
         let path = self.paths[pos].clone();
-        if std::fs::remove_file(&path).is_err() {
-            return false;
-        }
+        let existed = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(CatalogError::RemoveFailed),
+        };
         self.rescan();
-        true
+        Ok(existed)
     }
 }
 
 /// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the folder's removal + re-feed through
 /// this trait (the web demo plugs in the trip-less `()` instead).
 impl obc_host_core::TripCatalog for TripStore {
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
     fn rescan(&mut self) {
@@ -269,7 +271,7 @@ mod tests {
         assert_eq!(trip_store.inputs().len(), 1);
 
         let trip = obc_host_core::TRIP_ID_BASE + 1;
-        assert!(trip_store.delete_by_id(trip));
+        assert_eq!(trip_store.delete_by_id(trip), Ok(true));
         assert!(!dir.join("TP1.OBT").exists(), "the trip file is gone");
         // The member route files are untouched (non-cascading, spec §7.7).
         assert!(dir.join("a.obcr").exists());
@@ -278,8 +280,34 @@ mod tests {
 
         assert!(trip_store.inputs().is_empty());
         // A second delete of the retired id is a no-op.
-        assert!(!trip_store.delete_by_id(trip));
+        assert_eq!(trip_store.delete_by_id(trip), Ok(false));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deletion_keeps_io_failure_distinct_from_absence() {
+        let dir = stage_fixture("delete-failure");
+        let mut store = TripStore::open(&dir);
+        let id = store.ids[0];
+        let path = store.paths[0].clone();
+        let before = store.ids.clone();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert_eq!(store.delete_by_id(id), Err(CatalogError::RemoveFailed));
+        assert_eq!(store.ids, before, "a failed unlink keeps the catalog intact");
+        assert!(path.is_dir(), "a failed unlink does not remove the obstruction");
+
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(store.delete_by_id(id), Ok(false), "the externally removed object is absent");
+        assert!(!store.ids.contains(&id), "absence refreshes the stale catalog");
+        std::fs::write(&path, bytes).unwrap();
+        store.rescan();
+        let id = store.ids[store.paths.iter().position(|p| *p == path).unwrap()];
+        assert_eq!(store.delete_by_id(id), Ok(true));
+        assert_eq!(store.delete_by_id(id), Ok(false));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

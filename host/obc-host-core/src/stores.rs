@@ -3,6 +3,7 @@
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
+use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::RideClose;
 use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
@@ -70,10 +71,9 @@ impl MemRouteStore {
         self.active.and_then(|i| self.bytes.get(i)).map(|b| SliceSource(b.as_slice()))
     }
 
-    /// Delete the route with id `id` (the on-device hold-to-delete, epic #447 P6). `true` =
-    /// removed. The id isn't re-issued (the seeded catalog is fixed and positional).
-    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+    /// Delete the route with id `id` (the on-device hold-to-delete, epic #447 P6). `Ok(true)` = removed, `Ok(false)` = absent. The id isn't re-issued (the seeded catalog is fixed and positional).
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
         self.catalog.remove(pos);
         self.ids.remove(pos);
         self.bytes.remove(pos);
@@ -84,7 +84,7 @@ impl MemRouteStore {
                 *a -= 1;
             }
         }
-        true
+        Ok(true)
     }
 }
 
@@ -97,7 +97,7 @@ impl RouteRepository for MemRouteStore {
         self.ids()
     }
 
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
 
@@ -159,12 +159,12 @@ impl MemRideStore {
         &self.ids
     }
 
-    /// Delete the ride with id `id` (the hold-to-delete footer). `true` = removed.
-    pub fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+    /// Delete the ride with id `id` (the hold-to-delete footer). `Ok(true)` = removed, `Ok(false)` = absent.
+    pub fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> Result<bool, CatalogError> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
         self.catalog.remove(pos);
         self.ids.remove(pos);
-        true
+        Ok(true)
     }
 }
 
@@ -177,7 +177,7 @@ impl RideRepository for MemRideStore {
         self.ids()
     }
 
-    fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> bool {
+    fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
 
@@ -265,10 +265,10 @@ mod tests {
             bytes: vec![vec![0], vec![1], vec![2]],
             active: Some(2),
         };
-        assert!(!s.delete_by_id(9), "unknown id is a no-op");
-        assert!(s.delete_by_id(0));
+        assert_eq!(s.delete_by_id(9), Ok(false), "unknown id is a no-op");
+        assert_eq!(s.delete_by_id(0), Ok(true));
         assert_eq!(s.active, Some(1), "active shifts down past a deletion before it");
-        assert!(s.delete_by_id(2));
+        assert_eq!(s.delete_by_id(2), Ok(true));
         assert_eq!(s.active, None, "deleting the active route drops the binding");
     }
 

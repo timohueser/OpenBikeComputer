@@ -92,8 +92,14 @@ fn remove_object(
     rides: &mut dyn RideRepository,
     trips: &mut dyn TripCatalog,
 ) -> CatalogOutcome {
-    let existed = routes.delete_by_id(object) || rides.delete_by_id(object) || trips.delete_by_id(object);
-    CatalogOutcome::ObjectRemoved { token, object, existed }
+    let result = routes
+        .delete_by_id(object)
+        .and_then(|existed| if existed { Ok(true) } else { rides.delete_by_id(object) })
+        .and_then(|existed| if existed { Ok(true) } else { trips.delete_by_id(object) });
+    match result {
+        Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
+        Err(error) => CatalogOutcome::Failed { token, error },
+    }
 }
 
 /// The one in-flight plan a host steps — a POI route plan or a detour plan (#882). One enum slot
@@ -821,6 +827,44 @@ mod tests {
     use obc_app::AppState;
     use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, TrackPoint};
     use obc_route::RideStats;
+
+    #[test]
+    fn failed_removal_preserves_the_token_and_stops_repository_fallback() {
+        use obc_app::catalog_state::CatalogError;
+
+        struct FailedRide;
+        impl RideRepository for FailedRide {
+            fn catalog(&self) -> &[obc_app::RideSummary] {
+                &[]
+            }
+            fn ids(&self) -> &[u64] {
+                &[]
+            }
+            fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
+                Err(CatalogError::RemoveFailed)
+            }
+            fn fill_track(&self, _: u64, _: &mut obc_route::Profile) -> Option<Vec<(i32, i32)>> {
+                None
+            }
+        }
+        struct UnreachedTrip;
+        impl TripCatalog for UnreachedTrip {
+            fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
+                panic!("failure must stop the namespace probe");
+            }
+        }
+
+        let token = obc_app::device_core::TokenSource::<CatalogTag>::new().issue();
+        let mut routes = crate::MemRouteStore::new(&[]);
+        assert_eq!(
+            remove_object(token, 7, &mut routes, &mut FailedRide, &mut UnreachedTrip),
+            CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
+        );
+        assert_eq!(
+            remove_object(token, 7, &mut routes, &mut crate::MemRideStore::new(vec![]), &mut ()),
+            CatalogOutcome::ObjectRemoved { token, object: 7, existed: false },
+        );
+    }
 
     /// A host that can do everything — none of it reached by the recording path under test.
     const SUPPORT: PlatformSupport = PlatformSupport {

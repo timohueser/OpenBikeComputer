@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use obc_app::catalog_state::CatalogError;
 use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_route::{ride_track_into, Profile, RideInfo};
@@ -75,18 +76,19 @@ impl RideStore {
         }
     }
 
-    /// Delete the ride with durable id `id` (the hold-to-delete, #454): remove its desktop fixture
-    /// object and retire its process-local synced flag, then rescan. `true` = a file was deleted.
-    /// The caller re-feeds [`App::set_rides`](obc_app::App::set_rides) so the app remaps.
-    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+    /// Remove the ride file and its process-local synced flag, then refresh the catalog.
+    /// `Ok(true)` means removed, `Ok(false)` means absent, and `Err` means storage failure.
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
         let path = self.paths[pos].clone();
-        if std::fs::remove_file(&path).is_err() {
-            return false;
-        }
+        let existed = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(CatalogError::RemoveFailed),
+        };
         self.synced.remove(&id);
         self.rescan();
-        true
+        Ok(existed)
     }
 
     /// Read one stored ride into the keyed detail's profile and preview. Unknown or unreadable
@@ -125,7 +127,7 @@ impl obc_host_core::RideRepository for RideStore {
     fn ids(&self) -> &[CatalogObjectId] {
         self.ids()
     }
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
     fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
@@ -246,5 +248,32 @@ mod tests {
         for unrelated in ["ride-42.bin", "other-42.obcr", "ride-x.obcr"] {
             assert_eq!(fixture_object_id_in(Path::new(unrelated)), None, "unrelated fixture {unrelated} is ignored");
         }
+    }
+
+    #[test]
+    fn deletion_keeps_io_failure_distinct_from_absence() {
+        let dir = obcm_testkit::scratch::scratch_dir("obc-ride-conf", "delete-failure");
+        record_ride(&dir, 1, "Ride");
+        let mut store = RideStore::open(&dir);
+        let id = store.ids[0];
+        let path = store.paths[0].clone();
+        let before = store.ids.clone();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert_eq!(store.delete_by_id(id), Err(CatalogError::RemoveFailed));
+        assert_eq!(store.ids, before, "a failed unlink keeps the catalog intact");
+        assert!(path.is_dir(), "a failed unlink does not remove the obstruction");
+
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(store.delete_by_id(id), Ok(false), "the externally removed object is absent");
+        assert!(!store.ids.contains(&id), "absence refreshes the stale catalog");
+        std::fs::write(&path, bytes).unwrap();
+        store.rescan();
+        let id = store.ids[store.paths.iter().position(|p| *p == path).unwrap()];
+        assert_eq!(store.delete_by_id(id), Ok(true));
+        assert_eq!(store.delete_by_id(id), Ok(false));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
