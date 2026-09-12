@@ -227,10 +227,8 @@ fn sample_dense(app: &mut App) {
 /// production hosts do) still hands the Map nothing.
 ///
 /// The walk runs through the **production derivation** (stage 10, once per pass on every host),
-/// so the rain map's zoom clamp really fires. That is why the
-/// claim pinned here is *rain-freeness*, not frame identity: the returned-to Map legitimately sits
-/// at a different zoom, which is its own defect (#1252) and has its own case below. What must hold
-/// at any camera is that the offered lease changes **nothing** on the Map — before or after.
+/// so the rain map's zoom clamp really fires. The offered lease changes nothing on the Map,
+/// and leaving the rain view restores the original Map zoom.
 #[test]
 fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
     let map = build_min_obcm(0);
@@ -259,30 +257,21 @@ fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
     let rained = render(&mut app, &map, Some(&mut on_rain_map));
     assert!(rained.count(rain_color) > 0, "the rain map is the screen that draws rain");
 
-    // …and the Map the rider comes back to carries none of it. Compared against the *same camera*
-    // drawn with no lease at all — the clamp moved the zoom (#1252), so `pristine` is no longer the
-    // right reference, but "the lease adds nothing" is still exactly the property under test, and
-    // it is the one that fails on the old behaviour.
+    // The returned-to Map has its original zoom and no rain, even with a lease still offered.
     walk_back_to_the_map(&mut app);
     sample_dense(&mut app);
     let mut still_offered = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
     let after = render(&mut app, &map, Some(&mut still_offered));
     let after_without_lease = render(&mut app, &map, None);
     assert_eq!(after.px, after_without_lease.px, "the rain map's raster must not outlive the rain map");
+    assert!(after.px == pristine.px, "the ordinary Map retains its original framing");
     for intensity in 1..=15u8 {
         assert_eq!(after.count(rgb888(rain_style(intensity).0)), 0, "no intensity-{intensity} rain on the Map");
     }
 }
 
-/// The **camera** half of the same walk, which this PR does *not* fix: the rain map's entry clamp
-/// (`AppState::clamp_rain_zoom`) writes the shared `AppState::zoom`, and nothing restores it, so a
-/// rider who opens the rain map from a wider-out Map is silently returned to a Map at the radar
-/// product's zoom floor. Kept as an executable statement of the defect and ignored until
-/// <https://github.com/timohueser/OpenBikeComputer/issues/1252> decides what the camera should do
-/// (restore it, or keep the shared camera and say so) — run with `cargo test -- --ignored` to
-/// watch it fail.
+/// The real product floor clamps the rain view, but does not change the Map returned to afterward.
 #[test]
-#[ignore = "#1252: the rain map's zoom clamp moves the shared camera and nothing restores it"]
 fn the_map_returns_to_the_camera_the_rider_left() {
     let map = build_min_obcm(0);
     let mut app = App::new(AppState::new(0, 0, 0.05));

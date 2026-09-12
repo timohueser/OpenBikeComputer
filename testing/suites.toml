@@ -14,7 +14,6 @@ scheduled = "none"
 extra_triggers = ["specs/vectors/**"]
 coverage_component = "firmware-app"
 ownership = [{ kind = "rust-package", name = "obc-app" }]
-quarantine = { reason = "One rain camera regression remains ignored pending restoration of the shared camera state.", issue = "#1252" }
 
 [[suite]]
 id = "rust.obc-formats"
