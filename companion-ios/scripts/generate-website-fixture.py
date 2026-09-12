@@ -106,7 +106,7 @@ def fixture(
             "firmwareVersion": "0.4.2",
             "hardwareVersion": "nRF54LM20 rev B",
             "serial": "OBC-WEBSITE-01",
-            "storeEpoch": 197132289,
+            "storeID": "1111111111111111111111110bc00001",
             "protocolVersion": 4,
         },
         "config": {"name": "Trailhead", "units": "metric"},
