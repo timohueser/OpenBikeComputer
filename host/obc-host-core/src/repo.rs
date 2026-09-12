@@ -9,6 +9,7 @@
 //! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
 //! shares are pinned by protocol tests instead.
 
+use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::RideClose;
 use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta};
 use obc_formats::io::SliceSource;
@@ -23,9 +24,9 @@ pub trait RouteRepository {
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
-    /// Delete the route with durable id `id` (the on-device hold-to-delete). `true` = removed; the
-    /// caller then re-feeds the catalog. A vanished id is a no-op.
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
+    /// Remove the route: `Ok(true)` = removed, `Ok(false)` = already absent. A storage failure
+    /// returns `Err`, so the executor cannot publish successful absence or probe another family.
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
     /// Persist the router's emitted OBCR as the reserved nav route (overwriting any previous plan),
     /// returning its session-stable id — or `None` on an I/O failure.
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId>;
@@ -61,8 +62,8 @@ pub trait RideRepository {
     fn catalog(&self) -> &[RideSummary];
     /// Each catalog entry's durable id, parallel to [`catalog`](RideRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
-    /// Delete the ride with durable id `id` (the hold-to-delete). `true` = removed.
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
+    /// Remove the ride: `Ok(true)` = removed, `Ok(false)` = already absent, `Err` = storage failure.
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
     /// Fill the keyed ride's profile in place and return its preview from one track read.
     /// `None` = unknown/unreadable; the caller must not publish the profile on failure.
     fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>>;
@@ -125,10 +126,10 @@ pub trait TrackRepository {
 pub trait TripCatalog {
     /// Delete the trip with id `id` — its backing `.obt` and nothing else. The cascade over member
     /// routes is `CatalogMachine`'s ordering (#1491) and reaches this executor as its own removals,
-    /// so there is no member lookup here. `true` = removed.
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
+    /// so there is no member lookup here. `Ok(true)` = removed, `Ok(false)` = absent, `Err` = failure.
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         let _ = id;
-        false
+        Ok(false)
     }
     /// Re-scan the trip folder (a store-changed edge re-resolves the folders alongside the routes).
     fn rescan(&mut self) {}
