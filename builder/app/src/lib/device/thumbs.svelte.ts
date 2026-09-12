@@ -58,7 +58,7 @@ export function entryFingerprint(entry: { readonly payloadCrc32: number }): stri
     return entry.payloadCrc32 !== 0 ? `c${entry.payloadCrc32 >>> 0}` : null;
 }
 
-export function thumbKey(scope: RideScope, kind: ThumbKind, id: number, fingerprint: string): string {
+export function thumbKey(scope: RideScope, kind: ThumbKind, id: bigint, fingerprint: string): string {
     return `${PREFIX}${scopeKey(scope)}:${kind}:${id}:${fingerprint}`;
 }
 
@@ -166,7 +166,7 @@ function parseStored(raw: string): StoredThumb | null {
 /** One thumbnail the page wants and how to fetch its full-resolution points. */
 export interface ThumbRequest {
     readonly kind: ThumbKind;
-    readonly id: number;
+    readonly id: bigint;
     /** Stable content identity. Without one, persistence is intentionally skipped. */
     readonly fingerprint: string | null;
     /** A cable download for most objects, or the ride library's held preview for a pulled ride. */
@@ -187,11 +187,11 @@ export class DeviceThumbs {
     }
 
     /** The track for a tile, or null while it is still on its way. Reactive. */
-    get(kind: ThumbKind, id: number): Thumb | null {
+    get(kind: ThumbKind, id: bigint): Thumb | null {
         return this.tracks.get(memKey(kind, id))?.track ?? null;
     }
 
-    /** Forget the map when `(serial, epoch)` changes; ids are recycled across device scopes. */
+    /** Forget the map when `(serial, StoreId)` changes; ids are recycled across device scopes. */
     ensureScope(scope: RideScope): void {
         const key = scopeKey(scope);
         if (this.scope === key) return;
@@ -256,7 +256,7 @@ export class DeviceThumbs {
     }
 }
 
-function memKey(kind: ThumbKind, id: number): string {
+function memKey(kind: ThumbKind, id: bigint): string {
     return `${kind}:${id}`;
 }
 

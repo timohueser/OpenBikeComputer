@@ -21,7 +21,7 @@
  *
  * ## The rule that survives
  *
- * **Identity is `(serial, era, ObjectId)`, never a bare id.** An `ObjectId` is store-global and
+ * **Identity is `(serial, StoreId, ObjectId)`, never a bare id.** An `ObjectId` is store-global and
  * never reused *within* one card (`FLAT_Store_Format.md` §3), but a re-initialized card mints a new
  * `StoreId` and starts its ids again — so anything this page remembers about a ride is keyed by
  * {@link rideKey} and thrown away when the scope changes. Nothing is persisted; the scope exists so
@@ -113,60 +113,24 @@ export function recordedRides(entries: readonly CatalogEntry[]): CatalogEntry[] 
 
 // --- ride identity -------------------------------------------------------------
 
-/**
- * The id era a ride id is meaningful in: the device's serial and a fingerprint of the card.
- *
- * `epoch` is `null` where the host could not read a `StoreId` — no card, or a listing that failed.
- * That is "no era", never `0`, because `0` is a legal fingerprint: a client that cannot name the era
- * must fail closed rather than share one bucket with every other cardless device.
- */
+/** The device and full card identity. A missing card has no usable scope. */
 export interface RideScope {
     readonly serial: string;
-    /** {@link storeEra} of the card's `StoreId`, or `null`. */
-    readonly epoch: number | null;
+    readonly storeId: string | null;
 }
 
-/**
- * The card's 128-bit `StoreId` narrowed to the 32 bits the ride index has a column for.
- *
- * The era on the wire is the whole `StoreId` (§3.3), and this throws 96 bits of it away. That is a
- * **cache key and nothing else**: it decides whether a ride the library already holds is the same
- * ride, it authorises nothing, and it is never sent anywhere. Two different cards colliding costs
- * one confused dedupe and has a probability of 2^-32 per pair, against a fleet of one device per
- * rider.
- *
- * The narrowing exists because `apps/obc-desktop/src/rides.rs` stores the era as a `u32` and
- * widening that column is a Rust change this slice does not make. The alternative — keeping the full
- * hex here and letting the desktop index key on something else — would give the two libraries two
- * different answers to "is this the same ride", which is the exact failure the 2026-07-12 incident
- * was.
- */
-export function storeEra(storeId: string): number {
-    return Number.parseInt(storeId.slice(0, 8), 16) >>> 0;
-}
-
-/** The scope of the connected device, from the two reads every connection already does: §5.2.1's
- *  strings and the first `LIST` page's identity prefix. */
+/** Identity from the device information and the first catalog page. */
 export function rideScope(info: DeviceInfo | null, store: StoreIdentity | null): RideScope {
-    return { serial: info?.serialNumber ?? "", epoch: store ? storeEra(store.storeId) : null };
+    return { serial: info?.serialNumber ?? "", storeId: store?.storeId ?? null };
 }
 
-/** A scope's own key — compare two of these to know whether every remembered id just became
- *  meaningless (a card swap, a different device on the same page). */
+/** Changes when either the device or its card changes. */
 export function scopeKey(scope: RideScope): string {
-    return `${scope.serial}:${scope.epoch ?? "no-store"}`;
+    return `${scope.serial}:${scope.storeId ?? "no-store"}`;
 }
 
-/**
- * `(serial, era, ObjectId)` — the ride identity. A bare id is wrong: a re-initialized card
- * starts its ids again, so two different rides can share one across that boundary.
- *
- * `bigint | number` because the two sides that key against each other hold the id differently: a
- * `LIST` entry carries the wire's `u64` and the ride library's index carries a JSON number. They
- * stringify identically, which is the whole reason one key function can serve both — stated here so
- * nobody "fixes" the union by narrowing it and silently splitting the keyspace in two.
- */
-export function rideKey(scope: RideScope, objectId: bigint | number): string {
+/** Shared with the desktop index: full StoreId hex and decimal u64 ObjectId. */
+export function rideKey(scope: RideScope, objectId: bigint): string {
     return `${scopeKey(scope)}:${objectId}`;
 }
 

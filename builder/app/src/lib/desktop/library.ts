@@ -21,7 +21,7 @@ import type { LibraryRide, LibraryView, RideImport, RideLibrary } from "../devic
 /**
  * `RideIndexEntry` → `LibraryRide`.
  *
- * A rename of two fields and nothing else. The wire carries `rideFile`/`gpxFile` as *basenames*
+ * Convert the JSON decimal ObjectId to bigint. The wire carries `rideFile`/`gpxFile` as *basenames*
  * plus the joined absolute paths, because a basename is what the index stores (the GPX folder can
  * move) and a path is what `reveal()` needs — and joining them in JavaScript would have to guess a
  * path separator. Since the GPX-only split the two paths point at different roots: `ridePath` into
@@ -31,8 +31,8 @@ function toRide(entry: RideIndexEntry): LibraryRide {
     return {
         key: entry.key,
         serial: entry.serial,
-        epoch: entry.epoch,
-        objectId: entry.objectId,
+        storeId: entry.storeId,
+        objectId: BigInt(entry.objectId),
         name: entry.name,
         startTime: entry.startTime,
         distanceM: entry.distanceM,
@@ -64,8 +64,8 @@ export function openRideLibrary(): RideLibrary {
         async import(ride: RideImport) {
             const landed = await desktop.ridesImport({
                 serial: ride.serial,
-                epoch: ride.epoch,
-                objectId: ride.objectId,
+                storeId: ride.storeId,
+                objectId: ride.objectId.toString(),
                 name: ride.name,
                 startTime: ride.startTime,
                 distanceM: ride.distanceM,

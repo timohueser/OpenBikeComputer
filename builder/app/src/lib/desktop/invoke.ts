@@ -139,12 +139,13 @@ export const desktop = {
 // Field for field what `serde` reads and writes in apps/obc-desktop/src/rides.rs.
 // `lib/device/library.ts` owns the app-facing shapes; these are the wire ones, and
 // `lib/desktop/library.ts` is the (thin) translation between them.
+// StoreId is full lowercase hex; ObjectId is a decimal u64 string to preserve JSON precision.
 
 export interface RideIndexEntry {
     key: string;
     serial: string;
-    epoch: number;
-    objectId: number;
+    storeId: string;
+    objectId: string;
     name: string;
     startTime: number;
     distanceM: number;
@@ -174,8 +175,8 @@ export interface RideIndexView {
 
 export interface RideImportRequest {
     serial: string;
-    epoch: number;
-    objectId: number;
+    storeId: string;
+    objectId: string;
     name: string;
     startTime: number;
     distanceM: number;

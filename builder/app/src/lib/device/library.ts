@@ -18,7 +18,7 @@
  * twice is then a no-op by construction rather than by remembering to check. `LIST` makes that
  * cheap: a catalog page is metadata, and nothing is downloaded to decide what to download.
  *
- * **2. The key is `(serial, era, ObjectId)`.** An `ObjectId` is never reused within one card,
+ * **2. The key is `(serial, StoreId, ObjectId)`.** An `ObjectId` is never reused within one card,
  * but a re-initialized card mints a new `StoreId` and starts its ids again, so a bare id names two
  * different rides on either side of one. The iOS companion learned this the hard way
  * (`LibraryScopingE2ETests` replays the 2026-07-12 incident: an old synced set filtered out the new
@@ -69,9 +69,9 @@ export type { CatalogEntry, RideObject, RideScope };
 export interface LibraryRide {
     readonly key: string;
     readonly serial: string;
-    /** `rides.ts`'s `storeEra` of the card's `StoreId` — the era an `ObjectId` is meaningful in. */
-    readonly epoch: number;
-    readonly objectId: number;
+    /** The complete lowercase 32-digit StoreId hex string. */
+    readonly storeId: string;
+    readonly objectId: bigint;
     readonly name: string;
     /** Ride start, unix seconds UTC. `0` on a device that never had a trusted clock. */
     readonly startTime: number;
@@ -94,8 +94,8 @@ export interface LibraryRide {
 /** One ride, on its way into the library. */
 export interface RideImport {
     readonly serial: string;
-    readonly epoch: number;
-    readonly objectId: number;
+    readonly storeId: string;
+    readonly objectId: bigint;
     readonly name: string;
     readonly startTime: number;
     readonly distanceM: number;
@@ -127,7 +127,7 @@ export interface RideLibrary {
     view(): Promise<LibraryView>;
     /**
      * Land one ride durably. **Resolves only after fsync** — of the ride object, of the GPX, and of
-     * the index that names them. Idempotent on `(serial, epoch, id)`: a second import of a ride
+     * the index that names them. Idempotent on `(serial, storeId, id)`: a second import of a ride
      * already held writes nothing and does not move its `importedAt`.
      */
     import(ride: RideImport): Promise<{ ride: LibraryRide; imported: boolean }>;
@@ -171,7 +171,7 @@ export class RideLibraryError extends Error {
 
 /** One ride the pull could not land, and why. The rest of the batch still lands. */
 interface RideFailure {
-    readonly objectId: number;
+    readonly objectId: bigint;
     readonly name: string;
     readonly message: string;
 }
@@ -200,7 +200,7 @@ export interface PullReport {
  * The order is the contract and it is worth reading as a sequence:
  *
  * 1. **list** — the whole ride catalog, unconditionally, minus what is still recording (§3.5);
- * 2. **dedupe locally** by `(serial, era, ObjectId)` against the library's own index;
+ * 2. **dedupe locally** by `(serial, StoreId, ObjectId)` against the library's own index;
  * 3. **download → decode → GPX → import** each missing ride, one at a time (§1 serves one transfer
  *    at a time anyway), each import resolving only after its fsync.
  *
@@ -248,7 +248,7 @@ export async function pullRides(
         } catch (cause) {
             if (ctx.signal.aborted) throw cause;
             failed.push({
-                objectId: Number(entry.objectId),
+                objectId: entry.objectId,
                 name: entry.displayName || `Ride ${entry.objectId}`,
                 message: cause instanceof Error ? cause.message : String(cause),
             });
@@ -267,8 +267,8 @@ export async function pullRides(
 }
 
 /** Both halves of the era, or nothing is copied. */
-function requireScope(scope: RideScope): asserts scope is RideScope & { epoch: number } {
-    if (!scope.serial || scope.epoch === null) {
+function requireScope(scope: RideScope): asserts scope is RideScope & { storeId: string } {
+    if (!scope.serial || scope.storeId === null) {
         throw new RideLibraryError(
             "no-scope",
             "This device did not report both a serial number and a card identity, so its ride ids " +
@@ -281,7 +281,7 @@ function requireScope(scope: RideScope): asserts scope is RideScope & { epoch: n
 async function importRide(
     source: RideSource,
     library: RideLibrary,
-    scope: RideScope & { epoch: number },
+    scope: RideScope & { storeId: string },
     entry: CatalogEntry,
     ctx: JobContext,
 ): Promise<{ ride: LibraryRide; imported: boolean }> {
@@ -324,8 +324,8 @@ async function importRide(
     // gone is the ability to show those figures *before* downloading.
     return library.import({
         serial: scope.serial,
-        epoch: scope.epoch,
-        objectId: Number(entry.objectId),
+        storeId: scope.storeId,
+        objectId: entry.objectId,
         name: ride.name || entry.displayName,
         startTime: ride.startTime,
         distanceM: ride.distanceM,

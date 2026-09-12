@@ -1,6 +1,5 @@
-//! Durable desktop ride library. A ride is acknowledged only after [`Library::import`]
-//! has flushed its object, GPX, and index in that order; the browser host never
-//! acknowledges rides because a download is not durable storage.
+//! Durable desktop ride library. [`Library::import`] returns only after it has flushed
+//! the ride object, GPX, and index in that order.
 //!
 //! ```text
 //!   <library>/                            rider-owned, relocatable GPX files
@@ -12,7 +11,7 @@
 //! ```
 //!
 //! The lossless `.obcride` copy makes GPX re-export possible. Identity is
-//! `(serial, epoch, id)` because object ids can be reused after an epoch change.
+//! `(serial, store_id, id)` because object ids can be reused after a card change.
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -36,7 +35,7 @@ fn lock() -> MutexGuard<'static, ()> {
 pub const INDEX_FILE: &str = "index.json";
 /// Bumped only when an older index can no longer be read. An unreadable index is not fatal (see
 /// [`Library::load`]) — it re-imports, it never deletes.
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 /// The stored ride object's extension. Not `.ride`: the suffix is obviously ours and not a GPX.
 const RIDE_EXT: &str = "obcride";
 const GPX_EXT: &str = "gpx";
@@ -68,11 +67,13 @@ const LOCATION_FILE: &str = "ride-library.json";
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryRide {
-    /// `serial:epoch:objectId` — minted here, never taken from the caller.
+    /// `serial:storeId:objectId` — minted here, never taken from the caller.
     pub key: String,
     pub serial: String,
-    pub epoch: u32,
-    pub object_id: u16,
+    #[serde(deserialize_with = "deserialize_store_id")]
+    pub store_id: String,
+    #[serde(serialize_with = "serialize_object_id", deserialize_with = "deserialize_object_id")]
+    pub object_id: u64,
     pub name: String,
     /// Ride start, unix seconds UTC. `0` on a device that never had a trusted clock.
     pub start_time: u32,
@@ -153,8 +154,10 @@ pub struct IndexView {
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
     pub serial: String,
-    pub epoch: u32,
-    pub object_id: u16,
+    #[serde(deserialize_with = "deserialize_store_id")]
+    pub store_id: String,
+    #[serde(deserialize_with = "deserialize_object_id")]
+    pub object_id: u64,
     pub name: String,
     pub start_time: u32,
     pub distance_m: u32,
@@ -267,7 +270,7 @@ impl Library {
         IndexView { folder: self.root.display().to_string(), is_default, rides: self.entries() }
     }
 
-    /// Land one pulled ride durably. Idempotent on its `(serial, epoch, id)` key.
+    /// Land one pulled ride durably. Idempotent on its `(serial, store_id, id)` key.
     ///
     /// Returns only after the ride object, the GPX and the index have each been fsynced. The caller
     /// may ack **after** this resolves and at no earlier point.
@@ -275,6 +278,10 @@ impl Library {
         let _guard = lock();
         if req.serial.is_empty() {
             return Err("this device reports no serial number, so a ride from it cannot be keyed".into());
+        }
+        validate_store_id(&req.store_id)?;
+        if req.object_id == 0 {
+            return Err("objectId zero names no object".into());
         }
         if req.object.is_empty() {
             return Err("that ride object is empty".into());
@@ -295,7 +302,7 @@ impl Library {
         std::fs::create_dir_all(&self.root).map_err(|e| format!("create {}: {e}", self.root.display()))?;
         std::fs::create_dir_all(&self.archive).map_err(|e| format!("create {}: {e}", self.archive.display()))?;
         let mut index = self.load();
-        let key = ride_key(&req.serial, req.epoch, req.object_id);
+        let key = ride_key(&req.serial, &req.store_id, req.object_id);
 
         // The idempotent path: everything already here, nothing written, nothing re-stamped.
         if let Some(existing) = index.rides.iter().find(|r| r.key == key) {
@@ -314,7 +321,7 @@ impl Library {
                 (r.ride_file.clone(), r.gpx_file.clone(), r.imported_at)
             }
             None => {
-                let stem = unique_stem(&index, &key, &stem_for(req));
+                let stem = unique_stem(&index, &self.root, &self.archive, &key, &stem_for(req))?;
                 (format!("{stem}.{RIDE_EXT}"), format!("{stem}.{GPX_EXT}"), now_secs())
             }
         };
@@ -330,7 +337,7 @@ impl Library {
         let ride = LibraryRide {
             key: key.clone(),
             serial: req.serial.clone(),
-            epoch: req.epoch,
+            store_id: req.store_id.clone(),
             object_id: req.object_id,
             name: req.name.clone(),
             start_time: req.start_time,
@@ -406,10 +413,8 @@ impl Library {
 fn read_index(path: &Path) -> Option<Index> {
     let bytes = std::fs::read(path).ok()?;
     match serde_json::from_slice::<Index>(&bytes) {
-        Ok(mut index) => {
-            index.version = INDEX_VERSION;
-            Some(index)
-        }
+        Ok(index) if index.version == INDEX_VERSION => Some(index),
+        Ok(_) => None,
         Err(e) => {
             eprintln!("ride library: {} is unreadable ({e}); treating it as empty", path.display());
             None
@@ -431,13 +436,36 @@ fn move_file_durably(source: &Path, dir: &Path, name: &str) -> Result<(), String
     std::fs::remove_file(source).map_err(|e| format!("remove {}: {e}", source.display()))
 }
 
-/// `serial:epoch:objectId`.
-///
-/// Byte-for-byte the string `lib/device/rides.ts`'s `rideKey()` builds, because the two sides look
-/// each other's entries up by it. `frontend_and_backend_agree_on_the_key` in `library.test.ts`
-/// pins the pair.
-pub fn ride_key(serial: &str, epoch: u32, object_id: u16) -> String {
-    format!("{serial}:{epoch}:{object_id}")
+/// Shared with `lib/device/rides.ts`: full StoreId hex and decimal u64 ObjectId.
+pub fn ride_key(serial: &str, store_id: &str, object_id: u64) -> String {
+    format!("{serial}:{store_id}:{object_id}")
+}
+
+fn validate_store_id(value: &str) -> Result<(), String> {
+    if value.len() == 32 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        Ok(())
+    } else {
+        Err("storeId must contain exactly 32 lowercase hexadecimal digits".into())
+    }
+}
+
+fn deserialize_store_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    validate_store_id(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
+fn serialize_object_id<S: serde::Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+fn deserialize_object_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    let value = text.parse::<u64>().map_err(serde::de::Error::custom)?;
+    if value == 0 || text != value.to_string() {
+        return Err(serde::de::Error::custom("objectId must be a canonical nonzero decimal u64 string"));
+    }
+    Ok(value)
 }
 
 // ============================ durability ============================
@@ -522,22 +550,27 @@ fn stem_for(req: &ImportRequest) -> String {
     stem.trim().trim_end_matches(['.', '-']).to_string()
 }
 
-/// A stem no other key in the index has claimed.
-///
-/// Two rides can share a date and name, so the first disambiguator is the object id.
-fn unique_stem(index: &Index, key: &str, base: &str) -> String {
+/// A stem unclaimed by the index or either folder, including files from an unreadable index.
+fn unique_stem(index: &Index, root: &Path, archive: &Path, key: &str, base: &str) -> Result<String, String> {
     let taken = |candidate: &str| {
-        index.rides.iter().any(|r| r.key != key && (r.ride_file.starts_with(&format!("{candidate}."))))
+        let ride_file = format!("{candidate}.{RIDE_EXT}");
+        let gpx_file = format!("{candidate}.{GPX_EXT}");
+        index.rides.iter().any(|r| r.ride_file == ride_file || r.gpx_file == gpx_file)
+            || archive.join(ride_file).exists()
+            || root.join(gpx_file).exists()
     };
-    let base = if base.is_empty() { "ride".to_string() } else { base.to_string() };
-    if !taken(&base) {
-        return base;
+    let base = if base.is_empty() { "ride" } else { base };
+    if !taken(base) {
+        return Ok(base.to_string());
     }
     let with_id = format!("{base}-{}", key.rsplit(':').next().unwrap_or("0"));
     if !taken(&with_id) {
-        return with_id;
+        return Ok(with_id);
     }
-    (2..10_000).map(|n| format!("{with_id}-{n}")).find(|candidate| !taken(candidate)).unwrap_or(with_id)
+    (2..10_000)
+        .map(|n| format!("{with_id}-{n}"))
+        .find(|candidate| !taken(candidate))
+        .ok_or_else(|| "no unused ride filename is available".into())
 }
 
 /// `YYYY-MM-DD` in UTC, or `None` for a device whose clock was never set (`start_time == 0`).
@@ -660,12 +693,12 @@ mod tests {
     /// the eight tests below are about, and it is a filter over `view()`'s entries, which is public
     /// and has real callers. So the filter moves here, the assertions are unchanged, and FS8's ride
     /// sync (#1390) re-promotes it to production the day something calls it again.
-    fn durable_ids(lib: &Library, serial: &str, epoch: u32) -> Vec<u16> {
-        let mut ids: Vec<u16> = lib
+    fn durable_ids(lib: &Library, serial: &str, store_id: u128) -> Vec<u64> {
+        let mut ids: Vec<u64> = lib
             .view(false)
             .rides
             .into_iter()
-            .filter(|e| e.present && e.ride.serial == serial && e.ride.epoch == epoch)
+            .filter(|e| e.present && e.ride.serial == serial && e.ride.store_id == format!("{store_id:032x}"))
             .map(|e| e.ride.object_id)
             .collect();
         ids.sort_unstable();
@@ -691,10 +724,10 @@ mod tests {
         Library::new(base.join("rides"), base.join("archive"))
     }
 
-    fn request(serial: &str, epoch: u32, id: u16, name: &str) -> ImportRequest {
+    fn request(serial: &str, store_id: u128, id: u64, name: &str) -> ImportRequest {
         ImportRequest {
             serial: serial.into(),
-            epoch,
+            store_id: format!("{store_id:032x}"),
             object_id: id,
             name: name.into(),
             start_time: 1_764_547_200, // 2025-12-01
@@ -824,18 +857,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// **Acceptance #3.** A chip erase re-mints the store epoch and the device starts assigning ids
-    /// from 1 again, so a *new* ride arrives under an id an *old* ride already used. Both must
-    /// survive: bare-id dedupe would silently discard the new one, which is the 2026-07-12 incident
-    /// the iOS `LibraryScopingE2ETests` replays.
+    /// Card identities that share their first 32 bits must keep recycled object ids distinct.
     #[test]
-    fn an_epoch_bump_with_a_recycled_id_keeps_both_rides() {
-        let base = temp("epoch");
+    fn a_card_change_with_a_recycled_id_keeps_both_rides() {
+        let base = temp("store_id");
         let lib = library(&base);
         let serial = "OBC-24-000317";
 
-        let old = lib.import(&request(serial, 0x1111_1111, 1, "Old era ride")).expect("old era");
-        let new = lib.import(&request(serial, 0x2222_2222, 1, "New era ride")).expect("new era");
+        let old =
+            lib.import(&request(serial, 0xa1b2c3d4_00000000_00000000_00000000, 1, "Old era ride")).expect("old era");
+        let new =
+            lib.import(&request(serial, 0xa1b2c3d4_00000000_00000000_00000001, 1, "New era ride")).expect("new era");
 
         assert!(old.imported && new.imported, "the recycled id is a different ride, not a duplicate");
         assert_ne!(old.ride.key, new.ride.key);
@@ -844,10 +876,10 @@ mod tests {
 
         // Each era acks only its own ids. The old era's record is archival — it names a ride the
         // device no longer has, and nothing in the new era may claim it.
-        assert_eq!(durable_ids(&lib, serial, 0x1111_1111), vec![1]);
-        assert_eq!(durable_ids(&lib, serial, 0x2222_2222), vec![1]);
+        assert_eq!(durable_ids(&lib, serial, 0xa1b2c3d4_00000000_00000000_00000000), vec![1]);
+        assert_eq!(durable_ids(&lib, serial, 0xa1b2c3d4_00000000_00000000_00000001), vec![1]);
         // A different device with the same id is a third ride again.
-        assert!(durable_ids(&lib, "OBC-24-000999", 0x2222_2222).is_empty());
+        assert!(durable_ids(&lib, "OBC-24-000999", 0xa1b2c3d4_00000000_00000000_00000001).is_empty());
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -859,7 +891,7 @@ mod tests {
         let base = temp("present");
         let lib = library(&base);
         let serial = "OBC-24-000317";
-        for id in [4u16, 5, 6] {
+        for id in [4u64, 5, 6] {
             lib.import(&request(serial, 9, id, &format!("Ride {id}"))).expect("import");
         }
         assert_eq!(durable_ids(&lib, serial, 9), vec![4, 5, 6]);
@@ -944,14 +976,121 @@ mod tests {
     }
 
     #[test]
-    fn the_key_is_serial_epoch_id() {
-        // The exact string `lib/device/rides.ts`'s `rideKey()` builds — an epoch is a decimal u32
-        // on both sides, never hex, or the two libraries would disagree about one ride.
-        assert_eq!(ride_key("OBC-24-000317", 0xa1b2c3d4, 7), "OBC-24-000317:2712847316:7");
-        assert_eq!(ride_key("", 0, 0), ":0:0");
-        // A serial containing the separator still keys unambiguously, because the last two fields
-        // are numbers and the split that matters is from the right.
-        assert_eq!(ride_key("a:b", 1, 2), "a:b:1:2");
+    fn the_key_uses_full_store_hex_and_decimal_u64() {
+        let store = "a1b2c3d4000000000000000000000000";
+        for id in [65536, 9007199254740993, u64::MAX] {
+            assert_eq!(ride_key("OBC-24-000317", store, id), format!("OBC-24-000317:{store}:{id}"));
+        }
+        assert_eq!(ride_key("a:b", store, 2), "a:b:a1b2c3d4000000000000000000000000:2");
+    }
+
+    fn json_request() -> serde_json::Value {
+        serde_json::json!({
+            "serial": "OBC-24-000317",
+            "storeId": "a1b2c3d4000000000000000000000000",
+            "objectId": "65536",
+            "name": "Same name",
+            "startTime": 1764547200_u32,
+            "distanceM": 42195,
+            "movingTimeS": 7200,
+            "climbM": 640,
+            "points": 1,
+            "crc32": 0,
+            "track": [],
+            "object": [1, 2, 3],
+            "gpx": "<gpx/>"
+        })
+    }
+
+    #[test]
+    fn json_identity_survives_import_reload_and_duplicate_detection() {
+        let base = temp("full-identity");
+        for store in ["a1b2c3d4000000000000000000000000", "a1b2c3d4000000000000000000000001"] {
+            for id in ["65536", "9007199254740993", "18446744073709551615"] {
+                let mut json = json_request();
+                json["storeId"] = store.into();
+                json["objectId"] = id.into();
+                let req: ImportRequest = serde_json::from_value(json).expect("JSON request");
+                let landed = library(&base).import(&req).expect("import");
+                assert!(landed.imported);
+                assert_eq!(landed.ride.key, format!("OBC-24-000317:{store}:{id}"));
+                let reply = serde_json::to_value(&landed).expect("JSON response");
+                assert_eq!(reply["ride"]["storeId"], store);
+                assert_eq!(reply["ride"]["objectId"], id);
+                assert!(!library(&base).import(&req).expect("reload and repeat").imported);
+            }
+        }
+        let rides = library(&base).view(false).rides;
+        assert_eq!(rides.len(), 6);
+        assert!(rides.iter().all(|r| r.present && r.gpx_present));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn malformed_json_identity_is_refused_before_file_creation() {
+        let base = temp("invalid-identity");
+        for field in ["storeId", "objectId"] {
+            let invalid = if field == "storeId" {
+                vec![
+                    serde_json::json!(7),
+                    serde_json::json!(null),
+                    "".into(),
+                    "a1b2c3d4".into(),
+                    "A1B2C3D4000000000000000000000000".into(),
+                    "g1b2c3d4000000000000000000000000".into(),
+                ]
+            } else {
+                vec![
+                    serde_json::json!(65536),
+                    serde_json::json!(null),
+                    "".into(),
+                    "0".into(),
+                    "-1".into(),
+                    "+1".into(),
+                    "01".into(),
+                    "1.0".into(),
+                    "1e3".into(),
+                    "18446744073709551616".into(),
+                ]
+            };
+            for value in invalid {
+                let mut json = json_request();
+                json[field] = value;
+                assert!(serde_json::from_value::<ImportRequest>(json).is_err(), "invalid {field}");
+            }
+        }
+        let mut req = request("S", 1, 1, "Bad card");
+        req.store_id = "invalid".into();
+        assert!(library(&base).import(&req).is_err());
+        assert!(file_names(&base).is_empty());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_old_index_never_overwrites_archived_objects_or_gpx() {
+        let base = temp("old-index");
+        let req = request("S", 1, 1, "Same name");
+        let old = library(&base).import(&req).unwrap();
+        let object_path = PathBuf::from(&old.ride.ride_path);
+        let gpx_path = PathBuf::from(&old.ride.gpx_path);
+        let mut index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(base.join("archive").join(INDEX_FILE)).unwrap()).unwrap();
+        index["version"] = 1.into();
+        index["rides"][0].as_object_mut().unwrap().remove("storeId");
+        index["rides"][0]["epoch"] = 1.into();
+        index["rides"][0]["objectId"] = 1.into();
+        std::fs::write(base.join("archive").join(INDEX_FILE), serde_json::to_vec(&index).unwrap()).unwrap();
+        assert!(library(&base).view(false).rides.is_empty());
+        let mut new_req = req.clone();
+        new_req.object = b"different ride".to_vec();
+        new_req.gpx = "<gpx>different ride</gpx>".into();
+        let new = library(&base).import(&new_req).unwrap();
+        assert!(new.imported);
+        assert_ne!(new.ride.ride_path, old.ride.ride_path);
+        assert_ne!(new.ride.gpx_path, old.ride.gpx_path);
+        assert_eq!(std::fs::read(object_path).unwrap(), req.object);
+        assert_eq!(std::fs::read_to_string(gpx_path).unwrap(), req.gpx);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
