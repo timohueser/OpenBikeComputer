@@ -935,13 +935,7 @@ impl App {
         // out of regime until the next gesture. Both are UI-plane work over a weather figure, which
         // is why they sit at this stage's tail rather than inside the domain.
         self.state.rain_step = self.state.rain_step.min(self.weather.steps_ahead());
-        if self.ui.base_wants_rain() {
-            let before = self.state.zoom;
-            self.state.clamp_rain_zoom(self.weather.zoom_floor());
-            if self.state.zoom != before {
-                self.ui.map_dirty = true;
-            }
-        }
+        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
         self.weather_alert_tick(snapshot);
         if let Some(effect) = self.weather.next_effect(self.pass.capabilities.weather) {
             let _ = effects.weather.try_put(effect);
