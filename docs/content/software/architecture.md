@@ -202,10 +202,19 @@ At startup, the simulator imports the OBCM input into a temporary sparse card fi
 The browser imports its embedded OBCM into sparse memory pages.
 Both hosts then read one pinned object revision through an owned source.
 The simulator and its background terrain worker share that source; the last reader releases it and removes the temporary card.
-See the [host map owner](src:host/obc-host-core/src/flat_map.rs).
+See the [shared host store](src:host/obc-host-core/src/flat_store.rs) and
+[map reader](src:host/obc-host-core/src/flat_map.rs).
 
-This map path does not make the host card persistent.
-Routes, trips, weather, and ride recording still use their existing host repositories.
+The browser imports its routes into the same session card as the map. Its
+[route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata
+and binds active readers to an exact object revision. A computed route replaces the prior
+revision under the same allocated object ID. Old readers remain valid until their last lease drops.
+Settled frames neither reopen the source nor scan the catalog.
+
+The browser card remains volatile. It allocates memory in 16 KiB pages; released pages remain
+available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
+route uses one page instead of a retained byte vector. Simulator route and trip folders, weather,
+and ride recording keep their existing host repositories and files.
 
 ### Semantic ports
 
