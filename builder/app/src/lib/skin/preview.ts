@@ -9,6 +9,7 @@
 
 import type { InitInput } from "./pkg/obc_skin_preview.js";
 import type { SkinEntry } from "../catalog/manifest";
+import { skinBandError } from "./bands";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
@@ -94,6 +95,13 @@ export async function openLiveSkinPreview(
     options: { fetchImpl?: typeof fetch; wasm?: InitInput; map?: Uint8Array } = {},
 ): Promise<LiveSkinPreview> {
     try {
+        const parsed = JSON.parse(schemaJson);
+        const schema = parsed.schema ?? parsed;
+        const admit = (json: string): void => {
+            const error = skinBandError(schema, JSON.parse(json).styles);
+            if (error) throw new Error(error);
+        };
+        admit(skinJson);
         const [mod, bytes] = await Promise.all([
             module(options.wasm),
             options.map ? Promise.resolve(options.map) : mapBytes(options.fetchImpl ?? globalThis.fetch),
@@ -102,7 +110,10 @@ export async function openLiveSkinPreview(
         return {
             width: preview.width,
             height: preview.height,
-            setSkin: (next) => preview.set_skin(next),
+            setSkin: (next) => {
+                admit(next);
+                preview.set_skin(next);
+            },
             panBy: (dx, dy) => preview.pan_by(dx, dy),
             zoomAt: (factor, x, y) => preview.zoom_at(factor, x, y),
             resetCamera: () => preview.reset_camera(),

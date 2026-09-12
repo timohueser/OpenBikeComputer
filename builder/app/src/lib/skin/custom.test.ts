@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { SchemaEntry, SkinEntry } from "../catalog/manifest";
+import { canonicalSchema as schema, canonicalSkin as hosted } from "./testdata";
+import { cloneSkin } from "./custom";
 import {
     CUSTOM_SKINS_KEY,
     loadCustomSkins,
@@ -8,62 +9,6 @@ import {
     prepareCustomSkin,
     type SkinStorage,
 } from "./custom";
-
-const schema = {
-    id: "bikepacking",
-    revision: 4,
-    styles: [
-        { id: 1, feature_type: "highway.primary" },
-        { id: 2, feature_type: "natural.water" },
-        { id: 3, feature_type: "contour.major" },
-    ],
-} as SchemaEntry;
-
-const hosted: SkinEntry = {
-    id: "default",
-    name: "Default",
-    description: "Day",
-    version: 7,
-    marker_color: 0xf800,
-    styles: [
-        {
-            feature_type: "highway.primary",
-            color: 0xffff,
-            weight: 3,
-            z_index: 5,
-            priority: 2,
-            dashed: false,
-            fixed_width: false,
-            terrain_layer: false,
-            color2: null,
-        },
-        {
-            feature_type: "natural.water",
-            color: 0x001f,
-            weight: 1,
-            z_index: 1,
-            priority: 3,
-            dashed: false,
-            fixed_width: false,
-            terrain_layer: false,
-            color2: null,
-        },
-        // A terrain style (#1095): the two structural flag bits must survive a clone → persist →
-        // reload round trip, or a custom skin would quietly put the contours back on the width ramp.
-        {
-            feature_type: "contour.major",
-            color: 0xad55,
-            weight: 1,
-            z_index: 8,
-            priority: 4,
-            dashed: true,
-            fixed_width: true,
-            terrain_layer: true,
-            color2: null,
-        },
-    ],
-    preview: null,
-};
 
 class MemoryStorage implements SkinStorage {
     readonly values = new Map<string, string>();
@@ -101,7 +46,7 @@ describe("custom skin storage", () => {
         expect(loadCustomSkins(storage, schema)).toEqual([]);
 
         persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
-        expect(loadCustomSkins(storage, { ...schema, revision: 5 })).toEqual([]);
+        expect(loadCustomSkins(storage, { ...schema, revision: schema.revision + 1 })).toEqual([]);
     });
 
     it("does not let a storage failure masquerade as a saved skin", () => {
@@ -122,5 +67,61 @@ describe("custom skin storage", () => {
         }));
         expect(() => persistCustomSkins(storage, schema, records)).toThrow(/24 custom skins/);
         expect(storage.values.has(CUSTOM_SKINS_KEY)).toBe(false);
+    });
+});
+
+
+describe("custom skin rain bands", () => {
+    it.each([
+        ["highway.primary", 16], ["natural.water", 24],
+        ["highway.primary", 17], ["natural.water", 23],
+    ])("refuses %s at z=%i on prepare, persist and reload", (feature, z) => {
+        const valid = prepareCustomSkin(hosted, schema, "Mine", null, () => "custom-mine");
+        const storage = new MemoryStorage();
+        persistCustomSkins(storage, schema, [{ skin: valid, based_on: "default" }]);
+        const saved = storage.values.get(CUSTOM_SKINS_KEY)!;
+        const invalid = cloneSkin(valid);
+        invalid.styles.find((style) => style.feature_type === feature)!.z_index = z;
+        expect(() => prepareCustomSkin(invalid, schema, "Mine", valid)).toThrow(/drawing order/);
+        expect(() => persistCustomSkins(storage, schema, [{ skin: invalid, based_on: "default" }])).toThrow(/drawing order/);
+        expect(storage.values.get(CUSTOM_SKINS_KEY), "failed admission must not replace saved bytes").toBe(saved);
+        const envelope = JSON.parse(saved);
+        envelope.skins[0].skin = invalid;
+        storage.values.set(CUSTOM_SKINS_KEY, JSON.stringify(envelope));
+        expect(loadCustomSkins(storage, schema)).toEqual([]);
+    });
+
+    it("allows each band's endpoints and reorders styles within a band", () => {
+        const draft = cloneSkin(hosted);
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 24;
+        draft.styles.find((style) => style.feature_type === "highway.track")!.z_index = 127;
+        draft.styles.find((style) => style.feature_type === "natural.water")!.z_index = -128;
+        draft.styles.find((style) => style.feature_type === "natural.land")!.z_index = 16;
+        const skin = prepareCustomSkin(draft, schema, "Mine", null, () => "custom-mine");
+        const storage = new MemoryStorage();
+        persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
+        expect(loadCustomSkins(storage, schema)[0].skin.styles).toEqual(draft.styles);
+    });
+
+    it("refuses unknown feature, ID, and schema assignments without admitting saved records", () => {
+        const skin = prepareCustomSkin(hosted, schema, "Mine", null, () => "custom-mine");
+        const storage = new MemoryStorage();
+        persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
+        for (const unknown of [
+            { ...schema, id: "another-schema" },
+            { ...schema, revision: 2 },
+            { ...schema, styles: schema.styles.slice(1) },
+            { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, id: 99 } : style) },
+            { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, feature_type: "unknown.layer" } : style) },
+        ]) {
+            expect(() => prepareCustomSkin(hosted, unknown, "Mine", null)).toThrow(/unavailable for this map schema/);
+            expect(() => persistCustomSkins(storage, unknown, [{ skin, based_on: "default" }])).toThrow(/unavailable for this map schema/);
+            // Match the envelope to the new catalog so its existing identity check cannot mask admission.
+            const envelope = JSON.parse(storage.values.get(CUSTOM_SKINS_KEY)!);
+            envelope.schema_id = unknown.id;
+            envelope.schema_revision = unknown.revision;
+            storage.values.set(CUSTOM_SKINS_KEY, JSON.stringify(envelope));
+            expect(loadCustomSkins(storage, unknown)).toEqual([]);
+        }
     });
 });
