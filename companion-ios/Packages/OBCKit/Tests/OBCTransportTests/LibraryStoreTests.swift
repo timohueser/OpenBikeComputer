@@ -105,7 +105,7 @@ final class LibraryStoreTests: XCTestCase {
         record.summary.name = "Schwarzwald Day 2"   // H12 rename
         // A later upload lands on device object 7 — under the connected
         // device's (serial, epoch) scope (#769).
-        record.deviceLink = DeviceRouteLink(serial: "OBC-24-000317", epoch: 42, objectID: DeviceObjectID(7))
+        record.deviceLink = DeviceRouteLink(serial: "OBC-24-000317", storeID: "0000000000000000000000000000002a", objectID: DeviceObjectID(7))
         store.savePlannedRoute(record)
 
         let reloaded = FileLibraryStore(directory: dir).plannedRoutes()
@@ -209,12 +209,11 @@ final class LibraryStoreTests: XCTestCase {
     }
 
     func testScopedLinkRoundTripsThroughDisk() throws {
-        // The v2 link persists all three parts and reassembles only when all
-        // three are present (#769).
+        // The full store identity survives a relaunch.
         let (store, dir) = makeFileStore()
         var record = makeRecord()
         record.deviceLink = DeviceRouteLink(
-            serial: "OBC-24-000317", epoch: 0xDEAD_0001, objectID: DeviceObjectID(9))
+            serial: "OBC-24-000317", storeID: "111111111111111111111111dead0001", objectID: DeviceObjectID(9))
         record.uploadedCRC32 = 0x1234_5678
         store.savePlannedRoute(record)
 
@@ -222,10 +221,17 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.deviceLink, record.deviceLink)
         XCTAssertEqual(loaded.uploadedCRC32, 0x1234_5678)
         XCTAssertTrue(
-            loaded.deviceLink?.matches(LibraryScope(serial: "OBC-24-000317", epoch: 0xDEAD_0001)) == true)
+            loaded.deviceLink?.matches(LibraryScope(serial: "OBC-24-000317", storeID: "111111111111111111111111dead0001")) == true)
         XCTAssertFalse(
-            loaded.deviceLink?.matches(LibraryScope(serial: "OBC-24-000317", epoch: 0xDEAD_0002)) == true,
+            loaded.deviceLink?.matches(LibraryScope(serial: "OBC-24-000317", storeID: "222222222222222222222222dead0001")) == true,
             "an era change invalidates the link")
+        let file = dir.appendingPathComponent("planned/imported-1/route.json")
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json.removeValue(forKey: "deviceStoreID")
+        json["deviceStoreEpoch"] = 0xDEAD_0001
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        XCTAssertNil(store.plannedRoutes().first?.deviceLink)
+
     }
 
     func testRetentionFieldsRoundTripThroughDisk() throws {

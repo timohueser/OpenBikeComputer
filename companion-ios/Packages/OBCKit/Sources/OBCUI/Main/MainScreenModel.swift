@@ -87,15 +87,8 @@ public final class MainScreenModel {
     /// #303: non-nil once a connected device reports an incompatible
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
-    /// The connected device's `(serial, epoch)` identity (#769), established
-    /// by each connection's `runIdentityCheck` and `nil` until it succeeds —
-    /// **fail-closed**: a failed version+epoch read, a missing epoch (v1 peer,
-    /// short read), or an empty serial leaves this `nil`, and with it
-    /// `ackRides` and every reconcile write stay closed for the connection
-    /// (library browsing is untouched). The gate re-opens on the next
-    /// successful identity read. Every id-keyed write derives its scope from
-    /// here: the possession ack filter, route-link minting on upload,
-    /// and badge reconcile.
+    /// The current device serial and full StoreId. Missing identity keeps
+    /// acknowledgments and reconciliation disabled while local browsing continues.
     public private(set) var connectedScope: LibraryScope?
     /// Whether the connected device understands **auto-expiry** (epic #638) —
     /// settled by each connection's `setClock` in the prologue (`.stamped` → true,
@@ -242,7 +235,7 @@ public final class MainScreenModel {
         // instead of hitting the closed gate and no-oping.
         //
         // v2 hardening (#769): the verdict must also have produced a scope —
-        // a *failed* identity read (or one without an epoch) keeps the gate
+        // a *failed* identity read (or one without a StoreId) keeps the gate
         // CLOSED, where #764's v1 posture settled it open. Fail-open would
         // let a sync persist id-keyed state under an unknown era, re-creating
         // the 2026-07-12 incident in the failure path.
@@ -448,7 +441,7 @@ public final class MainScreenModel {
     /// next successful connection. Local library browsing remains available.
     private func runIdentityCheck() async {
         // Unknown until proven, every connection: the device may have been
-        // wiped (new epoch) or swapped since the last read.
+        // reinitialized (new StoreId) or swapped since the last read.
         connectedScope = nil
         // Stamp the device's trusted wall clock (epic #638) on **every connect,
         // before the first ack / reconcile write** (spec §4.4): the sweep's ride
@@ -462,8 +455,8 @@ public final class MainScreenModel {
                 protocolMismatch = ProtocolMismatch(expected: expected, found: found)
             } else {
                 protocolMismatch = nil
-                // `libraryScope` is nil on a missing epoch or empty serial —
-                // the fail-closed input, never defaulted (`0` is a legal epoch).
+                // `libraryScope` is nil on a missing StoreId or empty serial —
+                // the fail-closed input, never defaulted.
                 connectedScope = info.libraryScope
             }
         }
@@ -1477,7 +1470,7 @@ public final class MainScreenModel {
         deviceName = name
     }
 
-    /// A B5 upload committed — record the `{serial, epoch, id}` link it landed
+    /// A B5 upload committed — record the `{serial, StoreId, id}` link it landed
     /// under (#769) so the C1 badge lights and a later re-upload replaces that
     /// object *on that device in that era*. Idempotent; a new link (re-upload
     /// after a device-side change) overwrites the old. The scope comes from
@@ -1538,7 +1531,7 @@ public final class MainScreenModel {
     }
 
     /// A whole-trip upload committed the trip object under `objectID` (TR8) —
-    /// record the `{serial, epoch, id}` link + fingerprint so the trip badge
+    /// record the `{serial, StoreId, id}` link + fingerprint so the trip badge
     /// lights and a later push replaces that object in place. Idempotent; the
     /// route-upload rule in reverse (no scope, or no committed id → no link, the
     /// safe direction: the next push or reconcile re-links).

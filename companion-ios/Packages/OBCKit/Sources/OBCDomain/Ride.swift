@@ -1,44 +1,18 @@
 import Foundation
 
-/// Stable identifier for a tracked ride on the device / in the app library.
-///
-/// A thin `String` wrapper for type safety (distinct from `RouteID`).
-///
-/// Unlike routes, ride identity is **deliberately shared** across the BLE
-/// boundary: the app reuses the device's durable ride id (spec §4.1, made
-/// durable by the #289/#290 identity rework) as the library id, so the
-/// synced/deleted tombstone sets key on it directly. The typed accessors below
-/// make that device-namespace nature explicit — the real transport **mints**
-/// ride ids via ``init(deviceObjectID:scope:)`` and reads them back via
-/// ``deviceObjectID``, never by ad-hoc string↔int round-trips (#359).
-///
-/// **Composite keys (v2, #769):** a device object id is durable only within an
-/// id era on one device, so the minted id string carries the whole
-/// `(serial, epoch, id)` composite — `v2:<epoch>:<objectID>:<serial>` (serial
-/// last, so a serial containing `:` needs no escaping; epoch and object id are
-/// canonical decimal, making the encoding injective). Everything downstream —
-/// the library's ride directories, the synced set, tombstones, trash marks —
-/// keys on the raw string, so per-(serial, epoch) scoping *falls out of the
-/// id*: an era change or a device switch changes the string, old keys stop
-/// matching, and there is no re-key flow to tear. A bare-number id is a v1
-/// (pre-scoping) legacy id — still readable, claimed by the one-time
-/// migration when the device corroborates it, archival forever otherwise.
+/// A ride's raw library key. Device keys contain the full StoreId, object ID,
+/// and serial. Other strings remain valid archive keys without a device scope.
 public struct RideID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
 
-    private static let v2Prefix = "v2:"
     private static let v4Prefix = "v4:"
 
     /// A ride id in one device's **current-era** namespace — what the
     /// transport mints from the device's ride catalog once the identity read
     /// has established the scope, and what the library then stores as-is.
     public init(deviceObjectID: DeviceObjectID, scope: LibraryScope) {
-        if let storeID = scope.storeID {
-            self.init("\(Self.v4Prefix)\(storeID):\(deviceObjectID.raw):\(scope.serial)")
-        } else {
-            self.init("\(Self.v2Prefix)\(scope.epoch):\(deviceObjectID.raw):\(scope.serial)")
-        }
+        self.init("\(Self.v4Prefix)\(scope.storeID):\(deviceObjectID.raw):\(scope.serial)")
     }
 
     /// An unscoped ride id for stand-ins without a device identity.
@@ -47,17 +21,10 @@ public struct RideID: Hashable, Sendable {
         self.init(String(deviceObjectID.raw))
     }
 
-    /// The `(serial, epoch)` scope this id was minted under, or `nil` for a
-    /// v1 legacy id / an id that never came from a device catalog (mock
-    /// fixtures, tests). `nil` is what keeps unclaimed flat entries archival:
-    /// they can never equal a scoped key, and scope-filtered writes (the
-    /// possession ack) skip them.
+    /// The current device scope, or nil for an arbitrary archival key.
     public var scope: LibraryScope? {
         guard let components = scopedComponents else { return nil }
-        switch components.identity {
-        case .epoch(let epoch): return LibraryScope(serial: components.serial, epoch: epoch)
-        case .storeID(let storeID): return LibraryScope(serial: components.serial, storeID: storeID)
-        }
+        return LibraryScope(serial: components.serial, storeID: components.storeID)
     }
 
     /// The device object id behind this ride id — parsed from either shape —
@@ -67,21 +34,13 @@ public struct RideID: Hashable, Sendable {
         return scopedComponents?.objectID
     }
 
-    /// Decompose a `v2:<epoch>:<objectID>:<serial>` id; `nil` for any other
-    /// shape. The serial is everything after the third `:` (it may itself
-    /// contain `:`), and may be empty only in synthetic test scopes.
-    private enum ScopedIdentity { case epoch(UInt32), storeID(String) }
-    private var scopedComponents: (identity: ScopedIdentity, objectID: DeviceObjectID, serial: String)? {
+    private var scopedComponents: (storeID: String, objectID: DeviceObjectID, serial: String)? {
         let parts = rawValue.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count == 4, let objectID = UInt64(parts[2]) else { return nil }
-        if rawValue.hasPrefix(Self.v2Prefix), let epoch = UInt32(parts[1]) {
-            return (.epoch(epoch), DeviceObjectID(objectID), String(parts[3]))
-        }
-        if rawValue.hasPrefix(Self.v4Prefix), parts[1].count == 32,
-            parts[1].allSatisfy({ $0.isHexDigit }) {
-            return (.storeID(String(parts[1])), DeviceObjectID(objectID), String(parts[3]))
-        }
-        return nil
+        guard parts.count == 4, parts[0] == "v4", parts[1].count == 32,
+            parts[1].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+            let objectID = UInt64(parts[2])
+        else { return nil }
+        return (String(parts[1]), DeviceObjectID(objectID), String(parts[3]))
     }
 }
 

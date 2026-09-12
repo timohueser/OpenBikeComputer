@@ -9,6 +9,9 @@ final class FixtureTests: XCTestCase {
     func testDefaultFixturesMatchDesignSampleData() {
         let set = FixtureSet.load("default")
         XCTAssertEqual(set.deviceInfo.name, "Trailhead")
+        for name in ["default", "empty", "large", "trips", "website"] {
+            XCTAssertEqual(FixtureSet.load(name).deviceInfo.libraryScope?.storeID, FixtureSet.defaultStoreID)
+        }
         XCTAssertEqual(set.battery, 82)
 
         let kettle = set.routes.first { $0.summary.name == "Kettle Moraine Loop" }

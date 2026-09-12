@@ -59,7 +59,7 @@ final class ImportFlowModelTests: XCTestCase {
 
     /// A scoped device link for the replace-import tests (#769).
     private func link(_ objectID: UInt16) -> DeviceRouteLink {
-        DeviceRouteLink(serial: "OBC-24-000317", epoch: 42, objectID: DeviceObjectID(objectID))
+        DeviceRouteLink(serial: "OBC-24-000317", storeID: "0000000000000000000000000000002a", objectID: DeviceObjectID(objectID))
     }
 
     private func detail(named name: String, id: String) -> RouteDetail {

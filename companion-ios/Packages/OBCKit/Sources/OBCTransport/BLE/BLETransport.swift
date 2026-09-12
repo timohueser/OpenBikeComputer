@@ -987,41 +987,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         async let fw = readString(GATT.firmwareRevision)
         async let hw = readString(GATT.hardwareRevision)
         async let serial = readString(GATT.serialNumber)
-        // v2 read: `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` LE (§1).
-        // **The length is the version mechanism** — every field is decoded by how
-        // much of the read arrived, never by an expected total, which is what let
-        // `obcm_version` (E1 / #911) and now the capability word (WX3 / #1188) land
-        // without a protocol bump. Four lengths exist: 11 (full), 7 (a firmware
-        // predating the capability word), 6 (also predating the obcm byte), 2 (no
-        // mounted store). Anything past what we know is ignored, so the next field
-        // to be appended will not break this build either.
-        //
-        // The version field keeps the **lenient prefix** decode (count >= 2 reads
-        // the first u16) — that's the v1-peer compat path: a v1 device returns 2
-        // bytes, reads as `version = 1`, and takes the #303 mismatch banner. Every
-        // trailing field decodes to `nil` when it did not arrive, never to a
-        // fabricated `0`: `0` is a legal store epoch, and OBCM `0` would read as
-        // "supports OBCM v0" and refuse every real map. V5 (#769) gates
-        // `ackRides`/reconcile on a present epoch — a `nil` here is that failed
-        // identity read surfaced, not hidden behind a fake value.
-        //
-        // The capability word needs **all four** of its bytes: 8, 9 or 10 bytes are
-        // a broken read of a `u32`, not a smaller capability set, and decoding the
-        // bytes that did arrive could claim a feature this device never announced —
-        // a phone that then offered weather to a device without it.
+        // BLE v4 exposes only the two-byte wire version. Store identity comes from LIST.
         let versionData = try await read(GATT.protocolVersion)
-        guard versionData.count >= 2 else { throw DeviceError.readFailed }
+        guard versionData.count == 2 else { throw DeviceError.readFailed }
         let b = versionData.startIndex
         let version = UInt16(versionData[b]) | (UInt16(versionData[b + 1]) << 8)
-        let storeEpoch: UInt32? = versionData.count >= 6
-            ? UInt32(versionData[b + 2]) | (UInt32(versionData[b + 3]) << 8)
-                | (UInt32(versionData[b + 4]) << 16) | (UInt32(versionData[b + 5]) << 24)
-            : nil
-        let obcmVersion: UInt8? = versionData.count >= 7 ? versionData[b + 6] : nil
-        let featureBits: UInt32? = versionData.count >= 11
-            ? UInt32(versionData[b + 7]) | (UInt32(versionData[b + 8]) << 8)
-                | (UInt32(versionData[b + 9]) << 16) | (UInt32(versionData[b + 10]) << 24)
-            : nil
         let name = await currentPeripheralName() ?? "OBC"
         let serialValue = try await serial
         let storeID: String?
@@ -1032,8 +1002,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         let info = DeviceInfo(
             name: name, firmwareVersion: try await fw, hardwareVersion: try await hw,
-            serial: serialValue, protocolVersion: version, storeEpoch: storeEpoch, storeID: storeID,
-            obcmVersion: obcmVersion, featureBits: featureBits
+            serial: serialValue, protocolVersion: version, storeID: storeID
         )
         return info
     }
