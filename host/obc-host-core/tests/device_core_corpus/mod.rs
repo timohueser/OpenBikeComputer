@@ -11,6 +11,7 @@
 // A shared test corpus is compiled into every binary that includes it, and each uses a subset.
 #![allow(dead_code)]
 
+use obc_app::catalog_state::CatalogError;
 use obc_app::device_core::ModeState;
 use obc_app::device_core::{
     DataIdentity, DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock,
@@ -950,15 +951,15 @@ impl RouteRepository for BorrowedRoutes<'_> {
         self.ids
     }
 
-    fn delete_by_id(&mut self, id: u64) -> bool {
+    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
         *self.delete_attempts = self.delete_attempts.saturating_add(1);
         if std::mem::take(self.fail_delete_once) {
-            return false;
+            return Err(CatalogError::RemoveFailed);
         }
-        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return false };
+        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return Ok(false) };
         self.ids.remove(index);
         self.catalog.remove(index);
-        true
+        Ok(true)
     }
 
     fn write_nav_route(&mut self, _bytes: &[u8]) -> Option<u64> {
@@ -990,11 +991,11 @@ impl RideRepository for BorrowedRides<'_> {
         self.ids
     }
 
-    fn delete_by_id(&mut self, id: u64) -> bool {
-        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return false };
+    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
+        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return Ok(false) };
         self.ids.remove(index);
         self.catalog.remove(index);
-        true
+        Ok(true)
     }
 
     fn fill_track(&self, _id: u64, _profile: &mut obc_route::Profile) -> Option<Vec<(i32, i32)>> {
@@ -1008,12 +1009,12 @@ struct BorrowedTrips<'a> {
 }
 
 impl TripCatalog for BorrowedTrips<'_> {
-    fn delete_by_id(&mut self, id: u64) -> bool {
+    fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
         if *self.present && id == TRIP {
             *self.present = false;
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 

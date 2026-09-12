@@ -425,8 +425,9 @@ impl SimGui {
         if let Some(id) = delete_trip {
             // A trip delete doesn't move the *route* store, so no store-changed edge — the trip
             // re-feed is the whole mechanism (the deleted folder's routes fall back to unfiled).
-            if self.trip_store.delete_by_id(id) {
-                self.app.set_trips(&self.trip_store.inputs());
+            match self.trip_store.delete_by_id(id) {
+                Ok(_) => self.app.set_trips(&self.trip_store.inputs()),
+                Err(error) => eprintln!("trip delete: {error:?}"),
             }
         }
     }
