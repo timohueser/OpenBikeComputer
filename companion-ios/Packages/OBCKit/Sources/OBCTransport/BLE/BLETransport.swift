@@ -1025,11 +1025,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await remove(id)
     }
 
-    public func ackRides(_ ids: [RideID]) async throws {
-        // Protocol v4 has no possession mutation. The library already owns downloaded bytes;
-        // keeping this compatibility capability as a no-op avoids inventing an unregistered frame.
-    }
-
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
         switch try await exchangeCommand(
             SetClockCommand.encode(sample), command: SetClockCommand.commandByte
