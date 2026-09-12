@@ -56,47 +56,6 @@ public struct BLEChannel: Sendable {
         return out
     }
 
-    /// Legacy raw-byte seam retained for the in-package echo harness. The live companion path uses
-    /// `sendRecord(_:)` exclusively.
-    /// Throws `ChannelDropped` on a dead link and `CancellationError` on cancel.
-    public func send(
-        _ object: Data, progress: @Sendable (TransferProgress) -> Void = { _ in }
-    ) async throws {
-        var done = 0
-        while done < object.count {
-            try Task.checkCancellation()
-            let end = min(done + chunkSize, object.count)
-            try await channel.write(object.subdata(in: (object.startIndex + done)..<(object.startIndex + end)))
-            done = end
-            progress(TransferProgress(bytesDone: done, total: object.count))
-        }
-    }
-
-    /// Legacy raw-byte seam retained for the in-package echo harness. The live companion path uses
-    /// `receiveRecord()` exclusively.
-    public func receive(
-        length: Int, expectedCRC: UInt32,
-        progress: @Sendable (TransferProgress) -> Void = { _ in }
-    ) async throws -> Data {
-        var buffer = Data(capacity: length)
-        var hasher = CRC32.Hasher()
-        while buffer.count < length {
-            try Task.checkCancellation()
-            let chunk: Data
-            do {
-                chunk = try await channel.read(maxLength: min(chunkSize, length - buffer.count))
-            } catch {
-                throw (error as? DeviceError) ?? DeviceError.transferDropped
-            }
-            if chunk.isEmpty { throw DeviceError.transferDropped }  // EOF before `length`
-            hasher.update(chunk)
-            buffer.append(chunk)
-            progress(TransferProgress(bytesDone: buffer.count, total: length))
-        }
-        guard hasher.finalize() == expectedCRC else { throw DeviceError.crcMismatch }
-        return buffer
-    }
-
     /// Tear the underlying channel down (idempotent) — unblocks a peer parked on
     /// backpressure and, on the real path, makes the device discard its partial.
     public func close() async {
