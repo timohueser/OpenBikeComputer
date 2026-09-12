@@ -65,7 +65,7 @@ impl LoadedMap {
         &self.name
     }
 
-    pub fn map_source(&self) -> obc_host_core::flat_map::MapSource {
+    pub fn map_source(&self) -> obc_host_core::flat_store::ObjectSource {
         self.map.source()
     }
     pub fn tables(&self) -> &MapTables {

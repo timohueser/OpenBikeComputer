@@ -23,7 +23,7 @@
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
-//! - [`MemRouteStore`] / [`MemRideStore`] / [`MemTrackStore`] — the in-memory store family for a
+//! - [`FlatRouteStore`] / [`MemRideStore`] / [`MemTrackStore`] — the in-memory store family for a
 //!   host without a filesystem (the web demo; also handy in tests). Same surfaces as `obc-sim`'s
 //!   folder-backed stores, so host code drives either shape identically.
 //!
@@ -34,6 +34,9 @@
 pub mod conformance;
 mod dispatch;
 pub mod flat_map;
+mod flat_routes;
+pub mod flat_store;
+pub use flat_routes::FlatRouteStore;
 mod frame;
 mod nav;
 mod replay;
@@ -51,7 +54,7 @@ pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};
 pub use sink::VecSink;
-pub use stores::{MemRideStore, MemRouteStore, MemTrackStore};
+pub use stores::{MemRideStore, MemTrackStore};
 
 /// The id band a host's **ride** objects live in.
 ///

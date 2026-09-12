@@ -21,6 +21,16 @@ use obc_host_core::VecSink;
 /// FatFs twin is `/routes/_NAV.OBR` (embedded-sdmmc can't write the 4-char LFN extension).
 const NAV_ROUTE_FILE: &str = "_nav.obcr";
 
+struct RouteBytes(Vec<u8>);
+impl obc_formats::io::ByteSource for RouteBytes {
+    fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        obc_formats::io::ByteSource::read_at(&SliceSource(&self.0), offset, out)
+    }
+}
+
 /// The folder-backed route store: the catalog of summaries plus the bytes of the one active route.
 pub struct RouteStore {
     dir: PathBuf,
@@ -38,7 +48,7 @@ pub struct RouteStore {
     assigned: Vec<(PathBuf, CatalogObjectId)>,
     next_id: CatalogObjectId,
     active: Option<usize>,
-    active_bytes: Option<Vec<u8>>,
+    active_bytes: Option<RouteBytes>,
     /// The in-memory route-retention sidecar (epic #638, S3): route id → (retention, last_used).
     /// Session-lived, mirroring the device's `ROUTES.RET` sidecar — the auto-expiry sweep reads it
     /// through [`retention_metas`](RouteStore::retention_metas), and the host's stamp/set commands
@@ -238,7 +248,7 @@ impl RouteStore {
             return false;
         }
         self.active = want;
-        self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok());
+        self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok()).map(RouteBytes);
         true
     }
 
@@ -254,7 +264,7 @@ impl RouteStore {
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes, for
     /// opening a [`RouteReader`](obc_route::RouteReader) to stream geometry from.
     pub fn active_source(&self) -> Option<SliceSource<'_>> {
-        self.active_bytes.as_deref().map(SliceSource)
+        self.active_bytes.as_ref().map(|bytes| SliceSource(&bytes.0))
     }
 }
 
@@ -277,8 +287,8 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn sync_active(&mut self, want: Option<usize>) -> bool {
         self.sync_active(want)
     }
-    fn active_source(&self) -> Option<SliceSource<'_>> {
-        self.active_source()
+    fn active_source(&self) -> Option<&dyn obc_formats::io::ByteSource> {
+        self.active_bytes.as_ref().map(|bytes| bytes as &dyn obc_formats::io::ByteSource)
     }
     fn invalidate_active(&mut self) {
         self.invalidate_active()

@@ -235,10 +235,10 @@ pub fn commit_detour(
         let orig_index = orig_index.ok_or(NavError::NoPath)?;
         let mut sink = VecSink::default();
         {
-            // Both sources are in-RAM snapshots, so the splice completes before any store write —
+            // Both sources stay readable through the splice, which completes before any store write —
             // self-splice (the active route already being the reserved slot) is safe.
             let orig_src = store.active_source().ok_or(NavError::NoPath)?;
-            let orig = obc_route::RouteReader::new(orig_index, &orig_src);
+            let orig = obc_route::RouteReader::new(orig_index, orig_src);
             let det_src = obc_formats::io::SliceSource(&ready.bytes);
             let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavError::NoPath)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
@@ -313,4 +313,33 @@ pub fn commit_nav_plan(
         eprintln!("nav route: failed ({e:?})");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FlatRouteStore, RouteRepository};
+
+    #[test]
+    fn a_detour_can_splice_and_replace_its_own_flat_route() {
+        const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+        let mut routes = FlatRouteStore::from_bytes(&[]).unwrap();
+        let id = routes.write_nav_route(ROUTE).unwrap();
+        assert!(routes.sync_active(Some(0)));
+        let index = obc_route::RouteIndex::read(routes.active_source().unwrap()).unwrap();
+        let ready = DetourReady {
+            bytes: ROUTE.to_vec(),
+            detour_len_m: index.total_distance_m,
+            progress_m: 0,
+            rejoin_m: index.total_distance_m,
+            has_elevation: true,
+        };
+        let mut app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(routes.catalog(), routes.ids());
+        assert_eq!(commit_detour(&mut app, &mut routes, Some(&index), Some(ready), &mut crate::trace::NoTrace), Ok(id));
+        assert!(routes.sync_active(Some(0)));
+        assert!(obc_route::RouteIndex::read(routes.active_source().unwrap()).is_ok());
+        assert_eq!(routes.ids(), &[id]);
+        assert!(!routes.sync_active(Some(0)));
+    }
 }
