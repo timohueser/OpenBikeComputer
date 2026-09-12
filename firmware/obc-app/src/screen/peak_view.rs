@@ -171,17 +171,7 @@ impl PeakViewScreen {
             terrain::draw(cv, terrain, profile, heading_q4, rx.w, chart_bottom);
         }
         draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
-        if rx.peak_view.is_some_and(|terrain| terrain.has_incomplete_coverage()) {
-            cv.fill(rect(0, chart_bottom - 24, rx.w, 24), palette::PARCHMENT);
-            cv.text(
-                rx.t(Msg::PeakViewLimitedTerrain),
-                Point::new(rx.w / 2, chart_bottom - 24),
-                Font::Label,
-                TextAlign::Center,
-                palette::SUBTEXT,
-            );
-        }
-        draw_ledger(cv, rx, profile, selected);
+        draw_ledger(cv, rx, profile, selected, heading_q4);
     }
 }
 
@@ -380,12 +370,20 @@ fn draw_peak_annotations(
     }
 }
 
-fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, selected: Option<usize>) {
+fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, selected: Option<usize>, heading: u16) {
     let top = rx.h - LEDGER_H;
     cv.fill(rect(0, top, rx.w, LEDGER_H), palette::PARCHMENT);
     cv.hline(0, top, rx.w, palette::WOOD);
     let Some(peak) = selected.and_then(|i| profile.peaks.get(i)) else {
-        cv.text(rx.t(Msg::PeakViewNoPeaks), Point::new(10, top + 7), Font::Label, TextAlign::Left, palette::SUBTEXT);
+        let pending = rx.peak_view.is_some_and(|terrain| !terrain.view_ready(heading, fov_q4(profile)));
+        let mut caption = heapless::String::new();
+        let status = super::vocab::tiles::fit_caption(
+            rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }),
+            rx.w - 20,
+            &mut caption,
+            Font::Label,
+        );
+        cv.text(status, Point::new(10, top + 7), Font::Label, TextAlign::Left, palette::SUBTEXT);
         return;
     };
 

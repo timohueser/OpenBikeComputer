@@ -1,16 +1,14 @@
 //! Front-to-back traversal of baked geographic height bounds and bilinear terrain cells.
 
 use super::{
-    panorama::{Panorama, COLUMNS, ROWS},
+    panorama::{view_sector_bounds, view_sectors, Panorama, COLUMNS, ROWS, SECTORS, SECTOR_COLUMNS as SECTOR},
     PeakViewPeak, PeakViewProfile,
 };
 use obc_elevation::surface::Patch;
 
-const SECTOR: usize = 15;
 const DRAW_RAYS: usize = SECTOR + 2;
 // Fill the quarter-degree bearings between the picture's 3/8-degree samples only near named peaks.
 const RAYS: usize = DRAW_RAYS + SECTOR;
-const SECTORS: usize = COLUMNS / SECTOR;
 const _: () = assert!(COLUMNS.is_multiple_of(SECTOR) && SECTORS == 64 && RAYS <= u32::BITS as usize);
 const CURVATURE: f32 = 0.87 / (2.0 * 6_371_000.0);
 const INVERSE_CURVATURE: f32 = -1.0 / (2.0 * CURVATURE);
@@ -91,7 +89,6 @@ pub struct Builder {
     profile: PeakViewProfile<'static>,
     stack: heapless::Vec<Node, STACK_CAPACITY>,
     sector: usize,
-    finished: u64,
     priority_heading_q4: u16,
     reuse_halo: bool,
     ray_mask: u32,
@@ -186,11 +183,19 @@ impl Builder {
         self.profile
     }
 
+    pub fn display_peaks(&self) -> impl Iterator<Item = PeakViewPeak> + '_ {
+        self.peaks.iter().map(|peak| {
+            let mut peak = *peak;
+            peak.visible &= self.panorama.ready_at_bearing_q4(peak.azimuth_q4);
+            peak
+        })
+    }
+
     pub fn complete(&self) -> bool {
-        self.finished == u64::MAX
+        self.panorama.finished == u64::MAX
     }
     pub fn progress(&self) -> u8 {
-        (self.finished.count_ones() * 100 / SECTORS as u32) as u8
+        (self.panorama.finished.count_ones() * 100 / SECTORS as u32) as u8
     }
 
     /// Finish the current sector, then give an unfinished part of this view priority.
@@ -200,25 +205,20 @@ impl Builder {
 
     /// Terrain, outlines and nearby catalogue rays are complete throughout this viewport.
     pub fn view_ready(&self, heading_q4: u16) -> bool {
-        self.view_sectors(heading_q4).all(|sector| self.finished & (1 << sector) != 0)
-    }
-
-    fn view_sectors(&self, heading_q4: u16) -> impl Iterator<Item = usize> {
-        // Include the picture's neighbour columns and the catalogue's half-degree search.
-        let half = (self.profile.horizontal_fov_q4() / 2 + 6).min(720);
-        let low = ((i32::from(heading_q4) - half) * COLUMNS as i32).div_euclid(1440 * SECTOR as i32);
-        let high = ((i32::from(heading_q4) + half) * COLUMNS as i32).div_euclid(1440 * SECTOR as i32);
-        (low..=high).map(|sector| sector.rem_euclid(SECTORS as i32) as usize)
+        self.panorama.view_ready(heading_q4, self.profile.horizontal_fov_q4())
     }
 
     fn next_sector(&self) -> usize {
-        let next = self.view_sectors(self.priority_heading_q4).find(|sector| self.finished & (1 << sector) == 0);
-        next.or_else(|| {
-            (1..=SECTORS)
-                .map(|step| (self.sector / SECTOR + step) % SECTORS)
-                .find(|sector| self.finished & (1 << sector) == 0)
-        })
-        .expect("an unfinished sector")
+        let fov = self.profile.horizontal_fov_q4();
+        let (low, high) = view_sector_bounds(self.priority_heading_q4, fov);
+        // Grow both edges in 17-degree batches. Each batch keeps clockwise halo reuse.
+        let buffer = (0..SECTORS as i32)
+            .step_by(3)
+            .flat_map(|offset| (high + 1 + offset..high + 4 + offset).chain(low - offset - 3..low - offset));
+        view_sectors(self.priority_heading_q4, fov)
+            .chain(buffer.map(|sector| sector.rem_euclid(SECTORS as i32) as usize))
+            .find(|sector| self.panorama.finished & (1 << sector) == 0)
+            .expect("an unfinished sector")
             * SECTOR
     }
 
@@ -232,7 +232,7 @@ impl Builder {
                 self.visit(terrain, node);
             } else if !self.begin_level(terrain) {
                 self.finish_sector();
-                self.finished |= 1 << (self.sector / SECTOR);
+                self.panorama.finished |= 1 << (self.sector / SECTOR);
                 if !self.complete() {
                     let next = self.next_sector();
                     self.reuse_halo = next == (self.sector + SECTOR) % COLUMNS;
@@ -999,6 +999,25 @@ mod tests {
                 assert_eq!(reference.panorama.tone(x, y), moving.panorama.tone(x, y), "pixel {x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn background_work_buffers_both_sides_of_a_wrapped_view() {
+        let profile = PeakViewProfile { default_heading_q4: 1430, ..PROFILE };
+        let mut job = std::boxed::Box::new(Builder::new(&profile));
+        let mut terrain = Flat { height: 100, missing: false, patches: 0 };
+        while !job.view_ready(1430) {
+            job.step(&mut terrain, 1);
+        }
+        let initial = job.panorama.finished.count_ones();
+        while job.panorama.finished.count_ones() < initial + 6 {
+            job.step(&mut terrain, 1);
+        }
+        let (low, high) = view_sector_bounds(1430, profile.horizontal_fov_q4());
+        for sector in low - 3..=high + 3 {
+            assert_ne!(job.panorama.finished & (1 << sector.rem_euclid(SECTORS as i32)), 0);
+        }
+        assert!(!job.view_ready(710), "buffer both edges before working on the opposite direction");
     }
 
     #[test]

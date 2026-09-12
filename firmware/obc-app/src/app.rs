@@ -2318,6 +2318,12 @@ impl App {
         }
     }
 
+    pub fn redraw_peak_view(&mut self) {
+        if matches!(self.ui.stack.last(), Some(Screen::PeakView(_))) {
+            self.ui.map_dirty = true;
+        }
+    }
+
     pub fn peak_view_heading_q4(&self) -> u16 {
         match self.peak_view_base() {
             Some(screen) => screen.heading_q4(&self.state),
