@@ -343,81 +343,38 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.ridePoints(ride.id), ride.points)
     }
 
-    // MARK: v1 → v2 ride migration (#360)
-
-    /// Copy the checked-in v1 whole-ride file (written verbatim by the pre-#360
-    /// store) into a store's `rides/` directory.
-    private func installV1RideFixture(in dir: URL) throws {
+    func testUnsupportedWholeRideFileSurvivesCurrentRideOperations() throws {
+        let (store, dir) = makeFileStore()
         let fixture = try XCTUnwrap(Bundle.module.url(
             forResource: "ride-v1", withExtension: "json", subdirectory: "Fixtures"))
+        let archivedBytes = try Data(contentsOf: fixture)
         let ridesDir = dir.appendingPathComponent("rides", isDirectory: true)
         try FileManager.default.createDirectory(at: ridesDir, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(
-            at: fixture, to: ridesDir.appendingPathComponent("ride-v1-fixture.json"))
-    }
+        let oldFile = ridesDir.appendingPathComponent("ride-v1-fixture.json")
+        try archivedBytes.write(to: oldFile)
+        let ride = makeRide(id: "ride-v1-fixture", name: "Current Ride")
 
-    func testV1RideFileMigratesOnFirstListRead() throws {
-        let (store, dir) = makeFileStore()
-        try installV1RideFixture(in: dir)
+        XCTAssertNil(store.ridePoints(ride.id))
+        XCTAssertTrue(store.rideSummaries().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
 
-        // First read: the v1 file loads whole and comes back as a summary…
-        let loaded = try XCTUnwrap(store.rideSummaries().first)
-        XCTAssertEqual(loaded.id, RideID("ride-v1-fixture"))
-        XCTAssertEqual(loaded.name, "Dawn Patrol")
-        XCTAssertEqual(loaded.date, Date(timeIntervalSince1970: 2_000))
-        XCTAssertEqual(loaded.trackPreview?.coordinates.count, 2)
-
-        // …and the store is rewritten split: old file gone, v2 files in place.
-        let rideDir = dir.appendingPathComponent("rides/ride-v1-fixture")
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: dir.appendingPathComponent("rides/ride-v1-fixture.json").path))
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: rideDir.appendingPathComponent("summary.json").path))
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: rideDir.appendingPathComponent("points.json").path))
-
-        // The migrated store survives a second read (= the next launch) with the
-        // tracklog intact — elevation-less samples included.
+        store.saveRide(ride)
         let relaunched = FileLibraryStore(directory: dir)
-        XCTAssertEqual(relaunched.rideSummaries(), [loaded])
-        let points = try XCTUnwrap(relaunched.ridePoints(loaded.id))
-        XCTAssertEqual(points.count, 2)
-        XCTAssertEqual(points.first?.elevationMeters, 300)
-        XCTAssertNil(points.last?.elevationMeters)
-    }
+        XCTAssertEqual(relaunched.rideSummaries(), [ride.summary])
+        XCTAssertEqual(relaunched.ridePoints(ride.id), ride.points)
+        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
 
-    /// The detail-before-list order: `ridePoints` on an un-migrated ride splits
-    /// the file too — the store never depends on which read comes first.
-    func testV1RideFileMigratesOnAPointsRead() throws {
-        let (store, dir) = makeFileStore()
-        try installV1RideFixture(in: dir)
+        var renamed = ride.summary
+        renamed.name = "Renamed Current Ride"
+        relaunched.saveRideSummary(renamed)
+        XCTAssertEqual(store.rideSummaries(), [renamed])
+        XCTAssertEqual(store.ridePoints(ride.id), ride.points)
+        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
 
-        let points = try XCTUnwrap(store.ridePoints(RideID("ride-v1-fixture")))
-        XCTAssertEqual(points.count, 2)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: dir.appendingPathComponent("rides/ride-v1-fixture.json").path))
-        XCTAssertEqual(store.rideSummaries().count, 1)
-    }
-
-    /// A rename must migrate a lingering v1 file *first* — otherwise the next
-    /// lazy migration would rewrite the summary from the stale whole-ride file
-    /// and silently undo the rename.
-    func testRenameOfAnUnmigratedRideSurvivesTheNextRead() throws {
-        let (store, dir) = makeFileStore()
-        try installV1RideFixture(in: dir)
-
-        // No list read first: the summary-only write itself finds the v1 file.
-        let renamed = RideSummary(
-            id: RideID("ride-v1-fixture"), name: "Renamed After Migration",
-            date: Date(timeIntervalSince1970: 2_000),
-            distanceMeters: 31_000, movingTime: 4_500,
-            averageSpeedMps: 6.9, climbMeters: 410
-        )
-        store.saveRideSummary(renamed)
-
-        let relaunched = FileLibraryStore(directory: dir)
-        XCTAssertEqual(relaunched.rideSummaries().first?.name, "Renamed After Migration")
-        XCTAssertEqual(relaunched.ridePoints(renamed.id)?.count, 2, "the tracklog rode along")
+        store.deleteRide(ride.id)
+        XCTAssertTrue(relaunched.rideSummaries().isEmpty)
+        XCTAssertNil(relaunched.ridePoints(ride.id))
+        XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
     }
 
     func testSyncedIDsSurviveRideDeleteAndRelaunch() {
