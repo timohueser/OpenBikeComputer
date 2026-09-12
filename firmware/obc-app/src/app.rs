@@ -19,7 +19,7 @@ use crate::input::{Chord, Gesture};
 use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
-use crate::ride::RideSummary;
+use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::screen::{
     self, ContextDrawerScreen, Ctx, MapScreen, MenuScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags,
@@ -1471,18 +1471,14 @@ impl App {
         self.catalogs.route_filed(idx)
     }
 
-    /// Replace the host's ride snapshot (`ids` pairwise with `summaries`, newest first). Keep the
+    /// Replace the host's paired ride snapshot, newest first. Keep the
     /// newest [`UI_RIDES_CAP`](crate::UI_RIDES_CAP) summaries visible and retain expiry metadata for
     /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
     /// across the rescan and dirty the map once.
-    pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[crate::CatalogObjectId]) {
-        // Re-point every held ride index by identity (its id in `old_ids` → new index), the
-        // ride-namespace twin of the route remap: `replace_rides` moves its own view-cache keys
-        // (the profile/preview the detail's band hangs off — identity survives → the resident
-        // profile moves with it, no re-stream; vanished → the buffer drops); the Rides menu's
-        // highlight, an open Ride detail's subject (#680 — a vanished subject becomes the detail's
-        // missing-ride state), and the viewed-ride key are remapped here with the same old ids.
-        let old_ids = self.catalogs.replace_rides(summaries, ids);
+    pub fn set_rides(&mut self, entries: &[RideEntry]) {
+        // Screen indices follow the durable identity through each rescan.
+        // Derived track answers already carry that identity and need no remap.
+        let old_ids = self.catalogs.replace_rides(entries);
         let catalogs = &self.catalogs;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_ride(&old_ids, i) };
         let new_len = catalogs.ride_len();
@@ -1504,15 +1500,9 @@ impl App {
         self.catalogs.set_ride_retention_inventory(records);
     }
 
-    /// The resident ride catalog (summaries) — what the Rides screen lists.
-    pub fn rides(&self) -> &[RideSummary] {
+    /// The resident ride catalog (paired entries) — what the Rides screen lists.
+    pub fn rides(&self) -> &[RideEntry] {
         self.catalogs.rides()
-    }
-
-    /// Each ride-catalog entry's durable object id, parallel to [`rides`](App::rides) — as last fed to
-    /// [`set_rides`](App::set_rides).
-    pub fn ride_ids(&self) -> &[crate::CatalogObjectId] {
-        self.catalogs.ride_ids()
     }
 
     /// Borrow the app's one resident ride-profile buffer for an in-place host fill. **Invalidates**
@@ -6307,7 +6297,10 @@ mod tests {
             synced: false,
             synced_at_utc: 0,
         };
-        app.set_rides(&[ride("A"), ride("B")], &[7, 9]);
+        app.set_rides(&[
+            crate::RideEntry { id: 7, summary: ride("A") },
+            crate::RideEntry { id: 9, summary: ride("B") },
+        ]);
 
         assert_eq!(ride_track_request(&app), None, "no detail open — no request");
 
@@ -6322,12 +6315,12 @@ mod tests {
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
-        app.set_rides(&[ride("B")], &[9]);
+        app.set_rides(&[crate::RideEntry { id: 9, summary: ride("B") }]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
         assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
-        app.set_rides(&[ride("A")], &[7]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride("A") }]);
         assert_eq!(app.activity.viewed_ride, None);
         assert_eq!(ride_track_request(&app), None);
     }
@@ -6372,7 +6365,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.stamp_clock(DateTime { year: 2026, month: 7, day: 1, hour: 12, minute: 0 }, 0, None, ClockTrust::Gps);
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
-        app.set_rides(&[ride_summary("R")], &[7]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("R") }]);
 
         // The one residual class…
         app.state.ble_forget_pending = true;
@@ -6807,7 +6800,7 @@ mod tests {
             &[10],
             &[RouteRetentionMeta::new(Retention::Day1, 1)], // "used" at unix 1 → ancient
         );
-        app.set_rides(&[synced_ride("R", true, 1)], &[7]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("R", true, 1) }]);
         let cmds = sweep_and_drain(&mut app);
         assert!(cmds.is_empty(), "untrusted clock → no deletes, no stamps: {cmds:?}");
     }
@@ -6941,7 +6934,7 @@ mod tests {
         let (mut app, _now) = trusted_app();
         app.test_start_ride(); // recording a multi-day tour
                                // The phone acks a ride synced (synced_at not yet set) mid-recording.
-        app.set_rides(&[synced_ride("Acked", true, 0)], &[7]);
+        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("Acked", true, 0) }]);
         let cmds = sweep_and_drain(&mut app);
         assert!(
             cmds.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
@@ -6967,15 +6960,12 @@ mod tests {
         // Re-stamp trust (set_settings re-stamped the wall clock from the persisted set-point).
         app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
         let now = app.wall_unix_now().max(now);
-        app.set_rides(
-            &[
-                synced_ride("Aged", true, now - 8 * DAY_SECS), // synced 8d ago → delete (>7)
-                synced_ride("Recent", true, now - DAY_SECS),   // synced 1d ago → keep
-                synced_ride("Legacy", true, 0),                // synced, no stamp → stamp
-                synced_ride("Unsynced", false, 0),             // unsynced → never touched
-            ],
-            &[1, 2, 3, 4],
-        );
+        app.set_rides(&[
+            crate::RideEntry { id: 1, summary: synced_ride("Aged", true, now - 8 * DAY_SECS) },
+            crate::RideEntry { id: 2, summary: synced_ride("Recent", true, now - DAY_SECS) },
+            crate::RideEntry { id: 3, summary: synced_ride("Legacy", true, 0) },
+            crate::RideEntry { id: 4, summary: synced_ride("Unsynced", false, 0) },
+        ]);
         let cmds = sweep_and_drain(&mut app);
         assert!(cmds.contains(&SweepOp::Remove(1)), "aged synced ride deleted");
         assert!(!cmds.contains(&SweepOp::Remove(2)), "recent synced ride kept");
@@ -6994,13 +6984,12 @@ mod tests {
         app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
         app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
         let now = app.wall_unix_now();
-        let mut rides: [RideSummary; 33] = core::array::from_fn(|_| synced_ride("Unsynced", false, 0));
-        rides[32] = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
-        let ids: [crate::CatalogObjectId; 33] = core::array::from_fn(|i| i as u64 + 1);
-        app.set_rides(&rides, &ids);
+        let mut rides: [RideEntry; 33] =
+            core::array::from_fn(|i| RideEntry { id: i as u64 + 1, summary: synced_ride("Unsynced", false, 0) });
+        rides[32].summary = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
+        app.set_rides(&rides);
 
         assert_eq!(app.rides(), &rides[..32], "the menu still holds only its first 32 summaries");
-        assert_eq!(app.ride_ids(), &ids[..32], "visible identities keep the supplied order");
         let cmds = sweep_and_drain(&mut app);
         assert_eq!(cmds.as_slice(), &[SweepOp::Remove(33)], "only the older synced ride expires");
     }
@@ -7011,7 +7000,7 @@ mod tests {
         let (mut app, _now) = trusted_app();
         app.set_settings(Settings { ride_retention: RideRetention::Never, ..Settings::default() });
         app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        app.set_rides(&[synced_ride("Aged", true, 1)], &[1]); // synced at unix 1 → ancient
+        app.set_rides(&[crate::RideEntry { id: 1, summary: synced_ride("Aged", true, 1) }]); // synced at unix 1 → ancient
         assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "ride_retention Never → nothing");
     }
 
@@ -7834,9 +7823,11 @@ mod tests {
     /// A `set_rides` catalog with one ride at durable id `7`, and its detail opened.
     fn viewing_ride(ids: &[crate::CatalogObjectId]) -> App {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let summaries: heapless::Vec<crate::ride::RideSummary, 4> =
-            ids.iter().map(|id| ride_summary(if *id == 7 { "First" } else { "Second" })).collect();
-        app.set_rides(&summaries, ids);
+        let rides: heapless::Vec<RideEntry, 4> = ids
+            .iter()
+            .map(|&id| RideEntry { id, summary: ride_summary(if id == 7 { "First" } else { "Second" }) })
+            .collect();
+        app.set_rides(&rides);
         app.activity.viewed_ride = Some(0);
         app
     }

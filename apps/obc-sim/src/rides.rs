@@ -10,16 +10,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use obc_app::catalog_state::CatalogError;
-use obc_app::{CatalogObjectId, RideSummary};
+use obc_app::{CatalogObjectId, RideEntry, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_route::{ride_track_into, Profile, RideInfo};
 
-/// The folder-backed ride store: the catalog of ride summaries (newest first) plus, parallel to it,
-/// each ride's full-width object id and desktop `ride-{id}.obcr` path.
+/// The folder-backed ride store: paired ride entries (newest first) and their fixture paths.
 pub struct RideStore {
     dir: PathBuf,
-    catalog: Vec<RideSummary>,
-    ids: Vec<CatalogObjectId>,
+    catalog: Vec<RideEntry>,
     paths: Vec<PathBuf>,
     synced: HashMap<CatalogObjectId, u32>,
 }
@@ -27,32 +25,20 @@ pub struct RideStore {
 impl RideStore {
     /// Open and scan the tracks folder (a missing folder scans to an empty catalog).
     pub fn open(dir: impl Into<PathBuf>) -> Self {
-        let mut s = RideStore {
-            dir: dir.into(),
-            catalog: Vec::new(),
-            ids: Vec::new(),
-            paths: Vec::new(),
-            synced: HashMap::new(),
-        };
+        let mut s = RideStore { dir: dir.into(), catalog: Vec::new(), paths: Vec::new(), synced: HashMap::new() };
         s.rescan();
         s
     }
 
-    /// The ride catalog (summaries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
-    pub fn catalog(&self) -> &[RideSummary] {
+    /// The ride catalog (paired entries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
+    pub fn catalog(&self) -> &[RideEntry] {
         &self.catalog
-    }
-
-    /// Each catalog entry's durable object id, parallel to [`catalog`](RideStore::catalog).
-    pub fn ids(&self) -> &[CatalogObjectId] {
-        &self.ids
     }
 
     /// Re-read the folder's `ride-{id}.obcr` files into the catalog (newest first by `start_time`),
     /// with larger durable IDs first for equal times. Each carries this process's synced fact.
     pub fn rescan(&mut self) {
         self.catalog.clear();
-        self.ids.clear();
         self.paths.clear();
         let mut rows: Vec<(CatalogObjectId, PathBuf, RideSummary)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
@@ -70,16 +56,15 @@ impl RideStore {
         }
         rows.sort_by_key(|r| std::cmp::Reverse((r.2.start_time, r.0)));
         for (id, path, sum) in rows {
-            self.ids.push(id);
             self.paths.push(path);
-            self.catalog.push(sum);
+            self.catalog.push(RideEntry { id, summary: sum });
         }
     }
 
     /// Remove the ride file and its process-local synced flag, then refresh the catalog.
     /// `Ok(true)` means removed, `Ok(false)` means absent, and `Err` means storage failure.
     pub fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
+        let Some(pos) = self.catalog.iter().position(|entry| entry.id == id) else { return Ok(false) };
         let path = self.paths[pos].clone();
         let existed = match std::fs::remove_file(&path) {
             Ok(()) => true,
@@ -94,7 +79,7 @@ impl RideStore {
     /// Read one stored ride into the keyed detail's profile and preview. Unknown or unreadable
     /// objects fail the whole answer; no partial profile or preview is published.
     pub fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
-        let pos = self.ids.iter().position(|&x| x == id)?;
+        let pos = self.catalog.iter().position(|entry| entry.id == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;
         let mut preview = Default::default();
         ride_track_into::<{ obc_app::NAV_PREVIEW_MAX }>(&SliceSource(&bytes), profile, &mut preview).ok()?;
@@ -121,11 +106,8 @@ impl RideStore {
 /// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the ride catalog + per-ride track
 /// reads through this trait — the same delete/re-feed/track-fill sequencing the board runs.
 impl obc_host_core::RideRepository for RideStore {
-    fn catalog(&self) -> &[RideSummary] {
+    fn catalog(&self) -> &[RideEntry] {
         self.catalog()
-    }
-    fn ids(&self) -> &[CatalogObjectId] {
-        self.ids()
     }
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
@@ -223,10 +205,20 @@ mod tests {
 
         let mut store = RideStore::open(&dir);
         assert_eq!(store.catalog().len(), 2, "two saved rides scanned");
-        assert_eq!(store.catalog()[0].start_time, store.catalog()[1].start_time, "the records tie on time");
+        assert_eq!(
+            store.catalog()[0].summary.start_time,
+            store.catalog()[1].summary.start_time,
+            "the records tie on time"
+        );
         for _ in 0..2 {
-            assert_eq!(store.ids(), &[obc_host_core::RIDE_ID_BASE + 1, obc_host_core::RIDE_ID_BASE]);
-            assert_eq!(store.catalog().iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Ride Two", "Ride One"]);
+            assert_eq!(
+                store.catalog().iter().map(|entry| entry.id).collect::<Vec<_>>(),
+                [obc_host_core::RIDE_ID_BASE + 1, obc_host_core::RIDE_ID_BASE]
+            );
+            assert_eq!(
+                store.catalog().iter().map(|r| r.summary.name.as_str()).collect::<Vec<_>>(),
+                ["Ride Two", "Ride One"]
+            );
             store.rescan();
         }
         obc_host_core::conformance::ride_repository_suite(&mut store, true);
@@ -255,23 +247,23 @@ mod tests {
         let dir = obcm_testkit::scratch::scratch_dir("obc-ride-conf", "delete-failure");
         record_ride(&dir, 1, "Ride");
         let mut store = RideStore::open(&dir);
-        let id = store.ids[0];
+        let id = store.catalog[0].id;
         let path = store.paths[0].clone();
-        let before = store.ids.clone();
+        let before = store.catalog.clone();
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
 
         assert_eq!(store.delete_by_id(id), Err(CatalogError::RemoveFailed));
-        assert_eq!(store.ids, before, "a failed unlink keeps the catalog intact");
+        assert_eq!(store.catalog, before, "a failed unlink keeps the catalog intact");
         assert!(path.is_dir(), "a failed unlink does not remove the obstruction");
 
         std::fs::remove_dir(&path).unwrap();
         assert_eq!(store.delete_by_id(id), Ok(false), "the externally removed object is absent");
-        assert!(!store.ids.contains(&id), "absence refreshes the stale catalog");
+        assert!(!store.catalog.iter().any(|entry| entry.id == id), "absence refreshes the stale catalog");
         std::fs::write(&path, bytes).unwrap();
         store.rescan();
-        let id = store.ids[store.paths.iter().position(|p| *p == path).unwrap()];
+        let id = store.catalog[store.paths.iter().position(|p| *p == path).unwrap()].id;
         assert_eq!(store.delete_by_id(id), Ok(true));
         assert_eq!(store.delete_by_id(id), Ok(false));
         std::fs::remove_dir_all(&dir).unwrap();

@@ -477,7 +477,7 @@ impl Demo {
         app.set_nav_profiles(self.tables.nav_profiles());
         app.set_map_nav_graph(self.tables.has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
-        app.set_rides(self.rides.catalog(), self.rides.ids());
+        app.set_rides(self.rides.catalog());
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
         //

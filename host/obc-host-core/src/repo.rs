@@ -11,7 +11,7 @@
 
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::RideClose;
-use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta};
+use obc_app::{App, CatalogObjectId, RideEntry, RouteRetentionMeta};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackPoint;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -58,10 +58,8 @@ pub trait RouteRepository {
 
 /// The ride catalog (the Rides screen) plus the per-ride track reads its detail draws.
 pub trait RideRepository {
-    /// The ride catalog (summaries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
-    fn catalog(&self) -> &[RideSummary];
-    /// Each catalog entry's durable id, parallel to [`catalog`](RideRepository::catalog).
-    fn ids(&self) -> &[CatalogObjectId];
+    /// The ride catalog (paired entries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
+    fn catalog(&self) -> &[RideEntry];
     /// Remove the ride: `Ok(true)` = removed, `Ok(false)` = already absent, `Err` = storage failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
     /// Fill the keyed ride's profile in place and return its preview from one track read.

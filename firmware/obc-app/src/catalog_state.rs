@@ -7,14 +7,8 @@
 //! [`derived`](crate::device_core::derived) keys of #1437 — durable identity plus a source and view
 //! revision, so no cache key has to be walked across a live rescan.
 //!
-//! **The pairing invariant is encoded here, not policed by callers**: ids and summaries are only
-//! ever replaced together ([`replace_routes`](CatalogState::replace_routes) /
-//! [`replace_rides`](CatalogState::replace_rides)), read out together as a [`RouteEntry`] /
-//! [`RideEntry`], and remapped together. Storage keeps the summaries contiguous (the `&[Summary]`
-//! slice every screen renders from) with the id column alongside — fusing them into one
-//! `Vec<{id, summary}>` would add 2 B + repr padding per slot (~150 B resident on the board), which
-//! the epic's no-RAM-growth rule (#792 rule 2) outranks; the entry types keep the invariant
-//! structural at every read/write seam instead.
+//! Ride rows own their durable identity and summary together. Route summaries remain
+//! contiguous with a parallel id column and are exposed through [`RouteEntry`].
 //!
 //! `App` remains the composition root: screen-stack remaps and `Activity` key remaps stay there
 //! (this component never sees a `Screen`), driven by the old-id snapshot each `replace_*` returns.
@@ -26,7 +20,7 @@ use crate::device_core::derived::{DerivedInput, NavPreviewKey, RideTrackKey};
 use crate::device_core::Revision;
 use crate::placement::define_placement_constructors;
 use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
-use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
+use crate::ride::{RideCatalog, RideEntry, MAX_RIDES, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 use crate::CatalogObjectId;
@@ -39,15 +33,6 @@ pub struct RouteEntry<'a> {
     pub id: CatalogObjectId,
     /// The resident summary the menus render.
     pub summary: &'a RouteSummary,
-}
-
-/// One ride-catalog entry — the ride-namespace twin of [`RouteEntry`].
-#[derive(Debug, Clone, Copy)]
-pub struct RideEntry<'a> {
-    /// The ride's durable object id.
-    pub id: CatalogObjectId,
-    /// The resident summary the Rides screen renders.
-    pub summary: &'a RideSummary,
 }
 
 /// The snapshot of a catalog's ids **before** a replacement — what
@@ -77,14 +62,12 @@ pub(crate) struct CatalogState {
     /// route ids against [`route_ids`](CatalogState::route_ids); re-resolved on every route
     /// replacement so an appeared/vanished route re-files.
     trips: Trips,
-    /// The resident ride catalog (summaries) — what the Rides screen lists (epic #447, P7).
+    /// The resident ride catalog (paired entries) — what the Rides screen lists (epic #447, P7).
     rides: RideCatalog,
-    /// Each ride's durable object id, pairwise with [`rides`](CatalogState::rides).
-    ride_ids: heapless::Vec<CatalogObjectId, UI_RIDES_CAP>,
     /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
     /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
     /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
-    /// synced+expired ride the menu never shows is still reachable by expiry. Seeded from all pairs
+    /// synced+expired ride the menu never shows is still reachable by expiry. Seeded from all entries
     /// supplied to [`replace_rides`](CatalogState::replace_rides). Hosts that read only the visible
     /// summaries supply the full inventory through
     /// [`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory).
@@ -180,7 +163,6 @@ impl CatalogState {
             route_meta: heapless::Vec::new(),
             trips: Trips::new(),
             rides: RideCatalog::new(),
-            ride_ids: heapless::Vec::new(),
             ride_inventory: heapless::Vec::new(),
             ride_profile: Profile::EMPTY,
             ride_profile_present: false,
@@ -325,13 +307,8 @@ impl CatalogState {
     // ---- ride catalog ----
 
     /// The resident ride summaries — what the Rides screen lists.
-    pub(crate) fn rides(&self) -> &[RideSummary] {
+    pub(crate) fn rides(&self) -> &[RideEntry] {
         &self.rides
-    }
-
-    /// Each ride's durable id, pairwise with [`rides`](CatalogState::rides).
-    pub(crate) fn ride_ids(&self) -> &[CatalogObjectId] {
-        &self.ride_ids
     }
 
     /// The full compact ride-retention inventory the sweep reads (finding #876-2) — every stored
@@ -364,8 +341,8 @@ impl CatalogState {
 
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
-    pub(crate) fn ride_entry(&self, idx: usize) -> Option<RideEntry<'_>> {
-        Some(RideEntry { id: *self.ride_ids.get(idx)?, summary: self.rides.get(idx)? })
+    pub(crate) fn ride_entry(&self, idx: usize) -> Option<&RideEntry> {
+        self.rides.get(idx)
     }
 
     /// How many rides are resident.
@@ -374,22 +351,23 @@ impl CatalogState {
     }
 
     /// Replace the newest [`UI_RIDES_CAP`] visible rides and retain expiry metadata for up to
-    /// [`MAX_RIDES`] supplied summary/id pairs. Returns the old visible id column for the caller's
+    /// [`MAX_RIDES`] supplied entries. Returns the old visible id column for the caller's
     /// screen/`Activity` remap; detail keys continue to name durable identities.
-    pub(crate) fn replace_rides(&mut self, summaries: &[RideSummary], ids: &[CatalogObjectId]) -> OldRideIds {
-        let old_ids = self.ride_ids.clone();
+    pub(crate) fn replace_rides(&mut self, entries: &[RideEntry]) -> OldRideIds {
+        let old_ids = self.rides.iter().map(|ride| ride.id).collect();
         self.rides.clear();
-        self.ride_ids.clear();
         // The menu cap does not limit expiry coverage. Hosts that read only menu summaries can
         // replace this inventory with their complete metadata scan afterwards.
         self.ride_inventory.clear();
-        for (s, &id) in summaries.iter().zip(ids).take(MAX_RIDES) {
+        for entry in entries.iter().take(MAX_RIDES) {
             if self.rides.len() < UI_RIDES_CAP {
-                let _ = self.rides.push(s.clone());
-                let _ = self.ride_ids.push(id);
+                let _ = self.rides.push(entry.clone());
             }
-            let _ =
-                self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
+            let _ = self.ride_inventory.push(RideRetentionRecord {
+                id: entry.id,
+                synced: entry.summary.synced,
+                synced_at_utc: entry.summary.synced_at_utc,
+            });
         }
         // The view caches need no remap at all: their keys name a *durable ride identity*, so a
         // surviving ride keeps its answer (no re-stream) and a vanished one simply stops matching
@@ -402,7 +380,7 @@ impl CatalogState {
     /// [`remap_route`](CatalogState::remap_route).
     pub(crate) fn remap_ride(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
-        self.ride_ids.iter().position(|&x| x == id)
+        self.rides.iter().position(|ride| ride.id == id)
     }
 
     /// Optimistically stamp ride `id`'s `synced_at` in the resident summary (the sweep's mirror of
@@ -410,9 +388,9 @@ impl CatalogState {
     /// the same stamp. Only ever fills a `0` stamp (never re-stamps). A no-op if the id isn't
     /// resident. Returns whether it changed a summary (drives the map repaint).
     pub(crate) fn stamp_ride_synced_at(&mut self, id: CatalogObjectId, utc: u32) -> bool {
-        if let Some(p) = self.ride_ids.iter().position(|&x| x == id) {
-            if self.rides[p].synced_at_utc == 0 {
-                self.rides[p].synced_at_utc = utc;
+        if let Some(p) = self.rides.iter().position(|ride| ride.id == id) {
+            if self.rides[p].summary.synced_at_utc == 0 {
+                self.rides[p].summary.synced_at_utc = utc;
                 return true;
             }
         }
@@ -431,7 +409,7 @@ impl CatalogState {
     /// no detail is open (or its subject vanished) — the key the need carries and the key an answer
     /// must bring back.
     pub(crate) fn ride_track_key(&self, viewed_ride: Option<usize>) -> Option<RideTrackKey> {
-        let ride = *self.ride_ids.get(viewed_ride?)?;
+        let ride = self.rides.get(viewed_ride?)?.id;
         Some(RideTrackKey { ride, source: self.source_revision, view: self.ride_track_view })
     }
 
@@ -869,7 +847,6 @@ impl CatalogState {
             route_meta,
             trips,
             rides,
-            ride_ids,
             ride_inventory,
             ride_profile,
             ride_profile_present,
@@ -891,7 +868,7 @@ impl CatalogState {
         } = self;
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
-        assert!(rides.is_empty() && ride_ids.is_empty() && ride_inventory.is_empty(), "no rides catalogued");
+        assert!(rides.is_empty() && ride_inventory.is_empty(), "no rides catalogued");
         assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
