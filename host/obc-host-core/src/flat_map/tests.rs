@@ -48,7 +48,7 @@ fn render(source: &dyn ByteSource) -> (Vec<u8>, usize, usize) {
         },
     );
     assert_eq!(stats.features_drawn, 1);
-    assert!(frame.as_rgba().chunks_exact(4).any(|pixel| pixel[..3] == [0, 255, 0]));
+    assert!(frame.as_rgba().as_chunks::<4>().0.iter().any(|pixel| pixel[..3] == [0, 255, 0]));
     (frame.as_rgba().to_vec(), source.reads.get(), source.bytes.get())
 }
 
