@@ -439,10 +439,10 @@ climb = "ASCENSO"
 
 # --- Salida recuperada al arrancar ---
 [ride_recovery]
-title = "SALIDA RECUPERADA"
-body = "Grabación recuperada"
+title = "RECUPERACIÓN"
+body = "Salida recuperada"
 damaged = "Grabación dañada"
-continue_ride = "Continuar salida"
+continue_ride = "Continuar"
 discard = "Descartar"
 repair_failed = "Reparación fallida"
 discard_failed = "Descarte fallido"
@@ -489,7 +489,7 @@ card_free = "Tarjeta libre"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Comprobando la tarjeta..."
+checking = "Leyendo tarjeta..."
 installed = "Instalada"
 staged = "Actualización"
 confirm_title = "ACTUALIZAR"
@@ -497,7 +497,7 @@ same_version = "Esta versión ya está instalada."
 no_undo = "No hay deshacer automático."
 install = "Instalar"
 cancel = "Cancelar"
-preparing = "Preparando la actualización..."
+preparing = "Preparando..."
 installing = "Instalando la actualización"
 installing_body = "El LED parpadea durante la instalación. Después se reinicia el dispositivo."
 installing_power = "No apagues el dispositivo."
