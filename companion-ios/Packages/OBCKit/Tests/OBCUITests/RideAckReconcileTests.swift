@@ -83,11 +83,8 @@ import OBCTransport
         #expect(control.ackedRideBatches.allSatisfy { $0 == [id] })
     }
 
-    /// The #769 scope filter: ids from another device, another era, or the
-    /// unclaimed flat legacy namespace never reach `ackRides` — stamping
-    /// checkmarks for object ids that happen to collide is the 2026-07-12
-    /// incident. (The flat ride ids here are deliberately non-listed ones, so
-    /// the claim migration corroborates nothing and they stay flat.)
+    /// Only ids from the connected scope reach `ackRides`; other scopes and
+    /// unscoped archives can reuse the same device object id.
     @Test func ackSendsOnlyTheConnectedScopesIDs() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
