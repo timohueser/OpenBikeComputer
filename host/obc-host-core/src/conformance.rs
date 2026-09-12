@@ -71,23 +71,22 @@ pub fn route_identity_remap(repo: &mut dyn RouteRepository) {
 
 /// Ride-store invariants: delete + id retirement, and the unknown-id track reads. `expects_track`
 /// says whether a *known* id yields a real profile/preview (a folder-backed store with v3 ride
-/// object bytes) — a memory store answers `None`/empty for every id.
+/// object bytes) — a memory store answers `None` for every id.
 pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool) {
     assert!(!repo.catalog().is_empty(), "seed the ride conformance repo with ≥1 ride");
     assert_eq!(repo.catalog().len(), repo.ids().len(), "catalog and ids stay parallel");
 
     // Unknown ids never read.
     let unknown = repo.ids().iter().copied().max().unwrap_or(0).wrapping_add(7);
-    assert!(repo.profile_by_id(unknown).is_none(), "an unknown ride has no profile");
-    assert!(repo.preview_by_id(unknown).is_empty(), "an unknown ride has no preview");
+    let mut profile = obc_route::Profile::EMPTY;
+    assert!(repo.fill_track(unknown, &mut profile).is_none(), "an unknown ride has no track");
 
     let known = repo.ids()[0];
+    let preview = repo.fill_track(known, &mut profile);
     if expects_track {
-        assert!(repo.profile_by_id(known).is_some(), "a folder-backed ride yields its recorded profile");
-        assert!(!repo.preview_by_id(known).is_empty(), "a folder-backed ride yields its recorded preview");
+        assert!(!preview.expect("a stored ride yields its recorded track").is_empty());
     } else {
-        assert!(repo.profile_by_id(known).is_none(), "a memory ride has no on-disk profile");
-        assert!(repo.preview_by_id(known).is_empty(), "a memory ride has no on-disk preview");
+        assert!(preview.is_none(), "a memory ride has no stored track");
     }
 
     // Delete + id retirement.

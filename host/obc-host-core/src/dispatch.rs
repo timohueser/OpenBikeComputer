@@ -686,18 +686,10 @@ impl HostLoop {
         rides: &mut dyn RideRepository,
     ) {
         if let Some(key) = plan.derived_needs.ride_track {
-            let profile = rides.profile_by_id(key.ride);
-            let filled = profile.is_some();
-            // The ~5 KB profile stays DeviceCore-owned and is filled **in place**, which
-            // invalidates the view — so the key the answer must carry is the one the need has
-            // *after* the fill, not the one it had before.
-            match profile {
-                Some(profile) => *app.begin_ride_profile_fill() = profile,
-                None => {
-                    app.begin_ride_profile_fill();
-                }
-            }
-            self.inbox.ride_preview = rides.preview_by_id(key.ride);
+            // Filling invalidates the view, so answer with its post-fill key below.
+            let preview = rides.fill_track(key.ride, app.begin_ride_profile_fill());
+            let filled = preview.is_some();
+            self.inbox.ride_preview = preview.unwrap_or_default();
             if let Some(key) = app.derived_needs().ride_track {
                 let input = if filled { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
                 self.inbox.derived.ride_track = Some(input);

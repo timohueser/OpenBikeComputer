@@ -281,6 +281,9 @@ impl Runtime {
     pub fn update(&mut self, app: &mut App) {
         let active = matches!(app.top_screen(), Screen::PeakView(_));
         if !active {
+            if app.peak_view_is_base() {
+                return;
+            }
             self.cancel.store(true, Ordering::Relaxed);
             self.receiver = None;
             self.result = None;
@@ -437,6 +440,16 @@ mod tests {
         assert!(runtime.panorama().is_some(), "embedded terrain generated without any fixture source");
         assert!(runtime.panorama().unwrap().has_incomplete_coverage());
         let completed = Arc::clone(&runtime.cancel);
+        let panorama = runtime.panorama().unwrap() as *const Panorama;
+        assert!(app.apply_chord(obc_app::Chord::Quick));
+        runtime.update(&mut app);
+        assert_eq!(runtime.panorama().unwrap() as *const Panorama, panorama);
+        app.apply_gesture(obc_app::Gesture::Press);
+        runtime.update(&mut app);
+        assert_eq!(runtime.panorama().unwrap() as *const Panorama, panorama, "a drawer page retains its base");
+        assert!(app.apply_chord(obc_app::Chord::Quick));
+        runtime.update(&mut app);
+        assert!(Arc::ptr_eq(&completed, &runtime.cancel), "closing the drawer does not start another panorama");
         app.state.compass_deg = Some(210.0);
         runtime.update(&mut app);
         assert!(Arc::ptr_eq(&completed, &runtime.cancel));
@@ -446,5 +459,8 @@ mod tests {
         assert!(!Arc::ptr_eq(&completed, &runtime.cancel));
         assert!(runtime.panorama().is_some());
         assert_eq!(app.state.peak_view_profile.unwrap().observer_lat, 201_000);
+        app.apply_gesture(obc_app::Gesture::Back);
+        runtime.update(&mut app);
+        assert!(runtime.panorama().is_none(), "leaving the base releases the panorama");
     }
 }

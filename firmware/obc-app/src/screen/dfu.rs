@@ -202,8 +202,8 @@ fn version_row(cv: &mut impl Surface, w: i32, top_y: i32, caption: &str, version
 /// Draw a version string char-wrapped to `width_px`, `align`ed at anchor `x`, stacking `font` lines
 /// from `top_y`. A git-describe tag is a single space-less token the word-wrapping [`wrapped`] can't
 /// break, so this splits it on the monospace cell budget — the versions never ellipsize. Returns the
-/// `y` just past the last line. Shared by the confirm table (right-aligned) and the "UPDATED" toast
-/// (centred).
+/// `y` just past the last line. Shared by the confirm table (right-aligned) and both boot-outcome
+/// cards (centred).
 #[allow(clippy::too_many_arguments)] // a plain draw helper: surface + string + full text geometry
 fn version_lines(
     cv: &mut impl Surface,
@@ -458,7 +458,7 @@ impl DfuFailedScreen {
         let bottom = wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, INK);
         // The staged version that failed, verbatim (never translated) — when the marker survived.
         if let Some(v) = &self.staged {
-            cv.text(v, Point::new(w / 2, bottom + 22), Font::Body, TextAlign::Center, AMBER);
+            version_lines(cv, v, w / 2, bottom + 22, w - 2 * INSET, Font::Body, TextAlign::Center, AMBER);
         }
     }
 }

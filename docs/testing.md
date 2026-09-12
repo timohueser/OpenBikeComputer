@@ -35,22 +35,11 @@ cadence match it; if none does, add a suite.
 A file or binary that mixes the fast tier with fixture, end-to-end, live, or hardware work must be
 split into separate execution units. Until that source split can be made, the registry records a
 `cadence_conflict` with its reason and an open issue. Do not make a mixed binary look homogeneous
-by relabeling it and do not add test-level selection. The initial measured inventory records the
-following temporary conflicts:
+by relabeling it and do not add test-level selection.
 
-- `obc-storage` mixes fast storage tests with expensive crash matrices.
-- `obc-wx-bake` mixes fast codecs, captured fixtures, large bakes, and manual generators.
-- `obc-dem`, `obc-link`, `obc-render`, `obc-display`, `obc-vectors`, `obcm-assemble`, and
-  `obc-web-assemble` contain an ignored live, timing, exhaustive, or generator path beside required
-  tests.
-- the Rust aggregate command still combines fast and external-fixture execution.
-- the Swift host command combines fast model tests, captured fixtures, real sleeps, and one
-  expensive exhaustive codec test.
-- required XCUITest currently runs two screenshot methods while the rest of the application suite
-  has no scheduled full route.
-
-These are inventory findings, not permission to hide a conflict. The linked issues in the registry
-keep every temporary state accountable.
+The current conflicts and their owners live in `testing/suites.toml`. Use `obc suites list` and
+`obc suites explain SUITE_ID` to inspect them. A declared cadence does not prove that a workflow
+executes it; unresolved execution routes remain explicit conflicts until the implementation lands.
 
 ## Suite registry fields
 
@@ -143,6 +132,32 @@ registry, Git, nor Cargo metadata.
 those gates reproduce; a gate that resolves to no registry suite fails before any work starts.
 `obc check full` runs every gate the registry declares and then names each suite required on a pull
 request that the run did not reproduce, with the reason. It makes no unqualified CI-parity claim.
+
+## Rust CI result artifacts
+
+The existing `cargo nextest run` commands in `test` and each `test-weather` matrix leg use
+`NEXTEST_PROFILE=ci`. The profile in `.config/nextest.toml` writes native JUnit XML to
+`target/nextest/ci/junit.xml`. Each test case retains its binary and test identity, result, and
+elapsed duration. Failed tests also retain their output. Test selection, retries, and failure
+handling keep their existing settings; a failed run can contain only the tests completed before
+it stopped. Filtered and ignored tests are absent from the report, not recorded as passes.
+
+CI uploads the report after test success or failure. Artifact names are `rust-test-ATTEMPT` and
+`rust-test-weather-INDEX-ATTEMPT`, where `INDEX` is the matrix job index and `ATTEMPT` is the GitHub
+run attempt. The two canonical mosaic partitions have distinct indices. Open a workflow run's
+**Artifacts** section, or download all its Rust reports with:
+
+```sh
+gh run download RUN_ID --pattern 'rust-test-*' --dir test-results
+```
+
+Each command removes an old report before it starts. A skipped job uploads nothing. A build or
+fixture setup failure remains a failure and may produce no report; the upload step reports a
+missing file as an error. CI does not create an empty report or run the tests again for reporting.
+
+These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
+web, Python, and Swift results still use their existing logs. This is not a coverage baseline or
+a complete cross-language result set.
 
 ## Exceptions, quarantines, and sleeps
 

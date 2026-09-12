@@ -272,9 +272,12 @@ jobs:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       - name: cargo nextest (workspace, all features, without the weather bakery)
+        id: nextest
         env:
+          NEXTEST_PROFILE: ci
           OBC_REQUIRE_FIXTURES: "1"
         run: |
+          rm -f target/nextest/ci/junit.xml
           python3 tools/fixtures.py sync test
           OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
           export OBC_FIXTURE_ROOT
@@ -334,6 +337,13 @@ jobs:
           pip install -r builder/requirements-dev.txt
           cargo build -p obc-pack --release --locked
           PYTHONPATH=. python3 -m pytest builder/tests/ -v
+      - name: Upload Rust test results
+        if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-${{ github.run_attempt }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
 
   # The bakery, on four runners, split around what cannot be divided — and started only when the
   # plan says the bakery changed.
@@ -411,13 +421,23 @@ jobs:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       - name: "cargo nextest (weather bakery: ${{ matrix.name }})"
+        id: nextest
         env:
+          NEXTEST_PROFILE: ci
           OBC_REQUIRE_FIXTURES: "1"
         run: |
+          rm -f target/nextest/ci/junit.xml
           python3 tools/fixtures.py sync test
           OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
           export OBC_FIXTURE_ROOT
           cargo nextest run ${{ matrix.args }}
+      - name: Upload Rust test results
+        if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-weather-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the one shipping image. Build-only (no board in CI). Each leg runs from the

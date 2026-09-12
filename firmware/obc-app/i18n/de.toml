@@ -191,7 +191,6 @@ ride = "Fahrt"
 display = "Anzeige"
 connections = "Verbindungen"
 power = "Energie"
-weather = "Wetter"
 system = "System"
 
 # --- Date & Time settings screen ---
@@ -210,10 +209,10 @@ day1 = "1 Tag"
 week1 = "1 Woche"
 month1 = "1 Monat"
 
-# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
+# --- onto the route-plan sheet in #1515 D4d) ---
 [ride]
 title = "FAHRT"
-bike_type = "Fahrradtyp"
 fields = "Datenfelder"
 fields_sub = "Anordnung"
 pages = "Seiten"
@@ -228,18 +227,18 @@ autodelete_sub = "Fahrten"
 # --- Display settings screen ---
 [display]
 title = "ANZEIGE"
-clock = "Uhr"
-clock_sub = "auf Karte"
-scale_bar = "Maßstab"
-scale_bar_sub = "auf Karte"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-# "Höhenlinien" is the term, but at 11 Body glyphs (154 px) it runs under the row's toggle slider,
-# which starts 148 px into the label column — "Konturen" is the reading that fits.
-contours = "Konturen"
-contours_sub = "auf Karte"
 idle = "Ruhe"
 idle_sub = "Timeout"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+# "Kartenanzeige" is the literal reading for the door, but at ~182 px it overruns the 164 px door
+# budget, so the row takes the short "Anzeige". The sheet it opens draws no title; its three rows
+# (Uhr, Maßstab, Konturen) are all map chrome, which is what keeps the short label unambiguous.
+map_display = "Anzeige"
+clock = "Uhr"
+scale_bar = "Maßstab"
+contours = "Konturen"
 
 # --- Power settings screen ---
 [power]
@@ -308,13 +307,6 @@ saved_time = "& die Uhrzeit."
 confirm = "Bestätigen"
 keep_holding = "Weiter halten"
 hold_to_erase = "Zum Löschen halten"
-
-# --- Bike-type settings screen ---
-[bike_type]
-title = "FAHRRADTYP"
-routing_uses = "Routing nutzt dieses Profil"
-no_profiles = "Keine Profile"
-no_profiles_sub = "Karte laden für Radtyp"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -459,10 +451,15 @@ climb = "ANSTIEG"
 # --- Wiederhergestellte Fahrt beim Start ---
 [ride_recovery]
 title = "FAHRT GERETTET"
-body = "Aufzeichnung gerettet"
-damaged = "Aufzeichnung beschädigt"
-continue_ride = "Fahrt fortsetzen"
+body = "Fahrt gerettet"
+damaged = "Fahrt beschädigt"
+continue_ride = "Fortsetzen"
 discard = "Verwerfen"
+repair_failed = "Nicht repariert"
+discard_failed = "Nicht verworfen"
+unrepairable = "Karte defekt"
+retry = "Wiederholen"
+leave = "Zurück"
 
 # --- Route-less ride start card ---
 [ride_start]
@@ -503,7 +500,7 @@ card_free = "Karte frei"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Karte wird geprüft..."
+checking = "Karte prüfen..."
 installed = "Installiert"
 staged = "Update"
 confirm_title = "INSTALLIEREN"
@@ -511,7 +508,7 @@ same_version = "Diese Version ist bereits installiert."
 no_undo = "Kein automatisches Zurücksetzen."
 install = "Installieren"
 cancel = "Abbrechen"
-preparing = "Update wird vorbereitet..."
+preparing = "Vorbereiten..."
 installing = "Update wird installiert"
 installing_body = "Die LED blinkt während der Installation. Danach startet das Gerät neu."
 installing_power = "Nicht ausschalten."
@@ -589,19 +586,22 @@ alert_gust_body = "Gefährliche Böen voraus."
 view_rain_map = "REGENKARTE"
 dismiss = "SCHLIESSEN"
 
-# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
+[route_context]
+bike_type = "Fahrradtyp"
+
+# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
+[weather_context]
+refresh_now = "Jetzt laden"
+interval = "Intervall"
+
+# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
 [weather_refresh]
 off = "Aus"
 m15 = "15 min"
 m30 = "30 min"
 m60 = "60 min"
 m120 = "120 min"
-
-# --- The Weather settings screen ---
-[weather_settings]
-title = "WETTER"
-refresh = "Abruf"
-refresh_sub = "per Telefon"
 
 # --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]

@@ -548,16 +548,16 @@ settings_table! {
         /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
         idle_return: IdleReturn = IdleReturn::S30, since(16);
-        /// Show the small floating `HH:MM` clock on the Map (the Display settings screen's toggle).
+        /// Show the small floating `HH:MM` clock on the Map (the map display sheet's toggle).
         /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
         /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
         /// **on**.
         map_clock: bool = true, since(16);
-        /// Show the scale bar at the Map's bottom-left (the Display settings screen's toggle).
+        /// Show the scale bar at the Map's bottom-left (the map display sheet's toggle).
         /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
         map_scale_bar: bool = true, since(16);
         /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
-        /// (N2/N5, epic #533). The Bike-type settings screen cycles it through the map's profile *names*;
+        /// (N2/N5, epic #533). The create-route sheet's bike-type editor steps it through the map's profile *names*;
         /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
         /// bare `u8` because the profile table is the map's, not the device's: a map with fewer profiles
         /// than this index falls back to profile 0 **at plan time** (guaranteed in the router, N3) and the
@@ -599,7 +599,7 @@ settings_table! {
         /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
         /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
         up_ahead_source: UpAheadSource = UpAheadSource::Both, since(16);
-        /// Draw the map's **terrain layer** — today the E3 contour lines (the Display settings screen's
+        /// Draw the map's **terrain layer** — today the E3 contour lines (the map display sheet's
         /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
         /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
         /// Default **on** — the point of the setting is to *see* contours without hunting for a switch.
@@ -621,13 +621,13 @@ settings_table! {
         /// preference — don't grow migration concerns around it.
         map_contours: bool = true, since(16);
         /// How often the device raises a **scheduled weather request** (weather epic #1185: WX8
-        /// #1193's due scheduler consumes it, WX11 #1196's Weather settings screen edits it) — the
+        /// #1193's due scheduler consumes it, the weather sheet's Interval row edits it) — the
         /// typed [`WeatherRefresh`] whose discriminants ARE the BLE §11.8 wire bytes (pinned by
         /// test). Division of labour (the #1221/#1224 merge resolution): the wire crate (`obc-ble`'s
         /// own `WeatherRefresh`) owns the vocabulary and the direction-dependent validation rule at
         /// the radio boundary — the board's Config write path validates there first and converts via
         /// [`WeatherRefresh::from_byte`] — while this enum is `obc-app`'s typed representation the
-        /// settings screen cycles ([`stepped`](WeatherRefresh::stepped)) and the scheduler reads
+        /// interval editor cycles ([`stepped`](WeatherRefresh::stepped)) and the scheduler reads
         /// ([`minutes`](WeatherRefresh::minutes)). [`decode`] sanitises an out-of-range stored byte
         /// to the default — deliberately **30 min and not `Off`**: §7.3 pins that only an explicit
         /// rider choice may disable weather. **BLE-writable** (like [`units`](Settings::units) /

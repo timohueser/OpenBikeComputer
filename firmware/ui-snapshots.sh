@@ -19,7 +19,7 @@
 #
 #   1. It states its destination with `--expect-screen NAME` (the `screens!` table's own
 #      variant string). A scripted recipe is a hostage to the menus it walks: insert one
-#      station and `B u p d d d d d p` quietly snapshots a different screen under the old
+#      station and `B u p d d d d p` quietly snapshots a different screen under the old
 #      filename. Stating it turns that into a failed sweep. Add the flag to every new
 #      command; if you don't know the name, guess, and the error message names the
 #      screen the script actually reached.
@@ -28,9 +28,11 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 61 of the 62 screens have at least one frame here.
-# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count is unchanged; D4a moved the
-# Up-ahead filter off the list and onto that same `ContextDrawer`, adding frames rather than rows.)
+# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
+# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count was unchanged; D4a moved the
+# Up-ahead filter onto that same `ContextDrawer`, adding frames rather than rows; D4b deleted the
+# Weather settings screen outright, so both counts drop by one; D4d deleted the Bike type screen
+# the same way.)
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -95,11 +97,7 @@ cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
 cp "$ROUTES/route-plain.obcr" "$PLAINROUTE/"
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
-# The trip object comes from the repository's own tracked source, not the packaged copy: the
-# published `sim-grimsel` package still carries a v1 trip object (`python3 tools/fixtures.py verify
-# sim-grimsel` says so), which every reader rejects — so the packaged file silently produced a
-# folder-less Route menu under the three trip filenames below.
-cp "$repo_root/fixtures/sources/sim-grimsel/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
+cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
@@ -196,6 +194,15 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # the name): detail of a resupply POI ~600 m away → press.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
+# The confirm card's own context sheet (#1515 D4d) — the **only** home the routing profile has
+# since its settings screen was deleted. `C` is the Down+Back squeeze over the card above: one row,
+# `Bike type`, on the 68 px sheet the card recesses under. Then its nested editor, staged on Gravel
+# with the committed tick still under Road's notch — the mark the grammar promises while browsing.
+NAVCONFIRM="B d d w p d d d p f p p"
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$NAVCONFIRM C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$NAVCONFIRM C p w d" --expect-screen ContextDrawer --png "$OUT/route-plan-biketype-editor.png"
 # The computed-route overview (length only — no elevation band, no climb/descent rows; #685:
 # static NEW ROUTE title, the destination name as the first body line, metres below 1 km, and the
 # decimated route-shape preview polyline in the middle): confirm → Create route → `f` runs the
@@ -226,11 +233,11 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # plan → preview (+cost line) → commit — the commit splices INTO the reserved `_nav.obcr` the
 # prefix planned (the self-splice case) and lands back on the riding map.
 DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
-# (a0) The ride context with **every row live** — the Monaco graph, a loaded route and an on-route
-# rider are exactly what the Detour row needs, so this is the arrangement `ride-context.png` cannot
+# (a0) The map context with **every row live** — the Monaco graph, a loaded route and an on-route
+# rider are exactly what the Detour row needs, so this is the arrangement `map-context.png` cannot
 # show on the graph-less Grimsel fixture.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/ride-context-live.png"
+    --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/map-context-live.png"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
@@ -265,104 +272,102 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # now a *group* index, so the pre-group scripts landed several screens off their frame's name.
 "$SIM" "$MAP" --boot --script "B u p w"      --expect-screen Settings --png "$OUT/settings.png"
 
-# Ride (group 0) — everything you tune for a ride, in one scrolling seven-row group: Bike type,
-# Data fields, Pages, Climb, Waypoints, Up ahead, Auto-delete. It absorbed the old standalone Stats
-# and Auto-delete screens, so those two names are gone from the sweep. Only four rows fit the panel;
-# the cursor drives the window, so the frames below past row 3 show it scrolled.
+# Ride (group 0) — everything you tune for a ride, in one scrolling five-row group: Data fields,
+# Pages, Climb, Waypoints, Auto-delete. It absorbed the old standalone Stats and Auto-delete
+# screens, so those two names are gone from the sweep. Only four rows fit the panel; the cursor
+# drives the window, so the frames below past row 3 show it scrolled.
 "$SIM" "$MAP" --boot --script "B u p p w"    --expect-screen Ride --png "$OUT/ride-settings.png"
-# Bike type (routing-v2 N5): the map's §8.6 profile names — grimsel ships Road/Gravel/MTB/Touring,
-# each with its own name-matched pixel-art bike (Road/Gravel/MTB/Touring silhouettes). The default
-# selection (Road), then steps cycling through the other three — pinning the name list, the cycle,
-# and each hero sprite.
-"$SIM" "$MAP" --boot --script "B u p p p"     --expect-screen BikeType --png "$OUT/biketype.png"
-"$SIM" "$MAP" --boot --script "B u p p p d"   --expect-screen BikeType --png "$OUT/biketype-gravel.png"
-"$SIM" "$MAP" --boot --script "B u p p p d d" --expect-screen BikeType --png "$OUT/biketype-mtb.png"
-"$SIM" "$MAP" --boot --script "B u p p p u"   --expect-screen BikeType --png "$OUT/biketype-touring.png"
-# Data fields (row 1) — the WYSIWYG grid editor.
-"$SIM" "$MAP" --boot --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields.png"
+# The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
+# confirm card's own context sheet now — see `route-plan-context.png` below, which is its only home.
+# Its four hero-bike frames left with it, and the group's remaining rows shift up one slot.
+# Data fields (row 0) — the WYSIWYG grid editor.
+"$SIM" "$MAP" --boot --script "B u p p p" --expect-screen StatFields --png "$OUT/fields.png"
 # The 2×3 waypoint list panel placed in the WYSIWYG field editor (epic #523): from the Fields grid,
 # six steps reach the ADD ghost (the six default tiles fill page 1), press to open the picker, then
 # five steps to `Waypoint list` (the last hidden non-sensor entry) and press. The page-sized panel lands on
 # its own page — the `2 / 3` counter, full-width and three rows tall (`--` with no route loaded).
-"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d p" --expect-screen StatFields --png "$OUT/fields-wpt-panel.png"
-# The six `Next: <category>` fields (epic #946, U5). `B u p p d p` is Home -> Settings -> Ride ->
+"$SIM" "$MAP" --boot --script "B u p p p d d d d d d p d d d d d p" --expect-screen StatFields --png "$OUT/fields-wpt-panel.png"
+# The six `Next: <category>` fields (epic #946, U5). `B u p p p` is Home -> Settings -> Ride ->
 # Data fields (the Fields grid). (a) the Add-field picker scrolled onto the new group: six rows
 # wearing the category's own row icon in place of a span badge, directly under `Next waypoint`.
-"$SIM" "$MAP" --boot --script "B u p p d p d d d d d d p d d d d d" --expect-screen AddField --png "$OUT/addfield-next-category.png"
+"$SIM" "$MAP" --boot --script "B u p p p d d d d d d p d d d d d" --expect-screen AddField --png "$OUT/addfield-next-category.png"
 # (b) three of them placed, drawn by the WYSIWYG editor's ghost: icon + the localized category word
 # + a per-category sample distance (the editor has no route, so the live cell would read `--`).
 "$SIM" "$MAP" --boot --stat-fields "next-water,next-campsite,next-lodging" \
-    --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields-next-category.png"
-# The Waypoints mode row (epic #523): the group's 5th row, under Climb. Four steps park the amber
+    --script "B u p p p" --expect-screen StatFields --png "$OUT/fields-next-category.png"
+# The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
-"$SIM" "$MAP" --boot --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
 # The "Up ahead shows" source row is **gone** from this group (#1515 D4a): it is a row of the
 # timeline's own context sheet now — see `up-ahead-context.png` below, which is its only home. Its
 # three frames left with it, and the group's remaining rows shift up one slot.
 # The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
-# synced-ride retention ring on the last row, defaulting to 1 week. Five steps park the cursor on it;
+# synced-ride retention ring on the last row, defaulting to 1 week. Four steps park the cursor on it;
 # one press cycles to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p p d d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
-# Display (group 1): the two Map-overlay toggles + the idle-return picker moved from Power. The
-# picker in its open (editing) state is two rows down, press to open.
-"$SIM" "$MAP" --boot --script "B u p d p"       --expect-screen Display --png "$OUT/display.png"
-"$SIM" "$MAP" --boot --script "B u p d p d d p" --expect-screen Display --png "$OUT/display-idle-return.png"
+# Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
+# #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
+# — so the picker is row 0 and one press opens it. (The old recipe walked two rows down first and
+# pressed *Contours*, which is not the state this filename has always claimed.)
+"$SIM" "$MAP" --boot --script "B u p d p"   --expect-screen Display --png "$OUT/display.png"
+"$SIM" "$MAP" --boot --script "B u p d p p" --expect-screen Display --png "$OUT/display-idle-return.png"
 
-# Weather (group 2) is the refresh-interval picker; it is shot with the rest of the weather
-# surfaces further down (`weather-settings.png`), which reach it from the Menu's Weather station.
+# The Weather group is **gone** (#1515 D4b): the refresh interval is a row of the weather screens'
+# own context sheet now — see `weather-context.png` below, its only home — and every recipe below
+# lost one `d` because the list is five rows.
 #
-# Connections (group 3): the two radios in one drawer — Phone (Bluetooth) then Sensors.
-"$SIM" "$MAP" --boot --script "B u p d d d p"  --expect-screen Connections --png "$OUT/connections.png"
+# Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
+"$SIM" "$MAP" --boot --script "B u p d d p"  --expect-screen Connections --png "$OUT/connections.png"
 # Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
 # the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
 # at the bottom anchor), the row selected (a step puts the shaded guarded base on it), the guarded
 # hold mid-charge (a partial hold fills it warning-red), and the unpaired state — no bond, so the
 # Forget row isn't drawn at all (the round-1 only-when-possible grammar).
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth.png"
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p d"   --expect-screen Bluetooth --png "$OUT/bluetooth-forget-selected.png"
-"$SIM" "$MAP" --boot --ble paired --script "B u p d d d p p d H" --expect-screen Bluetooth --png "$OUT/bluetooth-forget-hold.png"
-"$SIM" "$MAP" --boot              --script "B u p d d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth-unpaired.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p d"   --expect-screen Bluetooth --png "$OUT/bluetooth-forget-selected.png"
+"$SIM" "$MAP" --boot --ble paired --script "B u p d d p p d H" --expect-screen Bluetooth --png "$OUT/bluetooth-forget-hold.png"
+"$SIM" "$MAP" --boot              --script "B u p d d p p"     --expect-screen Bluetooth --png "$OUT/bluetooth-unpaired.png"
 # Sensors screen (BLE sensors epic #707, SE7) — the group's second row, under Phone. `--sensors screen`
 # drives the sim's fake central manager: the three-row list (Heart rate Connected · 78 %, Power
 # Searching, Cadence Not set — the HR row selected, so its hold-to-forget footer shows), and the scan
 # list one press deeper (the HR-filtered discovered sensors, name/address + RSSI). A third run with no
 # fake manager pins the empty `Searching...` state while the scan finds nothing.
-"$SIM" "$MAP" --boot --sensors screen --script "B u p d d d p d p"   --expect-screen Sensors --png "$OUT/sensors.png"
-"$SIM" "$MAP" --boot --sensors screen --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scan.png"
-"$SIM" "$MAP" --boot                  --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scanning.png"
+"$SIM" "$MAP" --boot --sensors screen --script "B u p d d p d p"   --expect-screen Sensors --png "$OUT/sensors.png"
+"$SIM" "$MAP" --boot --sensors screen --script "B u p d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scan.png"
+"$SIM" "$MAP" --boot                  --script "B u p d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scanning.png"
 
-# Power (group 4): the GPS fix-interval stepper + the power-saver toggle.
-"$SIM" "$MAP" --boot --script "B u p d d d d p" --expect-screen Power --png "$OUT/power.png"
+# Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
+"$SIM" "$MAP" --boot --script "B u p d d d p" --expect-screen Power --png "$OUT/power.png"
 
-# System (group 5) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
+# System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
 # menu itself first, then each row's page.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p"     --expect-screen System --png "$OUT/system.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d p" --expect-screen DateTime --png "$OUT/datetime.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p"     --expect-screen System --png "$OUT/system.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d p" --expect-screen DateTime --png "$OUT/datetime.png"
 # The Language screen (epic #602): the endonym value picker. The default (English), then two
 # steps cycling to Français — pinning the ç glyph the Latin font (#601) adds.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p"     --expect-screen Language --png "$OUT/language.png"
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d p d d" --expect-screen Language --png "$OUT/language-french.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p"     --expect-screen Language --png "$OUT/language.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d p d d" --expect-screen Language --png "$OUT/language-french.png"
 # The About page (#1149) — System row 4, above Reset: the read-only credits page.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d d p" --expect-screen About --png "$OUT/about.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d p" --expect-screen About --png "$OUT/about.png"
 # Factory Reset is the group's last row: five steps in, press to open, arm (press), then a
 # partial-hold to fill the bar. (Four steps stopped on About until this recipe was corrected.)
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d d d p p H" --expect-screen Reset --png "$OUT/reset-hold.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d d d p p H" --expect-screen Reset --png "$OUT/reset-hold.png"
 # The Firmware page (epic #615 S5, #620) — System row 3, the SD-sideload door ("Install update from
 # card") over the read-only device-info ledger.
-"$SIM" "$MAP" --boot --script "B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware.png"
+"$SIM" "$MAP" --boot --script "B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware.png"
 # The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
 # is live), out to the Menu with the global escape (`B`), then Settings -> System -> Firmware. The
 # row loses its amber box and shows the "Recording" cue.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 \
-    --script "p p p p B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
+    --script "p p p p B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
 # The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu scan/error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
 # real obc-dfu scan). --dfu progress then presses Install so the "Preparing update..." spinner shows.
-DFU_PRE="B u p d d d d d p d d d p p"
+DFU_PRE="B u p d d d d p d d d p p"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --expect-screen DfuCheck --png "$OUT/dfu-check.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu scan=normal --expect-screen DfuConfirm --png "$OUT/dfu-confirm.png"
 "$SIM" "$MAP" --boot --script "$DFU_PRE" --dfu scan=same   --expect-screen DfuConfirm --png "$OUT/dfu-confirm-same.png"
@@ -513,14 +518,29 @@ WXNAV="p d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-hourly-only.png"
 "$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-zoom-clamped.png"
-# The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
+# The alert card (locked VIEW RAIN MAP + DISMISS).
 # The pushed card is the *presentation* seam, so the bundle under it must not alert on its own:
 # with the engine live on every host (#1549) a `demo:storm` bundle fires its own card and updates
 # this one's minutes in place, which is the seam working, not the seam being tested. A dry bundle
 # leaves `--weather-alert` the only writer — byte-identical, because the card is full-screen.
 "$SIM" "$MAP" --boot --weather demo:dry --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --expect-screen WeatherAlert --png "$OUT/weather-alert-rain.png"
-"$SIM" "$MAP" --boot --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings.png"
+# The weather context sheet (#1515 D4b) — the only home either control has. `$WXNAV C w` squeezes
+# it up over the dashboard and lets the open land: two rows, Refresh now and Interval.
+#
+# `--ble connected+paired` is what makes the **Refresh row live**, and it is the honest reason
+# rather than a decoration. Opening the dashboard from the Menu raises the entry refresh; with no
+# link that request can never go out, so it stays outstanding and the row draws recessed for the
+# rest of the session. A link lets the request leave, the headless companion answers it, and the
+# row is free again — which is the state a rider with a phone is in.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context.png"
+# The honest inert state: with a fetch already running the Refresh row loses its chevron, draws in
+# the recessed ink and a press does nothing — the row is live exactly where its action can act.
+# The only difference from the frame above is that row and the title's UPDATING cue.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --weather-refreshing --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-refreshing.png"
+# The nested Interval editor, staged one notch off the committed 30 min — so the tick that marks
+# what the device is set to sits under a different notch from the knob.
+"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor.png"
 # WX12 (#1197): the two-hour *ride* decision + engine-fired alerts. `stormahead`/`rainahead` are
 # stationary rings around the grid centre: parked at the centre the dashboard honestly reads DRY,
 # while `--weather-decide` samples the bundle **route-projected** (the app's own matched progress +
@@ -583,17 +603,32 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 "$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
-# The **ride context** (#1515 D3): a Down+Back squeeze (`C`) on the riding Map raises the bottom
-# sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes. It replaced the
-# compass RIDE menu, whose fifth station (Main menu) is now the global Back-hold escape. Same base
-# as the quick-drawer frames — a real map under the device-64 dim LUT — so the two sheets can be
-# judged against each other.
+# The **map context** (#1515 D3, extended by D4c): a Down+Back squeeze (`C`) on the riding Map
+# raises the bottom sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes
+# — plus the fifth row only the Map declares, Map display. It replaced the compass RIDE menu, whose
+# own fifth station (Main menu) is now the global Back-hold escape. Same base as the quick-drawer
+# frames — a real map under the device-64 dim LUT — so the two sheets can be judged against each
+# other.
 #
 # Grimsel carries **no routing graph**, so this frame is also the inert-row case: Detour draws
 # recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
 # compass dial's, which dimmed a station a press still opened. The all-live arrangement is
-# `ride-context-live.png`, shot on the Monaco graph down in the detour block.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
+# `map-context-live.png`, shot on the Monaco graph down in the detour block.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-context.png"
+# The **map display sheet** (#1515 D4c): the fifth row swaps the five-row sheet for the three
+# switches that are the only home the map's clock pill, scale bar and terrain layer have. `u` wraps
+# the cursor to the last row; there is **no settle token after the press**, because the swap is
+# instantaneous by design — a frame that needed one would be evidence the swap re-ran the open.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-sheet.png"
+# …and the Clock row flipped off, which is the pair that shows the switch working. The `HH:MM` pill
+# is gone from the map too, and that is the **headless** path being honest rather than the frozen
+# base failing: `--png` composes the whole frame from nothing, so it never claims a resident frame
+# and draws the base as always. On the device the map keeps the pill until the sheet closes, which
+# is the one repaint the rider pays for however many switches they flip.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
+# The **ride context** the other three riding views share — the unchanged four-row table, shot over
+# Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
@@ -668,7 +703,7 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 # waypoint*, resupply and pharmacy to corridor POIs, so one frame pins both sources; the long names
 # pin the ellipsis. NOTE the U4 source setting deliberately does not scope these tiles.
 U5FIELDS="next-water,next-resupply,next-pharmacy,speed,dist-to-go"
-U5CLIMBOFF="B u p p d d d p b b b"
+U5CLIMBOFF="B u p p d d p b b b"
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --stat-fields "$U5FIELDS" \
     --script "$U5CLIMBOFF p p p p b f f f f f f" --expect-screen Statistics --png "$OUT/stats-next-category.png"
 # The empty state: a route-less ride, where nothing can be "ahead" — icon + the category's own word
@@ -792,32 +827,40 @@ QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B w"           --expect-screen Menu --png "$OUT/menu-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p w"       --expect-screen Settings --png "$OUT/settings-$lang.png"
-    # The Ride group per-language — the longest settings screen there is: six two-line rows, each
+    # The Ride group per-language — the longest settings screen there is: five two-line rows, each
     # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
     # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
-    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Five** steps: the
-    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a), and a sixth step here
-    # wrapped the cursor back to row 0 and quietly re-shot `ride-settings-$lang.png` under this name.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
+    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Four** steps: the
+    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a) and its Bike type row to
+    # the create-route sheet (#1515 D4d), and one step too many here wraps the cursor back to row 0 and
+    # quietly re-shoots `ride-settings-$lang.png` under this name.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
     # and the icon-gutter picker row have to fit whole.
     "$SIM" "$MAP" --boot --lang "$lang" --stat-fields "next-campsite,next-lodging,next-bike-shop" \
-        --script "B u p p d p" --expect-screen StatFields --png "$OUT/fields-next-category-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d p d d d d d d p d d d d d d d d d d" \
+        --script "B u p p p" --expect-screen StatFields --png "$OUT/fields-next-category-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p p d d d d d d p d d d d d d d d d d" \
         --expect-screen AddField --png "$OUT/addfield-next-category-$lang.png"
     # Date & Time is the tightest screen per-language: the localized month name fills the fixed
     # month stepper cell (#614 widened it to 70 px for the four-char French months). Eyeball the
     # month glyphs against the active cell's amber border.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d p" --expect-screen DateTime --png "$OUT/datetime-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d p" --expect-screen DateTime --png "$OUT/datetime-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p b"    --expect-screen Statistics --png "$OUT/statistics-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --expect-screen Map --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-$lang.png"
+    # The route-plan sheet's one row label per language (#1515 D4d). `fr`/`es` are re-authored for
+    # the sheet's 164 px row budget ("Type vélo" / "Tipo bici"), so these are the frames that show
+    # the shortened readings on-glass. No per-language *editor* frame: its choices are the map's own
+    # §8.6 names, byte-identical in every column.
+    "$SIM" "$MONACO" --boot --lang "$lang" --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 \
+        --clock "2025-01-06T12:00" --script "$NAVCONFIRM C" \
+        --expect-screen ContextDrawer --png "$OUT/route-plan-context-$lang.png"
     # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — a ≤5-day heads-up;
     # eyeball the label ("Auto-Lösch" / "Suppr. auto" / "Autoborrado") beside the ink "in 5 d".
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
@@ -834,7 +877,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
-    "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
     # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
     "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d d w p p" --expect-screen RideStart --png "$OUT/ride-start-$lang.png"
@@ -847,8 +890,8 @@ for lang in de fr es; do
     # first-install confirm (the worst case for vertical fit — the two-row version table + the
     # no-undo note, which wraps to two Label lines), the progress spinner, an error card, and the
     # post-update toast — the text-heaviest DFU screens, to eyeball for clipped/overflowing copy.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p"         --expect-screen System --png "$OUT/system-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p"         --expect-screen System --png "$OUT/system-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu scan=first --expect-screen DfuConfirm --png "$OUT/dfu-confirm-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu progress=normal --expect-screen DfuProgress --png "$OUT/dfu-progress-$lang.png"
     # The terminal installing card per-language — the wrapped Body headline (two lines in French)
@@ -864,12 +907,18 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --weather demo:dry --lang "$lang" --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-$lang.png"
   # WX12: the new STRONG WIND card copy, per language.
   "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --expect-screen WeatherAlert --png "$OUT/weather-alert-gust-$lang.png"
-  "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings-$lang.png"
+  # The weather sheet per language (#1515 D4b): its two row labels, then the Interval editor's
+  # title + the choice it stages. `Jetzt laden` is the width constraint on the row.
+  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor-$lang.png"
   # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
   # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
   # each of which has to fit the sheet's width in the longer translations.
-  # The ride context's four row labels at 240 px — the sheet is all copy, so this is its overflow check.
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/ride-context-$lang.png"
+  # The map context's five row labels at 240 px — the sheet is all copy, so this is its overflow
+  # check — and then its display sub-sheet, whose three labels have 36 px less room because the
+  # slider takes it (#1515 D4c).
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/map-context-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C u p"       --expect-screen ContextDrawer --png "$OUT/map-display-sheet-$lang.png"
   # The Up-ahead sheet (#1515 D4a): its two row labels, then the nested editor's title + the choice
   # it stages. `Campingplatz` / `Alojamiento` are the width constraint on the editor line.
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C p C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"

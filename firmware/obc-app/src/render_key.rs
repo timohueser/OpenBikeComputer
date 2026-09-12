@@ -335,6 +335,8 @@ impl App {
                     navigation: self.navigator.route_state(),
                     settings: self.settings(),
                     recording: self.recorder.recording(),
+                    weather_request_outstanding: self.weather.request_outstanding(),
+                    nav_profiles: self.nav_profiles(),
                 });
                 Some(DrawerKey { page, selected, staged, committed, enabled })
             }
@@ -675,6 +677,88 @@ mod tests {
         assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
     }
 
+    /// …and the twin on the **map display** sheet (#1515 D4c), where the moving fact is a switch's
+    /// own bit rather than a row's availability.
+    ///
+    /// This is the whole argument for `DrawerKey` gaining no field for it. All three switches are
+    /// device-only — no BLE adopt writes them — so under an open sheet only the rider can move one,
+    /// and only the selected row's. Every state change is therefore accompanied by a `committed`
+    /// change and every cursor move by a `selected` change, which the two existing bytes already
+    /// carry. The mutant is a `key` that reports 0 for a switch row: the flip below would move
+    /// nothing and the slider would sit still until the sheet closed.
+    #[test]
+    fn a_flip_under_the_sheet_moves_only_the_drawer_key() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(crate::input::Chord::Context), "the Map declares a context");
+        app.apply_gesture(crate::input::Gesture::Step(-1)); // → the Map display row
+        app.apply_gesture(crate::input::Gesture::Press); // → the display sheet
+
+        let quiet = app.render_key();
+        assert!(quiet.map.is_none(), "no map fact survives under either sheet");
+        assert_eq!(quiet.drawer.map(|d| d.enabled), Some(0b111), "all three switches are always live");
+        assert_eq!(quiet.drawer.map(|d| d.committed), Some(1), "the selected row reads its own bit");
+
+        // The base moving under the sheet is not a pixel either sheet draws.
+        app.state.cam_lon += 5_000;
+        app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
+        assert_eq!(app.render_key(), quiet, "a moving map under the display sheet asks for no repaint");
+
+        // A flip is, and it moves the key through `committed` alone.
+        app.apply_gesture(crate::input::Gesture::Press);
+        let flipped = app.render_key();
+        assert_ne!(flipped, quiet, "the slider moved — the sheet must redraw");
+        assert_eq!(flipped.drawer.map(|d| d.committed), Some(0));
+
+        // …and the close is exactly one invalidation, with the map back in the key.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, flipped);
+        assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "the base is back");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
+    /// …the twin of the test above, on the **weather** sheet (#1515 D4b), where the row's live bit
+    /// is the one thing under a sheet that is allowed to move.
+    ///
+    /// The dashboard is the busiest base there is: a provider fetch can start, land and install new
+    /// data at any moment. Under the sheet none of that is in the frame's identity — except the
+    /// Refresh row's own cue, which is a pixel the *sheet* draws. So a fetch starting moves the key
+    /// through `enabled` and nothing else; new installed data moves nothing at all; and the close is
+    /// one invalidation.
+    #[test]
+    fn a_refresh_landing_under_the_sheet_moves_the_row_and_nothing_else() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.ui.stack.push(Screen::Weather(crate::screen::WeatherScreen::new()));
+        assert!(app.apply_chord(crate::input::Chord::Context), "the dashboard declares a context");
+
+        let live = app.render_key();
+        assert!(live.weather.is_none(), "no weather fact survives under the sheet");
+        assert_eq!(live.drawer.map(|d| d.enabled), Some(0b11), "both rows live over an idle domain");
+
+        // A provider-cadence fetch starts under the sheet: the row goes recessed, which is the one
+        // base-derived cue the sheet draws — and it moves *only* `enabled`.
+        app.weather.note_refreshing(true);
+        let fetching = app.render_key();
+        assert_ne!(fetching, live, "the Refresh row went recessed — the sheet must redraw");
+        assert_eq!(fetching.drawer.map(|d| d.enabled), Some(0b10), "…only the Refresh row");
+
+        // New data landing under the sheet is not a pixel the sheet draws, so it moves nothing.
+        let quiet = app.render_key();
+        app.weather.note_installed(crate::device_core::WeatherData {
+            data: crate::device_core::DataIdentity::new(7),
+            revision: crate::device_core::Revision::new(3),
+        });
+        app.state.cam_lon += 5_000;
+        assert_eq!(app.render_key(), quiet, "installed data under a sheet asks for no repaint");
+
+        // …and the close is exactly one invalidation, with the base back in the key.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, quiet);
+        assert!(uncovered.drawer.is_none() && uncovered.weather.is_some(), "the base is back");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
     /// **Closing the context sheet costs exactly one invalidation**, like closing the quick one.
     #[test]
     fn closing_the_context_sheet_invalidates_the_base_exactly_once() {
@@ -729,6 +813,56 @@ mod tests {
         app.state.cam_lon += 5_000;
         app.navigator.route_state_mut().progress_m += 900;
         assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
+    }
+
+    /// …and the twin on the **route-plan** sheet (#1515 D4d), where the moving fact comes from
+    /// outside the app entirely: the host loading a map changes how many routing profiles exist,
+    /// and therefore whether the sheet's one row is live and which profile it marks.
+    ///
+    /// The confirm card under it is `RenderKeyKind::Static`, so there is no base fact in the key to
+    /// begin with; the whole question is that the two things the sheet *does* draw — `enabled` and
+    /// `committed` — still move when a `set_nav_profiles` lands under it, and that the close is one
+    /// invalidation.
+    #[test]
+    fn a_map_load_under_the_sheet_moves_the_row_and_nothing_else() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
+        let _ = app.ui.stack.push(Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None)));
+        assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
+
+        // No map yet: the row is inert, and the frame holds no base fact of any kind.
+        let inert = app.render_key();
+        assert_eq!(inert.drawer.map(|d| d.enabled), Some(0), "with no map the row has no choice to offer");
+        assert!(inert.map.is_none() && inert.home.is_none() && inert.weather.is_none());
+
+        // The host loads a map under the open sheet — through the real mirror, from a real parsed
+        // §8.6 table. That is a pixel the *sheet* draws.
+        let bytes = crate::harness::support::build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+        app.set_nav_profiles(tables.nav_profiles());
+        let live = app.render_key();
+        assert_ne!(live, inert, "the row went live — the sheet must redraw");
+        assert_eq!(live.drawer.map(|d| d.enabled), Some(1));
+
+        // The committed mark is the other half: a stale index resolved to profile 0 while the map
+        // was empty and resolves to itself now, which moves `committed` on its own.
+        app.set_settings(crate::settings::Settings { bike_profile_idx: 2, ..Default::default() });
+        let marked = app.render_key();
+        assert_ne!(marked, live, "the tick moved to the profile the router will use");
+        assert_eq!(marked.drawer.map(|d| d.committed), Some(2));
+
+        // …and the base under the sheet is still nothing at all.
+        let quiet = app.render_key();
+        app.state.cam_lon += 5_000;
+        app.state.device.battery_pct = 9;
+        assert_eq!(app.render_key(), quiet, "a moving base under the route-plan sheet asks for no repaint");
+
+        // The close is exactly one invalidation.
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, quiet);
+        assert!(uncovered.drawer.is_none(), "the sheet is gone from the key");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
     /// The two sheets are **different frames**: the shape carries which drawer is up, so swapping

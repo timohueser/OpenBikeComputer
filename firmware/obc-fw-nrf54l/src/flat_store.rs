@@ -1431,6 +1431,34 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
     store.entries().find(|entry| entry.kind == kind)
 }
 
+/// `debug-uart` only (#1591 on-device acceptance): print the whole catalog, one line per entry,
+/// plus the entry count, whether the listing ran to the end, and the free extents.
+///
+/// The before/after comparison of two of these is what proves a repair removed exactly one object
+/// and left every other one byte-identical — `EntryMeta` already carries the per-object CRC, so
+/// "unchanged" is a comparison rather than a claim.
+#[cfg(feature = "debug-uart")]
+pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
+    for entry in store.entries() {
+        defmt::info!(
+            "store census: id={=u64} rev={=u64} kind={=u16} flags={=u16} len={=u64} crc={=u32} name={=str}",
+            entry.id.0,
+            entry.revision.0,
+            entry.kind as u16,
+            entry.flags.bits(),
+            entry.payload_len,
+            entry.payload_crc,
+            entry.name.as_str().unwrap_or("<invalid>")
+        );
+    }
+    defmt::info!(
+        "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32}",
+        store.entry_count(),
+        store.entries_ok(),
+        store.free_extents()
+    );
+}
+
 // ═══════════════════════════════ weather ═══════════════════════════════
 
 /// One fully validated flat-store weather head.
@@ -1865,10 +1893,8 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 /// The polyline goes to the caller rather than into the app directly because it reaches
 /// DeviceCore as `DerivedTargets::ride_preview` beside the key that guards it — and because at
 /// `NAV_PREVIEW_MAX` it is 512 B that must not become resident (the board has 72 B of resident
-/// headroom). Returns whether the profile is showable; the preview is handed over either way.
-///
-/// The two consumers stream the exact recorded sample bytes; neither rewrites or converts the
-/// object.
+/// headroom). Both outputs come from one sample pass; failure clears the preview and leaves
+/// the profile unpublished.
 #[inline(never)]
 pub(crate) fn fill_ride_track(
     store: &'static FlatStore<FlatCard>,
@@ -1876,42 +1902,14 @@ pub(crate) fn fill_ride_track(
     ride: u64,
     preview: &mut heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
 ) -> bool {
-    let id = ObjectId(ride);
-    let valid = fill_ride_profile(store, app, id);
-    read_ride_preview(store, id, preview);
-    valid
-}
-
-// Keep the returned ~5 KiB profile and the independent preview/source walk out of one combined
-// caller frame. The shipping flat-store frame guard is 16 KiB because this path runs inside the
-// ride task's already-live stack; inlining both readers made LLVM reserve 22+ KiB at once even
-// though their results are consumed sequentially.
-#[inline(never)]
-fn fill_ride_profile(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) -> bool {
-    let valid = {
-        let profile = app.begin_ride_profile_fill();
-        matches!(
-            store.with_source(id, None, |source| obc_route::ride_elevation_profile_into(source, profile)),
-            Ok(Ok(()))
-        )
-    };
+    let profile = app.begin_ride_profile_fill();
+    let valid = matches!(
+        store.with_source(ObjectId(ride), None, |source| obc_route::ride_track_into(source, profile, preview)),
+        Ok(Ok(()))
+    );
     if !valid {
-        defmt::warn!("flat: ride profile fill for object {=u64} failed", id.0);
+        preview.clear();
+        defmt::warn!("flat: ride track fill for object {=u64} failed", ride);
     }
     valid
-}
-
-#[inline(never)]
-fn read_ride_preview(
-    store: &'static FlatStore<FlatCard>,
-    id: ObjectId,
-    out: &mut heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
-) {
-    out.clear();
-    let preview = store
-        .with_source(id, None, |source| {
-            obc_route::ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(source).unwrap_or_default()
-        })
-        .unwrap_or_default();
-    let _ = out.extend_from_slice(&preview);
 }

@@ -296,6 +296,22 @@ impl UiRuntime {
             && !self.stack.iter().skip(base + 1).any(|s| s.needs_base())
     }
 
+    /// **This frame drew the base, so every sheet above it is square with the screen below**
+    /// (#1515 D5). Called at the frame boundary, from the one place that knows the draw happened —
+    /// the render's own `!sheet_only`, whose three exclusions are exactly the reasons the base is
+    /// drawn anyway.
+    ///
+    /// It is the only thing that clears [`Screen::needs_base`], which is a debt rather than a flag:
+    /// a pass that ticks and then drops its frame (the board holds the scratch arena, a weather
+    /// bind fails) leaves the obligation armed for the pass that renders. [`Screen::draw`] stays
+    /// `&self` and side-effect-free, so the mutation lives here instead.
+    pub(crate) fn spend_base_draw(&mut self) {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        for scr in self.stack.iter_mut().skip(base + 1) {
+            scr.clear_base_debt();
+        }
+    }
+
     /// Whether the base (lowest opaque) screen **wants the rain overlay** — its declared
     /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay), true only for the WX11 rain map.
     /// The frame's rain lease is dropped when this is false, so the precipitation raster is a

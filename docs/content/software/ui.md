@@ -1,6 +1,7 @@
 ---
 title: UI system
 description: Screen state, navigation, input, repaint policy, and rider-facing data views.
+copy: ai
 ---
 
 # The UI system
@@ -294,16 +295,45 @@ actions. A screen does not build a drawer: it declares a static table of rows, a
 drawer supplies the cursor, the transitions and the drawing. A screen that declares no table gets no
 sheet, and the chord does nothing on it — an empty drawer is never shown.
 
-The four riding views (Map, Statistics, Climb, and the paused page) share one table: Up ahead,
-Detour, POIs, and Routes. A row that cannot act right now is drawn recessed and does nothing — the
-Detour row without a route, without map routing data, or off the route. A row that can act replaces
-the sheet with its screen, so one Back returns the rider to the riding view they squeezed from.
+The four riding views (Map, Statistics, Climb, and the paused page) offer the same four actions in
+the same order: Up ahead, Detour, POIs, and Routes. A row that cannot act right now is drawn
+recessed and does nothing — the Detour row without a route, without map routing data, or off the
+route. A row that can act replaces the sheet with its screen, so one Back returns the rider to the
+riding view they squeezed from.
+
+The Map adds a fifth row, **Map display**, because it is the only one of the four with something to
+apply it to. That row replaces the sheet with a shorter sheet holding three switches: the clock, the
+scale bar and the contour layer. The new sheet arrives with no animation, because a sheet that is
+already on the screen does not come in again. Back closes it onto the Map, like every other row's
+destination.
 
 A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
 and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
 becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
-two such rows, Filter and Sources, and they are the only place these two controls are set.
+two such rows, Filter and Sources; the three weather views declare one, Interval — the time between
+the weather requests the device makes on its own. The create-route card declares one, Bike type —
+the routing profile the device plans with. These rows are the only place those controls are set.
+
+The bike-type row shows what a value row does when its choices come from the loaded map. The
+choices are the map's own routing-profile names. A map built with a custom profile offers that
+profile with no change to the device software. A map with only one profile, or no map at all,
+offers no choice. The row is then drawn recessed and does nothing. The row is on the create-route
+card because that card is where the choice is used: the next press asks for a plan. The route
+overview shows the profile a route was planned with. It does not let the rider change it, because
+a change would make the page say something untrue about the route it shows.
+
+A row can also be a **switch**. Such a row shows its own state and flips it in place: the sheet stays
+open and only that row changes. The three rows of the map display sheet are switches. What they
+change is not visible until the sheet closes, because the screen below a sheet is held still — so the
+rider sets all three in one visit and the flips themselves cost no map render. The map is drawn once
+when the shorter display sheet replaces the taller sheet, and once more, with all three answers,
+when the sheet goes away.
+
+A row can also simply **act**. The weather views declare one such row, Refresh now. It asks for
+fresh weather and closes the sheet, because the answer and the cue for it are content of the screen
+below, which a sheet holds still. The row is drawn recessed while a request is already on its way,
+or while one waits for the phone to come back into range: a second request would change nothing.
 
 The drawer is the only home for a setting that belongs to one screen. A control that moves into a
 drawer is removed from the central settings tree in the same change. A check in the build fails if

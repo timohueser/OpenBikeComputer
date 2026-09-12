@@ -7,12 +7,17 @@
 //! per-language rendering, and stale-never-looks-dry at the frame level.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, Gesture, Screen, WeatherAlertKind, WeatherSnapshot};
+use obc_app::device_core::{
+    DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs, PassPlan,
+};
+use obc_app::weather::{WeatherEffect, WeatherOutcome};
+use obc_app::{App, AppState, BleLink, BleStatus, Gesture, Screen, WeatherAlertKind, WeatherRefresh, WeatherSnapshot};
 use obc_formats::obcw::{HourlyRecord, CONDITION_CLEAR, HOURLY_COUNT};
+use obc_ports::{InputClock, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource as MapSliceSource};
 
 mod common;
-use common::{build_min_obcm, weather_pass, Buf};
+use common::{build_min_obcm, weather_pass, Buf, NoFix, EVERY_CAPABILITY};
 
 const T0: i64 = 1_800_000_000;
 
@@ -317,4 +322,104 @@ fn refresh_cue_keeps_cached_content_visible() {
     assert_ne!(idle.px, refreshing.px, "the UPDATING cue is visible");
     let bar_rows = 40 * 240; // the title bar band
     assert_eq!(idle.px[bar_rows..], refreshing.px[bar_rows..], "everything below the title bar stays untouched");
+}
+
+/// A miniature runtime for the sheet's two rows: one pass, then the one thing a weather executor
+/// does — **raise** the request and answer that. Its outcome slots live across passes, which
+/// [`weather_pass`] cannot, and that is what lets a second request be told apart from the first.
+#[derive(Default)]
+struct SheetHost {
+    outcomes: OutcomeSlots,
+    /// How many requests actually reached the radio.
+    raised: usize,
+    /// How many settings writes the passes owed.
+    persists: usize,
+}
+
+impl SheetHost {
+    fn pass(&mut self, app: &mut App, ms: u32) -> PassPlan {
+        let mut facts = ExternalFacts::NONE;
+        let mut loc = NoFix;
+        let mut plan = app.run_pass(PassInputs {
+            now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+            gestures: &[],
+            sensors: Sensors::new(&mut loc),
+            route: None,
+            weather: None,
+            support: EVERY_CAPABILITY,
+            outcomes: &mut self.outcomes,
+            facts: &mut facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
+        if let Some(WeatherEffect::RequestRefresh { token }) = plan.effects.weather.take() {
+            self.raised += 1;
+            let _ = self.outcomes.weather.try_put(WeatherOutcome::Raised { token });
+        }
+        if plan.effects.settings.take().is_some() {
+            self.persists += 1;
+        }
+        plan
+    }
+}
+
+/// **The weather sheet reaches the radio and the settings record** (#1515 D4b), through real chords,
+/// real gestures and real passes.
+///
+/// Row 0 raises exactly one request, leaves the rider on the dashboard, and the cue the press
+/// produced lands in the title bar with the cached content below it untouched. Row 1 commits the
+/// interval into `Settings::weather_refresh`, and the next pass owes a persist for it — the same
+/// `==` diff a settings screen's edit arms.
+#[test]
+fn the_weather_sheet_reaches_the_request_and_the_save() {
+    let map = build_min_obcm(0x07E0);
+    let dry = snapshot(&[0; 9]);
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    pin_clock(&mut app, T0 + 60);
+    let mut host = SheetHost::default();
+    // A phone in reach: `WeatherCapabilities::refresh` is the link, so without it a request stays
+    // pending in the domain — honest, but not what this test is about.
+    app.set_ble_status(BleStatus { link: BleLink::Connected, paired: true, passkey: None });
+
+    // The Menu station's own *entry* refresh, served and answered: this slice adds the **manual**
+    // refresh beside it, so the entry request has to be out of the way before the row can be asked.
+    open_dashboard(&mut app);
+    // Three passes: the admission stage runs *after* the weather stage, so the first pass a link
+    // is up for still carries the previous pass's capabilities; the second raises, the third
+    // answers.
+    for ms in [0, 10, 20] {
+        host.pass(&mut app, ms);
+    }
+    assert_eq!(host.raised, 1, "opening the dashboard asks once, and only once");
+    assert!(!app.weather().request_outstanding(), "…and that question is answered");
+    let idle = render(&mut app, &map, Some(&dry));
+
+    // Row 0: one press, one question, and out of the sheet.
+    assert!(app.apply_chord(obc_app::Chord::Context), "the dashboard declares a context");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Weather(_)), "the row acts and leaves the sheet");
+    host.pass(&mut app, 30);
+    assert_eq!(host.raised, 2, "exactly one more request reached the radio");
+
+    // …and the cue is on the frame the press produced, over content that never blanked.
+    let refreshing = render(&mut app, &map, Some(&dry));
+    assert_ne!(idle.px, refreshing.px, "the UPDATING cue is visible");
+    let bar_rows = 40 * 240; // the title bar band
+    assert_eq!(idle.px[bar_rows..], refreshing.px[bar_rows..], "cached content stays fully visible");
+
+    // Row 1: the interval editor writes the persisted field, and the pass then owes the save.
+    host.pass(&mut app, 40); // the Raised answer lands; the Refresh row is live again
+    assert_eq!(app.settings().weather_refresh, WeatherRefresh::Every30, "the default the epic locks");
+    assert!(app.apply_chord(obc_app::Chord::Context));
+    app.apply_gesture(Gesture::Step(1)); // → the Interval row
+    app.apply_gesture(Gesture::Press); // → its editor
+    app.advance_animations(InputClock(400)); // let the page slide land
+    app.apply_gesture(Gesture::Step(1)); // stage 60 min
+    assert_eq!(app.settings().weather_refresh, WeatherRefresh::Every30, "staging commits nothing");
+    let owed = host.persists;
+    app.apply_gesture(Gesture::Press); // commit
+    assert_eq!(app.settings().weather_refresh, WeatherRefresh::Every60, "Select wrote the settings field");
+    host.pass(&mut app, 50);
+    assert_eq!(host.persists, owed + 1, "the commit leaves the pass owing one settings persist");
 }

@@ -16,7 +16,7 @@ struct TripUploadModelTests {
 
     private static let fastTiming = TripUploadModel.Timing(doneAutoDismiss: .milliseconds(40))
 
-    private func makeMain(routesNearlyFull: Bool = false) async -> (MainScreenModel, MockControl) {
+    private func makeMain(routesNearlyFull: Bool = false) async throws -> (MainScreenModel, MockControl) {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.throughputBytesPerSec = 40_000_000
@@ -26,19 +26,8 @@ struct TripUploadModelTests {
         control.seedLibrary(into: library)
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()
-        await poll("first reconcile") { model.loadState == .loaded }
+        try await waitFor("first reconcile", timeout: .seconds(20), interval: .milliseconds(5)) { model.loadState == .loaded }
         return (model, control)
-    }
-
-    private func poll(
-        _ what: String, timeout: Duration = .seconds(20), _ cond: @MainActor () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !cond() {
-            #expect(ContinuousClock.now <= deadline, "timed out waiting for \(what)")
-            if ContinuousClock.now > deadline { return }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     /// The device-side half of a retention postcondition, waited for rather than
@@ -58,8 +47,8 @@ struct TripUploadModelTests {
     private func pollDeviceRetention(
         _ control: MockControl, _ objectID: DeviceObjectID, _ expected: Retention,
         _ comment: Comment? = nil
-    ) async {
-        await poll("device retention \(expected) on \(objectID)") {
+    ) async throws {
+        try await waitFor("device retention \(expected) on \(objectID)", timeout: .seconds(20), interval: .milliseconds(5)) {
             control.routeRetention(for: objectID) == expected
         }
         #expect(control.routeRetention(for: objectID) == expected, comment)
@@ -77,11 +66,11 @@ struct TripUploadModelTests {
     // MARK: Happy path
 
     @Test
-    func uploadsEveryStageThenTheTripObject() async {
-        let (model, control) = await makeMain()
+    func uploadsEveryStageThenTheTripObject() async throws {
+        let (model, control) = try await makeMain()
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(upload)
-        await poll("done") { upload.phase == .done }
+        try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
 
         // Two fresh stages + the trip object committed; nothing skipped.
         #expect(upload.committedCount == 3)
@@ -97,15 +86,15 @@ struct TripUploadModelTests {
     // MARK: Interrupt + resume
 
     @Test
-    func aDropInterruptsThenResumeFinishesTheTrip() async {
-        let (model, control) = await makeMain()
+    func aDropInterruptsThenResumeFinishesTheTrip() async throws {
+        let (model, control) = try await makeMain()
         control.dropTransfer(atFraction: 0.5)  // one-shot: the first stage drops
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(upload)
-        await poll("interrupted") { upload.phase == .interrupted }
+        try await waitFor("interrupted", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .interrupted }
 
         upload.resume()
-        await poll("done after resume") { upload.phase == .done }
+        try await waitFor("done after resume", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(upload.committedCount == 3)
         #expect(control.deviceTripCount == 1)
     }
@@ -113,8 +102,8 @@ struct TripUploadModelTests {
     // MARK: Flat catalog vs. resident menu capacity
 
     @Test
-    func aFullResidentRouteMenuDoesNotPretendTheFlatStoreIsFull() async {
-        let (model, control) = await makeMain(routesNearlyFull: true)
+    func aFullResidentRouteMenuDoesNotPretendTheFlatStoreIsFull() async throws {
+        let (model, control) = try await makeMain(routesNearlyFull: true)
         // The mock catalog is padded to 63 routes. The shipping device keeps at
         // most 64 routes resident for its menu, but that is not a PUT admission
         // cap: the flat store has a separate 1,916-entry catalog.
@@ -123,7 +112,7 @@ struct TripUploadModelTests {
 
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(upload)
-        await poll("done") { upload.phase == .done }
+        try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(upload.committedCount == 3)
         #expect(control.deviceTripCount == 1)
     }
@@ -131,17 +120,17 @@ struct TripUploadModelTests {
     // MARK: Idempotent re-run
 
     @Test
-    func reRunningALandedTripSkipsEverything() async {
-        let (model, control) = await makeMain()
+    func reRunningALandedTripSkipsEverything() async throws {
+        let (model, control) = try await makeMain()
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(first)
-        await poll("first done") { first.phase == .done }
+        try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
         #expect(control.deviceTripCount == 1)
 
         // Re-run: every stage is up to date + the trip proven, so nothing is sent.
         let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(second)
-        await poll("second done") { second.phase == .done }
+        try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }
         #expect(second.committedCount == 0)
         #expect(second.skippedCount == 2)
         #expect(control.deviceTripCount == 1)  // no duplicate
@@ -153,7 +142,7 @@ struct TripUploadModelTests {
     /// tests can read the landed per-route records, and takes a scenario so the
     /// old-firmware (incapable) path is reachable.
     private func makeRetentionMain(_ scenario: Scenario = .happyPath)
-        async -> (MainScreenModel, MockControl, any LibraryStore) {
+        async throws -> (MainScreenModel, MockControl, any LibraryStore) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
         control.throughputBytesPerSec = 40_000_000
@@ -162,15 +151,15 @@ struct TripUploadModelTests {
         control.seedLibrary(into: library)
         let model = MainScreenModel(transport: MockTransport(control: control), library: library)
         model.start()
-        await poll("first reconcile") { model.loadState == .loaded }
+        try await waitFor("first reconcile", timeout: .seconds(20), interval: .milliseconds(5)) { model.loadState == .loaded }
         return (model, control, library)
     }
 
     /// A retention-capable device seeds the app default and holds on the `.ready`
     /// confirm — `start()` does **not** begin the queue (the level is chosen first).
     @Test
-    func capableTripSeedsTheDefaultAndHoldsOnReady() async {
-        let (model, _, _) = await makeRetentionMain()
+    func capableTripSeedsTheDefaultAndHoldsOnReady() async throws {
+        let (model, _, _) = try await makeRetentionMain()
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         #expect(upload.supportsRetention)
         #expect(upload.phase == .ready)
@@ -185,14 +174,14 @@ struct TripUploadModelTests {
     /// The confirm flow: `.ready` → begin → `.uploading` → `.done`, the queue
     /// intact behind the added gate.
     @Test
-    func readyConfirmBeginsTheQueueAndFinishes() async {
-        let (model, control, _) = await makeRetentionMain()
+    func readyConfirmBeginsTheQueueAndFinishes() async throws {
+        let (model, control, _) = try await makeRetentionMain()
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         #expect(upload.phase == .ready)
         upload.start()
         upload.beginUpload()
-        await poll("uploading") { upload.phase == .uploading || upload.phase == .done }
-        await poll("done") { upload.phase == .done }
+        try await waitFor("uploading", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .uploading || upload.phase == .done }
+        try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(upload.committedCount == 3)
         #expect(control.deviceTripCount == 1)
     }
@@ -201,14 +190,14 @@ struct TripUploadModelTests {
     /// opens on `.uploading` and `start()` runs the queue — the prior behaviour,
     /// the row never shown.
     @Test
-    func incapableDeviceSkipsTheReadyConfirm() async {
-        let (model, control, _) = await makeRetentionMain(.oldFirmware)
-        await poll("capability settles") { !model.supportsRetention }
+    func incapableDeviceSkipsTheReadyConfirm() async throws {
+        let (model, control, _) = try await makeRetentionMain(.oldFirmware)
+        try await waitFor("capability settles", timeout: .seconds(20), interval: .milliseconds(5)) { !model.supportsRetention }
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         #expect(!upload.supportsRetention)
         #expect(upload.phase == .uploading)      // no confirm gate
         upload.start()
-        await poll("done") { upload.phase == .done }
+        try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(upload.committedCount == 3)
         #expect(control.deviceTripCount == 1)
     }
@@ -218,8 +207,8 @@ struct TripUploadModelTests {
     /// one unit. One stage is pre-set to `.oneDay`; the rider picks `.twoMonths`
     /// for the trip; both stages land `.twoMonths`, on the device and in the library.
     @Test
-    func tripRetentionOverridesEveryMemberRoutesOwnLevel() async {
-        let (model, control, library) = await makeRetentionMain()
+    func tripRetentionOverridesEveryMemberRoutesOwnLevel() async throws {
+        let (model, control, library) = try await makeRetentionMain()
         let stageIDs = model.tripStages(tripID).map(\.id)
         #expect(stageIDs.count == 2)
         // Give one member its own, different level first.
@@ -230,13 +219,13 @@ struct TripUploadModelTests {
         upload.selectRetention(.twoMonths)       // the whole-trip pick
         #expect(upload.retention == .twoMonths)
         upload.beginUpload()
-        await poll("done") { upload.phase == .done }
+        try await waitFor("done", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
 
         // Every stage landed the trip's level — the per-route .oneDay is overridden.
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            await pollDeviceRetention(control, objectID, .twoMonths)
+            try await pollDeviceRetention(control, objectID, .twoMonths)
             #expect(record?.retention == .twoMonths)
         }
     }
@@ -248,17 +237,17 @@ struct TripUploadModelTests {
     /// Auto-delete level to every member route — on the device and in the library. A
     /// skip skips the bytes, not the retention postcondition.
     @Test
-    func reRunAtADifferentLevelUpdatesEverySkippedStage() async {
-        let (model, control, library) = await makeRetentionMain()
+    func reRunAtADifferentLevelUpdatesEverySkippedStage() async throws {
+        let (model, control, library) = try await makeRetentionMain()
         let stageIDs = model.tripStages(tripID).map(\.id)
 
         // First upload lands both stages fresh at the app default (.twoWeeks).
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(first)
-        await poll("first done") { first.phase == .done }
+        try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
         for id in stageIDs {
             let objectID = try! #require(library.plannedRoutes().first { $0.id == id }?.deviceLink?.objectID)
-            await pollDeviceRetention(control, objectID, .twoWeeks)
+            try await pollDeviceRetention(control, objectID, .twoWeeks)
         }
 
         // Re-run: everything is current → an all-skip queue, no payload bytes. Pick a
@@ -267,7 +256,7 @@ struct TripUploadModelTests {
         second.start()
         second.selectRetention(.twoMonths)
         second.beginUpload()
-        await poll("second done") { second.phase == .done }
+        try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }
         #expect(second.committedCount == 0, "no route/trip payload bytes transfer")
         #expect(second.skippedCount == 2)
 
@@ -275,7 +264,7 @@ struct TripUploadModelTests {
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            await pollDeviceRetention(
+            try await pollDeviceRetention(
                 control, objectID, .twoMonths, "a skipped stage still got the trip's level")
             #expect(record?.retention == .twoMonths)
         }
@@ -285,13 +274,13 @@ struct TripUploadModelTests {
     /// selected trip level (finding #876-4). The device forgets one stage after the
     /// first upload, so the re-plan is one fresh + one skip.
     @Test
-    func aFreshAndASkippedStageBothLandTheTripLevel() async {
-        let (model, control, library) = await makeRetentionMain()
+    func aFreshAndASkippedStageBothLandTheTripLevel() async throws {
+        let (model, control, library) = try await makeRetentionMain()
         let stageIDs = model.tripStages(tripID).map(\.id)
 
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(first)
-        await poll("first done") { first.phase == .done }
+        try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
 
         // The device forgets stage 0 → its re-plan is fresh; stage 1 stays a skip.
         let goneObjectID = try! #require(library.plannedRoutes().first { $0.id == stageIDs[0] }?.deviceLink?.objectID)
@@ -302,14 +291,14 @@ struct TripUploadModelTests {
         second.start()
         second.selectRetention(.oneMonth)
         second.beginUpload()
-        await poll("second done") { second.phase == .done }
+        try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }
         #expect(second.committedCount >= 1, "the forgotten stage re-uploads")
         #expect(second.skippedCount >= 1, "the surviving stage skips its bytes")
 
         for id in stageIDs {
             let record = library.plannedRoutes().first { $0.id == id }
             let objectID = try! #require(record?.deviceLink?.objectID)
-            await pollDeviceRetention(
+            try await pollDeviceRetention(
                 control, objectID, .oneMonth, "fresh and skipped stages both land the trip level")
             #expect(record?.retention == .oneMonth)
         }
@@ -319,19 +308,19 @@ struct TripUploadModelTests {
     /// command (finding #876-4) — a skipped stage whose device level already matches
     /// pushes nothing.
     @Test
-    func reRunAtTheSameLevelSendsNoRedundantRetentionCommand() async {
-        let (model, control, library) = await makeRetentionMain()
+    func reRunAtTheSameLevelSendsNoRedundantRetentionCommand() async throws {
+        let (model, control, library) = try await makeRetentionMain()
         let stageIDs = model.tripStages(tripID).map(\.id)
 
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(first)  // lands both stages at the .twoWeeks default
-        await poll("first done") { first.phase == .done }
+        try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
         // Let the first run's pushes land before counting. They ride detached
         // tasks (see `pollDeviceRetention`), so a snapshot taken at `.done` can
         // miss one and then read it as the second run's redundant write.
         for id in stageIDs {
             let objectID = try! #require(library.plannedRoutes().first { $0.id == id }?.deviceLink?.objectID)
-            await pollDeviceRetention(control, objectID, .twoWeeks)
+            try await pollDeviceRetention(control, objectID, .twoWeeks)
         }
         let writesAfterFirst = control.routeRetentionWriteCount
 
@@ -339,7 +328,7 @@ struct TripUploadModelTests {
         second.start()
         second.selectRetention(.twoWeeks)  // the same level the stages already hold
         second.beginUpload()
-        await poll("second done") { second.phase == .done }
+        try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }
         #expect(second.skippedCount == 2)
         #expect(
             control.routeRetentionWriteCount == writesAfterFirst,
@@ -350,18 +339,18 @@ struct TripUploadModelTests {
     /// skipped stages send **no** retention command (finding #876-4) — the flow is
     /// unchanged, `applyStageRetention` gates the push on capability.
     @Test
-    func incapableDeviceRerunSendsNoRetentionCommand() async {
-        let (model, control, _) = await makeRetentionMain(.oldFirmware)
-        await poll("capability settles") { !model.supportsRetention }
+    func incapableDeviceRerunSendsNoRetentionCommand() async throws {
+        let (model, control, _) = try await makeRetentionMain(.oldFirmware)
+        try await waitFor("capability settles", timeout: .seconds(20), interval: .milliseconds(5)) { !model.supportsRetention }
 
         let first = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         #expect(!first.supportsRetention)
         first.start()  // no confirm gate — runs straight away
-        await poll("first done") { first.phase == .done }
+        try await waitFor("first done", timeout: .seconds(20), interval: .milliseconds(5)) { first.phase == .done }
 
         let second = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         second.start()
-        await poll("second done") { second.phase == .done }
+        try await waitFor("second done", timeout: .seconds(20), interval: .milliseconds(5)) { second.phase == .done }
         #expect(second.skippedCount == 2)
         #expect(control.routeRetentionWriteCount == 0, "an incapable device never gets a retention command")
     }
