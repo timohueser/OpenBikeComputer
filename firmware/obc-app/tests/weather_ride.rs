@@ -42,6 +42,24 @@ impl ByteSource for CountingSource<'_> {
     }
 }
 
+struct FailingSource<'a> {
+    bytes: &'a [u8],
+    fail_at: std::cell::Cell<Option<u64>>,
+}
+
+impl ByteSource for FailingSource<'_> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
+        if self.fail_at.get().is_some_and(|at| offset <= at && at < offset + out.len() as u64) {
+            return Err(SourceError::BadOffset);
+        }
+        SliceSource(self.bytes).read_at(offset, out)
+    }
+
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+}
+
 /// The committed Grimsel fixture (~18.7 km) — the same bytes the App-level tests ride.
 const GRIMSEL: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
@@ -84,6 +102,14 @@ fn cell_of(bbox: (i32, i32, i32, i32), lat: i32, lon: i32) -> (usize, usize) {
 /// Encode a nine-frame bundle over `bbox` whose per-frame wet cells come from `wet`:
 /// `wet(frame) -> Vec<(row, col, band)>`; everything else dry. Hourly rows are calm.
 fn bundle(bbox: (i32, i32, i32, i32), wet: impl Fn(usize) -> Vec<(usize, usize, u8)>) -> Vec<u8> {
+    bundle_with_cell_size(bbox, 1_000, wet)
+}
+
+fn bundle_with_cell_size(
+    bbox: (i32, i32, i32, i32),
+    cell_size_m: u16,
+    wet: impl Fn(usize) -> Vec<(usize, usize, u8)>,
+) -> Vec<u8> {
     let (south, west, north, east) = bbox;
     let hourly: [HourlyRecord; HOURLY_COUNT] = core::array::from_fn(|i| HourlyRecord {
         valid_time_offset_s: i as u32 * 3_600,
@@ -113,7 +139,7 @@ fn bundle(bbox: (i32, i32, i32, i32), wet: impl Fn(usize) -> Vec<(usize, usize, 
             valid_at: T0 + i as i64 * 900,
             width: GRID as u16,
             height: GRID as u16,
-            cell_size_m: 1_000,
+            cell_size_m,
             quality_flags: QUALITY_FORECAST,
             tiles,
         })
@@ -294,7 +320,7 @@ fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
     assert_eq!(rain_outlook(&riding, T0), RainOutlook::Dry, "the widened corridor still lets a clean sky be dry");
 
     // A cell on frame 3's axis, 3 steps out: inside its claim corridor (half-width 4 at +45 min on
-    // the declared 1 km grid), and more than one step from *every* frame's projected cell, so no
+    // this geometric grid), and more than one step from *every* frame's projected cell, so no
     // one-cell warning corridor can see it.
     let target = frame_cells[3];
     let far_enough = |c: &(usize, usize)| frame_cells.iter().all(|f| c.0.abs_diff(f.0) + c.1.abs_diff(f.1) >= 2);
@@ -317,6 +343,114 @@ fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
         RainOutlook::UpdateNeeded,
         "one cell would have said DRY; the rider's plausible position spread refuses it"
     );
+}
+
+/// The actual east/west pitch is about 1.38 km at Grimsel, although the bundle declares
+/// 2 km. At +2 h, a cell six steps east is inside the 9 km pace spread but beyond the old
+/// five-cell scalar corridor. Its data must block DRY without raising a one-cell warning.
+#[test]
+fn physical_corridor_ignores_declared_resolution_and_fails_closed() {
+    let idx = grimsel_index();
+    let route_source = SliceSource(GRIMSEL);
+    let route = RouteReader::new(&idx, &route_source);
+    let start = route.position_at(0).unwrap();
+    let stride = 18_000;
+    let south = start.lat - 24 * stride - stride / 2;
+    let west = start.lon - 29 * stride - stride / 2;
+    let bbox = (south, west, south + GRID as i32 * stride, west + GRID as i32 * stride);
+    let home = cell_of(bbox, start.lat, start.lon);
+    assert_eq!(home, (24, 29));
+    let east_m = stride as f64 * obc_map_scene::M_PER_DEG / 1_000_000.0 * obc_map_scene::cos_lat(start.lat) as f64;
+    assert!(6.0 * east_m < 9_000.0 && 7.0 * east_m > 9_000.0);
+    let projection = RideProjection { progress_m: 0, speed_cms: 0, now: T0 };
+    // At T0 + 1, the +2 h frame contributes to the two-hour coverage claim.
+
+    for declared in [2_000, 20_000] {
+        // The control must cover all arms: this is not a blanket refusal at this latitude.
+        let dry = bundle_with_cell_size(bbox, declared, |_| Vec::new());
+        let source = SliceSource(&dry);
+        let reader = WeatherReader::open(&source).unwrap();
+        let sample = WeatherSnapshot::sample_along(
+            &reader,
+            &mut WeatherCache::new(),
+            Some((start.lat, start.lon)),
+            Some((&route, projection)),
+        )
+        .unwrap();
+        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry);
+
+        // Six north/south steps exceed the physical corridor. Do not apply the longer
+        // east/west count to both axes and refuse a claim on unrelated distant rain.
+        let far_north = bundle_with_cell_size(bbox, declared, |frame| {
+            if frame == 8 {
+                vec![(home.0 + 6, home.1, RAIN_MIN_INTENSITY)]
+            } else {
+                Vec::new()
+            }
+        });
+        let source = SliceSource(&far_north);
+        let reader = WeatherReader::open(&source).unwrap();
+        let sample = WeatherSnapshot::sample_along(
+            &reader,
+            &mut WeatherCache::new(),
+            Some((start.lat, start.lon)),
+            Some((&route, projection)),
+        )
+        .unwrap();
+        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry);
+
+        for band in [RAIN_MIN_INTENSITY, obc_formats::obcw::INTENSITY_NODATA] {
+            for col in [home.1 - 6, home.1 + 6] {
+                let bytes = bundle_with_cell_size(bbox, declared, |frame| {
+                    if frame == 8 {
+                        vec![(home.0, col, band)]
+                    } else {
+                        Vec::new()
+                    }
+                });
+                let source = FailingSource { bytes: &bytes, fail_at: std::cell::Cell::new(None) };
+                let reader = WeatherReader::open(&source).unwrap();
+                // Repeat with a failed tile read after mount. The centre and warning neighbours
+                // live in another tile, so the refusal must come from the extended claim arm.
+                let entry = reader.tile_entry(reader.frame(8).unwrap(), ((home.0 / 16) * 3 + col / 16) as u32).unwrap();
+                for fail_at in
+                    [None, Some(entry.data_offset as u64)].into_iter().take(if col / 16 != home.1 / 16 { 2 } else { 1 })
+                {
+                    source.fail_at.set(fail_at);
+                    let sample = WeatherSnapshot::sample_along(
+                        &reader,
+                        &mut WeatherCache::new(),
+                        Some((start.lat, start.lon)),
+                        Some((&route, projection)),
+                    )
+                    .unwrap();
+                    assert_eq!(sample.frames[8].intensity, 0, "claim probes must not raise a warning");
+                    assert!(
+                        sample.frames[8].spread_uncertain,
+                        "declared={declared}, band={band}, col={col}, failure={fail_at:?}"
+                    );
+                    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::UpdateNeeded);
+                }
+            }
+        }
+    }
+    // The one-cell warning is covered, but the longer west arm leaves the bundle.
+    let edge_west = start.lon - 3 * stride - stride / 2;
+    let edge_bbox = (south, edge_west, bbox.2, edge_west + GRID as i32 * stride);
+    let bytes = bundle_with_cell_size(edge_bbox, 20_000, |_| Vec::new());
+    let source = SliceSource(&bytes);
+    let reader = WeatherReader::open(&source).unwrap();
+    let sample = WeatherSnapshot::sample_along(
+        &reader,
+        &mut WeatherCache::new(),
+        Some((start.lat, start.lon)),
+        Some((&route, projection)),
+    )
+    .unwrap();
+    assert!(!sample.frames[0].spread_uncertain);
+    assert_eq!(sample.frames[8].intensity, 0);
+    assert!(sample.frames[8].spread_uncertain);
+    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::UpdateNeeded);
 }
 
 /// The deliberately expensive case is a completely covered, dry nine-frame forecast: every
@@ -344,11 +478,7 @@ fn clean_projected_snapshot_io_budget_is_pinned() {
     .unwrap();
 
     assert_eq!(rain_outlook(&snapshot, T0), RainOutlook::Dry);
-    assert_eq!(
-        source.calls.get(),
-        60,
-        "the pre-batching/first-step-reuse path took 78 transactions; audit before changing this budget"
-    );
+    assert_eq!(source.calls.get(), 56, "the geometric claim corridors must keep the bounded tile-read budget");
 }
 
 /// The corridor is conservative in exactly one direction: a wet cell one step beside the
@@ -568,12 +698,11 @@ fn an_interpolated_corridor_probe_would_fabricate_a_dry_claim() {
     let idx = grimsel_index();
     let src = SliceSource(GRIMSEL);
     let route = RouteReader::new(&idx, &src);
-    // Padded well past the widest pace-spread corridor (10 cells at the +2 h frame) so the only
-    // thing that can refuse a dry claim is the band-1 cell, never the grid edge.
-    let bbox = padded_route_bbox(&route, 200_000);
+    let start = route.position_at(0).unwrap();
+    // Approximately 1 km on both axes at Grimsel, with 24 cells of room around the rider.
+    let bbox = (start.lat - 24 * 9_000, start.lon - 24 * 13_100, start.lat + 24 * 9_000, start.lon + 24 * 13_100);
     let (south, _, north, _) = bbox;
 
-    let start = route.position_at(0).unwrap();
     let home = cell_of(bbox, start.lat, start.lon);
     let cell_lat = (north as i64 - south as i64) / GRID as i64;
 
