@@ -1187,22 +1187,6 @@ pub enum RefreshResult {
     Cancelled,
 }
 
-/// Everything the weather screens may say about freshness, in one value.
-///
-/// The bundle's own honesty arithmetic ([`rain_outlook`]) answers *what may be claimed*; this adds
-/// the device-side half — is there data at all, and is an update running right now — that a
-/// snapshot cannot know about itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WeatherVisible {
-    /// What the dashboard may honestly claim at `now`, or `None` when no bundle is sampled.
-    pub outlook: Option<RainOutlook>,
-    /// A refresh is in flight: the screens raise the non-blocking UPDATING cue over the cached
-    /// content — they never blank it, because stale-and-labelled beats empty.
-    pub refreshing: bool,
-    /// Weather data is installed on the device at all.
-    pub installed: bool,
-}
-
 /// The **one owner** of what the rider is told about weather (epic #1433 §5, #1437): the installed
 /// data's identity and revision, visible freshness, the refresh request and its in-flight
 /// operation, the last terminal result, and the alert decision.
@@ -1420,23 +1404,6 @@ impl WeatherDomain {
         }
     }
 
-    /// Everything the screens may say about freshness right now: the snapshot's own honest claim,
-    /// plus the two device-side facts a snapshot cannot know about itself.
-    ///
-    /// The one part of this domain that is a *new shape* rather than a moved value. The screens
-    /// still read the three facts separately through `Render`, so this stays reader-less until
-    /// #1401 W3 gives `Render` the whole value; it exists as one call rather than three getters
-    /// precisely so that cutover consumes it whole instead of re-deriving freshness from
-    /// [`installed`](Self::installed) and [`refreshing`](Self::refreshing) at each screen — which is
-    /// how the three states drifted apart in the first place.
-    pub fn visible(&self, snapshot: Option<&WeatherSnapshot>, now: i64) -> WeatherVisible {
-        WeatherVisible {
-            outlook: snapshot.map(|snap| rain_outlook(snap, now)),
-            refreshing: self.refreshing(),
-            installed: self.installed.is_some(),
-        }
-    }
-
     /// Decide what the alert engine wants shown this pass: evaluate the centralized threshold table
     /// against `snapshot` at `now`, then govern the result against the persisted cooldown marks and
     /// the card already on the stack. No snapshot never alerts, and neither does expired data — the
@@ -1590,19 +1557,5 @@ mod domain_tests {
 
         wx.note_installed(data(2, 0));
         assert_eq!(wx.installed(), Some(data(2, 0)), "a different product replaces");
-    }
-
-    /// Visible freshness carries the device-side half a snapshot cannot know about itself.
-    #[test]
-    fn visible_state_reports_installation_and_refresh() {
-        let mut wx = WeatherDomain::new();
-        let blank = wx.visible(None, 0);
-        assert_eq!(blank, WeatherVisible { outlook: None, refreshing: false, installed: false });
-
-        wx.note_installed(data(1, 1));
-        wx.apply_intent(WeatherIntent::RefreshRequested);
-        let _ = wx.next_effect(can_refresh());
-        let live = wx.visible(None, 0);
-        assert!(live.installed && live.refreshing);
     }
 }

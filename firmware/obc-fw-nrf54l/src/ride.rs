@@ -1178,7 +1178,7 @@ pub(crate) async fn run_app(
             // context — ride state, fresh fix + its UTC, bearing/speed, active route id, trusted
             // "now". One small `Cell` store per pass; the scheduler task wakes only on the edges
             // it keys on (ride state, route), never at the fix cadence.
-            crate::ble::set_weather_inputs(app.weather_snapshot());
+            crate::ble::set_weather_inputs(app.weather_request_inputs());
         }
 
         // ── Map-transfer card (issue #927): the on-glass half of a write that runs for minutes ──

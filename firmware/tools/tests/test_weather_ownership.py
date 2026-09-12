@@ -80,11 +80,10 @@ class WeatherOwnershipTests(unittest.TestCase):
 
         `WeatherFeed` paired a snapshot borrow with a `refreshing: bool` and every host filled the
         bool from its own platform flag, so the cue and `WeatherDomain::refreshing()` could disagree.
-        Exactly two places may declare that flag now: the domain's own aggregate value, and the
-        render key that names what the weather pages draw. A third is a second source of truth.
+        Only the render key may declare that flag: it names what the weather pages draw.
+        A second declaration would create another source of truth.
         """
         owners = {
-            "firmware/obc-app/src/weather.rs",  # WeatherVisible — the domain's own answer
             "firmware/obc-app/src/render_key.rs",  # WeatherKey — what the pages declare they draw
         }
         pattern = re.compile(r"\brefreshing\s*:\s*bool\b")

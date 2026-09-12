@@ -1,5 +1,8 @@
 //! OBCG v1 published precipitation grid object: byte authority for `specs/OBCG_Spec.md`.
 //!
+//! Only host consumers read OBCG. It stays here with the precipitation byte authority shared
+//! with the device's OBCW format.
+//!
 //! One OBCG object is exactly one grid frame — one real UTC valid time, one regular
 //! latitude/longitude window of the one published lattice. The frame set, its keys and its
 //! integrity data live in the service manifest, never inside an object.
