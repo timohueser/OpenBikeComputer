@@ -182,8 +182,14 @@ which use Node and simulated DOM environments; they are not real-browser evidenc
 
 Budget exceptions, quarantines, cadence conflicts, and real-sleep exceptions are temporary. Each
 must state a concrete reason and reference an open repository issue. A missing or malformed issue
-reference fails the checker. Normal validation stays offline; issue closure is reviewed when the
-exception changes and will be automated by the later quarantine-hygiene delivery step.
+reference fails the checker. Normal validation stays offline. To check issue state, run
+`./tools/obc suites check-issues --repo OWNER/REPO` with authenticated `gh` access. This explicit
+online maintenance command checks each distinct issue once, with a 20-second request timeout. It
+fails on closed issues, pull requests, or API errors and names each owning suite and field.
+
+The Test exception issue health workflow runs this command each Monday at 07:17 UTC and on manual
+dispatch, with read-only permissions. It reads the same registry; it is separate from offline suite
+validation and does not claim that all scheduled test suites have execution routes.
 
 Do not retry a flaky test automatically. A quarantined behavior stays visible in the registry and
 its issue. Prefer observed state, a controllable clock, or a protocol signal to a fixed sleep; use
