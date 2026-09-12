@@ -133,6 +133,32 @@ those gates reproduce; a gate that resolves to no registry suite fails before an
 `obc check full` runs every gate the registry declares and then names each suite required on a pull
 request that the run did not reproduce, with the reason. It makes no unqualified CI-parity claim.
 
+## Rust CI result artifacts
+
+The existing `cargo nextest run` commands in `test` and each `test-weather` matrix leg use
+`NEXTEST_PROFILE=ci`. The profile in `.config/nextest.toml` writes native JUnit XML to
+`target/nextest/ci/junit.xml`. Each test case retains its binary and test identity, result, and
+elapsed duration. Failed tests also retain their output. Test selection, retries, and failure
+handling keep their existing settings; a failed run can contain only the tests completed before
+it stopped. Filtered and ignored tests are absent from the report, not recorded as passes.
+
+CI uploads the report after test success or failure. Artifact names are `rust-test-ATTEMPT` and
+`rust-test-weather-INDEX-ATTEMPT`, where `INDEX` is the matrix job index and `ATTEMPT` is the GitHub
+run attempt. The two canonical mosaic partitions have distinct indices. Open a workflow run's
+**Artifacts** section, or download all its Rust reports with:
+
+```sh
+gh run download RUN_ID --pattern 'rust-test-*' --dir test-results
+```
+
+Each command removes an old report before it starts. A skipped job uploads nothing. A build or
+fixture setup failure remains a failure and may produce no report; the upload step reports a
+missing file as an error. CI does not create an empty report or run the tests again for reporting.
+
+These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
+web, Python, and Swift results still use their existing logs. This is not a coverage baseline or
+a complete cross-language result set.
+
 ## Exceptions, quarantines, and sleeps
 
 Budget exceptions, quarantines, cadence conflicts, and real-sleep exceptions are temporary. Each
