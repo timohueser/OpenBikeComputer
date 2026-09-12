@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use obc_app::catalog_state::CatalogError;
 use obc_app::{CatalogObjectId, Retention, RouteRetentionMeta, RouteRetentionStore};
 use obc_formats::io::SliceSource;
 use obc_route::gpx_to_obcr;
@@ -167,18 +168,18 @@ impl RouteStore {
         Ok(stats)
     }
 
-    /// Delete the route with session id `id` (the on-device hold-to-delete, epic #447 P6): remove its
-    /// `.obcr` from the folder and rescan. `true` = a file was deleted. The registry is append-only,
-    /// so the id is retired, not reused — mirroring the device's never-reuse contract. The caller then
-    /// re-feeds [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) so the app remaps.
-    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
+    /// Remove the route file and refresh the catalog. `Ok(true)` means removed, `Ok(false)`
+    /// means absent, and `Err` means storage failure. The append-only registry never reuses its id.
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
+        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
         let path = self.paths[pos].clone();
-        if std::fs::remove_file(&path).is_err() {
-            return false;
-        }
+        let existed = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(CatalogError::RemoveFailed),
+        };
         self.rescan();
-        true
+        Ok(existed)
     }
 
     /// Duplicate route `i`'s file under a fresh name — the control panel's "**new** upload"
@@ -267,7 +268,7 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn ids(&self) -> &[CatalogObjectId] {
         self.ids()
     }
-    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
@@ -355,5 +356,31 @@ mod tests {
         let mut store = RouteStore::open(&dir);
         obc_host_core::conformance::route_identity_remap(&mut store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deletion_keeps_io_failure_distinct_from_absence() {
+        let dir = temp_route_dir("delete-failure");
+        let mut store = RouteStore::open(&dir);
+        let id = store.ids[0];
+        let path = store.paths[0].clone();
+        let before = store.ids.clone();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        assert_eq!(store.delete_by_id(id), Err(CatalogError::RemoveFailed));
+        assert_eq!(store.ids, before, "a failed unlink keeps the catalog intact");
+        assert!(path.is_dir(), "a failed unlink does not remove the obstruction");
+
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(store.delete_by_id(id), Ok(false), "the externally removed object is absent");
+        assert!(!store.ids.contains(&id), "absence refreshes the stale catalog");
+        std::fs::write(&path, bytes).unwrap();
+        store.rescan();
+        let id = store.ids[store.paths.iter().position(|p| *p == path).unwrap()];
+        assert_eq!(store.delete_by_id(id), Ok(true));
+        assert_eq!(store.delete_by_id(id), Ok(false));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

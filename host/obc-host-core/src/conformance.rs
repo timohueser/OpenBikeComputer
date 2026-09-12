@@ -36,10 +36,10 @@ pub fn route_repository_suite(repo: &mut dyn RouteRepository, nav_bytes: &[u8]) 
     // Delete + id retirement (never reused).
     let victim = repo.ids()[0];
     let before = repo.catalog().len();
-    assert!(repo.delete_by_id(victim), "a present id deletes");
+    assert_eq!(repo.delete_by_id(victim), Ok(true), "a present id deletes");
     assert_eq!(repo.catalog().len(), before - 1, "the catalog shrinks by one");
     assert!(!repo.ids().contains(&victim), "the deleted id is gone from the catalog");
-    assert!(!repo.delete_by_id(victim), "a retired id is a no-op");
+    assert_eq!(repo.delete_by_id(victim), Ok(false), "a retired id is a no-op");
 
     // The reserved nav-route commit appears in the catalog under a stable id.
     let nav_id = repo.write_nav_route(nav_bytes).expect("nav commit succeeds");
@@ -62,7 +62,7 @@ pub fn route_identity_remap(repo: &mut dyn RouteRepository) {
     // remap must not.
     let victim = repo.ids()[0];
     assert_ne!(victim, active_id, "delete a different route than the active one");
-    assert!(repo.delete_by_id(victim));
+    assert_eq!(repo.delete_by_id(victim), Ok(true));
     app.set_routes_with_ids(repo.catalog(), repo.ids());
 
     let idx = app.active_route_index().expect("the active route survived the delete");
@@ -91,9 +91,9 @@ pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool)
 
     // Delete + id retirement.
     let before = repo.catalog().len();
-    assert!(repo.delete_by_id(known), "a present ride deletes");
+    assert_eq!(repo.delete_by_id(known), Ok(true), "a present ride deletes");
     assert_eq!(repo.catalog().len(), before - 1);
-    assert!(!repo.delete_by_id(known), "a retired ride id is a no-op");
+    assert_eq!(repo.delete_by_id(known), Ok(false), "a retired ride id is a no-op");
 }
 
 /// Track-lifecycle invariants, one per [`RecorderEffect`](obc_app::recorder::RecorderEffect) the
