@@ -898,3 +898,51 @@ rollback snapshot, `armed gen=N` — then resets into `obc-boot`, which installs
 same way and the device keeps running. The trigger is
 refused mid-recording. Concept + formats: `OBCU_Spec.md`; the byte-identical request path
 is what S5's on-device menu entry will post.
+
+## Peak View on the selected map
+
+Peak View is part of the normal firmware. The menu entry appears when the selected map contains
+current indexed terrain. It uses that map's terrain region and geographic summit records through
+the same pinned map source as navigation. No separate scene objects or fixed viewpoints are needed.
+The selected map is the lowest-ID Map object; replace that object when testing a new regional map.
+
+Open Peak View from the menu after a GPS fix. Before the first fix, the screen shows
+"Waiting for GPS...". The observer height comes from the terrain plus two metres. The normal view starts at about
+60° horizontal width and expands upward when nearby summit elevations require more headroom.
+The device generates the current viewing direction first in the existing 128 KiB scratch arena.
+The compass animation stops when that view is ready. Three static dots show that the remaining
+panorama is still being built. Turning gives the new direction priority; an unfinished direction
+shows the compass animation until ready. Work yields between 50 ms slices. Back cancels and
+releases the arena before navigation, map rendering, or USB can use it.
+
+Ready directions use the RAM image without more terrain reads. Up/Down selects visible summits; Select switches
+between Browse and Live. A displacement above 20 m starts another job after the current job
+finishes. Missing distant data produces a "Limited terrain" notice and dashed marks over affected
+bearings. Missing observer terrain or a read error produces "Terrain unavailable".
+
+For an indoor test, build from this crate directory and inject GPS/compass data through VCOM:
+
+```sh
+cargo run --release --features debug-uart
+```
+
+The optional `peak-view-demo` feature seeds a Kleine Scheidegg test fix and opens the screen at
+boot. It still reads only the selected map. To test an additional map object without replacing
+the normal lowest-ID map, set an explicit build-time object ID with that feature:
+
+```sh
+OBC_TEST_MAP_OBJECT_ID=201 cargo run --release --features debug-uart,peak-view-demo
+```
+
+Use the ID returned by the map upload. The override selects the whole map at boot through the
+normal pinned source; it is ignored without `peak-view-demo`. An invalid or absent requested
+object fails to open instead of falling back to another map. Rebuild without the override to
+return to normal selection.
+RTT reports total generation time, visited cells and nodes, terrain reads, and arena size.
+Normal render/push telemetry measures cached interaction. J3 supplies USB data; J4 supplies
+programming and VCOM. Reconnect J3 after startup if it does not enumerate after a debug reset.
+
+Use a complete regional map to check production coverage and the map-size budget. The assembler
+rejects more than 10% growth relative to the same complete map with native heights only, including
+terrain indices and alignment. Simulator fixture packages are separate acceptance inputs; see
+[the simulator README](../../apps/obc-sim/README.md).

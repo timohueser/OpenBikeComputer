@@ -800,14 +800,14 @@ from 32).
 
 The section is reached from `POI Section Offset` (header offset 32) and is
 **always present**: a map with no POIs writes a directory of six empty
-categories, never a zero offset. Each POI record carries a `HoursRef` u16 into
+categories, never a zero offset. Service POI records carry a `HoursRef` u16 into
 the trailing **hours-pool section** (§7.5), reached from the directory's
 `hours_pool_offset`.
 
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (= 6 in v7)
+uint8   Category Count            (6, or 7 when named summits are present)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
@@ -859,8 +859,8 @@ records/chunk). Each record is exactly 36 bytes (v7 widened them from 32). A `0x
 | 4 | Lon | 4 | `int32` | Longitude, **absolute** microdegrees |
 | 8 | Subtype | 1 | `uint8` | Canonical subtype id (§7.4); `0xFF` = end-of-chunk sentinel |
 | 9 | Name Len | 1 | `uint8` | Length of the stored name in bytes (`0` = unnamed) |
-| 10 | Name | 24 | `char[24]` | Pre-folded printable ASCII; unused tail bytes are `0xFF` |
-| 34 | HoursRef | 2 | `uint16` | 0-based index into the hours pool (§7.5); `0xFFFF` = no hours |
+| 10 | Name | 24 | `char[24]` | Printable ASCII for services; UTF-8 for summits; unused tail bytes are `0xFF` |
+| 34 | Payload | 2 | `uint16` or `int16` | Services: `HoursRef`, a 0-based pool index (`0xFFFF` = none). Summits: signed elevation in metres (`-32768` = unknown). |
 
 Coordinates are **absolute** (no per-node anchor/delta as in geometry §5): at a
 fixed 36 bytes the delta win isn't worth the decode asymmetry with geometry
@@ -870,7 +870,7 @@ stored per record — it is derived on-device from the subtype (each subtype map
 exactly one category, §7.4) — and is implicit anyway from which category's
 quadtree the record came from.
 
-Names are ASCII-folded at pack time to printable ASCII (`0x20..=0x7E`) and
+Service names are ASCII-folded at pack time to printable ASCII (`0x20..=0x7E`) and
 capped at **24 bytes** (v7 widened the field from 20) — a fixed-width,
 one-byte-per-character slot, so the packer transliterates umlauts/accents
 (e.g. `ä → ae`) rather than store variable-width UTF-8; an unnamed POI
@@ -881,6 +881,13 @@ one-byte-per-character slot, so the packer transliterates umlauts/accents
 `hours_pool_offset * U + 2 + i*29`. `0xFFFF` means the POI has no (parseable) hours.
 Duplicate weekly schedules collapse to one pooled blob, so many POIs in a region
 can share a single `HoursRef`.
+
+Summits (subtype 19) retain their UTF-8 name, case and diacritics. Names must be nonempty,
+contain no control characters, and end on a complete character within the 24-byte field.
+Their trailer is a signed little-endian elevation in metres, not a pool reference.
+The producer uses the OSM `ele` tag and fills missing elevations from the map DEM when available.
+`-32768` means unknown; all other `int16` values are valid, including negative heights.
+Assemblers preserve this trailer and do not include summits in the hours pool.
 
 ### 7.4 Canonical category / subtype table (normative)
 
@@ -912,10 +919,14 @@ end-of-chunk sentinel and can never be a subtype id.
 | 4 | Resupply | 16 | `amenity=marketplace` | Marketplace |
 | 5 | Pharmacy | 17 | `amenity=pharmacy` | Pharmacy |
 | 6 | Bike shop | 18 | `shop=bicycle` | Bike shop |
+| 7 | Summit landmark | 19 | Named `natural=peak` node | Summit |
 
-Subtype ids are dense and 1-based, so a subtype id indexes directly into the
-table (`row = subtype - 1`). The category count in the directory (`6`) equals the
-number of distinct category ids; every subtype belongs to exactly one category.
+The six service categories are always present in the directory. Category 7 is an optional
+landmark index for Peak View and is not part of the service POI browser. The producer emits
+it only when named summit nodes exist. Closed-way centroids and unnamed peaks are excluded.
+Each subtype belongs to exactly one category; its record must be stored in that category.
+Summit coordinates are the original node coordinates rounded to microdegrees. Distinct
+summits less than 50 metres apart remain separate; only exact coordinate duplicates collapse.
 
 ### 7.5 Hours-pool section (v7)
 

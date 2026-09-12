@@ -67,6 +67,19 @@ the same OBCM bytes in a WebAssembly worker. Maintainer baking, incremental plan
 publication are documented in the [packer and routing guide](https://openbikecomputer.com/software/packer-routing/)
 and exposed through `obc bake help`.
 
+The normal `obc-bake bake` terrain stage writes the Peak View surface index. Re-bake all published
+terrain cells with the same baker before publishing this format; catalog generation rejects a
+mixture of native and indexed blocks. Standalone `obc-dem bake` writes native terrain. Convert
+that output explicitly when needed:
+
+```sh
+target/release/obc-dem surface native.obcd indexed.obcd
+```
+
+Map assembly rejects indexed terrain when it adds more than 10% to the complete native-equivalent
+map size. Sparse map selections can exceed this limit. See the
+[terrain guide](docs/content/software/terrain.md#peak-view-surface-data) for coverage and runtime limits.
+
 Routes enter as GPX/TCX on a host and become compact OBCR files before reaching the device. The
 device reads maps, routes, terrain and weather directly from binary formats designed for bounded,
 streaming access. Readable tours live on the docs site; exact layouts live in:

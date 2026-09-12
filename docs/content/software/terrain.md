@@ -93,6 +93,45 @@ Thus, all consumers use the same elevation values.
 <figcaption>The bakery publishes OBCT cells. The assembler puts the selected cells in the map. One sampler supplies all elevation consumers.</figcaption>
 </figure>
 
+
+## Peak View surface data
+
+The production terrain baker writes a geographic surface index for Peak View.
+Native heights remain unchanged and are stored once. Coarser height levels and conservative
+maximum-height bounds let the renderer skip hidden terrain. Baked height and gradient error
+bounds also let it draw large smooth patches without visiting each small source cell.
+The extra coarse levels keep those patches' corner reads close together in storage.
+The data contains no stored viewpoints or images.
+
+Peak View uses the loaded map and the current GPS position. It reads nearby named summits from
+that map, projects their geographic coordinates, and checks their visibility against the terrain.
+Before a GPS fix it waits. The renderer prepares the current field of view first, then fills the
+rest of the circle in the background. Static dots show that background work remains. Turning
+toward an unfinished view gives that view priority; it shows the loading compass until the
+required terrain is ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
+another panorama after the current job finishes. Back cancels generation and releases the arena.
+Lighting has a fixed northwest world direction, so turning does not change the shading.
+
+The renderer requests terrain out to 100 km. Missing distant coverage is marked with dashed bearing
+segments and a coverage notice. Missing terrain at the observer or a storage read failure makes the
+view unavailable. Absent geographic cells are skipped without traversing their individual samples.
+
+At the standard posting and cell size, an indexed cell occupies 3,149,824 bytes instead of
+2,097,152 bytes. The assembler enforces a 10% limit on growth of the **complete map**, including
+summit data and alignment. It rejects a map that exceeds this limit before writing it. Terrain
+itself grows about 50.2%, so terrain-heavy sparse selections can exceed the complete-map budget.
+The limit does not guarantee that every selection can include the surface index.
+
+The normal map bakery writes indexed terrain and named summit records directly. Re-bake all
+published terrain and geometry cells before publication. Catalog generation rejects mixed native
+and indexed terrain blocks. Standalone DEM baking produces native terrain; its surface conversion
+command adds the index without changing native heights.
+
+Distance bands follow the source posting, so a finer source uses its fine cells over a shorter
+range. Smooth open terrain can merge into large patches. Rough mountain faces require more
+individual cells. Performance must therefore be checked at varied observer positions on the device.
+See [OBCT section 8](src:specs/OBCT_Spec.md) for the byte layout and complete-map size rule.
+
 ## One sampling truth
 
 The packer samples OBCT tiles to calculate navigation-edge ascent.
