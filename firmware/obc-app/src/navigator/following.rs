@@ -484,13 +484,12 @@ impl NavigatorMachine {
         false
     }
 
-    /// Rebuild the cached elevation profile when the active route changed — it streams every
-    /// chunk, so it's built once on load, never per frame; clears when no route is loaded. Run at
-    /// render (the one place the host guarantees a live reader for the frame).
+    /// Build once per active route at render time. A missing reader clears stale geometry but
+    /// leaves the build pending; an unloaded route has no profile.
     pub(crate) fn refresh_route_profile(&mut self, route: Option<&RouteReader>) {
         if self.following.active_route != self.profile_route {
-            self.profile = route.map(|r| r.elevation_profile());
-            self.profile_route = self.following.active_route;
+            self.profile = self.following.active_route.and(route).map(|r| r.elevation_profile());
+            self.profile_route = self.profile.as_ref().and(self.following.active_route);
         }
     }
 
@@ -606,6 +605,65 @@ impl NavigatorMachine {
 mod tests {
     use super::*;
     use crate::harness::support::wpts;
+
+    #[test]
+    fn route_profile_retries_missing_readers_without_repeating_completed_reads() {
+        use core::cell::Cell;
+        use obc_formats::io::{ByteSource, Error, SliceSource};
+
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            reads: Cell<usize>,
+        }
+        impl ByteSource for Counted<'_> {
+            fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+                self.reads.set(self.reads.get() + 1);
+                SliceSource(self.bytes).read_at(offset, out)
+            }
+            fn len(&self) -> u64 {
+                self.bytes.len() as u64
+            }
+        }
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"
+        ));
+        let source = Counted { bytes, reads: Cell::new(0) };
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        source.reads.set(0);
+        let mut navigator = NavigatorMachine::new();
+
+        navigator.set_active_route(Some(0));
+        navigator.refresh_route_profile(None);
+        assert!(navigator.profile().is_none());
+        navigator.refresh_route_profile(Some(&route));
+        assert!(navigator.profile().is_some());
+        let one_build = source.reads.get();
+        assert!(one_build > 0, "the available reader supplies actual geometry");
+        navigator.refresh_route_profile(None);
+        navigator.refresh_route_profile(Some(&route));
+        assert_eq!(source.reads.get(), one_build, "a completed profile is cached");
+
+        navigator.set_active_route(Some(1));
+        navigator.refresh_route_profile(None);
+        assert!(navigator.profile().is_none(), "the previous route's profile must not remain visible");
+        navigator.refresh_route_profile(Some(&route));
+        assert!(navigator.profile().is_some());
+        assert_eq!(source.reads.get(), 2 * one_build);
+
+        navigator.drop_route_derived_state();
+        navigator.refresh_route_profile(None);
+        assert!(navigator.profile().is_none());
+        navigator.refresh_route_profile(Some(&route));
+        assert!(navigator.profile().is_some());
+        assert_eq!(source.reads.get(), 3 * one_build, "same-ID replacement still rebuilds");
+
+        navigator.set_active_route(None);
+        navigator.refresh_route_profile(Some(&route));
+        assert!(navigator.profile().is_none(), "unloading clears the profile even if a reader remains");
+        assert_eq!(source.reads.get(), 3 * one_build);
+    }
 
     /// The placement path must land exactly the state the by-value path builds.
     #[test]
