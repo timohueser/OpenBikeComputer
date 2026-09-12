@@ -188,7 +188,19 @@ the GPS configuration before it reads fixes. The startup sensor-warning bundle i
 or at the deadline if GPS remains absent. This can delay the altimeter and compass warnings too;
 their original probe results are retained. A successful first GPS probe publishes immediately.
 This is a one-time startup result, not a report of live sensor availability. Intentional idle
-backup sleep still produces no DDC polling.
+GNSS stop still produces no DDC polling.
+
+The Qwiic prototype has no GPS wake or reset wire. Idle sends `UBX-CFG-RST` controlled GNSS stop;
+tracking resumes with controlled GNSS start. Startup also sends START after the receiver answers,
+so an MCU reset can recover a receiver left stopped by the previous session. The driver sends
+configuration after START. These operations retain receiver configuration and navigation data.
+They do not enter backup sleep, and their idle current has not been measured. The receiver does
+not acknowledge CFG-RST; logs report a command write, while new NAV-PVT epochs confirm acquisition.
+The existing `power_saver` tracking mode is unchanged.
+
+An older image can leave the receiver in indefinite software standby. I²C traffic is not a
+supported wake source for that mode. If the receiver remains absent, remove its power before
+starting this image. See the [SAM-M10Q integration manual, sections 3.3 and 3.5.3.3](https://content.u-blox.com/sites/default/files/documents/SAM-M10Q_IntegrationManual_UBX-22020019.pdf).
 
 ## Build & flash
 
