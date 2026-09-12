@@ -74,14 +74,14 @@ pub struct WeatherFix {
 /// The app-side half of the §11.4 weather request context (WX8, #1193): everything the *app* knows
 /// that the request context carries — position, travel bearing/speed, the active route's durable
 /// id, ride state, and the trusted-clock "now". Distilled by
-/// [`App::weather_snapshot`](crate::App::weather_snapshot) and pushed across the plane seam each
-/// pass, the reverse direction of [`BleStatus`]; like it, **no `obc-ble` type crosses here** — the
+/// [`App::weather_request_inputs`](crate::App::weather_request_inputs) and pushed across the plane seam
+/// each pass, the reverse direction of [`BleStatus`]; like it, **no `obc-ble` type crosses here** — the
 /// board's weather plane maps these onto the wire layout and its validity bits.
 ///
 /// Every field is optional-by-honesty: `None` means the group is *absent* (the spec's
 /// flags-not-sentinels rule), never a zero the peer could mistake for the equator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeatherSnapshot {
+pub struct WeatherRequestInputs {
     /// A ride is being tracked — the scheduler's "scheduled requests only while riding" gate.
     pub ride_active: bool,
     /// The last GPS fix, only while fresh **and** datable (trusted clock).

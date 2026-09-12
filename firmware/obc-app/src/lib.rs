@@ -77,10 +77,6 @@ pub use app::{
     App, AppState, CameraMode, ClockTrust, MarksProvenance, Pan, PanBasis, PanTool, GESTURE_BUF, NAV_PREVIEW_MAX,
 };
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
-pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage};
-// `ble::WeatherSnapshot` (WX8's request-context inputs) deliberately keeps its module-qualified
-// name: the crate-root `WeatherSnapshot` is the resident *forecast* snapshot the screens render
-// (WX11's `weather::WeatherSnapshot`) — two different objects that merged with the same name.
 pub use ble::{BleLink, BleStatus, WeatherFix};
 pub use breadcrumb::Breadcrumb;
 pub use corridor::{CorridorKey, CorridorScratch};
@@ -100,6 +96,7 @@ pub use map_catalog::{
 pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
+pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage};
 pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
