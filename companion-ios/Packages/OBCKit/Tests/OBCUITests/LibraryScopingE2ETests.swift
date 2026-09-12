@@ -19,7 +19,7 @@ import OBCTransport
         private var _serial: String
         private var _storeID: String?
         private var _rides: [Ride]
-        private var _acked: [[RideID]] = []
+        private var _downloads: [[RideID]] = []
         private var _failIdentityRead = false
 
         init(serial: String, storeID: String?, rides: [Ride] = []) {
@@ -37,7 +37,7 @@ import OBCTransport
         }
         func setRides(_ rides: [Ride]) { lock.withLock { _rides = rides } }
         func setFailIdentityRead(_ fail: Bool) { lock.withLock { _failIdentityRead = fail } }
-        var ackedBatches: [[RideID]] { lock.withLock { _acked } }
+        var downloadRequests: [[RideID]] { lock.withLock { _downloads } }
         var scope: LibraryScope? {
             lock.withLock { _storeID.map { LibraryScope(serial: _serial, storeID: $0) } }
         }
@@ -89,7 +89,10 @@ import OBCTransport
         }
 
         func downloadRides(_ ids: [RideID]) -> RideDownload {
-            let rides = lock.withLock { _rides }
+            let rides = lock.withLock {
+                _downloads.append(ids)
+                return _rides
+            }
             let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
             for id in ids {
                 guard let objectID = id.deviceObjectID,
@@ -99,11 +102,6 @@ import OBCTransport
             }
             continuation.finish()
             return RideDownload(handle: .immediatelyFinished(.completed), rides: stream)
-        }
-
-        func ackRides(_ ids: [RideID]) async throws {
-            guard !ids.isEmpty else { return }
-            lock.withLock { _acked.append(ids) }
         }
     }
 
@@ -133,9 +131,7 @@ import OBCTransport
 
     // MARK: End-to-end composite keying
 
-    /// A full sync against a scoped-minting device lands every ride — entry,
-    /// synced mark — under (serial, storeID, id) keys, and the next connect's
-    /// possession ack sends exactly those scoped ids.
+    /// Sync stores scoped rides once; a later sync does not download them again.
     @Test func syncLandsRidesUnderCompositeKeys() async throws {
         let device = ScopedStubDevice(
             serial: serial, storeID: store1,
@@ -160,17 +156,16 @@ import OBCTransport
         #expect(Set(library.rideSummaries().map(\.name)) == ["Dawn Patrol", "Gravel Hour"])
         #expect(library.ridePoints(RideID(deviceObjectID: DeviceObjectID(1), scope: scope))?.isEmpty == false)
 
-        // A reconnect acks exactly the scoped possession list.
-        device.bounce()
-        try await waitFor("the reconnect ack") { !device.ackedBatches.isEmpty }
-        #expect(Set(device.ackedBatches.last ?? []) == expected)
+        try await waitFor("sync completes") { model.sync.syncState == .done }
+        model.sync.sync()
+        try await waitFor("repeat sync is up to date") { model.sync.syncState == .idle }
+        #expect(device.downloadRequests.count == 1)
+        #expect(Set(device.downloadRequests[0]) == expected)
+        #expect(Set(library.rideSummaries().map(\.id)) == expected)
+
     }
 
-    /// The 2026-07-12 incident, replayed self-healing: the device is wiped
-    /// (fresh storeID, fresh rides under recycled object ids). The old synced
-    /// set must not filter the new rides ("sync forever answers up to date"),
-    /// the old rows must survive as archival entries, and no ack may stamp
-    /// old ids onto the new era.
+    /// A replacement store can reuse object IDs while earlier rides remain archival.
     @Test func eraChangeSyncsTheNewErasRidesAndKeepsTheOldArchival() async throws {
         let device = ScopedStubDevice(
             serial: serial, storeID: store1,
@@ -200,9 +195,7 @@ import OBCTransport
         #expect(Set(library.rideSummaries().map(\.id)) == [oldID, newID],
                 "the old era's row is archival; the new era's ride is a distinct row")
         #expect(library.syncedRideIDs() == [oldID, newID])
-        // No ack ever carried an old-era id after the era change.
-        let postEraAcks = device.ackedBatches.filter { $0.contains(where: { $0.scope?.storeID == store1 }) }
-        #expect(postEraAcks.allSatisfy { batch in batch.allSatisfy { $0.scope?.storeID == store1 } })
+
     }
 
     /// A tombstone belongs to one store. A replacement store can reuse its
@@ -240,13 +233,14 @@ import OBCTransport
         #expect(model.rides.map(\.id) == [newID], "visible again — resurrected once, by design")
     }
 
-    /// Ack fail-closed, end to end: a connection whose identity read throws
-    /// sends no ack and syncs nothing — and the next good connection heals.
-    @Test func failedIdentityReadClosesAckAndSync() async throws {
+    /// Missing or failed identity keeps sync closed until a later connection succeeds.
+    @Test(arguments: [false, true])
+    func unavailableIdentityClosesSyncAndRecovers(readFails: Bool) async throws {
         let device = ScopedStubDevice(
             serial: serial, storeID: store1,
             rides: [deviceRide(1, name: "Unreachable treasure", start: 1_700_000_000)])
-        device.setFailIdentityRead(true)
+        device.setFailIdentityRead(readFails)
+        if !readFails { device.setIdentity(storeID: nil) }
         let library = InMemoryLibraryStore()
         library.markRideSynced(RideID(deviceObjectID: DeviceObjectID(9),
                                       scope: LibraryScope(serial: serial, storeID: store1)))
@@ -258,21 +252,22 @@ import OBCTransport
         try await waitFor("the vetoed sync returns to idle") {
             model.sync.syncState == .idle && model.sync.syncProgress == nil
         }
-        try? await Task.sleep(for: .milliseconds(100))
-        #expect(device.ackedBatches.isEmpty, "no possession ack under an unknown era")
+        await model.sync.identitySettled()
+        #expect(!model.sync.canSync())
+        #expect(device.downloadRequests.isEmpty)
         #expect(library.rideSummaries().isEmpty, "nothing synced under an unknown era")
         #expect(model.connectedScope == nil)
 
-        // The next connection reads identity fine → ack + sync work.
+        // The next connection reads identity and sync works.
         device.setFailIdentityRead(false)
+        device.setIdentity(storeID: store1)
         device.bounce()
         try await waitFor("the healed scope") { model.connectedScope != nil }
-        try await waitFor("the ack") { !device.ackedBatches.isEmpty }
         model.sync.sync()
         try await waitFor("the ride lands") { library.rideSummaries().count == 1 }
     }
 
-    @Test func connectionPreservesArchivesAndScopesSyncAndAcknowledgments() async throws {
+    @Test func connectionPreservesArchivesAndScopesSync() async throws {
         let start: TimeInterval = 1_700_000_000
         let archive = deviceRide(3, name: "Archived", start: start)
         let trashed = deviceRide(5, name: "Trashed archive", start: start)
@@ -295,15 +290,11 @@ import OBCTransport
         try await waitFor("identity settles") { model.connectedScope != nil }
         model.sync.sync()
         try await waitFor("current rides sync") { library.rideSummaries().count == 5 }
-        #expect(device.ackedBatches.isEmpty)
-        device.bounce()
-        try await waitFor("current rides acknowledge on reconnect") { !device.ackedBatches.isEmpty }
 
         let scope = LibraryScope(serial: serial, storeID: store1)
         let currentIDs = Set([3, 4, 5].map {
             RideID(deviceObjectID: DeviceObjectID($0), scope: scope)
         })
-        #expect(Set(device.ackedBatches.flatMap { $0 }) == currentIDs)
         #expect(library.syncedRideIDs() == currentIDs.union([archive.id]))
         #expect(library.deletedRideIDs() == [deletedID])
         #expect(library.trashedRideIDs() == [trashed.id: trashDate])

@@ -88,7 +88,7 @@ public final class MainScreenModel {
     /// `protocol_version` — drives the incompatibility banner and disables sync.
     public private(set) var protocolMismatch: ProtocolMismatch?
     /// The current device serial and full StoreId. Missing identity keeps
-    /// acknowledgments and reconciliation disabled while local browsing continues.
+    /// reconciliation disabled while local browsing continues.
     public private(set) var connectedScope: LibraryScope?
     /// Whether the connected device understands **auto-expiry** (epic #638) —
     /// settled by each connection's `setClock` in the prologue (`.stamped` → true,
@@ -229,16 +229,7 @@ public final class MainScreenModel {
         )
         // The coordinator's seams back into this model — weak, so the closures
         // the model's own coordinator holds can never pin the model.
-        // Closed — not open — until the identity read settles: neither the SYNC
-        // decode path nor the possession ack may run ahead of the #303 verdict.
-        // The settle seam is what makes an early SYNC tap wait for that verdict
-        // instead of hitting the closed gate and no-oping.
-        //
-        // v2 hardening (#769): the verdict must also have produced a scope —
-        // a *failed* identity read (or one without a StoreId) keeps the gate
-        // CLOSED, where #764's v1 posture settled it open. Fail-open would
-        // let a sync persist id-keyed state under an unknown era, re-creating
-        // the 2026-07-12 incident in the failure path.
+        // Wait for a compatible identity and full store scope before syncing.
         sync.canSync = { [weak self] in
             guard let self else { return false }
             return identityChecked && protocolMismatch == nil && connectedScope != nil
@@ -298,9 +289,7 @@ public final class MainScreenModel {
                 // store, never this model.
                 if state == .connected, let was = previous, was != .connected {
                     reload()
-                    // Re-run the identity read per connection — the verdict can
-                    // genuinely change between connects (a DFU install), and
-                    // its completion is what re-fires the possession ack.
+                    // Re-read identity because firmware or the mounted store can change.
                     identityTask = Task { [weak self] in
                         await self?.runIdentityCheck()
                     }
@@ -436,17 +425,14 @@ public final class MainScreenModel {
         loadTask = nil
     }
 
-    /// Read identity before scope-filtered acknowledgments and reconciliation.
+    /// Read identity before scope-filtered reconciliation.
     /// A missing scope or failed read leaves device writes disabled until the
     /// next successful connection. Local library browsing remains available.
     private func runIdentityCheck() async {
         // Unknown until proven, every connection: the device may have been
         // reinitialized (new StoreId) or swapped since the last read.
         connectedScope = nil
-        // Stamp the device's trusted wall clock (epic #638) on **every connect,
-        // before the first ack / reconcile write** (spec §4.4): the sweep's ride
-        // `synced_at` stamping assumes a trusted clock, and this is what
-        // establishes it. Also settles `supportsRetention` for the connection.
+        // Establish the device clock before reconciliation and settle retention support.
         await stampDeviceClock()
         if let info = try? await transport.deviceInfo() {
             deviceName = info.name
@@ -461,11 +447,7 @@ public final class MainScreenModel {
             }
         }
         identityChecked = true
-        if let scope = connectedScope {
-            // The per-connect possession ack (spec §4.4), scope-filtered — a
-            // send that misses a dying link is dropped and covered by the next
-            // connect's re-ack.
-            sync.reconcilePossession(for: scope)
+        if connectedScope != nil {
             // Route + trip links could not be reconciled while the scope was
             // unknown (reload may have run first) — true them up against the
             // cached catalogs now that their validity is decidable.
@@ -523,7 +505,7 @@ public final class MainScreenModel {
     }
 
     /// Fire-and-forget `setRouteRetention` (epic #638) — best-effort like the
-    /// possession ack / name reconcile: a failed push self-heals at the next
+    /// name reconcile: a failed push self-heals at the next
     /// reconcile (the desired level still diverges) or on reconnect, so the error
     /// is dropped rather than surfaced. Captures only the transport.
     private func pushRetention(_ retention: Retention, to objectID: DeviceObjectID) {
