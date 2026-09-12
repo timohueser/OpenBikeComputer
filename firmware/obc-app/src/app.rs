@@ -573,7 +573,7 @@ pub struct App {
     /// the host through the `set_*` façade methods below.
     pub(crate) catalogs: CatalogState,
     /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
-    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
+    /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the bike-type editor
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
     /// Only the names are mirrored (≤ 8 × 12 B); the multiplier tables stay solely in `MapTables`.
     nav_profiles: crate::NavProfiles,
@@ -1264,9 +1264,9 @@ impl App {
     /// #538). The host calls this whenever it (re)loads a map's tables — pass
     /// [`Reader::nav_profiles`](obc_reader::Reader::nav_profiles) — exactly as it calls
     /// [`set_routes`](App::set_routes) when the route store changes. Copies only the display names
-    /// (the multiplier tables stay in `MapTables`); the Bike-type settings screen cycles them and the
+    /// (the multiplier tables stay in `MapTables`); the bike-type editor steps them and the
     /// created-route overview labels itself with the selected one. Safe to call on a router-less
-    /// (`ble`) image — the names are map metadata and the setting still renders (inert). Dirties the
+    /// (`ble`) image — the names are map metadata and the row still renders (inert). Dirties the
     /// map so an open settings screen picks up the new names.
     pub fn set_nav_profiles(&mut self, profiles: &[obc_reader::MapProfile]) {
         self.nav_profiles.set_from(profiles);
@@ -1471,13 +1471,10 @@ impl App {
         self.catalogs.route_filed(idx)
     }
 
-    /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
-    /// ride's durable object id (`ids` parallel to `summaries`) and its `synced` flag (baked into the
-    /// summary by the host from the SD synced-set sidecar). Re-points an open Rides-menu selection by
-    /// id across the rescan, so a finished ride, a phone-side ride delete, or an on-device delete
-    /// appears/disappears without a reboot. Clones up to [`MAX_RIDES`](crate::MAX_RIDES); any beyond
-    /// that are ignored. Sorted-by-`start_time` is the host's job (the board scan and the sim store
-    /// both hand newest-first). Dirties the map once — a store change is a repaint-worthy event.
+    /// Replace the host's ride snapshot (`ids` pairwise with `summaries`, newest first). Keep the
+    /// newest [`UI_RIDES_CAP`](crate::UI_RIDES_CAP) summaries visible and retain expiry metadata for
+    /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
+    /// across the rescan and dirty the map once.
     pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[crate::CatalogObjectId]) {
         // Re-point every held ride index by identity (its id in `old_ids` → new index), the
         // ride-namespace twin of the route remap: `replace_rides` moves its own view-cache keys
@@ -1500,12 +1497,9 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Feed the **full** compact ride-retention inventory (finding #876-2): every stored ride's
-    /// `id + synced + synced_at`, up to [`MAX_RIDES`](crate::MAX_RIDES), independent of the
-    /// newest-32 UI catalog [`set_rides`](App::set_rides) carries. A retention-aware host (the board)
-    /// streams this from its whole-store synced-set after each rescan so the auto-delete sweep + the
-    /// eager `synced_at` stamp reach a synced+expired ride even when it never sits in the display
-    /// list. Call **after** [`set_rides`](App::set_rides) (which seeds a display-only fallback).
+    /// Replace the full compact ride-retention inventory, up to [`MAX_RIDES`](crate::MAX_RIDES).
+    /// Hosts that supply only visible summaries to [`set_rides`](App::set_rides), such as the board,
+    /// call this afterwards with every stored ride's metadata so expiry also reaches older rides.
     pub fn set_ride_retention_inventory(&mut self, records: &[crate::retention::RideRetentionRecord]) {
         self.catalogs.set_ride_retention_inventory(records);
     }
@@ -2246,35 +2240,43 @@ impl App {
     /// Returns `true` exactly when the card was raised. An already-tracking app refuses the offer;
     /// recovery is a boot decision, never something that can replace a live session.
     pub fn offer_recovered_ride(&mut self, continuation: crate::RideContinuation) -> bool {
-        if !self.recorder.offer_recovery() {
+        if !self.recorder.offer_recovery(crate::recorder::RideRecoveryState::Resumable) {
             return false;
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
         self.navigator.set_active_route(None);
-        screen::apply(
-            &mut self.ui.stack,
-            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new())),
-        );
-        self.ui.map_dirty = true;
-        self.ui.input.cancel_holds();
-        self.ui.hold_cancel_pending = true;
-        true
+        self.raise_ride_recovery()
     }
 
-    /// Surface a durable recording whose journal bytes or continuation metadata failed domain
-    /// validation. The fail-closed card has no Continue action; the rider may only hold-to-Discard,
-    /// and Back cannot silently strand the object behind Home.
-    pub fn offer_damaged_ride(&mut self) -> bool {
-        if !self.recorder.offer_recovery() {
+    /// Surface a durable recording an executor could not attach to a session, named by what is
+    /// wrong with it. Logical damage on a readable catalog offers the one hold-guarded Discard;
+    /// [`RideDamage::Catalog`](crate::RideDamage::Catalog) offers no action at all. Back cannot
+    /// silently strand the object behind Home in either case.
+    pub fn offer_damaged_ride(&mut self, damage: crate::RideDamage) -> bool {
+        if !self.recorder.offer_recovery(crate::recorder::RideRecoveryState::for_damage(damage)) {
             return false;
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
         self.navigator.set_active_route(None);
+        self.raise_ride_recovery()
+    }
+
+    /// Root the UI at the recovery card in whatever mode Recorder's state names, and cancel any hold
+    /// in flight so the card's guarded row starts from zero.
+    ///
+    /// **The one place the card is raised**, so the two boot offers and the pass's re-raise cannot
+    /// drift. Re-rooting is also what repaints it: the card is `Static`-keyed, so a newly latched
+    /// mode reaches the panel through the stack change rather than through a render key.
+    /// `false` means the state names no decision to put.
+    pub(crate) fn raise_ride_recovery(&mut self) -> bool {
+        let Some(mode) = crate::screen::RecoveryMode::of(self.recorder.recovery()) else {
+            return false;
+        };
         screen::apply(
             &mut self.ui.stack,
-            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::damaged())),
+            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new(mode))),
         );
         self.ui.map_dirty = true;
         self.ui.input.cancel_holds();
@@ -2317,9 +2319,20 @@ impl App {
     }
 
     pub fn peak_view_heading_q4(&self) -> u16 {
-        match self.top_screen() {
-            Screen::PeakView(screen) => screen.heading_q4(&self.state),
-            _ => self.state.peak_view_profile.map(|profile| profile.default_heading_q4).unwrap_or(0),
+        match self.peak_view_base() {
+            Some(screen) => screen.heading_q4(&self.state),
+            None => self.state.peak_view_profile.map(|profile| profile.default_heading_q4).unwrap_or(0),
+        }
+    }
+
+    pub fn peak_view_is_base(&self) -> bool {
+        self.peak_view_base().is_some()
+    }
+
+    fn peak_view_base(&self) -> Option<&screen::PeakViewScreen> {
+        match self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) {
+            Some(Screen::PeakView(screen)) => Some(screen),
+            _ => None,
         }
     }
 
@@ -3030,11 +3043,11 @@ impl App {
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
             screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
         };
-        // The rider's Start becomes a session here rather than at stage 7, so the rest of this
-        // gesture batch sees the ride the first of them opened. Same entry point either way.
+        screen::apply(&mut self.ui.stack, t);
+        // Admit Start before the next gesture, after its requested screen transition, so a
+        // recovery decision takes precedence over the requested riding view.
         self.advance_recorder_session();
         self.sync_detour_preview(detour_planned_before);
-        screen::apply(&mut self.ui.stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
         // (the stack grew), so a step *within* the list doesn't wipe the frozen snapshot.
@@ -3422,6 +3435,9 @@ impl App {
         // shape as `card_free_bytes: storage.free_bytes()` below. A `refreshing` bool crossing a
         // render signature is what let the platform's copy and the domain's answer disagree.
         let weather_refreshing = self.weather.refreshing();
+        // The wider level the weather sheet's *Refresh now* row draws off (#1515 D4b) — read from
+        // the same owner, on the same line, so the drawn row and the pressed row cannot part.
+        let weather_request_outstanding = self.weather.request_outstanding();
         let App {
             state,
             activity,
@@ -3500,6 +3516,7 @@ impl App {
             card_free_bytes: storage.free_bytes(),
             weather,
             weather_refreshing,
+            weather_request_outstanding,
             travel_deg: navigator.travel_deg(),
             backlight: backlight_available,
         };
@@ -3549,7 +3566,17 @@ impl App {
                 recess.set(false);
             }
         }
-        rx.stats
+        // Read out before the debt is discharged, so `rx`'s borrow of `ui` ends first.
+        let stats = rx.stats;
+        // **The frame pays what the sheets above the base owed** (#1515 D5). A sheet arms a base
+        // draw when it stops purely covering the screen below — a page slide, a shorter sheet
+        // swapped in — and carries it until a frame draws that screen. This is that frame, and
+        // `!sheet_only` is the only place the answer exists: a pass may tick and then render
+        // nothing at all.
+        if !sheet_only {
+            ui.spend_base_draw();
+        }
+        stats
     }
 
     /// Render **only the overlay plane** — the transient always-on-top chrome (the global
@@ -4832,7 +4859,7 @@ mod tests {
     fn every_settings_screen_holds_a_pending_save_until_exit() {
         use crate::screen::{
             apply, AddFieldScreen, ConnectionsScreen, DateTimeScreen, FirmwareScreen, PowerScreen, ResetScreen,
-            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen, WeatherSettingsScreen,
+            RideScreen, SettingsScreen, StatFieldsScreen, SystemScreen, Transition, UnitsScreen,
         };
         use crate::settings::Units;
 
@@ -4844,7 +4871,7 @@ mod tests {
             let _ = v.push(s);
             v
         }
-        let cases: [Case; 12] = [
+        let cases: [Case; 11] = [
             // Pure navigation — no edit gesture of its own.
             ("Settings list", || one(Screen::Settings(SettingsScreen::new())), &[]),
             // Open the UTC-offset stepper (#641: the one editable row), +one step — and leave the
@@ -4852,9 +4879,9 @@ mod tests {
             ("Date & Time", || one(Screen::DateTime(DateTimeScreen::new())), &[Gesture::Press, Gesture::Step(1)]),
             // Press flips metric ↔ imperial.
             ("Units", || one(Screen::Units(UnitsScreen::new())), &[Gesture::Press]),
-            // → the Page-cycle row (index 2), open its stepper, +1 s (and leave it open — Back must
+            // → the Page-cycle row (index 1), open its stepper, +1 s (and leave it open — Back must
             // still close it then exit).
-            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(2), Gesture::Press, Gesture::Step(1)]),
+            ("Ride", || one(Screen::Ride(RideScreen::new())), &[Gesture::Step(1), Gesture::Press, Gesture::Step(1)]),
             // A completed hold deletes the highlighted field.
             ("Fields", || one(Screen::StatFields(StatFieldsScreen::new())), &[Gesture::Hold]),
             // Press adds the highlighted field and pops back onto its Fields parent — still settings.
@@ -4877,12 +4904,6 @@ mod tests {
             ("Firmware", || one(Screen::Firmware(FirmwareScreen::new())), &[]),
             // Press arms, then the completed hold erases to defaults — a real diff off the seed below.
             ("Reset", || one(Screen::Reset(ResetScreen::new())), &[Gesture::Press, Gesture::Hold]),
-            // Open the refresh picker, step it once (and leave it open — Back closes it first).
-            (
-                "Weather",
-                || one(Screen::WeatherSettings(WeatherSettingsScreen::new())),
-                &[Gesture::Press, Gesture::Step(1)],
-            ),
         ];
 
         for (name, stack, edits) in cases {
@@ -4949,8 +4970,7 @@ mod tests {
         app.apply_gesture(Gesture::BackHold); // the global escape: Map → Menu (Push, ride caller kept)
         app.apply_gesture(Gesture::Step(-1)); // Routes → Settings
         app.apply_gesture(Gesture::Press); // Menu → Settings
-        app.apply_gesture(Gesture::Press); // Settings → Ride
-        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // Settings → Ride (Data fields is the first row)
         app.apply_gesture(Gesture::Press); // Ride → Fields
         let field_count = app.settings().stat_fields.len();
         app.apply_gesture(Gesture::Step(field_count as i32)); // first field → trailing Add tile
@@ -6959,6 +6979,24 @@ mod tests {
             !cmds.iter().any(|c| matches!(c, SweepOp::Remove(4) | SweepOp::StampRide(4))),
             "the unsynced ride is never touched"
         );
+    }
+
+    /// A full host feed keeps older synced rides eligible for expiry beyond the visible menu.
+    #[test]
+    fn ride_expiry_reaches_beyond_the_menu_cap() {
+        let (mut app, _) = trusted_app();
+        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        let now = app.wall_unix_now();
+        let mut rides: [RideSummary; 33] = core::array::from_fn(|_| synced_ride("Unsynced", false, 0));
+        rides[32] = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
+        let ids: [crate::CatalogObjectId; 33] = core::array::from_fn(|i| i as u64 + 1);
+        app.set_rides(&rides, &ids);
+
+        assert_eq!(app.rides(), &rides[..32], "the menu still holds only its first 32 summaries");
+        assert_eq!(app.ride_ids(), &ids[..32], "visible identities keep the supplied order");
+        let cmds = sweep_and_drain(&mut app);
+        assert_eq!(cmds.as_slice(), &[SweepOp::Remove(33)], "only the older synced ride expires");
     }
 
     /// `ride_retention = Never` deletes no ride, however long ago it synced.

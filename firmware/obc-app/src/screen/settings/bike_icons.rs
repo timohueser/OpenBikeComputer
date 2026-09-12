@@ -1,4 +1,4 @@
-//! Pixel-art bike sprites for the [Bike type screen](super::bike_type), one per
+//! Pixel-art bike sprites for the [ride-start card](crate::screen::RideStartScreen), one per
 //! routing profile, **matched by the profile's name**. Each sprite is a grid of ASCII
 //! rows — a non-space cell is one ink pixel — laid out from simple geometry (round
 //! wheels, straight frame tubes) so the curves stay clean, then kept here as plain,

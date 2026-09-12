@@ -191,7 +191,6 @@ ride = "Sortie"
 display = "Affichage"
 connections = "Connexions"
 power = "Énergie"
-weather = "Météo"
 system = "Système"
 
 # --- Date & Time settings screen ---
@@ -210,10 +209,10 @@ day1 = "1 jour"
 week1 = "1 sem."
 month1 = "1 mois"
 
-# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
+# --- onto the route-plan sheet in #1515 D4d) ---
 [ride]
 title = "SORTIE"
-bike_type = "Type de vélo"
 fields = "Champs"
 fields_sub = "disposition"
 pages = "Pages"
@@ -228,18 +227,17 @@ autodelete_sub = "sorties"
 # --- Display settings screen ---
 [display]
 title = "AFFICHAGE"
-clock = "Horloge"
-clock_sub = "sur carte"
-scale_bar = "Échelle"
-scale_bar_sub = "sur carte"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-# "Courbes de niveau" does not fit the label column beside the toggle slider, so the term is split
-# across the row's two lines — the sub-caption carries "de niveau" instead of the usual "sur carte".
-contours = "Courbes"
-contours_sub = "de niveau"
 idle = "Veille"
 idle_sub = "délai"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+map_display = "Affichage"
+clock = "Horloge"
+scale_bar = "Échelle"
+# "Courbes de niveau" needed the old settings row's two lines; a sheet row has one, so the
+# self-contained "Relief" is the reading that fits beside the slider.
+contours = "Relief"
 
 # --- Power settings screen ---
 [power]
@@ -308,13 +306,6 @@ saved_time = "& l'heure."
 confirm = "Confirmer"
 keep_holding = "Maintenez"
 hold_to_erase = "Tenez: effacer"
-
-# --- Bike-type settings screen ---
-[bike_type]
-title = "TYPE DE VÉLO"
-routing_uses = "Le routage utilise ce profil"
-no_profiles = "Aucun profil"
-no_profiles_sub = "Charger une carte"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -458,11 +449,16 @@ climb = "MONTÉE"
 
 # --- Sortie récupérée au démarrage ---
 [ride_recovery]
-title = "SORTIE RÉCUPÉRÉE"
-body = "Enregistrement récupéré"
-damaged = "Enregistrement endommagé"
-continue_ride = "Continuer la sortie"
+title = "RÉCUPÉRATION"
+body = "Sortie récupérée"
+damaged = "Sortie endommagée"
+continue_ride = "Continuer"
 discard = "Abandonner"
+repair_failed = "Réparation échouée"
+discard_failed = "Abandon échoué"
+unrepairable = "Carte à remplacer"
+retry = "Réessayer"
+leave = "Retour"
 
 # --- Route-less ride start card ---
 [ride_start]
@@ -503,7 +499,7 @@ card_free = "Carte libre"
 
 # --- Firmware update (sideload) flow: check / confirm / progress / error / toast ---
 [dfu]
-checking = "Vérification de la carte..."
+checking = "Lecture carte..."
 installed = "Installée"
 staged = "Mise à jour"
 confirm_title = "MISE À JOUR"
@@ -511,7 +507,7 @@ same_version = "Cette version est déjà installée."
 no_undo = "Pas d'annulation automatique."
 install = "Installer"
 cancel = "Annuler"
-preparing = "Préparation de la mise à jour..."
+preparing = "Préparation..."
 installing = "Installation de la mise à jour"
 installing_body = "La LED clignote pendant l'installation. L'appareil redémarre ensuite."
 installing_power = "Ne pas éteindre."
@@ -589,19 +585,22 @@ alert_gust_body = "Rafales dangereuses devant."
 view_rain_map = "CARTE PLUIE"
 dismiss = "FERMER"
 
-# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
+[route_context]
+bike_type = "Type vélo"
+
+# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
+[weather_context]
+refresh_now = "Actualiser"
+interval = "Intervalle"
+
+# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
 [weather_refresh]
 off = "Non"
 m15 = "15 min"
 m30 = "30 min"
 m60 = "60 min"
 m120 = "120 min"
-
-# --- The Weather settings screen ---
-[weather_settings]
-title = "MÉTÉO"
-refresh = "Mise à jour"
-refresh_sub = "via téléphone"
 
 # --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]

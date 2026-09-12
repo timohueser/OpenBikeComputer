@@ -647,7 +647,7 @@ ownership = [
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCUITests" },
   { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit" },
 ]
-sleep_exception = { reason = "Short bounded host-model waits remain while the state-observation work is completed.", issue = "#1236" }
+sleep_exception = { reason = "Bounded condition polling, negative observation windows and model timing tests use real time; broader clock control remains test-health work.", issue = "#1449" }
 
 [[suite]]
 id = "ios.xcuitest"
@@ -688,7 +688,7 @@ ownership = [
   { kind = "workflow", pattern = "cargo test --release --locked -- --nocapture" },
   { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
 ]
-cadence_conflict = { reason = "The aggregate workspace command still mixes fast and captured-fixture cadences; TS2 will consume the per-suite routes.", issue = "#1451" }
+cadence_conflict = { reason = "The aggregate workspace command still mixes fast and captured-fixture cadences; remaining source and command splits belong to test-system delivery.", issue = "#1449" }
 
 [[suite]]
 id = "ci.rust-format"

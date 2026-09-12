@@ -24,7 +24,7 @@ use obc_app::{App, AppState, Gesture, Screen, Settings};
 use obc_ports::{Button, ButtonEvent, InputClock, InputEvent};
 
 mod common;
-use common::{build_min_obcm, keys, render_120};
+use common::{build_min_obcm, build_min_obcm_profiles, keys, render_120};
 
 /// The four shipped languages, in `Language` discriminant order — the column order of
 /// [`obc_app::i18n::TABLE`].
@@ -106,6 +106,11 @@ fn fixed_buffer_captions_fit() {
         // Map off-route pill: `write_off_route`'s `String<20>` = this prefix + a distance suffix up
         // to ~7 bytes ("9999km" / "5279ft"), so the prefix must clear ≤ 13 (map.rs).
         (Msg::MapOffRoute, 13, "map.rs off-route pill (String<20>, ≤7-byte distance follows)"),
+        // The quick drawer's brightness title: `draw_brightness` writes this plus " 100%" into a
+        // `String<24>` and discards the result, so a caption past the budget silently loses its
+        // trailing fragments (the write is atomic per fragment, not per call). Current worst is
+        // de "HELLIGKEIT" at 10 — a guard, not a fix.
+        (Msg::QuickBrightness, 19, "quick_drawer.rs draw_brightness title (String<24>, ' 100%' follows)"),
     ];
 
     let mut offenders: Vec<String> = Vec::new();
@@ -204,5 +209,155 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         app.advance_animations(InputClock(400)); // let the page slide land
         let buf = render_120(&mut app, &bytes);
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the filter editor rendered blank in {lang:?}");
+    }
+}
+
+/// The **map sheet's** own copy (#1515 D4c) is translated in all four columns, and both of its
+/// states render through each of them: the five-row map table over the riding Map, and the
+/// three-switch display sheet its last row swaps in.
+#[test]
+fn the_map_sheet_is_localized_and_every_state_renders() {
+    // All four labels differ from English everywhere. The three switches lost the settings row's
+    // sub-caption line when they moved onto the sheet, so `fr`/`es` needed a one-line reading for
+    // "contours" — this is where a translation that quietly stayed English would show up.
+    for (key, msg) in [
+        ("map_context.map_display", Msg::MapContextMapDisplay),
+        ("map_context.clock", Msg::MapContextClock),
+        ("map_context.scale_bar", Msg::MapContextScaleBar),
+        ("map_context.contours", Msg::MapContextContours),
+    ] {
+        for lang in [Language::De, Language::Fr, Language::Es] {
+            assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
+        }
+    }
+
+    let bytes = build_min_obcm(0xF800);
+    for lang in LANGS {
+        let mut app = App::new(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+
+        assert!(app.apply_chord(obc_app::Chord::Context), "the Map declares a context");
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the map sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Step(-1)); // → the Map display row
+        app.apply_gesture(Gesture::Press); // → the display sheet, landed at once
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the map display sheet rendered blank in {lang:?}");
+    }
+}
+
+/// The **weather sheet's** own copy (#1515 D4b) is translated in all four columns, and both of its
+/// states render through each of them: the two-row table over the dashboard, and the nested Interval
+/// editor whose five choices are the `[weather_refresh]` names the deleted settings screen used to
+/// draw.
+#[test]
+fn the_weather_sheet_is_localized_and_every_state_renders() {
+    // Both row labels differ from English everywhere — unlike D4a's *Filter* / *Sources*, which are
+    // words their own languages already spell that way, these join the net rather than excepting
+    // themselves from it.
+    for (key, msg) in [
+        ("weather_context.refresh_now", Msg::WeatherContextRefreshNow),
+        ("weather_context.interval", Msg::WeatherContextInterval),
+    ] {
+        for lang in [Language::De, Language::Fr, Language::Es] {
+            assert_ne!(t(msg, lang), t(msg, Language::En), "`{key}` is still English in {lang:?}");
+        }
+    }
+
+    let bytes = build_min_obcm(0xF800);
+    for lang in LANGS {
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+        // Home → Menu → the Weather station → the dashboard.
+        app.apply_gesture(Gesture::Press);
+        for _ in 0..4 {
+            app.apply_gesture(Gesture::Step(1));
+        }
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Weather(_)));
+
+        assert!(app.apply_chord(obc_app::Chord::Context), "the dashboard declares a context");
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the weather sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Step(1)); // → the Interval row
+        app.apply_gesture(Gesture::Press); // → its editor
+        app.advance_animations(InputClock(400)); // let the page slide land
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the interval editor rendered blank in {lang:?}");
+    }
+}
+
+/// The **route-plan sheet's** one row label (#1515 D4d) is translated in all four columns, and both
+/// of its states render through each of them: the one-row table over the create-route confirm card,
+/// and the nested bike-type editor a press opens.
+///
+/// The editor's choices are deliberately **not** in the copy net: they are the loaded map's §8.6
+/// profile names, byte-identical in every column. The width they must fit is pinned at the format's
+/// own name cap by `context_drawer`'s width test rather than measured here per language.
+///
+/// Two fixtures, because the walk needs two unrelated things a map carries: POIs to browse to a
+/// confirm card through the real gestures, and a profile table with more than one entry (without a
+/// choice the row is inert by design and no editor opens). `set_nav_profiles` is the host's own
+/// map-load mirror, so seeding it from the second fixture is the seam a host uses.
+#[test]
+fn the_route_plan_sheet_is_localized_and_every_state_renders() {
+    use obc_ports::Fix;
+    use obcm_testkit::{build_poi_map, PoiSpec};
+
+    // `fr` and `es` are re-authored rather than carried over from the deleted settings row: "Type
+    // de vélo" / "Tipo de bici" are 12 monospace characters and overrun the sheet's 164 px
+    // row-label budget, where the settings screen had a whole 240 px line to itself.
+    assert_eq!(t(Msg::RouteContextBikeType, Language::Fr), "Type v\u{e9}lo");
+    assert_eq!(t(Msg::RouteContextBikeType, Language::Es), "Tipo bici");
+    for lang in [Language::De, Language::Fr, Language::Es] {
+        assert_ne!(
+            t(Msg::RouteContextBikeType, lang),
+            t(Msg::RouteContextBikeType, Language::En),
+            "`route_context.bike_type` is still English in {lang:?}"
+        );
+    }
+
+    const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
+    const POS: (i32, i32) = (7_500_000, 43_500_000);
+    let water =
+        vec![PoiSpec { lat: 43_500_500, lon: 7_500_000, subtype: 1, name: "Fontaine".into(), hours_ref: 0xFFFF }];
+    let bytes = build_poi_map(BBOX, 512, &[(1, water)]);
+
+    // The profile names a host mirrors on map load — Road / Gravel / MTB / Touring, the set both
+    // snapshot fixtures carry.
+    let profile_map = build_min_obcm_profiles(0, &["Road", "Gravel", "MTB", "Touring"]);
+    let src = obc_reader::SliceSource(&profile_map);
+    let tables = obc_reader::MapTables::parse(&src).expect("valid fixture");
+
+    for lang in LANGS {
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+        app.set_settings(Settings { language: lang, ..Default::default() });
+        app.set_nav_profiles(tables.nav_profiles());
+        app.state.user_fix = Some(Fix::at(POS.1, POS.0));
+
+        // Home → Menu → POIs → the Water list → the POI's detail → the create-route confirm.
+        app.apply_gesture(Gesture::BackHold);
+        app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
+        app.apply_gesture(Gesture::Press); // → the category list (Water first)
+        app.apply_gesture(Gesture::Press); // → the POI list
+        render_120(&mut app, &bytes); // the lazy POI snapshot fills on a render
+        app.apply_gesture(Gesture::Press); // → the detail
+        app.apply_gesture(Gesture::Press); // → the confirm card
+        assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the POI detail opens the confirm");
+
+        assert!(app.apply_chord(obc_app::Chord::Context), "the confirm card declares a context");
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+        let root = render_120(&mut app, &bytes);
+        assert!(root.px.iter().any(|&p| p != Rgb888::BLACK), "the route-plan sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Press); // → the bike-type editor
+        app.advance_animations(InputClock(400)); // let the page slide land
+        let editor = render_120(&mut app, &bytes);
+        assert!(editor.px.iter().any(|&p| p != Rgb888::BLACK), "the bike-type editor rendered blank in {lang:?}");
+        assert!(editor.px != root.px, "the press must land on the editor, not re-render the sheet root, in {lang:?}");
     }
 }

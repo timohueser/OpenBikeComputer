@@ -48,6 +48,7 @@ pub(crate) struct Runtime {
     failed: bool,
     first_presented: bool,
     view_ready: bool,
+    active: bool,
     work_us: u64,
     reported: u8,
     position: Option<(i32, i32)>,
@@ -72,6 +73,7 @@ impl Runtime {
             failed: false,
             first_presented: false,
             view_ready: false,
+            active: false,
             work_us: 0,
             reported: 0,
             position: None,
@@ -80,7 +82,8 @@ impl Runtime {
 
     /// Release before another arena claimant runs after a screen transition.
     pub fn reconcile(&mut self, app: &App) {
-        if !matches!(app.top_screen(), Screen::PeakView(_)) {
+        self.active = matches!(app.top_screen(), Screen::PeakView(_));
+        if !app.peak_view_is_base() {
             self.arm = None;
             self.first_presented = false;
             self.view_ready = false;
@@ -92,7 +95,7 @@ impl Runtime {
         self.arm.as_ref().filter(|_| !self.failed).map(|arm| &arm.builder.panorama)
     }
     pub fn busy(&self) -> bool {
-        self.arm.as_ref().is_some_and(|arm| !arm.builder.complete()) && !self.failed
+        self.active && self.arm.as_ref().is_some_and(|arm| !arm.builder.complete()) && !self.failed
     }
 
     pub fn note_frame_presented(&mut self, app: &App) {

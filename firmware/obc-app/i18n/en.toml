@@ -218,7 +218,6 @@ ride = "Ride"
 display = "Display"
 connections = "Connections"
 power = "Power"
-weather = "Weather"
 system = "System"
 
 # --- Date & Time settings screen ---
@@ -237,10 +236,10 @@ day1 = "1 day"
 week1 = "1 week"
 month1 = "1 month"
 
-# --- Ride settings screen (routing profile + the riding stats grid + ride retention) ---
+# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
+# --- onto the route-plan sheet in #1515 D4d) ---
 [ride]
 title = "RIDE"
-bike_type = "Bike type"
 fields = "Data fields"
 fields_sub = "panels & order"
 pages = "Pages"
@@ -258,16 +257,17 @@ autodelete_sub = "rides"
 # --- Display settings screen ---
 [display]
 title = "DISPLAY"
-clock = "Clock"
-clock_sub = "on map"
-scale_bar = "Scale bar"
-scale_bar_sub = "on map"
-# Elevation EL10c (#1096): the provisional contour toggle. Expected to be removed once #1097's ride
-# review decides the feature's fate — drop these two keys from all four catalogs with the row.
-contours = "Contours"
-contours_sub = "on map"
 idle = "Idle"
 idle_sub = "timeout"
+
+# --- The map sheet's row labels (#1515 D4c) — the only home these three switches have ---
+[map_context]
+map_display = "Map display"
+clock = "Clock"
+scale_bar = "Scale bar"
+# Elevation EL10c (#1096), provisional: the contour switch migrated here rather than being
+# retired, and it still goes with #1097's verdict — drop this key from all four catalogs with it.
+contours = "Contours"
 
 # --- Power settings screen ---
 [power]
@@ -336,13 +336,6 @@ saved_time = "& saved time."
 confirm = "Confirm"
 keep_holding = "Keep holding"
 hold_to_erase = "Hold to erase"
-
-# --- Bike-type settings screen ---
-[bike_type]
-title = "BIKE TYPE"
-routing_uses = "Routing uses this profile"
-no_profiles = "No map profiles"
-no_profiles_sub = "Load a map to pick a bike type"
 
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
@@ -492,6 +485,11 @@ body = "Recording restored"
 damaged = "Recording damaged"
 continue_ride = "Continue ride"
 discard = "Discard"
+repair_failed = "Repair failed"
+discard_failed = "Discard failed"
+unrepairable = "Card needs service"
+retry = "Retry"
+leave = "Back"
 
 # --- Route-less ride start card ---
 [ride_start]
@@ -622,19 +620,22 @@ alert_gust_body = "Dangerous gusts ahead."
 view_rain_map = "VIEW RAIN MAP"
 dismiss = "DISMISS"
 
-# --- WeatherRefresh enum labels (Weather settings screen picker) ---
+# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
+[route_context]
+bike_type = "Bike type"
+
+# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
+[weather_context]
+refresh_now = "Refresh now"
+interval = "Interval"
+
+# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
 [weather_refresh]
 off = "Off"
 m15 = "15 min"
 m30 = "30 min"
 m60 = "60 min"
 m120 = "120 min"
-
-# --- The Weather settings screen ---
-[weather_settings]
-title = "WEATHER"
-refresh = "Refresh"
-refresh_sub = "via phone"
 
 # --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]

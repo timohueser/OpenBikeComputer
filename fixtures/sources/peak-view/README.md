@@ -4,7 +4,7 @@ The simulator computes panoramas at runtime for Gornergrat, Kleine Scheidegg and
 Kaiser-Franz-Josefs-Höhe. It uses the allocation-free renderer in
 `firmware/obc-app/src/peak_view/surface.rs` and the production OBCT surface reader.
 The observer locations and peak catalogue are in [locations.json](locations.json).
-Peak names, heights, distances and bearings come from the original2026-08-30 fixtures.
+Peak names, heights, distances and bearings come from the original 2026-08-30 fixtures.
 Those inputs retained rounded bearings and distances, so fixture summit coordinates are
 reconstructed from them. Production map summit records retain exact OSM coordinates.
 
@@ -58,11 +58,13 @@ areas.
 
 ## Rendering and interaction
 
-The host starts one cancellable worker when Peak View opens. Each sector combines eight
+The host starts one cancellable worker when Peak View opens. Each sector combines 15
 output rays with neighboring rays for outlines and quarter-degree rays for summit visibility.
 It checks baked height bounds from near to far and skips blocks that cannot reach the
 next visible pixel. Within the remaining cells, it computes intersections with the
-bilinear terrain surface. Each step has a bounded hierarchy-node budget.
+bilinear terrain surface. Each step has a bounded hierarchy-node budget. The current
+heading gets priority. The view appears when its terrain and nearby catalogue rays
+are complete; the remaining sectors continue in the background.
 
 The completed 960 by 222 image uses two bits per pixel. The image, builder working
 buffers, terrain reader and caches fit within the existing 128 KiB memory arena.
@@ -72,8 +74,8 @@ this accounting. Turning reads the completed image and does not access terrain s
 Only visible surfaces receive shading. Lighting and depth are computed at each visible
 native cell span's endpoints and interpolated between them. Large smooth patches use exact
 per-row intersections. Their slopes determine face lighting, and
-depth discontinuities determine outlines. The first 200 m are excluded from this
-mountain panorama. Coordinates use a local geographic projection. Curvature uses
+depth discontinuities determine outlines. Terrain starts 2 m from the observer.
+Coordinates use a local geographic projection. Curvature uses
 an effective Earth radius with refraction coefficient 0.13.
 
 Lighting is fixed relative to geography, at 25 degrees above the horizon and to the
@@ -86,8 +88,8 @@ degree of their bearing. Visibility uses the intervening terrain with a quarter-
 tolerance. Terrain is never raised to meet a catalogue height. Moving the observer
 recomputes the relative summit bearings and distances.
 
-The shared compass spinner runs during generation. Back cancels; opening again starts
-a new job. A GPS displacement above 20 m starts a replacement job. Smaller changes keep
+The shared compass spinner appears until the current view is ready. Turning toward
+an unfinished view gives it priority. Back cancels; opening again starts a new job. A GPS displacement above 20 m starts a replacement job. Smaller changes keep
 the current panorama to limit GPS jitter. At a moved observer, ground elevation plus
 two metres sets the viewing height. Missing distant terrain and clipped coverage show a partial-coverage notice and bearing marks.
 Missing observer terrain or failed reads cause an unavailable state.

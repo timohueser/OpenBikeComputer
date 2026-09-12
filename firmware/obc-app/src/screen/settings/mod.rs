@@ -31,10 +31,10 @@ use super::{palette, Ctx, Render, Screen, Transition};
 
 mod about;
 mod add_field;
-/// Shared with the route-less ride-start card (T6, #684), which draws the selected profile's hero
-/// bike from the same sprites + colours the Bike-type screen uses.
+/// The route-less ride-start card's hero bike (T6, #684) — the only place these sprites are drawn
+/// since #1515 D4d moved the bike-type choice onto the route-plan sheet, whose editor is a names
+/// list.
 pub(crate) mod bike_icons;
-mod bike_type;
 mod bluetooth;
 mod connections;
 mod datetime;
@@ -48,11 +48,9 @@ mod ride;
 mod sensors;
 mod system;
 mod units;
-mod weather;
 
 pub use about::AboutScreen;
 pub use add_field::AddFieldScreen;
-pub use bike_type::BikeTypeScreen;
 pub use bluetooth::BluetoothScreen;
 pub use connections::ConnectionsScreen;
 pub use datetime::DateTimeScreen;
@@ -66,14 +64,15 @@ pub use ride::RideScreen;
 pub use sensors::{SensorScanScreen, SensorsScreen};
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
-pub use weather::WeatherSettingsScreen;
 
-/// The number of Settings list entries — six themed groups. The row *labels* are looked up
+/// The number of Settings list entries — five themed groups. The row *labels* are looked up
 /// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
-/// (routing + the riding grid + retention), Display, Weather (the WX11 refresh interval),
-/// Connections (Phone + Sensors), Power, and System (Units / Date & Time / Language / Firmware
-/// update / About / Reset).
-const N_ITEMS: usize = 6;
+/// (routing + the riding grid + retention), Display, Connections (Phone + Sensors), Power, and
+/// System (Units / Date & Time / Language / Firmware update / About / Reset).
+///
+/// Weather is **not** among them (#1515 D4b): its one control, the scheduled refresh interval, is a
+/// row of the weather screens' own contextual sheet, which is the only home it has.
+const N_ITEMS: usize = 5;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the
 /// highlighted row.
@@ -93,9 +92,8 @@ impl SettingsScreen {
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::Ride(RideScreen::new())),
                 1 => Transition::Push(Screen::Display(DisplayScreen::new())),
-                2 => Transition::Push(Screen::WeatherSettings(WeatherSettingsScreen::new())),
-                3 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
-                4 => Transition::Push(Screen::Power(PowerScreen::new())),
+                2 => Transition::Push(Screen::Connections(ConnectionsScreen::new())),
+                3 => Transition::Push(Screen::Power(PowerScreen::new())),
                 _ => Transition::Push(Screen::System(SystemScreen::new())),
             },
             Gesture::Back => Transition::Pop, // climb back to the main Menu
@@ -109,7 +107,6 @@ impl SettingsScreen {
         let items: [&str; N_ITEMS] = [
             rx.t(Msg::SettingsRide),
             rx.t(Msg::SettingsDisplay),
-            rx.t(Msg::SettingsWeather),
             rx.t(Msg::SettingsConnections),
             rx.t(Msg::SettingsPower),
             rx.t(Msg::SettingsSystem),
@@ -164,20 +161,6 @@ pub(super) fn row_label(cv: &mut impl Surface, area: Rectangle, label: &str, sub
             cv.text_vcentered(label, x, (top, h), Font::Body, TextAlign::Left, palette::INK);
         }
     }
-}
-
-/// Draw a slider toggle at the right of `area` — a white knob sliding left (off) / right (on), the
-/// track dark for off and green for on. The knob position and track colour carry the state.
-pub(super) fn toggle_slider(cv: &mut impl Surface, area: Rectangle, on: bool) {
-    let (tw, th) = (50, 28);
-    let tx = area.top_left.x + area.size.width as i32 - tw - 4;
-    let ty = area.top_left.y + (area.size.height as i32 - th) / 2;
-    cv.round(rect(tx, ty, tw, th), 6, if on { palette::ON } else { palette::INK });
-    // Knob at the on/off end, with an even margin.
-    let m = 4;
-    let k = th - 2 * m;
-    let kx = if on { tx + tw - m - k } else { tx + m };
-    cv.round(rect(kx, ty + m, k, k), 4, palette::PARCHMENT);
 }
 
 /// Draw a stepper field cell holding `text`. Inactive: just the text, no background. Active (the

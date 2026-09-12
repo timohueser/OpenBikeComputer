@@ -91,7 +91,7 @@ pub(crate) use quick_drawer::OPEN_MS as QUICK_OPEN_MS;
 pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
-pub use ride_recovery::RideRecoveryScreen;
+pub use ride_recovery::{RecoveryMode, RideRecoveryScreen};
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -99,9 +99,9 @@ pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
 pub use route_swap::RouteSwapScreen;
 pub use settings::{
-    AboutScreen, AddFieldScreen, BikeTypeScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen,
-    FirmwareScreen, LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen,
-    SettingsScreen, StatFieldsScreen, SystemScreen, UnitsScreen, WeatherSettingsScreen,
+    AboutScreen, AddFieldScreen, BluetoothScreen, ConnectionsScreen, DateTimeScreen, DisplayScreen, FirmwareScreen,
+    LanguageScreen, PowerScreen, ResetScreen, RideScreen, SensorScanScreen, SensorsScreen, SettingsScreen,
+    StatFieldsScreen, SystemScreen, UnitsScreen,
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
@@ -231,9 +231,10 @@ pub struct Ctx<'a> {
     /// level lists these above the unfiled routes and its long-press → confirm dialog cascade-deletes
     /// one; every other screen leaves it untouched.
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen cycles
-    /// [`Settings::bike_profile_idx`](crate::Settings) within [`NavProfiles::len`](crate::NavProfiles).
-    /// Empty before a map load / on a router-less image (the setting then cycles nowhere, inert).
+    /// The loaded map's routing-profile names (routing-v2 N5) — the route-plan sheet's bike-type row
+    /// edits [`Settings::bike_profile_idx`](crate::Settings) within
+    /// [`NavProfiles::len`](crate::NavProfiles). Empty before a map load / on a router-less image,
+    /// where the row is inert because there is no choice to offer.
     pub nav_profiles: &'a crate::NavProfiles,
     /// The App-owned POI-list snapshot, **read-only** here. The POI list's `Gesture::Press` reads
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
@@ -279,6 +280,8 @@ impl Ctx<'_> {
             navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
+            weather_request_outstanding: self.weather.request_outstanding(),
+            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -392,10 +395,10 @@ pub struct Render<'a> {
     /// its folder rows above the unfiled routes and, scoped to one trip, its member routes' stage
     /// list; every other screen leaves it untouched.
     pub trips: &'a [crate::trip::TripSummary],
-    /// The loaded map's routing-profile names (routing-v2 N5) — the Bike-type settings screen draws
-    /// the selected profile's name (a stale index renders profile 0's — the router's fallback) and the created-route
-    /// overview labels itself with it. Resident in the App because these frames draw without a
-    /// `Reader` on the board.
+    /// The loaded map's routing-profile names (routing-v2 N5) — the route-plan sheet's editor draws
+    /// them as its choices (a stale index resolves to profile 0's — the router's fallback) and the
+    /// created-route overview labels itself with one. Resident in the App because these frames draw
+    /// without a `Reader` on the board.
     pub nav_profiles: &'a crate::NavProfiles,
     /// The active route's geometry (the Map strokes it), or `None` when no route is loaded.
     /// Host-owned, streamed on demand.
@@ -524,6 +527,13 @@ pub struct Render<'a> {
     /// The dashboard shows its one non-blocking cue off this — cached content stays visible
     /// (locked UX), so this is a title-slot caption, never a blocking spinner.
     pub weather_refreshing: bool,
+    /// A weather request is **outstanding** — the wider level: in flight, or asked for and not yet
+    /// sent because no companion could carry it. The weather sheet's *Refresh now* row draws off
+    /// this (#1515 D4b) rather than off [`weather_refreshing`](Render::weather_refreshing), so the
+    /// row a frame draws and the row a press resolves can never be two different rows: a request
+    /// raised with no phone in reach stays pending for many frames, and over all of them the cue is
+    /// honestly absent while the row is honestly inert.
+    pub weather_request_outstanding: bool,
     /// The rider's travel direction (degrees CW from north) for the route-relative wind arrows
     /// (WX12, epic #1185): active-route tangent at the matched progress, else the moving GPS
     /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
@@ -542,6 +552,8 @@ impl Render<'_> {
             navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
+            weather_request_outstanding: self.weather_request_outstanding,
+            nav_profiles: self.nav_profiles,
         }
     }
 
@@ -1167,14 +1179,11 @@ screens! {
     /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
     WeatherAlert(WeatherAlertScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
-    /// The Ride settings screen: routing profile + the riding stats grid (page cycle, fields, climb,
-    /// waypoints) + the synced-ride retention ring. The one settings screen that scrolls (6 rows).
+    /// The Ride settings screen: the riding stats grid (fields, page cycle, climb, waypoints) + the
+    /// synced-ride retention ring. The one settings screen that scrolls (5 rows).
     Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
-    /// The Bike type screen: cycles the routing profile (§8.6) the planner weights edges by, by name
-    /// from the loaded map (routing-v2 N5, epic #533).
-    BikeType(BikeTypeScreen) => Caps::settings(),
     StatFields(StatFieldsScreen) => Caps::settings().hold_fill(),
     AddField(AddFieldScreen) => Caps::settings(),
     /// The Display screen: the Map's clock + scale-bar overlay toggles and the idle-return timeout.
@@ -1192,9 +1201,6 @@ screens! {
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),
-    /// The Weather settings screen (WX11): the scheduled refresh interval picker
-    /// (Off / 15 / 30 / 60 / 120 min, default 30) the WX8 due scheduler consumes.
-    WeatherSettings(WeatherSettingsScreen) => Caps::settings(),
     /// The System settings menu: Units / Date & Time / Language / Firmware update / About / Reset —
     /// a thin nav list whose rows open those pages.
     System(SystemScreen) => Caps::settings(),
@@ -1247,19 +1253,33 @@ impl Screen {
         self.kind().is_overlay()
     }
 
-    /// Whether this overlay needs the screen below **drawn under it** on this frame (#1559).
+    /// Whether this overlay still **owes** the screen below a draw (#1559, #1515 D5).
     ///
-    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and one thing
-    /// stops a sheet doing only that: a **page slide**. Its two pages travel through the inset
-    /// margin either side of the sheet, where the base shows — and when the two pages differ in
-    /// height the slide also *shrinks* the sheet, whose given-back rows still hold sheet pixels.
-    /// One draw answers both: covering is cheap, uncovering is not. Only a drawer ever answers
-    /// anything but `false`.
+    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and two things
+    /// stop a sheet doing only that: a **page slide**, whose two pages travel through the inset
+    /// margin either side of the sheet and whose differing page heights shrink it, giving back rows
+    /// that still hold sheet pixels; and a **shorter sheet swapped in** for a taller one. One draw
+    /// answers both: covering is cheap, uncovering is not. Only a drawer ever answers anything but
+    /// `false`.
+    ///
+    /// The answer is a debt carried until a frame pays it, not a per-frame flag — see
+    /// [`clear_base_debt`](Screen::clear_base_debt).
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.needs_base(),
             Screen::ContextDrawer(s) => s.needs_base(),
             _ => false,
+        }
+    }
+
+    /// Discharge that debt — called on every overlay by the frame that actually drew the base
+    /// ([`UiRuntime::spend_base_draw`](crate::ui_runtime::UiRuntime::spend_base_draw)). A pass may
+    /// tick and then draw no frame at all, so nothing short of the draw itself may end it.
+    pub(crate) fn clear_base_debt(&mut self) {
+        match self {
+            Screen::QuickDrawer(s) => s.clear_base_debt(),
+            Screen::ContextDrawer(s) => s.clear_base_debt(),
+            _ => {}
         }
     }
 
@@ -1299,13 +1319,23 @@ impl Screen {
     /// declare nothing, and an empty sheet is exactly what the issue forbids.
     pub(crate) fn context(&self) -> Option<&'static ContextMenu> {
         match self {
-            // The four riding views share one context — the ride's secondary actions do not change
-            // because the rider switched which readout they are looking at.
-            Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => {
-                Some(&context_drawer::RIDE)
-            }
+            // The Map declares its own table (#1515 D4c): the ride's four actions, in the same
+            // order and with the same predicates, plus the one row only it has a referent for — its
+            // display modifiers. A scale-bar switch means nothing on Statistics or the paused page.
+            Screen::Map(_) => Some(&context_drawer::MAP),
+            // The other three riding views share one context — the ride's secondary actions do not
+            // change because the rider switched which readout they are looking at.
+            Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
+            // scheduled *Interval*. The pushed alert card is `Caps::modal()` and declares nothing.
+            Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_) => Some(&context_drawer::WEATHER),
+            // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
+            // *Create route* row records the request the host plans with. Not `NavPlanning` (the
+            // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
+            // promises the profile the route was planned *under*).
+            Screen::NavConfirm(_) => Some(&context_drawer::ROUTE_PLAN),
             _ => None,
         }
     }

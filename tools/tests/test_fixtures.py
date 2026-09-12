@@ -1,5 +1,5 @@
-from pathlib import Path
 from argparse import Namespace
+from pathlib import Path
 import tarfile
 import tempfile
 import unittest
@@ -34,34 +34,51 @@ scenarios = ["sample"]
 
 
 class FixtureRegistryTests(unittest.TestCase):
-    def test_publish_probes_separate_url_then_verifies_canonical_download(self):
+    def test_publish_never_probes_the_public_url_before_upload(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             source = root / "source"
             source.mkdir()
-            (source / "map.obcm").write_bytes(b"map bytes")
+            (source / "map.obcm").write_bytes(b"fixture")
             archive = root / "sample.tar.gz"
             size, digest = build_package("sample", source, archive)
-            path = root / "catalog.toml"
-            path.write_text(catalog_text("https://fixtures.example/", digest, size))
-            catalog = Catalog(path)
-            with (
-                patch("tools.fixtures._verify_public_object", side_effect=[FixtureError("404"), None]) as verify,
-                patch("tools.fixtures.shutil.which", return_value="rclone"),
-                patch("tools.fixtures.subprocess.run", return_value=Namespace(returncode=0)) as upload,
-                patch.dict("os.environ", {
-                    "OBC_FIXTURE_R2_BUCKET": "test",
-                    "OBC_FIXTURE_R2_ACCESS_KEY_ID": "test",
-                    "OBC_FIXTURE_R2_SECRET_ACCESS_KEY": "test",
-                    "OBC_FIXTURE_R2_ENDPOINT": "https://storage.example/",
-                }),
-            ):
-                command_publish(catalog, Store(catalog, root / "cache"), Namespace(package="sample", archive=archive))
-            public_url = f"https://fixtures.example/packages/{digest}.tar.gz"
-            self.assertEqual(verify.call_count, 2)
-            self.assertTrue(verify.call_args_list[0].args[0].startswith(public_url + "?probe="))
-            self.assertEqual(verify.call_args_list[1].args, (public_url, size, digest))
-            upload.assert_called_once()
+            catalog_path = root / "catalog.toml"
+            catalog_path.write_text(catalog_text("https://fixtures.example/v1/", digest, size))
+            catalog = Catalog(catalog_path)
+            store = Store(catalog, root / "cache")
+            args = Namespace(package="sample", archive=archive)
+            env = {
+                "OBC_FIXTURE_R2_BUCKET": "test-fixtures",
+                "OBC_FIXTURE_R2_ENDPOINT": "https://example.eu.r2.cloudflarestorage.com",
+                "OBC_FIXTURE_R2_ACCESS_KEY_ID": "test-key",
+                "OBC_FIXTURE_R2_SECRET_ACCESS_KEY": "test-secret",
+            }
+            for status in (0, 1):
+                with self.subTest(upload_status=status):
+                    events = []
+
+                    def upload(command, **_kwargs):
+                        self.assertIn("--immutable", command)
+                        events.append("upload")
+                        return Namespace(returncode=status)
+
+                    def verify(url, actual_size, actual_digest):
+                        self.assertEqual(url, f"https://fixtures.example/v1/packages/{digest}.tar.gz")
+                        self.assertEqual((actual_size, actual_digest), (size, digest))
+                        events.append("verify")
+
+                    with (
+                        patch.dict("os.environ", env),
+                        patch("tools.fixtures.shutil.which", return_value="rclone"),
+                        patch("tools.fixtures.subprocess.run", side_effect=upload),
+                        patch("tools.fixtures._verify_public_object", side_effect=verify),
+                    ):
+                        if status:
+                            with self.assertRaisesRegex(FixtureError, "rclone failed"):
+                                command_publish(catalog, store, args)
+                        else:
+                            command_publish(catalog, store, args)
+                    self.assertEqual(events, ["upload"] if status else ["upload", "verify"])
 
     def test_package_build_is_deterministic_and_tree_verifies(self):
         with tempfile.TemporaryDirectory() as scratch:

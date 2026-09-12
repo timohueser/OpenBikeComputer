@@ -24,7 +24,6 @@ import tarfile
 import tempfile
 import tomllib
 from typing import Iterable
-from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -617,14 +616,6 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     with tempfile.TemporaryDirectory(prefix="obc-fixture-publish-") as scratch:
         extract_package_archive(archive, Path(scratch), args.package)
     public_url = urljoin(catalog.base_url, package["archive"])
-    try:
-        # A missing-object probe must not cache a 404 at the download URL.
-        _verify_public_object(f"{public_url}?probe={uuid4().hex}", actual_bytes, actual_digest)
-    except FixtureError:
-        pass
-    else:
-        print(f"✓ {args.package} already exists and is verified through {catalog.base_url}")
-        return
     required = (
         "OBC_FIXTURE_R2_BUCKET",
         "OBC_FIXTURE_R2_ACCESS_KEY_ID",

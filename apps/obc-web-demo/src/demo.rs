@@ -473,7 +473,7 @@ impl Demo {
         // the last one — which is what lets a drawer's sheet grow over a base the frame no longer
         // draws (#1559).
         app.set_resident_frame(true);
-        // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label.
+        // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label.
         app.set_nav_profiles(self.tables.nav_profiles());
         app.set_map_nav_graph(self.tables.has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());

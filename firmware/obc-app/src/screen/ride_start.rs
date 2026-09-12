@@ -29,8 +29,8 @@ use super::{palette, Ctx, Render, Transition};
 
 /// Top of the hero bike, just under the title bar.
 const HERO_TOP: i32 = TITLE_BAR_H + 8;
-/// Art-pixel scale for the hero bike. 2× (→ 100×60 device px), smaller than the Bike-type screen's
-/// own 4× hero: that hero fills a screen with one row under it, but this card stacks five content
+/// Art-pixel scale for the hero bike. 2× (→ 100×60 device px), half the 4× the deleted Bike-type
+/// screen used: that hero filled a screen with one row under it, but this card stacks five content
 /// rows (name + three checklist + two options) below it, so it renders the same sprite at half scale
 /// rather than cram the rows — the D5 mockup gate's "protect the rows/fonts over the hero" call.
 const HERO_SCALE: i32 = 2;
@@ -81,8 +81,8 @@ impl RideStartScreen {
         // hero + checklist + option rows.
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
 
-        // Hero: the selected profile's pixel bike — the same sprite + hinting colour the Bike-type
-        // screen draws (matched by name) — with its profile name centred just below in olive Label.
+        // Hero: the selected profile's pixel bike — the sprite + hinting colour matched by profile
+        // name (`bike_icons`) — with its profile name centred just below in olive Label.
         // A router-less / no-map device has no profiles: `for_name("")` falls back to the generic
         // bike in plain ink and the name draws empty.
         let marked = rx.nav_profiles.effective(rx.settings.bike_profile_idx);
