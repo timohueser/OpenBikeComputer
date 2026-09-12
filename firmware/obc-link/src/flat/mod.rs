@@ -20,7 +20,7 @@
 //! ## What this replaces
 //!
 //! The Device Object System v2 wire (major 3) and its engine, which the rest of this crate still
-//! carries for the OBC2 consumers that have not moved yet. Nothing here forwards to it, shims it, or
+//! retains with its contract suites. Nothing here forwards to it, shims it, or
 //! shares a byte with it: coexistence is compile-time and the two never meet.
 
 pub mod engine;

@@ -518,18 +518,13 @@ if __name__ == "__main__":
     unittest.main()
 
 class ModuleFrameGateTests(unittest.TestCase):
-    """The `frames` subcommand: the OBC2 store's own stack ceiling (#1359).
-
-    The regression it exists for is a measured one — a 56 KiB projection built in a return slot put
-    206,080 B on the stack and HardFaulted the board — so the gate is tested against a disassembly
-    that contains exactly that shape.
-    """
+    """The module frame gate selects and bounds inherent and trait methods."""
 
     DISASSEMBLY = """
-00001000 <obc_storage::obc2::transaction::KernelTransaction::commit>:
+00001000 <obc_storage::frame_fixture::transaction::KernelTransaction::commit>:
     1000: b5f0          push {r4, r5, r6, r7, lr}
     1002: b084          sub.w sp, sp, #6080
-00002000 <obc_storage::obc2::fat::FatMedia::append_journal>:
+00002000 <obc_storage::frame_fixture::fat::FatMedia::append_journal>:
     2000: b082          sub sp, #0x8
 00003000 <unrelated::renderer::draw>:
     3000: b084          sub.w sp, sp, #40000
@@ -545,7 +540,7 @@ class ModuleFrameGateTests(unittest.TestCase):
     4002: b084          sub.w sp, sp, #2812
 """
 
-    def _run(self, limit, match="obc2", disassembly=None):
+    def _run(self, limit, match="frame_fixture", disassembly=None):
         args = SimpleNamespace(elf=Path("image.elf"), match=match, limit=limit)
         with mock.patch.object(
             resource_guard, "run_tool", return_value=disassembly or self.DISASSEMBLY
@@ -565,7 +560,7 @@ class ModuleFrameGateTests(unittest.TestCase):
 
     def test_a_module_that_vanished_is_a_stale_guard_rather_than_a_pass(self):
         with self.assertRaisesRegex(resource_guard.GuardError, "guard is stale"):
-            self._run(8_192, match="obc3")
+            self._run(8_192, match="absent_module")
 
     def test_a_scoped_needle_reaches_trait_impl_symbols(self):
         """The #1386 hole: a needle spelled as a Rust path must gate trait methods too.
@@ -598,10 +593,10 @@ class ModuleFrameGateTests(unittest.TestCase):
         review.
         """
         disassembly = self.DISASSEMBLY + self.TRAIT_IMPL.replace(
-            "obc_storage..flat", "obc_storage..obc2"
+            "obc_storage..flat", "obc_storage..frame_fixture"
         ).replace("#2812", "#9000")
         with self.assertRaises(resource_guard.GuardError) as caught:
-            self._run(8_192, match="obc_storage::obc2", disassembly=disassembly)
+            self._run(8_192, match="obc_storage::frame_fixture", disassembly=disassembly)
         # The frame that tripped it is the trait method's, and the diagnostic names that symbol
         # rather than the inherent one it shares a module with.
         self.assertIn("9000 B", str(caught.exception))
