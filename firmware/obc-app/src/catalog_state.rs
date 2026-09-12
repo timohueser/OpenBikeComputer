@@ -84,10 +84,10 @@ pub(crate) struct CatalogState {
     /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
     /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
     /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
-    /// synced+expired ride the menu never shows is still reachable by expiry. Fed by the host
-    /// ([`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory)); a plain
-    /// [`replace_rides`](CatalogState::replace_rides) also seeds it from the visible summaries so a
-    /// host that never streams the full view still expires the rides it does surface.
+    /// synced+expired ride the menu never shows is still reachable by expiry. Seeded from all pairs
+    /// supplied to [`replace_rides`](CatalogState::replace_rides). Hosts that read only the visible
+    /// summaries supply the full inventory through
+    /// [`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory).
     ride_inventory: heapless::Vec<RideRetentionRecord, MAX_RIDES>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled once per detail entry. `None` while unanswered.
@@ -373,23 +373,21 @@ impl CatalogState {
         self.rides.len()
     }
 
-    /// Replace the ride catalog (`ids` pairwise with `summaries`; entries past [`UI_RIDES_CAP`]
-    /// ignored) and remap this component's own identity-keyed view caches — the answered-profile
-    /// and preview keys move with the ride they were filled for, and drop (buffer cleared) when it
-    /// vanished. Returns the old id column for the caller's screen/`Activity` remap.
+    /// Replace the newest [`UI_RIDES_CAP`] visible rides and retain expiry metadata for up to
+    /// [`MAX_RIDES`] supplied summary/id pairs. Returns the old visible id column for the caller's
+    /// screen/`Activity` remap; detail keys continue to name durable identities.
     pub(crate) fn replace_rides(&mut self, summaries: &[RideSummary], ids: &[CatalogObjectId]) -> OldRideIds {
         let old_ids = self.ride_ids.clone();
         self.rides.clear();
         self.ride_ids.clear();
-        // Seed the compact retention inventory from the visible summaries as a fallback (finding
-        // #876-2): a host that never streams the full store view still expires the rides it does
-        // surface. A retention-aware host (the board) overwrites this with the full up-to-MAX_RIDES
-        // view via `set_ride_retention_inventory` right after, so the sweep sees rides beyond the
-        // newest UI_RIDES_CAP too.
+        // The menu cap does not limit expiry coverage. Hosts that read only menu summaries can
+        // replace this inventory with their complete metadata scan afterwards.
         self.ride_inventory.clear();
-        for (s, &id) in summaries.iter().zip(ids).take(UI_RIDES_CAP) {
-            let _ = self.rides.push(s.clone());
-            let _ = self.ride_ids.push(id);
+        for (s, &id) in summaries.iter().zip(ids).take(MAX_RIDES) {
+            if self.rides.len() < UI_RIDES_CAP {
+                let _ = self.rides.push(s.clone());
+                let _ = self.ride_ids.push(id);
+            }
             let _ =
                 self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
         }

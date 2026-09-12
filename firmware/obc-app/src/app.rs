@@ -1456,13 +1456,10 @@ impl App {
         self.catalogs.route_filed(idx)
     }
 
-    /// Replace the resident **ride** catalog from the host's store (epic #447, P7), carrying each
-    /// ride's durable object id (`ids` parallel to `summaries`) and its `synced` flag (baked into the
-    /// summary by the host from the SD synced-set sidecar). Re-points an open Rides-menu selection by
-    /// id across the rescan, so a finished ride, a phone-side ride delete, or an on-device delete
-    /// appears/disappears without a reboot. Clones up to [`MAX_RIDES`](crate::MAX_RIDES); any beyond
-    /// that are ignored. Sorted-by-`start_time` is the host's job (the board scan and the sim store
-    /// both hand newest-first). Dirties the map once — a store change is a repaint-worthy event.
+    /// Replace the host's ride snapshot (`ids` pairwise with `summaries`, newest first). Keep the
+    /// newest [`UI_RIDES_CAP`](crate::UI_RIDES_CAP) summaries visible and retain expiry metadata for
+    /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
+    /// across the rescan and dirty the map once.
     pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[crate::CatalogObjectId]) {
         // Re-point every held ride index by identity (its id in `old_ids` → new index), the
         // ride-namespace twin of the route remap: `replace_rides` moves its own view-cache keys
@@ -1485,12 +1482,9 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Feed the **full** compact ride-retention inventory (finding #876-2): every stored ride's
-    /// `id + synced + synced_at`, up to [`MAX_RIDES`](crate::MAX_RIDES), independent of the
-    /// newest-32 UI catalog [`set_rides`](App::set_rides) carries. A retention-aware host (the board)
-    /// streams this from its whole-store synced-set after each rescan so the auto-delete sweep + the
-    /// eager `synced_at` stamp reach a synced+expired ride even when it never sits in the display
-    /// list. Call **after** [`set_rides`](App::set_rides) (which seeds a display-only fallback).
+    /// Replace the full compact ride-retention inventory, up to [`MAX_RIDES`](crate::MAX_RIDES).
+    /// Hosts that supply only visible summaries to [`set_rides`](App::set_rides), such as the board,
+    /// call this afterwards with every stored ride's metadata so expiry also reaches older rides.
     pub fn set_ride_retention_inventory(&mut self, records: &[crate::retention::RideRetentionRecord]) {
         self.catalogs.set_ride_retention_inventory(records);
     }
@@ -6881,6 +6875,24 @@ mod tests {
             !cmds.iter().any(|c| matches!(c, SweepOp::Remove(4) | SweepOp::StampRide(4))),
             "the unsynced ride is never touched"
         );
+    }
+
+    /// A full host feed keeps older synced rides eligible for expiry beyond the visible menu.
+    #[test]
+    fn ride_expiry_reaches_beyond_the_menu_cap() {
+        let (mut app, _) = trusted_app();
+        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
+        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
+        let now = app.wall_unix_now();
+        let mut rides: [RideSummary; 33] = core::array::from_fn(|_| synced_ride("Unsynced", false, 0));
+        rides[32] = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
+        let ids: [crate::CatalogObjectId; 33] = core::array::from_fn(|i| i as u64 + 1);
+        app.set_rides(&rides, &ids);
+
+        assert_eq!(app.rides(), &rides[..32], "the menu still holds only its first 32 summaries");
+        assert_eq!(app.ride_ids(), &ids[..32], "visible identities keep the supplied order");
+        let cmds = sweep_and_drain(&mut app);
+        assert_eq!(cmds.as_slice(), &[SweepOp::Remove(33)], "only the older synced ride expires");
     }
 
     /// `ride_retention = Never` deletes no ride, however long ago it synced.
