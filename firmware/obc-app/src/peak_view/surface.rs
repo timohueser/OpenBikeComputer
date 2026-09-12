@@ -116,7 +116,7 @@ pub struct Builder {
     lon_scale: f32,
     light_north: f32,
     light_east: f32,
-    height_error_per_m: f32,
+    radians_per_row: f32,
     gradient_error_limit: f32,
     pub samples: u32,
     pub missing: u32,
@@ -152,7 +152,7 @@ impl Builder {
         result.light_east = libm::sinf(light);
         result.peak_slopes.fill(f32::NEG_INFINITY);
         let (bottom, top) = profile.vertical_bounds_q4();
-        result.height_error_per_m = ((top - bottom) as f32 / (4.0 * ROWS as f32)).to_radians() * 0.35;
+        result.radians_per_row = ((top - bottom) as f32 / (4.0 * ROWS as f32)).to_radians();
         for (row, threshold) in result.thresholds.iter_mut().enumerate() {
             let angle = (top as f32 - (row as f32 + 0.5) * (top - bottom) as f32 / ROWS as f32) / 4.0;
             *threshold = libm::tanf(angle.to_radians());
@@ -494,7 +494,7 @@ impl Builder {
         }
         let mut mask = 0;
         for ray in active_rays(node.mask) {
-            if height_error > intervals.near[ray] * self.height_error_per_m {
+            if height_error > intervals.near[ray] * (self.radians_per_row * 0.35) {
                 continue;
             }
             // Keep the entire catalogue sight line exact, including its foreground horizon.
@@ -684,8 +684,12 @@ impl Builder {
                 continue;
             }
             self.peak_slopes[i] = slope;
-            let horizon = if self.cutoff[ray] < ROWS { self.thresholds[self.cutoff[ray]] } else { f32::NEG_INFINITY };
-            self.peaks[i].visible = slope + 0.0044 * (1.0 + slope * slope) >= horizon;
+            // Only foreground can hide the target, including the front part of its own cell.
+            let front_slope = if offset <= end { start_slope.max(slope) } else { peak };
+            let horizon = if bottom < ROWS { self.thresholds[bottom] } else { f32::NEG_INFINITY };
+            // Half a pixel keeps sampled summit coordinates stable at raster boundaries.
+            let tolerance = 0.5 * self.radians_per_row * (1.0 + slope * slope);
+            self.peaks[i].visible = slope + tolerance >= horizon.max(front_slope);
             self.peaks[i].angle_q4 = libm::roundf(libm::atanf(slope).to_degrees() * 4.0) as i16;
             self.peaks[i].azimuth_q4 = self.bearings[ray];
         }
@@ -905,8 +909,12 @@ mod tests {
     }
 
     #[test]
-    fn close_foreground_terrain_occludes_a_distant_summit() {
-        struct Ridge;
+    fn foreground_terrain_occludes_summits_at_each_vertical_scale() {
+        struct Ridge {
+            near_x: i32,
+            near_height: f32,
+            summit_height: i16,
+        }
         impl SurfaceTerrain for Ridge {
             fn level(&self, index: usize) -> Option<SurfaceLevel> {
                 (index == 0).then_some(SurfaceLevel {
@@ -920,10 +928,14 @@ mod tests {
                 })
             }
             fn patch(&mut self, _: usize, _: u32, x: u32) -> Option<Patch> {
-                let height = |x| match x - (1 << 19) {
-                    2 => 40.0,
-                    60 => 200.0,
-                    _ => 0.0,
+                let height = |x| {
+                    if x - (1 << 19) == self.near_x {
+                        self.near_height
+                    } else if x - (1 << 19) == 60 {
+                        f32::from(self.summit_height)
+                    } else {
+                        0.0
+                    }
                 };
                 let a = height(x as i32);
                 Some(Patch { height: a, east: height(x as i32 + 1) - a, north: 0.0, cross: 0.0 })
@@ -932,17 +944,27 @@ mod tests {
                 Some(200)
             }
         }
-        // A 114 m distant ridge ends before 200 m, in front of the 3.4 km summit.
-        let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: Some(200), ..PeakViewPeak::EMPTY };
-        peak.project(0, 0);
-        let peaks = [peak];
-        let profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 2) };
-        let mut job = std::boxed::Box::new(Builder::new(&profile));
-        while !job.complete() {
-            job.step(&mut Ridge, 64);
+        for vertical_scale_q8 in [320, 768] {
+            // Include a ridge inside 200 m and a summit hidden by only about 0.27°.
+            for (near_x, near_height, summit_height, visible) in
+                [(2, 40.0, 200, false), (20, 60.0, 160, false), (20, 60.0, 200, true)]
+            {
+                let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: Some(summit_height), ..PeakViewPeak::EMPTY };
+                peak.project(0, 0);
+                let peaks = [peak];
+                let profile = PeakViewProfile { vertical_scale_q8, peaks: &peaks, ..PeakViewProfile::at(0, 0, 2) };
+                let mut job = std::boxed::Box::new(Builder::new(&profile));
+                let mut terrain = Ridge { near_x, near_height, summit_height };
+                while !job.complete() {
+                    job.step(&mut terrain, 64);
+                }
+                assert_eq!(
+                    job.peaks[0].visible, visible,
+                    "summit {summit_height} m, foreground at {near_x}, scale {vertical_scale_q8}"
+                );
+                assert!(job.peaks[0].angle_q4 > 0, "the distant summit was sampled");
+            }
         }
-        assert!(!job.peaks[0].visible, "the nearby ridge must obscure the summit");
-        assert!(job.peaks[0].angle_q4 > 0, "the distant summit was sampled");
     }
 
     #[test]
