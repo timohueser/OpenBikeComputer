@@ -1,0 +1,118 @@
+use super::*;
+use crate::{
+    flat_map::FlatMap,
+    flat_store::{HostMedia, PAGE},
+    ActiveRouteSession,
+};
+use obc_storage::flat::Revision;
+
+const ROUTE: &[u8] = include_bytes!("../../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+const MAP: &[u8] = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+
+fn bytes(source: &dyn ByteSource) -> Vec<u8> {
+    let mut bytes = vec![0; source.len() as usize];
+    source.read_at(0, &mut bytes).unwrap();
+    bytes
+}
+fn pages(owner: &HostStore) -> usize {
+    let store = owner.0.lock().unwrap();
+    let HostMedia::Memory(pages) = store.device() else { unreachable!() };
+    let count = pages.borrow().len();
+    count
+}
+
+#[test]
+fn shared_map_and_routes_pin_revisions_and_reuse_sparse_pages() {
+    let owner = HostStore::memory().unwrap();
+    let map = FlatMap::from_bytes_in(&owner, MAP).unwrap();
+    let before = pages(&owner);
+    let mut routes = FlatRouteStore::new(HostStore(owner.0.clone()), &[ROUTE]).unwrap();
+    assert_eq!(pages(&owner) - before, 1);
+    assert_eq!(PAGE - ROUTE.len(), 12_632);
+    let id = routes.write_nav_route(ROUTE).unwrap();
+    let index = routes.ids().iter().position(|&candidate| candidate == id).unwrap();
+    assert!(routes.sync_active(Some(index)));
+    let old = routes.active.as_ref().unwrap().clone();
+    assert_eq!(old.store_id(), map.source().store_id());
+    assert_ne!(old.id(), map.source().id());
+    assert_eq!(routes.delete_by_id(map.source().id().0), Ok(false));
+    assert_eq!(&bytes(&map.source())[..4], b"OBCM");
+
+    let mut session = ActiveRouteSession::new();
+    session.reparse(true, &routes);
+    assert!(session.index().is_some());
+    assert_eq!(routes.write_nav_route(ROUTE), Some(id));
+    // Same catalog position, but an exact new revision, without external invalidation.
+    assert!(routes.sync_active(Some(index)));
+    session.reparse(true, &routes);
+    assert_eq!(routes.active.as_ref().unwrap().revision(), Revision(2));
+    assert!(!routes.sync_active(Some(index)));
+    assert_eq!(old.revision(), Revision(1));
+    assert_eq!(bytes(&old), ROUTE);
+    drop(old);
+    let high_water = pages(&owner);
+    for _ in 0..12 {
+        assert_eq!(routes.write_nav_route(ROUTE), Some(id));
+        assert!(routes.sync_active(Some(index)));
+        assert!(!routes.sync_active(Some(index)));
+        assert_eq!(pages(&owner), high_water, "released extents reuse already allocated pages");
+    }
+    let last = routes.active.as_ref().unwrap().clone();
+    assert_eq!(routes.delete_by_id(id), Ok(true));
+    assert_eq!(routes.delete_by_id(id), Ok(false));
+    assert_eq!(bytes(&last), ROUTE);
+    assert!(routes.active_source().is_none());
+    drop(last);
+    assert_eq!(pages(&owner), high_water, "deletion does not shrink sparse memory high-water");
+}
+
+#[test]
+fn committed_revision_survives_busy_open_and_retries_without_stale_source() {
+    let mut routes = FlatRouteStore::from_bytes(&[ROUTE; 5]).unwrap();
+    let id = routes.write_nav_route(ROUTE).unwrap();
+    let index = routes.ids().len() - 1;
+    routes.sync_active(Some(index));
+    let old = routes.active.as_ref().unwrap().clone();
+    let mut held: Vec<_> =
+        routes.ids[..5].iter().map(|&id| routes.owner.open(ObjectId(id), Revision(1)).unwrap()).collect();
+    assert_eq!(routes.write_nav_route(ROUTE), Some(id), "commit does not need another reader slot");
+    assert!(routes.sync_active(Some(index)), "failed open clears the old active binding");
+    assert!(routes.active_source().is_none());
+    assert_eq!(bytes(&old), ROUTE);
+    let mut session = ActiveRouteSession::new();
+    session.reparse(true, &routes);
+    assert!(session.index().is_none());
+    assert!(!routes.sync_active(Some(index)), "a still-missing source causes no repeated reparse");
+    held.pop();
+    assert!(routes.sync_active(Some(index)), "the exact committed revision remains owed");
+    session.reparse(true, &routes);
+    assert!(session.index().is_some());
+    assert_eq!(routes.active.as_ref().unwrap().revision(), Revision(2));
+    assert!(!routes.sync_active(Some(index)));
+}
+
+#[test]
+fn failed_route_write_and_delete_keep_committed_projection() {
+    let mut routes = FlatRouteStore::from_bytes(&[ROUTE]).unwrap();
+    assert!(routes.write_nav_route(b"invalid").is_none());
+    assert!(routes.nav_id.is_none());
+    assert_eq!(routes.ids().len(), 1);
+    let id = routes.ids()[0];
+    // A stale expected revision must fail rather than publish successful absence.
+    let old = (ObjectId(id), routes.revisions[0]);
+    routes
+        .owner
+        .import(ObjectKind::Route, Some(old), &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default())
+        .unwrap();
+    assert_eq!(routes.delete_by_id(id), Err(CatalogError::RemoveFailed));
+    assert_eq!(routes.ids(), &[id]);
+    // A different current revision is a failed removal, not confirmed absence.
+    assert_eq!(bytes(&routes.owner.open(ObjectId(id), Revision(2)).unwrap()), ROUTE);
+    {
+        let store = routes.owner.0.lock().unwrap();
+        let HostMedia::Memory(pages) = store.device() else { unreachable!() };
+        pages.borrow_mut().clear();
+    }
+    assert_eq!(routes.delete_by_id(id), Err(CatalogError::RemoveFailed));
+    assert_eq!(routes.ids(), &[id], "media errors cannot remove a catalog row");
+}

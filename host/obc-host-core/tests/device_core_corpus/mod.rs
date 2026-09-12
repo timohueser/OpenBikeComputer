@@ -970,7 +970,7 @@ impl RouteRepository for BorrowedRoutes<'_> {
         false
     }
 
-    fn active_source(&self) -> Option<SliceSource<'_>> {
+    fn active_source(&self) -> Option<&dyn obc_formats::io::ByteSource> {
         None
     }
 

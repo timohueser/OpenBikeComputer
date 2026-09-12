@@ -1,5 +1,5 @@
 //! The **shared repository conformance suite** (#801): one set of assertions every host store —
-//! the in-memory [`MemRouteStore`](crate::MemRouteStore) family and `obc-sim`'s folder-backed
+//! the in-memory [`FlatRouteStore`](crate::FlatRouteStore) family and `obc-sim`'s folder-backed
 //! stores — must pass, so both shapes prove the same identity-remap / delete / active-replacement /
 //! nav-commit / track-lifecycle behaviour the shared dispatcher relies on. `obc-host-core`'s own
 //! tests run it against the `Mem*` stores; `obc-sim`'s tests run it against the folder stores.
@@ -159,19 +159,19 @@ fn stats() -> obc_route::RideStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemRideStore, MemRouteStore, MemTrackStore};
+    use crate::{FlatRouteStore, MemRideStore, MemTrackStore};
     use obc_app::RideSummary;
 
-    // Two distinct valid OBCR blobs the mem route store seeds from (the committed climb route, twice —
+    // Two distinct valid OBCR blobs the flat route store imports from (the committed climb route, twice —
     // the bytes only need to parse as a `RouteSummary`; identity/index mechanics are what's under test).
     const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 
     #[test]
-    fn mem_route_store_passes_the_conformance_suite() {
-        let mut repo = MemRouteStore::new(&[ROUTE, ROUTE]);
+    fn flat_route_store_passes_the_conformance_suite() {
+        let mut repo = FlatRouteStore::from_bytes(&[ROUTE, ROUTE]).unwrap();
         route_repository_suite(&mut repo, ROUTE);
 
-        let mut repo = MemRouteStore::new(&[ROUTE, ROUTE]);
+        let mut repo = FlatRouteStore::from_bytes(&[ROUTE, ROUTE]).unwrap();
         route_identity_remap(&mut repo);
     }
 

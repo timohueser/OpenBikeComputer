@@ -1,7 +1,7 @@
 //! The narrow repository interfaces the shared typed executor ([`crate::HostLoop`]) drives — one
 //! trait per store family the app talks to, so the *sequencing* (delete → rescan → re-feed, the
 //! nav commit order, the track lifecycle) lives once in [`crate::dispatch`] and every host store —
-//! the simulator's folder-backed stores and the in-memory [`MemRouteStore`](crate::MemRouteStore)
+//! the simulator's folder-backed stores and the in-memory [`FlatRouteStore`](crate::FlatRouteStore)
 //! family — plugs in behind the same shape. Storage internals stay in the concrete stores; these
 //! traits carry no `std`-vs-`no_std` assumptions of their own.
 //!
@@ -12,7 +12,7 @@
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::RideClose;
 use obc_app::{App, CatalogObjectId, RideEntry, RouteRetentionMeta};
-use obc_formats::io::SliceSource;
+use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
 use obc_route::{Profile, RideStats, RouteSummary};
 
@@ -35,7 +35,7 @@ pub trait RouteRepository {
     /// gates its index reparse on, so a settled view never reparses.
     fn sync_active(&mut self, want: Option<usize>) -> bool;
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes.
-    fn active_source(&self) -> Option<SliceSource<'_>>;
+    fn active_source(&self) -> Option<&dyn ByteSource>;
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.
     fn invalidate_active(&mut self);
