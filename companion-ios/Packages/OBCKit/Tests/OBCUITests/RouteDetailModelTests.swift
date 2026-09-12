@@ -16,21 +16,6 @@ final class RouteDetailModelTests: XCTestCase {
         return control
     }
 
-    private func waitFor(
-        _ what: String,
-        timeout: Duration = .seconds(5),
-        _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: E2 · planned
 
     func testPlannedRendersFromItsLibraryRecordWithNoDeviceRoundTrip() async {
@@ -77,18 +62,18 @@ final class RouteDetailModelTests: XCTestCase {
 
     /// Upload is link-bound: `canUpload` follows the live connection stream
     /// (the S4 rule — the button dims when the device isn't actually there).
-    func testCanUploadFollowsTheLiveConnection() async {
+    func testCanUploadFollowsTheLiveConnection() async throws {
         let control = makeControl()
         let route = control.fixtures.routes[0].summary
         let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .planned(route))
 
         model.start()
-        await waitFor("connected replay") { model.canUpload }
+        try await waitFor("connected replay", timeout: .seconds(5)) { model.canUpload }
 
         control.connection = .outOfRange
-        await waitFor("link-down gate") { !model.canUpload }
+        try await waitFor("link-down gate", timeout: .seconds(5)) { !model.canUpload }
         control.connection = .connected
-        await waitFor("link-up gate") { model.canUpload }
+        try await waitFor("link-up gate", timeout: .seconds(5)) { model.canUpload }
     }
 
     /// The replace-in-place fix: the moment an upload commits, the model pins
@@ -133,7 +118,7 @@ final class RouteDetailModelTests: XCTestCase {
 
     // MARK: E3 · tracked
 
-    func testTrackedDressingShowsRideStatsAndFillsProfile() async {
+    func testTrackedDressingShowsRideStatsAndFillsProfile() async throws {
         let control = makeControl()
         let ride = control.fixtures.rides[0].summary  // Kettle Moraine Loop (ride)
         let model = RouteDetailModel(transport: MockTransport(control: control), dressing: .tracked(ride))
@@ -145,7 +130,7 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertTrue(model.isRenamable)
 
         model.start()
-        await waitFor("ride profile") { !model.elevationProfile.isEmpty }
+        try await waitFor("ride profile", timeout: .seconds(5)) { !model.elevationProfile.isEmpty }
         XCTAssertEqual(model.elevationProfile.count, 9)
     }
 

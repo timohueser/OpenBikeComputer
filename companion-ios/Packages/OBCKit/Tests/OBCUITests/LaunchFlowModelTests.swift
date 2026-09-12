@@ -32,22 +32,6 @@ final class LaunchFlowModelTests: XCTestCase {
         return (model, control)
     }
 
-    /// Poll until `condition` holds (the phases move on free-running tasks).
-    private func waitFor(
-        _ what: String,
-        timeout: Duration = .seconds(5),
-        _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: The launch branch
 
     func testFirstRunBranchesToPairIntro() {
@@ -57,50 +41,50 @@ final class LaunchFlowModelTests: XCTestCase {
     }
 
     /// H2 (B8): forgetting the device drops the flow back to the D1 prompt.
-    func testForgetDeviceReturnsToPairIntro() async {
+    func testForgetDeviceReturnsToPairIntro() async throws {
         let (model, _) = makeModel(.happyPath)
         model.start()
-        await waitFor("main") { model.phase == .main }
+        try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
 
         model.forgetDevice()
         XCTAssertEqual(model.phase, .pairIntro)
     }
 
-    func testBondedColdLaunchShowsConnectingThenMain() async {
+    func testBondedColdLaunchShowsConnectingThenMain() async throws {
         let (model, control) = makeModel(.happyPath)
         control.connection = .disconnected  // cold boot: bonded but link down
         model.start()
         XCTAssertEqual(model.phase, .connecting(deviceName: "Trailhead"))
-        await waitFor("main") { model.phase == .main }
+        try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
         XCTAssertEqual(control.connection, .connected)
     }
 
-    func testBondedLaunchAlreadyConnectedGoesStraightToMain() async {
+    func testBondedLaunchAlreadyConnectedGoesStraightToMain() async throws {
         let (model, _) = makeModel(.happyPath)
         model.start()
-        await waitFor("main") { model.phase == .main }
+        try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
     }
 
-    func testOutOfRangeLandsOnMainNotAnError() async {
+    func testOutOfRangeLandsOnMainNotAnError() async throws {
         let (model, control) = makeModel(.outOfRange)
         model.start()
-        await waitFor("main") { model.phase == .main }
+        try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
         // No connect attempt — the degraded link is the S4 banner's story.
         XCTAssertEqual(control.connection, .outOfRange)
     }
 
-    func testBondedConnectFailureStillLandsOnMain() async {
+    func testBondedConnectFailureStillLandsOnMain() async throws {
         let (model, control) = makeModel(.happyPath)
         control.connection = .disconnected
         control.radio = .off  // connect() will throw — must degrade, not error
         model.start()
-        await waitFor("main") { model.phase == .main }
+        try await waitFor("main", timeout: .seconds(5)) { model.phase == .main }
     }
 
     /// The device never answers (asleep / out of range): the grace window
     /// expires onto the connect-failed screen — never a forever-spinner — and
     /// "Go to routes" still reaches the library.
-    func testConnectGraceExpiryShowsConnectFailedAndRoutesStayReachable() async {
+    func testConnectGraceExpiryShowsConnectFailedAndRoutesStayReachable() async throws {
         let (model, control) = makeModel(
             .happyPath,
             timing: .init(connectGrace: .milliseconds(50), scanTimeout: .seconds(2), pairingBeat: .zero)
@@ -108,7 +92,7 @@ final class LaunchFlowModelTests: XCTestCase {
         control.connection = .disconnected
         control.latency = .seconds(30)  // connect() parks far past the cap
         model.start()
-        await waitFor("connect-failed despite a hung connect") {
+        try await waitFor("connect-failed despite a hung connect", timeout: .seconds(5)) {
             model.phase == .connectFailed(deviceName: "Trailhead")
         }
 
@@ -118,7 +102,7 @@ final class LaunchFlowModelTests: XCTestCase {
 
     /// Connect-failed "Try again" re-enters A; with the device now answering,
     /// the retry lands on main.
-    func testRetryConnectFromConnectFailedLandsOnMainOnceReachable() async {
+    func testRetryConnectFromConnectFailedLandsOnMainOnceReachable() async throws {
         let (model, control) = makeModel(
             .happyPath,
             timing: .init(connectGrace: .milliseconds(50), scanTimeout: .seconds(2), pairingBeat: .zero)
@@ -126,18 +110,18 @@ final class LaunchFlowModelTests: XCTestCase {
         control.connection = .disconnected
         control.latency = .seconds(30)
         model.start()
-        await waitFor("connect-failed") { model.phase == .connectFailed(deviceName: "Trailhead") }
+        try await waitFor("connect-failed", timeout: .seconds(5)) { model.phase == .connectFailed(deviceName: "Trailhead") }
 
         control.connection = .connected  // the device woke up / came into range
         model.retryConnect()
         XCTAssertEqual(model.phase, .connecting(deviceName: "Trailhead"))
-        await waitFor("main after retry") { model.phase == .main }
+        try await waitFor("main after retry", timeout: .seconds(5)) { model.phase == .main }
     }
 
     /// The background attempt outliving the grace window still counts: when the
     /// link comes up while the connect-failed screen is showing, the flow
     /// advances to main on its own.
-    func testLateConnectWhileOnConnectFailedAdvancesToMain() async {
+    func testLateConnectWhileOnConnectFailedAdvancesToMain() async throws {
         let (model, control) = makeModel(
             .happyPath,
             timing: .init(connectGrace: .milliseconds(50), scanTimeout: .seconds(2), pairingBeat: .zero)
@@ -145,13 +129,13 @@ final class LaunchFlowModelTests: XCTestCase {
         control.connection = .disconnected
         control.latency = .milliseconds(300)  // slower than the grace, but finite
         model.start()
-        await waitFor("connect-failed first") { model.phase == .connectFailed(deviceName: "Trailhead") }
-        await waitFor("main once the late connect lands") { model.phase == .main }
+        try await waitFor("connect-failed first", timeout: .seconds(5)) { model.phase == .connectFailed(deviceName: "Trailhead") }
+        try await waitFor("main once the late connect lands", timeout: .seconds(5)) { model.phase == .main }
     }
 
     // MARK: The pairing flow
 
-    func testPairingHappyPathThroughAllScreens() async {
+    func testPairingHappyPathThroughAllScreens() async throws {
         let (model, control) = makeModel(.noDevice)
         model.start()
         XCTAssertEqual(model.phase, .pairIntro)
@@ -160,7 +144,7 @@ final class LaunchFlowModelTests: XCTestCase {
         guard case .scanning = model.phase else {
             return XCTFail("expected scanning, got \(model.phase)")
         }
-        await waitFor("discovered row") {
+        try await waitFor("discovered row", timeout: .seconds(5)) {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
         XCTAssertEqual(
@@ -170,38 +154,38 @@ final class LaunchFlowModelTests: XCTestCase {
 
         model.confirmPairing()
         XCTAssertEqual(model.phase, .pairing)
-        await waitFor("paired") { model.phase == .paired(deviceName: "Trailhead") }
+        try await waitFor("paired", timeout: .seconds(5)) { model.phase == .paired(deviceName: "Trailhead") }
         XCTAssertTrue(control.bonded, "pairing success must record the bond")
 
         model.finishPairing()
         XCTAssertEqual(model.phase, .main)
     }
 
-    func testPairingTimeoutShowsD5AndRetryLoopsToScanning() async {
+    func testPairingTimeoutShowsD5AndRetryLoopsToScanning() async throws {
         let (model, _) = makeModel(.pairingTimeout)
         model.start()
         model.startPairing()
-        await waitFor("D5 timeout") { model.phase == .pairFailed(.timeout) }
+        try await waitFor("D5 timeout", timeout: .seconds(5)) { model.phase == .pairFailed(.timeout) }
 
         model.retryPairing()
         guard case .scanning = model.phase else {
             return XCTFail("retry must loop back to scanning, got \(model.phase)")
         }
-        await waitFor("D5 again") { model.phase == .pairFailed(.timeout) }
+        try await waitFor("D5 again", timeout: .seconds(5)) { model.phase == .pairFailed(.timeout) }
     }
 
     /// #297: a declined passkey is a *gated* failure, so it surfaces on the row tap
     /// (`confirmPairing`), not during the un-gated scan — the D2 row appears first.
-    func testPairingRejectedShowsD5RejectedVariant() async {
+    func testPairingRejectedShowsD5RejectedVariant() async throws {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
         model.startPairing()
-        await waitFor("discovered row") {
+        try await waitFor("discovered row", timeout: .seconds(5)) {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
         model.confirmPairing()
         XCTAssertEqual(model.phase, .pairing)
-        await waitFor("D5 rejected") { model.phase == .pairFailed(.rejected) }
+        try await waitFor("D5 rejected", timeout: .seconds(5)) { model.phase == .pairFailed(.rejected) }
     }
 
     /// #461: an **already-bonded** refusal is indistinguishable on the wire from a
@@ -211,15 +195,15 @@ final class LaunchFlowModelTests: XCTestCase {
     /// on the *same* `.pairFailed(.rejected)` screen the declined passkey does,
     /// which is why that one screen carries the combined copy. This pins that the
     /// generic transport pairing failure maps to `.rejected` (not a new case).
-    func testGenericPairingFailureLandsOnRejectedForBondedCase() async {
+    func testGenericPairingFailureLandsOnRejectedForBondedCase() async throws {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
         model.startPairing()
-        await waitFor("discovered row") {
+        try await waitFor("discovered row", timeout: .seconds(5)) {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
         model.confirmPairing()
-        await waitFor("generic pairing failure → rejected") {
+        try await waitFor("generic pairing failure → rejected", timeout: .seconds(5)) {
             model.phase == .pairFailed(.rejected)
         }
     }
@@ -263,7 +247,7 @@ final class LaunchFlowModelTests: XCTestCase {
         XCTAssertFalse(timeout.reason.contains("Forget phone"))
     }
 
-    func testScanWindowExpiryIsATimeout() async {
+    func testScanWindowExpiryIsATimeout() async throws {
         let (model, control) = makeModel(
             .noDevice,
             timing: .init(connectGrace: .seconds(2), scanTimeout: .milliseconds(50), pairingBeat: .zero)
@@ -271,45 +255,45 @@ final class LaunchFlowModelTests: XCTestCase {
         control.latency = .seconds(30)  // the mock never "finds" the device in time
         model.start()
         model.startPairing()
-        await waitFor("scan-window timeout") { model.phase == .pairFailed(.timeout) }
+        try await waitFor("scan-window timeout", timeout: .seconds(5)) { model.phase == .pairFailed(.timeout) }
     }
 
-    func testBluetoothOffShowsH8AndLibraryStaysReachable() async {
+    func testBluetoothOffShowsH8AndLibraryStaysReachable() async throws {
         let (model, _) = makeModel(.bluetoothOff)
         model.start()
         model.startPairing()
-        await waitFor("H8") { model.phase == .radioBlocked(.off) }
+        try await waitFor("H8", timeout: .seconds(5)) { model.phase == .radioBlocked(.off) }
 
         model.browseLibrary()
         XCTAssertEqual(model.phase, .main)
     }
 
-    func testPermissionDeniedShowsH7State() async {
+    func testPermissionDeniedShowsH7State() async throws {
         let (model, _) = makeModel(.permissionDenied)
         model.start()
         model.startPairing()
-        await waitFor("H7") { model.phase == .radioBlocked(.denied) }
+        try await waitFor("H7", timeout: .seconds(5)) { model.phase == .radioBlocked(.denied) }
     }
 
-    func testCancelScanningStepsBackAndDropsTheLink() async {
+    func testCancelScanningStepsBackAndDropsTheLink() async throws {
         let (model, control) = makeModel(.noDevice)
         control.latency = .milliseconds(200)
         model.start()
         model.startPairing()
         model.cancelScanning()
         XCTAssertEqual(model.phase, .pairIntro)
-        await waitFor("link down") { control.connection == .disconnected }
+        try await waitFor("link down", timeout: .seconds(5)) { control.connection == .disconnected }
     }
 
-    func testPairingHelpReturnsToTheIntroSteps() async {
+    func testPairingHelpReturnsToTheIntroSteps() async throws {
         let (model, _) = makeModel(.pairingRejected)
         model.start()
         model.startPairing()
-        await waitFor("discovered row") {
+        try await waitFor("discovered row", timeout: .seconds(5)) {
             model.phase == .scanning(discovered: .init(name: "Trailhead"))
         }
         model.confirmPairing()  // #297: the decline lands on the gated row tap
-        await waitFor("D5") { model.phase == .pairFailed(.rejected) }
+        try await waitFor("D5", timeout: .seconds(5)) { model.phase == .pairFailed(.rejected) }
 
         model.showPairingHelp()
         XCTAssertEqual(model.phase, .pairIntro)
