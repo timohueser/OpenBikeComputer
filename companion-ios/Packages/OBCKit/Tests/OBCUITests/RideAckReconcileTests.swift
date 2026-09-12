@@ -36,29 +36,12 @@ import OBCTransport
         control.deviceInfo.libraryScope!
     }
 
-    /// Poll until `condition` holds (the model moves on free-running tasks) —
-    /// the `RideSyncCoordinatorTests` convention, Swift Testing flavor.
-    private func waitFor(
-        _ what: String,
-        timeout: Duration = .seconds(30),
-        _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                Issue.record("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     /// The launch connection acks everything the library holds **under the
     /// connected device's scope** — the exact scenario behind the fix: ten
     /// pre-sidecar rides show "not synced" on the device while the app reports
     /// "No new rides"; one connect after the update, the possession ack flips
     /// them.
-    @Test func launchAcksTheLibrarysSyncedRides() async {
+    @Test func launchAcksTheLibrarysSyncedRides() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
         let ids = (1...10).map {
@@ -67,16 +50,16 @@ import OBCTransport
         for id in ids { library.markRideSynced(id) }
 
         model.start()
-        await waitFor("the connect-time ack") { !control.ackedRideBatches.isEmpty }
+        try await waitFor("the connect-time ack") { !control.ackedRideBatches.isEmpty }
         #expect(Set(control.ackedRideBatches.flatMap { $0 }) == Set(ids))
     }
 
     /// An empty library acks nothing — no zero-length command chatter.
-    @Test func emptyLibraryAcksNothing() async {
+    @Test func emptyLibraryAcksNothing() async throws {
         let (model, control) = makeModel()
         model.start()
         // The identity read settling is what would have fired the ack.
-        await waitFor("the identity read") { model.deviceName == control.deviceInfo.name }
+        try await waitFor("the identity read") { model.deviceName == control.deviceInfo.name }
         // Give a wrong-headed ack a beat to land before asserting silence.
         try? await Task.sleep(for: .milliseconds(100))
         #expect(control.ackedRideBatches.isEmpty)
@@ -84,19 +67,19 @@ import OBCTransport
 
     /// Every reconnect re-acks (that is what makes the ack self-healing: a send
     /// the link dropped is simply covered by the next connect).
-    @Test func reconnectAcksAgain() async {
+    @Test func reconnectAcksAgain() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
         let id = RideID(deviceObjectID: DeviceObjectID(7), scope: scope(of: control))
         library.markRideSynced(id)
 
         model.start()
-        await waitFor("the first ack") { control.ackedRideBatches.count == 1 }
+        try await waitFor("the first ack") { control.ackedRideBatches.count == 1 }
 
         control.connection = .disconnected
-        await waitFor("the drop") { model.connection == .disconnected }
+        try await waitFor("the drop") { model.connection == .disconnected }
         control.connection = .connected
-        await waitFor("the reconnect ack") { control.ackedRideBatches.count == 2 }
+        try await waitFor("the reconnect ack") { control.ackedRideBatches.count == 2 }
         #expect(control.ackedRideBatches.allSatisfy { $0 == [id] })
     }
 
@@ -105,7 +88,7 @@ import OBCTransport
     /// checkmarks for object ids that happen to collide is the 2026-07-12
     /// incident. (The flat ride ids here are deliberately non-listed ones, so
     /// the claim migration corroborates nothing and they stay flat.)
-    @Test func ackSendsOnlyTheConnectedScopesIDs() async {
+    @Test func ackSendsOnlyTheConnectedScopesIDs() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
         let mine = RideID(deviceObjectID: DeviceObjectID(3), scope: scope(of: control))
@@ -119,14 +102,14 @@ import OBCTransport
         for id in [mine, otherSerial, otherEra, flatLegacy] { library.markRideSynced(id) }
 
         model.start()
-        await waitFor("the connect-time ack") { !control.ackedRideBatches.isEmpty }
+        try await waitFor("the connect-time ack") { !control.ackedRideBatches.isEmpty }
         #expect(control.ackedRideBatches.flatMap { $0 } == [mine])
     }
 
     /// Fail-closed (#769): an identity read that carries **no epoch** (a
     /// short/torn v2 read — `storeEpoch == nil`, never a fabricated 0) must
     /// keep `ackRides` closed for the connection, while browsing works.
-    @Test func missingEpochBlocksTheAck() async {
+    @Test func missingEpochBlocksTheAck() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
         library.markRideSynced(RideID(deviceObjectID: DeviceObjectID(3), scope: scope(of: control)))
@@ -142,17 +125,17 @@ import OBCTransport
 
         model.start()
         // Identity settles (the SYNC gate stops waiting) — but with no scope.
-        await waitFor("the identity read") { model.deviceName == current.name }
+        try await waitFor("the identity read") { model.deviceName == current.name }
         try? await Task.sleep(for: .milliseconds(100))
         #expect(control.ackedRideBatches.isEmpty)
         #expect(model.connectedScope == nil)
         // Browsing is unaffected: the library-first lists still load.
-        await waitFor("the lists") { model.loadState == .loaded }
+        try await waitFor("the lists") { model.loadState == .loaded }
     }
 
     /// …and the gate re-opens on the next connection whose identity read
     /// succeeds — the closure is per-connection, not sticky.
-    @Test func ackReopensOnTheNextSuccessfulIdentityRead() async {
+    @Test func ackReopensOnTheNextSuccessfulIdentityRead() async throws {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(library: library)
         let full = control.deviceInfo
@@ -164,16 +147,16 @@ import OBCTransport
         )
 
         model.start()
-        await waitFor("the epoch-less identity read") { model.deviceName == full.name }
+        try await waitFor("the epoch-less identity read") { model.deviceName == full.name }
         try? await Task.sleep(for: .milliseconds(100))
         #expect(control.ackedRideBatches.isEmpty)
 
         // The next connection reads a whole identity → the ack fires.
         control.deviceInfo = full
         control.connection = .disconnected
-        await waitFor("the drop") { model.connection == .disconnected }
+        try await waitFor("the drop") { model.connection == .disconnected }
         control.connection = .connected
-        await waitFor("the reconnect ack") { !control.ackedRideBatches.isEmpty }
+        try await waitFor("the reconnect ack") { !control.ackedRideBatches.isEmpty }
         #expect(model.connectedScope == scope(of: control))
     }
 
@@ -181,7 +164,7 @@ import OBCTransport
     /// receive the possession ack — the id-keyed write waits for the identity
     /// verdict instead of racing it (before the fix, the connect-edge ack fired
     /// while `deviceInfo()` was still in flight).
-    @Test func protocolMismatchBlocksTheAck() async {
+    @Test func protocolMismatchBlocksTheAck() async throws {
         let library = InMemoryLibraryStore()
         library.markRideSynced(RideID(deviceObjectID: DeviceObjectID(3)))
 
@@ -194,7 +177,7 @@ import OBCTransport
             protocolVersion: OBCProtocol.version + 1
         )
         model.start()
-        await waitFor("the mismatch verdict") { model.protocolMismatch != nil }
+        try await waitFor("the mismatch verdict") { model.protocolMismatch != nil }
         // The verdict landed — any ack racing it would have been sent by now
         // (and the settled gate must keep every later one closed too).
         try? await Task.sleep(for: .milliseconds(100))
