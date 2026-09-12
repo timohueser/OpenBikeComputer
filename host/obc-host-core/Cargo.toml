@@ -13,7 +13,10 @@ obc-app = { path = "../../firmware/obc-app" }
 # Semantic replay and track ports shared by both desktop and browser hosts.
 obc-ports = { path = "../../firmware/obc-ports" }
 obc-map-scene = { path = "../../firmware/obc-map-scene" }
-obc-reader = { path = "../../firmware/obc-reader" }
+obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
+obc-storage = { path = "../../firmware/obc-storage" }
+obc-crc = { path = "../../firmware/obc-crc" }
+getrandom = "0.2"
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
@@ -29,7 +32,16 @@ obc-replay = { path = "../obc-replay" }
 embedded-graphics = "0.8"
 
 [dev-dependencies]
+obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
+obc-render = { path = "../../firmware/obc-render" }
+obcm-testkit = { path = "../obcm-testkit" }
 obc-fixtures = { path = "../obc-fixtures" }
 # The behaviour corpus builds sampled weather snapshots by hand, whose frame table is the
 # `heapless::Vec` the device's own snapshot carries.
 heapless = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tempfile = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

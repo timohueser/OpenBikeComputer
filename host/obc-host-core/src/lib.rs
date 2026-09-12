@@ -13,6 +13,8 @@
 //! - [`NavPlan`] / [`commit_nav_plan`] — the resumable route planner held across frames (one
 //!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit tail,
 //!   generic over a host's route store via [`RouteRepository`].
+//! - [`flat_map`] — owned map objects on temporary file or sparse memory media, read through
+//!   the shared flat store by the simulator and browser demo.
 //! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
 //!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
 //!   source when there is none.
@@ -26,11 +28,12 @@
 //!   folder-backed stores, so host code drives either shape identically.
 //!
 //! Deliberately **GUI-free**: no egui/eframe/winit here (that's the whole point — the web host's
-//! dependency tree must stay framework-free), and no wasm-specific code either. Everything
-//! compiles and is tested on the native host.
+//! dependency tree must stay framework-free). The map owner selects native temporary files or
+//! browser memory; both read paths are tested on the native host.
 
 pub mod conformance;
 mod dispatch;
+pub mod flat_map;
 mod frame;
 mod nav;
 mod replay;
