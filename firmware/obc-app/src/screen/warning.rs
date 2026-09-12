@@ -214,7 +214,7 @@ const GLYPH_GAP: i32 = 4;
 /// The centre a line's leading glyph draws at: just left of the centred `name`'s first character,
 /// vertically centred on the row's cap height.
 fn glyph_anchor(w: i32, y: i32, name: &str, font: Font) -> Point {
-    Point::new(w / 2 - text_width(name, font) as i32 / 2 - GLYPH_GAP - GLYPH_HALF, y + font.cap_height() as i32 / 2)
+    Point::new(w / 2 - text_width(name, font) as i32 / 2 - GLYPH_GAP - GLYPH_HALF, y + font.cap_mid() as i32)
 }
 
 /// The GPS **signal fan**: a dot at bottom-left plus two concentric quarter-arc strokes opening

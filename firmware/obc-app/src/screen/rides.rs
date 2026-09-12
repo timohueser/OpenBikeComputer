@@ -119,7 +119,7 @@ impl RidesScreen {
             let name = fit_name(&ride.name, name_max);
             cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, INK);
             if ride.synced {
-                let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_height() as i32 / 2);
+                let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);
                 synced_mark(cv, mark_c, accent);
             }
 

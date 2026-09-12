@@ -155,3 +155,48 @@ mod latin {
 fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
 }
+
+#[test]
+fn capital_and_digit_metrics_match_raster_ink_and_cell_top() {
+    for font in [Font::Label, Font::Body, Font::Display, Font::Huge] {
+        for text in ["H", "0123456789"] {
+            let mut buf = Buf::new(340, 80);
+            let anchor = Point::new(3, 5);
+            draw_text(&mut buf, text, anchor, font, TextAlign::Left, RED);
+            let (_, top, _, bottom) = buf.bbox(RED).unwrap();
+            assert_eq!(top - anchor.y, font.cap_top() as i32, "{font:?}: {text}");
+            assert_eq!(bottom + 1 - anchor.y, font.cap_bottom() as i32, "{font:?}: {text}");
+            assert_eq!(bottom + 1 - top, font.cap_height() as i32, "{font:?}: {text}");
+        }
+    }
+}
+
+#[test]
+fn vertically_centered_capitals_have_even_visible_padding() {
+    use obc_render::{Canvas, Surface};
+    for font in [Font::Label, Font::Body, Font::Display, Font::Huge] {
+        for height in [70, 71] {
+            let mut buf = Buf::new(100, 90);
+            Canvas::new(&mut buf, &|_| RED).text_vcentered("H0", 5, (7, height), font, TextAlign::Left, 0);
+            let (_, top, _, bottom) = buf.bbox(RED).unwrap();
+            let above = top - 7;
+            let below = 7 + height - 1 - bottom;
+            assert!((above - below).abs() <= 1, "{font:?}: {above} above, {below} below");
+        }
+    }
+}
+
+#[test]
+fn ink_bounds_include_accents_descenders_and_fallback_glyphs() {
+    use obc_render::text::text_ink_bounds;
+    for font in [Font::Label, Font::Body, Font::Display] {
+        for text in ["Q", "FERMÉ", "Drücken", "Appuyer", "gjpqy", "🚲"] {
+            let mut buf = Buf::new(180, 50);
+            draw_text(&mut buf, text, Point::zero(), font, TextAlign::Left, RED);
+            let (_, top, _, bottom) = buf.bbox(RED).unwrap();
+            assert_eq!(text_ink_bounds(text, font), Some(top..bottom + 1), "{font:?}: {text}");
+        }
+        assert_eq!(text_ink_bounds("", font), None);
+        assert_eq!(text_ink_bounds("   ", font), None);
+    }
+}

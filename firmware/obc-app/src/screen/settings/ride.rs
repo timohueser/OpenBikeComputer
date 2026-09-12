@@ -217,7 +217,7 @@ fn draw_subline_cycle_value(
     let sub_y = row.top_left.y + 30;
     cv.text(value, Point::new(val_r, sub_y), Font::Label, TextAlign::Right, INK);
     let ax = val_r - text_width(value, Font::Label) as i32 - CUE_GAP;
-    let tmid = sub_y + Font::Label.cap_height() as i32 / 2;
+    let tmid = sub_y + Font::Label.cap_mid() as i32;
     cv.triangle(Point::new(ax, tmid - 6), Point::new(ax, tmid + 6), Point::new(ax - 8, tmid), INK);
 }
 

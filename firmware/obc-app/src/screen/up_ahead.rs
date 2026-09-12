@@ -576,7 +576,7 @@ fn draw_row(cv: &mut impl Surface, entry: Entry, row: &list::RowCtx, values: Fig
     let x = row.area.top_left.x;
     let y = row.area.top_left.y;
     let right = x + row.area.size.width as i32;
-    let icon_c = Point::new(x + ICON_INSET + 11, y + 9 + Font::Body.cap_height() as i32 / 2);
+    let icon_c = Point::new(x + ICON_INSET + 11, y + 9 + Font::Body.cap_mid() as i32);
     match entry.category() {
         Some(cat) => draw_category_icon(cv, cat, icon_c, icon_color, bg),
         None => draw_diamond(cv, icon_c, 8, icon_color),
@@ -604,7 +604,7 @@ fn draw_row(cv: &mut impl Surface, entry: Entry, row: &list::RowCtx, values: Fig
             let tw = text_width(txt, Font::Label) as i32;
             let tx = right - 8 - tw;
             let ax = tx - ARROW_GAP - ARROW_W;
-            draw_side_arrow(cv, Point::new(ax, sy + Font::Label.cap_height() as i32 / 2), *to_right, stat_color);
+            draw_side_arrow(cv, Point::new(ax, sy + Font::Label.cap_mid() as i32), *to_right, stat_color);
             cv.text(txt, Point::new(tx, sy), Font::Label, TextAlign::Left, stat_color);
             ax
         }
