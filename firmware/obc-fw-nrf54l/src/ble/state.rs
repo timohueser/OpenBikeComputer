@@ -147,33 +147,32 @@ static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// A pending request for the peripheral advertiser to expose the dedicated **Weather Request**
 /// service instead of OBC Control (spec §11). The GATT database always contains both services; this
-/// bit only selects the one UUID that fits in the single legacy primary advertisement — which is
+/// intent only selects the one UUID that fits in the single legacy primary advertisement — which is
 /// why it is a swap rather than a second advertised UUID.
-static WEATHER_REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
-static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static WEATHER_REQUEST_BUDGET: BlockingMutex<CriticalSectionRawMutex, Cell<Option<obc_ble::WeatherRequestBudget>>> =
     BlockingMutex::new(Cell::new(None));
+// Only raising or clearing the intent wakes the advertiser; replacing a live budget does not.
+static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 // The arming seam: the production due scheduler ([`super::weather`]) arms it on every raise, and
 // the `ble-weather-request` harness once at boot.
 pub(crate) fn arm_weather_request(window: Duration) {
-    WEATHER_REQUEST_BUDGET.lock(|budget| {
-        budget.set(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks())))
+    let raised = WEATHER_REQUEST_BUDGET.lock(|budget| {
+        budget.replace(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks()))).is_none()
     });
-    if !WEATHER_REQUEST_PENDING.swap(true, Ordering::Relaxed) {
+    if raised {
         WEATHER_REQUEST_EDGE.signal(());
     }
 }
 
 pub(crate) fn clear_weather_request() {
-    WEATHER_REQUEST_BUDGET.lock(|budget| budget.set(None));
-    if WEATHER_REQUEST_PENDING.swap(false, Ordering::Relaxed) {
+    if WEATHER_REQUEST_BUDGET.lock(|budget| budget.take().is_some()) {
         WEATHER_REQUEST_EDGE.signal(());
     }
 }
 
 pub(crate) fn weather_request_pending() -> bool {
-    WEATHER_REQUEST_PENDING.load(Ordering::Relaxed)
+    WEATHER_REQUEST_BUDGET.lock(|budget| budget.get().is_some())
 }
 
 pub(crate) async fn weather_request_changed() {
