@@ -115,10 +115,8 @@ pub(crate) struct ObcControlService {
     /// **The protocol-v4 control channel** (§5.1): one Write Request value carries one complete
     /// control frame, and one confirmed indication carries its response.
     ///
-    /// `…0009` keeps the meaning `Device_Object_Protocol_v3.md` gave it rather than being retired
-    /// and reassigned — the no-reuse convention forbids giving a *retired* UUID a new meaning, and
-    /// this one keeps the one it has. What changed across the major bump is the frames it carries,
-    /// which `protocolVersion` already announces.
+    /// `…0009` remains the control channel under the UUID no-reuse convention.
+    /// `protocolVersion` announces the frames it carries.
     ///
     /// 244 bytes is `ATT_MTU - 3` at the device's preferred 247-byte MTU, which is the control
     /// ceiling §5.1 names; the largest fixed message in §3 is the 100-byte `PUT`, and a `LIST` page
