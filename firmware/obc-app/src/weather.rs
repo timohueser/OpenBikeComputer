@@ -295,7 +295,7 @@ impl WeatherSnapshot {
                         // Claim corridor — only worth paying for while a dry claim is still alive.
                         if max < RAIN_MIN_INTENSITY && !past_route_end {
                             let lead_s = projection.map_or(0, |(_, p)| frame.valid_at.saturating_sub(p.now));
-                            let (half, capped) = spread_half_cells(lead_s, frame.cell_size_m);
+                            let (half, capped) = spread_half_cells(lead_s, cell, lat);
                             // Step one is exactly the four-neighbour warning sweep above. Reusing
                             // its dry/coverage verdict avoids four duplicate probes per clean
                             // frame while keeping the warning and claim rules distinct.
@@ -593,23 +593,32 @@ fn projected_position(route: &RouteReader<'_>, proj: RideProjection, t: i64) -> 
     Some(((position.lat, position.lon), target_m > route.total_distance_m))
 }
 
-/// Half-width, in cells, of the pace-spread corridor a frame `lead_s` seconds past the projection
-/// anchor needs before it may carry a DRY claim: one cell (the projection's own grid granularity)
-/// plus whole cells of [`PACE_SPREAD_CMS`] accumulated over the lead, capped by
-/// [`CORRIDOR_MAX_HALF_CELLS`]. Frames at or before the anchor carry no pace uncertainty at all
-/// and stay at one cell.
-/// Also reports whether the cap truncated the wanted width: a corridor narrower than the pace
-/// spread demands cannot support a DRY claim, so the caller folds saturation into
-/// `spread_uncertain` — the guard fails closed instead of quietly narrowing (review #1232 delta).
-fn spread_half_cells(lead_s: i64, cell_size_m: u16) -> (u32, bool) {
-    let spread_m = (PACE_SPREAD_CMS as i64).saturating_mul(lead_s.max(0)) / 100;
-    let cells = spread_m / cell_size_m.max(1) as i64;
-    let wanted = 1 + cells;
-    let half = wanted.clamp(1, CORRIDOR_MAX_HALF_CELLS as i64) as u32;
-    (half, wanted > CORRIDOR_MAX_HALF_CELLS as i64)
+/// Per-axis half-widths `(north/south, east/west)` of the DRY claim corridor, using the
+/// same lattice steps as sampling. Longitude ground pitch depends on the sample latitude.
+/// One cell covers grid granularity; whole cells of pace spread widen the claim only.
+/// Either axis exceeding the I/O cap makes the claim uncertain.
+fn spread_half_cells(lead_s: i64, cell: (i32, i32), lat: i32) -> ((u32, u32), bool) {
+    if lead_s <= 0 {
+        return ((1, 1), false);
+    }
+    let spread_cm = (PACE_SPREAD_CMS as i64).saturating_mul(lead_s);
+    let cm_per_udeg = (obc_map_scene::M_PER_DEG / 10_000.0) as f32;
+    let axis = |stride: i32, scale: f32| {
+        // Round pitch down to centimetres so rounding cannot narrow the corridor.
+        // A sub-centimetre or polar pitch cannot establish coverage within the probe cap.
+        let pitch_cm = (stride as f32 * cm_per_udeg * scale) as i64;
+        if pitch_cm <= 0 {
+            return (CORRIDOR_MAX_HALF_CELLS, true);
+        }
+        let cells = spread_cm / pitch_cm;
+        ((cells.saturating_add(1)).min(CORRIDOR_MAX_HALF_CELLS as i64) as u32, cells >= CORRIDOR_MAX_HALF_CELLS as i64)
+    };
+    let (north_south, north_south_capped) = axis(cell.0, 1.0);
+    let (east_west, east_west_capped) = axis(cell.1, obc_map_scene::cos_lat(lat));
+    ((north_south, east_west), north_south_capped || east_west_capped)
 }
 
-/// Is every cell within `half` cells of `(lat, lon)` along both axes readable, in-grid and dry?
+/// Is every cell within the per-axis `half` counts readable, in-grid and dry?
 /// The DRY claim's gate — fail-closed in every direction (a wet cell, a no-data cell, a cell
 /// outside the grid, or a failed read all answer `false`), and short-circuiting on the first
 /// blocker so the cost is only paid by corridors that actually turn out clean.
@@ -619,12 +628,12 @@ fn corridor_tail_is_dry<S: ByteSource + ?Sized>(
     frame: usize,
     (lat, lon): (i32, i32),
     cell: (i32, i32),
-    half: u32,
+    half: (u32, u32),
 ) -> bool {
-    for (dlat, dlon) in [(cell.0, 0), (-cell.0, 0), (0, cell.1), (0, -cell.1)] {
+    for (dlat, dlon, count) in [(cell.0, 0, half.0), (-cell.0, 0, half.0), (0, cell.1, half.1), (0, -cell.1, half.1)] {
         // Walk each arm outward from the centre: consecutive cells share a tile, so the
         // single-entry tile cache is hit for all but the few steps that cross a tile edge.
-        for step in 2..=half as i32 {
+        for step in 2..=count as i32 {
             let probe_lat = lat.saturating_add(dlat.saturating_mul(step));
             let probe_lon = lon.saturating_add(dlon.saturating_mul(step));
             match reader.intensity_at(frame, probe_lat, probe_lon, cache) {
@@ -931,24 +940,33 @@ mod tests {
         assert_eq!(rain_outlook(&spread, t0), RainOutlook::UpdateNeeded, "an unclaimed corridor refuses dry");
     }
 
-    /// The pace-spread ladder: one cell at the anchor, and the reviewer's measured 2 / 3 / 4 cells
-    /// at +15 / +30 / +45 min on a 1 km grid — while a coarse floor source stays one cell wide
-    /// across the whole horizon, and the I/O cap bounds a pathological fine grid.
     #[test]
-    fn spread_half_cells_ladder_covers_the_measured_uncertainty() {
-        assert_eq!(spread_half_cells(0, 1_000), (1, false), "no lead, no pace uncertainty");
-        assert_eq!(spread_half_cells(-900, 1_000), (1, false), "a past frame samples here, exactly");
-        assert_eq!(spread_half_cells(15 * 60, 1_000), (2, false), "measured 1.7 cells at +15 min");
-        assert_eq!(spread_half_cells(30 * 60, 1_000), (3, false), "measured 2.4 cells at +30 min");
-        assert_eq!(spread_half_cells(45 * 60, 1_000), (4, false), "measured 3.5 cells at +45 min");
-        // A 27 km global-floor cell already swallows two hours of pace spread whole.
-        assert_eq!(spread_half_cells(2 * 3_600, 27_000), (1, false), "a coarse cell absorbs the spread");
-        // And nothing can run the probe count away.
-        assert_eq!(
-            spread_half_cells(2 * 3_600, 1),
-            (CORRIDOR_MAX_HALF_CELLS, true),
-            "a truncated corridor reports saturation so the DRY claim fails closed"
-        );
+    fn spread_counts_use_each_axes_ground_pitch() {
+        // 0.01 degrees spans 1,113.2 m north/south, half that east/west at 60 degrees.
+        let cell = (10_000, 10_000);
+        assert_eq!(spread_half_cells(0, cell, 60_000_000), ((1, 1), false));
+        assert_eq!(spread_half_cells(-900, cell, 60_000_000), ((1, 1), false));
+        assert_eq!(spread_half_cells(900, cell, 0), ((2, 2), false));
+        assert_eq!(spread_half_cells(900, cell, 60_000_000), ((2, 3), false));
+        assert_eq!(spread_half_cells(1_800, cell, -60_000_000), ((3, 5), false));
+        assert_eq!(spread_half_cells(2_700, cell, 0), ((4, 4), false));
+        assert_eq!(spread_half_cells(7_200, (250_000, 250_000), 0), ((1, 1), false));
+
+        // Keep the granularity cell at an exact physical boundary and round pitch down.
+        assert_eq!(spread_half_cells(11_132, (125_000, 250_000), 0), ((2, 1), false));
+        assert_eq!(spread_half_cells(11_131, (125_000, 250_000), 0), ((1, 1), false));
+    }
+
+    #[test]
+    fn either_axis_saturation_refuses_the_claim() {
+        assert_eq!(spread_half_cells(7_200, (10_000, 10_000), 60_000_000), ((9, 12), true));
+        assert_eq!(spread_half_cells(7_200, (1_000, 100_000), 0), ((12, 1), true));
+        assert_eq!(spread_half_cells(7_200, (100_000, 1_000), 0), ((1, 12), true));
+        assert_eq!(spread_half_cells(7_200, (1, 1), 0), ((12, 12), true));
+        for lat in [-90_000_000, 90_000_000] {
+            assert_eq!(spread_half_cells(900, (10_000, 10_000), lat), ((2, 12), true));
+        }
+        assert_eq!(spread_half_cells(i64::MAX, (1, 1), 0), ((12, 12), true));
     }
 
     /// F6: `pos_in_grid` ("some projected sample is covered") and `current_pos_in_grid` ("the
