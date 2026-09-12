@@ -183,6 +183,8 @@ class EndToEndTests(unittest.TestCase):
         self.repo = Path(self.dir.name)
         self.addCleanup(self.dir.cleanup)
         self.git("init", "-q", "-b", "main")
+        # Detached maintenance must not outlive this temporary repository.
+        self.git("config", "maintenance.auto", "false")
         self.git("config", "user.email", "t@example.com")
         self.git("config", "user.name", "T")
         self.write("src/lib.rs", "pub mod thing;\n#[cfg(test)]\nmod probe;\n")
