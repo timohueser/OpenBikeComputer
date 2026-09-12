@@ -45,7 +45,7 @@ pub(crate) type OldRideIds = heapless::Vec<CatalogObjectId, UI_RIDES_CAP>;
 
 /// The resident catalogs + identity-keyed view caches. See the module docs.
 pub(crate) struct CatalogState {
-    /// The resident route catalog (paired entries) — what the Route menu lists;
+    /// The resident route catalog (summaries) — what the Route menu lists;
     /// Navigator's active route indexes it.
     routes: Catalog,
     /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —

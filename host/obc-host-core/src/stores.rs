@@ -39,7 +39,7 @@ impl MemRouteStore {
         s
     }
 
-    /// The route catalog (paired entries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
+    /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
