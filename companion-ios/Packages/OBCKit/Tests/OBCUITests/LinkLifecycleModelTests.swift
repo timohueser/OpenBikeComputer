@@ -22,22 +22,6 @@ struct LinkLifecycleModelTests {
         return (model, transport, grace, activity)
     }
 
-    /// Poll until `condition` holds (the model moves on free-running tasks).
-    private func eventually(
-        _ what: String,
-        timeout: Duration = .seconds(30),
-        _ condition: @MainActor () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                Issue.record("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     /// A beat for negative assertions ("nothing further happens").
     private func settle() async {
         try? await Task.sleep(for: .milliseconds(120))
@@ -45,17 +29,17 @@ struct LinkLifecycleModelTests {
 
     private func startConnected(
         _ model: LinkLifecycleModel, _ transport: SpyTransport
-    ) async {
+    ) async throws {
         transport.setState(.connected)
         model.start()
-        await eventually("link mirror") { model.connection == .connected }
+        try await waitFor("link mirror") { model.connection == .connected }
     }
 
     // MARK: DoD — background mid-transfer drains, then disconnects
 
-    @Test func backgroundMidTransferDrainsThenSuspends() async {
+    @Test func backgroundMidTransferDrainsThenSuspends() async throws {
         let (model, transport, grace, activity) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         let token = activity.begin()
         model.scenePhaseChanged(to: .inactive)
@@ -67,35 +51,35 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("suspendLink") == 0, "an in-flight transfer is never dropped")
 
         activity.end(token)
-        await eventually("suspend after the drain") { transport.count("suspendLink") == 1 }
+        try await waitFor("suspend after the drain") { transport.count("suspendLink") == 1 }
         #expect(model.phase == .suspended)
-        await eventually("grace window returned") { grace.ended == grace.begun }
+        try await waitFor("grace window returned") { grace.ended == grace.begun }
         #expect(transport.count("disconnect") == 0, "the suspend uses the pausing seam, not a bare disconnect")
     }
 
     // MARK: DoD — background while idle disconnects promptly
 
-    @Test func backgroundIdleSuspendsPromptly() async {
+    @Test func backgroundIdleSuspendsPromptly() async throws {
         let (model, transport, grace, _) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         model.scenePhaseChanged(to: .inactive)
         model.scenePhaseChanged(to: .background)
-        await eventually("prompt suspend") { transport.count("suspendLink") == 1 }
+        try await waitFor("prompt suspend") { transport.count("suspendLink") == 1 }
         #expect(model.phase == .suspended)
-        await eventually("grace window returned") { grace.ended == grace.begun }
+        try await waitFor("grace window returned") { grace.ended == grace.begun }
     }
 
     // MARK: DoD — foreground reconnects via the bonded silent-reconnect path
 
-    @Test func foregroundResumesViaBondedSilentReconnect() async {
+    @Test func foregroundResumesViaBondedSilentReconnect() async throws {
         let (model, transport, _, _) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended") { model.phase == .suspended }
+        try await waitFor("suspended") { model.phase == .suspended }
 
         model.scenePhaseChanged(to: .active)
-        await eventually("resume") { transport.count("resumeLink") == 1 }
+        try await waitFor("resume") { transport.count("resumeLink") == 1 }
         #expect(model.phase == .foreground)
         #expect(transport.count("connect") == 0, "never the pairing-capable connect path")
     }
@@ -105,25 +89,25 @@ struct LinkLifecycleModelTests {
     /// changed on the device while the app was backgrounded (`storeChanged`
     /// is not surfaced by the transport even in the foreground; freshness
     /// comes from this reload and from explicit Sync).
-    @Test func foregroundReconnectTriggersMainScreenReload() async {
+    @Test func foregroundReconnectTriggersMainScreenReload() async throws {
         let (model, transport, _, _) = make()
         let main = MainScreenModel(transport: transport)
         main.start()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended") { model.phase == .suspended }
+        try await waitFor("suspended") { model.phase == .suspended }
         let baseline = transport.count("listRoutes")
 
         model.scenePhaseChanged(to: .active)
-        await eventually("reload on the reconnect edge") { transport.count("listRoutes") > baseline }
+        try await waitFor("reload on the reconnect edge") { transport.count("listRoutes") > baseline }
     }
 
     // MARK: DoD — inactive flickers never churn the link
 
-    @Test func inactiveFlickerNeverChurnsTheLink() async {
+    @Test func inactiveFlickerNeverChurnsTheLink() async throws {
         let (model, transport, grace, _) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         model.scenePhaseChanged(to: .inactive)
         model.scenePhaseChanged(to: .active)
@@ -136,11 +120,11 @@ struct LinkLifecycleModelTests {
 
     // MARK: DoD — the reconnect stays paused while backgrounded
 
-    @Test func reconnectStaysPausedWhileBackgrounded() async {
+    @Test func reconnectStaysPausedWhileBackgrounded() async throws {
         let (model, transport, _, _) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended") { model.phase == .suspended }
+        try await waitFor("suspended") { model.phase == .suspended }
 
         // However long the app sits in the background, nothing re-raises the
         // link: the suspend went through `suspendLink()` (whose contract is
@@ -153,14 +137,14 @@ struct LinkLifecycleModelTests {
         #expect(transport.count("connect") == 0)
 
         model.scenePhaseChanged(to: .active)
-        await eventually("resume on foreground only") { transport.count("resumeLink") == 1 }
+        try await waitFor("resume on foreground only") { transport.count("resumeLink") == 1 }
     }
 
     // MARK: A quick return mid-drain keeps the link up
 
-    @Test func foregroundDuringDrainKeepsTheLink() async {
+    @Test func foregroundDuringDrainKeepsTheLink() async throws {
         let (model, transport, grace, activity) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         let token = activity.begin()
         model.scenePhaseChanged(to: .background)
@@ -168,7 +152,7 @@ struct LinkLifecycleModelTests {
 
         model.scenePhaseChanged(to: .active)
         #expect(model.phase == .foreground)
-        await eventually("grace window returned") { grace.ended == grace.begun }
+        try await waitFor("grace window returned") { grace.ended == grace.begun }
 
         // The transfer finishing later must not fire the canceled suspend.
         activity.end(token)
@@ -179,23 +163,23 @@ struct LinkLifecycleModelTests {
 
     // MARK: Grace expiry forces the disconnect
 
-    @Test func graceExpiryForcesTheSuspend() async {
+    @Test func graceExpiryForcesTheSuspend() async throws {
         let (model, transport, grace, activity) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         let token = activity.begin()
         model.scenePhaseChanged(to: .background)
         #expect(model.phase == .draining)
 
         grace.fireExpiry()
-        await eventually("forced suspend") { transport.count("suspendLink") == 1 }
+        try await waitFor("forced suspend") { transport.count("suspendLink") == 1 }
         #expect(model.phase == .suspended)
         #expect(grace.ended == grace.begun, "the expired window is given back at once")
 
         // The stalled transfer resumes its story after the foreground
         // reconnect (upload sheet / H10 banner); the link itself comes back.
         model.scenePhaseChanged(to: .active)
-        await eventually("resume after a forced suspend") { transport.count("resumeLink") == 1 }
+        try await waitFor("resume after a forced suspend") { transport.count("resumeLink") == 1 }
         activity.end(token)
         await settle()
         #expect(transport.count("suspendLink") == 1, "the late drain must not re-suspend")
@@ -203,12 +187,12 @@ struct LinkLifecycleModelTests {
 
     // MARK: A never-connected session must not start scanning
 
-    @Test func neverConnectedSessionNeverResumes() async {
+    @Test func neverConnectedSessionNeverResumes() async throws {
         let (model, transport, _, _) = make()
         model.start()  // state stays .disconnected — a pair-intro session
 
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended") { model.phase == .suspended }
+        try await waitFor("suspended") { model.phase == .suspended }
         model.scenePhaseChanged(to: .active)
         await settle()
         #expect(
@@ -223,16 +207,16 @@ struct LinkLifecycleModelTests {
     /// a foreground return with no link at suspend time still starts nothing (the watch's scan is
     /// the transport's business, not this model's), and once a link exists again the ordinary
     /// suspend → `resumeLink()` round trip is unchanged.
-    @Test func aBluetoothToggleUnderTheWeatherWatchDoesNotChangeTheForegroundPolicy() async {
+    @Test func aBluetoothToggleUnderTheWeatherWatchDoesNotChangeTheForegroundPolicy() async throws {
         let (model, transport, _, _) = make()
-        await startConnected(model, transport)
+        try await startConnected(model, transport)
 
         // Radio off: the transport reports the link gone while the app is still foregrounded.
         transport.setState(.disconnected)
-        await eventually("link mirror down") { model.connection == .disconnected }
+        try await waitFor("link mirror down") { model.connection == .disconnected }
 
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended") { model.phase == .suspended }
+        try await waitFor("suspended") { model.phase == .suspended }
         model.scenePhaseChanged(to: .active)
         await settle()
         #expect(
@@ -241,12 +225,12 @@ struct LinkLifecycleModelTests {
 
         // Radio back and connected again: the normal policy, untouched.
         transport.setState(.connected)
-        await eventually("link mirror up") { model.connection == .connected }
+        try await waitFor("link mirror up") { model.connection == .connected }
         model.scenePhaseChanged(to: .background)
-        await eventually("suspended again") { model.phase == .suspended }
+        try await waitFor("suspended again") { model.phase == .suspended }
         #expect(transport.count("suspendLink") == 2)
         model.scenePhaseChanged(to: .active)
-        await eventually("resumed") { transport.count("resumeLink") == 1 }
+        try await waitFor("resumed") { transport.count("resumeLink") == 1 }
     }
 
     // MARK: The mock transport's default seam round-trips

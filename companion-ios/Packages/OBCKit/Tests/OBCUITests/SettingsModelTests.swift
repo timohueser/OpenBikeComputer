@@ -25,31 +25,15 @@ final class SettingsModelTests: XCTestCase {
         return (model, control)
     }
 
-    /// Poll until `condition` holds (the model moves on free-running tasks).
-    private func waitFor(
-        _ what: String,
-        timeout: Duration = .seconds(5),
-        _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                XCTFail("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: Identity + status (the G device row)
 
-    func testIdentityAndStatusLoadFromTheDevice() async {
+    func testIdentityAndStatusLoadFromTheDevice() async throws {
         let (model, _) = makeModel(.happyPath)
         model.start()
 
-        await waitFor("identity") { model.deviceName == "Trailhead" }
-        await waitFor("battery") { model.battery == 82 }
-        await waitFor("connection") { model.connection == .connected }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
+        try await waitFor("battery", timeout: .seconds(5)) { model.battery == 82 }
+        try await waitFor("connection", timeout: .seconds(5)) { model.connection == .connected }
         XCTAssertEqual(model.statusLine, "Connected · 82%")
         XCTAssertEqual(model.firmwareDisplay, "v0.4.2")
         // No "· latest" any more (#773 U5): since U4 the app has a real update channel, so the row
@@ -58,11 +42,11 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertTrue(model.canRename)
     }
 
-    func testDegradedLinkDimsRenameAndSaysWhy() async {
+    func testDegradedLinkDimsRenameAndSaysWhy() async throws {
         let (model, _) = makeModel(.outOfRange)
         model.start()
 
-        await waitFor("degraded state") { model.connection == .outOfRange }
+        try await waitFor("degraded state", timeout: .seconds(5)) { model.connection == .outOfRange }
         XCTAssertEqual(model.statusLine, "Out of range")
         XCTAssertFalse(model.canRename, "H3 is a config write — link-bound (S4 rule)")
         XCTAssertFalse(model.rename(to: "Summit"))
@@ -70,11 +54,11 @@ final class SettingsModelTests: XCTestCase {
 
     // MARK: Rename (H3)
 
-    func testRenameWritesConfigAndPropagates() async {
+    func testRenameWritesConfigAndPropagates() async throws {
         var renamedTo: String?
         let (model, control) = makeModel(.happyPath, onDeviceRenamed: { renamedTo = $0 })
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
 
         XCTAssertTrue(model.rename(to: "  Summit  "))
 
@@ -82,7 +66,7 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(renamedTo, "Summit", "the host callback refreshes the top bar")
         // Delta 1: the rename rides the Config blob to the device — the mock
         // reflects it into its served identity.
-        await waitFor("config write lands") { control.deviceInfo.name == "Summit" }
+        try await waitFor("config write lands", timeout: .seconds(5)) { control.deviceInfo.name == "Summit" }
         // The bond record greets with the new name on the next launch.
         XCTAssertEqual(MockBondStore(control: control).load()?.deviceName, "Summit")
         // The write landed → nothing to surface, nothing to reconcile.
@@ -91,13 +75,13 @@ final class SettingsModelTests: XCTestCase {
 
     /// #361 pin: rename is link-bound — a fully dropped link rejects it too
     /// (not only `.outOfRange`), before any optimistic state moves.
-    func testRenameWhileDisconnectedReturnsFalse() async {
+    func testRenameWhileDisconnectedReturnsFalse() async throws {
         let (model, control) = makeModel(.happyPath)
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
 
         control.connection = .disconnected
-        await waitFor("link down") { model.connection == .disconnected }
+        try await waitFor("link down", timeout: .seconds(5)) { model.connection == .disconnected }
 
         XCTAssertFalse(model.rename(to: "Summit"))
         XCTAssertEqual(model.deviceName, "Trailhead")
@@ -107,17 +91,17 @@ final class SettingsModelTests: XCTestCase {
     /// #361: a rename whose `writeConfig` leg fails — the phone keeps the
     /// optimistic name, the one-shot flag drives the toast, and the *bond
     /// record* keeps the desired name so the reconcile pass can converge.
-    func testRenameWriteFailureSetsTheFlagAndKeepsTheOptimisticName() async {
+    func testRenameWriteFailureSetsTheFlagAndKeepsTheOptimisticName() async throws {
         let transport = ConfigSpyTransport(config: DeviceConfig(name: "Trailhead"))
         let bondStore = RecordingBondStore(BondRecord(deviceName: "Trailhead"))
         let model = SettingsModel(transport: transport, bondStore: bondStore)
         model.start()
-        await waitFor("connected") { model.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model.connection == .connected }
 
         transport.failNextWrite()
         XCTAssertTrue(model.rename(to: "Summit"))
 
-        await waitFor("failure flag") { model.renameWriteFailed }
+        try await waitFor("failure flag", timeout: .seconds(5)) { model.renameWriteFailed }
         XCTAssertEqual(model.deviceName, "Summit", "the rename stays optimistic")
         XCTAssertEqual(transport.config.name, "Trailhead", "the device never got it")
         XCTAssertEqual(bondStore.load()?.deviceName, "Summit", "the desired name survives")
@@ -131,15 +115,15 @@ final class SettingsModelTests: XCTestCase {
     /// rename's `readConfig` leg (the first op) — same flag, same heal, and
     /// `MockBondStore` serves the diverged desired name the way the real
     /// `UserDefaultsBondStore` would.
-    func testRenameReadFailureFlagsAndReconcileHealsThroughTheMock() async {
+    func testRenameReadFailureFlagsAndReconcileHealsThroughTheMock() async throws {
         let (model, control) = makeModel(.happyPath)
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
 
         control.failNextOp(.readFailed)
         XCTAssertTrue(model.rename(to: "Summit"))
 
-        await waitFor("failure flag") { model.renameWriteFailed }
+        try await waitFor("failure flag", timeout: .seconds(5)) { model.renameWriteFailed }
         XCTAssertEqual(control.deviceInfo.name, "Trailhead", "the device never got it")
         XCTAssertEqual(MockBondStore(control: control).load()?.deviceName, "Summit")
 
@@ -152,10 +136,10 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(control.deviceInfo.name, "Summit")
     }
 
-    func testRenameCapsOverLongNamesAtTheS0Limit() async {
+    func testRenameCapsOverLongNamesAtTheS0Limit() async throws {
         let (model, control) = makeModel(.happyPath)
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
 
         // 40 × 3-byte scalars = 120 UTF-8 bytes; the cap lands on a Character
         // boundary at the 16 that fit in 48 B — so the app-side name and the
@@ -163,13 +147,13 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertTrue(model.rename(to: String(repeating: "名", count: 40)))
         XCTAssertEqual(model.deviceName, String(repeating: "名", count: 16))
         XCTAssertLessThanOrEqual(model.deviceName.utf8.count, DeviceConfig.maxNameUTF8Bytes)
-        await waitFor("config write lands") { control.deviceInfo.name == model.deviceName }
+        try await waitFor("config write lands", timeout: .seconds(5)) { control.deviceInfo.name == model.deviceName }
     }
 
-    func testRenameRejectsEmptyNames() async {
+    func testRenameRejectsEmptyNames() async throws {
         let (model, control) = makeModel(.happyPath)
         model.start()
-        await waitFor("identity") { model.deviceName == "Trailhead" }
+        try await waitFor("identity", timeout: .seconds(5)) { model.deviceName == "Trailhead" }
 
         XCTAssertFalse(model.rename(to: "   "))
         XCTAssertEqual(model.deviceName, "Trailhead")
@@ -180,7 +164,7 @@ final class SettingsModelTests: XCTestCase {
 
     /// The state/battery streams never finish, and RootView makes a fresh model
     /// per Settings push — the loops must not retain the model past its screen.
-    func testStreamTasksDoNotRetainTheModel() async {
+    func testStreamTasksDoNotRetainTheModel() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         weak var leaked: SettingsModel?
@@ -190,7 +174,7 @@ final class SettingsModelTests: XCTestCase {
                 bondStore: MockBondStore(control: control)
             )
             model.start()
-            await waitFor("streams running") { model.connection == .connected }
+            try await waitFor("streams running", timeout: .seconds(5)) { model.connection == .connected }
             leaked = model
         }
         // The model's last strong ref is gone; push an event through the still-
@@ -202,42 +186,42 @@ final class SettingsModelTests: XCTestCase {
 
     // MARK: Forget (H2)
 
-    func testForgetWhileConnectedDissolvesTheDeviceBondThenClears() async {
+    func testForgetWhileConnectedDissolvesTheDeviceBondThenClears() async throws {
         // #756: a connected forget first tells the device to dissolve its side of
         // the bond (so re-pairing isn't wedged by reject-when-bonded), THEN clears
         // the phone's record and drops the link.
         var forgetFired = false
         let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
         model.start()
-        await waitFor("connected") { model.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model.connection == .connected }
 
         model.forget()
 
-        await waitFor("device bond dissolved") { control.forgetBondCount == 1 }
-        await waitFor("bond record cleared") { !control.bonded }
-        await waitFor("host signaled") { forgetFired }
+        try await waitFor("device bond dissolved", timeout: .seconds(5)) { control.forgetBondCount == 1 }
+        try await waitFor("bond record cleared", timeout: .seconds(5)) { !control.bonded }
+        try await waitFor("host signaled", timeout: .seconds(5)) { forgetFired }
     }
 
-    func testConnectedForgetMessageDropsTheDeviceStep() async {
+    func testConnectedForgetMessageDropsTheDeviceStep() async throws {
         let (model, _) = makeModel(.happyPath)
         model.start()
-        await waitFor("connected") { model.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model.connection == .connected }
         XCTAssertFalse(
             model.forgetMessage.contains("Forget phone"),
             "connected: the app dissolves the device bond, so no device step in the copy"
         )
     }
 
-    func testOfflineForgetClearsWithoutBlockingOrCommandingTheDevice() async {
+    func testOfflineForgetClearsWithoutBlockingOrCommandingTheDevice() async throws {
         // Offline: the device is unreachable, so no `forgetBond` is sent (it would
         // only throw), and the forget still clears the record immediately — exactly
         // the prior behaviour. The copy keeps the Forget-phone-on-device guidance.
         var forgetFired = false
         let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
         model.start()
-        await waitFor("connected") { model.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model.connection == .connected }
         control.connection = .disconnected
-        await waitFor("link down") { model.connection == .disconnected }
+        try await waitFor("link down", timeout: .seconds(5)) { model.connection == .disconnected }
 
         model.forget()
 
@@ -251,23 +235,23 @@ final class SettingsModelTests: XCTestCase {
         )
     }
 
-    func testConnectedForgetStillClearsWhenTheCommandFails() async {
+    func testConnectedForgetStillClearsWhenTheCommandFails() async throws {
         // Best-effort: the device may not answer `forgetBond` (a genuine timeout,
         // or the link dropping the instant it acks). An armed one-shot fault stands
         // in for that — the forget must still clear the record and signal the host.
         var forgetFired = false
         let (model, control) = makeModel(.happyPath, onForget: { forgetFired = true })
         model.start()
-        await waitFor("connected") { model.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model.connection == .connected }
         control.failNextOp(.writeFailed)
 
         model.forget()
 
-        await waitFor("bond record cleared despite the failed command") { !control.bonded }
-        await waitFor("host signaled") { forgetFired }
+        try await waitFor("bond record cleared despite the failed command", timeout: .seconds(5)) { !control.bonded }
+        try await waitFor("host signaled", timeout: .seconds(5)) { forgetFired }
     }
 
-    func testConnectedForgetClearsEvenIfTheModelDiesDuringTheAckWait() async {
+    func testConnectedForgetClearsEvenIfTheModelDiesDuringTheAckWait() async throws {
         // The forgetBond command is SENT the moment forget() runs — so if the
         // model deallocates during the ack window (screen popped, app torn down),
         // the local clear must still happen: the device has already dissolved its
@@ -283,14 +267,14 @@ final class SettingsModelTests: XCTestCase {
             onForget: { forgetFired = true }
         )
         model?.start()
-        await waitFor("connected") { model?.connection == .connected }
+        try await waitFor("connected", timeout: .seconds(5)) { model?.connection == .connected }
         control.latency = .milliseconds(200) // hold the ack window open
 
         model?.forget()
         model = nil // the Settings screen pops mid-wait
 
-        await waitFor("device bond dissolved") { control.forgetBondCount == 1 }
-        await waitFor("bond record cleared despite the dead model") { !control.bonded }
-        await waitFor("host signaled") { forgetFired }
+        try await waitFor("device bond dissolved", timeout: .seconds(5)) { control.forgetBondCount == 1 }
+        try await waitFor("bond record cleared despite the dead model", timeout: .seconds(5)) { !control.bonded }
+        try await waitFor("host signaled", timeout: .seconds(5)) { forgetFired }
     }
 }
