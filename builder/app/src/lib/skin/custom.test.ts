@@ -109,12 +109,18 @@ describe("custom skin rain bands", () => {
         persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
         for (const unknown of [
             { ...schema, id: "another-schema" },
+            { ...schema, revision: 2 },
             { ...schema, styles: schema.styles.slice(1) },
             { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, id: 99 } : style) },
             { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, feature_type: "unknown.layer" } : style) },
         ]) {
             expect(() => prepareCustomSkin(hosted, unknown, "Mine", null)).toThrow(/unavailable for this map schema/);
             expect(() => persistCustomSkins(storage, unknown, [{ skin, based_on: "default" }])).toThrow(/unavailable for this map schema/);
+            // Match the envelope to the new catalog so its existing identity check cannot mask admission.
+            const envelope = JSON.parse(storage.values.get(CUSTOM_SKINS_KEY)!);
+            envelope.schema_id = unknown.id;
+            envelope.schema_revision = unknown.revision;
+            storage.values.set(CUSTOM_SKINS_KEY, JSON.stringify(envelope));
             expect(loadCustomSkins(storage, unknown)).toEqual([]);
         }
     });
