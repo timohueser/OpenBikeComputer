@@ -352,7 +352,6 @@ private struct PlannedRouteFile: Codable {
     /// A device link needs its object id, serial, and store identity.
     /// Incomplete links remain unbound until content reconciliation.
     var deviceSerial: String?
-    var deviceStoreEpoch: UInt32?
     var deviceStoreID: String?
     /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
     /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
@@ -377,7 +376,6 @@ private struct PlannedRouteFile: Codable {
         sourceFileName = record.sourceFileName
         deviceObjectID = record.deviceLink?.objectID.raw
         deviceSerial = record.deviceLink?.serial
-        deviceStoreEpoch = record.deviceLink?.epoch
         deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         retention = record.retention?.rawValue
@@ -391,10 +389,6 @@ private struct PlannedRouteFile: Codable {
             if let deviceObjectID, let deviceSerial, let deviceStoreID {
                 DeviceRouteLink(
                     serial: deviceSerial, storeID: deviceStoreID,
-                    objectID: DeviceObjectID(deviceObjectID))
-            } else if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
-                DeviceRouteLink(
-                    serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))
             } else {
                 nil
@@ -422,9 +416,9 @@ private struct PlannedRouteFile: Codable {
 /// file's, i.e. the domain's `stageIDs`, source of truth.
 ///
 /// The device link persists exactly the way `PlannedRouteFile`'s does:
-/// `deviceObjectID`/`deviceSerial`/`deviceStoreEpoch` as separate optional
+/// `deviceObjectID`/`deviceSerial`/`deviceStoreID` as separate optional
 /// fields, **all-or-nothing on read** — a partial/flat link (id without
-/// serial/epoch) decodes as **no link at all** (#769: the link is only real
+/// serial/store identity) decodes as **no link at all** (#769: the link is only real
 /// when all three parts are present, so it can never light a badge or drive a
 /// replace-by-id against the wrong device or era). The id stays a bare `UInt64`
 /// on disk (the domain's `DeviceObjectID` wraps it at the boundary); link +
@@ -436,7 +430,6 @@ private struct TripFile: Codable {
     var stageIDs: [String]
     var deviceObjectID: UInt64?
     var deviceSerial: String?
-    var deviceStoreEpoch: UInt32?
     var deviceStoreID: String?
     var uploadedCRC32: UInt32?
     var addedAt: Date
@@ -448,7 +441,6 @@ private struct TripFile: Codable {
         stageIDs = record.stageIDs.map(\.rawValue)
         deviceObjectID = record.deviceLink?.objectID.raw
         deviceSerial = record.deviceLink?.serial
-        deviceStoreEpoch = record.deviceLink?.epoch
         deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
@@ -459,10 +451,6 @@ private struct TripFile: Codable {
             if let deviceObjectID, let deviceSerial, let deviceStoreID {
                 DeviceRouteLink(
                     serial: deviceSerial, storeID: deviceStoreID,
-                    objectID: DeviceObjectID(deviceObjectID))
-            } else if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
-                DeviceRouteLink(
-                    serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))
             } else {
                 nil

@@ -249,7 +249,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
             control.deviceInfo = DeviceInfo(
                 name: info.name, firmwareVersion: info.firmwareVersion,
                 hardwareVersion: info.hardwareVersion, serial: info.serial,
-                protocolVersion: info.protocolVersion, storeEpoch: info.storeEpoch,
+                protocolVersion: info.protocolVersion, storeID: info.storeID,
                 obcmVersion: info.obcmVersion, featureBits: 0)
         }
         return control

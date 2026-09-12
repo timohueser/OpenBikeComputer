@@ -265,101 +265,11 @@ struct WeatherRefreshTests {
     }
 }
 
-// MARK: - Compatibility: #1188's acceptance criteria
-
-@Suite("Weather capability compatibility")
-struct WeatherCapabilityCompatibilityTests {
-    /// The identity read as `BLETransport.deviceInfo()` decodes it — transcribed rather than called,
-    /// because the transport's copy needs a live CoreBluetooth read. Kept byte-for-byte in step with
-    /// it; `ProtocolVectorTests` pins both against the checked-in vectors.
-    private func decodeIdentity(_ bytes: Data) -> (version: UInt16, epoch: UInt32?, obcm: UInt8?, features: UInt32?) {
-        let b = bytes.startIndex
-        let version = bytes.count >= 2 ? UInt16(bytes[b]) | (UInt16(bytes[b + 1]) << 8) : OBCProtocol.version
-        let epoch: UInt32? = bytes.count >= 6
-            ? UInt32(bytes[b + 2]) | (UInt32(bytes[b + 3]) << 8)
-                | (UInt32(bytes[b + 4]) << 16) | (UInt32(bytes[b + 5]) << 24)
-            : nil
-        let obcm: UInt8? = bytes.count >= 7 ? bytes[b + 6] : nil
-        let features: UInt32? = bytes.count >= 11
-            ? UInt32(bytes[b + 7]) | (UInt32(bytes[b + 8]) << 8)
-                | (UInt32(bytes[b + 9]) << 16) | (UInt32(bytes[b + 10]) << 24)
-            : nil
-        return (version, epoch, obcm, features)
-    }
-
-    /// A legacy extended identity fixture carried forward for weather compatibility checks.
-    /// features = weather.
-    private var newFirmwareRead: Data {
-        Data([0x04, 0x00, 0xD4, 0xC3, 0xB2, 0xA1, 12, 0x01, 0x00, 0x00, 0x00])
-    }
-
-    /// **Old app ↔ new firmware.** A shipped app decodes the identity read with the pre-WX3 rules
-    /// (`>= 6` bytes, take byte 6 if present, ignore the rest) and must survive the widened read —
-    /// same version, same epoch, same map version, and **no mismatch path**.
-    @Test func oldAppReadsTheWidenedIdentityReadWithoutNoticing() {
-        let wire = newFirmwareRead
-        #expect(wire.count == 11, "a weather device serves the full read")
-
-        // The pre-WX3 decoder, transcribed — it never looks past byte 6.
-        let b = wire.startIndex
-        let oldVersion = UInt16(wire[b]) | (UInt16(wire[b + 1]) << 8)
-        let oldEpoch = UInt32(wire[b + 2]) | (UInt32(wire[b + 3]) << 8)
-            | (UInt32(wire[b + 4]) << 16) | (UInt32(wire[b + 5]) << 24)
-        let oldObcm: UInt8? = wire.count >= 7 ? wire[b + 6] : nil
-
-        #expect(oldVersion == OBCProtocol.version, "no protocol bump — no mismatch banner")
-        #expect(OBCProtocol.versionMismatch(reportedBy: oldVersion) == nil)
-        #expect(oldEpoch == 0xA1B2_C3D4)
-        #expect(oldObcm == 12)
-    }
-
-    /// **New app ↔ old firmware.** A 7-byte (pre-WX3) and a 6-byte (pre-E1) read must decode as
-    /// *no weather capability* — absent, never fabricated — and must not offer weather.
-    @Test func newAppReadsOldFirmwareAsHavingNoWeather() {
-        let preWX3 = Data([0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 12])
-        let decodedPreWX3 = decodeIdentity(preWX3)
-        #expect(decodedPreWX3.obcm == 12)
-        #expect(decodedPreWX3.features == nil, "absent, never 0")
-        #expect(!DeviceInfo(name: "OBC", firmwareVersion: "1.0", featureBits: decodedPreWX3.features).supportsWeather)
-
-        let preE1 = Data([0x02, 0x00, 0x09, 0x00, 0x00, 0x00])
-        let decodedPreE1 = decodeIdentity(preE1)
-        #expect(decodedPreE1.epoch == 9, "the epoch is present, so the ack gate stays open")
-        #expect(decodedPreE1.obcm == nil)
-        #expect(decodedPreE1.features == nil)
-        #expect(!DeviceInfo(name: "OBC", firmwareVersion: "1.0", featureBits: decodedPreE1.features).supportsWeather)
-    }
-
-    @Test func allFourIdentityReadLengthsDecode() {
-        #expect(decodeIdentity(newFirmwareRead).features == OBCProtocol.featureWeather, "11 bytes")
-        #expect(decodeIdentity(newFirmwareRead.prefix(7)).obcm == 12, "7 bytes")
-        #expect(decodeIdentity(newFirmwareRead.prefix(6)).epoch == 0xA1B2_C3D4, "6 bytes")
-
-        // 2 bytes: no mounted card, so no era to name — and no room for the bytes after it.
-        let noStore = decodeIdentity(newFirmwareRead.prefix(2))
-        #expect(noStore.version == OBCProtocol.version)
-        #expect(noStore.epoch == nil, "ack fail-closed — never epoch 0, which is a legal era")
-        #expect(noStore.obcm == nil)
-        #expect(noStore.features == nil)
-    }
-
-    /// 8, 9 and 10 bytes are a broken read of a `u32`, not a smaller capability set. Decoding the
-    /// bytes that arrived could claim a feature the device never announced.
-    @Test func aPartialCapabilityWordNeverClaimsWeather() {
-        for length in 8..<11 {
-            let decoded = decodeIdentity(newFirmwareRead.prefix(length))
-            #expect(decoded.features == nil, "\(length) bytes must not yield a partial word")
-            let info = DeviceInfo(name: "OBC", firmwareVersion: "1.0", featureBits: decoded.features)
-            #expect(!info.supportsWeather, "\(length) bytes must not claim weather")
-        }
-    }
-
+@Suite("Weather capability gating")
+struct WeatherCapabilityTests {
     @Test func unknownFeatureBitsAreIgnored() {
-        // Bit 31 is a capability this build has never heard of; it must not mask bit 0 beside it.
-        let exotic = Data([0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 12, 0x01, 0x00, 0x00, 0x80])
-        let decoded = decodeIdentity(exotic)
-        #expect(decoded.features == (OBCProtocol.featureWeather | 1 << 31))
-        #expect(DeviceInfo(name: "OBC", firmwareVersion: "1.0", featureBits: decoded.features).supportsWeather)
+        let features = OBCProtocol.featureWeather | 1 << 31
+        #expect(DeviceInfo(name: "OBC", firmwareVersion: "1.0", featureBits: features).supportsWeather)
     }
 
     @Test func anAbsentCapabilityWordIsNotAFabricatedZero() {
