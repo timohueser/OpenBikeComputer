@@ -5,7 +5,7 @@
 use crate::{RideRepository, RouteRepository, TrackRepository};
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::RideClose;
-use obc_app::{CatalogObjectId, RideSummary};
+use obc_app::{CatalogObjectId, RideEntry, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_route::{Profile, RideStats, RouteSummary};
 
@@ -39,7 +39,7 @@ impl MemRouteStore {
         s
     }
 
-    /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
+    /// The route catalog (paired entries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
@@ -135,8 +135,7 @@ impl RouteRepository for MemRouteStore {
 /// An in-memory ride store: a fixed demo catalog so the Rides screen renders (#454). Hold-to-delete
 /// removes rows for the session; nothing is ever written.
 pub struct MemRideStore {
-    catalog: Vec<RideSummary>,
-    ids: Vec<obc_app::CatalogObjectId>,
+    catalog: Vec<RideEntry>,
 }
 
 impl MemRideStore {
@@ -145,36 +144,30 @@ impl MemRideStore {
     /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) so a ride and a route can never share an identity the
     /// namespace-free `CatalogEffect::RemoveObject` would confuse.
     pub fn new(catalog: Vec<RideSummary>) -> Self {
-        let ids = (0..catalog.len() as obc_app::CatalogObjectId).map(|i| crate::RIDE_ID_BASE + i).collect();
-        MemRideStore { catalog, ids }
+        let catalog = catalog
+            .into_iter()
+            .enumerate()
+            .map(|(i, summary)| RideEntry { id: crate::RIDE_ID_BASE + i as CatalogObjectId, summary })
+            .collect();
+        MemRideStore { catalog }
     }
 
-    /// The ride catalog (summaries), for [`App::set_rides`](obc_app::App::set_rides).
-    pub fn catalog(&self) -> &[RideSummary] {
+    /// The ride catalog (paired entries), for [`App::set_rides`](obc_app::App::set_rides).
+    pub fn catalog(&self) -> &[RideEntry] {
         &self.catalog
-    }
-
-    /// Each catalog entry's id, parallel to [`catalog`](MemRideStore::catalog).
-    pub fn ids(&self) -> &[obc_app::CatalogObjectId] {
-        &self.ids
     }
 
     /// Delete the ride with id `id` (the hold-to-delete footer). `Ok(true)` = removed, `Ok(false)` = absent.
     pub fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> Result<bool, CatalogError> {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Ok(false) };
+        let Some(pos) = self.catalog.iter().position(|entry| entry.id == id) else { return Ok(false) };
         self.catalog.remove(pos);
-        self.ids.remove(pos);
         Ok(true)
     }
 }
 
 impl RideRepository for MemRideStore {
-    fn catalog(&self) -> &[RideSummary] {
+    fn catalog(&self) -> &[RideEntry] {
         self.catalog()
-    }
-
-    fn ids(&self) -> &[obc_app::CatalogObjectId] {
-        self.ids()
     }
 
     fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> Result<bool, CatalogError> {

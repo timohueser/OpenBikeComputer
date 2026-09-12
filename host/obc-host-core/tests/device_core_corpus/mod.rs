@@ -342,8 +342,7 @@ pub struct CorpusState {
     pub app: App,
     pub routes: Vec<RouteSummary>,
     pub route_ids: Vec<u64>,
-    pub rides: Vec<RideSummary>,
-    pub ride_ids: Vec<u64>,
+    pub rides: Vec<obc_app::RideEntry>,
     pub trip_stage_ids: Vec<u64>,
     pub trip_present: bool,
     pub nav_generation: u16,
@@ -393,19 +392,21 @@ impl CorpusState {
     pub fn new() -> Self {
         let routes = vec![route("Alpha"), route("Beta"), route("Gamma")];
         let route_ids = vec![10, 20, 30];
-        let rides = vec![ride("Morning"), ride("Evening")];
-        let ride_ids = vec![70, 90];
+        let rides = vec![
+            obc_app::RideEntry { id: 70, summary: ride("Morning") },
+            obc_app::RideEntry { id: 90, summary: ride("Evening") },
+        ];
+
         let trip_stage_ids = vec![10, 20];
         let mut app = App::new_idle(AppState::new(8_330_000, 46_570_000, 1.0));
         app.set_routes_with_ids(&routes, &route_ids);
-        app.set_rides(&rides, &ride_ids);
+        app.set_rides(&rides);
         app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &trip_stage_ids }]);
         Self {
             app,
             routes,
             route_ids,
             rides,
-            ride_ids,
             trip_stage_ids,
             trip_present: true,
             nav_generation: 0,
@@ -463,7 +464,7 @@ impl CorpusState {
     }
 
     pub fn feed_rides(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
-        self.app.set_rides(&self.rides, &self.ride_ids);
+        self.app.set_rides(&self.rides);
         trace.record_feeder(FeederCall::new(FeederKind::RideCatalog, key, self.rides.len()));
     }
 
@@ -479,7 +480,7 @@ impl CorpusState {
     fn reset_to_riding_map(&mut self) {
         self.app = App::new_idle(AppState::new(7_500_000, 43_500_000, 1.0));
         self.app.set_routes_with_ids(&self.routes, &self.route_ids);
-        self.app.set_rides(&self.rides, &self.ride_ids);
+        self.app.set_rides(&self.rides);
         self.app.set_map_nav_graph(true);
         self.app.state.user_fix = Some(road_fix(0.0));
         self.mount_store(); // the ride these gestures start needs somewhere to go
@@ -698,12 +699,12 @@ impl CorpusState {
             Action::StampRideSync => {
                 self.app.stamp_clock_ble(1_720_000_000, 60);
                 let mut stamped = self.rides[0].clone();
-                stamped.synced = true;
-                stamped.synced_at_utc = 0;
+                stamped.summary.synced = true;
+                stamped.summary.synced_at_utc = 0;
                 self.rides[0] = stamped;
                 self.feed_rides("retention.synced", trace);
                 self.app.set_ride_retention_inventory(&[RideRetentionRecord {
-                    id: self.ride_ids[0],
+                    id: self.rides[0].id,
                     synced: true,
                     synced_at_utc: 0,
                 }]);
@@ -789,7 +790,6 @@ impl CorpusState {
             }
             Action::RemapRideIdentity => {
                 self.rides.swap(0, 1);
-                self.ride_ids.swap(0, 1);
                 self.feed_rides("ride.remap", trace);
             }
             Action::ReplaceRideTrackNeed => {
@@ -901,8 +901,8 @@ pub fn visible_state(
         mode: app.mode(),
         route_names: app.routes().iter().map(|item| item.name.as_str().to_owned()).collect(),
         route_ids: app.route_ids().iter().map(|&id| fixture_object_key(ObjectKind::Route, id)).collect(),
-        ride_names: app.rides().iter().map(|item| item.name.as_str().to_owned()).collect(),
-        ride_ids: app.ride_ids().iter().map(|&id| fixture_object_key(ObjectKind::Ride, id)).collect(),
+        ride_names: app.rides().iter().map(|item| item.summary.name.as_str().to_owned()).collect(),
+        ride_ids: app.rides().iter().map(|entry| fixture_object_key(ObjectKind::Ride, entry.id)).collect(),
         trip_names: app.trips().iter().map(|item| item.name.as_str().to_owned()).collect(),
         trip_ids: app.trips().iter().map(|trip| fixture_object_key(ObjectKind::Trip, trip.id)).collect(),
         active_route_name: app
@@ -978,22 +978,16 @@ impl RouteRepository for BorrowedRoutes<'_> {
 }
 
 struct BorrowedRides<'a> {
-    catalog: &'a mut Vec<RideSummary>,
-    ids: &'a mut Vec<u64>,
+    catalog: &'a mut Vec<obc_app::RideEntry>,
 }
 
 impl RideRepository for BorrowedRides<'_> {
-    fn catalog(&self) -> &[RideSummary] {
+    fn catalog(&self) -> &[obc_app::RideEntry] {
         self.catalog
     }
 
-    fn ids(&self) -> &[u64] {
-        self.ids
-    }
-
     fn delete_by_id(&mut self, id: u64) -> Result<bool, CatalogError> {
-        let Some(index) = self.ids.iter().position(|candidate| *candidate == id) else { return Ok(false) };
-        self.ids.remove(index);
+        let Some(index) = self.catalog.iter().position(|entry| entry.id == id) else { return Ok(false) };
         self.catalog.remove(index);
         Ok(true)
     }

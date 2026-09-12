@@ -71,7 +71,7 @@ pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &m
 }
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
-    app.set_rides(rides.catalog(), rides.ids());
+    app.set_rides(rides.catalog());
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
@@ -834,10 +834,7 @@ mod tests {
 
         struct FailedRide;
         impl RideRepository for FailedRide {
-            fn catalog(&self) -> &[obc_app::RideSummary] {
-                &[]
-            }
-            fn ids(&self) -> &[u64] {
+            fn catalog(&self) -> &[obc_app::RideEntry] {
                 &[]
             }
             fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {

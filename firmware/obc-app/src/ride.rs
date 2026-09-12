@@ -3,7 +3,7 @@
 //! A stored Ride object is described to the UI by a [`RideSummary`]: the v3 footer facts
 //! ([`obc_route::RideInfo`]) — name + start time + totals — with no resident track geometry. The
 //! host lists the device's flat catalog (the simulator may use files as its stand-in) and hands the
-//! summaries to [`App::set_rides`](crate::App::set_rides).
+//! paired identities and summaries to [`App::set_rides`](crate::App::set_rides).
 //!
 //! Each summary carries a host-supplied `synced` flag. Its future flat ride-domain persistence is
 //! #1398's boundary; FS8 intentionally has no FAT sidecar compatibility path.
@@ -17,17 +17,26 @@ use obc_route::RideInfo;
 /// catalog is deliberately smaller ([`UI_RIDES_CAP`]).
 pub const MAX_RIDES: usize = 128;
 
-/// Maximum rides the **resident** menu catalog holds — the newest [`UI_RIDES_CAP`] of however many
-/// the card stores. Deliberately far below [`MAX_RIDES`]: a resident 128-ride catalog (plus the
-/// board's parallel filename/id tables) cost ~8 KB of `.bss`, and on the 256 KB part stack and
-/// statics are zero-sum — that growth ate the deep-render path's ~1.6 KB stack margin and
-/// hard-faulted at boot (#454 review). The Rides screen is see-and-delete, not an archive browser;
-/// 32 newest rows cover it, and the cap can relax on the 512 KB LM20.
+/// Maximum resident menu rows. The separate compact retention inventory can
+/// cover older rides without retaining their full summaries.
 pub const UI_RIDES_CAP: usize = 32;
 
-/// The app's resident ride catalog: the summaries the Rides screen lists (newest first, capped at
+/// The app's resident ride catalog: the paired entries the Rides screen lists (newest first, capped at
 /// [`UI_RIDES_CAP`]).
-pub type RideCatalog = heapless::Vec<RideSummary, UI_RIDES_CAP>;
+pub type RideCatalog = heapless::Vec<RideEntry, UI_RIDES_CAP>;
+
+/// One stored ride's durable identity and menu facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RideEntry {
+    pub id: crate::CatalogObjectId,
+    pub summary: RideSummary,
+}
+
+// Pairing must not add per-row padding on the board or host.
+const _: () = assert!(
+    core::mem::size_of::<RideEntry>()
+        == core::mem::size_of::<RideSummary>() + core::mem::size_of::<crate::CatalogObjectId>()
+);
 
 /// A stored ride's header facts for the Rides screen — the `rideList` header without the track
 /// points, plus the device-local `synced` flag the unsynced-delete guard keys on.

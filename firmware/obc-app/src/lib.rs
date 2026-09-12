@@ -101,7 +101,7 @@ pub use retention::{
     decode_route_retention, encode_route_retention, Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta,
     RouteRetentionStore, ROUTE_RETENTION_MAX_LEN,
 };
-pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
+pub use ride::{RideCatalog, RideEntry, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen, WeatherAlertKind};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
