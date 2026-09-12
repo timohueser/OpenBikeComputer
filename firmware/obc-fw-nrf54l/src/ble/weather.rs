@@ -6,7 +6,7 @@
 //! matrix, pinned against a synthetic clock); this module is only the plumbing around it:
 //!
 //! - **Inputs** cross the plane boundary the same way every other App fact does: the ride loop
-//!   distils an [`obc_app::ble::WeatherSnapshot`] once per pass ([`set_weather_inputs`], the reverse
+//!   distils an [`obc_app::ble::WeatherRequestInputs`] once per pass ([`set_weather_inputs`], the reverse
 //!   direction of `app_ble_status`), and the Config write path pokes [`note_settings_changed`].
 //! - **Outputs** are exactly two: `server.set` on the Weather Request context attribute (so the
 //!   next authenticated read serves this request), and [`super::state::arm_weather_request`] (the
@@ -30,7 +30,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use obc_app::ble::WeatherSnapshot;
+use obc_app::ble::WeatherRequestInputs;
 use obc_ble::weather_request::{RequestContextBundle, RequestContextFacts, RequestContextFix};
 use obc_ble::{BundleFacts, DueScheduler, WeatherRefresh, WeatherRequestContext, VALID_POSITION};
 
@@ -51,7 +51,7 @@ use super::state;
 
 /// The app-side context inputs, pushed by the ride loop once per pass (last-writer-wins — the
 /// scheduler reads whatever is freshest when it wakes).
-const EMPTY_SNAPSHOT: WeatherSnapshot = WeatherSnapshot {
+const EMPTY_INPUTS: WeatherRequestInputs = WeatherRequestInputs {
     ride_active: false,
     position: None,
     bearing_deg: None,
@@ -59,15 +59,14 @@ const EMPTY_SNAPSHOT: WeatherSnapshot = WeatherSnapshot {
     route_id: None,
     now_utc: None,
 };
-static SNAPSHOT: BlockingMutex<CriticalSectionRawMutex, Cell<WeatherSnapshot>> =
-    BlockingMutex::new(Cell::new(EMPTY_SNAPSHOT));
+static INPUTS: BlockingMutex<CriticalSectionRawMutex, Cell<WeatherRequestInputs>> =
+    BlockingMutex::new(Cell::new(EMPTY_INPUTS));
 
 /// The scheduler task's wake edge — rung by every event below. Level + latest-state: a burst of
 /// edges wakes the task once and it re-reads the current levels, so nothing here queues.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// The rider opened Weather (WX11 wires the screen; the seam exists now so the screen PR is
-/// UI-only) — an urgent request, honoured even outside a ride and with refresh `Off`.
+/// A typed refresh request raises urgent work, including outside a ride and with refresh `Off`.
 static URGENT: AtomicBool = AtomicBool::new(false);
 /// UI-facing level from dashboard entry/scheduler raise through commit or request lapse.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
@@ -78,11 +77,11 @@ static PENDING_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 static UNCHANGED: BlockingMutex<CriticalSectionRawMutex, Cell<Option<(u32, u16)>>> =
     BlockingMutex::new(Cell::new(None));
 
-/// Push the app-side weather context snapshot across the plane boundary (ride loop, once per pass
+/// Push the app-side weather request inputs across the plane boundary (ride loop, once per pass
 /// — one small `Cell` store). Wakes the scheduler only on the edges it keys on (ride state, the
 /// active route), never at the 1 Hz fix cadence.
-pub fn set_weather_inputs(s: WeatherSnapshot) {
-    let material_change = SNAPSHOT.lock(|c| {
+pub fn set_weather_inputs(s: WeatherRequestInputs) {
+    let material_change = INPUTS.lock(|c| {
         let prev = c.get();
         c.set(s);
         prev.ride_active != s.ride_active || prev.route_id != s.route_id
@@ -92,9 +91,7 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
     }
 }
 
-/// The rider opened Weather: raise an urgent request now (spec §11.4 reason bit 1). The board ride
-/// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
-/// dashboard's child surfaces does not re-arm it.
+/// Raise an urgent request for the Weather effect (spec §11.4 reason bit 1).
 pub fn request_weather_now() {
     URGENT.store(true, Ordering::Relaxed);
     IN_FLIGHT.store(true, Ordering::Relaxed);
@@ -172,7 +169,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         if URGENT.swap(false, Ordering::Relaxed) {
             sched.open_weather();
         }
-        let snapshot = SNAPSHOT.lock(|c| c.get());
+        let inputs = INPUTS.lock(|c| c.get());
         // The persisted setting is obc-app's typed enum whose discriminant IS the §11.8 wire
         // byte (pinned), so the fallback is unreachable.
         let refresh_raw = store.borrow().settings().weather_refresh as u8;
@@ -182,11 +179,11 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         let store_ready = flat.is_some_and(|store| store.mode().readable());
         let candidate = bundle.map(crate::flat_store::FlatWeather::candidate);
         let policy = bundle.map(crate::flat_store::FlatWeather::header);
-        let (location_changed, source_current) = match (candidate, policy, snapshot.now_utc) {
+        let (location_changed, source_current) = match (candidate, policy, inputs.now_utc) {
             (Some(b), Some(policy), Some(now_utc)) => {
                 let centre_lat = (policy.south_lat_udeg as i64 + policy.north_lat_udeg as i64) / 2;
                 let centre_lon = (policy.west_lon_udeg as i64 + policy.east_lon_udeg as i64) / 2;
-                let moved = snapshot.position.is_some_and(|fix| {
+                let moved = inputs.position.is_some_and(|fix| {
                     obc_map_scene::ground_dist_m((centre_lon as i32, centre_lat as i32), (fix.lon_udeg, fix.lat_udeg))
                         > LOCATION_REUSE_RADIUS_M
                 });
@@ -210,7 +207,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         let facts = BundleFacts {
             held: bundle.is_some(),
             // Age only with a trusted clock; the scheduler treats unknown age conservatively.
-            age_s: match (candidate, snapshot.now_utc) {
+            age_s: match (candidate, inputs.now_utc) {
                 (Some(b), Some(now_utc)) => Some((now_utc as i64 - b.generated_at).max(0) as u64),
                 _ => None,
             },
@@ -219,18 +216,18 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
             hourly_only: policy.is_some_and(|facts| facts.frame_count == 0),
         };
 
-        if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
+        if let Some(raise) = sched.poll(now_s, refresh, inputs.ride_active, store_ready, facts) {
             IN_FLIGHT.store(true, Ordering::Relaxed);
             PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
             let context_facts = RequestContextFacts {
-                fix: snapshot.position.map(|fix| RequestContextFix {
+                fix: inputs.position.map(|fix| RequestContextFix {
                     lat_udeg: fix.lat_udeg,
                     lon_udeg: fix.lon_udeg,
                     fix_utc: fix.fix_utc,
                 }),
-                bearing_deg: snapshot.bearing_deg,
-                speed_deci_ms: snapshot.speed_deci_ms,
-                route_id: snapshot.route_id,
+                bearing_deg: inputs.bearing_deg,
+                speed_deci_ms: inputs.speed_deci_ms,
+                route_id: inputs.route_id,
                 bundle: candidate.map(|bundle| RequestContextBundle {
                     generation: bundle.generation,
                     generated_at: bundle.generated_at,
@@ -275,7 +272,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
             }
         }
 
-        match sched.next_wake_s(refresh, snapshot.ride_active, store_ready) {
+        match sched.next_wake_s(refresh, inputs.ride_active, store_ready) {
             // A wake already in the past without a raise is a boundary case (levels moved under
             // us): yield a beat rather than spinning the executor.
             Some(at) if at <= now_s => Timer::after_millis(250).await,

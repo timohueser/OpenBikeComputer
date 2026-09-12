@@ -2674,7 +2674,7 @@ impl App {
     }
 
     /// The app-side half of the §11.4 weather request context (WX8, #1193), distilled to the
-    /// [`WeatherSnapshot`](crate::ble::WeatherSnapshot) the host's weather plane reads each pass —
+    /// [`WeatherRequestInputs`](crate::ble::WeatherRequestInputs) the host's weather plane reads each pass —
     /// the reverse direction of [`set_ble_status`](App::set_ble_status), and like it free of any
     /// wire type.
     ///
@@ -2690,7 +2690,7 @@ impl App {
     ///   travels.
     /// - **route id** is the active route's durable object id — the id the phone's route list
     ///   already knows — and absent for a route that has none resident.
-    pub fn weather_snapshot(&self) -> crate::ble::WeatherSnapshot {
+    pub fn weather_request_inputs(&self) -> crate::ble::WeatherRequestInputs {
         let now_utc = if self.clock_trusted() { Some(self.wall_unix_now()) } else { None };
         // The fresh fix + its age on the map-plane clock (the same timebase `last_fix_ms` stamps).
         let fresh = match (self.state.user_fix, self.tick_state.last_fix_ms) {
@@ -2727,7 +2727,7 @@ impl App {
             None
         };
         let speed_deci_ms = speed_mps.map(|s| (s.max(0.0) * 10.0).min(u16::MAX as f32) as u16);
-        crate::ble::WeatherSnapshot {
+        crate::ble::WeatherRequestInputs {
             ride_active: self.recorder.recording(),
             position,
             bearing_deg,
