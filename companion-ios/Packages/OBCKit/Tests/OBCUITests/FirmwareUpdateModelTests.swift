@@ -39,57 +39,6 @@ struct FirmwareUpdateModelTests {
 
     private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
 
-    /// Spin the run loop until `condition` holds (the model advances on
-    /// `AsyncStream` / `await` hops, not synchronously), or **throw**.
-    ///
-    /// Two things here are load-bearing, and both were learned from CI.
-    ///
-    /// It throws rather than returning quietly. A silent return let one starved
-    /// wait cascade into a page of unrelated `#expect` failures, none of which
-    /// named the wait that actually blew — the reader was left to guess which of
-    /// a dozen reported failures was the cause and which were its fallout.
-    ///
-    /// And the deadline is generous on purpose. Nothing here is slow: the stub
-    /// answers from memory and the model advances on task hops. What is being
-    /// waited on is the *scheduler*. Swift Testing runs suites concurrently in
-    /// one process, so on a loaded runner a `@MainActor` continuation can wait a
-    /// long time for its turn — which is what made a two-second bound fail
-    /// intermittently in CI while passing locally. The bound exists to catch a
-    /// genuine hang, not to police latency; a passing wait returns as soon as the
-    /// condition holds and costs nothing.
-    ///
-    /// For the opposite question — "this must *not* happen" — use ``neverHolds``,
-    /// which is the one case where a deadline passing is the expected result.
-    private func waitFor(
-        _ condition: () -> Bool,
-        within timeout: Duration = .seconds(30),
-        line: Int = #line
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                throw WaitTimedOut(timeout: timeout, line: line)
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
-    /// The negative wait: `true` when `condition` stayed false for the whole
-    /// window, `false` as soon as it holds. Returns early on the failing case, so
-    /// a test that is wrong fails fast instead of sitting out the window.
-    ///
-    /// Deliberately short-deadlined and non-throwing — unlike ``waitFor``, here
-    /// the deadline passing *is* the expected outcome, so the duration is the
-    /// assertion rather than a hang guard.
-    private func neverHolds(_ condition: () -> Bool, for duration: Duration) async -> Bool {
-        let deadline = ContinuousClock.now + duration
-        while ContinuousClock.now < deadline {
-            if condition() { return false }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        return !condition()
-    }
-
     // MARK: Import
 
     @Test func staysIdleAndSurfacesAnAlertForABadFile() {
@@ -115,7 +64,7 @@ struct FirmwareUpdateModelTests {
         stub.fwVersion = "0.4.2"
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
         model.start()
-        try await waitFor { model.connection == .connected }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
 
         // idle → staged
         model.stage(container(version: "0.5.0"))
@@ -128,7 +77,7 @@ struct FirmwareUpdateModelTests {
         // transferring → (commit) → installFw accepted → awaiting-confirm
         stub.installResult = .accepted
         stub.completeUpload()
-        try await waitFor { model.phase == .awaitingConfirm }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(model.phase == .awaitingConfirm)
 
         // awaiting-confirm: the device reboots (drop) then reconnects on the new
@@ -136,7 +85,7 @@ struct FirmwareUpdateModelTests {
         stub.push(.outOfRange)
         stub.fwVersion = "0.5.0"
         stub.push(.connected)
-        try await waitFor { model.phase == .done }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .done }
         #expect(model.phase == .done)
         #expect(model.runningVersion == "0.5.0")
     }
@@ -148,7 +97,7 @@ struct FirmwareUpdateModelTests {
         model.stage(container(version: "0.5.0"))
         model.send()
         stub.completeUpload()
-        try await waitFor { model.phase == .awaitingConfirm }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
 
         // A reconnect that still reports the OLD version isn't "done". This is the
         // negative case: `.done` must stay away for the whole window, so the
@@ -174,7 +123,7 @@ struct FirmwareUpdateModelTests {
         #expect(model.phase == .transferring)
 
         stub.push(.outOfRange) // link drops mid-transfer
-        try await waitFor { model.phase == .interrupted }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
         #expect(model.phase == .interrupted)
 
         model.resume()
@@ -192,24 +141,24 @@ struct FirmwareUpdateModelTests {
         let stub = StubTransport()
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
         model.start()
-        try await waitFor { model.connection == .connected }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
         model.stage(container(version: "0.5.0"))
         model.send()
         #expect(model.phase == .transferring)
 
         // A live tick moves the bar (and proves the tick watcher is consuming).
         stub.tick(TransferProgress(bytesDone: 10, total: 160))
-        try await waitFor { model.progress.bytesDone == 10 }
+        try await waitFor(interval: .milliseconds(5)) { model.progress.bytesDone == 10 }
 
         // The link drops — the transfer parks behind Resume.
         stub.push(.outOfRange)
-        try await waitFor { model.phase == .interrupted }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
 
         // A tick that was in flight before the drop lands late. Sequencing it
         // after `.interrupted` reproduces deterministically what scheduler load
         // produces by starving the MainActor.
         stub.tick(TransferProgress(bytesDone: 20, total: 160))
-        try await waitFor { model.progress.bytesDone == 20 }
+        try await waitFor(interval: .milliseconds(5)) { model.progress.bytesDone == 20 }
         #expect(model.phase == .interrupted, "a stale pre-drop tick must not resurrect .transferring")
     }
 
@@ -220,7 +169,7 @@ struct FirmwareUpdateModelTests {
         model.stage(container(version: "0.5.0"))
         model.send()
         stub.failUpload(.transferRejected)
-        try await waitFor { model.phase == .failed }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .failed }
         #expect(model.phase == .failed)
         #expect(model.failureMessage?.isEmpty == false)
     }
@@ -239,7 +188,7 @@ struct FirmwareUpdateModelTests {
         model.stage(container(version: "0.5.0"))
         model.send()
         stub.completeUpload()
-        try await waitFor { model.phase == .failed }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .failed }
         #expect(model.phase == .failed)
         #expect(model.failureMessage?.contains(needle) == true)
     }
@@ -261,7 +210,7 @@ struct FirmwareUpdateModelTests {
         // phase is over, so the claim releases (the on-glass confirm + reboot
         // isn't a transfer the drain/idle-timer should wait on).
         stub.completeUpload()
-        try await waitFor { model.phase == .awaitingConfirm }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(!activity.isActive)
     }
 
@@ -277,7 +226,7 @@ struct FirmwareUpdateModelTests {
         // A drop leaves it stalled-resumable — NOT in flight; the background
         // drain must not wait on a transfer whose link is already gone.
         stub.push(.outOfRange)
-        try await waitFor { model.phase == .interrupted }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .interrupted }
         #expect(!activity.isActive)
 
         // Resume re-claims for the fresh attempt.
@@ -295,7 +244,7 @@ struct FirmwareUpdateModelTests {
         #expect(activity.isActive)
 
         stub.failUpload(.transferRejected)
-        try await waitFor { model.phase == .failed }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .failed }
         #expect(!activity.isActive)
     }
 
@@ -323,7 +272,7 @@ struct FirmwareUpdateModelTests {
         let stub = StubTransport()
         let model = FirmwareUpdateModel(transport: stub, deviceName: "Trailhead")
         model.start()
-        try await waitFor { model.connection == .connected }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
 
         // An onDisappear→onAppear cycle on a persisting model (a presentation
         // pushed over the screen, a scene re-attach): the pair must be
@@ -333,11 +282,11 @@ struct FirmwareUpdateModelTests {
         model.start()
 
         stub.push(.outOfRange)
-        try await waitFor { model.connection == .outOfRange }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .outOfRange }
         #expect(model.connection == .outOfRange)
 
         stub.push(.connected)
-        try await waitFor { model.connection == .connected }
+        try await waitFor(interval: .milliseconds(5)) { model.connection == .connected }
         model.stage(container(version: "0.5.0"))
         #expect(model.canSend, "a restarted model is fully live again")
     }
@@ -352,7 +301,7 @@ struct FirmwareUpdateModelTests {
         model.send()
         #expect(activity.isActive)
         stub.completeUpload()
-        try await waitFor { model.phase == .awaitingConfirm }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(!activity.isActive, "no doubled subscription/claim from the repeat start")
     }
 
@@ -364,14 +313,14 @@ struct FirmwareUpdateModelTests {
         model.stage(container(version: "0.5.0"))
         model.send()
         stub.completeUpload()
-        try await waitFor { model.phase == .failed }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .failed }
 
         // The file is still staged — a retry re-enters transferring.
         stub.installResult = .accepted
         model.send()
         #expect(model.phase == .transferring)
         stub.completeUpload()
-        try await waitFor { model.phase == .awaitingConfirm }
+        try await waitFor(interval: .milliseconds(5)) { model.phase == .awaitingConfirm }
         #expect(model.phase == .awaitingConfirm)
     }
 }
@@ -442,16 +391,4 @@ private final class StubTransport: DeviceLink, DeviceUpdates, @unchecked Sendabl
 
     func connect() async throws {}
     func disconnect() async {}
-}
-
-/// A `waitFor` that gave up. Thrown rather than swallowed, so the wait that blew
-/// names itself — `line` is the call site, which is what tells a reader which of
-/// several waits in one test actually timed out.
-private struct WaitTimedOut: Error, CustomStringConvertible {
-    let timeout: Duration
-    let line: Int
-
-    var description: String {
-        "timed out after \(timeout) waiting for the condition at line \(line)"
-    }
 }

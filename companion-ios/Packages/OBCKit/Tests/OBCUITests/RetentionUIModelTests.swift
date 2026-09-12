@@ -10,15 +10,6 @@ import OBCTransport
 /// route detail gates and formats its Auto-delete row; the main model edits and
 /// badges retention. Transport-level reconcile/push is `RouteRetentionReconcileTests`.
 @MainActor @Suite struct RetentionUIModelTests {
-    private func waitFor(
-        _ what: String, timeout: Duration = .seconds(30), _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline { Issue.record("timed out waiting for \(what)"); return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
 
     private func makeMain(
         _ scenario: Scenario = .happyPath,
@@ -102,7 +93,7 @@ import OBCTransport
 
     /// Begin from `.ready` and the chosen retention rides to `onCompleted`
     /// (S6's post-commit push sends it).
-    @Test func beginUploadCarriesTheChosenRetention() async {
+    @Test func beginUploadCarriesTheChosenRetention() async throws {
         let control = MockControl(scenario: .happyPath)
         control.latency = .zero
         control.throughputBytesPerSec = 50_000_000
@@ -120,17 +111,17 @@ import OBCTransport
         model.selectRetention(.oneMonth)        // the rider changes it in the confirm
         #expect(model.retention == .oneMonth)
         model.beginUpload()
-        await waitFor("completion") { model.phase == .done }
+        try await waitFor("completion") { model.phase == .done }
         #expect(landed == .oneMonth)
     }
 
     /// A device without capability skips the confirm: `start()` begins the
     /// transfer immediately (the prior behaviour), the row hidden.
-    @Test func incapableUploadStartsImmediately() async {
+    @Test func incapableUploadStartsImmediately() async throws {
         let (model, _) = uploadModel(supportsRetention: false, retention: .twoWeeks)
         #expect(model.phase == .uploading)
         model.start()
-        await waitFor("progress") { model.progress.bytesDone > 0 || model.phase == .done }
+        try await waitFor("progress") { model.progress.bytesDone > 0 || model.phase == .done }
     }
 
     // MARK: Route detail — gating + expiry line
@@ -220,23 +211,23 @@ import OBCTransport
 
     /// Editing a route's retention from the detail, connected, pushes it now and
     /// stores the desired level.
-    @Test func setRouteRetentionPushesWhenConnected() async {
+    @Test func setRouteRetentionPushesWhenConnected() async throws {
         let (model, control, library) = makeMain()
         model.start()
-        await waitFor("the lists") { model.loadState == .loaded && model.connectedScope != nil }
+        try await waitFor("the lists") { model.loadState == .loaded && model.connectedScope != nil }
         // Route 7's device level is one week; pick two months from the detail.
         let id = record(library, objectID: 7)!.id
         model.setRouteRetention(id, .twoMonths)
-        await waitFor("the push") { control.routeRetention(for: DeviceObjectID(7)) == .twoMonths }
+        try await waitFor("the push") { control.routeRetention(for: DeviceObjectID(7)) == .twoMonths }
         #expect(library.plannedRoutes().first { $0.id == id }?.retention == .twoMonths)
     }
 
     /// The near-expiry fixture (kettle-moraine: one week, last used 5 d ago →
     /// ~2 d) shows the card badge; a far-off route shows none.
-    @Test func expiryBadgeShowsForANearExpiryRouteOnly() async {
+    @Test func expiryBadgeShowsForANearExpiryRouteOnly() async throws {
         let (model, _, library) = makeMain()
         model.start()
-        await waitFor("the reconcile lands device expiry") {
+        try await waitFor("the reconcile lands device expiry") {
             record(library, objectID: 7)?.deviceExpiresAt != nil
         }
         let nearID = record(library, objectID: 7)!.id     // one week / 5 d ago → ~2 d
@@ -246,20 +237,20 @@ import OBCTransport
     }
 
     /// A `notOnDevice` route never badges, even with a stale `deviceExpiresAt`.
-    @Test func expiryBadgeHidesForNotOnDeviceRoutes() async {
+    @Test func expiryBadgeHidesForNotOnDeviceRoutes() async throws {
         let (model, _, library) = makeMain()
         model.start()
-        await waitFor("the lists") { model.loadState == .loaded }
+        try await waitFor("the lists") { model.loadState == .loaded }
         // A library-only route (never uploaded) — no badge regardless.
         let planned = library.plannedRoutes().first { $0.deviceLink == nil }!
         #expect(model.expiryBadge(for: planned.id) == nil)
     }
 
     /// An upload with an explicit chosen level pushes that level, over the default.
-    @Test func uploadWithExplicitRetentionPushesTheChoice() async {
+    @Test func uploadWithExplicitRetentionPushesTheChoice() async throws {
         let (model, control, library) = makeMain()
         model.start()
-        await waitFor("the lists") { model.loadState == .loaded && model.connectedScope != nil }
+        try await waitFor("the lists") { model.loadState == .loaded && model.connectedScope != nil }
 
         let planned = library.plannedRoutes().first { $0.deviceLink == nil }!
         let payload = Data([9, 9, 9])
@@ -270,7 +261,7 @@ import OBCTransport
         }
         model.markRouteUploaded(planned.id, objectID: objectID, crc32: CRC32.checksum(payload),
             retention: .twoMonths)
-        await waitFor("the explicit-level push") { control.routeRetention(for: objectID) == .twoMonths }
+        try await waitFor("the explicit-level push") { control.routeRetention(for: objectID) == .twoMonths }
         #expect(library.plannedRoutes().first { $0.id == planned.id }?.retention == .twoMonths)
     }
 }

@@ -279,10 +279,23 @@ impl FixtureUpstream {
     /// request for any other range (or for the whole body) then fails loudly, which is exactly
     /// the request-accounting property the byte-range adapters must prove.
     pub fn insert_range(&mut self, url: impl Into<String>, object_len: u64, start: u64, bytes: Vec<u8>) {
-        let url = url.into();
         let end = start + bytes.len() as u64 - 1;
+        self.insert_range_response(url, object_len, start, end, bytes);
+    }
+
+    /// Serve `bytes` for an exact requested range, independently of the response length. This
+    /// lets corrupt-upstream tests replace a captured span with a different message or a short body.
+    pub fn insert_range_response(
+        &mut self,
+        url: impl Into<String>,
+        object_len: u64,
+        start: u64,
+        end_inclusive: u64,
+        bytes: Vec<u8>,
+    ) {
+        let url = url.into();
         self.declare(url.clone(), object_len);
-        self.ranges.insert((url, start, end), bytes);
+        self.ranges.insert((url, start, end_inclusive), bytes);
     }
 }
 

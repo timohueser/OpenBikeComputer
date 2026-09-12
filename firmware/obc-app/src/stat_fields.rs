@@ -8,7 +8,7 @@
 //!
 //! Three concerns, all `no_std` / zero-alloc / pure:
 //! - **the catalogue** — [`StatField`], one variant per field, owning its span, name and value
-//!   formatter. Adding a field is one variant + one match arm.
+//!   formatter. Adding a field needs one metadata row and one value-formatting match arm.
 //! - **the selection** — [`StatFieldList`], a fixed-capacity ordered list persisted in [`Settings`].
 //! - **the layout** — [`page_count`] / [`page_fields`], walking the selection into 6-slot pages
 //!   (3 rows × 2 cols) by each field's [`slots`](StatField::slots) footprint, keeping a `2`-span tile
@@ -93,202 +93,101 @@ pub const SLOTS_PER_PAGE: usize = ROWS_PER_PAGE * COLS;
 /// and bounds the persisted blob.
 pub const MAX_STAT_FIELDS: usize = 2 * SLOTS_PER_PAGE;
 
-/// One predefined data field. `#[repr(u8)]` + `Copy + Eq` so the selection is a trivially packed,
-/// comparable POD (the settings codec writes the discriminants; [`Settings`](crate::Settings) stays
-/// `Copy + Eq` for the one-`==` save check). The discriminants are a **stable on-disk contract** —
-/// only ever append, never renumber.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum StatField {
+// Rows are in picker order; explicit byte IDs remain independent of that order.
+macro_rules! stat_field_table {
+    ($( $(#[$doc:meta])* $field:ident = $id:literal, $name:ident, $span:literal, $rows:literal, $category:expr; )+) => {
+        /// One predefined data field. The explicit byte IDs are the persisted settings contract.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u8)]
+        pub enum StatField {
+            $( $(#[$doc])* $field = $id, )+
+        }
+
+        impl StatField {
+            /// Every field in picker order, independent of its persisted byte ID.
+            pub const ALL: [Self; [$(stringify!($field)),+].len()] = [$(Self::$field),+];
+
+            /// The localized picker name. POI fields use their category's catalog string.
+            pub const fn name(self, lang: Language) -> &'static str {
+                match self { $(Self::$field => t(Msg::$name, lang),)+ }
+            }
+
+            /// The POI category tracked by a next-place tile, or `None` for other fields.
+            pub const fn category(self) -> Option<PoiCategory> {
+                match self { $(Self::$field => $category,)+ }
+            }
+
+            /// The field's width in grid columns.
+            pub const fn span(self) -> u8 {
+                match self { $(Self::$field => $span,)+ }
+            }
+
+            /// The field's height in grid rows.
+            pub const fn rows(self) -> u8 {
+                match self { $(Self::$field => $rows,)+ }
+            }
+        }
+    };
+}
+
+stat_field_table! {
     /// Live GPS speed.
-    Speed = 0,
+    Speed = 0, StatfieldSpeed, 1, 1, None;
     /// Moving-average speed.
-    AvgSpeed = 1,
+    AvgSpeed = 1, StatfieldAvgSpeed, 1, 1, None;
     /// Distance ridden so far.
-    DistDone = 2,
+    DistDone = 2, StatfieldDistDone, 1, 1, None;
     /// Distance remaining along the route.
-    DistToGo = 3,
+    DistToGo = 3, StatfieldDistToGo, 1, 1, None;
     /// Ascent climbed so far.
-    Climbed = 4,
+    Climbed = 4, StatfieldClimbed, 1, 1, None;
     /// Ascent remaining along the route.
-    ToClimb = 5,
+    ToClimb = 5, StatfieldToClimb, 1, 1, None;
     /// Grade (%) at the live position.
-    Grade = 6,
-    /// Current elevation — the live altitude: map-referenced (EL8) once the offset estimator has
-    /// settled, raw barometric until then.
-    Elevation = 7,
+    Grade = 6, StatfieldGrade, 1, 1, None;
+    /// Live altitude: map-referenced once the offset estimator settles, raw barometric until then.
+    Elevation = 7, StatfieldElevation, 1, 1, None;
     /// Moving time this ride.
-    RideTime = 8,
-    /// Wall-clock time of day — a **two-column** tile.
-    Clock = 9,
-    /// Next route waypoint ahead — name + distance-to-go, a **two-column** tile.
-    NextWaypoint = 10,
-    /// The next ~4 route waypoints ahead — a **2-column × 3-row** list panel (name + along-route
-    /// distance-to-go per row, the first emphasized). The one multi-row field: page-sized
-    /// ([`SLOTS_PER_PAGE`] slots), so it always begins a page — mirroring how a two-span tile always
-    /// begins a row — which keeps the layout + reorder machinery tractable.
-    WaypointList = 11,
-    /// Live heart rate (bpm) from a paired BLE sensor — a single-column raw-int tile (epic #707).
-    /// `--` with no sensor / no data / a reading older than the 5 s staleness gate.
-    HeartRate = 12,
-    /// Live power (W) from a paired BLE power meter — a single-column raw-int tile (epic #707).
-    /// `--` with no sensor / no data / stale.
-    Power = 13,
-    /// Live cadence (rpm) from a paired BLE sensor (or a power meter's crank data) — a
-    /// single-column raw-int tile (epic #707). `--` with no sensor / no data / stale; a fresh `0`
-    /// is a coasting rider and shows `0`, not `--`.
-    Cadence = 14,
-    /// Next **water** on the route ahead — a **two-column** tile (epic #946, U5). See
-    /// [`category`](StatField::category) for the shared anatomy of the six.
-    NextWater = 15,
-    /// Next **campsite** on the route ahead — a two-column tile.
-    NextCampsite = 16,
-    /// Next **lodging** on the route ahead — a two-column tile.
-    NextLodging = 17,
-    /// Next **resupply** on the route ahead — a two-column tile.
-    NextResupply = 18,
-    /// Next **pharmacy** on the route ahead — a two-column tile.
-    NextPharmacy = 19,
-    /// Next **bike shop** on the route ahead — a two-column tile.
-    NextBikeShop = 20,
-    /// Estimated **time still to ride** to the end of the route — the gradient-aware model
-    /// (elevation epic #1068, EL9), not distance ÷ average speed. `--` on a route-less ride.
-    TimeToGo = 21,
-    /// Estimated **arrival clock time** at the end of the route — [`TimeToGo`](StatField::TimeToGo)
-    /// added to the wall clock. `--` on a route-less ride.
-    Eta = 22,
+    RideTime = 8, StatfieldRideTime, 1, 1, None;
+    /// Estimated riding time remaining, using the gradient-aware model. `--` without a route.
+    TimeToGo = 21, StatfieldTimeToGo, 1, 1, None;
+    /// Estimated arrival clock time: TimeToGo plus wall time. `--` without a route.
+    Eta = 22, StatfieldEta, 1, 1, None;
+    /// Wall-clock time of day.
+    Clock = 9, StatfieldClock, 2, 1, None;
+    /// Next route waypoint: name and distance remaining.
+    NextWaypoint = 10, StatfieldNextWaypoint, 2, 1, None;
+    /// Next water on the route ahead.
+    NextWater = 15, PoiCatWater, 2, 1, Some(PoiCategory::Water);
+    /// Next campsite on the route ahead.
+    NextCampsite = 16, PoiCatCampsite, 2, 1, Some(PoiCategory::Campsite);
+    /// Next lodging on the route ahead.
+    NextLodging = 17, PoiCatAccommodation, 2, 1, Some(PoiCategory::Accommodation);
+    /// Next resupply on the route ahead.
+    NextResupply = 18, PoiCatResupply, 2, 1, Some(PoiCategory::Resupply);
+    /// Next pharmacy on the route ahead.
+    NextPharmacy = 19, PoiCatPharmacy, 2, 1, Some(PoiCategory::Pharmacy);
+    /// Next bike shop on the route ahead.
+    NextBikeShop = 20, PoiCatBikeShop, 2, 1, Some(PoiCategory::BikeShop);
+    /// Upcoming route waypoints in a page-sized panel that always begins a page.
+    WaypointList = 11, StatfieldWaypointList, 2, 3, None;
+    /// Live heart rate (bpm). `--` when absent or older than the sensor staleness limit.
+    HeartRate = 12, StatfieldHeartRate, 1, 1, None;
+    /// Live power (W). `--` when absent or stale.
+    Power = 13, StatfieldPower, 1, 1, None;
+    /// Live cadence (rpm). `--` when absent or stale; a fresh coasting reading shows `0`.
+    Cadence = 14, StatfieldCadence, 1, 1, None;
 }
 
 impl StatField {
-    /// Every field, in catalogue order — drives the "Add field" picker and decode validation.
-    ///
-    /// Catalogue order is a **UI** decision and deliberately independent of the on-disk
-    /// discriminants (which are append-only): the six `Next: <category>` tiles are numbered last but
-    /// listed **directly after** [`NextWaypoint`](StatField::NextWaypoint), because that is where a
-    /// rider looking for "what's coming up" will look for them (epic #946, U5 — grouping in the
-    /// picker is the *only* curation knob the epic allows). The same reasoning puts
-    /// [`TimeToGo`](StatField::TimeToGo) and [`Eta`](StatField::Eta) (EL9, #1077) between
-    /// [`RideTime`](StatField::RideTime) and [`Clock`](StatField::Clock) — the clock family, read
-    /// together — rather than at the end where their discriminants sit.
-    pub const ALL: [StatField; 23] = [
-        StatField::Speed,
-        StatField::AvgSpeed,
-        StatField::DistDone,
-        StatField::DistToGo,
-        StatField::Climbed,
-        StatField::ToClimb,
-        StatField::Grade,
-        StatField::Elevation,
-        StatField::RideTime,
-        StatField::TimeToGo,
-        StatField::Eta,
-        StatField::Clock,
-        StatField::NextWaypoint,
-        StatField::NextWater,
-        StatField::NextCampsite,
-        StatField::NextLodging,
-        StatField::NextResupply,
-        StatField::NextPharmacy,
-        StatField::NextBikeShop,
-        StatField::WaypointList,
-        StatField::HeartRate,
-        StatField::Power,
-        StatField::Cadence,
-    ];
-
-    /// The POI category a `Next: <category>` tile tracks, or `None` for every other field. The one
-    /// switch the whole feature hangs off: it selects the tile drawer (icon + name | distance), the
-    /// picker row's icon, the field's name, and which categories the
-    /// [`NextAhead`](crate::next_ahead::NextAhead) cache keeps warm.
-    pub const fn category(self) -> Option<PoiCategory> {
-        Some(match self {
-            StatField::NextWater => PoiCategory::Water,
-            StatField::NextCampsite => PoiCategory::Campsite,
-            StatField::NextLodging => PoiCategory::Accommodation,
-            StatField::NextResupply => PoiCategory::Resupply,
-            StatField::NextPharmacy => PoiCategory::Pharmacy,
-            StatField::NextBikeShop => PoiCategory::BikeShop,
-            _ => return None,
-        })
-    }
-
-    /// Decode a persisted discriminant, or `None` for an unknown byte (a newer writer, a bit-flip
-    /// the CRC missed) — the codec drops it rather than trusting a garbage field.
+    /// Decode a persisted discriminant. Unknown bytes are dropped by the settings codec.
     pub fn from_u8(b: u8) -> Option<StatField> {
         Self::ALL.into_iter().find(|f| *f as u8 == b)
     }
 
-    /// Column span: `2` for the full-width [`Clock`](StatField::Clock),
-    /// [`NextWaypoint`](StatField::NextWaypoint), the six `Next: <category>` tiles (same
-    /// icon + name | distance anatomy), and the [`WaypointList`](StatField::WaypointList) panel,
-    /// else `1`.
-    pub const fn span(self) -> u8 {
-        match self {
-            StatField::Clock
-            | StatField::NextWaypoint
-            | StatField::WaypointList
-            | StatField::NextWater
-            | StatField::NextCampsite
-            | StatField::NextLodging
-            | StatField::NextResupply
-            | StatField::NextPharmacy
-            | StatField::NextBikeShop => 2,
-            _ => 1,
-        }
-    }
-
-    /// Row span: `3` for the multi-row [`WaypointList`](StatField::WaypointList) panel, `1` for every
-    /// other field (all today's tiles are one row tall). With [`span`](Self::span) it derives the
-    /// field's slot footprint, [`slots`](Self::slots).
-    pub const fn rows(self) -> u8 {
-        match self {
-            StatField::WaypointList => 3,
-            _ => 1,
-        }
-    }
-
-    /// The field's grid footprint in slots — [`span`](Self::span) × [`rows`](Self::rows): `1` for a
-    /// single tile, `2` for a full-width tile, [`SLOTS_PER_PAGE`] (`6`) for the page-sized waypoint
-    /// panel. The one measure the layout [`walk`] advances by, so the three tile shapes flow through
-    /// it uniformly.
+    /// The field's grid footprint, used by layout and reorder operations.
     pub const fn slots(self) -> usize {
         self.span() as usize * self.rows() as usize
-    }
-
-    /// The field's name for the settings list / picker, in the UI `lang` (epic #602). The on-grid
-    /// caption is in [`cell`](StatField::cell).
-    ///
-    /// A `Next: <category>` field names itself with the **category's** own catalog string — the very
-    /// one the Up-ahead picker and the POI menu use (epic #946 reuses one icon *and* one word per
-    /// category; a parallel `statfield.next_water` set would be the same six words drifting in four
-    /// languages). What makes the row read as a field rather than a place is the category icon the
-    /// picker draws beside it, and the tile preview in the editor.
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            StatField::Speed => t(Msg::StatfieldSpeed, lang),
-            StatField::AvgSpeed => t(Msg::StatfieldAvgSpeed, lang),
-            StatField::DistDone => t(Msg::StatfieldDistDone, lang),
-            StatField::DistToGo => t(Msg::StatfieldDistToGo, lang),
-            StatField::Climbed => t(Msg::StatfieldClimbed, lang),
-            StatField::ToClimb => t(Msg::StatfieldToClimb, lang),
-            StatField::Grade => t(Msg::StatfieldGrade, lang),
-            StatField::Elevation => t(Msg::StatfieldElevation, lang),
-            StatField::RideTime => t(Msg::StatfieldRideTime, lang),
-            StatField::TimeToGo => t(Msg::StatfieldTimeToGo, lang),
-            StatField::Eta => t(Msg::StatfieldEta, lang),
-            StatField::Clock => t(Msg::StatfieldClock, lang),
-            StatField::NextWaypoint => t(Msg::StatfieldNextWaypoint, lang),
-            StatField::WaypointList => t(Msg::StatfieldWaypointList, lang),
-            StatField::HeartRate => t(Msg::StatfieldHeartRate, lang),
-            StatField::Power => t(Msg::StatfieldPower, lang),
-            StatField::Cadence => t(Msg::StatfieldCadence, lang),
-            StatField::NextWater => t(Msg::PoiCatWater, lang),
-            StatField::NextCampsite => t(Msg::PoiCatCampsite, lang),
-            StatField::NextLodging => t(Msg::PoiCatAccommodation, lang),
-            StatField::NextResupply => t(Msg::PoiCatResupply, lang),
-            StatField::NextPharmacy => t(Msg::PoiCatPharmacy, lang),
-            StatField::NextBikeShop => t(Msg::PoiCatBikeShop, lang),
-        }
     }
 
     /// The rendered tile content: a unit-bearing caption, the number-only value, and whether to
@@ -1023,18 +922,49 @@ mod tests {
         assert_eq!(value(Units::Imperial).as_str(), "22.4", "…and 22.4 mph");
     }
 
-    /// Discriminants round-trip through `from_u8`, and an unknown byte is dropped. Byte `10`
-    /// (`NextWaypoint`, the on-disk contract this sub-issue appends) resolves and survives a
-    /// `StatFieldList` decode — so a persisted grid carrying the field reloads it.
+    /// Literal expectations pin persisted IDs and picker metadata independently of the declaration.
     #[test]
-    fn discriminant_round_trips() {
-        for f in StatField::ALL {
-            assert_eq!(StatField::from_u8(f as u8), Some(f));
+    fn field_metadata_contract() {
+        use StatField::*;
+        let expected = [
+            (Speed, 0, Msg::StatfieldSpeed, 1, 1, None),
+            (AvgSpeed, 1, Msg::StatfieldAvgSpeed, 1, 1, None),
+            (DistDone, 2, Msg::StatfieldDistDone, 1, 1, None),
+            (DistToGo, 3, Msg::StatfieldDistToGo, 1, 1, None),
+            (Climbed, 4, Msg::StatfieldClimbed, 1, 1, None),
+            (ToClimb, 5, Msg::StatfieldToClimb, 1, 1, None),
+            (Grade, 6, Msg::StatfieldGrade, 1, 1, None),
+            (Elevation, 7, Msg::StatfieldElevation, 1, 1, None),
+            (RideTime, 8, Msg::StatfieldRideTime, 1, 1, None),
+            (TimeToGo, 21, Msg::StatfieldTimeToGo, 1, 1, None),
+            (Eta, 22, Msg::StatfieldEta, 1, 1, None),
+            (Clock, 9, Msg::StatfieldClock, 2, 1, None),
+            (NextWaypoint, 10, Msg::StatfieldNextWaypoint, 2, 1, None),
+            (NextWater, 15, Msg::PoiCatWater, 2, 1, Some(PoiCategory::Water)),
+            (NextCampsite, 16, Msg::PoiCatCampsite, 2, 1, Some(PoiCategory::Campsite)),
+            (NextLodging, 17, Msg::PoiCatAccommodation, 2, 1, Some(PoiCategory::Accommodation)),
+            (NextResupply, 18, Msg::PoiCatResupply, 2, 1, Some(PoiCategory::Resupply)),
+            (NextPharmacy, 19, Msg::PoiCatPharmacy, 2, 1, Some(PoiCategory::Pharmacy)),
+            (NextBikeShop, 20, Msg::PoiCatBikeShop, 2, 1, Some(PoiCategory::BikeShop)),
+            (WaypointList, 11, Msg::StatfieldWaypointList, 2, 3, None),
+            (HeartRate, 12, Msg::StatfieldHeartRate, 1, 1, None),
+            (Power, 13, Msg::StatfieldPower, 1, 1, None),
+            (Cadence, 14, Msg::StatfieldCadence, 1, 1, None),
+        ];
+        assert_eq!(StatField::ALL, expected.map(|(field, ..)| field), "picker order");
+        for (field, id, name, span, rows, category) in expected {
+            assert_eq!(field as u8, id, "persisted ID for {field:?}");
+            assert_eq!(StatField::from_u8(id), Some(field));
+            assert_eq!((field.span(), field.rows(), field.category()), (span, rows, category), "{field:?}");
+            for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
+                assert_eq!(field.name(lang), t(name, lang), "{field:?} in {lang:?}");
+            }
         }
-        assert_eq!(StatField::from_u8(200), None, "an unknown discriminant is rejected");
-        assert_eq!(StatField::from_u8(10), Some(StatField::NextWaypoint), "byte 10 is Next waypoint");
+        for byte in 23..=u8::MAX {
+            assert_eq!(StatField::from_u8(byte), None, "unknown persisted ID {byte}");
+        }
         let list = StatFieldList::decode(1, &[10]);
-        assert_eq!(list.as_slice(), &[StatField::NextWaypoint], "a decoded byte-10 selection keeps the field");
+        assert_eq!(list.as_slice(), &[NextWaypoint], "a decoded byte-10 selection keeps the field");
     }
 
     /// An empty selection is still one page (drawing nothing), never zero — the `.max(1)` guard.
