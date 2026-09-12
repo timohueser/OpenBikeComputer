@@ -531,6 +531,7 @@ mod tests {
         default_heading_q4: 0,
         angle_bottom_q4: -4,
         angle_top_q4: 4,
+        vertical_scale_q8: 320,
         peaks: &[],
     };
 

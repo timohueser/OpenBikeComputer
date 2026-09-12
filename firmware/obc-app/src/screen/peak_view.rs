@@ -459,6 +459,7 @@ mod tests {
         default_heading_q4: 0,
         angle_bottom_q4: -40,
         angle_top_q4: 200,
+        vertical_scale_q8: 320,
         peaks: &PEAKS,
     };
     static STACKED_PEAKS: [PeakViewPeak; 3] = [
@@ -505,6 +506,7 @@ mod tests {
         default_heading_q4: 120,
         angle_bottom_q4: -4,
         angle_top_q4: 16,
+        vertical_scale_q8: 320,
         peaks: &STACKED_PEAKS,
     };
 

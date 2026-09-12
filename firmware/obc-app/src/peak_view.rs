@@ -87,6 +87,8 @@ pub struct PeakViewProfile<'a> {
     /// Relief framing used to choose the horizontal window and vertical centre.
     pub angle_bottom_q4: i16,
     pub angle_top_q4: i16,
+    /// Vertical exaggeration in Q8, fixed for the whole panorama (320 = 1.25×).
+    pub vertical_scale_q8: u16,
     /// Named summits sorted clockwise by [`PeakViewPeak::azimuth_q4`].
     pub peaks: &'a [PeakViewPeak],
 }
@@ -102,6 +104,7 @@ impl PeakViewProfile<'_> {
             default_heading_q4: 0,
             angle_bottom_q4: -32,
             angle_top_q4: 92,
+            vertical_scale_q8: 320,
             peaks: &[],
         }
     }
@@ -111,13 +114,13 @@ impl PeakViewProfile<'_> {
         PeakViewProfile { peaks: &[], ..*self }
     }
 
-    /// Set observer height and keep steep nearby summits inside the live view's vertical frame.
+    /// Frame the observer's relief once; turning keeps the same scale and horizon position.
     pub fn set_ground(&mut self, ground_m: f32) {
         self.observer_elevation_m = libm::roundf(ground_m + 2.0) as i16;
         if self.id != 0 {
             return;
         }
-        let highest = self
+        let (highest, relief) = self
             .peaks
             .iter()
             .filter_map(|peak| {
@@ -128,7 +131,14 @@ impl PeakViewProfile<'_> {
                         * 4.0
                 })
             })
-            .fold(96.0f32, f32::max);
+            .fold((0.0f32, None::<f32>), |(highest, relief), angle| {
+                (highest.max(angle), Some(relief.unwrap_or(0.0).max(angle.abs())))
+            });
+        // A shallow skyline needs more pixels. Keep the ordinary scale for steep views
+        // or absent height metadata, and cap the boost at 3× rather than magnifying noise.
+        self.vertical_scale_q8 = relief
+            .map(|angle_q4| libm::roundf(320.0 * (56.0 / angle_q4.max(1.0)).clamp(1.0, 2.4)) as u16)
+            .unwrap_or(320);
         if highest <= 96.0 {
             return;
         }
@@ -144,16 +154,18 @@ impl PeakViewProfile<'_> {
         (i32::from(self.angle_top_q4) - i32::from(self.angle_bottom_q4)).max(1) * 72 / 37
     }
 
-    /// Terrain and labels share 1.25× vertical exaggeration on the 240×222 chart.
+    /// Terrain and labels share the same vertical projection on the 240×222 chart.
     pub fn vertical_bounds_q4(&self) -> (i32, i32) {
-        let span = (self.horizontal_fov_q4() * 37 / 50).max(1);
-        let centre = (i32::from(self.angle_top_q4) + i32::from(self.angle_bottom_q4)) / 2;
+        let scale = i32::from(self.vertical_scale_q8.max(1));
+        let span = (self.horizontal_fov_q4() * 37 * 256 / (40 * scale)).max(1);
+        let centre = (i32::from(self.angle_top_q4) + i32::from(self.angle_bottom_q4)) / 2 * 320 / scale;
         let bottom = centre - span / 2;
         (bottom, bottom + span)
     }
 }
 
-/// Keep two strong candidates per bearing sector; DEM visibility is resolved by the renderer.
+/// Keep a tall landmark and a strong height/distance candidate per bearing sector.
+/// DEM visibility is resolved by the renderer.
 pub fn collect_summits(
     reader: &obc_reader::Reader<'_>,
     position: (i32, i32),
@@ -174,27 +186,27 @@ pub fn collect_summits(
         }
         peak.score =
             (u32::from(peak.elevation_m.unwrap_or(0).max(0) as u16) + 100) * 20_000 / (peak.distance_m + 20_000);
-        let sector = peak.azimuth_q4 / 90;
-        let mut count = 0;
-        let mut weakest = None;
-        for (i, previous) in out.iter().enumerate() {
-            if previous.azimuth_q4 / 90 == sector {
-                count += 1;
-                if weakest.is_none_or(|old: usize| previous.score < out[old].score) {
-                    weakest = Some(i);
-                }
-            }
-        }
-        if count < 2 {
-            let _ = out.push(peak);
-        } else if let Some(index) = weakest {
-            if peak.score > out[index].score {
-                out[index] = peak;
-            }
-        }
+        retain_candidate(out, peak);
     })?;
     out.sort_unstable_by_key(|peak| peak.azimuth_q4);
     Ok(())
+}
+
+fn retain_candidate(out: &mut heapless::Vec<PeakViewPeak, 32>, peak: PeakViewPeak) {
+    let mut sector = out.iter().enumerate().filter(|(_, old)| old.azimuth_q4 / 90 == peak.azimuth_q4 / 90);
+    let (Some((a, _)), Some((b, _))) = (sector.next(), sector.next()) else {
+        let _ = out.push(peak);
+        return;
+    };
+    let score = |p: &PeakViewPeak| (p.score, core::cmp::Reverse(p.distance_m), p.lat, p.lon);
+    let height = |p: &PeakViewPeak| (p.elevation_m, score(p));
+    let (landmark, other) = if height(&out[a]) >= height(&out[b]) { (a, b) } else { (b, a) };
+    if height(&peak) > height(&out[landmark]) {
+        let replace = if score(&out[a]) < score(&out[b]) { a } else { b };
+        out[replace] = peak;
+    } else if score(&peak) > score(&out[other]) {
+        out[other] = peak;
+    }
 }
 
 /// Position changes do not cancel a panorama already being generated.
@@ -228,5 +240,60 @@ mod tests {
         assert_eq!(flat.horizontal_fov_q4(), 241, "the ordinary frame keeps its 60-degree window");
         assert!(!moved((46_000_000, 8_000_000), (46_000_050, 8_000_000)));
         assert!(moved((46_000_000, 8_000_000), (46_000_200, 8_000_000)));
+    }
+
+    #[test]
+    fn shallow_relief_gets_a_capped_boost_without_changing_horizontal_bearings() {
+        let peaks = [PeakViewPeak { elevation_m: Some(1250), distance_m: 16_500, ..PeakViewPeak::EMPTY }];
+        let mut profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 0) };
+        profile.set_ground(200.0);
+        assert_eq!(profile.vertical_scale_q8, 768);
+        assert_eq!(profile.horizontal_fov_q4(), 241);
+        let bounds = profile.vertical_bounds_q4();
+        assert!(bounds.0 < 0 && bounds.1 >= 48, "retain ground below and label space above the horizon");
+        profile.default_heading_q4 = 720;
+        profile.peaks = &[];
+        assert_eq!(profile.detached().vertical_bounds_q4(), bounds, "heading and visibility do not rescale it");
+        profile.set_ground(200.0);
+        assert_eq!(profile.vertical_scale_q8, 320, "missing height metadata does not imply flat terrain");
+        let steep = [PeakViewPeak { elevation_m: Some(-500), distance_m: 1000, ..peaks[0] }];
+        profile.peaks = &steep;
+        profile.set_ground(200.0);
+        assert_eq!(profile.vertical_scale_q8, 320, "steep terrain below the observer also needs vertical room");
+    }
+
+    #[test]
+    fn nearby_candidates_do_not_crowd_out_a_taller_landmark() {
+        let candidates = [
+            PeakViewPeak {
+                name: PeakName::new("Near"),
+                elevation_m: Some(1200),
+                score: 620,
+                azimuth_q4: 660,
+                ..PeakViewPeak::EMPTY
+            },
+            PeakViewPeak {
+                name: PeakName::new("Neighbour"),
+                elevation_m: Some(900),
+                score: 605,
+                azimuth_q4: 650,
+                ..PeakViewPeak::EMPTY
+            },
+            PeakViewPeak {
+                name: PeakName::new("Tall"),
+                elevation_m: Some(1400),
+                score: 560,
+                azimuth_q4: 709,
+                ..PeakViewPeak::EMPTY
+            },
+        ];
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let mut selected = heapless::Vec::new();
+            for i in order {
+                retain_candidate(&mut selected, candidates[i]);
+            }
+            selected.sort_unstable_by_key(|peak| peak.azimuth_q4);
+            assert_eq!(&selected[..], &[candidates[0], candidates[2]]);
+        }
     }
 }

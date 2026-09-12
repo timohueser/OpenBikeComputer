@@ -9,6 +9,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
     default_heading_q4: 940,
     angle_bottom_q4: -44,
     angle_top_q4: 113,
+    vertical_scale_q8: 320,
     peaks: &[
         PeakViewPeak {
             name: PeakName::new("Rimpfischhorn"),
@@ -219,6 +220,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
     default_heading_q4: 565,
     angle_bottom_q4: -20,
     angle_top_q4: 172,
+    vertical_scale_q8: 320,
     peaks: &[
         PeakViewPeak {
             name: PeakName::new("Indri Sägissa"),
@@ -374,6 +376,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
     default_heading_q4: 1000,
     angle_bottom_q4: -24,
     angle_top_q4: 152,
+    vertical_scale_q8: 320,
     peaks: &[
         PeakViewPeak {
             name: PeakName::new("Freiwandkopf"),
