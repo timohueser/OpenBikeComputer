@@ -70,9 +70,8 @@ pub struct SensorPresence {
 }
 
 /// The GPS receiver's requested power state. The ride loop derives one from whether a ride is active
-/// and the `power_saver` toggle, and the sensor task drives the M10 to match: deep sleep when idle
-/// (~µA vs. the ~20 mA of continuous tracking), full-power fixes while riding, or the M10's on-chip
-/// low-power tracking when `power_saver` is on.
+/// and the `power_saver` toggle. The sensor task requests stopped GNSS processing when idle,
+/// full-power fixes while riding, or the M10's on-chip low-power tracking when `power_saver` is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpsPower {
     /// Riding, full-power continuous fixes at the configured rate.
@@ -80,8 +79,8 @@ pub enum GpsPower {
     /// Riding with `power_saver` on — the M10's low-power tracking mode (lower power, same rate, at
     /// the cost of some fix latency).
     LowPower,
-    /// Not tracking — deep sleep (`RXM-PMREQ` backup); woken on the next [`Active`](GpsPower::Active)
-    /// / [`LowPower`](GpsPower::LowPower) request for a fast warm fix.
+    /// Not tracking — stop GNSS processing and park host polling. Resume on the next
+    /// [`Active`](GpsPower::Active) / [`LowPower`](GpsPower::LowPower) request.
     Sleep,
 }
 

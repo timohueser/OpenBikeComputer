@@ -733,7 +733,7 @@ impl RideExec {
     }
 }
 
-/// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
+/// The GPS power state the ride wants: stopped GNSS when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`SensorControl::set_power`]) only on a change.
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
