@@ -69,7 +69,7 @@ impl PasskeyScreen {
         let key = self.passkey.min(999_999);
         let mut code: heapless::String<8> = heapless::String::new();
         let _ = write!(code, "{key:06}");
-        let code_top = h * 42 / 100 - Font::Huge.cap_height() as i32 / 2;
+        let code_top = h * 42 / 100 - Font::Huge.cap_mid() as i32;
         cv.text(&code, Point::new(w / 2, code_top), Font::Huge, TextAlign::Center, INK);
 
         // The device↔phone pair in the glyph slot above the code (dialog anatomy, #678 T1): the

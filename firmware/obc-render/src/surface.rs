@@ -78,9 +78,8 @@ pub trait Surface {
     }
 
     /// [`text`](Surface::text) vertically centred in the `v_span = (top, height)` span: the
-    /// anchor's y is computed from the font's [`cap_height`](Font::cap_height)
-    /// (`top + (height - cap_height) / 2`), so a row/strip/button centres its label without a
-    /// hand-tuned baseline offset. Horizontal anchoring is `x` + `align`, unchanged.
+    /// capital ink is centred after subtracting the font's top bearing from the cell anchor.
+    /// Horizontal anchoring is `x` + `align`, unchanged.
     fn text_vcentered(
         &mut self,
         s: &str,
@@ -91,7 +90,7 @@ pub trait Surface {
         color: u16,
     ) -> Point {
         let (top, h) = v_span;
-        let y = top + (h - font.cap_height() as i32) / 2;
+        let y = top + (h - font.cap_height() as i32) / 2 - font.cap_top() as i32;
         self.text(s, Point::new(x, y), font, align, color)
     }
 }

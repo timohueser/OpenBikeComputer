@@ -105,7 +105,7 @@ impl HomeScreen {
             let wd = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day) as usize;
             let mon = (rx.now.month.clamp(1, 12) - 1) as usize;
             let _ = write!(date, "{} {} {}", rx.t(DATE_WEEKDAYS[wd]), rx.now.day, rx.t(DATE_MONTHS[mon]));
-            let date_y = clock_top + Font::Huge.cap_height() as i32 + 6;
+            let date_y = clock_top + Font::Huge.cap_bottom() as i32 + 6;
             cv.text(&date, Point::new(w / 2, date_y), Font::Label, TextAlign::Center, palette::CONTOUR);
         }
 

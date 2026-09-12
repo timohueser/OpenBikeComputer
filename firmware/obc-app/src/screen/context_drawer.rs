@@ -936,10 +936,10 @@ impl ContextDrawerScreen {
         cv.hline(x + 12, top + 47, rx.w - 24, palette::RULE);
 
         let choice = value.choice_label(self.staged, rx);
-        let cap = Font::Body.cap_height() as i32;
+        let cap_mid = Font::Body.cap_mid() as i32;
         let name_x = match value.choice_icon(self.staged) {
             Some(cat) => {
-                let c = Point::new(x + 26, top + 64 + cap / 2);
+                let c = Point::new(x + 26, top + 64 + cap_mid);
                 super::poi_menu::draw_category_icon(cv, cat, c, palette::INK, palette::PARCHMENT);
                 x + 48
             }
