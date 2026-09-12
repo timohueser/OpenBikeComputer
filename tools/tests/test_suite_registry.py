@@ -143,10 +143,9 @@ class SuiteRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(registry.RegistryError, "duplicate ownership"):
             registry.validate(self.root, suites, coverage, discovered)
 
-    def test_real_sleep_requires_an_open_issue_exception(self) -> None:
+    def test_python_sleep_detection_uses_call_syntax(self) -> None:
         source = self.root / "tools/tests/test_wait.py"
         source.parent.mkdir(parents=True)
-        source.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
         suites, coverage, _ = self.base_documents()
         suites["suite"][0].update(
             surface="python",
@@ -154,9 +153,19 @@ class SuiteRegistryTests(unittest.TestCase):
             ownership=[{"kind": "path", "source": "python-test", "pattern": "tools/tests/test_*.py"}],
         )
         discovered = [registry.Discovered("python-test", "tools/tests/test_wait.py", "tools/tests/test_wait.py")]
+        for text in ['# time.sleep(1)\n', 'fixture = "time.sleep(1)"\n', 'fixture = "Task.sleep(1)"\n']:
+            with self.subTest(source=text):
+                source.write_text(text, encoding="utf-8")
+                registry.validate(self.root, suites, coverage, discovered)
+        for content in [b"def broken(:\n", b"\xff"]:
+            with self.subTest(source=content):
+                source.write_bytes(content)
+                with self.assertRaisesRegex(registry.RegistryError, "cannot inspect tools/tests/test_wait.py"):
+                    registry.validate(self.root, suites, coverage, discovered)
+        source.write_text("import time\ntime.sleep(1)\n", encoding="utf-8")
         with self.assertRaisesRegex(registry.RegistryError, "real sleep"):
             registry.validate(self.root, suites, coverage, discovered)
-        suites["suite"][0]["sleep_exception"] = {"reason": "bounded watchdog", "issue": "#1236"}
+        suites["suite"][0]["sleep_exception"] = {"reason": "bounded watchdog", "issue": "#1449"}
         registry.validate(self.root, suites, coverage, discovered)
 
     def test_workflow_parser_handles_inline_blocks_and_matrix_commands(self) -> None:
