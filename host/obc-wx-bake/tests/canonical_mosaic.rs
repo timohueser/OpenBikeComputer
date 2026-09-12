@@ -25,7 +25,6 @@
 
 mod support;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::LazyLock;
 use support::published_tree;
