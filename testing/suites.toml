@@ -535,7 +535,7 @@ extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
-  { kind = "workflow", pattern = "npm test" },
+  { kind = "workflow", pattern = 'npm test -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"' },
 ]
 
 [[suite]]
@@ -622,7 +622,7 @@ extra_triggers = ["tools/rain-radar-demo/**"]
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" },
-  { kind = "workflow", pattern = "npm ci && npm test" },
+  { kind = "workflow", pattern = 'npm ci && npm test -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-rain-radar-junit.xml"' },
 ]
 
 [[suite]]
