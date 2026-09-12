@@ -156,8 +156,27 @@ fixture setup failure remains a failure and may produce no report; the upload st
 missing file as an error. CI does not create an empty report or run the tests again for reporting.
 
 These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
-web, Python, and Swift results still use their existing logs. This is not a coverage baseline or
-a complete cross-language result set.
+Python, and Swift results still use their existing logs. This is not a coverage baseline or a
+complete cross-language result set.
+
+## Web CI result artifacts
+
+The existing builder and rain-radar Vitest commands keep their default console output and also
+write native JUnit XML. Each report records file and test identities, outcomes, and elapsed
+durations. Skipped tests retain their skipped status. This does not add test execution or coverage.
+
+CI uploads the reports after test success or failure. Artifact names are `web-builder-ATTEMPT`
+and `web-rain-radar-ATTEMPT`, where `ATTEMPT` is the GitHub run attempt. Download both with:
+
+```sh
+gh run download RUN_ID --pattern 'web-*-ATTEMPT' --dir test-results
+```
+
+Each step removes its old report before it starts. A skipped step uploads nothing. Setup or
+collection failures remain failures and can produce an incomplete report or no report; a missing
+file makes the upload step fail. A cancelled run does not upload these reports. CI does not create
+an empty report or run tests again to obtain results. These reports cover the two Vitest suites,
+which use Node and simulated DOM environments; they are not real-browser evidence.
 
 ## Exceptions, quarantines, and sleeps
 
