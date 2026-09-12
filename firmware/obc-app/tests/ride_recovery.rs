@@ -5,7 +5,7 @@ mod common;
 use common::NoFix;
 use obc_app::device_core::{ExternalFacts, OutcomeSlots};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
-use obc_app::{App, AppState, Gesture, Mode, RecorderIntent, RideContinuation, RideDamage, Screen};
+use obc_app::{App, AppState, Gesture, Mode, RideContinuation, RideDamage, Screen};
 use obc_ports::{RideClock, Sensors};
 
 fn continuation() -> RideContinuation {
@@ -79,6 +79,18 @@ fn back_cannot_dismiss_the_recovery_decision() {
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
 }
 
+fn start_from_home(app: &mut App) {
+    assert!(matches!(app.top_screen(), Screen::Home(_)));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+    app.apply_gesture(Gesture::Step(3)); // Routes → Map
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::RideStart(_)));
+    app.apply_gesture(Gesture::Press); // Start ride
+}
+
 /// The whole rider path through a failed repair, over real gestures and real passes: the damaged
 /// offer, one confirmed removal, the store's refusal, the terminal card, a device that stays usable,
 /// a START that re-raises the decision instead of opening a phantom session, the retry the rider
@@ -123,11 +135,21 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     assert!(matches!(app.top_screen(), Screen::Menu(_)), "non-recording functions are the rider's again");
     app.apply_gesture(Gesture::Back);
 
-    // A START against the standing damaged object opens no session and puts the decision back.
-    app.recorder.request(RecorderIntent::Start);
-    common::quiet_pass(&mut app, 100_000);
+    // The real Start card must not overwrite Recorder's recovery decision with its Map transition.
+    start_from_home(&mut app);
+    assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the decision wins over the requested Map");
+    let plan = common::quiet_pass(&mut app, 100_000);
+    assert!(plan.effects.recorder.is_empty(), "a refused Start cannot write to the standing object");
     assert!(!app.recording(), "no phantom session opens against a damaged object");
-    assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the rider is shown what stands in the way");
+    assert_eq!(app.mode(), Mode::Idle, "a refused Start leaves the device in its non-recording mode");
+    assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the decision survives the next pass");
+
+    // Leaving and asking again remains usable and raises the same rider-controlled decision.
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
+    assert_eq!(app.mode(), Mode::Idle);
+    start_from_home(&mut app);
+    assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
 
     // Retry, with no reboot anywhere in this test. This time the removal commits.
     app.apply_gesture(Gesture::Hold);
@@ -138,8 +160,10 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     let mut facts = ExternalFacts::NONE;
     common::pass(&mut app, 100_002, &mut outcomes, &mut facts, None);
 
-    // Recording is available at once, in the same boot.
-    app.recorder.request(RecorderIntent::Start);
+    // The same visible Start action records at once after repair, in the same boot.
+    start_from_home(&mut app);
     common::quiet_pass(&mut app, 100_003);
     assert!(app.recording(), "the repaired card records again without a reboot");
+    assert_eq!(app.mode(), Mode::Riding);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
 }

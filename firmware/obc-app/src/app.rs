@@ -2982,11 +2982,11 @@ impl App {
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
             screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
         };
-        // The rider's Start becomes a session here rather than at stage 7, so the rest of this
-        // gesture batch sees the ride the first of them opened. Same entry point either way.
+        screen::apply(&mut self.ui.stack, t);
+        // Admit Start before the next gesture, after its requested screen transition, so a
+        // recovery decision takes precedence over the requested riding view.
         self.advance_recorder_session();
         self.sync_detour_preview(detour_planned_before);
-        screen::apply(&mut self.ui.stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
         // (the stack grew), so a step *within* the list doesn't wipe the frozen snapshot.

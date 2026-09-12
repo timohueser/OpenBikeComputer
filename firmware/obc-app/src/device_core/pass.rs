@@ -787,6 +787,7 @@ impl App {
             // back rather than a warning: it is the one thing between the rider and recording, and
             // it is the thing they can act on.
             crate::recorder::RecorderAdvance::RecoveryOwed => {
+                self.activity.mode = crate::activity::Mode::Idle;
                 self.raise_ride_recovery();
             }
             crate::recorder::RecorderAdvance::Nothing => {}
