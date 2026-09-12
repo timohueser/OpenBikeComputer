@@ -1021,15 +1021,8 @@ def check_build_rustflags(args: argparse.Namespace) -> None:
 def check_frames(args: argparse.Namespace) -> None:
     """Gate the largest single stack frame among the symbols of one module, in any ELF.
 
-    The poll-frame and boot-chain guards above measure the *app* image's async task frames. This
-    measures ordinary synchronous frames in a named module, which is what the OBC2 store is made of
-    — and until the DOS4 cutover puts that code in the app image, nothing else in CI looks at it.
-
-    It exists because of a measured regression, not a hypothetical one. Three constructors in the
-    OBC2 kernel returned or assigned a 56 KiB `CatalogModel` by value; placing one transaction cost
-    206,080 B of transient stack and HardFaulted on MSPLIM, against a 51,576 B residual main stack in
-    the shipping image (#1359). The fix took the largest OBC2 frame to 6,080 B. This is what keeps it
-    there: a by-value constructor reintroduced anywhere under `--match` fails the build.
+    This measures synchronous frames, including constructors, in the selected module.
+    It rejects an empty selection so a stale symbol needle cannot silently disable the gate.
     """
     parsed = parse_disassembly(run_tool("llvm-objdump", "--demangle", "-d", args.elf))
     needle = args.match

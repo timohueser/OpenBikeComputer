@@ -7,8 +7,7 @@
 //! [`FLAT_Store_Protocol.md`]: ../../../specs/FLAT_Store_Protocol.md
 //!
 //! Everything below this paragraph is the **superseded** Device Object System v2 wire (major 3) and
-//! its engine, kept while the OBC2 consumers that still read it are migrated (epic #1256, FS11
-//! deletes both). It is not extended and nothing in [`flat`] forwards to it.
+//! its engine, retained with their contract suites. No shipping caller or code in [`flat`] uses them.
 //!
 //! One Rust implementation of the bytes frozen by the normative suite in `specs/`:
 //!

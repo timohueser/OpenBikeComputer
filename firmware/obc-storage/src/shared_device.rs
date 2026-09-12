@@ -1,9 +1,7 @@
 //! A block device borrowed by shared reference.
 //!
-//! `embedded-sdmmc::VolumeManager` takes its device by value. Tests and the retiring OBC2
-//! compatibility benches still need to observe the same instrumented device after handing it to
-//! the manager, so they pass this tiny forwarding handle instead. It is deliberately independent
-//! of the deleted FAT extent-map implementation: sharing a test device is not an extent feature.
+//! `embedded-sdmmc::VolumeManager` takes its device by value. The board's FAT update adapter
+//! shares the card with the raw flat store through this forwarding handle.
 
 use embedded_sdmmc::{Block, BlockCount, BlockDevice, BlockIdx};
 

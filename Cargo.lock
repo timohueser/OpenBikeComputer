@@ -3045,7 +3045,6 @@ dependencies = [
  "obc-link",
  "obc-reader",
  "obcm-testkit",
- "sha2",
 ]
 
 [[package]]

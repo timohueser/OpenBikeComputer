@@ -56,8 +56,7 @@
 //! ## Bring-up
 //!
 //! `semmc.rs` is pulled in by path and has no `crate::` dependencies, so this binary owns its own
-//! host instance and never touches the display mux. The M33 must be at CK128 and `VPR00` bound,
-//! exactly as in `obc2_store_bench`.
+//! host instance and never touches the display mux. The M33 must be at CK128 and `VPR00` bound.
 //!
 //! # Serial map ingest — the board-acceptance path (FS7.5)
 //!

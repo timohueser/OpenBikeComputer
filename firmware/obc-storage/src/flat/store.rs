@@ -694,9 +694,6 @@ impl<D: BlockDevice> FlatStore<D> {
     /// its own, on top of `mount`'s 14,016 — a boot-chain cost of 25 KB against a residual main stack
     /// under 40. Through this constructor the caller's frame carries the pointer and nothing else.
     ///
-    /// The shape is `obc2::Transaction::mount_in_place`'s, one layer down and for the same reason —
-    /// and it is the shape `resource_guard.py`'s own failure text points a caller at.
-    ///
     /// `#[inline(never)]` for both of `mount`'s reasons: a caller that inlined this would be back to
     /// building the store in its own frame, and the frame gate would stop being able to name it.
     #[inline(never)]

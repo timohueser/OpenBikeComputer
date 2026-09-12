@@ -161,10 +161,7 @@ obc-display = { path = "../obc-display" }
 obc-sensors = { path = "../obc-sensors" }
 # The board-agnostic flat store and retained FAT byte adapters (#807).
 obc-storage = { path = "../obc-storage" }
-# The DOS2 wire/effect contract the OBC2 kernel transaction is defined against: `Command`,
-# `ClaimIntent`, `ObjectKind` and the identity types. Transport-free and storage-free by
-# construction, so this is a foundation dependency and not a second link stack — the only consumer
-# today is the `obc2_store_bench` binary (#1359); the live v1 link path is untouched.
+# The transport-free v4 engine and wire codecs shared by BLE, USB, and the flat store.
 obc-link = { path = "../obc-link", features = ["fast-crc"] }
 obc-crc = { path = "../obc-crc" }
 # Shared no_std OBCW reader/cache and deterministic generation selector. The board supplies only
