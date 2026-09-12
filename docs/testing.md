@@ -156,8 +156,8 @@ fixture setup failure remains a failure and may produce no report; the upload st
 missing file as an error. CI does not create an empty report or run the tests again for reporting.
 
 These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
-Python, and Swift results still use their existing logs. This is not a coverage baseline or a
-complete cross-language result set.
+Python, and serial XCTest results still use their existing logs. Swift Testing results are
+separate, as described below. This is not a coverage baseline or a complete cross-language result set.
 
 ## Web CI result artifacts
 
@@ -177,6 +177,24 @@ collection failures remain failures and can produce an incomplete report or no r
 file makes the upload step fail. A cancelled run does not upload these reports. CI does not create
 an empty report or run tests again to obtain results. These reports cover the two Vitest suites,
 which use Node and simulated DOM environments; they are not real-browser evidence.
+
+## Swift Testing CI result artifact
+
+The existing `ios-unit` command adds `--xunit-output` without changing how tests run. With both
+frameworks enabled, SwiftPM writes Swift Testing results to `ios-unit-swift-testing.xml`.
+The current serial XCTest run does not produce xUnit XML; its results remain in the CI log.
+
+The native report records Swift Testing function identities and durations. Parameterized cases
+are grouped under their test function. Failure totals count recorded issues, which can differ
+from the number of failed functions; known issues are not failures. Native skipped entries retain
+their status. Do not combine these fields into an invented count of executed parameter cases.
+
+CI removes stale reports before the command and uploads `ios-swift-testing-ATTEMPT` after test
+success or failure. Download it with `gh run download RUN_ID --name ios-swift-testing-ATTEMPT`.
+A build failure can produce no report; a terminated runner can leave incomplete XML. Missing
+output makes the upload fail. Skipped or cancelled steps upload nothing. The test exit status and
+CI log remain authoritative; an artifact is not proof that the run passed. No converter, extra
+test invocation or coverage collection is added. This is not a result set for all Swift tests.
 
 ## Exceptions, quarantines, and sleeps
 
