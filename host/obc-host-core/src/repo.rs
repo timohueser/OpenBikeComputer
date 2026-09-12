@@ -20,7 +20,7 @@ use obc_route::{Profile, RideStats, RouteSummary};
 /// router writes into. Supersedes the old `NavRouteStore` (which was only the nav-commit slice):
 /// the dispatcher needs the whole delete/rescan/active surface, so it lives in one trait.
 pub trait RouteRepository {
-    /// The route catalog (paired entries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
+    /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
