@@ -150,7 +150,7 @@ impl DfuConfirmScreen {
         // The conditional red note — the same-version note, then the no-undo note on a first install
         // (no rollback snapshot exists — spec §2.4) — one type-step down (Label), with a blank line
         // above it and the clearance to the Install row below. Both warning-coloured.
-        let note_y = y + Font::Label.cap_height() as i32 + 2;
+        let note_y = y + chrome::wrapped_line_pitch(Font::Label) + 1;
         if self.report.same_version() {
             let after = wrapped(cv, rx.t(Msg::DfuSameVersion), w / 2, note_y, w - 2 * INSET, WARNING);
             if self.report.first_install {
@@ -184,7 +184,7 @@ impl DfuConfirmScreen {
 /// never edge-to-edge). Returns the `y` just past the row. Versions are never translated.
 fn version_row(cv: &mut impl Surface, w: i32, top_y: i32, caption: &str, version: &Version) -> i32 {
     use palette::*;
-    let lh = Font::Label.cap_height() as i32 + 2;
+    let lh = chrome::wrapped_line_pitch(Font::Label) + 1;
     let char_w = Font::Label.char_width() as i32;
     let cap_w = caption.chars().count() as i32 * char_w;
     let ver_w = version.chars().count() as i32 * char_w;
@@ -216,7 +216,7 @@ fn version_lines(
     color: u16,
 ) -> i32 {
     let budget = (width_px / font.char_width() as i32).max(1) as usize;
-    let lh = font.cap_height() as i32 + 2;
+    let lh = chrome::wrapped_line_pitch(font) + 1;
     let mut y = top_y;
     let mut line: heapless::String<48> = heapless::String::new();
     for ch in version.chars() {

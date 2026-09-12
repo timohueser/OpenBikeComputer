@@ -194,7 +194,7 @@ fn draw_banner(cv: &mut impl Surface, w: i32, h: i32, text: &str, sub: Option<&s
         }
     }
     lines += 1;
-    let line_h = Font::Label.cap_height() as i32 + 1;
+    let line_h = super::vocab::chrome::wrapped_line_pitch(Font::Label);
     let body_h = lines as i32 * line_h + sub.map_or(0, |_| line_h + 2);
     let ph = body_h + 20;
     let py = h - ph - 12;

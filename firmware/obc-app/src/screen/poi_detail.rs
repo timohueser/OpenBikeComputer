@@ -149,7 +149,7 @@ impl PoiDetailScreen {
         let name_top = LIST_TOP + 4;
         let mut name_x = x;
         if let Some(cat) = obc_formats::obcm::poi_category_of(self.poi.subtype) {
-            let icon_c = Point::new(x + 11, name_top + Font::Body.cap_height() as i32 / 2);
+            let icon_c = Point::new(x + 11, name_top + Font::Body.cap_mid() as i32);
             super::poi_menu::draw_category_icon(cv, cat, icon_c, INK, PARCHMENT);
             name_x = x + 22 + 8;
         }
@@ -161,7 +161,7 @@ impl PoiDetailScreen {
         if named {
             let sub_y = name_bot + 6;
             cv.text(label, Point::new(x, sub_y), Font::Label, TextAlign::Left, SUBTEXT);
-            sub_bot = sub_y + Font::Label.cap_height() as i32;
+            sub_bot = sub_y + Font::Label.cap_bottom() as i32;
         }
 
         // Distance + bearing row — promoted directly under the category line (#685 §2: the two
@@ -175,7 +175,7 @@ impl PoiDetailScreen {
         let arrow_r = Font::Body.cap_height() as i32 / 2;
         let mut dist_x = x;
         if let (Some(fix), Some(heading)) = (fix, heading) {
-            let arrow_mid = dist_y + arrow_r;
+            let arrow_mid = dist_y + Font::Body.cap_mid() as i32;
             draw_bearing_arrow(
                 cv,
                 Point::new(x + arrow_r, arrow_mid),
@@ -189,7 +189,7 @@ impl PoiDetailScreen {
         let mut dist: heapless::String<12> = heapless::String::new();
         write_distance_coarse(&mut dist, "", self.poi.distance_m, rx.settings.units);
         cv.text(&dist, Point::new(dist_x, dist_y), Font::Body, TextAlign::Left, INK);
-        let mut dist_bot = dist_y + Font::Body.cap_height() as i32;
+        let mut dist_bot = dist_y + Font::Body.cap_bottom() as i32;
 
         // Off-route line (epic #946, U3) — only when the Up-ahead timeline handed the offset over.
         // The list row draws a side *arrow* (the device font has no arrow glyph, so it's a drawn
@@ -204,9 +204,9 @@ impl PoiDetailScreen {
             // The same drawn side arrow the timeline row uses, left of the words: without it
             // "245m left" reads as a *remaining* distance, which is exactly the number above it.
             use super::up_ahead::{draw_side_arrow, ARROW_GAP, ARROW_W};
-            draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_height() as i32 / 2), off > 0, SUBTEXT);
+            draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_mid() as i32), off > 0, SUBTEXT);
             cv.text(&line, Point::new(x + ARROW_W + ARROW_GAP, off_y), Font::Label, TextAlign::Left, SUBTEXT);
-            dist_bot = off_y + Font::Label.cap_height() as i32;
+            dist_bot = off_y + Font::Label.cap_bottom() as i32;
         }
 
         // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
@@ -226,12 +226,12 @@ impl PoiDetailScreen {
         };
         cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
 
-        let mut row_y = head_y + Font::Label.cap_height() as i32 + 8;
+        let mut row_y = head_y + Font::Label.cap_bottom() as i32 + 8;
         for iv in intervals {
             let mut range: heapless::String<16> = heapless::String::new();
             write_interval(&mut range, iv);
             cv.text(&range, Point::new(x, row_y), Font::Body, TextAlign::Left, INK);
-            row_y += Font::Body.cap_height() as i32 + 6;
+            row_y += Font::Body.line_height() as i32;
         }
 
         // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
@@ -239,8 +239,8 @@ impl PoiDetailScreen {
         // closed, so the closed state reads as a state, not just quieter text. Owner review round 1
         // (t7): the #685 shrink to a Label-in-18px pill read terribly — the text is back at Body
         // (the pre-epic weight) and the pill is sized *from* it: the measured text width plus a
-        // symmetric [`BADGE_PAD_X`], the Body cap plus a symmetric [`BADGE_PAD_Y`], and the anchor
-        // offset by the face's measured top bearing so the glyphs centre on both axes.
+        // symmetric [`BADGE_PAD_X`], and the visible ink bounds plus [`BADGE_PAD_Y`].
+        // Accents in translated labels are included in the bounds.
         //
         // Placement (owner review round 2, screenshot of a two-line name + split hours pushing the
         // badge under the footer bar): with interval rows on the page the badge rides the "Today"
@@ -259,14 +259,15 @@ impl PoiDetailScreen {
             let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
             let font = Font::Body;
             let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
-            let badge_h = BADGE_TEXT_H + 2 * BADGE_PAD_Y;
+            let ink = obc_render::text::text_ink_bounds(text, font).unwrap_or(0..0);
+            let badge_h = ink.end - ink.start + 2 * BADGE_PAD_Y;
             let (bx, badge_y) = if intervals.is_empty() {
                 (x, row_y + 8)
             } else {
-                (w - x - badge_w, head_y + Font::Label.cap_height() as i32 / 2 - badge_h / 2 - BADGE_RAISE)
+                (w - x - badge_w, head_y + Font::Label.cap_mid() as i32 - badge_h / 2 - BADGE_RAISE)
             };
             cv.round(rect(bx, badge_y, badge_w, badge_h), 6, bg);
-            let ty = badge_y + BADGE_PAD_Y - BADGE_TEXT_BEARING_Y;
+            let ty = badge_y + BADGE_PAD_Y - ink.start;
             cv.text(text, Point::new(bx + badge_w / 2, ty), font, TextAlign::Center, PARCHMENT);
         }
 
@@ -286,15 +287,6 @@ const BADGE_RAISE: i32 = 5;
 const BADGE_PAD_X: i32 = 8;
 /// The badge's symmetric vertical padding — pill edge to the measured text extents, both sides.
 const BADGE_PAD_Y: i32 = 8;
-/// Measured ink height (px) of the badge's uppercase [`Font::Body`] text ("OPEN"/"CLOSED" — caps
-/// only, no descenders), read off a rendered frame: the nominal `cap_height` (22) overshoots the
-/// face's real uppercase extents by 4 px, which would sit the text visibly high in the pill.
-const BADGE_TEXT_H: i32 = 18;
-/// Uppercase [`Font::Body`] glyphs ink 4 px below their cell-top anchor (the measured top bearing);
-/// the badge's text anchor offsets by it so the *visible* caps centre in the pill, not the padded
-/// glyph-cell box.
-const BADGE_TEXT_BEARING_Y: i32 = 4;
-
 /// Format quarter-hours from midnight (`0..=96`, `96` = 24:00) as `HH:MM` into `s`.
 fn write_quarter<const N: usize>(s: &mut heapless::String<N>, q: u8) {
     let minutes = q as u16 * 15;
@@ -316,10 +308,10 @@ fn write_interval<const N: usize>(s: &mut heapless::String<N>, iv: &Interval) {
 fn draw_wrapped(cv: &mut impl Surface, text: &str, x: i32, top: i32, max_w: i32, color: u16) -> i32 {
     let cw = Font::Body.char_width() as i32;
     let max_chars = (max_w / cw).max(1) as usize;
-    let line_h = Font::Body.cap_height() as i32 + 6;
+    let line_h = Font::Body.line_height() as i32;
     if text.chars().count() <= max_chars {
         cv.text(text, Point::new(x, top), Font::Body, TextAlign::Left, color);
-        return top + Font::Body.cap_height() as i32;
+        return top + Font::Body.cap_bottom() as i32;
     }
     // Split into two lines on the last space that keeps the first line within `max_chars`; fall back
     // to a hard char split if there's no such space (one very long token).
@@ -330,7 +322,7 @@ fn draw_wrapped(cv: &mut impl Surface, text: &str, x: i32, top: i32, max_w: i32,
     let second = fit_chars(rest.trim_start(), max_chars);
     let y2 = top + line_h;
     cv.text(&second, Point::new(x, y2), Font::Body, TextAlign::Left, color);
-    y2 + Font::Body.cap_height() as i32
+    y2 + Font::Body.cap_bottom() as i32
 }
 
 /// Byte index to split `text` for a first line of at most `max_chars` chars — the last space at or

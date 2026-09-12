@@ -18,8 +18,8 @@ use embedded_graphics::{
 
 use crate::font_data;
 
-/// A text size — one of three Terminus tiers. The names describe intent
-/// (`Label` / `Body` / `Display`), not pixel sizes, so screen code reads the same
+/// A text size — one of four Terminus tiers. The names describe intent
+/// (`Label` / `Body` / `Display` / `Huge`), not pixel sizes, so screen code reads the same
 /// regardless of which Terminus cut each maps to (see [`Font::mono`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Font {
@@ -58,16 +58,33 @@ impl Font {
         self.mono().character_size.height
     }
 
-    /// Cap height in pixels — the vertical span the glyphs actually occupy (≤ the cell
-    /// [`line_height`](Self::line_height)), for centring text in a cell. Approximate but stable.
+    /// Height of unaccented flat capitals and digits, excluding top bearing and descenders.
     #[inline]
-    pub fn cap_height(self) -> u32 {
+    pub const fn cap_height(self) -> u32 {
         match self {
-            Font::Label => 18,
-            Font::Body => 22,
-            Font::Display => 26,
-            Font::Huge => 52, // 2× Display; the Home clock only
+            Font::Label => 15,
+            Font::Body => 18,
+            Font::Display => 20,
+            Font::Huge => 40,
         }
+    }
+
+    /// Capital ink top relative to the cell-top anchor used by [`draw_text`].
+    #[inline]
+    pub fn cap_top(self) -> u32 {
+        self.cap_bottom() - self.cap_height()
+    }
+
+    /// Exclusive capital ink bottom relative to the cell-top anchor.
+    #[inline]
+    pub fn cap_bottom(self) -> u32 {
+        self.mono().baseline + 1
+    }
+
+    /// Capital ink centre relative to the cell-top anchor, for adjacent icons.
+    #[inline]
+    pub fn cap_mid(self) -> u32 {
+        self.cap_top() + self.cap_height() / 2
     }
 }
 
@@ -99,6 +116,28 @@ pub fn text_width(s: &str, font: Font) -> u32 {
     font.char_width() * s.chars().count() as u32
 }
 
+/// Visible vertical ink bounds of one line, relative to its cell-top anchor. Blank text has no bounds.
+/// Scans only rows outside the bounds already found; no glyph table or allocation is needed.
+pub fn text_ink_bounds(s: &str, font: Font) -> Option<core::ops::Range<i32>> {
+    let mono = font.mono();
+    let (w, h) = (mono.character_size.width, mono.character_size.height);
+    let per_row = mono.image.size().width / w;
+    let (mut top, mut bottom) = (h, 0);
+    for c in s.chars() {
+        let glyph = mono.glyph_mapping.index(c) as u32;
+        let (gx, gy) = (glyph % per_row * w, glyph / per_row * h);
+        let row_has_ink =
+            |y| (0..w).any(|x| mono.image.pixel(Point::new((gx + x) as i32, (gy + y) as i32)) == Some(BinaryColor::On));
+        if let Some(y) = (0..top).find(|&y| row_has_ink(y)) {
+            top = y;
+        }
+        if let Some(y) = (bottom..h).rev().find(|&y| row_has_ink(y)) {
+            bottom = y + 1;
+        }
+    }
+    (top < bottom).then_some(top as i32..bottom as i32)
+}
+
 /// Whether the text tiers can render `c` as a real glyph rather than the silent `?` fallback.
 ///
 /// The `Label` / `Body` / `Display` tiers share the one `LATIN` glyph strip added in #489/#601
@@ -118,8 +157,8 @@ pub fn glyph_supported(c: char) -> bool {
 }
 
 /// Draw `s` anchored at `anchor`, in `font`, aligned `align` about `anchor.x`, in the
-/// already-resolved `color`. The text's **top** sits at `anchor.y` (top baseline), so layout reads
-/// as "y = row top". Returns the position just past the string for chaining runs; a draw error
+/// already-resolved `color`. The glyph cell top sits at `anchor.y`; capital ink starts at
+/// `anchor.y + font.cap_top()`. Returns the position just past the string for chaining runs; a draw error
 /// falls back to `anchor`.
 pub fn draw_text<D>(target: &mut D, s: &str, anchor: Point, font: Font, align: TextAlign, color: D::Color) -> Point
 where

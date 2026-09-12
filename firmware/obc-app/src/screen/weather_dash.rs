@@ -229,7 +229,7 @@ fn draw_card_calm(cv: &mut impl Surface, w: i32, text: &str, sub: &str, icon: We
     // sub-line, so the block can never spill the pane (the round-one overlap bug).
     let zone_w = area.size.width as i32 - 48 - 26;
     let zone_cx = CARD_X + 12 + zone_w / 2;
-    let line_h = Font::Label.cap_height() as i32 + 1;
+    let line_h = super::vocab::chrome::wrapped_line_pitch(Font::Label);
     let per_line = (zone_w / Font::Label.char_width() as i32).max(1) as usize;
     let lines = wrapped_line_count(text, per_line) as i32;
     let block_h = lines * line_h + 4 + line_h;
@@ -273,7 +273,7 @@ fn draw_card_note(cv: &mut impl Surface, w: i32, text: &str, sub: Option<&str>) 
     card_triangle(cv, Point::new(CARD_X + 30, CARD_Y + CARD_H / 2), 14);
     let zone_x = CARD_X + 58;
     let zone_w = area.size.width as i32 - 58 - 10;
-    let line_h = Font::Label.cap_height() as i32 + 1;
+    let line_h = super::vocab::chrome::wrapped_line_pitch(Font::Label);
     let per_line = (zone_w / Font::Label.char_width() as i32).max(1) as usize;
     let lines = wrapped_line_count(text, per_line) as i32;
     let block_h = lines * line_h + sub.map_or(0, |_| line_h + 4);
