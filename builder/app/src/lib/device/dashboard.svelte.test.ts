@@ -17,7 +17,7 @@ import { encodeTripObject } from "../usb/objects";
 import { MockDevice, loopbackDevice } from "../usb/loopback";
 import { EntryFlags, ObjectKind } from "../usb/protocol";
 
-const SCOPE: RideScope = { serial: "0011223344556677", epoch: 0xa1b2c3d4 };
+const SCOPE: RideScope = { serial: "0011223344556677", storeId: "a1b2c3d4000000000000000000000000" };
 
 /** An OBCR-sized payload with a distinct byte at every offset — the page never looks inside one. */
 function routeBytes(seed: number): Uint8Array {
@@ -100,7 +100,7 @@ describe("DeviceDashboard", () => {
             seedRoute(device, 2n, "Second");
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.routes, "same scope: the cached lists stand").toHaveLength(1);
-            await dash.ensureLoaded(client, { ...SCOPE, epoch: 7 });
+            await dash.ensureLoaded(client, { ...SCOPE, storeId: "00000000000000000000000000000007" });
             expect(dash.routes, "new scope: reloaded").toHaveLength(2);
         });
     });
