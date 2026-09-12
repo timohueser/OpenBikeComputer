@@ -177,10 +177,14 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
     let owner = HostStore::memory().unwrap();
     let free = owner.0.lock().unwrap().free_extents();
     for _ in 0..12 {
-        for len in [bytes.len() as u64 + 1, bytes.len() as u64 - 1] {
-            assert!(owner
-                .import(ObjectKind::MapShard, None, &mut Bounded(&bytes), len, DisplayName::default())
-                .is_err());
+        for (len, expected) in [
+            (bytes.len() as u64 + 1, io::ErrorKind::UnexpectedEof),
+            (bytes.len() as u64 - 1, io::ErrorKind::InvalidData),
+        ] {
+            assert!(matches!(
+                owner.import(ObjectKind::MapShard, None, &mut Bounded(&bytes), len, DisplayName::default()),
+                Err(ImportError::Io(error)) if error.kind() == expected
+            ));
             assert_eq!(owner.0.lock().unwrap().free_extents(), free, "failed import cancels its allocation");
         }
     }
