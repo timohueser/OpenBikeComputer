@@ -30,7 +30,7 @@ use obc_formats::obcm::{
     NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
     NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CATEGORY_COUNT,
     POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
-    VERSION as OBCM_VERSION,
+    SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
 };
 
 /// The `Offset Scale` every `.obcm` this packer writes carries (§1.1): `U = 16`, a 64 GiB
@@ -718,15 +718,13 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
 
 /// A POI record's absolute microdegree coordinates + the fields packed into its
 /// 36-byte record (§7.3). Owned so the tree can move records into leaves.
-/// `hours_ref` is the 0-based index into the map's hours-pool section (§7.5), or
-/// [`POI_HOURS_REF_NONE`] when the POI has no pooled hours — resolved before
-/// tree-building so it travels with the record.
+/// The trailer stores either a service hours reference or a signed summit height.
 struct PoiPoint {
     lon_udeg: i32,
     lat_udeg: i32,
     subtype: u8,
     name: Option<String>,
-    hours_ref: u16,
+    payload: u16,
 }
 
 /// One node of a category's POI quadtree, mirroring the geometry [`Node`] shape so
@@ -757,10 +755,8 @@ impl FlattenTree for PoiNode {
 }
 
 /// Pack one 36-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
-/// subtype`, `u8 name_len`, a 24-byte `0xFF`-padded name, and a `u16 hours_ref`
-/// (0-based hours-pool index, [`POI_HOURS_REF_NONE`] = none). The name is already
-/// ASCII-folded + ≤ 24 bytes at ingest ([`crate::poi::normalize_name`]); truncate
-/// defensively so a stray long name can never overrun the fixed field.
+/// subtype`, `u8 name_len`, a 24-byte `0xFF`-padded name, and the subtype-specific
+/// two-byte trailer. Names truncate only at UTF-8 character boundaries.
 fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
     let mut rec = [CHUNK_END; POI_RECORD_LEN];
     rec[0..4].copy_from_slice(&p.lat_udeg.to_le_bytes());
@@ -768,11 +764,14 @@ fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
     rec[8] = p.subtype;
     let name = p.name.as_deref().unwrap_or("");
     let bytes = name.as_bytes();
-    let len = bytes.len().min(POI_NAME_LEN);
+    let mut len = bytes.len().min(POI_NAME_LEN);
+    while !name.is_char_boundary(len) {
+        len -= 1;
+    }
     rec[9] = len as u8;
     rec[10..10 + len].copy_from_slice(&bytes[..len]);
     // rec[10 + len .. 34] stays 0xFF (name pad).
-    rec[34..36].copy_from_slice(&p.hours_ref.to_le_bytes());
+    rec[34..36].copy_from_slice(&p.payload.to_le_bytes());
     rec
 }
 
@@ -843,7 +842,7 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 /// (§7.5) at the tail. `pois` is the deduped classified list; each is bucketed by
 /// its subtype's category ([`crate::poi::table_row`]). Category ids are
 /// `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or not
-/// (§7.1) — a map with no POIs writes six empty entries, never a zero offset.
+/// (§7.1). Named summits add category 7. A map with no POIs writes six empty entries.
 /// `section_offset` is the section's absolute byte offset in the file, needed so the
 /// directory's per-category `index_offset` fields and the `hours_pool_offset` are
 /// file-absolute.
@@ -857,11 +856,14 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), section_offset: usize) -> Vec<u8> {
     // Dedup the weekly schedules into a pool once over the whole list; `refs[k]` is
     // POI k's 0-based pool index (or `None` ⇒ no hours). Aligned to `pois`.
-    let (pool, refs) = crate::hours::build_hours_pool(pois, |p| p.hours.as_ref());
+    let (pool, refs) = crate::hours::build_hours_pool(pois, |p| {
+        (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten()
+    });
+    let category_count =
+        if pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) { SUMMIT_CATEGORY_ID } else { POI_CATEGORY_COUNT };
 
-    // Bucket points by category (id 1..=6). Index 0 is unused (no category 0). Each
-    // point carries its resolved `hours_ref` so it survives tree-building + chunking.
-    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=POI_CATEGORY_COUNT as usize).map(|_| Vec::new()).collect();
+    // Services occupy categories 1..6; named summits add category 7 when present.
+    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=category_count as usize).map(|_| Vec::new()).collect();
     for (p, hours_ref) in pois.iter().zip(refs.iter()) {
         let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {
@@ -869,7 +871,11 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
             lat_udeg: p.lat_udeg,
             subtype: p.subtype,
             name: p.name.clone(),
-            hours_ref: hours_ref.unwrap_or(POI_HOURS_REF_NONE),
+            payload: if p.subtype == SUMMIT_SUBTYPE_ID {
+                p.elevation_m.unwrap_or(SUMMIT_ELEVATION_UNKNOWN) as u16
+            } else {
+                hours_ref.unwrap_or(POI_HOURS_REF_NONE)
+            },
         });
     }
 
@@ -886,8 +892,8 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         chunks: Vec<u8>,
         chunk_count: u32,
     }
-    let mut blocks = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
-    for cat_id in 1..=POI_CATEGORY_COUNT {
+    let mut blocks = Vec::with_capacity(category_count as usize);
+    for cat_id in 1..=category_count {
         let pts = std::mem::take(&mut by_cat[cat_id as usize]);
         if pts.is_empty() {
             blocks.push(CatBlock { cat_id, index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0 });
@@ -904,7 +910,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
 
     // Directory size: count byte + chunk_size u16 + one entry per category + the two
     // v7 hours-pool fields (offset u32 + count u16).
-    let dir_len = 1 + 2 + POI_CATEGORY_COUNT as usize * POI_CAT_ENTRY_LEN + 4 + 2;
+    let dir_len = 1 + 2 + category_count as usize * POI_CAT_ENTRY_LEN + 4 + 2;
 
     // Lay categories out sequentially after the directory: [index][filler][chunks] per category,
     // empties contributing nothing but their directory entry. Every `Index Offset` is scaled, so
@@ -917,7 +923,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     // The cursor starts past the directory because the directory's own bytes cannot be written
     // until this walk has resolved the offsets they carry.
     let (payload, (cat_entries, hours_pool_offset)) = lay_out(section_offset + dir_len, |w| {
-        let mut cat_entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+        let mut cat_entries = Vec::with_capacity(category_count as usize);
         for b in &blocks {
             cat_entries.push((b.cat_id, scaled(w.begin_section()? as usize), b.node_count, b.chunk_count));
             w.put(&b.index)?;
@@ -933,7 +939,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
 
     // Now emit the directory with the resolved offsets + pool fields.
     let mut out = Vec::with_capacity(dir_len + payload.len());
-    out.push(POI_CATEGORY_COUNT);
+    out.push(category_count);
     out.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
     for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
         out.push(cat_id);
@@ -2211,6 +2217,7 @@ mod tests {
             name: name.map(String::from),
             from_node: true,
             hours: hours.and_then(crate::hours::parse),
+            elevation_m: None,
         };
         let pois = vec![
             poi(1, 100_000, 100_000, Some("Brunnen"), None),

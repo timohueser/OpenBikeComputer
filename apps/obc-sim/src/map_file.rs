@@ -95,6 +95,11 @@ impl LoadedMap {
         Ok(LoadedMap { source, slice, tables, cache })
     }
 
+    /// Immutable bytes of the selected map, shared with background terrain generation.
+    pub fn bytes(&self) -> &'static [u8] {
+        &self.source.file
+    }
+
     /// The map's parsed tables — the style table and the LOD pyramid.
     pub fn tables(&self) -> &'static MapTables {
         self.tables
@@ -135,6 +140,7 @@ pub fn render_frame<D, F>(
     scene: Scene<'_, '_>,
     rain: Option<&mut dyn obc_render::RainOverlaySource>,
     weather: Option<&obc_app::WeatherSnapshot>,
+    peak_view: Option<&obc_app::peak_view::Panorama>,
     (w, h): (f32, f32),
     color_fn: F,
 ) -> RenderStats
@@ -154,6 +160,7 @@ where
         route,
         rain,
         weather,
+        peak_view,
         w,
         h,
         &color_fn,

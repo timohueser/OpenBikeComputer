@@ -10,6 +10,7 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 external-fixtures = []
 
 [dependencies]
+obc-fixtures = { path = "../../host/obc-fixtures" }
 obc-reader = { path = "../../firmware/obc-reader" }
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
@@ -57,7 +58,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.14"
 
 [dev-dependencies]
-obc-fixtures = { path = "../../host/obc-fixtures" }
 # The differential replay builds sampled weather snapshots by hand, whose frame table is the
 # `heapless::Vec` the device's own snapshot carries.
 heapless = "0.8"

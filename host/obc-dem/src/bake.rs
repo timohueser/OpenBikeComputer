@@ -205,11 +205,12 @@ pub fn write_cell_file(
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut writer = ShardWriter::new(
+    let mut writer = ShardWriter::with_surface(
         std::io::BufWriter::new(file),
         posting_log2,
         cell_log2,
         CellRect { min_i: ci, min_j: cj, rows: 1, cols: 1 },
+        crate::surface::is_surface_block(posting_log2, cell_log2, block.len()),
     )?;
     writer.push(Some(block))?;
     writer.finish()?;

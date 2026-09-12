@@ -10,9 +10,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use obc_formats::io::{checked_rd_u16, checked_rd_u32, ByteSource, DecodeError, Error};
 use obc_formats::obct::{
     cell_block_len, cell_samples_log2, cell_tiles_log2, sample_offset_in_tile, tile_offset_in_cell,
-    validate_header_prefix, DIR_ABSENT, DIR_ENTRY_LEN, GRID_ORIGIN, HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I,
-    HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET, HDR_FLAGS, HDR_POSTING_LOG2, HDR_RESERVED, HEADER_LEN, NODATA,
-    TILE_BYTES, TILE_LOG2, TILE_SAMPLES,
+    validate_header_prefix, CellIndexLayout, SurfaceLayout, CELL_INDEX_FLAG, DIR_ABSENT, DIR_ENTRY_LEN, GRID_ORIGIN,
+    HDR_CELL_COLS, HDR_CELL_LOG2, HDR_CELL_MIN_I, HDR_CELL_MIN_J, HDR_CELL_ROWS, HDR_DIRECTORY_OFFSET, HDR_FLAGS,
+    HDR_POSTING_LOG2, HDR_RESERVED, HEADER_LEN, NODATA, SURFACE_FLAG, SURFACE_VERSION, TILE_BYTES, TILE_LOG2,
+    TILE_SAMPLES,
 };
 
 use crate::grid::{axis_cells, cell_base_sample, cell_of, lattice_coord, locate};
@@ -35,7 +36,7 @@ pub struct TerrainHeader {
     pub posting_log2: u8,
     /// `log2` of the terrain cell side in µdeg (v1 data: 19).
     pub cell_log2: u8,
-    /// Reserved encoding flags; `0` in v1 and rejected otherwise.
+    /// Zero for native v1 cells; `SURFACE_FLAG` for indexed v2 cells.
     pub flags: u8,
     /// Cell-rectangle origin on the OBCA grid: minimum cell index in latitude / longitude.
     pub cell_min_i: u32,
@@ -100,7 +101,7 @@ impl<'a> TerrainReader<'a> {
         })?;
 
         let flags = head[HDR_FLAGS];
-        if flags != 0 {
+        if !((head[4] == 1 && flags == 0) || (head[4] == SURFACE_VERSION && flags & !CELL_INDEX_FLAG == SURFACE_FLAG)) {
             return Err(Error::BadVersion);
         }
         let header = TerrainHeader {
@@ -136,6 +137,9 @@ impl<'a> TerrainReader<'a> {
 
         // The directory: fully present, after the header, and not overlapping the cell blocks.
         let total = src.len();
+        if flags & SURFACE_FLAG != 0 && total > u32::MAX.into() {
+            return Err(Error::BadOffset);
+        }
         let entries = header.cell_rows as u64 * header.cell_cols as u64;
         let dir_start = header.directory_offset as u64;
         let dir_end = dir_start + entries * DIR_ENTRY_LEN as u64;
@@ -143,8 +147,23 @@ impl<'a> TerrainReader<'a> {
             return Err(Error::BadOffset);
         }
 
+        let cell_bytes = if flags & SURFACE_FLAG != 0 {
+            SurfaceLayout::new(header.posting_log2, header.cell_log2).ok_or(Error::BadOffset)?.cell_bytes()
+        } else {
+            cell_bytes
+        };
+        let data_start = if flags & CELL_INDEX_FLAG != 0 {
+            CellIndexLayout::new(header.cell_rows, header.cell_cols, header.directory_offset)
+                .ok_or(Error::BadOffset)?
+                .end() as u64
+        } else {
+            dir_end
+        };
+        if data_start > total {
+            return Err(Error::BadOffset);
+        }
         let reader = TerrainReader { src, header, cell_bytes, cell_tiles_log2, generation: next_generation() };
-        reader.validate_directory(dir_start, dir_end, entries, total)?;
+        reader.validate_directory(dir_start, data_start, entries, total)?;
         Ok(reader)
     }
 
@@ -164,7 +183,8 @@ impl<'a> TerrainReader<'a> {
                     continue;
                 }
                 let start = offset as u64;
-                if offset % 2 != 0 || start < dir_end || start + self.cell_bytes as u64 > total {
+                let alignment = if self.header.flags & SURFACE_FLAG != 0 { 512 } else { 2 };
+                if offset % alignment != 0 || start < dir_end || start + self.cell_bytes as u64 > total {
                     return Err(Error::BadOffset);
                 }
             }

@@ -212,7 +212,15 @@ fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
 }
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
-    Poi { subtype, lon_udeg: lon as i32, lat_udeg: lat as i32, name: Some(name.into()), from_node: true, hours: None }
+    Poi {
+        subtype,
+        lon_udeg: lon as i32,
+        lat_udeg: lat as i32,
+        name: Some(name.into()),
+        from_node: true,
+        hours: None,
+        elevation_m: None,
+    }
 }
 
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {

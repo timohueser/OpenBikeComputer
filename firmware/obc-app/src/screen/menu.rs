@@ -522,18 +522,15 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
-    static PEAK_LAYER: [i16; 1] = [0];
-    static PEAK_PROFILE: crate::PeakViewProfile = crate::PeakViewProfile {
+    static PEAK_PROFILE: crate::PeakViewProfile<'static> = crate::PeakViewProfile {
         id: 250,
         name: "test",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 0,
-        sample_step_q4: 1440,
         angle_bottom_q4: -4,
         angle_top_q4: 4,
-        layers_q4: [&PEAK_LAYER, &PEAK_LAYER, &PEAK_LAYER],
         peaks: &[],
     };
 
@@ -576,7 +573,7 @@ mod tests {
     fn peak_station_exists_only_when_a_profile_is_installed() {
         let mut state = AppState::new(0, 0, 1.0);
         assert_eq!(menu_items(&state), &BASE_ITEMS);
-        state.peak_view_profile = Some(&PEAK_PROFILE);
+        state.peak_view_profile = Some(PEAK_PROFILE);
         assert_eq!(menu_items(&state), &PEAK_ITEMS);
 
         let mut activity = Activity::new(Mode::Idle);

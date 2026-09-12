@@ -153,10 +153,11 @@ pub struct AppState {
     /// the same fallback even when the map preference is north-up. It is adopted only on ticks
     /// where one of those views would use it (see [`App::tick`]).
     pub compass_deg: Option<f32>,
-    /// Renderer-ready panorama installed by the platform, or `None` when Peak View data is not
-    /// available. The simulator supplies independent real-location fixtures while the UI is being
-    /// evaluated; the device can later point this same seam at its chosen durable store.
-    pub peak_view_profile: Option<&'static crate::PeakViewProfile>,
+    /// Installed terrain availability, captured observer framing, and current summit projections.
+    /// The large panorama remains host-owned and is borrowed only while drawing.
+    pub peak_view_profile: Option<crate::PeakViewProfile<'static>>,
+    pub peak_view_peaks: [crate::PeakViewPeak; 32],
+    pub peak_view_peak_count: u8,
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
@@ -206,6 +207,8 @@ impl AppState {
             pan: None,
             compass_deg: None,
             peak_view_profile: None,
+            peak_view_peaks: [crate::PeakViewPeak::EMPTY; 32],
+            peak_view_peak_count: 0,
             device: DeviceStatus {
                 // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
                 battery_pct: 75,
@@ -2279,6 +2282,47 @@ impl App {
         true
     }
 
+    /// Open the platform's installed Peak View. Generation starts when the host sees this screen.
+    pub fn show_peak_view(&mut self) -> bool {
+        if self.state.peak_view_profile.is_none() {
+            return false;
+        }
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::PeakView(screen::PeakViewScreen::new())));
+        self.ui.map_dirty = true;
+        true
+    }
+
+    pub fn set_peak_view_loading(&mut self, loading: bool, failed: bool) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_loading(loading, failed) {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn set_peak_view_waiting(&mut self) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_waiting() {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn set_peak_view_building(&mut self, building: bool) {
+        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
+            if screen.set_building(building) {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    pub fn peak_view_heading_q4(&self) -> u16 {
+        match self.top_screen() {
+            Screen::PeakView(screen) => screen.heading_q4(&self.state),
+            _ => self.state.peak_view_profile.map(|profile| profile.default_heading_q4).unwrap_or(0),
+        }
+    }
+
     pub fn top_screen(&self) -> &Screen {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
@@ -3162,6 +3206,7 @@ impl App {
             route,
             rain,
             weather,
+            None,
             w,
             h,
             &color_fn,
@@ -3241,7 +3286,9 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.render_scene_map_rain_timed(scratch, target, reader, reader, route, rain, weather, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch, target, reader, reader, route, rain, weather, None, w, h, color_fn, clock,
+        )
     }
 
     /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
@@ -3265,7 +3312,20 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, None, w, h, color_fn, clock)
+        self.render_scene_map_rain_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            None,
+            None,
+            None,
+            w,
+            h,
+            color_fn,
+            clock,
+        )
     }
 
     /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
@@ -3286,6 +3346,7 @@ impl App {
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
         weather: Option<&crate::weather::WeatherSnapshot>,
+        peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -3392,6 +3453,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
+            peak_view,
             scratch,
             // Reborrow so the lease's trait-object lifetime shrinks to this frame's `Render`
             // borrow (a `&mut dyn` is invariant without the explicit coercion).

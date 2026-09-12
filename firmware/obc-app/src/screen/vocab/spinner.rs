@@ -75,15 +75,20 @@ impl Spinner {
     /// repaints only the disc. `w`/`h` of 0 (no frame rendered yet) abstains: `None` = full
     /// repaint.
     pub(crate) fn tick(&mut self, now_ms: u32, w: i32, h: i32) -> ScreenTick {
+        self.tick_at_cadence(now_ms, w, h, SPIN_FRAME_MS)
+    }
+
+    /// Keep the same sweep speed while a compute-heavy screen reserves more time for its work.
+    pub(crate) fn tick_at_cadence(&mut self, now_ms: u32, w: i32, h: i32, frame_ms: u32) -> ScreenTick {
         let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
         self.last_ms = Some(now_ms);
         self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(MAX_TICK_S)) % 360.0;
-        let due = self.last_paint_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= SPIN_FRAME_MS);
+        let due = self.last_paint_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= frame_ms);
         if due {
             self.last_paint_ms = Some(now_ms);
         }
         let region = (w > 0 && h > 0).then(|| needle_region(w, h));
-        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS), region }
+        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(frame_ms), region }
     }
 
     /// Draw the needle at the panel's centre — the shared compass needle (the Menu dial's), at the

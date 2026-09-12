@@ -8,8 +8,6 @@
 //! Host logic shared with the landing page's wasm host (`obc-web-demo`) — replay stepping, the
 //! frame-interleaved `NavPlan`, the in-memory byte sink — lives in `obc-host-core`, not here.
 
-use std::time::Instant;
-
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
@@ -109,7 +107,7 @@ struct Args {
     png: Option<String>,
     /// Start in heading-up orientation with this course (degrees CW from north).
     heading: Option<f32>,
-    /// Install one host-only real-location panorama and expose Peak View in the main menu.
+    /// Explicit geographic fixture input for Peak View acceptance tests.
     peak_view: Option<peak_view::Preset>,
     /// Preload this GPX track for replay.
     gpx: Option<String>,
@@ -1204,8 +1202,10 @@ fn main() {
         }
         zoom *= args.zoom_mul;
         let mut state = AppState::new(cx, cy, zoom);
+        let mut peak_runtime = peak_view::Runtime::new(&map, args.peak_view);
+        state.peak_view_profile = peak_runtime.profile();
         if let Some(profile) = args.peak_view.map(peak_view::Preset::profile) {
-            state.peak_view_profile = Some(profile);
+            state.peak_view_profile = Some(profile.detached());
             state.compass_deg = Some(profile.default_heading_q4 as f32 / 4.0);
             state.user_fix =
                 Some(Fix { lat: profile.observer_lat, lon: profile.observer_lon, course: None, speed_mps: Some(0.0) });
@@ -1217,7 +1217,8 @@ fn main() {
         // fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
             state.heading_up = true;
-            state.user_fix = Some(Fix { lat: cy, lon: cx, course: Some(deg), speed_mps: None });
+            let (lat, lon) = state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((cy, cx));
+            state.user_fix = Some(Fix { lat, lon, course: Some(deg), speed_mps: None });
         }
         // `--gpx` renders the replayed fix at `--at` (default: track midpoint). Seed the
         // camera/heading from that fix now; the replay up to `--at` runs below (after the
@@ -1505,6 +1506,7 @@ fn main() {
                     wx_script.as_ref(),
                     now,
                 );
+                peak_runtime.finish(app);
                 if matches!(what, ScriptHook::Render) {
                     // The frame carries the **streamed route** when one is active, exactly as the
                     // GUI's per-frame render does: the Up-ahead timeline's corridor snapshot (epic
@@ -1517,13 +1519,15 @@ fn main() {
                         _ => None,
                     };
                     let mut fb = Framebuffer::new(rw, rh);
-                    let _ = app.render_frame(
-                        Some(&mut scratch),
+                    let _ = map_file::render_frame(
+                        app,
+                        &mut scratch,
                         &mut fb,
-                        &reader,
-                        route.as_ref(),
-                        rw as f32,
-                        rh as f32,
+                        map_file::Scene { reader: &reader, route: route.as_ref() },
+                        None,
+                        wx_script.as_ref(),
+                        peak_runtime.panorama(),
+                        (rw as f32, rh as f32),
                         color_of,
                     );
                 }
@@ -1868,9 +1872,6 @@ fn main() {
         }
 
         let mut fb = Framebuffer::new(args.width, args.height);
-        // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
-        // the host fills it) — same field the live panel shows.
-        let t0 = Instant::now();
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
         // the production resident snapshot — the same adapter/feed pair the device and the GUI
@@ -1935,6 +1936,9 @@ fn main() {
         }
 
         let rain_step = app.state.rain_step;
+        peak_runtime.finish(&mut app);
+        let panorama = peak_runtime.panorama();
+        let t0 = std::time::Instant::now();
         let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
                             weather_feed: Option<&obc_app::WeatherSnapshot>,
                             app: &mut App,
@@ -1947,6 +1951,7 @@ fn main() {
                 scene,
                 rain,
                 weather_feed,
+                panorama,
                 (args.width as f32, args.height as f32),
                 color_of,
             )
@@ -1959,6 +1964,7 @@ fn main() {
             None => render_final(None, wx_snapshot.as_ref(), &mut app, &mut fb, &mut scratch),
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
+        peak_runtime.note_frame_presented(&app);
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
         let hit_pct = if cache_reqs == 0 { 0.0 } else { 100.0 * stats.map_chunk_hits as f32 / cache_reqs as f32 };
         eprintln!(
