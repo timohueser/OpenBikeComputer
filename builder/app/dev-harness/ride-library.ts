@@ -82,15 +82,15 @@ class HarnessRideLibrary implements RideLibrary {
     private readonly held = new Map<string, Held>();
     private nextStamp = 1_753_000_000;
 
-    seed(serial: string, epoch: number, objectId: number, ride: RideObject, gpxPresent: boolean): void {
-        const key = `${serial}:${epoch}:${objectId}`;
+    seed(serial: string, storeId: string, objectId: bigint, ride: RideObject, gpxPresent: boolean): void {
+        const key = `${serial}:${storeId}:${objectId}`;
         const object = encodeRideObject(ride);
         this.held.set(key, {
             object,
             ride: {
                 key,
                 serial,
-                epoch,
+                storeId,
                 objectId,
                 name: ride.name,
                 startTime: ride.startTime,
@@ -115,7 +115,7 @@ class HarnessRideLibrary implements RideLibrary {
     }
 
     async import(ride: RideImport): Promise<{ ride: LibraryRide; imported: boolean }> {
-        const key = `${ride.serial}:${ride.epoch}:${ride.objectId}`;
+        const key = `${ride.serial}:${ride.storeId}:${ride.objectId}`;
         const existing = this.held.get(key);
         if (existing) {
             // The repair path, mirrored from the real thing: same names, same `importedAt`.
@@ -126,7 +126,7 @@ class HarnessRideLibrary implements RideLibrary {
         const landed: LibraryRide = {
             key,
             serial: ride.serial,
-            epoch: ride.epoch,
+            storeId: ride.storeId,
             objectId: ride.objectId,
             name: ride.name,
             startTime: ride.startTime,
@@ -179,14 +179,14 @@ export function harnessRideLibrary(): RideLibrary {
     if (singleton) return singleton;
     const lib = new HarnessRideLibrary();
     const serial = "OBC-24-000111"; // an older device's pulls — NOT the simulated device's serial
-    const epoch = 7;
+    const storeId = "00000000000000000000000000000007";
     // The Freiburg / Kaiserstuhl cluster…
-    lib.seed(serial, epoch, 1, loopRide("Schauinsland classic", 1_784_608_800, 47.91, 7.9, 0.045, 1120), true);
-    lib.seed(serial, epoch, 2, loopRide("Rosskopf after work", 1_784_090_400, 48.01, 7.9, 0.028, 510), true);
+    lib.seed(serial, storeId, 1n, loopRide("Schauinsland classic", 1_784_608_800, 47.91, 7.9, 0.045, 1120), true);
+    lib.seed(serial, storeId, 2n, loopRide("Rosskopf after work", 1_784_090_400, 48.01, 7.9, 0.028, 510), true);
     // …one of which lost its GPX, so the auto-repair has work on first open…
-    lib.seed(serial, epoch, 3, loopRide("Kaiserstuhl gravel", 1_783_917_600, 48.09, 7.66, 0.038, 420), false);
+    lib.seed(serial, storeId, 3n, loopRide("Kaiserstuhl gravel", 1_783_917_600, 48.09, 7.66, 0.038, 420), false);
     // …and a lone ride far enough away for its own cluster badge.
-    lib.seed(serial, epoch, 4, loopRide("Inntal shakedown", 1_782_712_800, 47.26, 11.39, 0.05, 640), true);
+    lib.seed(serial, storeId, 4n, loopRide("Inntal shakedown", 1_782_712_800, 47.26, 11.39, 0.05, 640), true);
     singleton = lib;
     return lib;
 }

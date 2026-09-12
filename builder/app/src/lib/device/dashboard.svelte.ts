@@ -77,7 +77,7 @@ export class DeviceDashboard {
     }
 
     /**
-     * Load the three lists, once per `(serial, epoch)`. A remount of the page on the same device
+     * Load the three lists, once per `(serial, StoreId)`. A remount of the page on the same device
      * renders what is already here; a card swap or another device reloads.
      */
     async ensureLoaded(client: FlatStoreClient, scope: RideScope): Promise<void> {

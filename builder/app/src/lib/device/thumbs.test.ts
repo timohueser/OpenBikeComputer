@@ -16,7 +16,7 @@ import {
     type ThumbStorage,
 } from "./thumbs.svelte";
 
-const SCOPE: RideScope = { serial: "OBC-0042", epoch: 7 };
+const SCOPE: RideScope = { serial: "OBC-0042", storeId: "00000000000000000000000000000007" };
 const TRACK: Thumb = [
     [47.9950001234, 7.8420009876],
     [47.996, 7.843],
@@ -25,7 +25,7 @@ const TRACK: Thumb = [
 
 const request = (id: number, load: ThumbRequest["load"]): ThumbRequest => ({
     kind: "route",
-    id,
+    id: BigInt(id),
     fingerprint: `c${id}`,
     load,
 });
@@ -50,10 +50,13 @@ function ticker(): { now: () => number; tick: () => void } {
 
 describe("thumb keys", () => {
     it("carry device scope, kind, id and fingerprint", () => {
-        const key = thumbKey(SCOPE, "route", 12, "c123");
+        const key = thumbKey(SCOPE, "route", 12n, "c123");
         expect(key).toContain("OBC-0042");
-        expect(key).toContain(":7:route:12:c123");
-        expect(thumbKey({ ...SCOPE, epoch: 8 }, "route", 12, "c123")).not.toBe(key);
+        expect(thumbKey(SCOPE, "ride", 9007199254740992n, "c123")).not.toBe(
+            thumbKey(SCOPE, "ride", 9007199254740993n, "c123"),
+        );
+        expect(key).toContain(":00000000000000000000000000000007:route:12:c123");
+        expect(thumbKey({ ...SCOPE, storeId: "00000000000000000000000000000008" }, "route", 12n, "c123")).not.toBe(key);
     });
 
     it("uses the route CRC and does not invent a missing fingerprint", () => {
@@ -71,7 +74,7 @@ describe("thumb keys", () => {
 describe("ThumbCache", () => {
     it("round-trips a track and rounds coordinates to six decimals", () => {
         const cache = new ThumbCache(recordedStorage().storage);
-        const key = thumbKey(SCOPE, "route", 1, "c1");
+        const key = thumbKey(SCOPE, "route", 1n, "c1");
         cache.put(key, TRACK);
         expect(cache.get(key)).toEqual([
             [47.995, 7.842001],
@@ -83,7 +86,7 @@ describe("ThumbCache", () => {
     it("removes corrupt entries so the caller can refetch", () => {
         const { storage, map } = recordedStorage();
         const cache = new ThumbCache(storage);
-        const key = thumbKey(SCOPE, "route", 1, "c1");
+        const key = thumbKey(SCOPE, "route", 1n, "c1");
         for (const junk of ["not json", "42", `{"at":"soon","track":[]}`, `{"at":1,"track":[[1]]}`]) {
             map.set(key, junk);
             expect(cache.get(key)).toBeNull();
@@ -95,7 +98,7 @@ describe("ThumbCache", () => {
         const { storage, map } = recordedStorage();
         const clock = ticker();
         const cache = new ThumbCache(storage, 3, clock.now);
-        const keys = [1, 2, 3, 4].map((id) => thumbKey(SCOPE, "route", id, `c${id}`));
+        const keys = [1, 2, 3, 4].map((id) => thumbKey(SCOPE, "route", BigInt(id), `c${id}`));
         for (const key of keys.slice(0, 3)) {
             cache.put(key, TRACK);
             clock.tick();
@@ -121,8 +124,8 @@ describe("ThumbCache", () => {
             },
             1,
         );
-        expect(() => cache.put(thumbKey(SCOPE, "route", 1, "c1"), TRACK)).not.toThrow();
-        expect(() => cache.put(thumbKey(SCOPE, "route", 2, "c2"), TRACK)).not.toThrow();
+        expect(() => cache.put(thumbKey(SCOPE, "route", 1n, "c1"), TRACK)).not.toThrow();
+        expect(() => cache.put(thumbKey(SCOPE, "route", 2n, "c2"), TRACK)).not.toThrow();
     });
 });
 
@@ -144,7 +147,7 @@ describe("DeviceThumbs", () => {
         );
         await thumbs.fill(SCOPE, requests, queue, new AbortController().signal);
         expect(order).toEqual(["enter", "load 1", "leave", "enter", "load 2", "leave", "enter", "load 3", "leave"]);
-        expect(thumbs.get("route", 2)).not.toBeNull();
+        expect(thumbs.get("route", 2n)).not.toBeNull();
     });
 
     it("reuses a track within the session but refetches after a reload", async () => {
@@ -229,7 +232,7 @@ describe("DeviceThumbs", () => {
         const thumbs = new DeviceThumbs();
         const long: Thumb = Array.from({ length: 3 * PREVIEW_POINTS }, (_, i) => [47 + i * 1e-5, 7.8]);
         await thumbs.fill(SCOPE, [request(1, async () => long)], (op) => op(), new AbortController().signal);
-        expect(thumbs.get("route", 1)!.length).toBeLessThanOrEqual(PREVIEW_POINTS);
+        expect(thumbs.get("route", 1n)!.length).toBeLessThanOrEqual(PREVIEW_POINTS);
     });
 
     it("stops the walk on abort, and skips a failed load", async () => {
@@ -255,13 +258,13 @@ describe("DeviceThumbs", () => {
         ];
         await thumbs.fill(SCOPE, requests, (op) => op(), controller.signal);
         expect(loaded).toEqual([2]);
-        expect(thumbs.get("route", 1)).toBeNull();
-        expect(thumbs.get("route", 4)).toBeNull();
+        expect(thumbs.get("route", 1n)).toBeNull();
+        expect(thumbs.get("route", 4n)).toBeNull();
     });
 
     it("drops a completion that crossed an abort and scope change", async () => {
         const thumbs = new DeviceThumbs();
-        const scopeB: RideScope = { serial: "OBC-0042", epoch: 8 };
+        const scopeB: RideScope = { serial: "OBC-0042", storeId: "00000000000000000000000000000008" };
         let resolveA: ((track: Thumb) => void) | undefined;
         const pendingA = new Promise<Thumb>((resolve) => (resolveA = resolve));
         const aborter = new AbortController();
@@ -271,7 +274,7 @@ describe("DeviceThumbs", () => {
         thumbs.ensureScope(scopeB);
         resolveA!(TRACK);
         await fillA;
-        expect(thumbs.get("route", 1)).toBeNull();
+        expect(thumbs.get("route", 1n)).toBeNull();
 
         let loadsB = 0;
         await thumbs.fill(
@@ -286,7 +289,7 @@ describe("DeviceThumbs", () => {
             new AbortController().signal,
         );
         expect(loadsB).toBe(1);
-        expect(thumbs.get("route", 1)).not.toBeNull();
+        expect(thumbs.get("route", 1n)).not.toBeNull();
     });
 
     it("drops a completion that crossed a plain abort", async () => {
@@ -298,14 +301,14 @@ describe("DeviceThumbs", () => {
         aborter.abort();
         resolveLoad!(TRACK);
         await fill;
-        expect(thumbs.get("route", 1)).toBeNull();
+        expect(thumbs.get("route", 1n)).toBeNull();
     });
 
     it("forgets the in-memory map on a scope change", async () => {
         const thumbs = new DeviceThumbs();
         await thumbs.fill(SCOPE, [request(1, async () => TRACK)], (op) => op(), new AbortController().signal);
-        expect(thumbs.get("route", 1)).not.toBeNull();
-        thumbs.ensureScope({ serial: "OBC-0042", epoch: 8 });
-        expect(thumbs.get("route", 1)).toBeNull();
+        expect(thumbs.get("route", 1n)).not.toBeNull();
+        thumbs.ensureScope({ serial: "OBC-0042", storeId: "00000000000000000000000000000008" });
+        expect(thumbs.get("route", 1n)).toBeNull();
     });
 });
