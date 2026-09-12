@@ -107,14 +107,15 @@ The data contains no stored viewpoints or images.
 Peak View uses the loaded map and the current GPS position. It reads nearby named summits from
 that map, projects their geographic coordinates, and checks their visibility against the terrain.
 Before a GPS fix it waits. The renderer prepares the current field of view first, then fills the
-rest of the circle in the background. Static dots show that background work remains. Turning
-toward an unfinished view gives that view priority; it shows the loading compass until the
-required terrain is ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
+rest of the circle in the background, extending a buffer on both sides of the view. Static dots
+show that background work remains. Turning toward an unfinished view gives that view priority.
+After the first view appears, completed terrain continues to follow the heading. A light hatch
+marks pending parts until they are ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
 another panorama after the current job finishes. Back cancels generation and releases the arena.
 Lighting has a fixed northwest world direction, so turning does not change the shading.
 
 The renderer requests terrain out to 100 km. Missing distant coverage is marked with dashed bearing
-segments and a coverage notice. Missing terrain at the observer or a storage read failure makes the
+segments. Missing terrain at the observer or a storage read failure makes the
 view unavailable. Absent geographic cells are skipped without traversing their individual samples.
 
 At the standard posting and cell size, an indexed cell occupies 3,149,824 bytes instead of
