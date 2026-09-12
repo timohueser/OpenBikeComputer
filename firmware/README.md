@@ -111,26 +111,10 @@ admits, and `model`, the reference state a recovered card is compared against by
 `cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
 after), the decoder fuzz, and both specs' vectors.
 
-`obc-storage::obc2` — superseded by the above, and deleted in the epic's last slice — is the
-Device Object System v2 suite's on-card half: the record codecs of
-[`OBC2_Storage_Format.md`](../specs/OBC2_Storage_Format.md) — gate, checkpoint, journal, WORK,
-`RIDE.ACT`, ARM handoff, `INIT.REC`, resolution generation — plus the bounded catalog projection
-whose `apply` is the meaning of a journal record, §7's and §7.1's WORK/RIDE recovery rules, §6.3's
-recovery decision as a pure function and its streaming compaction pass, §9's leases and incremental
-collector, and the `KernelTransaction` that implements `obc-link`'s effect seam over all of it. The
-projection is generic over its head and result rows and has two instantiations: `CatalogModel`, the
-host oracle holding whole entries, and §13's `RamIndex`, which is what a device places — the
-catalog-projection envelopes, resolution `GenerationId`s and terminal-result bodies stay on the card
-and are re-read on demand. `fat` is the §13.1 adapter that mounts one on a real card, streaming the
-checkpoint rather than staging it.
-
-Four host-only modules sit beside them behind the crate's `std` feature — a deterministic
-faulting-media harness that models five of §13.1's eight adapter obligations plus §1.1's
-program-page tearing, the whole simulated card composed out of it, the shared sample records, and
-the storage half of the vector suite (`cargo test -p obc-storage regenerate_storage_vectors --
---ignored`, then the `obc-link` regenerate above, which indexes it). The crash matrix and the
-equivalence suite — `obc-link`'s entire scenario list run against the real kernel over that card —
-are two more, under `cfg(test)`.
+The superseded Device Object System v2 vector files remain for the v3 contract suites in
+`obc-link` and the builder. Their OBC2 storage records are frozen artifacts; the storage crate no
+longer contains their producer or decoder. The active flat-store crash tests and vectors use their
+own card model and the flat-store specifications.
 
 ## Test
 
