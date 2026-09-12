@@ -2890,7 +2890,7 @@ pub(crate) async fn run_app(
             let (ok, push_us) = display.present_frame(exclude).await;
             presented_ok = ok;
             if ok {
-                peak_view.note_frame_presented(&app);
+                peak_view.note_frame_presented(app);
             }
 
             // Snapshot this frame's render stats for the host telemetry line — the same numbers as
