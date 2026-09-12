@@ -1,9 +1,8 @@
 # OBC BLE Interface Specification (legacy wire v2)
 
-> **Superseded for Device Object System v2.** The normative replacement is
-> [`Device_Object_System_v2.md`](Device_Object_System_v2.md), using wire major 3. This document
-> remains the authority only for the temporary legacy implementation during the coordinated
-> cutover. Shipping DOS v2 peers do not translate or serve these descriptors.
+> **Object transfers use protocol v4.** The normative contract is
+> [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md). This document remains the authority for the
+> live command, status and config characteristics. Its retired object surface is not served.
 >
 > ⚠️ **The radio no longer speaks this document's object surface** (FS7.5-c3a, epic #1256). On BLE
 > the object surface is **protocol v4**, whose normative contract is
