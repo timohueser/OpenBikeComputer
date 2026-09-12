@@ -1419,7 +1419,7 @@ fn main() {
         // Load the simulator tracks folder so the Rides screen (#454) lists its v3 fixtures and
         // process-local synced flags.
         let mut ride_store = RideStore::open(args.tracks_dir());
-        app.set_rides(ride_store.catalog(), ride_store.ids());
+        app.set_rides(ride_store.catalog());
         // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
         app.set_ble_status(obc_app::BleStatus {

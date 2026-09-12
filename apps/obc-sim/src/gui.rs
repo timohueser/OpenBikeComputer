@@ -562,7 +562,7 @@ impl SimGui {
         };
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
-        gui.app.set_rides(gui.ride_store.catalog(), gui.ride_store.ids());
+        gui.app.set_rides(gui.ride_store.catalog());
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));

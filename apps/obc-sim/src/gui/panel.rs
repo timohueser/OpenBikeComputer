@@ -338,7 +338,7 @@ impl SimGui {
             // The same edge covers the simulator ride catalog (#454): a dropped-in fixture shows
             // up on the Rides screen without a relaunch.
             self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
+            self.app.set_rides(self.ride_store.catalog());
         }
         ui.weak("re-scans the routes + trips + tracks folders like a BLE commit/delete");
 
@@ -520,17 +520,16 @@ impl SimGui {
                 ui.weak("no rides — record one (Ride ▶ … ▶ Finish) to test ride expiry");
             } else {
                 self.panel.synced_ride_sel = self.panel.synced_ride_sel.min(rides.len() - 1);
-                let ids = self.app.ride_ids();
-                let sel_id = ids[self.panel.synced_ride_sel];
+                let sel_id = rides[self.panel.synced_ride_sel].id;
                 egui::ComboBox::from_id_salt("synced-ride")
-                    .selected_text(rides[self.panel.synced_ride_sel].name.as_str())
+                    .selected_text(rides[self.panel.synced_ride_sel].summary.name.as_str())
                     .show_ui(ui, |ui| {
                         for (i, r) in rides.iter().enumerate() {
-                            let tag = if r.synced { " (synced)" } else { "" };
+                            let tag = if r.summary.synced { " (synced)" } else { "" };
                             ui.selectable_value(
                                 &mut self.panel.synced_ride_sel,
                                 i,
-                                format!("{}{tag}", r.name.as_str()),
+                                format!("{}{tag}", r.summary.name.as_str()),
                             );
                         }
                     });
@@ -544,7 +543,7 @@ impl SimGui {
             let utc = self.app.wall_unix_now();
             self.ride_store.mark_synced(id, utc);
             self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
+            self.app.set_rides(self.ride_store.catalog());
         }
     }
 

@@ -132,7 +132,7 @@ impl RideDetailScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         use palette::*;
         let (w, h) = (rx.w, rx.h);
-        let Some(ride) = rx.rides.get(self.ride) else {
+        let Some(ride) = rx.rides.get(self.ride).map(|entry| &entry.summary) else {
             // The shown ride vanished in a rescan (deleted from the phone mid-view): the Rides
             // list's own empty-state copy, Back returns to the refreshed list.
             title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
@@ -248,19 +248,22 @@ mod tests {
     use super::*;
     use crate::activity::Activity;
     use crate::activity::Mode;
-    use crate::ride::RideSummary;
+    use crate::ride::{RideEntry, RideSummary};
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
-    fn summary(name: &str) -> RideSummary {
-        RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 42_500,
-            moving_time_s: 2 * 3600 + 31 * 60,
-            climb_m: 640,
-            synced: false,
-            synced_at_utc: 0,
+    fn summary(name: &str) -> RideEntry {
+        RideEntry {
+            id: 1,
+            summary: RideSummary {
+                name: heapless::String::try_from(name).unwrap(),
+                start_time: 1_720_000_000,
+                distance_m: 42_500,
+                moving_time_s: 2 * 3600 + 31 * 60,
+                climb_m: 640,
+                synced: false,
+                synced_at_utc: 0,
+            },
         }
     }
 
@@ -268,7 +271,7 @@ mod tests {
         scr: &mut RideDetailScreen,
         act: &mut Activity,
         rec: &mut crate::RecorderMachine,
-        rides: &[RideSummary],
+        rides: &[RideEntry],
         g: Gesture,
     ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
