@@ -25,7 +25,7 @@ use crate::activity::{Activity, Mode};
 use crate::app::AppState;
 use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
-use crate::ride::RideSummary;
+use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
@@ -226,7 +226,7 @@ pub struct Ctx<'a> {
     pub routes: &'a [RouteSummary],
     /// The resident ride catalog (read-only here) — the Rides screen lists it and its hold-to-delete
     /// footer records a delete by index against it (epic #447, P7).
-    pub rides: &'a [RideSummary],
+    pub rides: &'a [RideEntry],
     /// The resident trip catalog (epic #526, TR3) — the grouped-route folders. The Route menu's top
     /// level lists these above the unfiled routes and its long-press → confirm dialog cascade-deletes
     /// one; every other screen leaves it untouched.
@@ -390,7 +390,7 @@ pub struct Render<'a> {
     pub route_metas: &'a [crate::retention::RouteRetentionMeta],
     /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
     /// hold-to-delete footer from it (epic #447, P7).
-    pub rides: &'a [RideSummary],
+    pub rides: &'a [RideEntry],
     /// The resident trip catalog (epic #526, TR3) — the grouped-route folders. The Route menu draws
     /// its folder rows above the unfiled routes and, scoped to one trip, its member routes' stage
     /// list; every other screen leaves it untouched.
@@ -1366,7 +1366,7 @@ impl Screen {
         navigation: &crate::navigator::RouteState,
         recording: bool,
         routes: &[RouteSummary],
-        rides: &[RideSummary],
+        rides: &[RideEntry],
     ) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),

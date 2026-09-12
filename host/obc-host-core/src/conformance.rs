@@ -74,14 +74,13 @@ pub fn route_identity_remap(repo: &mut dyn RouteRepository) {
 /// object bytes) — a memory store answers `None` for every id.
 pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool) {
     assert!(!repo.catalog().is_empty(), "seed the ride conformance repo with ≥1 ride");
-    assert_eq!(repo.catalog().len(), repo.ids().len(), "catalog and ids stay parallel");
 
     // Unknown ids never read.
-    let unknown = repo.ids().iter().copied().max().unwrap_or(0).wrapping_add(7);
+    let unknown = repo.catalog().iter().map(|entry| entry.id).max().unwrap_or(0).wrapping_add(7);
     let mut profile = obc_route::Profile::EMPTY;
     assert!(repo.fill_track(unknown, &mut profile).is_none(), "an unknown ride has no track");
 
-    let known = repo.ids()[0];
+    let known = repo.catalog()[0].id;
     let preview = repo.fill_track(known, &mut profile);
     if expects_track {
         assert!(!preview.expect("a stored ride yields its recorded track").is_empty());

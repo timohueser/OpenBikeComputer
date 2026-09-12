@@ -1857,13 +1857,14 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
         return false;
     }
 
-    let mut rides: heapless::Vec<obc_app::RideSummary, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
-    let mut ids: heapless::Vec<u64, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    let mut rides = obc_app::RideCatalog::new();
     for entry in heads {
         match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source)) {
             Ok(Ok(info)) => {
-                let _ = rides.push(obc_app::RideSummary::from_info(&info, false, 0));
-                let _ = ids.push(entry.id.0);
+                let _ = rides.push(obc_app::RideEntry {
+                    id: entry.id.0,
+                    summary: obc_app::RideSummary::from_info(&info, false, 0),
+                });
             }
             Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
                 defmt::warn!(
@@ -1880,7 +1881,7 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
             ),
         }
     }
-    app.set_rides(&rides, &ids);
+    app.set_rides(&rides);
     app.set_ride_retention_inventory(&inventory);
     defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
     true

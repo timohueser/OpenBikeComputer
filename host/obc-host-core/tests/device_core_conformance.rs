@@ -473,9 +473,8 @@ impl CoreHarness {
                     }
                     self.state.routes.remove(index);
                     self.state.route_ids.remove(index);
-                } else if let Some(index) = self.state.ride_ids.iter().position(|&id| id == object) {
+                } else if let Some(index) = self.state.rides.iter().position(|entry| entry.id == object) {
                     self.state.rides.remove(index);
-                    self.state.ride_ids.remove(index);
                 } else if self.state.trip_present && object == TRIP {
                     // The folder's own object — the cascade's last step, decided by the domain and
                     // not composed here.
@@ -1945,7 +1944,7 @@ fn a_failed_retention_write_is_retried() {
 fn a_stamp_that_was_answered_is_not_enqueued_again() {
     let mut harness = typed();
     harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let id = harness.state.ride_ids[0];
+    let id = harness.state.rides[0].id;
     harness.app().set_ride_retention_inventory(&[RideRetentionRecord { id, synced: true, synced_at_utc: 0 }]);
     harness.app().force_retention_sweep();
 

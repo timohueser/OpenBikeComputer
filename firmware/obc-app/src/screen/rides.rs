@@ -102,7 +102,7 @@ impl RidesScreen {
         let sel = self.selected.min(total - 1);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            let ride = &rides[row.index];
+            let ride = &rides[row.index].summary;
             let (bx, y) = (row.area.top_left.x, row.area.top_left.y);
             let accent = if row.selected { INK } else { SUBTEXT };
 
@@ -180,23 +180,26 @@ fn meta_line(start_time: u32, dist_m: u32, units: Units, lang: Language, budget_
 mod tests {
     use super::*;
     use crate::activity::{Activity, Mode};
-    use crate::ride::RideSummary;
+    use crate::ride::{RideEntry, RideSummary};
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
-    fn summary(name: &str, synced: bool) -> RideSummary {
-        RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 42_500,
-            moving_time_s: 2 * 3600 + 31 * 60,
-            climb_m: 640,
-            synced,
-            synced_at_utc: 0,
+    fn summary(name: &str, synced: bool) -> RideEntry {
+        RideEntry {
+            id: 1,
+            summary: RideSummary {
+                name: heapless::String::try_from(name).unwrap(),
+                start_time: 1_720_000_000,
+                distance_m: 42_500,
+                moving_time_s: 2 * 3600 + 31 * 60,
+                climb_m: 640,
+                synced,
+                synced_at_utc: 0,
+            },
         }
     }
 
-    fn run(scr: &mut RidesScreen, act: &mut Activity, rides: &[RideSummary], g: Gesture) -> Transition {
+    fn run(scr: &mut RidesScreen, act: &mut Activity, rides: &[RideEntry], g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
         let mut cx = Ctx { rides, ..test_ctx(&mut st, act, &mut settings) };
