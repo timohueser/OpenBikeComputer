@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import sys
 
@@ -115,8 +116,8 @@ class SuiteRegistryTests(unittest.TestCase):
         case("invalid schedule", lambda s, c, d: s["suite"][0].update(scheduled="monthly"), "invalid scheduled cadence")
         case("fixture declaration", lambda s, c, d: s["suite"][0].update(level="fixture"), "must declare fixtures")
         case("derived fact", lambda s, c, d: s["suite"][0].update(test_count=3), "derived fields are forbidden")
-        case("budget issue", lambda s, c, d: s["suite"][0].update(budget_exception={"reason": "slow"}), "open GitHub issue")
-        case("quarantine issue", lambda s, c, d: s["suite"][0].update(quarantine={"reason": "flake"}), "open GitHub issue")
+        case("budget issue", lambda s, c, d: s["suite"][0].update(budget_exception={"reason": "slow"}), "GitHub issue reference")
+        case("quarantine issue", lambda s, c, d: s["suite"][0].update(quarantine={"reason": "flake"}), "GitHub issue reference")
         case("unknown component", lambda s, c, d: s["suite"][0].update(coverage_component="missing"), "unknown coverage component")
         case("dead entry", lambda s, c, d: s["suite"].append({**copy.deepcopy(s["suite"][0]), "id": "dead", "ownership": [{"kind": "workflow", "pattern": "never"}]}), "dead registry entry")
         case("missing trigger", lambda s, c, d: s["suite"][0].update(extra_triggers=["missing/**"]), "extra trigger matches no maintained path")
@@ -825,6 +826,79 @@ class ShippedRoutingTests(unittest.TestCase):
                 jobs = self.jobs_for(*paths) - self.unconditional
                 self.assertEqual(sorted(jobs), expected)
 
+
+
+class ExceptionIssueStateTests(unittest.TestCase):
+    def suite(self, reference: str, field: str = "quarantine", name: str = "demo") -> dict:
+        return {"id": name, field: {"reason": "Pending repair", "issue": reference}}
+
+    def response(self, value: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(value))
+
+    @patch.object(registry.subprocess, "run")
+    def test_local_and_full_references_share_one_lookup(self, run) -> None:
+        run.return_value = self.response({"state": "open"})
+        suites = [self.suite("#7"), self.suite("https://github.com/OWNER/REPO/issues/007", "sleep_exception")]
+        self.assertEqual(registry.check_issue_states(suites, "owner/repo"), 1)
+        run.assert_called_once_with(
+            ["gh", "api", "repos/owner/repo/issues/7"],
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+
+    @patch.object(registry.subprocess, "run")
+    def test_distinct_issues_report_all_owning_fields(self, run) -> None:
+        run.side_effect = [self.response({"state": "closed"}), self.response({"state": "closed"})]
+        suites = [self.suite("#1"), self.suite("#1", "cadence_conflict", "other"), self.suite("#2", "budget_exception")]
+        with self.assertRaises(registry.RegistryError) as caught:
+            registry.check_issue_states(suites, "owner/repo")
+        for owner in ("demo.quarantine", "other.cadence_conflict", "demo.budget_exception"):
+            self.assertIn(owner, str(caught.exception))
+        self.assertEqual(run.call_count, 2)
+
+    @patch.object(registry.subprocess, "run")
+    def test_invalid_references_are_rejected_before_any_request(self, run) -> None:
+        for invalid in ("garbage", "https://example.com/o/r/issues/3", "https://github.com/o/r?bad/issues/3"):
+            with self.subTest(reference=invalid), self.assertRaises(registry.RegistryError):
+                registry.check_issue_states([self.suite("#1"), self.suite(invalid)], "owner/repo")
+        run.assert_not_called()
+
+    @patch.object(registry.subprocess, "run")
+    def test_missing_reason_and_repository_are_rejected_before_requests(self, run) -> None:
+        suite = self.suite("#1")
+        suite["quarantine"]["reason"] = ""
+        with self.assertRaises(registry.RegistryError):
+            registry.check_issue_states([suite], "owner/repo")
+        with self.assertRaises(registry.RegistryError):
+            registry.check_issue_states([self.suite("#1")], "not-a-repository")
+        run.assert_not_called()
+
+    @patch.object(registry.subprocess, "run")
+    def test_pull_requests_and_malformed_responses_are_not_open_issues(self, run) -> None:
+        for response in ({"state": "open", "pull_request": {}}, {}, [], {"state": []}, {"state": "unknown"}):
+            with self.subTest(response=response):
+                run.return_value = self.response(response)
+                with self.assertRaisesRegex(registry.RegistryError, "demo.quarantine: owner/repo#1"):
+                    registry.check_issue_states([self.suite("#1")], "owner/repo")
+
+    @patch.object(registry.subprocess, "run")
+    def test_api_auth_timeout_and_decode_errors_are_visible_without_retry(self, run) -> None:
+        failures = [
+            subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 403: authentication failed"),
+            subprocess.TimeoutExpired(["gh"], 20),
+            FileNotFoundError("gh is not installed"),
+        ]
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                run.reset_mock(side_effect=True)
+                run.side_effect = failure
+                with self.assertRaisesRegex(registry.RegistryError, "demo.quarantine: owner/repo#1"):
+                    registry.check_issue_states([self.suite("#1")], "owner/repo")
+                run.assert_called_once()
+        run.reset_mock(side_effect=True)
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="not JSON")
+        with self.assertRaisesRegex(registry.RegistryError, "could not check issue"):
+            registry.check_issue_states([self.suite("#1")], "owner/repo")
+        run.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()
