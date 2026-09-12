@@ -16,8 +16,6 @@
 
 include!("stat_fields/selection.rs");
 
-use core::fmt::Write;
-
 use obc_reader::PoiCategory;
 use obc_render::text::TextAlign;
 use obc_route::{Profile, RouteReader, Waypoints};
@@ -279,17 +277,14 @@ impl StatField {
                 let value = match time_to_go_s(cx) {
                     Some(s) => {
                         let at = cx.now.add_minutes((s + 30) / 60);
-                        let mut v: heapless::String<8> = heapless::String::new();
-                        let _ = write!(v, "{:02}:{:02}", at.hour, at.minute);
-                        v
+                        fmt::clock_hm(at.hour, at.minute)
                     }
                     None => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileEta, lang), ""), value, false)
             }
             StatField::Clock => {
-                let mut value: heapless::String<8> = heapless::String::new();
-                let _ = write!(value, "{:02}:{:02}", cx.now.hour, cx.now.minute);
+                let value = fmt::clock_hm(cx.now.hour, cx.now.minute);
                 StatCell::new(cap(t(Msg::TileTime, lang), ""), value, false)
             }
             StatField::NextWaypoint => {
@@ -503,6 +498,7 @@ mod tests {
     use super::*;
     use crate::harness::support::wpts;
     use crate::recorder::RecorderMachine;
+    use core::fmt::Write;
 
     /// The const default grid is byte-identical to the push-built list it replaced — the pin that
     /// keeps `StatFieldList::DEFAULT` honest against `push`'s semantics (#1197's const chain).

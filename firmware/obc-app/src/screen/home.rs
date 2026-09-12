@@ -26,7 +26,7 @@ use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 
 use super::vocab::chrome::{ble_glyph, BLE_GLYPH_W};
-use super::vocab::fmt::DATE_MONTHS;
+use super::vocab::fmt::{clock_hm, DATE_MONTHS};
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
 
 /// The seven weekday-abbreviation catalog keys (the `[date]` section), Monday-first — the order
@@ -92,8 +92,7 @@ impl HomeScreen {
 
         // The wall clock: HH:MM in the Huge tier, centred in the upper third. `rx.now` is the live
         // time, not the frozen set-point, so it actually ticks; `tick_timers` repaints it each minute.
-        let mut clock: heapless::String<8> = heapless::String::new();
-        let _ = write!(clock, "{:02}:{:02}", rx.now.hour, rx.now.minute);
+        let clock = clock_hm(rx.now.hour, rx.now.minute);
         let clock_top = h * 40 / 100 - Font::Huge.line_height() as i32 / 2;
         cv.text(&clock, Point::new(w / 2, clock_top), Font::Huge, TextAlign::Center, palette::PARCHMENT);
 
