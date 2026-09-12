@@ -1142,10 +1142,23 @@ fn publish_plan_rejects_a_pin_changed_after_generation() {
     let path = f.tree.join(&satellite.rel_path);
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
-    std::fs::write(&path, bytes).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
 
     let error = obc_bake::publish::plan(&f.tree, &generated).expect_err("changed bytes must not use the old pin");
-    assert!(error.contains("digest changed after catalog generation"), "{error}");
+    assert_eq!(error, format!("{}: digest changed after catalog generation", path.display()));
+
+    bytes.push(0);
+    std::fs::write(&path, &bytes).unwrap();
+    let error = obc_bake::publish::plan(&f.tree, &generated).expect_err("length check must precede hashing");
+    assert_eq!(
+        error,
+        format!(
+            "{}: changed from {} to {} bytes after catalog generation",
+            path.display(),
+            satellite.bytes,
+            bytes.len()
+        )
+    );
 }
 
 /// A cell tree publishes root-last — the satellites are

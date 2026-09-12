@@ -13,12 +13,17 @@ const HASH_BUF: usize = 64 * 1024;
 /// German extract is 4.8 GB — and the bakery must never need one resident just to
 /// decide whether it changed.
 pub fn file(path: &Path) -> Result<(u64, String), String> {
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    reader(f).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Hash an open stream with a fixed-size buffer, returning its byte count and digest.
+pub(crate) fn reader(mut input: impl Read) -> std::io::Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF];
     let mut total = 0u64;
     loop {
-        let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+        let n = input.read(&mut buf)?;
         if n == 0 {
             break;
         }
