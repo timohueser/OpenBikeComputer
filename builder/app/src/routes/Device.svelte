@@ -310,12 +310,11 @@
 
     /** Ride ids a durable copy of which is in the folder — inverse of the library's own list. */
     const heldHere = $derived.by(() => {
-        if (!libraryView || scope.epoch === null) return null;
+        if (!libraryView || scope.storeId === null) return null;
         return new Set(
             libraryView.rides
-                .filter((r) => r.present && r.serial === scope.serial && r.epoch === scope.epoch)
-                // The index stores an id as a JSON number; the catalog carries the wire's `u64`.
-                .map((r) => BigInt(r.objectId)),
+                .filter((r) => r.present && r.serial === scope.serial && r.storeId === scope.storeId)
+                .map((r) => r.objectId),
         );
     });
 
@@ -358,9 +357,7 @@
     ): ThumbRequest {
         return {
             kind,
-            // The thumb store keys on a number; an `ObjectId` is a `u64` allocated from a cursor
-            // that starts at 1, so every id a card will hold in this decade is exact as a double.
-            id: Number(entry.objectId),
+            id: entry.objectId,
             fingerprint: entryFingerprint(entry),
             // A ride already pulled has its preview track in the library index — the free win:
             // no download, and the tile shows exactly what the Ride-library page shows.
@@ -379,10 +376,10 @@
         const c = client;
         if (!c) return;
         deviceThumbs.ensureScope(scope);
-        const heldTracks = new Map<number, Thumb>();
-        if (libraryView && scope.epoch !== null) {
+        const heldTracks = new Map<bigint, Thumb>();
+        if (libraryView && scope.storeId !== null) {
             for (const r of libraryView.rides) {
-                if (r.present && r.serial === scope.serial && r.epoch === scope.epoch && r.track.length > 1) {
+                if (r.present && r.serial === scope.serial && r.storeId === scope.storeId && r.track.length > 1) {
                     heldTracks.set(r.objectId, r.track);
                 }
             }
@@ -390,7 +387,7 @@
         const requests: ThumbRequest[] = [
             ...dashboard.routes.map((route) => thumbRequest(c, "route", route, undefined)),
             // A ride still being recorded has no payload to draw yet (§3.5), so it is not asked for.
-            ...pullable.map((ride) => thumbRequest(c, "ride", ride, heldTracks.get(Number(ride.objectId)))),
+            ...pullable.map((ride) => thumbRequest(c, "ride", ride, heldTracks.get(ride.objectId))),
         ];
         const aborter = new AbortController();
         // `untrack`: the fill reads (and writes) the thumb store's reactive map, and this effect
@@ -612,7 +609,7 @@
                 <TripBand
                     {trip}
                     stages={dashboard.stagesOf(trip)}
-                    trackFor={(id) => deviceThumbs.get("route", Number(id))}
+                    trackFor={(id) => deviceThumbs.get("route", id)}
                     busy={previewing !== null}
                     onopen={() => void previewTrip(trip)}
                     onopenstage={(route) => void previewRoute(route)}
@@ -626,7 +623,7 @@
             <RouteTiles
                 routes={dashboard.topLevelRoutes}
                 trips={dashboard.trips}
-                trackFor={(id) => deviceThumbs.get("route", Number(id))}
+                trackFor={(id) => deviceThumbs.get("route", id)}
                 busy={previewing !== null}
                 onopen={(route) => void previewRoute(route)}
                 onrename={doRenameRoute}
@@ -671,7 +668,7 @@
                 <RideTiles
                     rides={dashboard.rides}
                     {heldHere}
-                    trackFor={(id) => deviceThumbs.get("ride", Number(id))}
+                    trackFor={(id) => deviceThumbs.get("ride", id)}
                     busy={previewing !== null}
                     pulling={pullJob.running}
                     onopen={(ride) => void previewRide(ride)}

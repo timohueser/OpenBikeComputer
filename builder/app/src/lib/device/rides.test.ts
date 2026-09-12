@@ -44,7 +44,6 @@ import {
     rideKey,
     rideScope,
     scopeKey,
-    storeEra,
     type RideSource,
 } from "./rides";
 
@@ -511,29 +510,27 @@ describe("listing", () => {
 });
 
 describe("ride identity", () => {
-    it("keys a ride by (serial, era, id), so a recycled id is a different ride", () => {
-        const before = { serial: "0011223344556677", epoch: 0xa1b2c3d4 };
-        const after = { serial: "0011223344556677", epoch: 0x00000001 };
+    it("keys the complete card identity and decimal u64 object id", () => {
+        const before = { serial: "OBC-24-000317", storeId: "a1b2c3d4000000000000000000000000" };
+        const after = { ...before, storeId: "a1b2c3d4000000000000000000000001" };
         expect(rideKey(before, 4n)).not.toBe(rideKey(after, 4n));
         expect(scopeKey(before)).not.toBe(scopeKey(after));
-        // The wire's `u64` and the library index's JSON number stringify alike, which is what lets
-        // one key function serve both sides.
-        expect(rideKey(before, 4n)).toBe(rideKey(before, 4));
-        // A device with no readable card has *no* era — never era 0, which is a legal fingerprint.
-        expect(scopeKey({ serial: "x", epoch: null })).not.toBe(scopeKey({ serial: "x", epoch: 0 }));
+        for (const id of [65536n, 9007199254740993n, 18446744073709551615n]) {
+            expect(rideKey(before, id)).toBe(`OBC-24-000317:a1b2c3d4000000000000000000000000:${id}`);
+        }
+        expect(scopeKey({ serial: "x", storeId: null })).not.toBe(
+            scopeKey({ serial: "x", storeId: "00000000000000000000000000000000" }),
+        );
     });
 
-    it("takes the era from the card's StoreId and the serial from §5.2.1's strings", () => {
-        // 32 bits of the 128-bit `StoreId`: a cache key, never an authorisation, and never sent
-        // anywhere — the desktop ride index stores it as a `u32` and both ends must agree.
-        expect(storeEra(REFERENCE_STORE_ID)).toBe(0x8f2c41d9);
+    it("takes the full StoreId and device serial", () => {
         const info = { firmwareRevision: "0.4.0", hardwareRevision: "obc-lm20-r1", serialNumber: "AABB" };
         expect(rideScope(info, { storeId: REFERENCE_STORE_ID, commitSequence: 3n })).toEqual({
             serial: "AABB",
-            epoch: 0x8f2c41d9,
+            storeId: REFERENCE_STORE_ID,
         });
-        expect(rideScope(info, null)).toEqual({ serial: "AABB", epoch: null });
-        expect(rideScope(null, null)).toEqual({ serial: "", epoch: null });
+        expect(rideScope(info, null)).toEqual({ serial: "AABB", storeId: null });
+        expect(rideScope(null, null)).toEqual({ serial: "", storeId: null });
     });
 
     it("names the file by date then ride, taking the date from the payload", () => {

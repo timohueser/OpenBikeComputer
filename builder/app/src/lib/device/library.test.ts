@@ -47,7 +47,7 @@ import {
     type RideImport,
     type RideLibrary,
 } from "./library";
-import { rideAccess, rideKey, rideScope, storeEra, type RideScope } from "./rides";
+import { rideAccess, rideKey, rideScope, type RideScope } from "./rides";
 import type { JobContext, JobPhase } from "./progress";
 
 // --- scaffolding ---------------------------------------------------------------
@@ -63,9 +63,7 @@ beforeAll(async () => {
 /** The mock's default §5.2.1 serial, and the two cards these tests swap between. */
 const SERIAL = "0011223344556677";
 const CARD_A = REFERENCE_STORE_ID;
-const CARD_B = "0f0f0f0f00000000000000000000abcd";
-const ERA_A = storeEra(CARD_A);
-const ERA_B = storeEra(CARD_B);
+const CARD_B = CARD_A.slice(0, 8) + "00000000000000000000abcd";
 
 function ctx(): JobContext {
     const phases: JobPhase[] = [];
@@ -130,7 +128,7 @@ class RecordingLibrary implements RideLibrary {
     }
 
     async import(ride: RideImport): Promise<{ ride: LibraryRide; imported: boolean }> {
-        const key = `${ride.serial}:${ride.epoch}:${ride.objectId}`;
+        const key = `${ride.serial}:${ride.storeId}:${ride.objectId}`;
         if (this.failFor.has(key)) {
             this.events.push(`import-failed:${ride.objectId}`);
             throw new Error("simulated power loss between write() and fsync()");
@@ -151,7 +149,7 @@ class RecordingLibrary implements RideLibrary {
         const landed: LibraryRide = {
             key,
             serial: ride.serial,
-            epoch: ride.epoch,
+            storeId: ride.storeId,
             objectId: ride.objectId,
             name: ride.name,
             startTime: ride.startTime,
@@ -239,6 +237,25 @@ function seedRide(
 // --- acceptance ----------------------------------------------------------------
 
 describe("pulling rides into the library", () => {
+    it("pulls and deduplicates full u64 object ids without rounding", async () => {
+        const { device, client, source, close } = connect();
+        try {
+            const scope = await scopeNow(client);
+            const ids = [65536n, 9007199254740993n, 18446744073709551615n];
+            for (const id of ids) seedRide(device, id, `Ride ${id}`, 1_700_000_000);
+            const library = new RecordingLibrary();
+            const first = await pullRides(source, library, scope, ctx());
+            expect(first.failed).toEqual([]);
+            expect(first.imported.map((ride) => ride.objectId)).toEqual(ids);
+            expect(library.held()).toEqual(ids.map((id) => `${SERIAL}:${CARD_A}:${id}`).sort());
+            const second = await pullRides(source, library, scope, ctx());
+            expect(second.imported).toEqual([]);
+            expect(second.alreadyHeld).toBe(3);
+        } finally {
+            await close();
+        }
+    });
+
     it("is idempotent: a second pull downloads nothing, duplicates nothing and re-stamps nothing", async () => {
         const { device, client, source, close } = connect();
         try {
@@ -249,7 +266,7 @@ describe("pulling rides into the library", () => {
 
             const first = await pullRides(source, library, scope, ctx());
             expect(first.listed).toBe(2);
-            expect(first.imported.map((ride) => ride.objectId)).toEqual([1, 2]);
+            expect(first.imported.map((ride) => ride.objectId)).toEqual([1n, 2n]);
             const stamps = [...library.rides.values()].map((r) => [r.key, r.importedAt] as const);
 
             const second = await pullRides(source, library, scope, ctx());
@@ -279,7 +296,7 @@ describe("pulling rides into the library", () => {
 
             expect(report.recording).toBe(1);
             expect(report.listed, "the recording ride is not something the pull could act on").toBe(1);
-            expect(report.imported.map((ride) => ride.objectId)).toEqual([1]);
+            expect(report.imported.map((ride) => ride.objectId)).toEqual([1n]);
             expect(report.failed).toEqual([]);
             expect(library.held()).toEqual([rideKey(scope, 1n)]);
         } finally {
@@ -299,14 +316,14 @@ describe("pulling rides into the library", () => {
 
             const report = await pullRides(source, library, scope, ctx());
 
-            expect(report.failed.map((f) => f.objectId)).toEqual([2]);
-            expect(report.imported.map((r) => r.objectId)).toEqual([1, 3]);
+            expect(report.failed.map((f) => f.objectId)).toEqual([2n]);
+            expect(report.imported.map((r) => r.objectId)).toEqual([1n, 3n]);
             expect(library.held()).toEqual([rideKey(scope, 1n), rideKey(scope, 3n)].sort());
 
             // …and the next pull, with the write working, fetches ride 2 and only then holds it.
             library.failFor.clear();
             const retry = await pullRides(source, library, scope, ctx());
-            expect(retry.imported.map((r) => r.objectId)).toEqual([2]);
+            expect(retry.imported.map((r) => r.objectId)).toEqual([2n]);
             expect(library.held()).toHaveLength(3);
         } finally {
             await close();
@@ -321,7 +338,7 @@ describe("pulling rides into the library", () => {
 
         const first = connect({ storeId: CARD_A });
         const oldEra = await scopeNow(first.client);
-        expect(oldEra.epoch).toBe(ERA_A);
+        expect(oldEra.storeId).toBe(CARD_A);
         seedRide(first.device, 1n, "Old era ride", 1_700_000_000);
         await pullRides(first.source, library, oldEra, ctx());
         expect(library.rides.size).toBe(1);
@@ -330,7 +347,7 @@ describe("pulling rides into the library", () => {
         const second = connect({ storeId: CARD_B });
         try {
             const newEra = await scopeNow(second.client);
-            expect(newEra.epoch).toBe(ERA_B);
+            expect(newEra.storeId).toBe(CARD_B);
             expect(newEra.serial).toBe(oldEra.serial);
             seedRide(second.device, 1n, "New era ride", 1_800_000_000);
 
@@ -338,9 +355,9 @@ describe("pulling rides into the library", () => {
             expect(after.imported.map((r) => r.name)).toEqual(["New era ride"]);
             // Two rows, two keys, one object id.
             expect([...library.rides.keys()].sort()).toEqual(
-                [`${SERIAL}:${ERA_A}:1`, `${SERIAL}:${ERA_B}:1`].sort(),
+                [`${SERIAL}:${CARD_A}:1`, `${SERIAL}:${CARD_B}:1`].sort(),
             );
-            expect(new Set([...library.rides.values()].map((r) => r.objectId))).toEqual(new Set([1]));
+            expect(new Set([...library.rides.values()].map((r) => r.objectId))).toEqual(new Set([1n]));
         } finally {
             await second.close();
         }
@@ -364,7 +381,7 @@ describe("pulling rides into the library", () => {
             const again = await pullRides(source, library, scope, ctx());
 
             expect(again.imported).toEqual([]);
-            expect(again.repaired.map((r) => r.objectId)).toEqual([2]);
+            expect(again.repaired.map((r) => r.objectId)).toEqual([2n]);
             expect(again.repaired[0].importedAt).toBe(firstStamp);
             expect(again.alreadyHeld).toBe(2);
             expect(library.held()).toHaveLength(3);
@@ -376,16 +393,16 @@ describe("pulling rides into the library", () => {
     it("refuses to import anything from a device whose card identity it could not read", async () => {
         // The fail-closed posture is the phone's (#769): without both halves of the era, an id from
         // this device cannot be told apart from another device's, so nothing is keyed and nothing is
-        // copied. `epoch: null` is "no era" and never `0`, which is a legal fingerprint.
+        // copied. A missing StoreId never shares an identity with a readable card.
         const { device, source, close } = connect();
         try {
             seedRide(device, 1n, "Unkeyable", 1_700_000_000);
             const library = new RecordingLibrary();
-            await expect(pullRides(source, library, { serial: SERIAL, epoch: null }, ctx())).rejects.toMatchObject({
+            await expect(pullRides(source, library, { serial: SERIAL, storeId: null }, ctx())).rejects.toMatchObject({
                 name: "RideLibraryError",
                 code: "no-scope",
             });
-            await expect(pullRides(source, library, { serial: "", epoch: ERA_A }, ctx())).rejects.toThrow(
+            await expect(pullRides(source, library, { serial: "", storeId: CARD_A }, ctx())).rejects.toThrow(
                 /card identity/,
             );
             expect(library.rides.size).toBe(0);
@@ -434,9 +451,9 @@ describe("pulling rides into the library", () => {
             const landed = (await pullRides(source, library, scope, ctx())).imported[0];
 
             expect(landed).toMatchObject({
-                objectId: 9,
+                objectId: 9n,
                 serial: scope.serial,
-                epoch: scope.epoch,
+                storeId: scope.storeId,
                 name: ride.name,
                 startTime: ride.startTime,
                 distanceM: ride.distanceM,
