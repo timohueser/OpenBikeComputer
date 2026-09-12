@@ -1384,8 +1384,8 @@ fn main() {
         // into a buffer that holds nothing, so every screen has to be drawn, including a base a
         // resident host would leave standing under a sheet (#1559).
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        let map_name = map.source.display_name();
-        app.set_map_info(&map_name, tables.version);
+        let map_name = map.display_name();
+        app.set_map_info(map_name, tables.version);
         // Load the routes folder so the Route menu has real entries and a picked route
         // can be drawn.
         let mut store = RouteStore::open(args.routes_dir());
