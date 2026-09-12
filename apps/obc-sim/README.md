@@ -49,8 +49,10 @@ Peak View appears in the normal menu when the loaded map contains indexed terrai
 simulator's current GPS position and the selected map's summit records. The background job reads
 the same immutable map bytes as the map screen. Without a GPS fix it waits; it does not use the
 camera centre as an observer. Normal framing widens when a nearby summit requires more vertical
-headroom; explicit fixture frames retain their configured bounds. In a headless test, `--center LON,LAT --heading DEG` supplies an
-explicit simulated fix. Use the menu and `f` to complete generation before saving the frame.
+headroom. Low-relief observers receive up to 3× vertical exaggeration, fixed while turning;
+steep views keep 1.25×. The summit candidates reserve a slot for each bearing sector's tallest
+landmark. Explicit fixture frames retain their configured bounds. In a headless test,
+`--center LON,LAT --heading DEG` supplies an explicit simulated fix. Use the menu and `f` to complete generation before saving the frame.
 
 - `--peak-view gornergrat|scheidegg|glockner` selects an explicit geographic test fixture and
   opens Peak View in the GUI. This overrides the selected map's terrain for that test. It generates a
