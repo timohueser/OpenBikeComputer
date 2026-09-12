@@ -39,11 +39,9 @@
 //! there is no connection-string parser to mis-split an `https://` endpoint.
 
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use obc_pack::catalog::{CatalogOptions, DEFAULT_MANIFEST_NAME};
-use sha2::{Digest, Sha256};
 
 use crate::util::human_bytes;
 
@@ -391,17 +389,7 @@ fn verify_generated_pin(path: &Path, expected_bytes: u64, expected_sha256: &str)
             path.display()
         ));
     }
-    let mut reader = std::io::BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let actual_sha256 = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let (_, actual_sha256) = crate::hash::reader(file).map_err(|e| format!("{}: {e}", path.display()))?;
     if actual_sha256 != expected_sha256 {
         return Err(format!("{}: digest changed after catalog generation", path.display()));
     }
