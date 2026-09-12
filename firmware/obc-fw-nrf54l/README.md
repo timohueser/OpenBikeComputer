@@ -218,43 +218,12 @@ one async mutex, in one image. The device advertises as `OBC-XXXX` (S0 §2 — t
 See the "USB device plane" section further down for the bring-up recipe.
 
 ```bash
-# The OBC2 media bench (#1354). Storage only — no display, no app, no BLE, no sensors — and
-# DESTRUCTIVE: it deletes and rebuilds /OBC2 on the card in the slot. It decides the two §1.1
-# volume-geometry preconditions for this card, times the §12 skeleton initialization, records the
-# exact sectors a gated sync writes (the §13.1 clean-flush obligation), times the commit cycle, and
-# then verifies the recovery decision across resets. Run it, then `probe-rs reset` (or re-run) for
-# each further recovery cycle; the on-card journal is the state that carries across.
-cargo run --release --bin obc2_media_bench
-```
-
-Its first cycle is destructive and its later ones are not: the bench resumes the journal it finds
-and appends exactly one record per boot. Flip `FORCE_REINIT` in the source for one flash to get the
-destructive first-cycle path back on a card it has already initialized.
-
-```bash
-# The OBC2 store bench (#1359) — the layer above the media bench. Same bring-up (storage only, no
-# display/app/BLE/sensors) and the same destructive posture, but it drives the whole DOS3 kernel
-# transaction on the card: §12 mount classification and initialization with lazy shards, then one
-# upload lifecycle (claim → append → seal → validate → publish → QueryOperation), then the sectors
-# that publish wrote, the resident footprint, and the stack high-water. Reset the board and run it
-# again: the store must remount from the card alone with the head, its payload bytes and the
-# retained result intact, and then commit one more object.
-cargo run --release --bin obc2_store_bench
-```
-
-It reinitializes only when §12 refuses to mount what it finds (or when `FORCE_REINIT` is set), so
-consecutive resets accumulate objects and journal records — which is the point, since the mount cost
-it reports grows with the replay suffix. It refuses to write to a store whose `StoreId` is not its
-own.
-
-```bash
-# The flat store bench (#1386) — `obc_storage::flat` on the card, and the successor to both benches
-# above. It measures every figure `specs/FLAT_Store_Format.md` states: §8 initialization, §5.6 mount
+# The flat store bench — `obc_storage::flat` on the card. It measures every figure `specs/FLAT_Store_Format.md` states: §8 initialization, §5.6 mount
 # at an empty / 300-entry / 1024-entry catalog and with a ride recording, §5.5's commit at each of
 # those, §7.2's checkpoint cadence, and §6.1's read path over a 2 GiB object with the read
 # amplification device blocks read / payload blocks required, which must be 1.00.
 #
-# MORE destructive than the OBC2 benches: the flat store owns the RAW CARD FROM LBA 0, so a run
+# DESTRUCTIVE: the flat store owns the RAW CARD FROM LBA 0, so a run
 # destroys the partition table too. Anything on the card is gone. It refuses a card that already
 # carries a flat store under another `StoreId` (override with `FORCE_REINIT`).
 #
