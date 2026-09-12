@@ -204,47 +204,6 @@ private func makeModel(
     return (model, control, jobs)
 }
 
-/// A `waitFor` that gave up. Thrown rather than recorded, so the test that was waiting stops.
-private struct WaitTimedOut: Error, CustomStringConvertible {
-    let what: String
-    let timeout: Duration
-
-    var description: String {
-        "timed out after \(timeout) waiting for \(what)"
-    }
-}
-
-/// Waits for a condition the model reaches on its own, and **throws** when it does not.
-///
-/// Two things here are load-bearing, and both were learned from a CI failure.
-///
-/// **It throws instead of recording an issue and returning.** Returning normally after a timeout
-/// left the caller asserting against a model that never reached the state, so one timeout became
-/// six failures like `(model.statusLine → "No weather sent yet") == "Ready to send"` and the real
-/// cause was buried under them. Throwing ends the test at the wait, with one message that says what
-/// it was waiting for.
-///
-/// **The deadline is generous on purpose.** Nothing here is slow — `start()` fires its tasks and the
-/// scripted seams answer from a lock — so the only thing being waited on is the scheduler. These
-/// suites are `@MainActor` and Swift Testing runs suites in parallel, so on a loaded runner the
-/// main actor is contended by many tests at once and a continuation can wait a long time for its
-/// turn. That is what made a five-second bound fail intermittently in CI while passing locally. The
-/// bound exists to stop a genuine hang, not to police latency, so it is set where a real hang is
-/// still caught quickly and starvation is not mistaken for one. A passing wait returns as soon as
-/// the condition holds and costs nothing.
-@MainActor
-private func waitFor(
-    _ what: String, timeout: Duration = .seconds(30), _ condition: () -> Bool
-) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while !condition() {
-        if ContinuousClock.now > deadline {
-            throw WaitTimedOut(what: what, timeout: timeout)
-        }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-}
-
 // MARK: - The suite
 
 @Suite("Weather settings model")
@@ -255,7 +214,7 @@ struct WeatherSettingsModelTests {
     @Test func theStoredIntervalIsReadFromTheDeviceAndReported() async throws {
         let (model, _, _) = makeModel(refresh: .every60)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
         #expect(model.refresh == .every60)
         #expect(model.canStateRefresh)
         #expect(model.refreshValue == "Every hour")
@@ -267,7 +226,7 @@ struct WeatherSettingsModelTests {
     func everyIntervalTheDeviceCanHoldIsReportedAsItself(_ stored: WeatherRefresh) async throws {
         let (model, _, _) = makeModel(refresh: stored)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
         #expect(model.refresh == stored)
         #expect(model.refreshValue == WeatherCopy.refreshLabel(stored))
     }
@@ -277,7 +236,7 @@ struct WeatherSettingsModelTests {
     @Test func anAbsentRefreshByteReadsAsTheDeviceDefault() async throws {
         let (model, _, _) = makeModel(refresh: nil)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
         #expect(model.refresh == .every30)
         #expect(!model.refreshIsUnknownToThisBuild)
         #expect(model.refreshValue == "Every 30 min")
@@ -289,7 +248,7 @@ struct WeatherSettingsModelTests {
     @Test func anIntervalThisBuildCannotNameIsStatedNotGuessed() async throws {
         let (model, _, _) = makeModel(refresh: nil, refreshRawOverride: 9)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
         #expect(model.refresh == nil)
         #expect(model.refreshIsUnknownToThisBuild)
         #expect(model.refreshValue == "Set on the device")
@@ -301,7 +260,7 @@ struct WeatherSettingsModelTests {
     @Test func anUnreachableDeviceIsNotGuessedAt() async throws {
         let (model, _, _) = makeModel(scenario: .outOfRange)
         model.start()
-        try await waitFor("link") { model.connection != .connecting }
+        try await waitFor("link", interval: .milliseconds(5)) { model.connection != .connecting }
         #expect(!model.canStateRefresh)
         #expect(model.refreshValue == "Not connected")
     }
@@ -314,7 +273,7 @@ struct WeatherSettingsModelTests {
     @Test func theScreenNeverWritesToTheDevice() async throws {
         let (model, transport) = makeConfigModel(refresh: .every30)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
 
         // Everything a rider can do on this screen, plus a revisit.
         model.setWatchEnabled(false)
@@ -332,7 +291,7 @@ struct WeatherSettingsModelTests {
     @Test func firmwareWithoutWeatherIsReportedAndClaimsNoInterval() async throws {
         let (model, _, _) = makeModel(supportsWeather: false)
         model.start()
-        try await waitFor("capability") { model.deviceSupportsWeather != nil }
+        try await waitFor("capability", interval: .milliseconds(5)) { model.deviceSupportsWeather != nil }
         #expect(model.deviceSupportsWeather == false)
         #expect(!model.canStateRefresh)
         // The row goes away entirely rather than reporting the Config byte such a device still
@@ -347,7 +306,7 @@ struct WeatherSettingsModelTests {
     @Test func theScheduleRowStaysForAWeatherCapableDeviceEvenOutOfRange() async throws {
         let (model, _, _) = makeModel(scenario: .outOfRange)
         model.start()
-        try await waitFor("link") { model.connection != .connecting }
+        try await waitFor("link", interval: .milliseconds(5)) { model.connection != .connecting }
         #expect(model.showsRefreshRow)
     }
 
@@ -356,7 +315,7 @@ struct WeatherSettingsModelTests {
     @Test func theStatusFooterSaysWhereTheIntervalIsChanged() async throws {
         let (model, _, _) = makeModel(refresh: .every30)
         model.start()
-        try await waitFor("config") { model.hasReadConfig }
+        try await waitFor("config", interval: .milliseconds(5)) { model.hasReadConfig }
         #expect(model.statusFooter.contains("on the OBC itself"))
     }
 
@@ -382,7 +341,7 @@ struct WeatherSettingsModelTests {
     @Test func withNoHistoryTheScreenSaysSoRatherThanImplyingSuccess() async throws {
         let (model, _, _) = makeModel()
         model.start()
-        try await waitFor("history") { model.service != .loading }
+        try await waitFor("history", interval: .milliseconds(5)) { model.service != .loading }
         #expect(model.lastDeliveryValue == "Never")
         #expect(model.statusLine == "No weather sent yet")
         #expect(!model.canRetry)
@@ -394,7 +353,7 @@ struct WeatherSettingsModelTests {
     @Test func aDeliveredJobShowsWhenItLanded() async throws {
         let (model, _, _) = makeModel(history: [historyEntry(outcome: .committed)])
         model.start()
-        try await waitFor("history") { model.lastDelivery != nil }
+        try await waitFor("history", interval: .milliseconds(5)) { model.lastDelivery != nil }
         #expect(model.lastDeliveryValue == "12 min ago")
         #expect(model.statusLine == "Delivered 12 min ago")
         #expect(!model.showsStatusRow, "a success needs one line, not two")
@@ -408,7 +367,7 @@ struct WeatherSettingsModelTests {
             historyEntry(outcome: .failed, failure: .uploadFailed, minutesAgo: 6, attempts: 6),
         ])
         model.start()
-        try await waitFor("history") { model.lastAttempt != nil }
+        try await waitFor("history", interval: .milliseconds(5)) { model.lastAttempt != nil }
         #expect(model.showsStatusRow)
         #expect(model.statusRowLabel == "Last try")
         #expect(model.statusLine == "Last try failed · The Bluetooth transfer dropped")
@@ -451,7 +410,7 @@ struct WeatherSettingsModelTests {
             historyEntry(outcome: .agedOut, failure: .agedOut, phase: .bundleReady, minutesAgo: 3),
         ])
         model.start()
-        try await waitFor("history") { model.lastAttempt != nil }
+        try await waitFor("history", interval: .milliseconds(5)) { model.lastAttempt != nil }
         #expect(!model.showsStatusRow, "an expired run is not a failure to shout about")
         #expect(model.statusLine == "Delivered 40 min ago")
     }
@@ -502,7 +461,7 @@ struct WeatherSettingsModelTests {
             bundleByteCount: 40_000)
         let (model, _, jobs) = makeModel(pending: pending)
         model.start()
-        try await waitFor("pending") { model.pending != nil }
+        try await waitFor("pending", interval: .milliseconds(5)) { model.pending != nil }
         #expect(model.statusLine == "Ready to send")
         #expect(model.showsStatusRow)
         #expect(model.statusRowLabel == "Now")
@@ -527,10 +486,10 @@ struct WeatherSettingsModelTests {
         let gate = RetryGate()
         jobs.gate = gate
         model.start()
-        try await waitFor("pending") { model.pending != nil }
+        try await waitFor("pending", interval: .milliseconds(5)) { model.pending != nil }
 
         let tap = Task { await model.retryNow() }
-        try await waitFor("in flight") { model.isRetrying }
+        try await waitFor("in flight", interval: .milliseconds(5)) { model.isRetrying }
         // A rider pressing again while it spins must not start a second run.
         await model.retryNow()
         #expect(jobs.retryCount == 1)
@@ -551,7 +510,7 @@ struct WeatherSettingsModelTests {
             retryNotBefore: clock.addingTimeInterval(20))
         let (model, _, _) = makeModel(pending: pending)
         model.start()
-        try await waitFor("pending") { model.pending != nil }
+        try await waitFor("pending", interval: .milliseconds(5)) { model.pending != nil }
         #expect(model.statusLine == "Waiting to retry in 20s")
     }
 
@@ -562,7 +521,7 @@ struct WeatherSettingsModelTests {
             "Source: Deutscher Wetterdienst (DWD)", "Source: NOAA/NWS MRMS",
         ]))
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         let rows = model.attributions
         #expect(rows.first?.credit == .met)
         #expect(rows.first?.role == "Hourly forecast")
@@ -579,7 +538,7 @@ struct WeatherSettingsModelTests {
         let long = String(repeating: "Deutscher Wetterdienst, Offenbach am Main, ", count: 8)
         let (model, _, _) = makeModel(status: dataset(credits: [long], publishedSecondsAgo: 0))
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         #expect(model.attributions.contains { $0.credit.text == long })
         #expect(model.dataset != nil)
     }
@@ -588,7 +547,7 @@ struct WeatherSettingsModelTests {
         let (model, _, _) = makeModel(
             status: dataset(staleness: -600, publishedSecondsAgo: 3_600))
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         #expect(model.datasetIsStale)
         #expect(model.serviceFooter.contains("Service data stale since"))
         #expect(model.serviceFooter.contains("never shown as dry"))
@@ -599,7 +558,7 @@ struct WeatherSettingsModelTests {
     @Test func anUnavailableServiceKeepsTheHourlyPromiseHonest() async throws {
         let (model, _, _) = makeModel(status: nil)
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         #expect(model.service == .unavailable)
         #expect(model.serviceValue == "Unavailable")
         #expect(model.serviceFooter.contains("MET Norway"))
@@ -611,7 +570,7 @@ struct WeatherSettingsModelTests {
     @Test func theDatasetRowStatesResolutionAndDepthWithoutATier() async throws {
         let (model, _, _) = makeModel(status: dataset(generation: "20260810T1500Z"))
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         let published = model.dataset
         #expect(published?.generation == "20260810T1500Z")
         let summary = WeatherCopy.datasetSummary(published!)
@@ -649,7 +608,7 @@ struct WeatherSettingsModelTests {
 
         let (model, _, _) = makeModel(status: nil)
         model.start()
-        try await waitFor("service") { model.service != .loading }
+        try await waitFor("service", interval: .milliseconds(5)) { model.service != .loading }
         #expect(model.serviceFooter.contains(name))
 
         // The old spellings are gone, not merely joined by a fourth.

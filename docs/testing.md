@@ -35,22 +35,11 @@ cadence match it; if none does, add a suite.
 A file or binary that mixes the fast tier with fixture, end-to-end, live, or hardware work must be
 split into separate execution units. Until that source split can be made, the registry records a
 `cadence_conflict` with its reason and an open issue. Do not make a mixed binary look homogeneous
-by relabeling it and do not add test-level selection. The initial measured inventory records the
-following temporary conflicts:
+by relabeling it and do not add test-level selection.
 
-- `obc-storage` mixes fast storage tests with expensive crash matrices.
-- `obc-wx-bake` mixes fast codecs, captured fixtures, large bakes, and manual generators.
-- `obc-dem`, `obc-link`, `obc-render`, `obc-display`, `obc-vectors`, `obcm-assemble`, and
-  `obc-web-assemble` contain an ignored live, timing, exhaustive, or generator path beside required
-  tests.
-- the Rust aggregate command still combines fast and external-fixture execution.
-- the Swift host command combines fast model tests, captured fixtures, real sleeps, and one
-  expensive exhaustive codec test.
-- required XCUITest currently runs two screenshot methods while the rest of the application suite
-  has no scheduled full route.
-
-These are inventory findings, not permission to hide a conflict. The linked issues in the registry
-keep every temporary state accountable.
+The current conflicts and their owners live in `testing/suites.toml`. Use `obc suites list` and
+`obc suites explain SUITE_ID` to inspect them. A declared cadence does not prove that a workflow
+executes it; unresolved execution routes remain explicit conflicts until the implementation lands.
 
 ## Suite registry fields
 

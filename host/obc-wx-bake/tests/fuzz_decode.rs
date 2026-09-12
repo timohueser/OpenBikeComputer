@@ -8,8 +8,9 @@
 
 #![cfg(feature = "external-fixtures")]
 
+use obc_wx_bake::fetch::{FixtureUpstream, Upstream};
 use obc_wx_bake::grib::{decode_bzip2_field, decode_field, decode_gzip_field};
-use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms};
+use obc_wx_bake::source::{dwd_rv, gfs, hrrr, icon_eu, mrms, Adapter};
 
 /// The wall clock the RV tar is baked against. Since #1251 the adapter selects its members
 /// by canonical instant, so a bake needs one; the fuzz corpus only cares that a mutated tar
@@ -143,6 +144,35 @@ fn mutated_range_messages_error_and_never_panic() {
     // Cross-contract: neither source's bytes satisfy the other's pinned geometry.
     assert!(decode_field(&hrrr_good, &gfs_expected).is_err());
     assert!(decode_field(&gfs_good, &hrrr_expected).is_err());
+}
+
+#[test]
+fn a_replaced_gfs_range_reaches_the_wrong_lead_check() {
+    let run = obc_wx_bake::timefmt::parse_rfc3339("2026-08-09T12:00:00Z").unwrap();
+    let object = gfs::object_url(run, 1);
+    let object_len = 537_540_348;
+    let index = fixture("gfs-global-20260809T12-f001.idx");
+    let (range, _) = idx::resolve(std::str::from_utf8(&index).unwrap(), &gfs::selector(1), object_len, &[1]).unwrap();
+    let good = fixture("gfs-global-20260809T12-prate-f001.grib2");
+    let swapped = fixture("gfs-global-20260809T12-prate-f002.grib2");
+    assert_eq!(good.len() as u64, range.len());
+    assert_ne!(swapped.len(), good.len(), "the replacement must change the response length");
+
+    let mut upstream = FixtureUpstream::default();
+    // Discovery needs every lead's index. The first message must fail before any later fetch.
+    for lead in gfs::LEADS_H {
+        upstream.declare(gfs::index_url(run, lead), 1);
+    }
+    upstream.insert(gfs::index_url(run, 1), index, None);
+    upstream.insert_range(&object, object_len, range.start, good.clone());
+    let fetched = upstream.fetch_range(&object, range.start, range.end_inclusive, range.len()).unwrap();
+    assert_eq!(fetched.bytes, good);
+    assert!(upstream.fetch_range(&object, range.start, range.end_inclusive - 1, range.len()).is_err());
+
+    upstream.insert_range_response(&object, object_len, range.start, range.end_inclusive, swapped);
+    let error = gfs::GfsFloor.bake(&mut upstream, run, &mut Vec::new()).unwrap_err();
+    assert_eq!(error, "GFS f001 point rate does not match its lead");
+    assert_eq!(upstream.requests.last(), Some(&format!("{object}#{}-{}", range.start, range.end_inclusive)));
 }
 
 /// The OPERA COG path (WXR6): a hand-written TIFF tag parser plus deflate over 3 MB of somebody

@@ -127,19 +127,6 @@ import OBCTransport
                                coordinate: Coordinate(latitude: 48, longitude: 8))])
     }
 
-    private func waitFor(
-        _ what: String, timeout: Duration = .seconds(30), _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !condition() {
-            if ContinuousClock.now > deadline {
-                Issue.record("timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     private func makeModel(
         device: ScopedStubDevice, library: any LibraryStore
     ) -> MainScreenModel {
@@ -153,7 +140,7 @@ import OBCTransport
     /// A full sync against a scoped-minting device lands every ride — entry,
     /// synced mark — under (serial, epoch, id) keys, and the next connect's
     /// possession ack sends exactly those scoped ids.
-    @Test func syncLandsRidesUnderCompositeKeys() async {
+    @Test func syncLandsRidesUnderCompositeKeys() async throws {
         let device = ScopedStubDevice(
             serial: serial, epoch: epoch1,
             rides: [deviceRide(1, name: "Dawn Patrol", start: 1_700_000_000),
@@ -161,10 +148,10 @@ import OBCTransport
         let library = InMemoryLibraryStore()
         let model = makeModel(device: device, library: library)
         model.start()
-        await waitFor("identity settles") { model.connectedScope != nil }
+        try await waitFor("identity settles") { model.connectedScope != nil }
 
         model.sync.sync()
-        await waitFor("both rides land") { library.rideSummaries().count == 2 }
+        try await waitFor("both rides land") { library.rideSummaries().count == 2 }
 
         let scope = LibraryScope(serial: serial, epoch: epoch1)
         let expected: Set<RideID> = [
@@ -179,7 +166,7 @@ import OBCTransport
 
         // A reconnect acks exactly the scoped possession list.
         device.bounce()
-        await waitFor("the reconnect ack") { !device.ackedBatches.isEmpty }
+        try await waitFor("the reconnect ack") { !device.ackedBatches.isEmpty }
         #expect(Set(device.ackedBatches.last ?? []) == expected)
     }
 
@@ -188,27 +175,27 @@ import OBCTransport
     /// set must not filter the new rides ("sync forever answers up to date"),
     /// the old rows must survive as archival entries, and no ack may stamp
     /// old ids onto the new era.
-    @Test func eraChangeSyncsTheNewErasRidesAndKeepsTheOldArchival() async {
+    @Test func eraChangeSyncsTheNewErasRidesAndKeepsTheOldArchival() async throws {
         let device = ScopedStubDevice(
             serial: serial, epoch: epoch1,
             rides: [deviceRide(1, name: "Old era ride", start: 1_700_000_000)])
         let library = InMemoryLibraryStore()
         let model = makeModel(device: device, library: library)
         model.start()
-        await waitFor("identity settles") { model.connectedScope != nil }
+        try await waitFor("identity settles") { model.connectedScope != nil }
         model.sync.sync()
-        await waitFor("old-era ride lands") { library.rideSummaries().count == 1 }
+        try await waitFor("old-era ride lands") { library.rideSummaries().count == 1 }
 
         // Chip-erase: new epoch, a NEW ride recycles object id 1.
         device.setIdentity(epoch: epoch2)
         device.setRides([deviceRide(1, name: "New era ride", start: 1_800_000_000)])
         device.bounce()
-        await waitFor("the new era's scope") {
+        try await waitFor("the new era's scope") {
             model.connectedScope == LibraryScope(serial: serial, epoch: epoch2)
         }
 
         model.sync.sync()
-        await waitFor("the new era's ride lands") { library.rideSummaries().count == 2 }
+        try await waitFor("the new era's ride lands") { library.rideSummaries().count == 2 }
 
         let oldID = RideID(deviceObjectID: DeviceObjectID(1),
                            scope: LibraryScope(serial: serial, epoch: epoch1))
@@ -225,16 +212,16 @@ import OBCTransport
     /// A phone-side tombstone dies with its era: after the wipe the (kept
     /// card's) ride under a matching object id re-syncs once — resurrection
     /// is the accepted safe direction, silent suppression the incident.
-    @Test func tombstonesDoNotCarryAcrossEras() async {
+    @Test func tombstonesDoNotCarryAcrossEras() async throws {
         let device = ScopedStubDevice(
             serial: serial, epoch: epoch1,
             rides: [deviceRide(5, name: "To be deleted", start: 1_700_000_000)])
         let library = InMemoryLibraryStore()
         let model = makeModel(device: device, library: library)
         model.start()
-        await waitFor("identity settles") { model.connectedScope != nil }
+        try await waitFor("identity settles") { model.connectedScope != nil }
         model.sync.sync()
-        await waitFor("the ride lands") { library.rideSummaries().count == 1 }
+        try await waitFor("the ride lands") { library.rideSummaries().count == 1 }
 
         // Phone-side permanent delete (trash → delete forever).
         let oldID = RideID(deviceObjectID: DeviceObjectID(5),
@@ -246,13 +233,13 @@ import OBCTransport
         // RRAM-only wipe: new epoch, the card kept the ride.
         device.setIdentity(epoch: epoch2)
         device.bounce()
-        await waitFor("the new era's scope") {
+        try await waitFor("the new era's scope") {
             model.connectedScope == LibraryScope(serial: serial, epoch: epoch2)
         }
         model.sync.sync()
         let newID = RideID(deviceObjectID: DeviceObjectID(5),
                            scope: LibraryScope(serial: serial, epoch: epoch2))
-        await waitFor("the ride re-syncs under the new era") {
+        try await waitFor("the ride re-syncs under the new era") {
             library.rideSummaries().contains { $0.id == newID }
         }
         #expect(model.rides.map(\.id) == [newID], "visible again — resurrected once, by design")
@@ -260,7 +247,7 @@ import OBCTransport
 
     /// Ack fail-closed, end to end: a connection whose identity read throws
     /// sends no ack and syncs nothing — and the next good connection heals.
-    @Test func failedIdentityReadClosesAckAndSync() async {
+    @Test func failedIdentityReadClosesAckAndSync() async throws {
         let device = ScopedStubDevice(
             serial: serial, epoch: epoch1,
             rides: [deviceRide(1, name: "Unreachable treasure", start: 1_700_000_000)])
@@ -273,7 +260,7 @@ import OBCTransport
 
         // The gate settles closed: a SYNC tap comes straight back to idle.
         model.sync.sync()
-        await waitFor("the vetoed sync returns to idle") {
+        try await waitFor("the vetoed sync returns to idle") {
             model.sync.syncState == .idle && model.sync.syncProgress == nil
         }
         try? await Task.sleep(for: .milliseconds(100))
@@ -284,16 +271,16 @@ import OBCTransport
         // The next connection reads identity fine → ack + sync work.
         device.setFailIdentityRead(false)
         device.bounce()
-        await waitFor("the healed scope") { model.connectedScope != nil }
-        await waitFor("the ack") { !device.ackedBatches.isEmpty }
+        try await waitFor("the healed scope") { model.connectedScope != nil }
+        try await waitFor("the ack") { !device.ackedBatches.isEmpty }
         model.sync.sync()
-        await waitFor("the ride lands") { library.rideSummaries().count == 1 }
+        try await waitFor("the ride lands") { library.rideSummaries().count == 1 }
     }
 
     /// The claim migration runs on the model's own connect flow: a flat v1
     /// library entry the device corroborates is re-keyed before the first
     /// sync's freshness filter runs — one row, never a re-download duplicate.
-    @Test func connectFlowClaimsLegacyEntriesBeforeSyncing() async {
+    @Test func connectFlowClaimsLegacyEntriesBeforeSyncing() async throws {
         let start: TimeInterval = 1_700_000_000
         let device = ScopedStubDevice(
             serial: serial, epoch: epoch1,
@@ -309,17 +296,17 @@ import OBCTransport
 
         let model = makeModel(device: device, library: library)
         model.start()
-        await waitFor("identity settles") { model.connectedScope != nil }
+        try await waitFor("identity settles") { model.connectedScope != nil }
 
         let scopedID = RideID(deviceObjectID: DeviceObjectID(3),
                               scope: LibraryScope(serial: serial, epoch: epoch1))
-        await waitFor("the claim") { library.rideSummaries().map(\.id) == [scopedID] }
+        try await waitFor("the claim") { library.rideSummaries().map(\.id) == [scopedID] }
         // The claimed id is what the connect ack sends…
-        await waitFor("the ack") { !device.ackedBatches.isEmpty }
+        try await waitFor("the ack") { !device.ackedBatches.isEmpty }
         #expect(device.ackedBatches.last == [scopedID])
         // …and the first sync answers up to date instead of duplicating.
         model.sync.sync()
-        await waitFor("up to date") { model.sync.upToDateToastVisible }
+        try await waitFor("up to date") { model.sync.upToDateToastVisible }
         #expect(library.rideSummaries().count == 1, "no duplicate row after the claim")
         // The model's own list shows the claimed row.
         #expect(model.rides.map(\.id) == [scopedID])
