@@ -166,7 +166,7 @@ They do not construct `App`.
   <text class="d-label" x="360" y="245" text-anchor="middle" style="font-size:11px">ByteSource</text>
   <text class="d-sub" x="360" y="258" text-anchor="middle">bytes in</text>
   <rect class="d-panel" x="20" y="228" width="180" height="38" rx="9" />
-  <text class="d-sub" x="110" y="251" text-anchor="middle">in-memory slice</text>
+  <text class="d-sub" x="110" y="251" text-anchor="middle">flat-store map object</text>
   <rect class="d-panel" x="520" y="228" width="180" height="38" rx="9" />
   <text class="d-sub" x="610" y="251" text-anchor="middle">flat-store object</text>
   <line class="d-stroke" x1="200" y1="247" x2="298" y2="247" /><line class="d-stroke" x1="422" y1="247" x2="520" y2="247" />
@@ -197,7 +197,15 @@ pub trait ByteSource {
 
 The reader requests only the required tables and chunks.
 The device reads these bytes from a flat-store object.
-Host implementations can read from memory or a file.
+The simulator and browser demo also read their maps through the shared flat store.
+At startup, the simulator imports the OBCM input into a temporary sparse card file with a 16 KiB buffer.
+The browser imports its embedded OBCM into sparse memory pages.
+Both hosts then read one pinned object revision through an owned source.
+The simulator and its background terrain worker share that source; the last reader releases it and removes the temporary card.
+See the [host map owner](src:host/obc-host-core/src/flat_map.rs).
+
+This map path does not make the host card persistent.
+Routes, trips, weather, and ride recording still use their existing host repositories.
 
 ### Semantic ports
 

@@ -1107,7 +1107,9 @@ pub trait ByteSource {
 ```
 
 The device implementation reads a flat-store object.
-Host implementations can read memory or files.
+The simulator and browser demo import OBCM into the same flat store, then read the committed map object.
+Their media differ: a temporary sparse file on the simulator and sparse memory pages in the browser.
+Other host objects still use their existing file or memory repositories.
 The `u64` offset supports large OBCM objects.
 
 <figure class="fig">
