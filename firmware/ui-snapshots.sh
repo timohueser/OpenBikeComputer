@@ -97,11 +97,7 @@ cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
 cp "$ROUTES/route-plain.obcr" "$PLAINROUTE/"
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$TRIPDIR/3-grimsel.obcr"
-# The trip object comes from the repository's own tracked source, not the packaged copy: the
-# published `sim-grimsel` package still carries a v1 trip object (`python3 tools/fixtures.py verify
-# sim-grimsel` says so), which every reader rejects — so the packaged file silently produced a
-# folder-less Route menu under the three trip filenames below.
-cp "$repo_root/fixtures/sources/sim-grimsel/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
+cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the

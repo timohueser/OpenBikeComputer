@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
-use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo};
+use obc_route::{ride_track_into, Profile, RideInfo};
 
 /// The folder-backed ride store: the catalog of ride summaries (newest first) plus, parallel to it,
 /// each ride's full-width object id and desktop `ride-{id}.obcr` path.
@@ -89,30 +89,14 @@ impl RideStore {
         true
     }
 
-    /// Build the ride with durable id `id`'s recorded-track elevation [`Profile`] — the Ride
-    /// detail's band fill (epic #678 T2 / #680), answering
-    /// [`App::ride_track_request`](obc_app::App::ride_track_request). One read of the
-    /// stored `ride-{id}.obcr` through the shared `ride_elevation_profile` (the firmware streams the
-    /// same object bytes in chunks). `None` = unknown id / unreadable file — the caller parks the
-    /// failure via a `Failed` keyed answer.
-    pub fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile> {
+    /// Read one stored ride into the keyed detail's profile and preview. Unknown or unreadable
+    /// objects fail the whole answer; no partial profile or preview is published.
+    pub fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
         let pos = self.ids.iter().position(|&x| x == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;
-        ride_elevation_profile(&SliceSource(&bytes)).ok()
-    }
-
-    /// Build the ride with durable id `id`'s decimated recorded-track shape polyline (#678
-    /// rework 3), answering the preview half of the same
-    /// [`App::ride_track_request`](obc_app::App::ride_track_request) drain — one more
-    /// read of the stored `ride-{id}.obcr` through the shared `ride_preview_polyline` (the firmware
-    /// streams the same object bytes in blocks). Empty = unknown id / unreadable file — the Ride
-    /// detail's track page just leaves its slot blank.
-    pub fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)> {
-        let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Vec::new() };
-        let Ok(bytes) = std::fs::read(&self.paths[pos]) else { return Vec::new() };
-        ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(&SliceSource(&bytes))
-            .map(|v| v.as_slice().to_vec())
-            .unwrap_or_default()
+        let mut preview = Default::default();
+        ride_track_into::<{ obc_app::NAV_PREVIEW_MAX }>(&SliceSource(&bytes), profile, &mut preview).ok()?;
+        Some(preview.as_slice().to_vec())
     }
 
     /// Mark ride `id` as synced for this simulator process. The first nonzero stamp wins.
@@ -144,11 +128,8 @@ impl obc_host_core::RideRepository for RideStore {
     fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
-    fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile> {
-        self.profile_by_id(id)
-    }
-    fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)> {
-        self.preview_by_id(id)
+    fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
+        self.fill_track(id, profile)
     }
     /// A `Save` just wrote a fresh desktop ride object; re-scan so it appears in the Rides menu live.
     fn refresh(&mut self) {

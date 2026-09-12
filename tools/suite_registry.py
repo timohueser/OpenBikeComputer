@@ -58,6 +58,7 @@ RUST_FOUNDATION_PATHS = {
     ".cargo/config",
 }
 TEST_POLICY_PATTERNS = (
+    ".config/nextest.toml",
     ".github/workflows/**",
     ".github/actions/**",
     "testing/**",

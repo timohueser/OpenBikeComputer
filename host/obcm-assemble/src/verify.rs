@@ -727,13 +727,6 @@ fn verify_nav(
             })
             .map_err(|e| Error::Verify(format!("the nav walk failed: {e:?}")))?;
         if fault.is_some() || spill.is_some() {
-            // Hand the sort its runs back before refusing. `ExternalSort::finish` is what owns them
-            // — the stream it returns deletes them as it drops — so abandoning the sort where it
-            // stands would leave a spill behind on a host that is about to be told the map is
-            // broken. A refusal must cost the host nothing but the message.
-            if let Some(sort) = claims.take() {
-                drop(sort.finish());
-            }
             return Err(spill.unwrap_or_else(|| Error::Verify(fault.expect("a fault or a spill failure"))));
         }
         // The band and the delivery bitmap are dead the moment the walk ends, and what comes next

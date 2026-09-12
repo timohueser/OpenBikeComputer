@@ -616,13 +616,6 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     with tempfile.TemporaryDirectory(prefix="obc-fixture-publish-") as scratch:
         extract_package_archive(archive, Path(scratch), args.package)
     public_url = urljoin(catalog.base_url, package["archive"])
-    try:
-        _verify_public_object(public_url, actual_bytes, actual_digest)
-    except FixtureError:
-        pass
-    else:
-        print(f"✓ {args.package} already exists and is verified through {catalog.base_url}")
-        return
     required = (
         "OBC_FIXTURE_R2_BUCKET",
         "OBC_FIXTURE_R2_ACCESS_KEY_ID",
