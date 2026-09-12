@@ -33,7 +33,7 @@ impl ActiveRouteSession {
         if !changed {
             return;
         }
-        self.index = routes.active_source().and_then(|s| RouteIndex::read(&s).ok()).map(Box::new);
+        self.index = routes.active_source().and_then(|s| RouteIndex::read(s).ok()).map(Box::new);
     }
 
     /// The resident parse, for building a [`RouteReader`] over the store's active bytes.

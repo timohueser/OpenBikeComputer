@@ -1,8 +1,16 @@
 use super::*;
+use crate::flat_store::{HostMedia, Lease, ObjectSource, IMPORT_BUFFER_BYTES, PAGE};
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_formats::io::SliceSource;
+use obc_formats::io::{ByteSource, Error};
+use obc_storage::flat::{EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, Store, StoreId};
 use obcm_testkit::{build_file, pack_line, seal, LodSpec};
 use std::cell::Cell;
+use std::{
+    cell::RefCell,
+    io::Read,
+    sync::{Arc, Mutex},
+};
 
 fn map_bytes() -> Vec<u8> {
     let chunk = seal(pack_line(1, 100, 100, &[(50, 50), (50, -50)]), 4096);
@@ -97,13 +105,13 @@ fn clones_pin_the_full_identity_and_revision_until_the_last_drop() {
     let id = ObjectId((1 << 48) + 7);
     publish(&store, id, Revision(1), b"old map");
     let owner = Arc::new(Mutex::new(store));
-    let first = MapSource::open(owner.clone(), id, None).unwrap();
+    let first = ObjectSource::open(owner.clone(), id, None).unwrap();
     let worker = first.clone();
     assert_eq!(owner.lock().unwrap().store_id(), identity);
     assert_eq!(worker.id(), id);
     let free = owner.lock().unwrap().free_extents();
     publish(&owner.lock().unwrap(), id, Revision(2), b"new");
-    let head = MapSource::open(owner.clone(), id, None).unwrap();
+    let head = ObjectSource::open(owner.clone(), id, None).unwrap();
     assert_eq!(head.revision(), Revision(2));
     let mut new = [0; 3];
     head.read_at(0, &mut new).unwrap();
@@ -166,14 +174,36 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
     }
     let mut bytes = map_bytes();
     bytes.resize(IMPORT_BUFFER_BYTES * 3 + 7, 0);
-    let make = |len| FlatMap::import(HostMedia::Memory(RefCell::default()), &mut Bounded(&bytes), len);
-    assert!(make(bytes.len() as u64).is_ok());
-    assert!(
-        matches!(make(bytes.len() as u64 + 1), Err(MapError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof)
-    );
-    assert!(
-        matches!(make(bytes.len() as u64 - 1), Err(MapError::Io(error)) if error.kind() == io::ErrorKind::InvalidData)
-    );
+    let owner = HostStore::memory().unwrap();
+    let free = owner.0.lock().unwrap().free_extents();
+    for _ in 0..12 {
+        for (len, expected) in [
+            (bytes.len() as u64 + 1, io::ErrorKind::UnexpectedEof),
+            (bytes.len() as u64 - 1, io::ErrorKind::InvalidData),
+        ] {
+            assert!(matches!(
+                owner.import(ObjectKind::MapShard, None, &mut Bounded(&bytes), len, DisplayName::default()),
+                Err(ImportError::Io(error)) if error.kind() == expected
+            ));
+            assert_eq!(owner.0.lock().unwrap().free_extents(), free, "failed import cancels its allocation");
+        }
+    }
+    let meta = owner
+        .import(ObjectKind::MapShard, None, &mut Bounded(&bytes), bytes.len() as u64, DisplayName::default())
+        .unwrap();
+    assert_eq!(owner.open(meta.id, meta.revision).unwrap().len(), bytes.len() as u64);
+    let free = owner.0.lock().unwrap().free_extents();
+    assert!(owner
+        .import(
+            ObjectKind::MapShard,
+            Some((meta.id, Revision(77))),
+            &mut Bounded(&bytes),
+            bytes.len() as u64,
+            DisplayName::default()
+        )
+        .is_err());
+    assert_eq!(owner.0.lock().unwrap().free_extents(), free, "a rejected commit also cancels its allocation");
+
     assert!(matches!(FlatMap::from_bytes(b"invalid map"), Err(MapError::Format(_))));
 }
 
