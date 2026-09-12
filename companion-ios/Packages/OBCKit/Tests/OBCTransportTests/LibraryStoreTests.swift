@@ -317,9 +317,7 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.rideSummaries().count, 200)
     }
 
-    /// A points file gone missing entirely (half-written v2 dir, manual sweep)
-    /// mirrors the undecodable-payload rule: the ride stays a summary-only row
-    /// rather than being dropped.
+    /// A saved ride remains browsable when its points file is missing.
     func testMissingPointsFileKeepsTheSummaryRow() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
