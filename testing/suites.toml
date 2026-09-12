@@ -920,6 +920,7 @@ scheduled = "none"
 # The app links OBCKit, and no Swift dependency graph exists to derive that edge: an OBCKit
 # API change breaks `xcodebuild build` without touching a file under OBCCompanion/.
 extra_triggers = [
+  "companion-ios/scripts/generate-website-fixture.py",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
