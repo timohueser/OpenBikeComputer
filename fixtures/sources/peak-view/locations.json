@@ -9,6 +9,7 @@
     "default_heading_q4": 940,
     "angle_bottom_q4": -44,
     "angle_top_q4": 113,
+    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Rimpfischhorn",
@@ -148,6 +149,7 @@
     "default_heading_q4": 565,
     "angle_bottom_q4": -20,
     "angle_top_q4": 172,
+    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Indri Sägissa",
@@ -252,6 +254,7 @@
     "default_heading_q4": 1000,
     "angle_bottom_q4": -24,
     "angle_top_q4": 152,
+    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Freiwandkopf",
