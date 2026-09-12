@@ -106,13 +106,19 @@ The data contains no stored viewpoints or images.
 
 Peak View uses the loaded map and the current GPS position. It reads nearby named summits from
 that map, projects their geographic coordinates, and checks their visibility against the terrain.
+Each bearing sector keeps its tallest summit and one strong height-and-distance candidate. This
+prevents nearby lower hills from using both slots before a distant landmark can be checked.
 Before a GPS fix it waits. The renderer prepares the current field of view first, then fills the
 rest of the circle in the background, extending a buffer on both sides of the view. Static dots
 show that background work remains. Turning toward an unfinished view gives that view priority.
 After the first view appears, completed terrain continues to follow the heading. A light hatch
 marks pending parts until they are ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
 another panorama after the current job finishes. Back cancels generation and releases the arena.
-Lighting has a fixed northwest world direction, so turning does not change the shading.
+The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
+relief receives up to 3× vertical exaggeration; steep views keep 1.25×. Missing height metadata
+keeps the ordinary scale. Terrain and labels share the projection, while bearings, elevations,
+distances and visibility stay geographic. Turning changes neither the scale nor the horizon
+position. Lighting has a fixed northwest world direction, so turning does not change the shading.
 
 The renderer requests terrain out to 100 km. Missing distant coverage is marked with dashed bearing
 segments. Missing terrain at the observer or a storage read failure makes the
