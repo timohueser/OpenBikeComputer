@@ -226,8 +226,8 @@ impl AppState {
     /// Clamp the camera to the rain map's zoom-out `floor` — the smallest zoom at which the active
     /// product's raster still renders, derived by
     /// [`WeatherDomain`](crate::weather::WeatherDomain) and passed in by the caller that has it.
-    /// Called by the weather screens on rain-map entry and after each Inspect zoom step, and by the
-    /// pass's own tail while the rain map is up; a disengaged floor (`0.0`) is a no-op, and zooming
+    /// Applied by the UI's rain-view reconciliation and after each Inspect zoom step.
+    /// A disengaged floor (`0.0`) is a no-op, and zooming
     /// *in* is never touched.
     pub fn clamp_rain_zoom(&mut self, floor: f32) {
         if floor > 0.0 && self.zoom < floor {
@@ -2977,6 +2977,7 @@ impl App {
     /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
     /// drop rule without consuming the hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
+        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
         // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
@@ -2988,7 +2989,9 @@ impl App {
         // **The global escape** (#1515 D3): Back-hold reaches the main menu from anywhere, so it is
         // resolved here, above screen dispatch, and no screen binds it any more.
         if g == Gesture::BackHold {
-            return self.escape_to_menu();
+            let changed = self.escape_to_menu();
+            self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
+            return changed;
         }
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
@@ -3088,6 +3091,7 @@ impl App {
                 self.wall_clock.set(local_now, self.ui.now_ms);
             }
         }
+        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
         stack_changed
     }
 
@@ -3120,6 +3124,7 @@ impl App {
         // The idle-return sweep (fire the return if we're past the deadline) and its residual wake,
         // folded into the deadline the event-driven host arms so a parked device wakes to return.
         self.ui.apply_idle_return(&self.settings, tracking);
+        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
         if let Some(rem) = self.ui.idle_return_remaining_ms(&self.settings, tracking) {
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(rem, |w| w.min(rem)));
         }

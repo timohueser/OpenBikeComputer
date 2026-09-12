@@ -203,6 +203,25 @@ fn rain_map_zoom_clamps_to_the_rain_grid_regime_floor() {
     app.apply_gesture(Gesture::Step(-1));
     assert!(app.state.zoom > floor, "zooming back in is free");
 
+    // A replacement product raises the floor without replacing the saved ordinary-map zoom.
+    let mut denser = dense.clone();
+    denser.rain_grid.as_mut().unwrap().width_cells *= 4;
+    denser.rain_grid.as_mut().unwrap().height_cells *= 4;
+    sample(&mut app, Some(&denser));
+    assert!(app.weather().zoom_floor() > floor);
+    assert_eq!(app.state.zoom, app.weather().zoom_floor());
+
+    // Pan's own exit follows the newest fix. Restoring zoom must not roll that position back.
+    let fix = obc_ports::Fix::at(12_345, 67_890);
+    let mut loc = common::OnceFix(Some(fix));
+    app.tick(RideClock(1), Sensors::new(&mut loc), None);
+    app.apply_gesture(Gesture::Back); // Inspect → Follow
+    app.apply_gesture(Gesture::Back); // rain map → dashboard
+    assert_eq!(app.state.zoom, 0.004);
+    assert_eq!((app.state.cam_lat, app.state.cam_lon), (fix.lat, fix.lon));
+    assert_eq!(app.state.mode, obc_app::CameraMode::Follow);
+    assert!(app.state.pan.is_none());
+
     // No rain grid: the floor is 0.0 and the clamp disengages (the defensive banner remains
     // the backstop for that configuration).
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
@@ -211,6 +230,86 @@ fn rain_map_zoom_clamps_to_the_rain_grid_regime_floor() {
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
     assert_eq!(app.state.zoom, 0.004, "no rain grid, no clamp");
+}
+
+#[test]
+fn rain_zoom_follows_the_base_through_drawers_cards_and_escape() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.004));
+    let dense = snapshot_at(app.wall_unix_now() as i64, &[0; 4]);
+    sample(&mut app, Some(&dense));
+    open_dashboard(&mut app);
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
+    let floor = app.weather().zoom_floor();
+    assert!(floor > 0.004);
+
+    assert!(app.apply_chord(obc_app::Chord::Quick));
+    sample(&mut app, Some(&dense));
+    assert_eq!(app.state.zoom, floor, "a drawer still draws the rain base");
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
+    assert_eq!(app.state.zoom, floor);
+
+    app.show_weather_alert(WeatherAlertKind::Rain, 10);
+    sample(&mut app, Some(&dense));
+    assert_eq!(app.state.zoom, 0.004, "an opaque card leaves the rain base");
+    app.apply_gesture(Gesture::Press); // reveal the existing rain map
+    assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
+    assert_eq!(app.state.zoom, floor);
+    app.apply_gesture(Gesture::BackHold); // truncate back to the Menu
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+    assert_eq!(app.state.zoom, 0.004);
+
+    // The Map station deliberately picks its riding camera. No late restoration may undo it.
+    app.apply_gesture(Gesture::Step(-1));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    let riding_zoom = app.state.zoom;
+    assert!(riding_zoom > 0.004);
+    common::mount_store(&mut app);
+    app.apply_gesture(Gesture::Press); // Start ride card
+    app.apply_gesture(Gesture::Press); // new session roots to Map
+    sample(&mut app, Some(&dense));
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    assert_eq!(app.debug_stack_len(), 2);
+    assert_eq!(app.state.zoom, riding_zoom);
+}
+
+#[test]
+fn idle_and_root_returns_restore_rain_zoom_while_tracking() {
+    for idle in [false, true] {
+        let mut app = App::new(AppState::new(0, 0, 0.05));
+        common::mount_store(&mut app);
+        app.apply_gesture(Gesture::Press); // Start ride card
+        app.apply_gesture(Gesture::Press);
+        sample(&mut app, None); // admit the new recording session
+        let mut settings = *app.settings();
+        settings.idle_return = obc_app::settings::IdleReturn::S15;
+        app.set_settings(settings);
+        app.state.zoom = 0.004;
+        let dense = snapshot_at(app.wall_unix_now() as i64, &[0; 4]);
+        sample(&mut app, Some(&dense));
+        app.apply_gesture(Gesture::BackHold);
+        app.apply_gesture(Gesture::Step(4));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
+        assert!(app.state.zoom > 0.004);
+        if idle {
+            // Rain itself is a deliberate ride view; its transient drawer can time out.
+            assert!(app.apply_chord(obc_app::Chord::Quick));
+            weather_pass(&mut app, 0, Some(&dense), |_| {});
+            weather_pass(&mut app, 15_000, Some(&dense), |_| {});
+        } else {
+            app.apply_gesture(Gesture::BackHold);
+            app.apply_gesture(Gesture::Step(-1));
+            app.apply_gesture(Gesture::Press); // tracking Map station roots the stack
+        }
+        assert!(matches!(app.top_screen(), Screen::Map(_)));
+        assert_eq!(app.debug_stack_len(), 2);
+        assert_eq!(app.state.zoom, 0.004);
+    }
 }
 
 /// The alert card: host-pushed, re-fires update in place (never stack), VIEW RAIN MAP replaces
