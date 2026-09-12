@@ -17,12 +17,6 @@
 //! crate may not name a platform adapter. [`engine`] sits on both: one transfer at a time, no
 //! resume, no session, and the catalog as the only durable record of a result.
 //!
-//! ## What this replaces
-//!
-//! The Device Object System v2 wire (major 3) and its engine, which the rest of this crate still
-//! retains with its contract suites. Nothing here forwards to it, shims it, or
-//! shares a byte with it: coexistence is compile-time and the two never meet.
-
 pub mod engine;
 pub mod ids;
 pub mod records;

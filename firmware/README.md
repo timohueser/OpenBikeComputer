@@ -71,32 +71,19 @@ silently targets the host and fails):
 cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
 ```
 
-The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
-`cargo test` below already exercises it. The wire contract those bytes cross to the phone
-is [`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md) (legacy wire v2 — superseded for
-DOS v2 by the [`Device_Object_System_v2.md`](../specs/Device_Object_System_v2.md) suite); the
-concepts are on the docs site under
-[the companion link](https://openbikecomputer.com/software/companion-link/).
+The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member. Its command,
+status and config bytes are specified in
+[`obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md). Object transfers use
+[`FLAT_Store_Protocol.md`](../specs/FLAT_Store_Protocol.md), on both BLE and USB. The concepts are
+on the docs site under [the companion link](https://openbikecomputer.com/software/companion-link/).
 
-`obc-link` is that suite's Rust codec: OBCP wire major 3 control and stream frames, the
-mechanically distinct identities, metadata envelopes, typed results, error bodies, and the
-canonical-intent SHA-256. It is deliberately transport-free — no `obc-ble`, no embassy, no
-adapter — so an adapter hands it a record and gets a typed message back. Its golden vectors live
-in [`specs/vectors/device-object-v2/`](../specs/vectors/device-object-v2/), built by a producer
-that lays every byte down from the spec's own offset tables rather than through the codec;
-regenerate them deliberately with `cargo test -p obc-link regenerate -- --ignored`.
-
-Its `engine` module is the device half of that contract above the codec and below the board: the
-connection state machine of §5.2, the SessionId coordinator of §3, and the upload/download/command
-machines of §15 as pure typed transitions. It still owns no transport and does no storage I/O —
-everything it needs done comes back as a typed command the board glue executes against the DOS2
-transaction seam — and it implements §6.1's **restart-only** upload profile, so no kind advertises
-resumable upload and no durable next offset above zero is ever reported. The host-only `harness`
-module beside it (behind the same `std` feature) implements the `ByteLink` seam twice, with BLE and
-USB physical framing, and drives one engine over both against an in-memory transaction. All eleven
-checked-in semantic transcripts are held to their framing and decoding on both bindings; one is
-driven end to end through the engine and one more has its semantics reproduced from a preamble,
-and the rest name the device state or profile they would need.
+`obc-link::flat` is the protocol-v4 codec and transfer engine. It owns control and stream records,
+exact identity types, and one transfer state machine. It owns no transport or storage I/O: the
+board adapters supply records and implement its store seam. The independent fixture producer
+builds [`specs/vectors/flat-store-v4/`](../specs/vectors/flat-store-v4/) directly from the contract's
+offset tables. Regenerate these fixtures deliberately with
+`cargo test -p obc-link flat_regenerate -- --ignored`. Host tests exercise the engine against the
+real flat store and its faulting card model.
 
 `obc-storage::flat` is the **flat card store** (Device Object System v3): the whole of
 [`FLAT_Store_Format.md`](../specs/FLAT_Store_Format.md) and §2 of
@@ -110,11 +97,6 @@ the same `std` feature: `sim`, a sparse card that tears exactly the program page
 admits, and `model`, the reference state a recovered card is compared against byte for byte. Under
 `cfg(test)`: the crash matrix (every media operation of every durable path, cut before, during and
 after), the decoder fuzz, and both specs' vectors.
-
-The superseded Device Object System v2 vector files remain for the v3 contract suites in
-`obc-link` and the builder. Their OBC2 storage records are frozen artifacts; the storage crate no
-longer contains their producer or decoder. The active flat-store crash tests and vectors use their
-own card model and the flat-store specifications.
 
 ## Test
 
