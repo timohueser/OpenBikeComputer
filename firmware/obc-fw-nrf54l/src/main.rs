@@ -535,8 +535,8 @@ static mut FB: [u8; FB_BYTES] = [0; FB_BYTES];
 static mut ROW_DIFF: RowDiff<FRAME_H> = RowDiff::new();
 
 /// The streamed-map geometry cache + the shared [`App`], placed in `.bss` and built **in place** (a
-/// `ptr::write` into the reserved region): the ~44 KB `App` and the 37 KB cache must never form on
-/// the part's small stack. [`MapCache::new`](obc_reader::MapCache) is an all-zero
+/// `ptr::write` into the reserved region): these large values must never form on the part's small
+/// stack. [`MapCache::new`](obc_reader::MapCache) is an all-zero
 /// `MaybeUninit::zeroed`, so writing it is a `.bss` memset.
 static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// The immutable map tables (header scalars + style table + LOD pyramid), parsed **once at boot** into
