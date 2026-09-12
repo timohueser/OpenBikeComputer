@@ -276,6 +276,7 @@ public final class RideSyncCoordinator {
             }
             syncDropWatch = dropWatch
             var landed = 0
+            var batchFailed = false
             do {
                 for try await downloaded in download.rides {
                     // A superseding sync (or a fresh sync over a waiting
@@ -283,42 +284,31 @@ public final class RideSyncCoordinator {
                     // old stalled stream must not mutate the new sync's shared
                     // state (double-persist, clobbered progress / activeDownload).
                     guard !Task.isCancelled else { return }
+                    guard let summary = fresh.first(where: { $0.id == downloaded.id }) else {
+                        throw DeviceError.readFailed
+                    }
+                    let decoded = try RideObjectCodec.decode(downloaded.payload, id: downloaded.id)
+                    // Keep the catalog's display fields and the payload's track and sensor summary.
+                    var ride = Ride(summary: summary, points: decoded.points)
+                    if ride.summary.trackPreview == nil {
+                        ride.summary.trackPreview = decoded.summary.trackPreview
+                    }
+                    ride.summary.avgHeartRate = decoded.summary.avgHeartRate
+                    ride.summary.maxHeartRate = decoded.summary.maxHeartRate
+                    ride.summary.avgCadence = decoded.summary.avgCadence
+                    ride.summary.avgPower = decoded.summary.avgPower
+                    ride.summary.maxPower = decoded.summary.maxPower
+                    try library.saveRide(ride)
                     syncedRideIDs.insert(downloaded.id)
                     library.markRideSynced(downloaded.id)
-                    // Persist the canonical ride the moment it lands, so an
-                    // interrupted batch keeps its partial across a relaunch
-                    // (H10). The payload decodes through the device ride codec;
-                    // bytes that don't parse keep the ride summary-only rather
-                    // than dropping it (wire bytes are never the stored format).
-                    if let summary = fresh.first(where: { $0.id == downloaded.id }) {
-                        let decoded = try? RideObjectCodec.decode(
-                            downloaded.payload, id: downloaded.id)
-                        // The ride catalog summary stays canonical for display; the
-                        // payload contributes the tracklog (and a preview, if
-                        // the list entry came without one), plus the per-ride
-                        // BLE-sensor summary (epic #707) the catalog entry
-                        // doesn't carry — it only exists in the ride object's
-                        // v2 header.
-                        var ride = Ride(summary: summary, points: decoded?.points ?? [])
-                        if ride.summary.trackPreview == nil {
-                            ride.summary.trackPreview = decoded?.summary.trackPreview
-                        }
-                        if let decoded {
-                            ride.summary.avgHeartRate = decoded.summary.avgHeartRate
-                            ride.summary.maxHeartRate = decoded.summary.maxHeartRate
-                            ride.summary.avgCadence = decoded.summary.avgCadence
-                            ride.summary.avgPower = decoded.summary.avgPower
-                            ride.summary.maxPower = decoded.summary.maxPower
-                        }
-                        library.saveRide(ride)
-                        onRideLanded(ride)
-                    }
+                    onRideLanded(ride)
                     landed += 1
                     syncProgress = SyncProgress(done: landed, total: fresh.count)
                 }
             } catch {
-                // A hard transfer failure — fall through; `landed` keeps the
-                // partial batch either way.
+                // A transfer, decode or save error stops the batch; earlier saves remain.
+                batchFailed = true
+                download.handle.cancel()
             }
             // The transfer is over one way or another: the watch has done its
             // job (leaving it running would fire H10 on a later, harmless drop).
@@ -327,6 +317,10 @@ public final class RideSyncCoordinator {
             syncProgress = nil
             syncInterruption = nil
             activeDownload = nil
+            guard !batchFailed else {
+                syncState = .idle
+                return
+            }
             let outcome = await download.handle.outcome
             // Re-check after the outcome await too: a superseding `sync()` can
             // land while this task is suspended here (its `handle.cancel()` is
