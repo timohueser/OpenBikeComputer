@@ -242,14 +242,14 @@ fn draw_poi_row(
     cv.text(&fit(name, name_max), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
 
     // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
-    let line2_top = name_top + Font::Body.cap_height() as i32 + 4;
+    let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
     let mut dist: heapless::String<12> = heapless::String::new();
     write_distance_coarse(&mut dist, "", poi.distance_m, units);
     let mut text_x = x;
     // Arrow at the left of line 2 (only when a heading reference exists — else hidden), distance
     // just to its right.
     if let (Some(fix), Some(heading)) = (fix, heading) {
-        let arrow_mid = line2_top + Font::Label.cap_height() as i32 / 2;
+        let arrow_mid = line2_top + Font::Label.cap_mid() as i32;
         draw_bearing_arrow(
             cv,
             Point::new(x + ARROW_R, arrow_mid),

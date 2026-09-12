@@ -120,12 +120,17 @@ pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
     seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
 }
 
+/// Compact card-body pitch: five pixels less than the full cell height.
+/// This spacing is a layout choice, independent of the capital ink height.
+pub(crate) fn wrapped_line_pitch(font: Font) -> i32 {
+    font.line_height() as i32 - 5
+}
+
 /// Draw `text` word-wrapped into centred `font` lines within `width_px`, the first line at
 /// `top_y`, in `color` — the shared multi-line card body (author each catalog string on one line;
 /// wrap at draw time). Greedy over the monospace cell width; returns the `y` just past the last
 /// line so a caller can stack more below it. A single word wider than the budget is left to clip
-/// (versions and the like are short). The line advance is the font's cap height plus a hair of
-/// lead. Shared by the DFU cards (which established it) and the routing-failure card.
+/// (versions and the like are short). The line advance is [`wrapped_line_pitch`].
 pub(crate) fn wrapped(
     cv: &mut impl Surface,
     text: &str,
@@ -135,7 +140,7 @@ pub(crate) fn wrapped(
     font: Font,
     color: u16,
 ) -> i32 {
-    let lh = font.cap_height() as i32 + 1; // cap + a hair of lead (Label: the 19 px the DFU cards pinned)
+    let lh = wrapped_line_pitch(font);
     let char_w = font.char_width() as i32;
     let budget = (width_px / char_w).max(1) as usize;
     let mut y = top_y;
