@@ -456,9 +456,10 @@ fn ride_vector_reads_through_the_production_codec() {
     );
     assert_eq!(v3.len() as u64, obc_formats::ride::checked_object_len(info.point_count).unwrap());
 
-    let p = obc_route::ride_elevation_profile(&SliceSource(&v3)).unwrap();
+    let mut p = obc_route::Profile::EMPTY;
+    let mut preview = heapless::Vec::<_, 3>::new();
+    obc_route::ride_track_into(&SliceSource(&v3), &mut p, &mut preview).unwrap();
     assert_eq!((p.min_ele_m, p.max_ele_m), (214, 225));
-    let preview = obc_route::ride_preview_polyline::<3>(&SliceSource(&v3)).unwrap();
     assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }
 

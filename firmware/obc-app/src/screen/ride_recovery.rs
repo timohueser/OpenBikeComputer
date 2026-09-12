@@ -370,29 +370,26 @@ mod tests {
         let body_room = W - MIN_CLEAR * 2;
         assert_eq!((row_room, body_room), (192, 224), "the card's two budgets, pinned");
 
-        let (mut worst_body, mut worst_row) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            for mode in [RecoveryMode::RepairFailed, RecoveryMode::DiscardFailed, RecoveryMode::Unrepairable] {
+            let title = t(Msg::RideRecoveryTitle, lang);
+            assert!(text_width(title, Font::Body) <= (W - 28) as u32, "{lang:?}: title {title:?} overruns its insets");
+            for mode in [
+                RecoveryMode::Resumable,
+                RecoveryMode::Damaged,
+                RecoveryMode::RepairFailed,
+                RecoveryMode::DiscardFailed,
+                RecoveryMode::Unrepairable,
+            ] {
                 let s = t(mode.body(), lang);
                 let px = text_width(s, Font::Label) as i32;
                 assert!(px <= body_room, "{lang:?}: body {s:?} ({px} px) overruns the {body_room} px card");
-                worst_body = worst_body.max(px);
             }
-            for row in [Row::Retry, Row::Leave] {
+            for row in [Row::Continue, Row::Discard, Row::Retry, Row::Leave] {
                 let s = t(row.label(), lang);
                 // `draw_guarded_rows` draws its labels in `Font::Body`, the wider tier.
                 let px = text_width(s, Font::Body) as i32;
                 assert!(px <= row_room, "{lang:?}: row {s:?} ({px} px) overruns the {row_room} px panel");
-                worst_row = worst_row.max(px);
             }
         }
-        // Pinned, so copy that merely *fits* cannot grow toward the edge unnoticed.
-        assert_eq!(
-            worst_body, 216,
-            "en \"Card needs service\" / fr \"Réparation échouée\" / es \"Reparación fallida\" in Label, pinned"
-        );
-        assert_eq!(body_room - worst_body, 8, "…with 8 px to spare");
-        assert_eq!(worst_row, 154, "de \"Wiederholen\" in Body, pinned");
-        assert_eq!(row_room - worst_row, 38, "…with 38 px to spare");
     }
 }

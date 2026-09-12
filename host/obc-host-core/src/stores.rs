@@ -181,14 +181,9 @@ impl RideRepository for MemRideStore {
         self.delete_by_id(id)
     }
 
-    /// No on-disk track behind a memory ride — the Ride detail's band parks empty (an answered
-    /// `None`, so the fill cue stops re-emitting rather than grinding a missing file every frame).
-    fn profile_by_id(&self, _id: obc_app::CatalogObjectId) -> Option<Profile> {
+    /// Memory rides have no stored track. The keyed failure parks the empty detail.
+    fn fill_track(&self, _id: obc_app::CatalogObjectId, _profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
         None
-    }
-
-    fn preview_by_id(&self, _id: obc_app::CatalogObjectId) -> Vec<(i32, i32)> {
-        Vec::new()
     }
 }
 
