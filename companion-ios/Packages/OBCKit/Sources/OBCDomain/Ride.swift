@@ -41,9 +41,8 @@ public struct RideID: Hashable, Sendable {
         }
     }
 
-    /// An **unscoped** ride id — the v1 shape (the bare device object id).
-    /// Kept for the legacy-claim migration and for stand-ins that model no
-    /// device identity; the real transport always mints scoped ids.
+    /// An unscoped ride id for stand-ins without a device identity.
+    /// The real transport always mints scoped ids.
     public init(deviceObjectID: DeviceObjectID) {
         self.init(String(deviceObjectID.raw))
     }

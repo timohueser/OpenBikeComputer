@@ -4,12 +4,8 @@ import OBCDomain
 import OBCTransport
 @testable import OBCUI
 
-/// End-to-end (serial, epoch, id) keying (#769): a stub device that mints
-/// scoped catalog ids exactly like `BLETransport` (from its own identity read),
-/// driven through the real `MainScreenModel` + `RideSyncCoordinator` — a full
-/// mock sync lands rides under composite keys, an era change replays the
-/// 2026-07-12 incident self-healingly, and the claim migration runs on the
-/// model's own connect flow.
+/// Drive scoped device catalogs through the main model and sync coordinator.
+/// Device changes isolate current sync from earlier scopes and local archives.
 @MainActor @Suite struct LibraryScopingE2ETests {
     // MARK: The stub device
 
@@ -277,39 +273,46 @@ import OBCTransport
         try await waitFor("the ride lands") { library.rideSummaries().count == 1 }
     }
 
-    /// The claim migration runs on the model's own connect flow: a flat v1
-    /// library entry the device corroborates is re-keyed before the first
-    /// sync's freshness filter runs — one row, never a re-download duplicate.
-    @Test func connectFlowClaimsLegacyEntriesBeforeSyncing() async throws {
+    @Test func connectionPreservesArchivesAndScopesSyncAndAcknowledgments() async throws {
         let start: TimeInterval = 1_700_000_000
-        let device = ScopedStubDevice(
-            serial: serial, epoch: epoch1,
-            rides: [deviceRide(3, name: "Corroborated", start: start)])
-        let library = InMemoryLibraryStore()
-        // The v1 library: the same ride under its flat key.
-        library.saveRide(Ride(
-            summary: RideSummary(
-                id: RideID(deviceObjectID: DeviceObjectID(3)), name: "Corroborated",
-                date: Date(timeIntervalSince1970: start), distanceMeters: 20_000),
-            points: []))
-        library.markRideSynced(RideID(deviceObjectID: DeviceObjectID(3)))
+        let archive = deviceRide(3, name: "Archived", start: start)
+        let trashed = deviceRide(5, name: "Trashed archive", start: start)
+        let deletedID = RideID(deviceObjectID: DeviceObjectID(4))
+        let trashDate = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = FileLibraryStore(directory: directory)
+        library.saveRide(archive)
+        library.saveRide(trashed)
+        library.markRideSynced(archive.id)
+        library.markRideDeleted(deletedID)
+        library.markRideTrashed(trashed.id, at: trashDate)
 
+        let device = ScopedStubDevice(serial: serial, epoch: epoch1, rides: [
+            archive, deviceRide(4, name: "Current ride", start: start), trashed,
+        ])
         let model = makeModel(device: device, library: library)
         model.start()
         try await waitFor("identity settles") { model.connectedScope != nil }
-
-        let scopedID = RideID(deviceObjectID: DeviceObjectID(3),
-                              scope: LibraryScope(serial: serial, epoch: epoch1))
-        try await waitFor("the claim") { library.rideSummaries().map(\.id) == [scopedID] }
-        // The claimed id is what the connect ack sends…
-        try await waitFor("the ack") { !device.ackedBatches.isEmpty }
-        #expect(device.ackedBatches.last == [scopedID])
-        // …and the first sync answers up to date instead of duplicating.
         model.sync.sync()
-        try await waitFor("up to date") { model.sync.upToDateToastVisible }
-        #expect(library.rideSummaries().count == 1, "no duplicate row after the claim")
-        // The model's own list shows the claimed row.
-        #expect(model.rides.map(\.id) == [scopedID])
+        try await waitFor("current rides sync") { library.rideSummaries().count == 5 }
+        #expect(device.ackedBatches.isEmpty)
+        device.bounce()
+        try await waitFor("current rides acknowledge on reconnect") { !device.ackedBatches.isEmpty }
+
+        let scope = LibraryScope(serial: serial, epoch: epoch1)
+        let currentIDs = Set([3, 4, 5].map {
+            RideID(deviceObjectID: DeviceObjectID($0), scope: scope)
+        })
+        #expect(Set(device.ackedBatches.flatMap { $0 }) == currentIDs)
+        #expect(library.syncedRideIDs() == currentIDs.union([archive.id]))
+        #expect(library.deletedRideIDs() == [deletedID])
+        #expect(library.trashedRideIDs() == [trashed.id: trashDate])
+        #expect(Set(library.rideSummaries().map(\.id)) == currentIDs.union([archive.id, trashed.id]))
+        #expect(library.rideSummaries().first { $0.id == archive.id } == archive.summary)
+        #expect(library.ridePoints(archive.id) == archive.points)
+        #expect(library.rideSummaries().first { $0.id == trashed.id } == trashed.summary)
+        #expect(library.ridePoints(trashed.id) == trashed.points)
     }
 }
 

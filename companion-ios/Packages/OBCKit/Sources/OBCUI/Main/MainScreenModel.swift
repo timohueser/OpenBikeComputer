@@ -94,8 +94,8 @@ public final class MainScreenModel {
     /// `ackRides` and every reconcile write stay closed for the connection
     /// (library browsing is untouched). The gate re-opens on the next
     /// successful identity read. Every id-keyed write derives its scope from
-    /// here: the possession ack filter, route-link minting on upload, the
-    /// badge reconcile, and the legacy-claim migration.
+    /// here: the possession ack filter, route-link minting on upload,
+    /// and badge reconcile.
     public private(set) var connectedScope: LibraryScope?
     /// Whether the connected device understands **auto-expiry** (epic #638) —
     /// settled by each connection's `setClock` in the prologue (`.stamped` → true,
@@ -443,20 +443,9 @@ public final class MainScreenModel {
         loadTask = nil
     }
 
-    /// One identity read (`deviceInfo()`) for the current connection: the #303
-    /// protocol-version verdict **and the (serial, epoch) scope** (#769), and —
-    /// strictly downstream of both — the legacy-claim migration and the
-    /// coordinator's possession ack, so an id-keyed write can never race the
-    /// verdict or run under an unknown era.
-    ///
-    /// **Fail-closed (#769, reversing #764's v1 posture):** "settled" still
-    /// includes a *failed* read (launched offline, a flaky link) — the SYNC
-    /// button stops waiting — but the gate stays **closed**: no scope means no
-    /// `ackRides` and no reconcile writes for this connection. Library
-    /// browsing is unaffected, and the next connect edge re-runs the check
-    /// (the gate re-opens on the first successful read). A compatible read
-    /// clears a stale mismatch (a DFU install can fix the device between
-    /// connects).
+    /// Read identity before scope-filtered acknowledgments and reconciliation.
+    /// A missing scope or failed read leaves device writes disabled until the
+    /// next successful connection. Local library browsing remains available.
     private func runIdentityCheck() async {
         // Unknown until proven, every connection: the device may have been
         // wiped (new epoch) or swapped since the last read.
@@ -478,18 +467,8 @@ public final class MainScreenModel {
                 connectedScope = info.libraryScope
             }
         }
-        // The verdict is in (scope included) — the `canSync` gate may answer.
-        // Early SYNC taps still wait out the rest of this task: the
-        // `identitySettled` seam awaits the whole task, claim included, so a
-        // sync can never race the migration's re-keys.
         identityChecked = true
         if let scope = connectedScope {
-            // One-time v1 → scoped migration, claim-on-first-contact (#769):
-            // runs before the ack so freshly-claimed ids are acked (and before
-            // any sync — see above — so a corroborated flat ride can't
-            // re-download as "new" under its scoped key, which would be the
-            // duplicate row the claim forbids).
-            await claimLegacyLibraryEntries(for: scope)
             // The per-connect possession ack (spec §4.4), scope-filtered — a
             // send that misses a dying link is dropped and covered by the next
             // connect's re-ack.
@@ -506,25 +485,6 @@ public final class MainScreenModel {
             }
             reloadTrips()
         }
-    }
-
-    /// Run one claim pass of the v1 → scoped migration against the connected
-    /// device (see `LibraryScopeMigrator`). Skipped in one cheap check once no
-    /// flat legacy state remains — the steady state costs no device read. The
-    /// ride-list read is the claim's corroboration evidence; if it fails, the
-    /// pass simply waits for the next connect (nothing is guessed).
-    private func claimLegacyLibraryEntries(for scope: LibraryScope) async {
-        guard LibraryScopeMigrator.hasLegacyState(in: library) else { return }
-        guard let catalog = try? await transport.listRides() else { return }
-        LibraryScopeMigrator.run(in: library, scope: scope, deviceRides: catalog.rides)
-        // Ids may have moved under the claim — re-read every mirror the lists
-        // are built from (the same set `start()` seeds).
-        rideSummaries = Dictionary(
-            uniqueKeysWithValues: library.rideSummaries().map { ($0.id, $0) })
-        deletedRideIDs = library.deletedRideIDs()
-        trashedRideIDs = library.trashedRideIDs()
-        rides = trackedList()
-        trashedRides = trashedList()
     }
 
     /// Stamp the device's trusted wall clock (`setClock`, epic #638) with the
