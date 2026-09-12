@@ -10,7 +10,7 @@
 //! Membership, order and distances are frozen on take. The snapshot is keyed by a
 //! [`CorridorKey`] — the category filter **and** the progress anchor it was taken at — so live
 //! progress advancing under the rider never re-runs the query and rows can never shift under the
-//! cursor. It is re-taken only when the screen re-arms it: on entry, and on a filter change.
+//! cursor. It is re-taken on entry, on a filter change, or when active route geometry is replaced.
 //!
 //! # Storage decision (#425)
 //!
@@ -98,7 +98,7 @@ impl CorridorScratch {
     }
 
     /// Drop the held snapshot so the next `prepare` re-runs the query for the armed key — the
-    /// "re-enter to refresh" half of the contract. Called when the Up-ahead screen opens.
+    /// "re-enter to refresh" half of the contract. Also used when active route geometry changes.
     pub fn invalidate(&mut self) {
         self.taken_for = None;
         self.pois.clear();
