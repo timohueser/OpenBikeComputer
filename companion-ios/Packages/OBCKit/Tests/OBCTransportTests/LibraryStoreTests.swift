@@ -260,12 +260,12 @@ final class LibraryStoreTests: XCTestCase {
 
     // MARK: Rides + the synced set (H9/H10) — split summary/points (#360)
 
-    func testRideSummariesRoundTripNewestFirst() {
+    func testRideSummariesRoundTripNewestFirst() throws {
         let (store, dir) = makeFileStore()
         let older = makeRide(id: "ride-a", date: Date(timeIntervalSince1970: 2_000))
         let newer = makeRide(id: "ride-b", name: "Lunch Loop", date: Date(timeIntervalSince1970: 8_000))
-        store.saveRide(older)
-        store.saveRide(newer)
+        try store.saveRide(older)
+        try store.saveRide(newer)
 
         // A second instance over the same directory = the app relaunched.
         let summaries = FileLibraryStore(directory: dir).rideSummaries()
@@ -277,10 +277,10 @@ final class LibraryStoreTests: XCTestCase {
         )
     }
 
-    func testRidePointsRoundTripAcrossInstances() {
+    func testRidePointsRoundTripAcrossInstances() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
 
         XCTAssertEqual(FileLibraryStore(directory: dir).ridePoints(ride.id), ride.points)
         XCTAssertNil(store.ridePoints(RideID("never-synced")), "an unknown id has no tracklog")
@@ -289,10 +289,10 @@ final class LibraryStoreTests: XCTestCase {
     /// The #360 point: listing summaries must not read — let alone decode — the
     /// points files. A deliberately corrupt points file proves it (correctness
     /// beats a flaky timing assert).
-    func testRideSummariesNeverDecodeThePointsFiles() {
+    func testRideSummariesNeverDecodeThePointsFiles() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
         try? Data("not json".utf8).write(
             to: dir.appendingPathComponent("rides/ride-1/points.json"))
 
@@ -305,10 +305,10 @@ final class LibraryStoreTests: XCTestCase {
     /// Loose perf pin, shape not stopwatch: a big library's summaries all load
     /// while **every** points file is unreadable — the only way that passes is
     /// if `rideSummaries()` never touches them.
-    func testABigLibraryListsWithoutTouchingAnyPointsFile() {
+    func testABigLibraryListsWithoutTouchingAnyPointsFile() throws {
         let (store, dir) = makeFileStore()
         for index in 0..<200 {
-            store.saveRide(makeRide(id: "ride-\(index)",
+            try store.saveRide(makeRide(id: "ride-\(index)",
                                     date: Date(timeIntervalSince1970: Double(index))))
             try? Data("points deliberately unreadable".utf8).write(
                 to: dir.appendingPathComponent("rides/ride-\(index)/points.json"))
@@ -317,13 +317,11 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.rideSummaries().count, 200)
     }
 
-    /// A points file gone missing entirely (half-written v2 dir, manual sweep)
-    /// mirrors the undecodable-payload rule: the ride stays a summary-only row
-    /// rather than being dropped.
-    func testMissingPointsFileKeepsTheSummaryRow() {
+    /// A saved ride remains browsable when its points file is missing.
+    func testMissingPointsFileKeepsTheSummaryRow() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
         try? FileManager.default.removeItem(
             at: dir.appendingPathComponent("rides/ride-1/points.json"))
 
@@ -336,7 +334,7 @@ final class LibraryStoreTests: XCTestCase {
     func testSaveRideSummaryUpdatesTheRowWithoutRewritingPoints() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
         let pointsURL = dir.appendingPathComponent("rides/ride-1/points.json")
         let pointBytes = try Data(contentsOf: pointsURL)
 
@@ -364,7 +362,7 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertTrue(store.rideSummaries().isEmpty)
         XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
 
-        store.saveRide(ride)
+        try store.saveRide(ride)
         let relaunched = FileLibraryStore(directory: dir)
         XCTAssertEqual(relaunched.rideSummaries(), [ride.summary])
         XCTAssertEqual(relaunched.ridePoints(ride.id), ride.points)
@@ -383,10 +381,49 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: oldFile), archivedBytes)
     }
 
-    func testSyncedIDsSurviveRideDeleteAndRelaunch() {
+    func testRideSaveReportsFilesystemFailureAndCanRetry() throws {
+        for file in ["points.json", "summary.json"] {
+            let (store, dir) = makeFileStore()
+            let ride = makeRide()
+            let blocker = dir.appendingPathComponent("rides/ride-1/\(file)")
+            try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+
+            XCTAssertThrowsError(try store.saveRide(ride))
+            XCTAssertTrue(store.rideSummaries().isEmpty)
+            XCTAssertTrue(store.syncedRideIDs().isEmpty)
+            if file == "summary.json" {
+                XCTAssertEqual(store.ridePoints(ride.id), ride.points, "a partial save remains unmarked")
+            }
+
+            try FileManager.default.removeItem(at: blocker)
+            try store.saveRide(ride)
+            let relaunched = FileLibraryStore(directory: dir)
+            XCTAssertEqual(relaunched.rideSummaries(), [ride.summary])
+            XCTAssertEqual(relaunched.ridePoints(ride.id), ride.points)
+        }
+    }
+
+    func testRideEncodingFailureLeavesBothFilesUnchanged() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
+        let points = dir.appendingPathComponent("rides/ride-1/points.json")
+        let summary = dir.appendingPathComponent("rides/ride-1/summary.json")
+        let pointBytes = try Data(contentsOf: points)
+        let summaryBytes = try Data(contentsOf: summary)
+        var invalid = ride
+        invalid.points = []
+        invalid.summary.distanceMeters = .nan
+
+        XCTAssertThrowsError(try store.saveRide(invalid))
+        XCTAssertEqual(try Data(contentsOf: points), pointBytes)
+        XCTAssertEqual(try Data(contentsOf: summary), summaryBytes)
+    }
+
+    func testSyncedIDsSurviveRideDeleteAndRelaunch() throws {
+        let (store, dir) = makeFileStore()
+        let ride = makeRide()
+        try store.saveRide(ride)
         store.markRideSynced(ride.id)
         store.deleteRide(ride.id)
 
@@ -397,10 +434,10 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(relaunched.syncedRideIDs(), [ride.id])
     }
 
-    func testDeletedTombstonesSurviveRelaunch() {
+    func testDeletedTombstonesSurviveRelaunch() throws {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
-        store.saveRide(ride)
+        try store.saveRide(ride)
         store.markRideDeleted(ride.id)
         store.deleteRide(ride.id)
 
@@ -409,12 +446,12 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(FileLibraryStore(directory: dir).deletedRideIDs(), [ride.id])
     }
 
-    func testTrashedRideMarksSurviveRelaunchAndKeepTheFiles() {
+    func testTrashedRideMarksSurviveRelaunchAndKeepTheFiles() throws {
         let (store, dir) = makeFileStore()
         let kept = makeRide()
         let recovered = makeRide(id: "ride-2", name: "Second")
-        store.saveRide(kept)
-        store.saveRide(recovered)
+        try store.saveRide(kept)
+        try store.saveRide(recovered)
         let trashedAt = Date(timeIntervalSince1970: 1_700_000_000)
         store.markRideTrashed(kept.id, at: trashedAt)
         store.markRideTrashed(recovered.id, at: trashedAt.addingTimeInterval(60))
@@ -428,14 +465,14 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(relaunched.ridePoints(kept.id), kept.points)
     }
 
-    func testAwkwardIDsStayDistinctOnDisk() {
+    func testAwkwardIDsStayDistinctOnDisk() throws {
         // Device ride ids are firmware-owned strings — path separators and
         // near-collisions must not merge records.
         let (store, dir) = makeFileStore()
         let a = makeRide(id: "rides/2026-07-01 08:12")
         let b = makeRide(id: "rides_2026-07-01 08:12", name: "Twin")
-        store.saveRide(a)
-        store.saveRide(b)
+        try store.saveRide(a)
+        try store.saveRide(b)
 
         let reloaded = FileLibraryStore(directory: dir).rideSummaries()
         XCTAssertEqual(Set(reloaded.map(\.id)), [a.id, b.id])

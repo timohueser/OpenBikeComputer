@@ -24,8 +24,8 @@ import OBCDomain
 /// The JSON shape is an **app-owned schema** (versioned DTOs below), decoupled
 /// from both the domain types' memberwise layout and the device wire formats —
 /// a firmware `S0` byte-layout change never touches saved libraries. Unreadable
-/// or future-versioned files are skipped, never fatal; writes are best-effort
-/// (a full disk loses one save, not the store).
+/// or future-versioned files are skipped. Full-ride saves report encoding and I/O errors;
+/// other writes remain best-effort. Per-file atomic replacement is not a durable receipt.
 public struct FileLibraryStore: LibraryStore, Sendable {
     private let directory: URL
 
@@ -189,14 +189,14 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return file.ridePoints
     }
 
-    public func saveRide(_ ride: Ride) {
+    public func saveRide(_ ride: Ride) throws {
+        let points = try encode(RidePointsFile(ride.points), formatting: [.sortedKeys])
+        let summary = try encode(RideSummaryFile(ride.summary))
         let dir = rideDir(ride.id)
-        ensure(dir)
-        write(RideSummaryFile(ride.summary), to: dir.appendingPathComponent("summary.json"))
-        // The tracklog is the bulky file — compact JSON, written once per sync
-        // and read one ride at a time.
-        write(RidePointsFile(ride.points), to: dir.appendingPathComponent("points.json"),
-              formatting: [.sortedKeys])
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Publish the list row after its tracklog. A failed save stays eligible for sync.
+        try points.write(to: dir.appendingPathComponent("points.json"), options: .atomic)
+        try summary.write(to: dir.appendingPathComponent("summary.json"), options: .atomic)
     }
 
     public func saveRideSummary(_ summary: RideSummary) {
@@ -325,11 +325,17 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         _ value: T, to url: URL,
         formatting: JSONEncoder.OutputFormatting = [.prettyPrinted, .sortedKeys]
     ) {
+        guard let data = try? encode(value, formatting: formatting) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func encode<T: Encodable>(
+        _ value: T, formatting: JSONEncoder.OutputFormatting = [.prettyPrinted, .sortedKeys]
+    ) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .secondsSince1970
         encoder.outputFormatting = formatting
-        guard let data = try? encoder.encode(value) else { return }
-        try? data.write(to: url, options: .atomic)
+        return try encoder.encode(value)
     }
 }
 

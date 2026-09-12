@@ -277,12 +277,11 @@ final class RideSyncCoordinatorTests: XCTestCase {
         control.latency = .zero
         let library = InMemoryLibraryStore()
         let base = MockTransport(control: control)
-        let transport = HardFailingDownloadTransport(
+        let transport = ScriptedDownloadTransport(
             base: base,
-            yieldedRides: [
-                DownloadedRide(id: RideID("ride-kettle-moraine"), payload: Data()),
-                DownloadedRide(id: RideID("ride-sunday-coffee-spin"), payload: Data()),
-            ]
+            yieldedRides: control.fixtures.rides.prefix(2).map {
+                DownloadedRide(id: $0.summary.id, payload: RideObjectCodec.encode($0.ride()))
+            }
         )
         let coordinator = RideSyncCoordinator(
             transport: transport, library: library, timing: Self.stickyTiming)
@@ -302,6 +301,59 @@ final class RideSyncCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.lastSyncCount)
         XCTAssertNil(coordinator.syncInterruption)
         XCTAssertFalse(coordinator.upToDateToastVisible)
+    }
+
+    func testLocalFailureKeepsEarlierSavesAndRetriesAfterRelaunch() async throws {
+        for malformedPayload in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let library = FileLibraryStore(directory: directory)
+            let control = MockControl(scenario: .happyPath)
+            control.latency = .zero
+            let entries = Array(control.fixtures.rides.prefix(2))
+            let first = entries[0]
+            let second = entries[1]
+            let blocker = directory.appendingPathComponent("rides/\(second.summary.id.rawValue)/points.json")
+            if !malformedPayload {
+                try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+            }
+            let transport = ScriptedDownloadTransport(
+                base: MockTransport(control: control),
+                yieldedRides: [
+                    DownloadedRide(id: first.summary.id, payload: RideObjectCodec.encode(first.ride())),
+                    DownloadedRide(id: second.summary.id,
+                                   payload: malformedPayload ? Data() : RideObjectCodec.encode(second.ride())),
+                ],
+                failure: nil
+            )
+            let coordinator = RideSyncCoordinator(
+                transport: transport, library: library, timing: Self.stickyTiming)
+            var landed: [RideID] = []
+            coordinator.onRideLanded = { landed.append($0.id) }
+            try await startConnected(coordinator)
+            coordinator.sync()
+            try await waitFor("first ride saved") { landed == [first.summary.id] }
+            try await waitFor("local failure settles") {
+                coordinator.syncState == .idle && coordinator.syncProgress == nil
+            }
+
+            XCTAssertEqual(landed, [first.summary.id])
+            XCTAssertEqual(library.syncedRideIDs(), [first.summary.id])
+            XCTAssertEqual(library.rideSummaries().map(\.id), [first.summary.id])
+            XCTAssertFalse(try XCTUnwrap(library.ridePoints(first.summary.id)).isEmpty)
+            XCTAssertNil(coordinator.lastSyncCount, "transport completion cannot override a local failure")
+            XCTAssertNil(coordinator.syncInterruption)
+            XCTAssertFalse(coordinator.upToDateToastVisible)
+
+            if !malformedPayload { try FileManager.default.removeItem(at: blocker) }
+            let (relaunched, _) = makeCoordinator(.happyPath, library: FileLibraryStore(directory: directory))
+            try await startConnected(relaunched)
+            relaunched.sync()
+            try await waitFor("unfinished rides saved") { relaunched.syncState == .done }
+            XCTAssertEqual(relaunched.lastSyncCount, control.fixtures.rides.count - 1)
+            XCTAssertEqual(library.syncedRideIDs().count, control.fixtures.rides.count)
+            XCTAssertTrue(library.rideSummaries().allSatisfy { !(library.ridePoints($0.id) ?? []).isEmpty })
+        }
     }
 
     // MARK: Persistence across "relaunches" (B1S)
@@ -404,12 +456,11 @@ private struct TruncatedRideCatalogTransport: DeviceLink, DeviceObjects {
     }
 }
 
-/// Forwards everything to the mock, but hands back a download whose rides
-/// stream **throws** after a couple of rides — the hard `crcMismatch` failure
-/// the mock's drop knob (a stall, resumable by design) can't stage.
-private struct HardFailingDownloadTransport: DeviceLink, DeviceObjects {
+/// A finite batch with an already-completed handle, or a terminal stream failure.
+private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let yieldedRides: [DownloadedRide]
+    var failure: DeviceError? = .crcMismatch
 
     var state: AsyncStream<ConnectionState> { base.state }
     func connect() async throws { try await base.connect() }
@@ -425,7 +476,7 @@ private struct HardFailingDownloadTransport: DeviceLink, DeviceObjects {
     func downloadRides(_ ids: [RideID]) -> RideDownload {
         let (stream, continuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
         for ride in yieldedRides { continuation.yield(ride) }
-        continuation.finish(throwing: DeviceError.crcMismatch)
-        return RideDownload(handle: .immediatelyFinished(.failed(.crcMismatch)), rides: stream)
+        continuation.finish(throwing: failure)
+        return RideDownload(handle: .immediatelyFinished(failure.map { .failed($0) } ?? .completed), rides: stream)
     }
 }

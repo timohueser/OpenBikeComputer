@@ -58,9 +58,9 @@ public protocol LibraryStore: Sendable {
     /// stays summary-only rather than dropped, and the detail degrades to the
     /// preview's coordinates.
     func ridePoints(_ id: RideID) -> [RidePoint]?
-    /// Insert or replace a ride under its id — called per ride as a sync lands
-    /// it, so an interrupted batch (H10) keeps its partial across a relaunch.
-    func saveRide(_ ride: Ride)
+    /// Save one ride's summary and points. Report a write failure before sync records success.
+    /// This does not promise a transaction across files or power-loss durability.
+    func saveRide(_ ride: Ride) throws
     /// Update a ride's summary without touching its stored points — the rename
     /// (H12) write path; re-encoding a full tracklog to change a name would be
     /// the exact whole-ride coupling #360 removed.
