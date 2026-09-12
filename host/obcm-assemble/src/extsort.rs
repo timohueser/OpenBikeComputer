@@ -236,7 +236,7 @@ impl<const R: usize> Eq for Head<R> {}
 /// A sort of `R`-byte records that never holds more than its budget.
 ///
 /// Push everything, then [`ExternalSort::finish`] for the sorted stream. See the module header for
-/// the budget and the determinism contract.
+/// the budget and the determinism contract. Dropping an unfinished sort removes its runs.
 pub struct ExternalSort<'s, const R: usize> {
     scratch: &'s dyn ScratchStore,
     budget: usize,
@@ -281,7 +281,10 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
         // Stable, so equal records keep push order inside the run — see the module header.
         self.buf.sort_by(self.order);
         let id = self.scratch.create()?;
-        self.scratch.append(id, self.buf.as_flattened())?;
+        if let Err(error) = self.scratch.append(id, self.buf.as_flattened()) {
+            let _ = self.scratch.remove(id);
+            return Err(error);
+        }
         self.runs.push((id, self.buf.len() as u64));
         self.buf.clear();
         Ok(())
@@ -292,7 +295,10 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
     pub fn finish(mut self) -> Result<SortedRecords<'s, R>> {
         if self.runs.is_empty() {
             self.buf.sort_by(self.order);
-            return Ok(SortedRecords { source: Source::Memory { buf: self.buf, at: 0 }, scratch: self.scratch });
+            return Ok(SortedRecords {
+                source: Source::Memory { buf: std::mem::take(&mut self.buf), at: 0 },
+                scratch: self.scratch,
+            });
         }
         self.spill()?;
         // The run buffer is dead the moment the last run is on disk, and the read buffers below are
@@ -312,8 +318,16 @@ impl<'s, const R: usize> ExternalSort<'s, R> {
             }
             cursors.push(cursor);
         }
-        let runs = self.runs.iter().map(|&(id, _)| Some(id)).collect();
+        let runs = std::mem::take(&mut self.runs).into_iter().map(|(id, _)| Some(id)).collect();
         Ok(SortedRecords { source: Source::Merge { cursors, heap, runs }, scratch: self.scratch })
+    }
+}
+
+impl<const R: usize> Drop for ExternalSort<'_, R> {
+    fn drop(&mut self) {
+        for &(id, _) in &self.runs {
+            let _ = self.scratch.remove(id);
+        }
     }
 }
 
@@ -519,11 +533,19 @@ mod tests {
         inner: MemoryScratch,
         live: std::cell::Cell<usize>,
         peak: std::cell::Cell<usize>,
+        fail_append: std::cell::Cell<bool>,
+        fail_read: std::cell::Cell<bool>,
     }
 
     impl Counting {
         fn new() -> Counting {
-            Counting { inner: MemoryScratch::new(), live: 0.into(), peak: 0.into() }
+            Counting {
+                inner: MemoryScratch::new(),
+                live: 0.into(),
+                peak: 0.into(),
+                fail_append: false.into(),
+                fail_read: false.into(),
+            }
         }
     }
 
@@ -534,9 +556,16 @@ mod tests {
             self.inner.create()
         }
         fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
+            if self.fail_append.get() {
+                self.inner.append(id, &buf[..1])?;
+                return Err(crate::Error::Scratch("append refused after a partial write".into()));
+            }
             self.inner.append(id, buf)
         }
         fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
+            if self.fail_read.get() {
+                return Err(crate::Error::Scratch("read refused".into()));
+            }
             self.inner.read_at(id, offset, buf)
         }
         fn len(&self, id: ScratchId) -> Result<u64> {
@@ -545,6 +574,54 @@ mod tests {
         fn remove(&self, id: ScratchId) -> Result<()> {
             self.live.set(self.live.get() - 1);
             self.inner.remove(id)
+        }
+    }
+
+    #[test]
+    fn abandoned_runs_die_with_the_sort_or_its_transferred_stream() {
+        for finish in [false, true] {
+            let scratch = Counting::new();
+            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            for i in 0..6 {
+                sort.push(rec(i, i)).expect("push");
+            }
+            assert_eq!(scratch.live.get(), 3);
+            if finish {
+                let mut stream = sort.finish().expect("finish");
+                assert_eq!(key(&stream.next().expect("record").expect("read")), 0);
+                assert!(scratch.live.get() > 0, "unfinished runs belong to the stream");
+                drop(stream);
+            } else {
+                drop(sort);
+            }
+            assert_eq!(scratch.live.get(), 0);
+            assert_eq!(scratch.inner.resident_bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn scratch_failures_remove_existing_and_partially_written_runs() {
+        for failure in ["push", "finish write", "finish read"] {
+            let scratch = Counting::new();
+            let mut sort = ExternalSort::<R>::new(&scratch, 4 * R, by_key);
+            for i in 0..3 {
+                sort.push(rec(i, i)).expect("push");
+            }
+            assert_eq!(scratch.live.get(), 1, "one run and one buffered record");
+            scratch.fail_append.set(failure != "finish read");
+            scratch.fail_read.set(failure == "finish read");
+            let result = if failure == "push" {
+                let result = sort.push(rec(3, 3));
+                assert_eq!(scratch.live.get(), 1, "the partial run is removed immediately");
+                drop(sort);
+                result
+            } else {
+                sort.finish().map(drop)
+            };
+            let error = result.expect_err(failure).to_string();
+            assert!(error.contains(if failure == "finish read" { "read refused" } else { "append refused" }));
+            assert_eq!(scratch.live.get(), 0, "{failure} left a run behind");
+            assert_eq!(scratch.inner.resident_bytes(), 0);
         }
     }
 
