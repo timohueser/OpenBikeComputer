@@ -13,10 +13,10 @@ import OBCTransport
 ///
 /// The ack is triggered by the model's **identity read settling** — never by the
 /// raw connect edge — so an id-keyed write can never race the #303
-/// protocol-version verdict. Protocol v2 (#769) hardens both halves of that
+/// protocol-version verdict. Store scoping hardens both halves of that
 /// ordering: the ack sends only ids scoped to the connected device's
-/// **(serial, epoch)** identity, and a read that fails to establish that
-/// identity (no epoch, failed read) keeps the ack **closed** for the
+/// **(serial, StoreId)** identity, and a read that fails to establish that
+/// identity (no StoreId, failed read) keeps the ack **closed** for the
 /// connection — fail-closed, where #764's v1 posture settled open.
 @MainActor @Suite struct RideAckReconcileTests {
     private func makeModel(
@@ -29,7 +29,7 @@ import OBCTransport
         return (model, control)
     }
 
-    /// The mock device's own (serial, epoch) scope — synced ids must carry it
+    /// The mock device's own (serial, StoreId) scope — synced ids must carry it
     /// to be ack-eligible (#769), exactly like ids the transport minted from
     /// this device's catalog.
     private func scope(of control: MockControl) -> LibraryScope {
@@ -91,10 +91,10 @@ import OBCTransport
         let mine = RideID(deviceObjectID: DeviceObjectID(3), scope: scope(of: control))
         let otherSerial = RideID(
             deviceObjectID: DeviceObjectID(3),
-            scope: LibraryScope(serial: "OBC-24-999999", epoch: scope(of: control).epoch))
+            scope: LibraryScope(serial: "OBC-24-999999", storeID: scope(of: control).storeID))
         let otherEra = RideID(
             deviceObjectID: DeviceObjectID(3),
-            scope: LibraryScope(serial: scope(of: control).serial, epoch: 0xDEAD_0000))
+            scope: LibraryScope(serial: scope(of: control).serial, storeID: "000000000000000000000000dead0000"))
         let flatLegacy = RideID(deviceObjectID: DeviceObjectID(200))
         for id in [mine, otherSerial, otherEra, flatLegacy] { library.markRideSynced(id) }
 
@@ -103,8 +103,8 @@ import OBCTransport
         #expect(control.ackedRideBatches.flatMap { $0 } == [mine])
     }
 
-    /// Fail-closed (#769): an identity read that carries **no epoch** (a
-    /// short/torn v2 read — `storeEpoch == nil`, never a fabricated 0) must
+    /// Fail-closed (#769): an identity read that carries **no StoreId** (a
+    /// missing LIST identity — `storeID == nil`) must
     /// keep `ackRides` closed for the connection, while browsing works.
     @Test func missingEpochBlocksTheAck() async throws {
         let library = InMemoryLibraryStore()
@@ -117,7 +117,7 @@ import OBCTransport
             hardwareVersion: current.hardwareVersion,
             serial: current.serial,
             protocolVersion: current.protocolVersion,
-            storeEpoch: nil
+            storeID: nil
         )
 
         model.start()
@@ -140,11 +140,11 @@ import OBCTransport
         control.deviceInfo = DeviceInfo(
             name: full.name, firmwareVersion: full.firmwareVersion,
             hardwareVersion: full.hardwareVersion, serial: full.serial,
-            protocolVersion: full.protocolVersion, storeEpoch: nil
+            protocolVersion: full.protocolVersion, storeID: nil
         )
 
         model.start()
-        try await waitFor("the epoch-less identity read") { model.deviceName == full.name }
+        try await waitFor("the StoreId-less identity read") { model.deviceName == full.name }
         try? await Task.sleep(for: .milliseconds(100))
         #expect(control.ackedRideBatches.isEmpty)
 

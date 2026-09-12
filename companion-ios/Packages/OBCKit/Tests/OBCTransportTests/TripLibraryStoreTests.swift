@@ -43,7 +43,7 @@ struct TripLibraryStoreTests {
         let store = makeStore(kind)
         ["a", "b", "c"].forEach { store.savePlannedRoute(plannedRoute($0)) }
         var t = trip("t1", ["c", "a", "b"], name: "Alpen Traverse")
-        let link = DeviceRouteLink(serial: "OBC-001", epoch: 0xA1B2_C3D4, objectID: DeviceObjectID(5))
+        let link = DeviceRouteLink(serial: "OBC-001", storeID: "000000000000000000000000a1b2c3d4", objectID: DeviceObjectID(5))
         t.deviceLink = link
         t.uploadedCRC32 = 0xDEAD_BEEF
         store.saveTrip(t)
@@ -134,11 +134,11 @@ struct TripLibraryStoreTests {
     }
 
     @Test
-    func fileStorePersistsAcrossInstances() {
+    func fileStorePersistsAcrossInstances() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("obc-trip-persist-\(UUID().uuidString)", isDirectory: true)
         var t = trip("t1", ["r1", "r2"], name: "Persisted")
-        let link = DeviceRouteLink(serial: "OBC-042", epoch: 0x0BAD_F00D, objectID: DeviceObjectID(9))
+        let link = DeviceRouteLink(serial: "OBC-042", storeID: "1111111111111111111111110badf00d", objectID: DeviceObjectID(9))
         t.deviceLink = link
         t.uploadedCRC32 = 0x1234_5678
         do {
@@ -154,6 +154,13 @@ struct TripLibraryStoreTests {
         #expect(got[0].stageIDs == [RouteID("r1"), RouteID("r2")])
         #expect(got[0].deviceLink == link)
         #expect(got[0].uploadedCRC32 == 0x1234_5678)
+        let file = dir.appendingPathComponent("trips/t1.json")
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json.removeValue(forKey: "deviceStoreID")
+        json["deviceStoreEpoch"] = 0x0BAD_F00D
+        try JSONSerialization.data(withJSONObject: json).write(to: file)
+        #expect(reopened.trips().first?.deviceLink == nil)
+
     }
 
     @Test

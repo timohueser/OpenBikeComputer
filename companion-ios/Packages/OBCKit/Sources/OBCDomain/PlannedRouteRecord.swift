@@ -51,7 +51,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     public var sourceFileName: String
     public var sourceFileData: Data
     /// The device copy this route was assigned on upload — the durable
-    /// `{serial, epoch, id}` link between a library route and its copy on
+    /// `{serial, StoreId, id}` link between a library route and its copy on
     /// **one device in one id era** (#769; names/local ids can't match across
     /// the BLE boundary, and a bare object id silently matched every device).
     /// `nil` until an upload commits (an H4 save-before-pairing import, a
