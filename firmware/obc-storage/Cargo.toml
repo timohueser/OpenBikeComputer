@@ -17,25 +17,13 @@ obc-crc = { path = "../obc-crc" }
 # defmt/RTT itself); the adapters add no logging of their own.
 embedded-sdmmc = { version = "0.9", default-features = false }
 
-# The bounded `Vec<Run, N>` a FAT-extent table stores the resolved map chain in, and the bounded
-# region tables of the OBC2 catalog projection.
-# Same 0.8 the rest of the OBC stack uses.
+# Bounded mutation batches for the flat-store wire adapter.
 heapless = "0.8"
 
-# The Device Object System v2 identity types (`obc_link::ids`) and the wire opcode registry an OBC2
-# active-operation row is validated against (`OBC2_Storage_Format.md` §5.3). A platform -> foundation
-# edge, the same direction `obc-storage -> obc-formats` already runs: `obc-link` is a transport-free
-# codec, so no adapter, session or framing comes with it.
+# The transport-free v4 store seam implemented by `flat::wire`.
 obc-link = { path = "../obc-link" }
 
-# Host-only, and optional so the device image never links it: the storage fixture producer digests
-# each vector file with SHA-256 for the suite manifest. Same 0.11 the rest of the workspace resolves.
-sha2 = { version = "0.11", default-features = false, optional = true }
-
 [dev-dependencies]
-# The same digest, for `cfg(test)` runs that do not enable the `std` feature.
-sha2 = { version = "0.11", default-features = false }
-
 # The read cutover's pin (FS7.5-c2, #1420): `flat::map_read` commits a real OBCM map into a flat
 # store and drives the renderer's own `MapTables`/`Reader` over it through `StoreSource`, against a
 # `SliceSource` over the same bytes as the oracle. Dev-only, and deliberately upward — the device
@@ -45,15 +33,8 @@ sha2 = { version = "0.11", default-features = false }
 obc-reader = { path = "../obc-reader" }
 obcm-testkit = { path = "../../host/obcm-testkit" }
 
-# The wire crate's host-only fake-link harness and its published scenario suite, which the
-# kernel-backed transaction is held to. It is a dev-dependency so the device image never sees
-# `std`: `cargo build -p obc-storage` still resolves `obc-link` without it.
-obc-link = { path = "../obc-link", features = ["std"] }
-
 [features]
 default = []
-# Host-only: the deterministic faulting-media harness (`obc2::media`) and the spec-derived storage
-# fixture producer (`obc2::vectors`) that writes `specs/vectors/device-object-v2/storage/`. Neither
-# is reachable from the device image. `cfg(test)` enables both implicitly, so `cargo test -p
-# obc-storage` and a workspace `--all-features` run agree.
-std = ["dep:sha2", "obc-link/std"]
+# Host-only deterministic faulting card and reference model (`flat::sim`, `flat::model`).
+# Tests enable both implicitly; the device image uses neither.
+std = []

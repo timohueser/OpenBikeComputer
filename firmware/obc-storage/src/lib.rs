@@ -16,14 +16,11 @@
 
 #![no_std]
 
-// Tests, the flat store's faulting card and reference model, and the host-only halves of the OBC2
-// kernel are the only things in this crate that see `std`. The device image links none of them:
-// `default = []`.
+// Only tests and the flat store's host-only faulting card and reference model use `std`.
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
 pub mod flat;
-pub mod obc2;
 mod object_id;
 pub mod sd;
 pub mod shared_device;
