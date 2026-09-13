@@ -1131,7 +1131,7 @@ mod tests {
         for route in [RouteReader::new(&empty, &source), RouteReader::new(&index, &Unreadable)] {
             for units in [Units::Metric, Units::Imperial] {
                 let mut app = crate::App::new(crate::AppState::new(0, 0, 0.05));
-                app.settings.units = units;
+                app.set_settings(Settings { units, ..Settings::default() });
                 let fix = Fix::at(good.start_lat, good.start_lon);
                 app.tick(RideClock(0), Sensors::new(&mut OnceFix(Some(fix))), None);
                 app.navigator.set_active_route(Some(0));
@@ -1156,8 +1156,8 @@ mod tests {
                             &mut canvas,
                             240,
                             320,
-                            crate::t(Msg::StatsTitle, app.settings.language),
-                            crate::t(Msg::StatsOff, app.settings.language).trim_end(),
+                            crate::t(Msg::StatsTitle, app.settings().language),
+                            crate::t(Msg::StatsOff, app.settings().language).trim_end(),
                         );
                         8..28
                     } else {
@@ -1165,7 +1165,7 @@ mod tests {
                             &mut canvas,
                             240,
                             320,
-                            crate::t(Msg::MapOffRoute, app.settings.language).trim_end(),
+                            crate::t(Msg::MapOffRoute, app.settings().language).trim_end(),
                         );
                         (320 - CHIP_H - CHIP_MARGIN + 10)..(320 - CHIP_MARGIN - 10)
                     };
