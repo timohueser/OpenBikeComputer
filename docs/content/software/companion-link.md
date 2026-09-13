@@ -286,6 +286,14 @@ Protocol v4 has no ride-possession mutation, so device rides remain unsynced and
 automatic expiry. The [archive contract](src:specs/Ride_Archive_Contract.md) defines the local
 boundary and the required next device persistence boundary.
 
+The shared card store has a dormant metadata format for route-use and ride-archive stamps.
+It binds each row to the card and the exact source revision, length, and CRC. It replaces
+the metadata object atomically and checks the committed bytes before it reports success.
+Clients can list and read this object but cannot upload or remove it. The device does not
+yet write these stamps or use them for expiry. A future policy integration must stop card
+writers and remount after an uncertain commit. See the
+[metadata contract](src:specs/Retention_Metadata.md).
+
 ## Pairing and BLE controls
 
 The phone uses LE Secure Connections passkey entry.
