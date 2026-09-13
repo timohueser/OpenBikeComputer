@@ -87,7 +87,7 @@ fn batch_capacity_and_context_are_atomic_and_legacy_lifecycle_remains_compatible
     assert_eq!(recorder.append_batch(&[point(2000)], None), Ok(AppendStatus::Cancelled));
     let State::Live(live) = &recorder.state else { unreachable!() };
     assert_eq!((live.crc, live.len, live.continuation), (crc, len, accepted));
-    assert_eq!(recorder.checkpoint(stats(), None), Ok(CheckpointStatus::Durable));
+    assert_eq!(recorder.checkpoint(stats(), None), Ok(CheckpointStatus::Unsupported));
     append(&mut recorder, &[point(2000)]);
     assert!(matches!(recorder.finalize(stats()), RideClose::Committed(_)));
 }

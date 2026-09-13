@@ -114,7 +114,7 @@ pub struct RideContinuation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointStatus {
     Durable,
-    /// The adapter has no recovery journal. Service is complete, but no durable claim is made.
+    /// The medium has no durable recovery guarantee. Service is complete, but no durable claim is made.
     Unsupported,
 }
 
@@ -602,6 +602,12 @@ impl RecorderMachine {
     /// Whether a ride is open (recording, paused, or closing).
     pub fn recording(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// A requested or issued close still owns this session until its terminal outcome lands.
+    pub fn closing(&self) -> bool {
+        matches!(self.pending, Some(RecorderIntent::Save | RecorderIntent::Discard))
+            || matches!(self.inflight, Some(InFlight::Close))
     }
 
     /// Put a boot-recovered ride to the rider in `state`, once per boot. `false` means the decision
@@ -1494,7 +1500,9 @@ mod tests {
     #[test]
     fn the_close_becomes_a_finalize_and_the_session_survives_until_it_is_answered() {
         let mut rec = recording();
+        assert!(!rec.closing());
         rec.request(RecorderIntent::Save);
+        assert!(rec.closing());
         let effect = rec.next_effect(CAN_RECORD, at(1)).expect("the close outranks the cadence");
         assert!(matches!(effect, RecorderEffect::Finalize { .. }));
         assert!(rec.recording(), "the ride is open until the store says otherwise");
@@ -1502,6 +1510,7 @@ mod tests {
         let verdict = rec.apply_outcome(RecorderOutcome::Finalized { token: effect.token(), ride: 42 });
         assert_eq!(verdict, RecorderVerdict::Saved(42));
         assert!(!rec.recording());
+        assert!(!rec.closing());
     }
 
     /// A failed finalize leaves the ride open and re-offers itself: the object is still on the store

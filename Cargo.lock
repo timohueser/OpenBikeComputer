@@ -3146,16 +3146,18 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "embedded-graphics",
- "heapless 0.8.0",
  "js-sys",
  "obc-app",
  "obc-display",
+ "obc-formats",
  "obc-host-core",
  "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-replay",
  "obc-route",
+ "obc-storage",
+ "tempfile",
  "wasm-bindgen",
 ]
 
