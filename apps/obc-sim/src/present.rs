@@ -354,6 +354,8 @@ mod tests {
     use obc_display::ls021::{FRAME_H, FRAME_W};
     #[cfg(feature = "external-fixtures")]
     use obc_display::FbDevice64;
+    #[cfg(feature = "external-fixtures")]
+    use obc_host_core::{flat_store::HostStore, FlatRouteStore, RouteRepository};
     use pollster::block_on;
 
     use super::*;
@@ -818,7 +820,7 @@ mod tests {
         present: &mut Present,
         player: &mut obc_replay::GpxPlayer,
         baro: &mut obc_replay::BaroSensor,
-        store: &mut crate::routes::RouteStore,
+        store: &mut FlatRouteStore,
         host: &mut obc_host_core::HostLoop,
         session: &mut obc_host_core::ActiveRouteSession,
         map: &obc_host_core::flat_map::FlatMap,
@@ -859,7 +861,7 @@ mod tests {
         session.sync(app, store);
         let mut plan = {
             let route_src = store.active_source();
-            let route = match (session.index(), route_src.as_ref()) {
+            let route = match (session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
@@ -891,7 +893,7 @@ mod tests {
         // Re-open the route for the render: the executor may have committed new geometry under it.
         session.sync(app, store);
         let route_src = store.active_source();
-        let route = match (session.index(), route_src.as_ref()) {
+        let route = match (session.index(), route_src) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -941,19 +943,15 @@ mod tests {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
         let reader = Reader::new(&src, &tables, &cache);
-        let map = obc_host_core::flat_map::FlatMap::from_bytes(&bytes).unwrap();
+        let owner = HostStore::memory().unwrap();
+        let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
 
-        // A folder-backed route store over a temp dir seeded with the demo route, so the planner's
-        // `_nav.obcr` write + rescan runs the real path.
-        let dir = std::env::temp_dir().join(format!("obc626-tour-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp routes dir");
-        std::fs::write(
-            dir.join("grimsel-climb.obcr"),
-            include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"),
+        // The route and planner publications share the map's card and exact source identities.
+        let mut store = FlatRouteStore::new(
+            owner,
+            &[include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr")],
         )
-        .expect("seed demo route");
-        let mut store = crate::routes::RouteStore::open(&dir);
+        .expect("seed demo route on the map card");
 
         let track = Track::load(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -972,7 +970,7 @@ mod tests {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         let (cx, cy, zoom) = crate::initial_camera(&reader, W);
-        let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
+        let build_app = |settings: Settings, store: &FlatRouteStore| {
             let mut state = AppState::new(cx, cy, zoom * 12.0);
             state.mode = CameraMode::Follow;
             state.heading_up = true;
@@ -1115,8 +1113,6 @@ mod tests {
                 "ambient reset",
             );
         }
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #626 regression (b): a demo-style reset — the mid-session `App` rebuild plus a
@@ -1140,17 +1136,14 @@ mod tests {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
         let reader = Reader::new(&src, &tables, &cache);
-        let map = obc_host_core::flat_map::FlatMap::from_bytes(&bytes).unwrap();
+        let owner = HostStore::memory().unwrap();
+        let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
 
-        let dir = std::env::temp_dir().join(format!("obc626-reset-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp routes dir");
-        std::fs::write(
-            dir.join("grimsel-climb.obcr"),
-            include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr"),
+        let mut store = FlatRouteStore::new(
+            owner,
+            &[include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr")],
         )
-        .expect("seed demo route");
-        let mut store = crate::routes::RouteStore::open(&dir);
+        .expect("seed demo route on the map card");
 
         let track = Track::load(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1169,7 +1162,7 @@ mod tests {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         let (cx, cy, zoom) = crate::initial_camera(&reader, W);
-        let build_app = |settings: Settings, store: &crate::routes::RouteStore| {
+        let build_app = |settings: Settings, store: &FlatRouteStore| {
             let mut state = AppState::new(cx, cy, zoom * 12.0);
             state.mode = CameraMode::Follow;
             state.heading_up = true;
@@ -1187,7 +1180,7 @@ mod tests {
                        present: &mut Present,
                        player: &mut GpxPlayer,
                        baro: &mut BaroSensor,
-                       store: &mut crate::routes::RouteStore,
+                       store: &mut FlatRouteStore,
                        host: &mut obc_host_core::HostLoop,
                        session: &mut obc_host_core::ActiveRouteSession,
                        tour: bool,
@@ -1263,8 +1256,6 @@ mod tests {
             300,
             "after ambient",
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
