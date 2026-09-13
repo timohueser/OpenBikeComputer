@@ -355,11 +355,12 @@ the sheet and no more. This needs no extra frame buffer: the panel keeps the las
 sheet writes over it. A screen that *is* dimmed is drawn again on every one of those frames, because
 the dim is that drawing — but it is a menu, so the drawing is cheap.
 
-Two cases draw the screen below again whatever it is, and both are cases where the sheet stops
-purely covering. Every frame of a **page slide** does, because the two pages travel through the
+Three cases draw the screen below again whatever it is, and all three are cases where the sheet
+stops purely covering. Every frame of a **page slide** does, because the two pages travel through the
 narrow margin either side of the sheet, where the screen below shows; when the two pages differ in
-height, the same drawing puts back the rows the shrinking sheet gives up. And the frame that
-**closes** the drawer does, once.
+height, the same drawing puts back the rows the shrinking sheet gives up. The first frame of a drawer
+that **replaces the other drawer** does, once, because the departed sheet's rows are still on the
+panel at the opposite edge. And the frame that **closes** the drawer does, once.
 
 The sheet **slides** in from its edge over about 440 milliseconds, in steps timed to what the panel
 can complete. A step that does not move the sheet is not drawn. Closing is immediate, on every
