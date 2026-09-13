@@ -81,6 +81,7 @@ pub(crate) struct Executor {
     published: Option<ObjectId>,
     trimmed: Option<obc_route::TrimOutcome>,
 }
+#[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<Executor>() <= 256);
 impl Executor {
     pub(crate) fn new() -> Self {
