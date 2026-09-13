@@ -10,7 +10,7 @@
 //! shares are pinned by protocol tests instead.
 
 use obc_app::catalog_state::CatalogError;
-use obc_app::recorder::RideClose;
+use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
 use obc_app::{App, CatalogObjectId, RideEntry, RouteRetentionMeta};
 use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
@@ -194,18 +194,21 @@ pub trait TrackRepository {
     /// not happen must not read as one that did.
     fn discard(&mut self) -> bool;
 
-    /// Make the ride recoverable across a power loss up to this point. `false` is a failed write —
-    /// Recorder owes the same checkpoint again. A store with no journal has nothing to do and says
-    /// so by succeeding.
-    fn checkpoint(&mut self) -> bool {
-        true
+    /// Checkpoint the accepted payload boundary. `continuation` is fresh only with no App-staged
+    /// samples; otherwise retain the context accepted with the payload. A failed attempt must
+    /// replay its frozen bytes and context before considering either argument again.
+    fn checkpoint(
+        &mut self,
+        _stats: RideStats,
+        _continuation: Option<RideContinuation>,
+    ) -> Result<CheckpointStatus, RecorderError> {
+        Ok(CheckpointStatus::Unsupported)
     }
 
     /// Append one staged sample to the open ride. `false` means the medium refused it: Recorder
     /// keeps that sample and every sample behind it staged, and offers them again.
     ///
-    /// A store with no log has nothing to write and says so by succeeding — the same shape
-    /// [`checkpoint`](Self::checkpoint) uses, and the reason a memory store needs no arm of its own.
+    /// A store with no log has nothing to write and says so by succeeding.
     fn append(&mut self, point: TrackPoint) -> bool {
         let _ = point;
         true

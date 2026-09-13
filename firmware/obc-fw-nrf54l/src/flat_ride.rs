@@ -19,6 +19,7 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
+use obc_app::recorder::{CheckpointStatus, RecorderError};
 use obc_app::RideDamage;
 
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
@@ -105,6 +106,13 @@ enum State {
         id: ObjectId,
         revision: Revision,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppendResult {
+    Accepted,
+    NeedsCheckpoint,
+    Failed,
 }
 
 pub(crate) struct Recorder {
@@ -372,43 +380,44 @@ impl Recorder {
         }
     }
 
-    /// Append one staged sample to the bounded tail. `false` is a refusal, and Recorder keeps that
-    /// sample and everything behind it staged rather than losing them.
-    ///
-    /// A refusal is always transient and always cleared by the checkpoint Recorder ranks ahead of
-    /// the append: either the journal is blocked (storage needs the exact failed write replayed
-    /// before it takes anything else), or the delta window is full (a checkpoint empties it). The
-    /// fixed footer's space stays reserved through both, because accepting a sample that displaced
-    /// it would strand the durable `RECORDING` object after the ride was already closed.
-    pub(crate) fn append(&mut self, mut point: TrackPoint) -> bool {
-        let State::Live(mut live) = self.state else { return false };
-        if live.session.is_none() || live.journal_blocked || live.delta_len + SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
-            return false;
+    /// Admit the whole issued batch and its App observation boundary together. Capacity refusal
+    /// leaves the previous bytes, CRC, times, point count and continuation untouched.
+    pub(crate) fn append(&mut self, points: &[TrackPoint], continuation: obc_app::RideContinuation) -> AppendResult {
+        let State::Live(mut live) = self.state else { return AppendResult::Failed };
+        if live.session.is_none() || points.len() > DELTA_SAMPLES {
+            return AppendResult::Failed;
         }
-        if let Some(clock) = live.clock_rebase {
-            point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
+        let Some(count) = live.points.checked_add(points.len() as u32) else { return AppendResult::Failed };
+        if live.journal_blocked || live.delta_len + points.len() * SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
+            return AppendResult::NeedsCheckpoint;
         }
-        let Some(points) = live.points.checked_add(1) else { return false };
-        let sample = obc_formats::track::encode_record(&point);
-        unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
-        live.delta_len += SAMPLE_LEN;
-        live.points = points;
-        live.first_t_ms.get_or_insert(point.t_ms);
-        live.last_t_ms = Some(point.t_ms);
-        live.crc.update(&sample);
+        for point in points {
+            let mut point = *point;
+            if let Some(clock) = live.clock_rebase {
+                point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
+            }
+            let sample = obc_formats::track::encode_record(&point);
+            unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
+            live.delta_len += SAMPLE_LEN;
+            live.first_t_ms.get_or_insert(point.t_ms);
+            live.last_t_ms = Some(point.t_ms);
+            live.crc.update(&sample);
+        }
+        live.points = count;
+        live.continuation = continuation;
         self.state = State::Live(live);
-        true
+        AppendResult::Accepted
     }
 
-    /// Make the ride recoverable up to this point. `false` is a failed journal write; Recorder owes
-    /// the same checkpoint again, and storage's equality contract needs it to be exactly the same.
+    /// Checkpoint the accepted boundary. A current continuation is supplied only when App staging
+    /// is empty. A failed attempt always replays its frozen tuple before considering fresh context.
     pub(crate) async fn checkpoint(
         &mut self,
         now_ms: u32,
         stats: &obc_route::RideStats,
-        continuation: obc_app::RideContinuation,
-    ) -> bool {
-        let State::Live(live) = self.state else { return true };
+        continuation: Option<obc_app::RideContinuation>,
+    ) -> Result<CheckpointStatus, RecorderError> {
+        let State::Live(live) = self.state else { return Err(RecorderError::Write) };
         // Once an attempt fails, storage's equality contract requires the *entire* logical
         // checkpoint to be replayed: append, CRC and opaque resume. App totals can keep moving even
         // while samples are frozen, so never rebuild resume from the current app on a retry.
@@ -418,7 +427,8 @@ impl Recorder {
             let stable_start = live.start_time.or_else(|| {
                 (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms))
             });
-            (encode_resume(continuation, stable_start), continuation, stable_start)
+            let accepted = continuation.unwrap_or(live.continuation);
+            (encode_resume(accepted, stable_start), accepted, stable_start)
         };
         match self.journal(live, &resume).await {
             Ok(()) => {
@@ -430,7 +440,7 @@ impl Recorder {
                 next.continuation = attempted_continuation;
                 next.journal_blocked = false;
                 self.state = State::Live(next);
-                true
+                Ok(CheckpointStatus::Durable)
             }
             Err(error) => {
                 let mut blocked = live;
@@ -443,7 +453,7 @@ impl Recorder {
                 self.state = State::Live(blocked);
                 self.warning_pending = true;
                 defmt::warn!("flat ride: checkpoint failed: {}", defmt::Debug2Format(&error));
-                false
+                Err(RecorderError::Write)
             }
         }
     }
