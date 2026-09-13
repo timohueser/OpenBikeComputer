@@ -37,6 +37,9 @@ impl FlatRouteStore {
         };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
+                if repo.ids.len() == obc_app::MAX_ROUTES {
+                    return Err(StoreError::Invalid.into());
+                }
                 let source = repo.owner.open(meta.id, meta.revision)?;
                 let summary = RouteSummary::read(&source).map_err(|_| StoreError::Invalid)?;
                 repo.publish(meta, summary);
@@ -122,6 +125,9 @@ impl RouteRepository for FlatRouteStore {
             .entries()
             .filter(|entry| entry.kind == ObjectKind::Route && entry.flags == obc_storage::flat::EntryFlags::NONE)
         {
+            if ids.len() == obc_app::MAX_ROUTES {
+                return Err(obc_app::retention::RetentionError::WriteFailed);
+            }
             let summary = store
                 .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read(source))
                 .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?

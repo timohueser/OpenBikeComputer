@@ -158,3 +158,40 @@ fn metadata_executor_commits_then_refreshes_and_refuses_stale_card_and_object_sc
     obc_storage::flat::metadata::read_routes(&store.card, |_| count += 1).unwrap();
     assert_eq!(count, 0, "reconciliation published the empty metadata image");
 }
+
+#[test]
+fn full_route_catalog_refuses_growth_but_keeps_replacement_and_complete_projection() {
+    use obc_storage::flat::{EntryFlags, Mutation, PutSource, Store};
+    let owner = HostStore::memory().unwrap();
+    let mut routes = FlatRouteStore::new(owner.clone(), &vec![ROUTE; obc_app::MAX_ROUTES]).unwrap();
+    let ids = routes.ids().to_vec();
+    let before = routes.store_scope();
+    assert!(matches!(routes.import(ROUTE), Err(ImportError::Storage(StoreError::Busy))));
+    assert!(routes.publish_nav_route(ROUTE).is_none());
+    assert_eq!(routes.store_scope(), before, "refusal does not publish or allocate an object");
+    routes.replace(ids[0], ROUTE).unwrap();
+    assert_eq!(routes.source(ids[0]).unwrap().revision(), Revision(2));
+    {
+        // Media from another producer can exceed the application's bounded catalog.
+        let owner = owner.0.lock().unwrap();
+        let card = owner.ready().unwrap();
+        let mut allocation = card.allocate(ROUTE.len() as u64).unwrap();
+        card.write(&mut allocation, ROUTE).unwrap();
+        card.commit(&[Mutation::Put {
+            meta: EntryMeta {
+                id: card.next_object_id(),
+                revision: Revision(1),
+                kind: ObjectKind::Route,
+                flags: EntryFlags::NONE,
+                payload_len: ROUTE.len() as u64,
+                payload_crc: obc_crc::crc32(ROUTE),
+                name: DisplayName::default(),
+            },
+            source: PutSource::Fresh(allocation),
+        }])
+        .unwrap();
+    }
+    assert!(routes.refresh_metadata().is_err());
+    assert_eq!(routes.ids(), ids, "an incomplete refresh keeps the previous complete projection");
+    assert!(FlatRouteStore::new(owner, &[]).is_err(), "reopen cannot hide excess routes");
+}
