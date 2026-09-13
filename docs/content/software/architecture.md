@@ -210,6 +210,17 @@ The simulator and its background terrain worker share that source; the last read
 See the [shared host store](src:host/obc-host-core/src/flat_store.rs) and
 [map reader](src:host/obc-host-core/src/flat_map.rs).
 
+The host library also provides an explicit persistent card owner on Unix systems.
+Maps and routes can share this owner. A new card gets a new store identity.
+Opening an existing card preserves its store, object, and revision identities.
+Creation never overwrites an existing path. Opening never formats an invalid card.
+The shared store applies its normal recording recovery during mount.
+The owner holds an exclusive file lock until the last object reader closes.
+A failed commit can have reached the file. In that case, the owner stops further changes and
+requires a fresh mount to select the durable catalog. Existing readers keep their pinned bytes.
+The simulator still uses its temporary map card and folder route repository.
+Persistent Windows cards and simulator integration remain separate work.
+
 The browser imports its routes into the same session card as the map. Its
 [route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata
 and binds active readers to an exact object revision. A computed route replaces the prior
