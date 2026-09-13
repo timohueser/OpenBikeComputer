@@ -847,21 +847,8 @@ fn serve_recorder(
             true => RecorderOutcome::Checkpointed { token },
             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        // The samples this ride staged and no append has taken yet go in **before** the footer:
-        // they belong to the ride being saved, and the totals the footer carries already count the
-        // distance and the moving time they cover. This is inside the close's own service, so it
-        // orders nothing against the append rank.
-        //
-        // The footer facts come from Recorder, which stamped its wall-clock anchor as it minted
-        // this close — nothing assembles them a second time on the way out.
+        // Recorder drains acknowledged samples before it admits this footer-only close.
         RecorderEffect::Finalize { token } => {
-            if opened {
-                for point in app.recorder.staged() {
-                    if !tracks.append(*point) {
-                        break; // the medium refused; the footer is still the honest total
-                    }
-                }
-            }
             match tracks.finalize(app.recorder.ride_stats()) {
                 RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                 // The object was never created — a start this store refused, which already warned
@@ -1069,6 +1056,10 @@ mod tests {
         footer: Option<RideStats>,
         failed_opens: usize,
         open_attempts: usize,
+        delta_limit: Option<usize>,
+        delta_points: usize,
+        failed_checkpoints: usize,
+        failed_finalizes: usize,
     }
 
     impl TrackRepository for RecordingTrackStore {
@@ -1082,6 +1073,10 @@ mod tests {
             if !self.open {
                 return RideClose::Nothing;
             }
+            if self.failed_finalizes > 0 {
+                self.failed_finalizes -= 1;
+                return RideClose::Failed;
+            }
             self.open = false;
             self.footer = Some(stats);
             RideClose::Committed(7)
@@ -1094,11 +1089,20 @@ mod tests {
 
         fn checkpoint(&mut self) -> bool {
             assert!(self.open, "no checkpoint against an absent recorder");
+            if self.failed_checkpoints > 0 {
+                self.failed_checkpoints -= 1;
+                return false;
+            }
+            self.delta_points = 0;
             true
         }
 
         fn append(&mut self, point: TrackPoint) -> bool {
             assert!(self.open, "no append against an absent recorder");
+            if self.delta_limit.is_some_and(|limit| self.delta_points == limit) {
+                return false;
+            }
+            self.delta_points += 1;
             self.points.push(point);
             true
         }
@@ -1130,7 +1134,7 @@ mod tests {
             // Refuse every append, so the samples stay staged. A refusal is a delay, not a loss.
             if let Some(effect) = plan.effects.recorder.take() {
                 assert!(matches!(effect, RecorderEffect::Append { .. }), "only appends here: {effect:?}");
-                let refused = RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
+                let refused = RecorderOutcome::Cancelled { token: effect.token() };
                 let _ = host.inbox.outcomes.recorder.try_put(refused);
             }
         }
@@ -1173,7 +1177,7 @@ mod tests {
                 let first_token = (step == 0).then(|| {
                     let effect = plan.effects.recorder.take().unwrap();
                     assert!(match (save, start) {
-                        (true, _) => matches!(effect, RecorderEffect::Finalize { .. }),
+                        (true, _) => matches!(effect, RecorderEffect::Append { .. }),
                         (_, 11_000) => matches!(effect, RecorderEffect::Checkpoint { .. }),
                         _ => matches!(effect, RecorderEffect::Append { .. }),
                     });
@@ -1197,24 +1201,18 @@ mod tests {
                     assert!(store.points.is_empty());
                     assert_eq!(app.recorder.staged(), expected);
                     let outcome = host.inbox.outcomes.recorder.take().unwrap();
-                    assert_eq!(
-                        outcome,
-                        if save {
-                            RecorderOutcome::Discarded { token }
-                        } else {
-                            RecorderOutcome::Failed { token, error: RecorderError::Write }
-                        }
-                    );
+                    assert_eq!(outcome, RecorderOutcome::Failed { token, error: RecorderError::Write });
                     host.inbox.outcomes.recorder.try_put(outcome).unwrap();
                 }
             }
-            assert!(app.recorder.staged().is_empty());
             if save {
-                assert_eq!(store.open_attempts, 1, "a terminal close does not reopen");
-                assert_eq!(app.recorder.session(), None);
+                assert_eq!(app.recorder.staged(), expected, "Save cannot drop samples whose open is still refused");
+                assert_eq!(store.open_attempts, 4, "the same session still owes its object");
+                assert!(app.recorder.session().is_some());
                 assert!(store.points.is_empty());
                 assert!(store.footer.is_none(), "no object was committed");
             } else {
+                assert!(app.recorder.staged().is_empty());
                 assert_eq!(store.open_attempts, 2, "one retry, then the session stays acknowledged");
                 assert_eq!(host.opened_session, app.recorder.session());
                 assert_eq!(store.points, expected, "the staged samples reach the object once, in order");
@@ -1222,43 +1220,53 @@ mod tests {
         }
     }
 
-    /// **The close writes the samples it was holding.** A ride whose tail no append reached is
-    /// saved with that tail in the ride object, ahead of the footer — because the footer's distance
-    /// and moving time already count the ground those samples cover, and an object whose figures
-    /// describe track it does not contain is the inconsistency this exists to prevent.
     #[test]
-    fn a_saved_ride_writes_the_samples_the_close_was_holding() {
+    fn save_drains_a_short_append_and_retries_checkpoint_and_footer_without_duplicates() {
         let (mut app, mut host) = ride_with_a_staged_tail(4);
-        let mut store = RecordingTrackStore::default();
+        let expected = app.recorder.staged().to_vec();
+        let mut store = RecordingTrackStore {
+            delta_limit: Some(2),
+            failed_checkpoints: 1,
+            failed_finalizes: 1,
+            ..Default::default()
+        };
         store.open(1, Some("ride"));
-
         app.recorder.request(RecorderIntent::Save);
-        let mut loc = OneFix(None);
-        let mut plan = host.pass(
-            &mut app,
-            PassClock { ride: RideClock(9_000), ui: InputClock(9_000) },
-            &[],
-            Sensors::new(&mut loc),
-            None,
-            None,
-            SUPPORT,
-        );
-        let effect = plan.effects.recorder.take().expect("the rider's Save is a close");
-        assert!(matches!(effect, RecorderEffect::Finalize { .. }), "{effect:?}");
-
-        let outcome = serve_recorder(&app, effect, &mut store, true);
-        assert!(matches!(outcome, RecorderOutcome::Finalized { .. }), "{outcome:?}");
-
-        assert_eq!(store.points.len(), 4, "every staged sample reached the ride object");
-        let footer = store.footer.expect("the close wrote a footer");
-        let last = store.points.last().expect("…and the object is not empty");
-        assert_eq!(last.t_ms, 6_000, "the object's last sample is the ride's last fix");
-        assert!(footer.distance_m > 0, "the footer counts ground the object now contains");
-        assert_eq!(
-            footer.moving_time_s,
-            (last.t_ms - store.points[0].t_ms) / 1_000,
-            "and the moving time it reports is the span the samples cover"
-        );
+        let mut operations = Vec::new();
+        for step in 0..8 {
+            let now = 9_000 + step;
+            let mut loc = OneFix(None);
+            let mut plan = host.pass(
+                &mut app,
+                PassClock { ride: RideClock(now), ui: InputClock(now) },
+                &[],
+                Sensors::new(&mut loc),
+                None,
+                None,
+                SUPPORT,
+            );
+            let Some(effect) = plan.effects.recorder.take() else { continue };
+            operations.push(match effect {
+                RecorderEffect::Append { .. } => "append",
+                RecorderEffect::Checkpoint { .. } => "checkpoint",
+                RecorderEffect::Finalize { .. } => {
+                    assert!(app.recorder.staged().is_empty());
+                    assert_eq!(store.points, expected);
+                    "finalize"
+                }
+                RecorderEffect::Discard { .. } => panic!("Save cannot discard"),
+            });
+            let outcome = serve_recorder(&app, effect, &mut store, true);
+            host.inbox.outcomes.recorder.try_put(outcome).unwrap();
+        }
+        assert_eq!(operations, ["append", "checkpoint", "checkpoint", "append", "finalize", "finalize"]);
+        assert_eq!(store.points, expected, "each accepted sample occurs once");
+        assert!(!app.recorder.recording());
+        let footer = store.footer.expect("one successful close writes the footer");
+        let last = store.points.last().unwrap();
+        assert_eq!(last.t_ms, 6_000);
+        assert!(footer.distance_m > 0);
+        assert_eq!(footer.moving_time_s, (last.t_ms - store.points[0].t_ms) / 1_000);
     }
 }
 
