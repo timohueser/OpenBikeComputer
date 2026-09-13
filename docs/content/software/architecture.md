@@ -414,6 +414,13 @@ preview for retry. Cancellation drains any pending writer request before it rele
 The same 128 KiB arena serves planning, transforms, rendering, and cable transfer; the detour path
 adds no permanent route index or output buffer.
 
+The [resource guard](src:firmware/tools/resource_guard.py) reads the linked Cortex-M33 instructions.
+Its fixed stack-entry measurements include split local allocations and saved integer and
+floating-point registers. Each selected direct-call chain counts those entry costs once, including
+the task entry. Parsing stops when the function body begins. These checks do not measure body
+stack adjustments, indirect calls, interrupt preemption, or physical stack high-water. A passing
+single-entry check does not prove that a nested call path fits the available stack.
+
 The router projects each endpoint onto stored road geometry.
 It accepts roads within 100 m.
 Sparse lookup anchors make long road edges discoverable.
