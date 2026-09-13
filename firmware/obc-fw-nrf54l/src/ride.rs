@@ -617,11 +617,6 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
     retention_metadata: true,
 };
 
-/// The board's store identity for [`ExternalFacts::note_store_revision`]. One card mounted once at
-/// boot, for the life of the boot: the identity half never moves and only the revision does. A
-/// remount would be a different identity — and the board faults out rather than remounting, so there
-/// is nothing here that could report a store it has unmounted.
-
 /// One in-flight `CatalogEffect::RemoveObject` on the flat store's **ticketed** writer path: the
 /// storage task's answer slip, and the operation token that answer has to carry back.
 ///
