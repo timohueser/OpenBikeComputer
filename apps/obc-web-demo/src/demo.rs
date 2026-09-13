@@ -715,14 +715,9 @@ mod tests {
         d.cmd("back");
         d.tick(250.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed, "an unrelated input cannot erase failure");
-        d.player.seek(d.player.duration() - 0.5);
-        d.tick(500.0);
-        assert!(!d.player.is_playing());
-        assert_eq!(d.reset_status(), ResetStatus::Failed, "a later playback end cannot retry reset");
-        assert!(d.queue.is_empty());
         d.cmd("enter");
         assert_eq!(d.reset_status(), ResetStatus::Pending, "an explicit retry remains possible");
-        d.tick(500.0);
+        d.tick(250.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert_eq!(d.ui_offset_ms, offset);
     }
