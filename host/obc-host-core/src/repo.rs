@@ -62,9 +62,7 @@ impl ByteSource for RouteLease {
     }
 }
 
-/// The route catalog + the one active route's bytes, plus the reserved nav-route commit slot the
-/// router writes into. Supersedes the old `NavRouteStore` (which was only the nav-commit slice):
-/// the dispatcher needs the whole delete/rescan/active surface, so it lives in one trait.
+/// Route projections, retained readers and physical writes used by the shared host executor.
 pub trait RouteRepository {
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     fn catalog(&self) -> &[RouteSummary];
@@ -214,19 +212,23 @@ pub trait TrackRepository {
     }
 }
 
-/// The `.obt` trip folders that group routes (sim-only; the web demo has none, the board reads its
-/// own `ObjectStore`). Every method defaults to "no trips" so a host without them plugs in the unit
-/// type `()`.
+/// Trip projections and physical removal. A host without trips uses the unit implementation.
 pub trait TripCatalog {
-    /// Delete the trip with id `id` — its backing `.obt` and nothing else. The cascade over member
+    fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
+        None
+    }
+
+    /// Delete only the trip object with id `id`. The cascade over member
     /// routes is `CatalogMachine`'s ordering (#1491) and reaches this executor as its own removals,
     /// so there is no member lookup here. `Ok(true)` = removed, `Ok(false)` = absent, `Err` = failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         let _ = id;
         Ok(false)
     }
-    /// Re-scan the trip folder (a store-changed edge re-resolves the folders alongside the routes).
-    fn rescan(&mut self) {}
+    /// Load a complete trip projection, preserving the previous one on failure.
+    fn rescan(&mut self) -> Result<(), CatalogError> {
+        Ok(())
+    }
     /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) — call **after** the
     /// route catalog is re-fed so the stage ids resolve.
     fn refeed(&self, app: &mut App) {

@@ -512,10 +512,13 @@ impl HostLoop {
                     Ok(scope) => scope,
                     Err(error) => return CatalogOutcome::Failed { token, error: catalog_metadata_error(error) },
                 };
-                trips.rescan();
+                if let Err(error) = trips.rescan() {
+                    return CatalogOutcome::Failed { token, error };
+                }
                 if routes.store_scope() != scope
                     || rides.store_scope() != ride_scope
                     || ride_scope.is_some_and(|ride_scope| Some(ride_scope) != scope)
+                    || trips.store_scope().is_some_and(|trip| Some(trip) != scope)
                 {
                     return CatalogOutcome::Failed { token, error: CatalogError::Stale };
                 }
@@ -1001,6 +1004,41 @@ mod tests {
             CatalogOutcome::ObjectRemoved { token, object, existed: false },
         );
         assert_eq!(routes.ids(), &[object], "same-numbered route is untouched by a ride request");
+    }
+
+    #[test]
+    fn trip_refresh_failure_or_another_card_cannot_grant_catalog_scope() {
+        use crate::flat_store::HostStore;
+        use obc_storage::flat::{DisplayName, ObjectKind};
+        let owner = HostStore::memory().unwrap();
+        let mut routes = crate::FlatRouteStore::new(owner.clone(), &[]).unwrap();
+        let mut trips = crate::FlatTripStore::new(owner.clone()).unwrap();
+        let mut sink = crate::VecSink::default();
+        obc_route::write_trip("Kept", &[], &mut sink).unwrap();
+        let trip = trips.import(sink.bytes()).unwrap();
+        let mut app = App::new_idle(obc_app::AppState::new(0, 0, 1.0));
+        let mut host = HostLoop::new();
+        let mut rides = crate::MemRideStore::new(vec![]);
+        let mut tokens = obc_app::device_core::TokenSource::<CatalogTag>::new();
+        let token = tokens.issue();
+        assert!(matches!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut trips),
+            CatalogOutcome::CatalogRead { scope: Some(_), .. }
+        ));
+        assert_eq!(app.trips()[0].id, trip);
+        owner.import(ObjectKind::Trip, None, &mut &b"bad"[..], 3, DisplayName::default()).unwrap();
+        let token = tokens.issue();
+        assert_eq!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut trips),
+            CatalogOutcome::Failed { token, error: CatalogError::Unreadable }
+        );
+        assert_eq!(app.trips()[0].id, trip, "failed refresh retains the previous projection");
+        let mut other = crate::FlatTripStore::new(HostStore::memory().unwrap()).unwrap();
+        let token = tokens.issue();
+        assert_eq!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut other),
+            CatalogOutcome::Failed { token, error: CatalogError::Stale }
+        );
     }
 
     /// A host that can do everything — none of it reached by the recording path under test.
