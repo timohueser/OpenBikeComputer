@@ -649,8 +649,7 @@ static CATALOG_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Sig
 ///
 /// What is **not** here is as deliberate: no `PassPlan` (it is destructured and dropped inside the
 /// store phase — FAR-19's rule, restated for the typed protocol), no polyline (the derived reads are
-/// served into a stack buffer immediately before the pass, so 512 B never becomes resident), and no
-/// mailbox (the ~600 B `Deque` stays a synchronous stack temporary in the residual drain's block).
+/// served into a stack buffer immediately before the pass, so 512 B never becomes resident).
 #[derive(Default)]
 struct RideExec {
     /// What the executor finished, for the next pass's stage 1.
@@ -3080,11 +3079,8 @@ pub(crate) async fn run_app(
         // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
         // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
         // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
-        // to consume, an effect to serve, a derived read it was asked for, or a residual command in
-        // the legacy mailbox. That last one is the rider's **forget-phone**, which nothing else here
-        // can see, and which the guarded hold that posts it leaves on a static screen. The ride
-        // save was the other half until #1398; it is an effect in this pass's plan now, so `owed`
-        // covers it. An outstanding store round trip takes the short animation cadence instead,
+        // to consume, an effect to serve, or a derived read it was asked for.
+        // An outstanding store round trip takes the short animation cadence instead,
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
         let immediate = immediate || peak_view.busy();
