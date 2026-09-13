@@ -39,6 +39,10 @@ impl PeakViewScreen {
         Self { status: if fix.is_some() { Status::Building(0) } else { Status::Waiting }, ..Self::default() }
     }
 
+    pub fn needs_position(&self) -> bool {
+        self.status == Status::Waiting
+    }
+
     pub fn set_status(&mut self, status: Status) -> bool {
         let changed = self.status != status;
         if matches!(status, Status::Waiting | Status::Unavailable) {
@@ -191,7 +195,8 @@ fn current_profile(state: &crate::AppState) -> Option<PeakViewProfile<'_>> {
 
 fn live_heading_q4(state: &crate::AppState, profile: &PeakViewProfile) -> u16 {
     state
-        .effective_heading_deg()
+        .compass_deg
+        .or_else(|| state.effective_heading_deg())
         .map(|deg| normalize_q4((deg * 4.0 + 0.5) as i32) as u16)
         .unwrap_or(profile.default_heading_q4)
 }
@@ -485,7 +490,8 @@ mod tests {
         for has_fix in [false, true] {
             let mut app = crate::App::new(AppState::new(0, 0, 1.0));
             app.state.peak_view_profile = Some(PROFILE);
-            app.state.user_fix = has_fix.then_some(obc_ports::Fix { lat: 0, lon: 0, course: None, speed_mps: None });
+            let mut loc = crate::harness::support::OnceFix(has_fix.then_some(obc_ports::Fix::at(0, 0)));
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
             assert!(app.show_peak_view());
             let super::super::Screen::PeakView(screen) = app.top_screen() else { panic!("Peak View") };
             assert_eq!(screen.status, if has_fix { Status::Building(0) } else { Status::Waiting });

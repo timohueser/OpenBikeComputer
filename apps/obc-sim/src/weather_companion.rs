@@ -15,7 +15,7 @@
 use obc_ble::weather_request::{RequestContextBundle, RequestContextFacts, RequestContextFix};
 use obc_ble::{
     classify_upload, BundleFacts, BundleIdentity, DueScheduler, UploadDisposition, WeatherRefresh,
-    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_POSITION,
+    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT,
 };
 
 use crate::weather_live::LiveWeather;
@@ -102,8 +102,7 @@ impl SimCompanion {
         // typed enum is only for the scheduler's own arithmetic; collapsing an unknown byte to the
         // default before it reaches the context would misreport the rider's cadence to the phone.
         let refresh_raw = app.settings().weather_refresh as u8;
-        let fallback = (app.state.cam_lat, app.state.cam_lon);
-        self.run(&app.weather_request_inputs(), refresh_raw, store.and_then(held_of), fallback, live, now)
+        self.run(&app.weather_request_inputs(), refresh_raw, store.and_then(held_of), live, now)
     }
 
     /// The lifecycle without the `App`: the scheduler's levels, the context fill, the fetch and
@@ -113,7 +112,6 @@ impl SimCompanion {
         inputs: &obc_app::ble::WeatherRequestInputs,
         refresh_raw: u8,
         held: Option<RequestContextBundle>,
-        fallback_position: (i32, i32),
         live: &mut LiveWeather,
         now: i64,
     ) -> Option<Vec<u8>> {
@@ -134,7 +132,8 @@ impl SimCompanion {
             None => BundleFacts::NONE,
         };
         let now_s = now.max(0) as u64;
-        let raise = self.scheduler.poll(now_s, refresh, inputs.ride_active, self.store_ready, facts);
+        let raise =
+            self.scheduler.poll(now_s, refresh, inputs.ride_active, self.store_ready, inputs.position.is_some(), facts);
         self.state.pending_request_id = self.scheduler.pending_request_id();
         self.state.next_wake_s = self.scheduler.next_wake_s(refresh, inputs.ride_active, self.store_ready);
         let raise = raise?;
@@ -144,13 +143,7 @@ impl SimCompanion {
         // 1-2. The phone reads the request context and disconnects. Building it for real is the
         //      point: the context is what tells the companion *where* and *what for*.
         let context = WeatherRequestContext::raised(refresh_raw, raise, request_context_facts(inputs, held));
-        let position = if context.has(VALID_POSITION) {
-            (context.lat_udeg, context.lon_udeg)
-        } else {
-            // No trusted fix: the phone falls back to its own last known position. The simulator's
-            // stand-in is the camera, which is what the rider is looking at.
-            fallback_position
-        };
+        let position = (context.lat_udeg, context.lon_udeg);
         // The corridor is a 90 km disc around wherever the device says the rider is. The bearing
         // and speed §11.4 carries are still read into the context — the device vouches for them and
         // the panel shows them — but nothing downstream projects a corridor from them any more:
@@ -263,7 +256,7 @@ mod tests {
         let mut live = offline_live();
         companion.request_now();
         assert!(!companion.refreshing(), "a queued request is not an active fetch");
-        let bytes = companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
+        let bytes = companion.run(&parked(), 0, None, &mut live, 0);
         assert!(bytes.is_none());
         assert_eq!(companion.state.raises, 0, "a card-less device must not raise a weather request");
         assert_eq!(companion.state.next_wake_s, None, "…and must not schedule one either");
@@ -277,7 +270,12 @@ mod tests {
     fn with_a_card_the_same_levels_raise_and_fetch() {
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        let bytes = companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        let mut acquiring = riding();
+        acquiring.position = None;
+        assert!(companion.run(&acquiring, 2, None, &mut live, 1_799_999).is_none());
+        assert_eq!(companion.state.raises, 0, "no context is advertised before GPS");
+        assert_eq!(live.total_requests(), 0, "no phone fetch uses a fallback location");
+        let bytes = companion.run(&riding(), 2, None, &mut live, 1_800_000);
         assert!(bytes.is_none(), "the offline client cannot produce a bundle");
         assert_eq!(companion.state.raises, 1);
         assert!(live.total_requests() > 0, "the companion must actually go and fetch");
@@ -289,13 +287,13 @@ mod tests {
         let mut live = offline_live();
         companion.request_now();
 
-        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
+        companion.run(&parked(), 0, None, &mut live, 0);
         assert_eq!(companion.state.raises, 1);
         assert_eq!(companion.state.last_reason, REASON_URGENT | REASON_NO_BUNDLE);
         assert!(!companion.refreshing(), "a failed fetch is not active during its retry wait");
         assert!(live.total_requests() > 0, "Off disables cadence, not a rider's typed urgent request");
 
-        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 1);
+        companion.run(&parked(), 0, None, &mut live, 1);
         assert_eq!(companion.state.raises, 1, "one typed request cannot become a per-frame screen sniff");
     }
 
@@ -306,7 +304,7 @@ mod tests {
         let held = RequestContextBundle { generation: 7, generated_at: 0, crc32: 0xDEAD_BEEF };
         companion.request_now();
 
-        companion.run(&parked(), 0, Some(held), (48_060_000, 7_900_000), &mut live, 1);
+        companion.run(&parked(), 0, Some(held), &mut live, 1);
         assert_eq!(companion.state.raises, 1, "no metadata exists to prove that the bundle is reusable");
         assert_eq!(companion.state.last_reason, REASON_URGENT, "the recent held bundle is otherwise usable");
         assert_eq!(companion.state.last_reason & obc_ble::REASON_OUT_OF_AREA, 0);
@@ -317,20 +315,20 @@ mod tests {
     fn refreshing_level_tracks_cadence_completion_and_urgent_lapse() {
         let mut cadence = SimCompanion::new(true);
         let mut live = offline_live();
-        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 0);
+        cadence.run(&riding(), 2, None, &mut live, 0);
         assert!(!cadence.refreshing(), "a completed synchronous attempt is no longer active");
         cadence.scheduler.commit_succeeded(1);
-        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1);
+        cadence.run(&riding(), 2, None, &mut live, 1);
         assert!(!cadence.refreshing(), "completion clears the level before the next pass");
 
         let mut urgent = SimCompanion::new(true);
         let mut live = offline_live();
         urgent.request_now();
         for now in [0, 300, 900, 2_100] {
-            urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, now);
+            urgent.run(&parked(), 0, None, &mut live, now);
             assert!(!urgent.refreshing(), "the urgent ladder is waiting at {now}");
         }
-        urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 2_160);
+        urgent.run(&parked(), 0, None, &mut live, 2_160);
         assert!(!urgent.refreshing(), "the final request window lapses without a cadence fallback");
         assert_eq!(urgent.state.pending_request_id, None);
     }
@@ -361,12 +359,12 @@ mod tests {
         moving.speed_deci_ms = Some(80); // 8 m/s ≈ 29 km/h
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        companion.run(&moving, 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        companion.run(&moving, 2, None, &mut live, 1_800_000);
         let directed = live.report.corridor_km.expect("a corridor was asked about");
 
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        companion.run(&riding(), 2, None, &mut live, 1_800_000);
         let still = live.report.corridor_km.expect("a corridor was asked about");
         assert_eq!(directed, still, "a heading must not change the window");
         assert!((still.1 - 180.0).abs() < 1.0, "2 x 90 km north-south: {}", still.1);

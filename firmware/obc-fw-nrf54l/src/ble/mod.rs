@@ -56,6 +56,7 @@ pub use state::{set_radio_enabled, take_bond_outcome, try_forget_bond};
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
 // each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
 // paths poke the two crate-internal edges.
+pub use weather::needs_position as weather_needs_position;
 pub use weather::refreshing as weather_refreshing;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;

@@ -45,7 +45,7 @@ impl Lifecycle {
             *self = Self::default();
             return true;
         }
-        if self.position.is_none() && app.state.user_fix.is_some() {
+        if self.position.is_none() && !app.peak_view_needs_position() && app.state.user_fix.is_some() {
             // Opening the screen must schedule its first work slice without a spinner timer.
             self.status = Status::Building(0);
         }
@@ -57,6 +57,9 @@ impl Lifecycle {
             platform.cancel();
         }
         if !self.active {
+            return;
+        }
+        if app.peak_view_needs_position() {
             return;
         }
         let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
@@ -137,7 +140,8 @@ mod tests {
         lifecycle.update(&mut app, &mut job, 0);
         assert_eq!(job.starts, 0);
         assert!(!lifecycle.busy(), "waiting for GPS does not request terrain work");
-        app.state.user_fix = Some(obc_ports::Fix { lat: 0, lon: 0, course: None, speed_mps: None });
+        let mut loc = crate::harness::support::OnceFix(Some(obc_ports::Fix::at(0, 0)));
+        app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         lifecycle.reconcile(&app);
         assert!(lifecycle.busy(), "an available fix schedules the first slice before any spinner timer");
         assert_eq!(lifecycle.note_presented(&app, 5), None, "the pre-job hatch has no job timing yet");
