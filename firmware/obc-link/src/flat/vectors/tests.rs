@@ -70,7 +70,7 @@ fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
     }
     // The suite's own size, so a category that stopped being produced is visible.
     let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 25);
+    assert_eq!(count(Category::Control), 26);
     assert_eq!(count(Category::Stream), 4);
     assert_eq!(count(Category::Error), 14);
     assert_eq!(count(Category::Negative), 25);
@@ -139,6 +139,8 @@ fn the_codec_encodes_every_response_vector_byte_for_byte() {
         "list-response-two-entries",
         &list_page(4_096, SEQUENCE, &[route_entry(), ride_entry()], false, LIST_REQUEST),
     );
+    let metadata = EntryMeta { kind: ObjectKind::Metadata, ..route_entry() };
+    encoded("list-response-metadata", &list_page(4_096, SEQUENCE, &[metadata], false, LIST_REQUEST));
     encoded("list-response-empty-catalog", &list_page(CONTROL_FLOOR, 1, &[], false, LIST_REQUEST));
     encoded(
         "list-response-with-a-further-page",

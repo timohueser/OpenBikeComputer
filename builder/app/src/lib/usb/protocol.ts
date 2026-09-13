@@ -126,6 +126,7 @@ export const ObjectKind = {
     UpdatePackage: 7,
     /** Extents owned by the store, payload written by the bootloader (§4). */
     RollbackReserve: 8,
+    Metadata: 9,
 } as const;
 export type ObjectKind = (typeof ObjectKind)[keyof typeof ObjectKind];
 
@@ -140,6 +141,7 @@ const KIND_NAMES: Readonly<Record<ObjectKind, string>> = {
     [ObjectKind.MapSetManifest]: "map set manifest",
     [ObjectKind.UpdatePackage]: "update package",
     [ObjectKind.RollbackReserve]: "rollback reserve",
+    [ObjectKind.Metadata]: "retention metadata",
 };
 
 /** A kind's word, for a sentence a rider reads. */
