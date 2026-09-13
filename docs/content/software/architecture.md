@@ -256,7 +256,7 @@ Catalog deletion retains the selected object kind, so equal numeric IDs in separ
 cannot redirect a removal. The domain removes a trip's member routes before the trip object.
 A failed member stops that cascade. The trip and remaining members stay stored; an explicit retry
 can pass members that were already removed. Catalog scope is published only after complete
-route, metadata and trip reads from one unchanged card and catalog sequence.
+route, metadata, trip and ride reads from one unchanged card and catalog sequence.
 
 The shared host dispatcher retries a recording open until the repository confirms that the object exists.
 While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.

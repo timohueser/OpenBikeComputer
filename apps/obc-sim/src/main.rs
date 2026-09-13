@@ -1455,8 +1455,7 @@ fn main() {
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
         let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
-        // Load the simulator tracks folder so the Rides screen (#454) lists its v3 fixtures and
-        // process-local synced flags.
+        // The complete saved-ride projection comes from the same card as the map and routes.
         let mut ride_store = rides;
         app.set_rides(ride_store.catalog());
         // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.

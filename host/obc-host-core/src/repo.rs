@@ -186,8 +186,8 @@ pub enum AppendStatus {
 /// no sink either: the app stages its own samples and this writes the ones it is handed (#1553).
 pub trait TrackRepository {
     /// Open a ride object for `session`, to be saved under `name`. Return true only when that
-    /// object is open. False leaves no object; the dispatcher retries on the next execution.
-    /// Recorder opens exactly one ride at a time, so any previous object is already closed.
+    /// object is attached. False leaves the open owed; an uncertain publication may still exist
+    /// and its owner must refuse further writes until remount. Recovery attaches the same object.
     fn open(&mut self, session: u32, name: Option<&str>, now_ms: u32) -> bool;
 
     /// Close the open ride into a durable ride object.
@@ -197,9 +197,8 @@ pub trait TrackRepository {
     /// how a store says there was no object to close, which is over rather than owed.
     fn finalize(&mut self, stats: RideStats) -> RideClose;
 
-    /// Delete the open ride and its journal. `false` is a **failure** and Recorder re-offers the
-    /// same discard — the same rule [`finalize`](Self::finalize) follows, because a close that did
-    /// not happen must not read as one that did.
+    /// Delete the open ride and its journal. Return success only after confirmed removal.
+    /// A write error permits retry; ReadOnly tells Recorder that this boot cannot mutate the object.
     fn discard(&mut self) -> Result<(), RecorderError>;
 
     /// Checkpoint the accepted payload boundary. `continuation` is fresh only with no App-staged
