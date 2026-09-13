@@ -463,12 +463,22 @@ impl RramSettingsStore {
     /// Clear the stored BLE bond — zero the slot so [`load_bond`](Self::load_bond) reads "no bond"
     /// and the device returns to open pairing. Used when the peer signals it lost
     /// its keys (the app/OS "forgot" the device) so the next contact re-pairs cleanly.
-    pub fn clear_bond(&mut self) {
+    pub fn clear_bond(&mut self) -> Result<(), obc_app::ble::BondError> {
         let off = region_offset() + BOND_OFFSET;
         let zero = [0u8; BOND_SLOT_LEN];
         match self.rram.write(off, &zero) {
-            Ok(()) => defmt::info!("settings: cleared BLE bond @ {=u32:#010x}", off),
-            Err(e) => defmt::warn!("settings: bond RRAM clear failed: {}", e),
+            Ok(()) => {
+                let mut check = [0xff; BOND_SLOT_LEN];
+                if self.rram.read(off, &mut check).is_err() || check != zero {
+                    return Err(obc_app::ble::BondError::StoreVerifyFailed);
+                }
+                defmt::info!("settings: cleared BLE bond @ {=u32:#010x}", off);
+                Ok(())
+            }
+            Err(e) => {
+                defmt::warn!("settings: bond RRAM clear failed: {}", e);
+                Err(obc_app::ble::BondError::StoreWriteFailed)
+            }
         }
     }
 }

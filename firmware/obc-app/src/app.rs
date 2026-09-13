@@ -14,7 +14,6 @@ use crate::device_core::core_mode::{CoreMode, ModeState};
 use crate::device_core::storage_info::StorageInfo;
 use crate::dfu::DfuState;
 use crate::dirty::Dirty;
-use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostMailbox};
 use crate::input::{Chord, Gesture};
 use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
@@ -160,12 +159,8 @@ pub struct AppState {
     pub peak_view_peak_count: u8,
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
-    /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
-    /// guarded hold, drained by the host via the pass — which clears the RRAM bond
-    /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
-    /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
-    /// app-wide state a screen's `handle` reaches — the last request that still works this way.
-    pub ble_forget_pending: bool,
+    pub ble_forget_requested: bool,
+    pub bond_status: crate::ble::BondStatus,
     /// Whether the loaded map carries a non-empty §8 nav graph (#882) — fed once at map open by
     /// [`App::set_map_nav_graph`]; the Detour station/chooser gate on it (a graph-less map dims
     /// the station instead of failing a plan). Carried here because both `handle` (the gate) and
@@ -216,7 +211,8 @@ impl AppState {
                 ble_link: crate::BleLink::Advertising,
                 ble_paired: false,
             },
-            ble_forget_pending: false,
+            ble_forget_requested: false,
+            bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
             rain_step: 0,
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
@@ -602,8 +598,7 @@ pub struct App {
     /// The retention domain (epic #638 S3, #1437): the whole auto-expiry policy — the trusted-clock
     /// and hourly gates, the usage and sync stamps, expiry discovery, live revalidation, and the
     /// delete retry pacing. Advanced from [`tick`](App::tick); it emits typed metadata effects and
-    /// catalog expiry intents, which the compatibility seam below still translates into the legacy
-    /// [`HostCommand`] protocol.
+    /// catalog expiry intents.
     pub(crate) retention: crate::retention::RetentionMachine,
     /// The **Recorder** domain (#1398 R1/R2): the ride session identity, whether a ride is open,
     /// the rider's undelivered close, the checkpoint deadline, the boot-recovery decision, and the
@@ -635,6 +630,7 @@ pub struct App {
     pub(crate) alert_marks_ops: crate::settings::SettingsMachine,
     /// The **DFU** domain (#1397 S2): the single most-recent-wins update phase and its token.
     pub(crate) dfu: DfuState,
+    pub(crate) bond: crate::ble::BondMachine,
     /// The **StorageInfo** domain (#1397 S2): the free-space refresh, its token, and the figure the
     /// System screen prints.
     pub(crate) storage: StorageInfo,
@@ -729,6 +725,7 @@ impl App {
             settings_ops: crate::settings::SettingsMachine::new(),
             alert_marks_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
+            bond: crate::ble::BondMachine::new(),
             storage: StorageInfo::new(),
             pass: crate::device_core::pass::PassState::new(),
             fw_version: heapless::String::new(),
@@ -777,6 +774,7 @@ impl App {
             settings_ops,
             alert_marks_ops,
             dfu,
+            bond,
             storage,
             pass,
             fw_version,
@@ -810,6 +808,7 @@ impl App {
         recorder.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
         dfu.assert_boot_state();
+        assert_eq!(bond.status(), crate::ble::BondStatus::Idle);
         storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
@@ -3701,69 +3700,7 @@ impl App {
     }
 }
 
-// ==================== The typed app↔host protocol (FAR-07, #800) ====================
-//
-// One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
-// typed [`HostCommand`] through the residual drain — one class, one door, with the pending state
-// living once inside `App` (a typed slot, a counter, or a derived predicate).
-
 impl App {
-    /// Drain **only** the residual classes — the one a typed executor still performs
-    /// ([`device_core::residual`](crate::device_core::residual)).
-    ///
-    /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
-    /// point.** For every class DeviceCore owns, that walk is not a read: it *pulls* from the domain
-    /// — `next_plan_effect`, `SettingsMachine::next_effect`, `DfuState::next_effect`,
-    /// `StorageInfo::next_effect`, `next_expiry`, `deliver_plan_cancel` — taking the rider's request
-    /// and minting the operation on the way past. A typed executor that walked it would therefore
-    /// **destroy** any intent admitted since its own last pass, leave the domain holding an
-    /// operation nobody will ever answer, and see the loss only as a command it then declines to
-    /// perform.
-    ///
-    /// That is not hypothetical: it is what a board seam running between the drain and
-    /// [`run_pass`](App::run_pass) does on every frame — the debug link's route plan, the phone's
-    /// remote update check, a BLE clock stamp arming a settings write. Asking for the class by
-    /// name is what makes those seams safe, and it leaves
-    /// [`assert_residual`](crate::device_core::residual::assert_residual) as the belt-and-braces
-    /// check it was meant to be rather than the thing that notices.
-    pub fn drain_residual_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
-        for class in crate::device_core::residual::RESIDUAL_CLASSES {
-            if out.is_full() {
-                let remaining = crate::device_core::residual::RESIDUAL_CLASSES
-                    .iter()
-                    .skip_while(|&&c| c != class)
-                    .any(|&c| self.peek_host_command(c));
-                return if remaining { DrainStatus::MailboxFull } else { DrainStatus::Complete };
-            }
-            if let Some(cmd) = self.drain_host_command(class) {
-                let pushed = out.push(cmd);
-                debug_assert!(pushed, "room was checked before the class was drained");
-            }
-        }
-        DrainStatus::Complete
-    }
-
-    /// Whether the **residual** [`ForgetBond`](crate::HostCommand::ForgetBond) is pending — the one
-    /// class a typed executor still drains
-    /// ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
-    ///
-    /// A typed executor's wake is blind to the legacy mailbox, and this class is not an effect, so
-    /// `EffectSlots::has_pending` cannot see it either. The removal is posted by one pass and
-    /// performed by the **next** pass's drain, so without folding this in that "next pass" is the
-    /// next *wake* — and the guarded hold that posts it leaves a static screen, so the next wake is
-    /// whenever the rider presses something else.
-    ///
-    /// The ride save used to be the other half of this. It is a `RecorderEffect` in the pass's own
-    /// plan since #1398, so it is covered by the effects and needs no term here.
-    ///
-    /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
-    /// includes the two derived cues, which are levels re-derived on every drain, so folding it
-    /// into a wake would spin the loop forever. The residual class is a one-shot the drain clears,
-    /// which is what makes this safe to ask for an immediate pass on.
-    pub fn has_pending_residual_command(&self) -> bool {
-        crate::device_core::residual::RESIDUAL_CLASSES.iter().any(|&c| self.peek_host_command(c))
-    }
-
     /// Whether the "Installing update" card is on the stack — the frame an arming executor freezes
     /// onto the panel for the whole SD→flash stream and the warm reset that never paints.
     ///
@@ -3773,23 +3710,6 @@ impl App {
     /// frame showing something else. This is how it asks.
     pub fn dfu_installing_card_up(&self) -> bool {
         self.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_)))
-    }
-
-    /// Non-consuming per-class pendency for the drain's backpressure check.
-    fn peek_host_command(&self, class: HostCommandClass) -> bool {
-        match class {
-            HostCommandClass::ForgetBond => self.state.ble_forget_pending,
-        }
-    }
-
-    /// Drain one command class from its single pending slot. Both are one-shots: they drain
-    /// exactly once, and a vanished subject consumes the slot and yields nothing.
-    fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
-        match class {
-            HostCommandClass::ForgetBond => {
-                core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
-            }
-        }
     }
 
     // ==================== keyed derived data (#1437) ====================
@@ -6396,77 +6316,6 @@ mod tests {
             synced: false,
             synced_at_utc: 0,
         }
-    }
-
-    /// The residual drains in its class order, exactly once each, and reaches nothing else.
-    ///
-    /// Every other class the mailbox once carried is a domain's now: they are posted here too, and
-    /// the drain must walk straight past them. That is the property PR #1505's regression turned on
-    /// — a walk that *pulled* from each domain would mint a planner operation nobody answers.
-    #[test]
-    fn the_residual_drains_in_class_order_and_reaches_nothing_else() {
-        use crate::activity::NavRequest;
-        use crate::host::{DrainStatus, HostCommand, HostMailbox};
-
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.stamp_clock(DateTime { year: 2026, month: 7, day: 1, hour: 12, minute: 0 }, 0, None, ClockTrust::Gps);
-        app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
-        app.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary("R") }]);
-
-        // The one residual class…
-        app.state.ble_forget_pending = true;
-        // …and a request from every domain that owns its own lifecycle now.
-        app.activity.request_trip_delete(42);
-        app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
-        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (500, 500), "To the col")));
-        app.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
-        app.activity.request_route_delete(1);
-        app.activity.request_ride_delete(0);
-        app.arm_settings_save();
-        app.retention.test_push(crate::retention::SweepAction::StampRoute(10));
-
-        let mut mailbox: HostMailbox = HostMailbox::new();
-        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
-        let mut drained: heapless::Vec<HostCommand, 4> = heapless::Vec::new();
-        while let Some(cmd) = mailbox.pop() {
-            let _ = drained.push(cmd);
-        }
-        assert!(matches!(drained.as_slice(), [HostCommand::ForgetBond]), "one class, and nothing else: {drained:?}");
-
-        // The domains it walked past still hold their work, untouched.
-        assert!(drain_nav(&mut app).is_some(), "the planner request is still Navigator's to hand out");
-        assert_eq!(drain_dfu(&mut app), Some(crate::activity::DfuAction::Scan));
-        assert!(drain_persist(&mut app).is_some());
-        assert!(app.retention.has(crate::retention::SweepKind::StampRoute), "and the sweep's stamp is retention's");
-        assert!(app.activity.take_route_delete().is_some(), "and the rider's route delete is the catalog's to take");
-        assert_eq!(app.activity.take_trip_delete(), Some(42), "and the trip cascade is the catalog's too");
-
-        // And it is a one-shot the drain clears.
-        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
-        assert!(mailbox.is_empty(), "nothing pending, nothing drained");
-    }
-
-    /// The saturation policy is backpressure, never loss: a drain into a mailbox without room
-    /// consumes nothing for the class it can't hand over — it stays latched, is reported by
-    /// `MailboxFull`, and comes out once the host makes room.
-    #[test]
-    fn full_mailbox_backpressures_without_losing_commands() {
-        use crate::host::{DrainStatus, HostCommand, HostMailbox};
-
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // The one slot is already taken, so the residual command cannot be handed over.
-        let mut mailbox: HostMailbox<1> = HostMailbox::new();
-        assert!(mailbox.push(HostCommand::ForgetBond));
-        app.state.ble_forget_pending = true;
-
-        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::MailboxFull);
-        assert!(app.state.ble_forget_pending, "the command stays latched — never silently dropped");
-
-        // The host makes room → the latched command drains intact.
-        assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
-        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
-        assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
-        assert!(!app.state.ble_forget_pending);
     }
 
     /// The DFU slot is most-recent-wins **by design** (one phase in flight; a later rider post
