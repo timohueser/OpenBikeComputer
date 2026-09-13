@@ -198,8 +198,12 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     let mut summaries = Vec::new();
     let mut ids = Vec::new();
     for meta in store.entries().filter(|m| m.kind == ObjectKind::Route && m.flags == EntryFlags::NONE) {
-        summaries
-            .push(store.with_source(meta.id, Some(meta.revision), |source| obc_route::RouteSummary::read(source)).unwrap().unwrap());
+        summaries.push(
+            store
+                .with_source(meta.id, Some(meta.revision), |source| obc_route::RouteSummary::read(source))
+                .unwrap()
+                .unwrap(),
+        );
         ids.push(meta.id.0);
     }
     app.set_routes_with_ids(&summaries, &ids);

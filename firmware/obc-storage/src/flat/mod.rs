@@ -62,8 +62,6 @@ mod crash;
 #[cfg(test)]
 mod fence;
 #[cfg(test)]
-mod sealed;
-#[cfg(test)]
 mod fuzz;
 #[cfg(test)]
 mod granularity;
@@ -71,6 +69,8 @@ mod granularity;
 mod map_read;
 #[cfg(test)]
 mod read_cost;
+#[cfg(test)]
+mod sealed;
 #[cfg(test)]
 mod vectors;
 
