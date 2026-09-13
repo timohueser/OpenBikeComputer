@@ -1431,17 +1431,22 @@ pub(crate) async fn run_app(
                     //
                     // A full request queue is not an answer: the effect simply was not taken this
                     // pass, so the domain re-offers it.
-                    CatalogEffect::ExpireObject { token, object, scope } => {
+                    CatalogEffect::ExpireObject { token, object, kind, scope } => {
                         // No App transition can occur between this policy admission and the writer's reply.
-                        let result = if !app.route_ids().contains(&object) {
-                            Err(CatalogError::Unsupported)
-                        } else if app.retention_expiry_due(object, scope) {
-                            metadata_call(crate::flat_store::Request::ExpireRoute {
-                                id: obc_storage::flat::ObjectId(object),
-                                scope,
-                            })
-                            .await
-                            .map_err(catalog_metadata_error)
+                        let result = if app.retention_expiry_due(object, kind, scope) {
+                            let id = obc_storage::flat::ObjectId(object);
+                            let request = match kind {
+                                obc_app::catalog_state::CatalogObjectKind::Route => {
+                                    crate::flat_store::Request::ExpireRoute { id, scope }
+                                }
+                                obc_app::catalog_state::CatalogObjectKind::Ride => {
+                                    crate::flat_store::Request::ExpireRide { id, scope }
+                                }
+                                obc_app::catalog_state::CatalogObjectKind::Trip => {
+                                    unreachable!("retention does not expire trips")
+                                }
+                            };
+                            metadata_call(request).await.map_err(catalog_metadata_error)
                         } else {
                             Err(CatalogError::Stale)
                         };
@@ -1451,10 +1456,13 @@ pub(crate) async fn run_app(
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
-                    CatalogEffect::RemoveObject { token, object } => {
+                    CatalogEffect::RemoveObject { token, object, kind } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
-                                crate::flat_store::Request::RemoveObject { id: obc_storage::flat::ObjectId(object) },
+                                crate::flat_store::Request::RemoveObject {
+                                    id: obc_storage::flat::ObjectId(object),
+                                    kind,
+                                },
                                 &CATALOG_STORE_REPLY,
                             )
                         }) {
@@ -1599,13 +1607,15 @@ pub(crate) async fn run_app(
                 if let Some(effect) = exec.effects.retention.take() {
                     use obc_app::retention::{RetentionEffect, RetentionOutcome};
                     let token = effect.token();
-                    let result = metadata_call(crate::flat_store::Request::WriteRouteMetadata { effect }).await;
+                    let result = metadata_call(crate::flat_store::Request::WriteMetadata { effect }).await;
                     let outcome = match (effect, result) {
                         (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
                             RetentionOutcome::RouteMetadataWritten { token, id }
                         }
+                        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => {
+                            RetentionOutcome::RideMetadataWritten { token, id }
+                        }
                         (_, Err(error)) => RetentionOutcome::Failed { token, error },
-                        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
                     };
                     RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
                 }
