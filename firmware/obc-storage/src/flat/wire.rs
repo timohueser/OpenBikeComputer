@@ -144,7 +144,7 @@ fn mode_out(mode: Mode) -> v4::Mode {
         Mode::ReadWrite => v4::Mode::ReadWrite,
         Mode::RevisionSpaceExhausted => v4::Mode::RevisionSpaceExhausted,
         Mode::SequenceSpaceExhausted => v4::Mode::SequenceSpaceExhausted,
-        Mode::CatalogUnreadable => v4::Mode::CatalogUnreadable,
+        Mode::CatalogUnreadable | Mode::RemountRequired => v4::Mode::CatalogUnreadable,
         Mode::Unformatted => v4::Mode::Unformatted,
         Mode::CardTooSmall => v4::Mode::CardTooSmall,
     }
@@ -276,6 +276,8 @@ mod tests {
         // a flat store, and the wire says so with `readOnly`/`unformatted`.
         assert_eq!(mode_out(Mode::CardTooSmall), v4::Mode::CardTooSmall);
         assert!(!v4::Mode::CardTooSmall.readable());
+        assert_eq!(mode_out(Mode::RemountRequired), v4::Mode::CatalogUnreadable);
+        assert!(!mode_out(Mode::RemountRequired).readable());
         assert_eq!(mode_out(Mode::ReadWrite), v4::Mode::ReadWrite);
         assert!(v4::Mode::ReadWrite.writable());
     }
