@@ -121,6 +121,7 @@ impl SimCompanion {
         self.scheduler.commit_succeeded(now.max(0) as u64);
         self.state.pending_request_id = None;
         if committed {
+            self.state.last_disposition = Some("committed");
             self.state.commits += 1;
         } else {
             self.state.rejected += 1;
@@ -143,10 +144,7 @@ impl SimCompanion {
             return;
         }
         match store.install(bytes) {
-            Ok(WeatherInstall::Adopted(_)) => {
-                self.state.last_disposition = Some("committed");
-                self.complete(request, now, true);
-            }
+            Ok(WeatherInstall::Adopted(_)) => self.complete(request, now, true),
             Ok(WeatherInstall::AwaitingReader { identity, error }) => {
                 eprintln!("weather committed {identity:?}; reader: {error}");
                 self.awaiting = Some((request, identity));
