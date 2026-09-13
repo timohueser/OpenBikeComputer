@@ -646,6 +646,8 @@ impl Writer {
         self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|_| ())
     }
 
+    // A full bounded queue must return the cleanup owner without a heap allocation.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn try_call_owned(&self, request: Request, reply: &'static Reply) -> Result<Ticket, Request> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|error| match error {

@@ -45,7 +45,7 @@ fn sealing_revokes_every_writable_copy_without_publishing_or_spending_a_hold() {
     };
     assert_eq!(store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(stale) }]), Err(StoreError::Invalid));
     let other = store.allocate(2048).unwrap();
-    assert!(matches!(store.allocate(1), Err(StoreError::Busy)));
+    assert!(matches!(store.allocate(1), Err(StoreError::Invalid)));
     assert_eq!(store.sequence(), seq);
     assert_eq!(store.entries().count(), 0);
     source.read_at(0, &mut actual).unwrap();
@@ -53,7 +53,7 @@ fn sealing_revokes_every_writable_copy_without_publishing_or_spending_a_hold() {
     store.release_sealed(sealed).unwrap();
     let reused = store.allocate(2048).unwrap();
     store.cancel(stale);
-    assert!(matches!(store.allocate(1), Err(StoreError::Busy)));
+    assert!(matches!(store.allocate(1), Err(StoreError::Invalid)));
     store.cancel(reused);
     store.cancel(other);
     assert_eq!(store.free_extents(), free);
