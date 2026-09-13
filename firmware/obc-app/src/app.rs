@@ -1344,7 +1344,7 @@ impl App {
     }
 
     /// [`set_routes_with_ids`](App::set_routes_with_ids) **plus** the host's fresh per-route
-    /// retention metas (read from the SD route-retention sidecar, epic #638 S3), pairwise with
+    /// retention metadata loaded from the card, pairwise with
     /// `ids`. The base call remaps held indices and carries surviving routes' metas across by
     /// identity; this then overlays the host's device-durable retention values so the sweep reads
     /// device truth. Retention-aware hosts (the board, the simulator) call this; plain
