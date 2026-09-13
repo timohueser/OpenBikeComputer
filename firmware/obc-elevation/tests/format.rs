@@ -475,3 +475,25 @@ fn the_elevation_source_seam_agrees_with_the_reader() {
     let mut null = obc_elevation::NullElevation;
     assert!(points.iter().all(|&(lat, lon)| null.sample(lat, lon).is_none()));
 }
+
+#[test]
+fn borrowed_views_keep_the_validated_generation_and_cache() {
+    let bytes = shard();
+    let source = Counting { bytes: &bytes, reads: Cell::new(0) };
+    let tables = obc_elevation::TerrainTables::parse(&source).unwrap();
+    let (i, j) = base_sample();
+    let point = (coord(i + 3), coord(j + 4));
+    let mut cache = Box::new(TileCache::<4>::new());
+    let first = tables.reader(&source);
+    assert_eq!(first.sample(&mut cache, point.0, point.1), Some(plane(i + 3, j + 4)));
+    let reads = source.reads.get();
+    let next = tables.reader(&source);
+    assert_eq!(next.generation(), first.generation());
+    assert_eq!(next.sample(&mut cache, point.0, point.1), first.sample(&mut cache, point.0, point.1));
+    assert_eq!(source.reads.get(), reads, "views do not revalidate or discard warm tiles");
+    let replacement = obc_elevation::TerrainTables::parse(&source).unwrap();
+    assert_ne!(replacement.reader(&source).generation(), first.generation());
+    let reads = source.reads.get();
+    replacement.reader(&source).sample(&mut cache, point.0, point.1);
+    assert!(source.reads.get() > reads, "a newly validated source cannot reuse the old generation");
+}

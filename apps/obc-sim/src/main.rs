@@ -1470,11 +1470,7 @@ fn main() {
             passkey: ble.passkey,
             paired: ble.paired,
         });
-        // The map's terrain (EL7), mounted **once** for the whole headless run like the map itself:
-        // the `.obcd` sidecar beside the `.obcm`, or the null source when there is none. Two
-        // consumers share it — a scripted route plan fills its elevation from it (EL7), and the
-        // replay below feeds the map-referenced altimeter from it (EL8) — so it is mounted here,
-        // above both, rather than once per user (mounting borrows the whole file for the session).
+        // Planner emission and map-referenced altitude share terrain from this retained map.
         let mut elev = map.elevation();
         // The open ride log. Opened here, above the script, because every settling pass reconciles
         // it against the app's tracking session exactly as a frame loop does.
@@ -1826,7 +1822,7 @@ fn main() {
                     &mut platform,
                 );
                 // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
-                // mounted `.obcd` the router emits from, drained right behind the pass exactly as
+                // retained map terrain the router emits from, drained right behind the pass exactly as
                 // the board's ride loop does.
                 app.sample_terrain(&mut *elev);
                 t += step;
