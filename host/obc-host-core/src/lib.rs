@@ -15,9 +15,7 @@
 //!   generic over a host's route store via [`RouteRepository`].
 //! - [`flat_map`] / [`flat_store`] — map objects and revision-pinned readers on shared
 //!   memory, temporary-file, or explicitly opened persistent Unix card media.
-//! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
-//!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
-//!   source when there is none.
+//! - [`terrain`] — bounded elevation sampling from the exact retained map on the shared card.
 //! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
 //!   outcome scheduling, which the DeviceCore conformance matrix is built on.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.

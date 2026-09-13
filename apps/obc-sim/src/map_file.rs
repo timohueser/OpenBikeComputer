@@ -1,5 +1,5 @@
 //! Native map import and exact persisted-card reopen.
-//! Import sessions retain the original path for terrain sidecars and the display name.
+//! Rendering and elevation retain the same map revision. Files are import inputs only.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -47,7 +47,6 @@ impl MapSource {
 
 pub struct LoadedMap {
     name: String,
-    path: PathBuf,
     map: FlatMap,
 }
 
@@ -65,12 +64,12 @@ impl LoadedMap {
             MapError::Format(err) => LoadError::NotObcm(err),
             other => LoadError::Import(source.path.clone(), other),
         })?;
-        Ok(Self { name, path: source.path, map })
+        Ok(Self { name, map })
     }
 
     pub fn reopen(store: &obc_host_core::flat_store::HostStore) -> Result<Self, MapError> {
         let map = FlatMap::open_only_in(store)?;
-        Ok(Self { name: "Card map".into(), path: PathBuf::new(), map })
+        Ok(Self { name: "Card map".into(), map })
     }
 
     pub fn display_name(&self) -> &str {
@@ -85,10 +84,13 @@ impl LoadedMap {
     }
 
     pub fn elevation(&self) -> Box<dyn obc_route::ElevationSource> {
-        if self.path.as_os_str().is_empty() {
-            Box::new(obc_route::NullElevation)
-        } else {
-            obc_host_core::terrain::resolve(&self.path)
+        match obc_host_core::terrain::FlatElevation::open(&self.map) {
+            Ok(Some(elevation)) => elevation,
+            Ok(None) => Box::new(obc_route::NullElevation),
+            Err(error) => {
+                eprintln!("terrain: embedded map terrain unavailable ({error:?}); routes stay flat");
+                Box::new(obc_route::NullElevation)
+            }
         }
     }
 
@@ -229,5 +231,146 @@ mod tests {
         let source = MapSource::load_single(&dir.path("MAP.OBCM")).expect("the file is readable");
         let Err(err) = LoadedMap::open(source).map(|_| ()) else { panic!("garbage does not open as OBCM") };
         assert!(matches!(err, LoadError::NotObcm(_)), "{err}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod terrain_tests {
+    use super::*;
+    use crate::card::Session;
+    use obc_app::{
+        device_core::{PassClock, PlatformSupport},
+        navigator::NavigatorOutcome,
+        App, AppState,
+    };
+    use obc_formats::io::ByteSource;
+    use obc_host_core::{ActiveRouteSession, HostLoop, RouteRepository};
+    use obc_ports::{AltimeterSource, Fix, InputClock, LocationSource, RideClock, Sensors};
+
+    struct Location;
+    impl LocationSource for Location {
+        fn poll(&mut self) -> Option<Fix> {
+            Some(Fix { lat: 512, lon: 512, course: Some(0.0), speed_mps: Some(0.0) })
+        }
+    }
+    struct Altimeter;
+    impl AltimeterSource for Altimeter {
+        fn poll(&mut self) -> Option<f32> {
+            Some(80.0)
+        }
+    }
+
+    fn plan(session: &mut Session, replace: Option<&Path>) -> Option<Vec<u8>> {
+        let mut app = App::new_idle(AppState::new(512, 512, 1.0));
+        app.set_nav_profiles(session.map.tables().nav_profiles());
+        app.set_map_nav_graph(true);
+        let mut elevation = session.map.elevation();
+        // The native altitude drain uses this same retained elevation object.
+        for now in 1..=40 {
+            app.tick(
+                RideClock(now * 1000),
+                Sensors { altimeter: Some(&mut Altimeter), ..Sensors::new(&mut Location) },
+                None,
+            );
+            assert!(app.sample_terrain(&mut *elevation));
+        }
+        assert!((app.recorder.current_elevation_m().unwrap() - 5.0).abs() < 1.0);
+        let mut host = HostLoop::new();
+        host.facts().note_store_revision(session.routes.store_scope().unwrap());
+        let mut active = ActiveRouteSession::new();
+        let before = session.routes.ids().len();
+        let mut replaced = false;
+        let mut source_changed = false;
+        for step in 0..100 {
+            if step == 2 {
+                assert!(app.debug_start_nav((512, 512), (8192, 8192), "Terrain plan"));
+            }
+            let now = 50_000 + step * 100;
+            let mut pass = host.pass(
+                &mut app,
+                PassClock { ride: RideClock(now), ui: InputClock(now) },
+                &[],
+                Sensors::new(&mut Location),
+                None,
+                None,
+                PlatformSupport::default(),
+            );
+            host.execute(
+                &mut app,
+                &mut pass,
+                &mut active,
+                &mut session.routes,
+                &mut session.rides,
+                &mut session.tracks,
+                &mut session.trips,
+                session.map.planner_map(),
+                &mut *elevation,
+                &mut (),
+            );
+            if let Some(outcome) = host.outcomes().navigator.take() {
+                if matches!(outcome, NavigatorOutcome::Acquired { .. }) && replace.is_some() {
+                    session
+                        .map
+                        .planner_map()
+                        .replace_from_file(std::fs::File::open(replace.unwrap()).unwrap())
+                        .unwrap();
+                    replaced = true;
+                }
+                source_changed |= matches!(
+                    outcome,
+                    NavigatorOutcome::Failed { error: obc_app::navigator::NavigatorError::SourceChanged, .. }
+                );
+                host.outcomes().navigator.try_put(outcome).unwrap();
+            }
+            if step > 2 && !host.is_planning() && session.routes.ids().len() > before {
+                let source = session.routes.source(*session.routes.ids().last().unwrap()).unwrap();
+                let summary = obc_route::RouteSummary::read(&source).unwrap();
+                assert!(summary.total_ascent_m > 0);
+                let mut bytes = vec![0; source.len() as usize];
+                source.read_at(0, &mut bytes).unwrap();
+                return Some(bytes);
+            }
+            if source_changed && !host.is_planning() {
+                assert!(replaced);
+                assert_eq!(session.routes.ids().len(), before);
+                return None;
+            }
+        }
+        panic!("planner did not reach its acknowledged terminal phase");
+    }
+
+    #[test]
+    fn native_session_plans_with_the_same_terrain_after_reopen_and_rejects_replacement() {
+        let directory = obcm_testkit::scratch::scratch_dir("native-terrain", "planner");
+        let input = directory.join("map.obcm");
+        let card = directory.join("card.obc");
+        std::fs::write(&input, obcm_testkit::terrain::map(0)).unwrap();
+        let mut session = Session::load(&mut crate::Args {
+            map: input.to_string_lossy().into_owned(),
+            create_card: Some(card.to_string_lossy().into_owned()),
+            routes_dir: Some(directory.to_string_lossy().into_owned()),
+            tracks_dir: Some(directory.to_string_lossy().into_owned()),
+            ..crate::Args::default()
+        })
+        .unwrap();
+        let source = session.map.map_source();
+        let identity = (source.store_id(), source.id(), source.revision());
+        let before = plan(&mut session, None).unwrap();
+        drop(source);
+        drop(session);
+        std::fs::remove_file(&input).unwrap();
+        let mut session = Session::load(&mut crate::Args {
+            card: Some(card.to_string_lossy().into_owned()),
+            ..crate::Args::default()
+        })
+        .unwrap();
+        let source = session.map.map_source();
+        assert_eq!((source.store_id(), source.id(), source.revision()), identity);
+        assert_eq!(plan(&mut session, None).unwrap(), before, "emitted geometry, heights and totals are identical");
+        std::fs::write(&input, obcm_testkit::terrain::map(100)).unwrap();
+        assert!(plan(&mut session, Some(&input)).is_none());
+        drop(source);
+        drop(session);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
