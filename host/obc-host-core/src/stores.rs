@@ -82,8 +82,9 @@ impl MemTrackStore {
 impl TrackRepository for MemTrackStore {
     /// Mirror the folder-backed store's recording flag without touching a filesystem. `name` is
     /// irrelevant with no on-disk log.
-    fn open(&mut self, _session: u32, _name: Option<&str>) {
+    fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
         self.recording = true;
+        true
     }
 
     fn finalize(&mut self, _stats: RideStats) -> RideClose {

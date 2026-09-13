@@ -86,7 +86,7 @@ impl TrackStore {
     }
 
     /// Open a fresh private `.obcr.part` object for session `id`, to be saved as `name`.
-    fn begin(&mut self, id: u32, name: &str) {
+    fn begin(&mut self, id: u32, name: &str) -> bool {
         self.open = None; // close any previous handle first
         let temp = self.dir.join(format!(".ride-{id}.obcr.part"));
         match OpenOptions::new().create(true).write(true).truncate(true).open(&temp) {
@@ -102,6 +102,7 @@ impl TrackStore {
             }
             Err(e) => eprintln!("track: cannot open ride {}: {e}", temp.display()),
         }
+        self.open.is_some()
     }
 
     /// Finalise the open object: append the fixed v3 footer and rename the same bytes into the
@@ -200,8 +201,8 @@ impl TrackStore {
 /// The shared dispatcher ([`obc_host_core::HostLoop`]) performs each recording operation through
 /// this trait, so what a ride *is* stays Recorder's and what it costs stays the store's.
 impl obc_host_core::TrackRepository for TrackStore {
-    fn open(&mut self, session: u32, name: Option<&str>) {
-        self.begin(session, name.unwrap_or("ride"));
+    fn open(&mut self, session: u32, name: Option<&str>) -> bool {
+        self.begin(session, name.unwrap_or("ride"))
     }
 
     fn finalize(&mut self, stats: RideStats) -> RideClose {
@@ -269,6 +270,24 @@ mod tests {
         assert!(store.is_recording(), "which leaves the ride exactly where it was");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_acknowledges_only_a_created_object_and_can_retry() {
+        use obc_host_core::TrackRepository;
+        let dir = obcm_testkit::scratch::scratch_dir("obc-track-open", "retry");
+        let mut store = TrackStore::open(&dir);
+        let temp = dir.join(".ride-1.obcr.part");
+        fs::create_dir(&temp).unwrap();
+        assert!(!store.open(1, Some("Ride")), "a directory blocks object creation");
+        assert!(!store.is_recording());
+        assert_eq!(TrackRepository::finalize(&mut store, ride_stats()), RideClose::Nothing);
+        fs::remove_dir(&temp).unwrap();
+        assert!(store.open(1, Some("Ride")));
+        assert!(store.is_recording());
+        assert!(store.discard());
+        assert!(!temp.exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn ride_stats() -> RideStats {
