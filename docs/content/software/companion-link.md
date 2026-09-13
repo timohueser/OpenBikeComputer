@@ -33,44 +33,42 @@ USB binding v5 uses one bulk endpoint pair for each plane.
 Both transports deliver identical protocol-v4 frame bytes to one transfer engine.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="BLE uses two protocol-v4 planes. GATT carries control records. L2CAP CoC carries stream records. The phone is the BLE central. The device is the BLE peripheral.">
-  <defs>
-    <marker id="cl-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="22">Two planes — protocol v4 control and stream</text>
-
-  <!-- phone -->
-  <rect class="d-panel" x="16" y="88" width="120" height="180" rx="12" />
-  <text class="d-title" x="76" y="164" text-anchor="middle">companion app</text>
-  <text class="d-sub" x="76" y="186" text-anchor="middle">BLE central</text>
-  <text class="d-sub" x="76" y="202" text-anchor="middle">(iPhone)</text>
-
-  <!-- device -->
-  <rect class="d-panel" x="584" y="88" width="120" height="180" rx="12" />
-  <text class="d-title" x="644" y="164" text-anchor="middle">OBC device</text>
-  <text class="d-sub" x="644" y="186" text-anchor="middle">BLE peripheral</text>
-  <text class="d-sub" x="644" y="202" text-anchor="middle">nRF54L</text>
-
-  <!-- control lane -->
-  <rect class="d-panel-2" x="150" y="88" width="420" height="86" rx="10" style="fill:#eef2df" />
-  <text class="d-label" x="360" y="112" text-anchor="middle" style="fill:#3c6b39">Control plane · GATT</text>
-  <text class="d-sub" x="360" y="132" text-anchor="middle">small, typed state — identity · config · orchestration</text>
-  <text class="d-sub" x="360" y="150" text-anchor="middle" style="font-size:9.5px">objectControl · protocolVersion · psm · command · status · config</text>
-  <text class="d-sub" x="360" y="168" text-anchor="middle" style="fill:#a9501c">≤ 512 bytes per attribute — a hard wall</text>
-
-  <!-- data lane -->
-  <rect class="d-panel-2" x="150" y="190" width="420" height="78" rx="10" />
-  <text class="d-label" x="360" y="216" text-anchor="middle" style="fill:#33575b">Data plane · L2CAP CoC</text>
-  <text class="d-sub" x="360" y="236" text-anchor="middle">one raw byte pipe · credit-based flow control</text>
-  <text class="d-sub" x="360" y="254" text-anchor="middle">stream frames, one transfer at a time</text>
-
-  <!-- connectors -->
-  <line class="d-flow" x1="136" y1="131" x2="150" y2="131" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
-  <line class="d-flow" x1="136" y1="229" x2="150" y2="229" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
-  <line class="d-flow" x1="570" y1="131" x2="584" y2="131" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
-  <line class="d-flow" x1="570" y1="229" x2="584" y2="229" marker-start="url(#cl-a)" marker-end="url(#cl-a)" />
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 414" role="img" aria-label="Protocol-v4 control and stream frames use GATT and L2CAP on BLE, or separate bulk endpoint pairs on USB. Both reach the same device transfer engine. BLE device controls are separate from object transfer.">
+  <defs><marker id="software-companion-link-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">One transfer protocol, two transport bindings</text>
+  <text class="d-title" x="20" y="66" text-anchor="start">Binding</text>
+  <text class="d-title" x="208" y="66" text-anchor="start">Control frames</text>
+  <text class="d-title" x="461" y="66" text-anchor="start">Stream frames</text>
+  <rect class="d-panel" x="20" y="86" width="145" height="78" rx="8" />
+  <text class="d-title" x="92.5" y="111" text-anchor="middle">BLE</text>
+  <text class="d-sub" x="92.5" y="131" text-anchor="middle">Authenticated bond</text>
+  <rect class="d-panel" x="190" y="86" width="240" height="78" rx="8" />
+  <text class="d-title" x="310" y="111" text-anchor="middle">GATT</text>
+  <text class="d-sub" x="310" y="131" text-anchor="middle">objectControl</text>
+  <rect class="d-panel" x="455" y="86" width="245" height="78" rx="8" />
+  <text class="d-title" x="577.5" y="111" text-anchor="middle">L2CAP CoC</text>
+  <text class="d-sub" x="577.5" y="131" text-anchor="middle">PUT / GET payloads</text>
+  <rect class="d-panel" x="20" y="184" width="145" height="78" rx="8" />
+  <text class="d-title" x="92.5" y="209" text-anchor="middle">USB v5</text>
+  <text class="d-sub" x="92.5" y="229" text-anchor="middle">Cable access</text>
+  <rect class="d-panel" x="190" y="184" width="240" height="78" rx="8" />
+  <text class="d-title" x="310" y="209" text-anchor="middle">Control endpoints</text>
+  <text class="d-sub" x="310" y="229" text-anchor="middle">Protocol-v4 records</text>
+  <rect class="d-panel" x="455" y="184" width="245" height="78" rx="8" />
+  <text class="d-title" x="577.5" y="209" text-anchor="middle">Stream endpoints</text>
+  <text class="d-sub" x="577.5" y="229" text-anchor="middle">Protocol-v4 records</text>
+  <path class="d-flow" d="M310 262 L310 292" />
+  <path class="d-flow" d="M578 262 L578 292" />
+<path class="d-flow" d="M310 292 H578" />
+  <path class="d-flow" d="M444 292 L444 320" marker-end="url(#software-companion-link-1)" />
+  <rect class="d-panel d-focus" x="190" y="322" width="510" height="70" rx="8" />
+  <text class="d-title" x="445" y="347" text-anchor="middle">Device transfer engine</text>
+  <text class="d-sub" x="445" y="367" text-anchor="middle">A successful commit makes an upload durable</text>
 </svg>
-<figcaption>BLE uses GATT for control records and L2CAP CoC for stream records. USB uses two bulk endpoint pairs.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>BLE and USB carry the same protocol-v4 frames. BLE pairing, clock, and settings controls remain outside this transfer protocol.</figcaption>
 </figure>
 
 Each control frame has a 16-byte header.
@@ -137,12 +135,16 @@ A nonzero ID replaces the expected revision.
 The client sends stream frames from absolute offset zero.
 Offsets must be contiguous and increasing.
 The device writes to an unpublished allocation.
-After the final byte, it verifies these items:
+The PUT contract requires these checks after the final byte:
 
 - Declared payload length.
 - Whole-payload CRC-32/IEEE.
 - Validator rules for the object kind.
 - Expected revision immediately before commit.
+
+The current [board policy](src:firmware/obc-fw-nrf54l/src/flat_store.rs) checks transfer length
+and CRC through the shared engine, but does not yet inspect the payload with a validator for
+each object kind. A successful upload is therefore not proof that the object can be read.
 
 A successful response supplies the object ID, new revision, length, and CRC.
 An error makes the new bytes unreachable.
@@ -150,6 +152,7 @@ A cancelled or disconnected transfer releases its allocation.
 There is no resume or checkpoint operation.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 372" role="img" aria-label="A PUT has four stages. The client sends a PUT control frame. It sends stream frames on L2CAP CoC. The device verifies length and CRC. The PUT response reports the commit or an error.">
   <defs>
     <marker id="tf-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -190,7 +193,9 @@ There is no resume or checkpoint operation.
   <line class="d-hot" x1="570" y1="322" x2="150" y2="322" marker-end="url(#tf-c)" />
   <text class="d-sub" x="360" y="342" text-anchor="middle" style="fill:#a9501c">4 · PUT response: committed or error</text>
 </svg>
-<figcaption>A PUT is one request. The device commits only after length, CRC, and kind validation succeed.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>A PUT is one request. A successful response follows the store commit. The current board checks length and CRC but has no object-specific payload validator.</figcaption>
 </figure>
 
 ### GET
@@ -229,54 +234,30 @@ It removes the other matches with their exact revisions.
 Do not infer state from a notification or operation log.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="The client uses LIST to reconcile the catalog. LIST supplies StoreId, commit sequence, and entries. The client uses GET for required objects. Protocol v4 does not send a ride acknowledgment.">
-  <defs>
-    <marker id="sy-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="sy-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
-    <marker id="sy-k" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="22">Reconciliation — LIST identifies the store and catalog</text>
-
-  <rect class="d-panel" x="16" y="70" width="150" height="72" rx="10" />
-  <text class="d-sub" x="91" y="42" text-anchor="middle" style="fill:#6b7758">on the device</text>
-  <text class="d-label" x="91" y="98" text-anchor="middle">store changes</text>
-  <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
-  <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
-
-  <rect class="d-panel-2" x="192" y="70" width="162" height="72" rx="10" style="fill:#eef2df" />
-  <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">catalog commit</text>
-  <text class="d-sub" x="273" y="118" text-anchor="middle" style="font-size:9.5px">StoreId · sequence</text>
-  <text class="d-sub" x="273" y="134" text-anchor="middle">LIST response</text>
-
-  <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
-  <text class="d-sub" x="455" y="42" text-anchor="middle" style="fill:#6b7758">on the phone</text>
-  <text class="d-label" x="455" y="98" text-anchor="middle">LIST changed →</text>
-  <text class="d-sub" x="455" y="118" text-anchor="middle">download the list</text>
-  <text class="d-sub" x="455" y="134" text-anchor="middle">paged LIST</text>
-
-  <rect class="d-hot" x="562" y="70" width="142" height="72" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="633" y="98" text-anchor="middle" style="fill:#a9501c">GET required</text>
-  <text class="d-sub" x="633" y="118" text-anchor="middle">objects, on</text>
-  <text class="d-sub" x="633" y="134" text-anchor="middle">the stream</text>
-
-  <line class="d-flow" x1="166" y1="106" x2="196" y2="106" marker-end="url(#sy-a)" />
-  <line class="d-flow" x1="348" y1="106" x2="378" y2="106" marker-end="url(#sy-a)" />
-  <line class="d-flow" x1="530" y1="106" x2="560" y2="106" marker-end="url(#sy-a)" />
-
-  <!-- loop back -->
-  <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
-  <text class="d-sub" x="360" y="202" text-anchor="middle" style="fill:#6b7758">on the next audit</text>
-
-  <!-- retired ackRides lane -->
-  <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
-  <text class="d-tag" x="20" y="242" style="fill:#a9501c">Protocol v4 has no ride-acknowledgment mutation</text>
-  <rect class="d-panel" x="380" y="252" width="150" height="34" rx="9" />
-  <text class="d-sub" x="455" y="273" text-anchor="middle">phone stores verified ride</text>
-  <line x1="378" y1="269" x2="168" y2="269" style="stroke:#cf6a2a;stroke-width:1.6" marker-end="url(#sy-k)" />
-  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">retired — no command</text>
-  <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
-  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device catalog unchanged</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 296" role="img" aria-label="The client reads StoreId and commit sequence with LIST, compares its local inventory, and fetches required revisions with GET. Saving a ride on the client does not mark it synced on the device.">
+  <defs><marker id="software-companion-link-3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">Read the catalog, then fetch the required revisions</text>
+  <rect class="d-panel" x="20" y="62" width="200" height="90" rx="8" />
+  <text class="d-title" x="120" y="87" text-anchor="middle">1. LIST</text>
+  <text class="d-sub" x="120" y="107" text-anchor="middle">StoreId + commit sequence</text>
+  <text class="d-sub" x="120" y="124" text-anchor="middle">Paged catalog entries</text>
+  <path class="d-flow" d="M220 108 L258 108" marker-end="url(#software-companion-link-3)" />
+  <rect class="d-panel" x="260" y="62" width="200" height="90" rx="8" />
+  <text class="d-title" x="360" y="87" text-anchor="middle">2. Compare</text>
+  <text class="d-sub" x="360" y="107" text-anchor="middle">New store: reset inventory</text>
+  <text class="d-sub" x="360" y="124" text-anchor="middle">New commit: reconcile</text>
+  <path class="d-flow" d="M460 108 L498 108" marker-end="url(#software-companion-link-3)" />
+  <rect class="d-panel d-focus" x="500" y="62" width="200" height="90" rx="8" />
+  <text class="d-title" x="600" y="87" text-anchor="middle">3. GET</text>
+  <text class="d-sub" x="600" y="107" text-anchor="middle">Read an exact revision</text>
+  <text class="d-sub" x="600" y="124" text-anchor="middle">Verify length + CRC</text>
+  <rect class="d-panel" x="20" y="198" width="680" height="76" rx="8" />
+  <text class="d-title" x="360" y="223" text-anchor="middle">A local ride archive does not change device retention</text>
+  <text class="d-sub" x="360" y="243" text-anchor="middle">Protocol v4 has no ride-possession acknowledgment.</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>LIST supplies the store identity, commit sequence, and catalog entries. Clients use it to reconcile state.</figcaption>
 </figure>
 
@@ -340,6 +321,7 @@ Device Information, Battery, and `protocolVersion` are open before pairing.
 The device also refuses an unencrypted CoC.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 400" role="img" aria-label="Pairing, reconnect, and rejection in three rows. Top row, first pairing, done once: the device shows a six-digit passkey on its screen; the rider reads it and types it into the phone; the two run an LESC elliptic-curve key exchange; both sides store the resulting bond keys. Middle row, every time after, silent: the device advertises with a stable address; the phone recognises that identity from the bond; the two re-encrypt with the stored long-term key and the phone's rotating address is resolved via the stored identity key; the result is a connected, encrypted link with no dialog. Bottom row, reject-when-bonded: a different phone tries to pair while a bond already exists; the device suppresses its passkey and drops the link; the other phone sees only a generic pairing failure; the only way through is the rider running Forget phone on the device to clear the bond.">
   <defs>
     <marker id="pk-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -383,8 +365,8 @@ The device also refuses an unencrypted CoC.
   <text class="d-sub" x="297" y="224" text-anchor="middle">this identity</text>
 
   <rect class="d-panel-2" x="424" y="180" width="158" height="66" rx="10" style="fill:#eef2df" />
-  <text class="d-sub" x="503" y="202" text-anchor="middle" style="font-size:9.5px">re-encrypt · stored LTK</text>
-  <text class="d-sub" x="503" y="220" text-anchor="middle" style="font-size:9.5px">resolve RPA · stored IRK</text>
+  <text class="d-sub" x="503" y="202" text-anchor="middle" style="font-size:12px">re-encrypt · stored LTK</text>
+  <text class="d-sub" x="503" y="220" text-anchor="middle" style="font-size:12px">resolve RPA · stored IRK</text>
 
   <rect class="d-hot" x="622" y="180" width="82" height="66" rx="10" style="fill:#f8efe4" />
   <text class="d-sub" x="663" y="204" text-anchor="middle">connected</text>
@@ -394,7 +376,7 @@ The device also refuses an unencrypted CoC.
   <line class="d-flow" x1="166" y1="213" x2="220" y2="213" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="372" y1="213" x2="426" y2="213" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="578" y1="213" x2="620" y2="213" marker-end="url(#pk-a)" />
-  <text class="d-sub" x="360" y="266" text-anchor="middle" style="fill:#6b7758">bonded + powered + in range  ⇒  connected + encrypted, no interaction</text>
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="fill:#4d5b3c">bonded + powered + in range  ⇒  connected + encrypted, no interaction</text>
 
   <!-- divider -->
   <line x1="20" y1="290" x2="700" y2="290" style="stroke:#d6cda8;stroke-width:1" />
@@ -421,6 +403,8 @@ The device also refuses an unencrypted CoC.
   <line class="d-flow" x1="166" y1="362" x2="220" y2="362" marker-end="url(#pk-a)" />
   <line class="d-flow" x1="406" y1="362" x2="460" y2="362" marker-end="url(#pk-a)" />
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>One passkey creates one bond. Later connections use the stored keys. A bonded device rejects a second phone.</figcaption>
 </figure>
 
@@ -450,6 +434,7 @@ The device has one saved slot for heart rate, power, and cadence.
 A power meter can supply cadence when no dedicated cadence sensor is configured.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 340" role="img" aria-label="The device plays two BLE roles on one radio. On the left the companion phone is the central and the device is the peripheral it connects to — the phone link. On the right the device is itself the central, connecting out to three sensors: a heart-rate strap, a power meter, and a cadence sensor. A band along the bottom notes that a single radio carries both directions, with MPSL time-slicing the airtime between the peripheral (phone) and central (sensor) roles, and that sensors are open GATT servers connected by stored address with no bond, one saved slot per quantity.">
   <defs>
     <marker id="se-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -472,32 +457,34 @@ A power meter can supply cadence when no dedicated cadence sensor is configured.
 
   <!-- phone <-> device -->
   <line class="d-flow" x1="152" y1="170" x2="276" y2="170" marker-start="url(#se-a)" marker-end="url(#se-a)" />
-  <text class="d-sub" x="214" y="160" text-anchor="middle" style="font-size:9px;fill:#3c6b39">the phone link</text>
+  <text class="d-sub" x="214" y="160" text-anchor="middle" style="font-size:12px;fill:#3c6b39">the phone link</text>
 
   <!-- sensors (device = central) -->
   <rect class="d-panel-2" x="566" y="70" width="138" height="48" rx="10" />
-  <text class="d-label" x="635" y="90" text-anchor="middle" style="font-size:10.5px">heart-rate strap</text>
-  <text class="d-sub" x="635" y="106" text-anchor="middle" style="font-size:8.5px">HRS · 0x180D</text>
+  <text class="d-label" x="635" y="90" text-anchor="middle" style="font-size:12px">heart-rate strap</text>
+  <text class="d-sub" x="635" y="106" text-anchor="middle" style="font-size:12px">HRS · 0x180D</text>
 
   <rect class="d-panel-2" x="566" y="146" width="138" height="48" rx="10" />
-  <text class="d-label" x="635" y="166" text-anchor="middle" style="font-size:10.5px">power meter</text>
-  <text class="d-sub" x="635" y="182" text-anchor="middle" style="font-size:8.5px">Cycling Power · 0x1818</text>
+  <text class="d-label" x="635" y="166" text-anchor="middle" style="font-size:12px">power meter</text>
+  <text class="d-sub" x="635" y="182" text-anchor="middle" style="font-size:12px">Cycling Power · 0x1818</text>
 
   <rect class="d-panel-2" x="566" y="222" width="138" height="48" rx="10" />
-  <text class="d-label" x="635" y="242" text-anchor="middle" style="font-size:10.5px">cadence sensor</text>
-  <text class="d-sub" x="635" y="258" text-anchor="middle" style="font-size:8.5px">CSC · 0x1816</text>
+  <text class="d-label" x="635" y="242" text-anchor="middle" style="font-size:12px">cadence sensor</text>
+  <text class="d-sub" x="635" y="258" text-anchor="middle" style="font-size:12px">CSC · 0x1816</text>
 
   <!-- device -> each sensor -->
   <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" />
   <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" />
-  <text class="d-sub" x="524" y="160" text-anchor="middle" style="font-size:9px;fill:#33575b">scan · connect · subscribe</text>
+  <text class="d-sub" x="524" y="160" text-anchor="middle" style="font-size:12px;fill:#33575b">scan · connect · subscribe</text>
 
   <!-- bottom band -->
   <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" />
-  <text class="d-sub" x="364" y="309" text-anchor="middle" style="font-size:9.5px">one radio — <tspan style="fill:#a9501c">MPSL time-slices</tspan> the peripheral (phone) and central (sensor) roles; no second radio</text>
-  <text class="d-sub" x="364" y="325" text-anchor="middle" style="font-size:9px">sensors are open GATT servers — connected by stored address, <tspan style="fill:#a9501c">no bond</tspan>, one saved slot per quantity</text>
+  <text class="d-sub" x="364" y="309" text-anchor="middle" style="font-size:12px">one radio — <tspan style="fill:#a9501c">MPSL time-slices</tspan> the peripheral (phone) and central (sensor) roles; no second radio</text>
+  <text class="d-sub" x="364" y="325" text-anchor="middle" style="font-size:12px">sensors are open GATT servers — connected by stored address, <tspan style="fill:#a9501c">no bond</tspan>, one saved slot per quantity</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The device is a BLE peripheral for the phone and a BLE central for sensors.</figcaption>
 </figure>
 

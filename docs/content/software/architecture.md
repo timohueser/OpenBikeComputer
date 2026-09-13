@@ -16,70 +16,39 @@ Dependencies point from hosts to the shared core.
 The shared core does not depend on a host.
 
 <figure class="fig">
-<svg viewBox="0 0 720 520" role="img" aria-label="Main map and route dependencies. Hosts use the application. The application uses the renderer, map reader, route reader, elevation library, and ports. Foundation crates do not depend on a host.">
-  <defs>
-    <marker id="aA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">Main map and route dependencies</text>
-
-  <!-- hosts -->
-  <rect class="d-panel" x="150" y="52" width="180" height="50" rx="10" />
-  <text class="d-label" x="240" y="78" text-anchor="middle" style="font-size:11px">obc-sim · obc-web-demo</text>
-  <text class="d-sub" x="240" y="93" text-anchor="middle">desktop sim · browser demo</text>
-  <rect class="d-panel" x="390" y="52" width="200" height="50" rx="10" />
-  <text class="d-label" x="490" y="78" text-anchor="middle">obc-fw-nrf54l</text>
-  <text class="d-sub" x="490" y="93" text-anchor="middle">device · obc-platform adapters</text>
-  <text class="d-tag" x="150" y="44" style="fill:#6b7758">hosts</text>
-
-  <!-- app -->
-  <rect class="d-hot" x="150" y="146" width="440" height="56" rx="12" style="fill:#f8efe4" />
-  <text class="d-title" x="370" y="172" text-anchor="middle" style="fill:#a9501c">obc-app</text>
-  <text class="d-sub" x="370" y="190" text-anchor="middle">camera · screen stack · input · ride tracking — the per-frame driver</text>
-
-  <!-- render -->
-  <rect class="d-panel" x="210" y="242" width="320" height="50" rx="10" />
-  <text class="d-label" x="370" y="268" text-anchor="middle">obc-render</text>
-  <text class="d-sub" x="370" y="283" text-anchor="middle">projection · culling · rasterization</text>
-
-  <!-- core sources -->
-  <rect class="d-panel" x="150" y="332" width="200" height="54" rx="10" />
-  <text class="d-label" x="250" y="358" text-anchor="middle">obc-reader</text>
-  <text class="d-sub" x="250" y="374" text-anchor="middle">OBCM · quadtree · chunk decode</text>
-  <rect class="d-panel" x="390" y="332" width="200" height="54" rx="10" />
-  <text class="d-label" x="490" y="358" text-anchor="middle">obc-route</text>
-  <text class="d-sub" x="490" y="374" text-anchor="middle">OBCR · GPX · map-match</text>
-  <!-- foundation -->
-  <rect class="d-panel-2" x="30" y="432" width="150" height="54" rx="10" />
-  <text class="d-label" x="105" y="454" text-anchor="middle" style="font-size:11px">obc-map-scene</text>
-  <text class="d-sub" x="105" y="470" text-anchor="middle" style="font-size:9px">styles · candidate visits</text>
-  <rect class="d-panel-2" x="200" y="432" width="150" height="54" rx="10" />
-  <text class="d-label" x="275" y="454" text-anchor="middle" style="font-size:11px">obc-formats</text>
-  <text class="d-sub" x="275" y="470" text-anchor="middle" style="font-size:9px">layouts · codecs · bytes</text>
-  <rect class="d-panel-2" x="370" y="432" width="150" height="54" rx="10" />
-  <text class="d-label" x="445" y="454" text-anchor="middle" style="font-size:11px">obc-elevation</text>
-  <text class="d-sub" x="445" y="470" text-anchor="middle" style="font-size:9px">OBCT · sampling · dead-band</text>
-  <rect class="d-panel-2" x="540" y="432" width="150" height="54" rx="10" />
-  <text class="d-label" x="615" y="454" text-anchor="middle" style="font-size:11px">obc-ports</text>
-  <text class="d-sub" x="615" y="470" text-anchor="middle" style="font-size:9px">semantic traits · no deps</text>
-
-  <!-- arrows (depends-on, downward) -->
-  <line class="d-flow" x1="240" y1="102" x2="258" y2="144" marker-end="url(#aA)" />
-  <line class="d-flow" x1="490" y1="102" x2="472" y2="144" marker-end="url(#aA)" />
-  <line class="d-flow" x1="370" y1="202" x2="370" y2="240" marker-end="url(#aA)" />
-  <path class="d-flow" d="M240 292 C 150 320, 88 380, 100 430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="388" y1="356" x2="354" y2="356" marker-end="url(#aA)" />
-  <line class="d-flow" x1="215" y1="386" x2="135" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="265" y1="386" x2="262" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="430" y1="386" x2="300" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="478" y1="386" x2="440" y2="430" marker-end="url(#aA)" />
-  <line class="d-flow" x1="530" y1="386" x2="600" y2="430" marker-end="url(#aA)" />
-
-  <!-- app also reaches past render straight to the foundation crates -->
-  <path class="d-flow" d="M186 202 C 170 252, 176 300, 206 330" marker-end="url(#aA)" opacity="0.8" />
-  <path class="d-flow" d="M554 202 C 570 252, 564 300, 534 330" marker-end="url(#aA)" opacity="0.8" />
-  <path class="d-flow" d="M590 174 C 700 240, 704 398, 640 430" marker-end="url(#aA)" opacity="0.8" />
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 486" role="img" aria-label="Hosts depend on the shared application. The application composes map, route, weather, and rendering modules. Foundation crates define data and host interfaces. This is a layer overview, not a complete dependency graph.">
+  <defs><marker id="software-architecture-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">Runtime layers</text>
+  <rect class="d-panel" x="20" y="54" width="210" height="72" rx="8" />
+  <text class="d-title" x="125" y="79" text-anchor="middle">Device host</text>
+  <text class="d-sub" x="125" y="99" text-anchor="middle">obc-fw-nrf54l</text>
+  <rect class="d-panel" x="255" y="54" width="210" height="72" rx="8" />
+  <text class="d-title" x="360" y="79" text-anchor="middle">Simulator host</text>
+  <text class="d-sub" x="360" y="99" text-anchor="middle">obc-sim</text>
+  <rect class="d-panel" x="490" y="54" width="210" height="72" rx="8" />
+  <text class="d-title" x="595" y="79" text-anchor="middle">Browser host</text>
+  <text class="d-sub" x="595" y="99" text-anchor="middle">obc-web-demo</text>
+  <path class="d-flow" d="M125 126 L125 151" />
+  <path class="d-flow" d="M360 126 L360 151" />
+  <path class="d-flow" d="M595 126 L595 151" />
+<path class="d-flow" d="M125 151 H595" />
+  <path class="d-flow" d="M360 151 L360 177" marker-end="url(#software-architecture-1)" />
+  <rect class="d-panel d-focus" x="20" y="180" width="680" height="74" rx="8" />
+  <text class="d-title" x="360" y="205" text-anchor="middle">Application · obc-app</text>
+  <text class="d-sub" x="360" y="225" text-anchor="middle">Screens · navigation · ride state · domain effects</text>
+  <path class="d-flow" d="M360 254 L360 283" marker-end="url(#software-architecture-1)" />
+  <rect class="d-panel" x="20" y="286" width="680" height="74" rx="8" />
+  <text class="d-title" x="360" y="311" text-anchor="middle">Shared modules</text>
+  <text class="d-sub" x="360" y="331" text-anchor="middle">obc-render · obc-reader · obc-route · obc-weather</text>
+  <path class="d-flow" d="M360 360 L360 389" marker-end="url(#software-architecture-1)" />
+  <rect class="d-panel" x="20" y="392" width="680" height="74" rx="8" />
+  <text class="d-title" x="360" y="417" text-anchor="middle">Foundations</text>
+  <text class="d-sub" x="360" y="437" text-anchor="middle">obc-map-scene · obc-formats · obc-elevation · obc-ports</text>
 </svg>
-<figcaption>The arrows show the main map and route dependencies. Host and platform code depend on the shared core.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>Read from top to bottom: each layer uses the shared layers below it. This overview groups responsibilities; it is not a complete Cargo dependency graph.</figcaption>
 </figure>
 
 The runtime uses these layers:
@@ -126,6 +95,7 @@ The conversion and assembly WebAssembly crates are tools.
 They do not construct `App`.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 372" role="img" aria-label="Four main host interfaces connect the shared core to a host. They provide pixels, color conversion, random-access bytes, and semantic hardware values.">
   <text class="d-tag" x="20" y="22">Everything device-specific lives at four seams</text>
 
@@ -143,7 +113,7 @@ They do not construct `App`.
   <!-- seam rows: y-centers 130, 188, 246, 304 -->
   <!-- 1 DrawTarget -->
   <rect class="d-panel-2" x="298" y="112" width="124" height="38" rx="9" />
-  <text class="d-label" x="360" y="129" text-anchor="middle" style="font-size:11px">DrawTarget</text>
+  <text class="d-label" x="360" y="129" text-anchor="middle" style="font-size:12px">DrawTarget</text>
   <text class="d-sub" x="360" y="142" text-anchor="middle">pixels out</text>
   <rect class="d-panel" x="20" y="112" width="180" height="38" rx="9" />
   <text class="d-sub" x="110" y="135" text-anchor="middle">RGB222 FB · self-diffed</text>
@@ -153,7 +123,7 @@ They do not construct `App`.
 
   <!-- 2 color_fn -->
   <rect class="d-panel-2" x="298" y="170" width="124" height="38" rx="9" />
-  <text class="d-label" x="360" y="187" text-anchor="middle" style="font-size:11px">color_fn</text>
+  <text class="d-label" x="360" y="187" text-anchor="middle" style="font-size:12px">color_fn</text>
   <text class="d-sub" x="360" y="200" text-anchor="middle">u16 → pixel</text>
   <rect class="d-panel" x="20" y="170" width="180" height="38" rx="9" />
   <text class="d-sub" x="110" y="193" text-anchor="middle">native RGB222 (64)</text>
@@ -163,7 +133,7 @@ They do not construct `App`.
 
   <!-- 3 ByteSource -->
   <rect class="d-panel-2" x="298" y="228" width="124" height="38" rx="9" />
-  <text class="d-label" x="360" y="245" text-anchor="middle" style="font-size:11px">ByteSource</text>
+  <text class="d-label" x="360" y="245" text-anchor="middle" style="font-size:12px">ByteSource</text>
   <text class="d-sub" x="360" y="258" text-anchor="middle">bytes in</text>
   <rect class="d-panel" x="20" y="228" width="180" height="38" rx="9" />
   <text class="d-sub" x="110" y="251" text-anchor="middle">flat-store map object</text>
@@ -173,7 +143,7 @@ They do not construct `App`.
 
   <!-- 4 semantic ports -->
   <rect class="d-panel-2" x="298" y="286" width="124" height="38" rx="9" />
-  <text class="d-label" x="360" y="303" text-anchor="middle" style="font-size:10.5px">obc-ports</text>
+  <text class="d-label" x="360" y="303" text-anchor="middle" style="font-size:12px">obc-ports</text>
   <text class="d-sub" x="360" y="316" text-anchor="middle">semantic HAL</text>
   <rect class="d-panel" x="20" y="286" width="180" height="38" rx="9" />
   <text class="d-sub" x="110" y="309" text-anchor="middle">panel · GPX · keys</text>
@@ -181,6 +151,8 @@ They do not construct `App`.
   <text class="d-sub" x="610" y="309" text-anchor="middle">GPS · baro · mag · GPIO</text>
   <line class="d-stroke" x1="200" y1="305" x2="298" y2="305" /><line class="d-stroke" x1="422" y1="305" x2="520" y2="305" />
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>A host supplies pixels, color conversion, random-access bytes, and semantic hardware values.</figcaption>
 </figure>
 
@@ -249,6 +221,7 @@ The device sensor task publishes coherent position and altitude samples.
 Each host processes sensor data, input, dirty regions, and host messages.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 264" role="img" aria-label="One runtime cycle processes sensors and input. Dirty flags control map and overlay rendering.">
   <defs>
     <marker id="aC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -277,13 +250,15 @@ Each host processes sensor data, input, dirty regions, and host messages.
   <line class="d-flow" x1="336" y1="100" x2="364" y2="100" marker-end="url(#aC)" />
   <path class="d-hot" d="M492 92 C 516 80, 520 70, 542 68" marker-end="url(#aCm)" />
   <path class="d-hot" d="M492 108 C 516 120, 520 128, 542 130" marker-end="url(#aCm)" />
-  <text class="d-sub" x="466" y="56" style="font-size:10px;fill:#a9501c">if map dirty</text>
-  <text class="d-sub" x="452" y="158" style="font-size:10px;fill:#a9501c">if overlay dirty</text>
+  <text class="d-sub" x="466" y="56" style="font-size:12px;fill:#a9501c">if map dirty</text>
+  <text class="d-sub" x="452" y="158" style="font-size:12px;fill:#a9501c">if overlay dirty</text>
 
   <!-- loop back -->
   <path class="d-flow" d="M619 150 C 619 208, 300 214, 92 214 C 60 214, 60 160, 64 130" marker-end="url(#aC)" stroke-dasharray="3 4" />
   <text class="d-sub" x="340" y="208" text-anchor="middle">next frame</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The host renders only dirty regions. A static screen does not cause a map render.</figcaption>
 </figure>
 
@@ -292,45 +267,48 @@ The application reports a wake deadline for visible animations.
 The device also wakes for input, sensor data, and the watchdog guard.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 760px">
 <svg viewBox="0 0 760 292" role="img" aria-label="The device waits for input, sensor data, an animation deadline, or the watchdog guard. It runs one cycle after a wake.">
   <defs>
     <marker id="lpF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="lpC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
   <text class="d-tag" x="20" y="24">On the device: sleep until a real event</text>
-  <text class="d-sub" x="26" y="58" style="font-size:9px;fill:#6b7758">three wake sources</text>
+  <text class="d-sub" x="26" y="58" style="font-size:12px;fill:#4d5b3c">three wake sources</text>
   <rect class="d-panel-2" x="24" y="72" width="156" height="38" rx="9" />
-  <text class="d-label" x="102" y="89" text-anchor="middle" style="font-size:10.5px">button edge</text>
-  <text class="d-sub" x="102" y="102" text-anchor="middle" style="font-size:8.5px">a gesture · a charging hold</text>
+  <text class="d-label" x="102" y="89" text-anchor="middle" style="font-size:12px">button edge</text>
+  <text class="d-sub" x="102" y="102" text-anchor="middle" style="font-size:12px">a gesture · a charging hold</text>
   <line class="d-flow" x1="180" y1="91" x2="214" y2="91" marker-end="url(#lpF)" />
   <rect class="d-panel-2" x="24" y="120" width="156" height="38" rx="9" />
-  <text class="d-label" x="102" y="137" text-anchor="middle" style="font-size:10.5px">sensor sample</text>
-  <text class="d-sub" x="102" y="150" text-anchor="middle" style="font-size:8.5px">GPS fix · baro · heading</text>
+  <text class="d-label" x="102" y="137" text-anchor="middle" style="font-size:12px">sensor sample</text>
+  <text class="d-sub" x="102" y="150" text-anchor="middle" style="font-size:12px">GPS fix · baro · heading</text>
   <line class="d-flow" x1="180" y1="139" x2="214" y2="139" marker-end="url(#lpF)" />
   <rect class="d-panel-2" x="24" y="168" width="156" height="38" rx="9" />
-  <text class="d-label" x="102" y="185" text-anchor="middle" style="font-size:10.5px">animation deadline</text>
-  <text class="d-sub" x="102" y="198" text-anchor="middle" style="font-size:8.5px">next clock minute · cursor</text>
+  <text class="d-label" x="102" y="185" text-anchor="middle" style="font-size:12px">animation deadline</text>
+  <text class="d-sub" x="102" y="198" text-anchor="middle" style="font-size:12px">next clock minute · cursor</text>
   <line class="d-flow" x1="180" y1="187" x2="214" y2="187" marker-end="url(#lpF)" />
   <path d="M218 86 C 230 86, 230 145, 242 145 C 230 145, 230 204, 218 204" fill="none" stroke="#6b7758" stroke-width="1.3" />
-  <text class="d-sub" x="232" y="226" text-anchor="middle" style="font-size:9px;fill:#6b7758">select —</text>
-  <text class="d-sub" x="232" y="237" text-anchor="middle" style="font-size:9px;fill:#6b7758">first to fire</text>
+  <text class="d-sub" x="232" y="226" text-anchor="middle" style="font-size:12px;fill:#4d5b3c">wake on</text>
+  <text class="d-sub" x="232" y="242" text-anchor="middle" style="font-size:12px;fill:#4d5b3c">first event</text>
   <rect class="d-panel" x="262" y="106" width="150" height="78" rx="14" style="fill:#f4f1e3" />
   <text class="d-title" x="337" y="140" text-anchor="middle">asleep · WFI</text>
-  <text class="d-sub" x="337" y="158" text-anchor="middle" style="font-size:9.5px">CPU idle between events</text>
-  <text x="382" y="122" style="font-family:var(--mono);font-size:9px;fill:#9aa884">z z z</text>
+  <text class="d-sub" x="337" y="158" text-anchor="middle" style="font-size:12px">CPU idle between events</text>
+  <text x="382" y="122" style="font-family:var(--mono);font-size:12px;fill:#9aa884">z z</text>
   <line class="d-flow" x1="246" y1="145" x2="260" y2="145" marker-end="url(#lpF)" />
   <line x1="412" y1="132" x2="476" y2="132" stroke="#cf6a2a" stroke-width="2.2" marker-end="url(#lpC)" />
-  <text x="444" y="124" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#a9501c">wake</text>
+  <text x="444" y="124" text-anchor="middle" style="font-family:var(--mono);font-size:12px;fill:#a9501c">wake</text>
   <rect class="d-hot" x="480" y="92" width="252" height="98" rx="14" style="fill:#f8efe4" />
   <text class="d-title" x="606" y="116" text-anchor="middle" style="fill:#a9501c">run one iteration</text>
-  <text class="d-sub" x="606" y="138" text-anchor="middle" style="font-size:9.5px">apply gestures · advance animations</text>
-  <text class="d-sub" x="606" y="153" text-anchor="middle" style="font-size:9.5px">run_pass → render + effects</text>
-  <text class="d-sub" x="606" y="168" text-anchor="middle" style="font-size:9.5px">→ render only what changed</text>
+  <text class="d-sub" x="606" y="138" text-anchor="middle" style="font-size:12px">apply gestures · advance animations</text>
+  <text class="d-sub" x="606" y="153" text-anchor="middle" style="font-size:12px">run_pass → render + effects</text>
+  <text class="d-sub" x="606" y="168" text-anchor="middle" style="font-size:12px">→ render only what changed</text>
   <path class="d-flow" d="M540 190 C 500 224, 420 224, 360 200" marker-end="url(#lpF)" stroke-dasharray="4 4" />
-  <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:9.5px">arm the next wake, sleep again</text>
-  <rect x="250" y="252" width="420" height="26" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
-  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (no animation · GNSS stopped): ~10 s watchdog-feed guard</text>
+  <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:12px">arm the next wake, sleep again</text>
+  <rect x="240" y="252" width="500" height="26" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
+  <text x="490" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:12px;fill:#3c6b39">Idle (no animation · GNSS stopped): ~10 s watchdog-feed guard</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The device sleeps between events. A hardware timer generates the display COM signal without CPU work.</figcaption>
 </figure>
 
@@ -361,60 +339,34 @@ The planner reads the navigation graph from the selected map.
 It writes a normal OBCR object to the reserved navigation slot.
 
 <figure class="fig">
-<svg viewBox="0 0 720 320" role="img" aria-label="The application requests a route. The host runs the route planner and stores an OBCR object. The host then reports the new durable object identifier.">
-  <defs>
-    <marker id="aR1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="aR2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">The core asks, the host routes, the answer re-enters the load path</text>
-
-  <!-- core column header -->
-  <text class="d-title" x="150" y="52" text-anchor="middle" style="font-size:12px">shared core (obc-app)</text>
-  <text class="d-title" x="560" y="52" text-anchor="middle" style="font-size:12px">host</text>
-  <line x1="360" y1="60" x2="360" y2="292" stroke="#9aa884" stroke-width="1.3" stroke-dasharray="3 4" />
-
-  <!-- core side -->
-  <rect class="d-panel-2" x="24" y="70" width="252" height="40" rx="9" />
-  <text class="d-label" x="40" y="88" style="font-size:10.5px">POI detail → press</text>
-  <text class="d-sub" x="40" y="102" style="font-size:9px">"Create a route?" confirm</text>
-
-  <rect class="d-hot" x="24" y="124" width="252" height="44" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one operation)</text>
-  <text class="d-sub" x="40" y="158" style="font-size:9px">from = rider fix · to = POI coord · name</text>
-
-  <!-- request arrow to host -->
-  <line class="d-flow" x1="276" y1="146" x2="404" y2="146" marker-end="url(#aR1)" />
-  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">Acquire (carries the token)</text>
-
-  <!-- host side -->
-  <rect class="d-panel" x="404" y="70" width="292" height="120" rx="10" />
-  <text class="d-tag" x="420" y="90">plan against the resident map</text>
-  <text class="d-sub" x="420" y="110" style="font-size:9.5px">obc-route::NavPlanner — exact road projection,</text>
-  <text class="d-sub" x="420" y="126" style="font-size:9.5px">profile-weighted A* (ε-ladder) over §8 graph</text>
-  <text class="d-sub" x="420" y="146" style="font-size:9.5px">→ stream OBCR into <tspan font-family="var(--mono)">the reserved route object</tspan></text>
-  <text class="d-sub" x="420" y="162" style="font-size:9.5px">→ rescan catalog, resolve durable id</text>
-  <text class="d-sub" x="420" y="180" style="font-size:8.5px;fill:#a9501c">stepped once per pass — the loop's watchdog covers it</text>
-
-  <!-- answer arrow back -->
-  <line class="d-flow" x1="404" y1="210" x2="276" y2="210" marker-end="url(#aR2)" stroke="#cf6a2a" stroke-width="2" />
-  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">PlanFinished / Failed (same token)</text>
-
-  <!-- ok / err -->
-  <rect class="d-panel-2" x="24" y="224" width="252" height="40" rx="9" />
-  <text class="d-sub" x="40" y="242" style="font-size:9.5px;fill:#2c5230"><tspan style="font-weight:700">Ok(id)</tspan> → NEW ROUTE overview + preview,</text>
-  <text class="d-sub" x="40" y="256" style="font-size:9px;fill:#2c5230">route activates → normal load/nav path</text>
-
-  <rect class="d-panel-2" x="24" y="272" width="252" height="40" rx="9" />
-  <text class="d-sub" x="40" y="290" style="font-size:9.5px;fill:#c0492e"><tspan style="font-weight:700">Err</tspan> → two-tier card:</text>
-  <text class="d-sub" x="40" y="304" style="font-size:9px;fill:#c0492e">Exhausted → "Too far…" · else "Couldn't find…"</text>
-
-  <!-- resident map note -->
-  <rect class="d-panel" x="404" y="224" width="292" height="88" rx="10" />
-  <text class="d-tag" x="420" y="244">re-enters the load path</text>
-  <text class="d-sub" x="420" y="264" style="font-size:9.5px">the reserved object is just another route</text>
-  <text class="d-sub" x="420" y="280" style="font-size:9.5px">in the catalog — same RouteReader,</text>
-  <text class="d-sub" x="420" y="296" style="font-size:9.5px">matcher, profile as a loaded GPX</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 365" role="img" aria-label="The application sends a planning request with an operation token. The host steps NavPlanner, writes an OBCR object, and returns the result with the same token. The application loads a successful route through its normal route path.">
+  <defs><marker id="software-architecture-5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">One planning request, one route object</text>
+  <rect class="d-panel" x="20" y="60" width="195" height="90" rx="8" />
+  <text class="d-title" x="117.5" y="85" text-anchor="middle">1. Request</text>
+  <text class="d-sub" x="117.5" y="105" text-anchor="middle">Endpoints + bike profile</text>
+  <text class="d-sub" x="117.5" y="122" text-anchor="middle">Operation token</text>
+  <path class="d-flow" d="M215 105 L260 105" marker-end="url(#software-architecture-5)" />
+  <rect class="d-panel d-focus" x="263" y="60" width="195" height="90" rx="8" />
+  <text class="d-title" x="360.5" y="85" text-anchor="middle">2. Plan on the host</text>
+  <text class="d-sub" x="360.5" y="105" text-anchor="middle">Step NavPlanner</text>
+  <text class="d-sub" x="360.5" y="122" text-anchor="middle">Read the map graph</text>
+  <path class="d-flow" d="M458 105 L502 105" marker-end="url(#software-architecture-5)" />
+  <rect class="d-panel" x="505" y="60" width="195" height="90" rx="8" />
+  <text class="d-title" x="602.5" y="85" text-anchor="middle">3. Store route</text>
+  <text class="d-sub" x="602.5" y="105" text-anchor="middle">Write an OBCR object</text>
+  <text class="d-sub" x="602.5" y="122" text-anchor="middle">Return result + token</text>
+  <path class="d-flow" d="M602 150 L602 204" />
+<path class="d-flow" d="M602 204 H360" />
+  <path class="d-flow" d="M360 204 L360 236" marker-end="url(#software-architecture-5)" />
+  <rect class="d-panel" x="140" y="238" width="440" height="74" rx="8" />
+  <text class="d-title" x="360" y="263" text-anchor="middle">4. Apply the matching result</text>
+  <text class="d-sub" x="360" y="283" text-anchor="middle">Load the route, or show a planning error</text>
+  <text class="d-sub" x="360" y="343" text-anchor="middle">A result for a cancelled or replaced operation is ignored.</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The planner returns a normal OBCR object. The standard route load path handles this object.</figcaption>
 </figure>
 
@@ -436,51 +388,36 @@ A map without terrain still supports route planning.
 
 The device uses two cooperating execution planes.
 The high-priority input plane samples buttons and recognizes gestures.
-The map plane applies gestures and owns all rendering.
+The map plane applies gestures and owns all rendering and panel output.
 A bounded channel sends gestures from the input plane to the map plane.
 
 <figure class="fig">
-<svg viewBox="0 0 720 290" role="img" aria-label="A high-priority input plane recognizes gestures. The map plane renders the base map and overlay. A channel sends gestures to the map plane.">
-  <defs>
-    <marker id="aD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">Input never waits on the map render</text>
-
-  <!-- input plane lane -->
-  <text class="d-label" x="20" y="74">input plane</text>
-  <text class="d-sub" x="20" y="88">high-priority executor</text>
-  <g>
-    <rect x="172" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="246" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="320" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="394" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="468" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="542" y="58" width="26" height="34" rx="5" class="d-forest" />
-    <rect x="616" y="58" width="26" height="34" rx="5" class="d-forest" />
-  </g>
-  <text class="d-sub" x="172" y="108">sample buttons · recognize gesture · animate overlay — every few ms</text>
-
-  <!-- map plane lane -->
-  <text class="d-label" x="20" y="194">map plane</text>
-  <text class="d-sub" x="20" y="208">the expensive render</text>
-  <rect class="d-hot" x="172" y="176" width="400" height="40" rx="8" style="fill:#f8efe4" />
-  <text class="d-label" x="372" y="201" text-anchor="middle" style="fill:#a9501c">render base map + push · ~44 ms</text>
-
-  <!-- preempt marks -->
-  <g stroke="#cf6a2a" stroke-width="1.3" stroke-dasharray="3 3" opacity="0.8">
-    <line x1="259" y1="92" x2="259" y2="176" />
-    <line x1="407" y1="92" x2="407" y2="176" />
-    <line x1="481" y1="92" x2="481" y2="176" />
-  </g>
-  <text class="d-sub" x="600" y="150" text-anchor="middle" style="font-size:10px">preempts the render</text>
-
-  <!-- gesture channel -->
-  <line x1="333" y1="92" x2="333" y2="174" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aD)" />
-  <rect x="300" y="126" width="120" height="22" rx="6" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:1.2" />
-  <text class="d-sub" x="360" y="141" text-anchor="middle" style="fill:#a9501c">gesture channel →</text>
-
-  <text class="d-sub" x="20" y="258" style="font-size:11px">Gestures flow one way; the shared panel + framebuffer are serialized by a bus mutex. On the simulator both halves run inline.</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 330" role="img" aria-label="The input task recognizes gestures while the map task performs a longer render. A bounded channel delivers gestures to the map task. The map task owns rendering and panel output.">
+  <defs><marker id="software-architecture-6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">Input stays responsive during rendering</text>
+  <text class="d-title" x="20" y="84" text-anchor="start">Input task</text>
+  <text class="d-sub" x="20" y="104" text-anchor="start">Recognize gestures</text>
+<rect class="d-forest" x="220" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="284" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="348" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="412" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="476" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="540" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="604" y="60" width="22" height="32" rx="4" />
+<rect class="d-forest" x="668" y="60" width="22" height="32" rx="4" />
+  <text class="d-title" x="20" y="197" text-anchor="start">Map task</text>
+  <text class="d-sub" x="20" y="217" text-anchor="start">Render and present</text>
+  <rect class="d-panel d-focus" x="220" y="170" width="470" height="72" rx="8" />
+  <text class="d-title" x="455" y="195" text-anchor="middle">One longer frame</text>
+  <text class="d-sub" x="455" y="215" text-anchor="middle">Duration depends on the map and changed rows</text>
+  <path class="d-flow" d="M359 100 L359 165" marker-end="url(#software-architecture-6)" />
+  <text class="d-sub" x="375" y="132" text-anchor="start">Bounded gesture channel</text>
+  <text class="d-sub" x="20" y="284" text-anchor="start">Input sampling can preempt the map task.</text>
+  <text class="d-sub" x="20" y="305" text-anchor="start">Panel output remains serialized.</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The input plane recognizes gestures during a map render. The map plane owns all rendering and panel output.</figcaption>
 </figure>
 

@@ -33,6 +33,7 @@ Each format stores offsets and counts.
 Readers use checked arithmetic and reject unsupported versions.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 290" role="img" aria-label="OSM data becomes an OBCM map. GPX data becomes an OBCR route. The device, simulator, and browser use the shared readers and converters.">
   <defs>
     <marker id="aF1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -55,7 +56,7 @@ Readers use checked arithmetic and reject unsupported versions.
   <text class="d-sub" x="98" y="204" text-anchor="middle">a ride you planned</text>
   <line class="d-flow" x1="170" y1="191" x2="298" y2="191" marker-end="url(#aF1)" />
   <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c">obc-route</text>
-  <text class="d-sub" x="234" y="207" text-anchor="middle" style="fill:#a9501c;font-size:9px">device · sim · browser</text>
+  <text class="d-sub" x="234" y="207" text-anchor="middle" style="fill:#a9501c;font-size:12px">device · sim · browser</text>
   <rect class="d-panel" x="304" y="166" width="120" height="50" rx="10" />
   <text class="d-label" x="364" y="188" text-anchor="middle">.obcr</text>
   <text class="d-sub" x="364" y="204" text-anchor="middle">route</text>
@@ -72,6 +73,8 @@ Readers use checked arithmetic and reject unsupported versions.
   <rect class="d-panel-2" x="32" y="244" width="668" height="34" rx="9" />
   <text class="d-sub" x="366" y="265" text-anchor="middle">shared DNA — little-endian · µdeg integers · anchor + delta geometry · explicit offsets · streamed</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>OBCM and OBCR use the same byte and streaming conventions.</figcaption>
 </figure>
 
@@ -86,54 +89,59 @@ This gives the file a 64 GiB address space.
 ### The file, front to back
 
 <figure class="fig">
-<svg viewBox="0 0 720 210" role="img" aria-label="An OBCM v14 file contains a 49-byte header, styles, an LOD table, independent LOD regions, POIs, opening hours, a navigation graph, and optional embedded OBCT terrain.">
-  <defs>
-    <marker id="aF2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">OBCM — the whole file, front to back</text>
-
-  <!-- ribbon -->
-  <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="60"  height="44" class="d-forest" />
-    <rect x="84"  y="56" width="82"  height="44" class="d-amber" />
-    <rect x="166" y="56" width="80"  height="44" class="d-water" />
-    <rect x="246" y="56" width="112" height="44" class="d-muted" />
-    <rect x="358" y="56" width="100" height="44" class="d-muted" />
-    <rect x="458" y="56" width="130" height="44" class="d-muted" />
-    <rect x="588" y="56" width="54"  height="44" class="d-hot-fill" />
-    <rect x="642" y="56" width="54"  height="44" class="d-water" />
-  </g>
-  <text class="d-label" x="54"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="54"  y="94" text-anchor="middle" style="fill:#e7ead8">49 B</text>
-  <text class="d-label" x="125" y="80" text-anchor="middle">Style table</text>
-  <text class="d-sub"   x="125" y="94" text-anchor="middle">global</text>
-  <text class="d-label" x="206" y="80" text-anchor="middle" style="fill:#fff">LOD table</text>
-  <text class="d-sub"   x="206" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 18 B</text>
-  <text class="d-label" x="302" y="80" text-anchor="middle">LOD 0</text>
-  <text class="d-sub"   x="302" y="94" text-anchor="middle">coarsest</text>
-  <text class="d-label" x="408" y="80" text-anchor="middle">LOD 1</text>
-  <text class="d-label" x="523" y="80" text-anchor="middle">LOD N−1</text>
-  <text class="d-sub"   x="523" y="94" text-anchor="middle">finest</text>
-  <text class="d-label" x="615" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">POIs</text>
-  <text class="d-sub"   x="615" y="92" text-anchor="middle" style="fill:#f6e6d8;font-size:8.5px">§7</text>
-  <text class="d-label" x="669" y="78" text-anchor="middle" style="fill:#fff;font-size:11px">Nav</text>
-  <text class="d-sub"   x="669" y="92" text-anchor="middle" style="fill:#e7ead8;font-size:8.5px">§8 · OBCT after</text>
-
-  <!-- detail arrow -->
-  <line x1="250" y1="114" x2="576" y2="114" stroke="#cf6a2a" stroke-width="1.6" marker-end="url(#aF2)" />
-  <text class="d-sub" x="413" y="128" text-anchor="middle" style="fill:#a9501c">detail increases →</text>
-
-  <!-- explode LOD 0 -->
-  <line x1="246" y1="100" x2="232" y2="152" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="358" y1="100" x2="544" y2="152" stroke="#9aa884" stroke-width="1.2" />
-  <rect class="d-panel-2" x="232" y="152" width="160" height="40" rx="7" />
-  <text class="d-label" x="312" y="170" text-anchor="middle">quadtree index</text>
-  <text class="d-sub"   x="312" y="184" text-anchor="middle">flat u32 nodes</text>
-  <rect class="d-panel" x="392" y="152" width="152" height="40" rx="7" />
-  <text class="d-label" x="468" y="170" text-anchor="middle">offsets + chunks</text>
-  <text class="d-sub"   x="468" y="184" text-anchor="middle">unit-aligned chunks</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 320" role="img" aria-label="A file ribbon shows the header, styles, LOD table, LOD regions, POIs and hours, navigation, and optional terrain. LOD 0 expands into its quadtree, chunk offsets, and geometry chunks.">
+<defs><marker id="r9arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">OBCM · follow the file, then open one LOD</text>
+<rect x="20" y="65" width="60" height="55" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="50.0" y="87" text-anchor="middle">Header</text>
+<text class="d-sub" x="50.0" y="107" text-anchor="middle">49 B</text>
+<rect x="80" y="65" width="70" height="55" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="115.0" y="87" text-anchor="middle">Styles</text>
+<text class="d-sub" x="115.0" y="107" text-anchor="middle">global</text>
+<rect x="150" y="65" width="80" height="55" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="190.0" y="87" text-anchor="middle">LOD table</text>
+<text class="d-sub" x="190.0" y="107" text-anchor="middle">N × 18 B</text>
+<rect x="230" y="65" width="75" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="267.5" y="87" text-anchor="middle">LOD 0</text>
+<text class="d-sub" x="267.5" y="107" text-anchor="middle">coarsest</text>
+<rect x="305" y="65" width="60" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="335.0" y="87" text-anchor="middle">…</text>
+<text class="d-sub" x="335.0" y="107" text-anchor="middle"></text>
+<rect x="365" y="65" width="80" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="405.0" y="87" text-anchor="middle">LOD N−1</text>
+<text class="d-sub" x="405.0" y="107" text-anchor="middle">finest</text>
+<rect x="445" y="65" width="70" height="55" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="480.0" y="87" text-anchor="middle">POIs</text>
+<text class="d-sub" x="480.0" y="107" text-anchor="middle">+ hours</text>
+<rect x="515" y="65" width="70" height="55" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="550.0" y="87" text-anchor="middle">Nav</text>
+<text class="d-sub" x="550.0" y="107" text-anchor="middle">graph</text>
+<rect x="585" y="65" width="115" height="55" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="642.5" y="87" text-anchor="middle">Terrain</text>
+<text class="d-sub" x="642.5" y="107" text-anchor="middle">OBCT · optional</text>
+<text class="d-sub" x="20" y="51" text-anchor="start">File order; region widths depend on the data.</text>
+<path d="M230 120 L110 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M305 120 L690 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="240" y="177" text-anchor="start">One LOD, expanded</text>
+<rect x="110" y="199" width="160" height="57" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="190.0" y="222" text-anchor="middle">Quadtree index</text>
+<text class="d-sub" x="190.0" y="242" text-anchor="middle">flat u32 nodes</text>
+<rect x="270" y="199" width="160" height="57" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="350.0" y="222" text-anchor="middle">Chunk offsets</text>
+<text class="d-sub" x="350.0" y="242" text-anchor="middle">one scaled u32 each</text>
+<rect x="430" y="199" width="130" height="57" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="495.0" y="222" text-anchor="middle">Chunk 0</text>
+<text class="d-sub" x="495.0" y="242" text-anchor="middle">geometry records</text>
+<rect x="560" y="199" width="130" height="57" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="625.0" y="222" text-anchor="middle">… Chunk k</text>
+<text class="d-sub" x="625.0" y="242" text-anchor="middle">aligned data</text>
+<path d="M350 256 V282 H495 V258" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r9arrow)"/>
+<text class="d-sub" x="110" y="300" text-anchor="start">The offset table locates each geometry chunk. Global addresses use scaled units.</text>
 </svg>
-<figcaption>Each LOD has a quadtree, a chunk-offset table, and geometry chunks. Global offsets use 16-byte units.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>Each LOD repeats the same index-and-chunks structure. The ribbon shows file order, not relative region sizes.</figcaption>
 </figure>
 
 The 49-byte header addresses the global sections.
@@ -159,61 +167,106 @@ A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
 ### The header
 
 <figure class="fig">
-<svg viewBox="0 0 720 170" role="img" aria-label="The OBCM v14 header is 49 bytes. The diagram shows the 40-byte core. Bytes 40 through 48 contain the offset scale, terrain offset, and terrain length.">
-  <text class="d-tag" x="20" y="24">The v14 header: 40-byte core + 9-byte extension</text>
-
-  <!-- field names -->
-  <text class="d-sub" x="74"  y="56" text-anchor="middle">Magic</text>
-  <text class="d-sub" x="112" y="56" text-anchor="middle" style="font-size:9px">ver</text>
-  <text class="d-sub" x="247" y="50" text-anchor="middle">global bbox</text>
-  <text class="d-sub" x="247" y="62" text-anchor="middle" style="font-size:9px">4 × i32 · µdeg</text>
-  <text class="d-sub" x="404" y="56" text-anchor="middle">style off</text>
-  <text class="d-sub" x="446" y="56" text-anchor="middle" style="font-size:9px">n</text>
-  <text class="d-sub" x="490" y="56" text-anchor="middle">LOD-tbl off</text>
-  <text class="d-sub" x="541" y="56" text-anchor="middle">mkr</text>
-  <text class="d-sub" x="597" y="50" text-anchor="middle" style="fill:#a9501c">POI off</text>
-  <text class="d-sub" x="597" y="62" text-anchor="middle" style="fill:#a9501c;font-size:9px">→ §7</text>
-  <text class="d-sub" x="657" y="50" text-anchor="middle" style="fill:#2c5230">Nav off</text>
-  <text class="d-sub" x="657" y="62" text-anchor="middle" style="fill:#2c5230;font-size:9px">→ §8 nav</text>
-
-  <!-- ruler fields (15 px / byte) -->
-  <g stroke="#20301d" stroke-width="1">
-    <rect x="44"  y="72" width="60"  height="32" class="d-forest" />
-    <rect x="104" y="72" width="15"  height="32" class="d-amber" />
-    <rect x="119" y="72" width="240" height="32" class="d-water" />
-    <rect x="359" y="72" width="60"  height="32" class="d-muted" />
-    <rect x="419" y="72" width="15"  height="32" class="d-amber" />
-    <rect x="434" y="72" width="60"  height="32" class="d-muted" />
-    <rect x="494" y="72" width="30"  height="32" style="fill:#e3ad33" />
-    <rect x="524" y="72" width="60"  height="32" class="d-hot-fill" />
-    <rect x="584" y="72" width="60"  height="32" class="d-water" />
-  </g>
-  <!-- per-byte ticks -->
-  <g stroke="#20301d" stroke-opacity="0.18" stroke-width="1">
-    <line x1="59" y1="72" x2="59" y2="104"/><line x1="74" y1="72" x2="74" y2="104"/><line x1="89" y1="72" x2="89" y2="104"/>
-    <line x1="134" y1="72" x2="134" y2="104"/><line x1="149" y1="72" x2="149" y2="104"/><line x1="164" y1="72" x2="164" y2="104"/><line x1="179" y1="72" x2="179" y2="104"/><line x1="194" y1="72" x2="194" y2="104"/><line x1="209" y1="72" x2="209" y2="104"/><line x1="224" y1="72" x2="224" y2="104"/><line x1="239" y1="72" x2="239" y2="104"/><line x1="254" y1="72" x2="254" y2="104"/><line x1="269" y1="72" x2="269" y2="104"/><line x1="284" y1="72" x2="284" y2="104"/><line x1="299" y1="72" x2="299" y2="104"/><line x1="314" y1="72" x2="314" y2="104"/><line x1="329" y1="72" x2="329" y2="104"/><line x1="344" y1="72" x2="344" y2="104"/>
-    <line x1="374" y1="72" x2="374" y2="104"/><line x1="389" y1="72" x2="389" y2="104"/><line x1="404" y1="72" x2="404" y2="104"/>
-    <line x1="449" y1="72" x2="449" y2="104"/><line x1="464" y1="72" x2="464" y2="104"/><line x1="479" y1="72" x2="479" y2="104"/>
-    <line x1="509" y1="72" x2="509" y2="104"/>
-    <line x1="539" y1="72" x2="539" y2="104"/><line x1="554" y1="72" x2="554" y2="104"/><line x1="569" y1="72" x2="569" y2="104"/>
-    <line x1="599" y1="72" x2="599" y2="104"/><line x1="614" y1="72" x2="614" y2="104"/><line x1="629" y1="72" x2="629" y2="104"/>
-  </g>
-  <!-- value + byte ranges -->
-  <text class="d-label" x="74" y="93" text-anchor="middle" style="fill:#fff;font-size:11px">OBCM</text>
-  <text class="d-label" x="112" y="93" text-anchor="middle" style="font-size:11px">14</text>
-  <text class="d-sub" x="74"  y="122" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="112" y="122" text-anchor="middle" style="font-size:9px">4</text>
-  <text class="d-sub" x="239" y="122" text-anchor="middle" style="font-size:9px">5–20</text>
-  <text class="d-sub" x="389" y="122" text-anchor="middle" style="font-size:9px">21–24</text>
-  <text class="d-sub" x="426" y="122" text-anchor="middle" style="font-size:9px">25</text>
-  <text class="d-sub" x="464" y="122" text-anchor="middle" style="font-size:9px">26–29</text>
-  <text class="d-sub" x="509" y="122" text-anchor="middle" style="font-size:9px">30–31</text>
-  <text class="d-sub" x="554" y="122" text-anchor="middle" style="fill:#a9501c;font-size:9px">32–35</text>
-  <text class="d-sub" x="614" y="122" text-anchor="middle" style="fill:#2c5230;font-size:9px">36–39</text>
-
-  <text class="d-sub" x="44" y="150" style="font-size:11px">bytes 40–48: scale u8 · terrain offset u32 · terrain length u32</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 382" role="img" aria-label="Two byte rulers show all 49 bytes with equal byte widths: magic, version, four bounds, style offset, LOD count and table offset, marker color, POI and navigation offsets, scale, terrain offset and length.">
+<defs><marker id="r10arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">OBCM header · every byte in order and to scale</text>
+<text class="d-sub" x="20" y="53" text-anchor="start">49 bytes · two consecutive rows · equal width per byte</text>
+<rect x="40" y="102" width="96" height="36" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M64 102 L64 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M88 102 L88 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 102 L112 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="88.0" y="125" text-anchor="middle">OBCM</text>
+<text class="d-sub" x="88.0" y="157" text-anchor="middle">0–3</text>
+<rect x="136" y="102" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="148.0" y="125" text-anchor="middle">14</text>
+<text class="d-sub" x="148.0" y="157" text-anchor="middle">4</text>
+<rect x="160" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M184 102 L184 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M208 102 L208 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M232 102 L232 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="208.0" y="125" text-anchor="middle">Min lat</text>
+<text class="d-sub" x="208.0" y="157" text-anchor="middle">5–8</text>
+<rect x="256" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M280 102 L280 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M304 102 L304 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M328 102 L328 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="304.0" y="125" text-anchor="middle">Min lon</text>
+<text class="d-sub" x="304.0" y="157" text-anchor="middle">9–12</text>
+<rect x="352" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M376 102 L376 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M400 102 L400 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M424 102 L424 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="400.0" y="125" text-anchor="middle">Max lat</text>
+<text class="d-sub" x="400.0" y="157" text-anchor="middle">13–16</text>
+<rect x="448" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M472 102 L472 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M496 102 L496 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M520 102 L520 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="496.0" y="125" text-anchor="middle">Max lon</text>
+<text class="d-sub" x="496.0" y="157" text-anchor="middle">17–20</text>
+<rect x="544" y="102" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M568 102 L568 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M592 102 L592 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M616 102 L616 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="592.0" y="125" text-anchor="middle">Style off</text>
+<text class="d-sub" x="592.0" y="157" text-anchor="middle">21–24</text>
+<text class="d-sub" x="88" y="84" text-anchor="middle">Magic</text>
+<text class="d-sub" x="164" y="70" text-anchor="middle">Version</text>
+<path d="M164 75 H148 V100" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="352" y="84" text-anchor="middle">Bounds · four i32 coordinates in µdeg</text>
+<text class="d-sub" x="590" y="84" text-anchor="middle">u32 offset</text>
+<rect x="40" y="242" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="52.0" y="265" text-anchor="middle">N</text>
+<text class="d-sub" x="52.0" y="297" text-anchor="middle">25</text>
+<rect x="64" y="242" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M88 242 L88 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 242 L112 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M136 242 L136 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="112.0" y="265" text-anchor="middle">LOD table off</text>
+<text class="d-sub" x="112.0" y="297" text-anchor="middle">26–29</text>
+<rect x="160" y="242" width="48" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M184 242 L184 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="184.0" y="265" text-anchor="middle">RGB</text>
+<text class="d-sub" x="184.0" y="297" text-anchor="middle">30–31</text>
+<rect x="208" y="242" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M232 242 L232 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M256 242 L256 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M280 242 L280 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="256.0" y="265" text-anchor="middle">POI off</text>
+<text class="d-sub" x="256.0" y="297" text-anchor="middle">32–35</text>
+<rect x="304" y="242" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M328 242 L328 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M352 242 L352 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M376 242 L376 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="352.0" y="265" text-anchor="middle">Nav off</text>
+<text class="d-sub" x="352.0" y="297" text-anchor="middle">36–39</text>
+<rect x="400" y="242" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="412.0" y="265" text-anchor="middle">s</text>
+<text class="d-sub" x="412.0" y="297" text-anchor="middle">40</text>
+<rect x="424" y="242" width="96" height="36" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M448 242 L448 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M472 242 L472 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M496 242 L496 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="472.0" y="265" text-anchor="middle">Terrain off</text>
+<text class="d-sub" x="472.0" y="297" text-anchor="middle">41–44</text>
+<rect x="520" y="242" width="96" height="36" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M544 242 L544 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M568 242 L568 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M592 242 L592 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="568.0" y="265" text-anchor="middle">Terrain len</text>
+<text class="d-sub" x="568.0" y="297" text-anchor="middle">45–48</text>
+<text class="d-sub" x="40" y="197" text-anchor="start">N: LOD count</text>
+<path d="M52 203 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="184" y="226" text-anchor="middle">RGB565</text>
+<text class="d-sub" x="412" y="207" text-anchor="middle">s: offset scale</text>
+<path d="M412 213 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="40" y="335" text-anchor="start">Bytes 0–24 above; 25–48 below. All multi-byte values are little-endian.</text>
+<text class="d-sub" x="40" y="357" text-anchor="start">Section address = stored offset × 2ˢ. Terrain length uses the same units; writers set s = 4.</text>
 </svg>
-<figcaption>The version is 14. Global offsets count units of 2 to the offset-scale power. Current writers use 16-byte units.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>Field widths show their actual byte sizes. Small fields have leader labels. The second row continues directly after byte 24.</figcaption>
 </figure>
 
 The core header fields are:
@@ -246,6 +299,7 @@ Value `0xFF` ends the features in a chunk.
 ### The quadtree index
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 205" role="img" aria-label="A quadtree node is one 32-bit word. The high bit identifies a branch. Other values identify an empty leaf or a chunk.">
   <text class="d-tag" x="20" y="24">One u32 per node — the high bit decides</text>
 
@@ -259,23 +313,25 @@ Value `0xFF` ends the features in a chunk.
   </g>
   <text class="d-num" x="65" y="65" text-anchor="middle">b31</text>
   <text class="d-sub" x="370" y="65" text-anchor="middle">bits 30 … 0</text>
-  <text class="d-sub" x="65" y="92" text-anchor="middle" style="fill:#a9501c;font-size:9px">branch flag</text>
+  <text class="d-sub" x="65" y="92" text-anchor="middle" style="fill:#a9501c;font-size:12px">branch flag</text>
 
   <!-- interpretations -->
   <g>
     <rect x="56" y="110" width="14" height="14" rx="3" class="d-hot-fill" />
-    <text class="d-label" x="80" y="121" style="font-size:11.5px">high bit set</text>
+    <text class="d-label" x="80" y="121" style="font-size:12px">high bit set</text>
     <text class="d-sub" x="200" y="121">branch → low 31 bits = index of the first child (NW)</text>
 
     <rect x="56" y="136" width="14" height="14" rx="3" class="d-muted" />
-    <text class="d-label" x="80" y="147" style="font-size:11.5px">0x7FFF_FFFF</text>
+    <text class="d-label" x="80" y="147" style="font-size:12px">0x7FFF_FFFF</text>
     <text class="d-sub" x="200" y="147">empty leaf → nothing to draw here</text>
 
     <rect x="56" y="162" width="14" height="14" rx="3" class="d-forest" />
-    <text class="d-label" x="80" y="173" style="font-size:11.5px">anything else</text>
+    <text class="d-label" x="80" y="173" style="font-size:12px">anything else</text>
     <text class="d-sub" x="200" y="173">leaf → the value is a chunk id into this LOD's chunks</text>
   </g>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Branches point to four consecutive children. Readers derive child bounds from the parent bounds.</figcaption>
 </figure>
 
@@ -292,6 +348,7 @@ The reader calculates child bounds with integer floor midpoints.
 ### Features: an anchor, then deltas
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 250" role="img" aria-label="A feature stores one anchor coordinate and then coordinate deltas. Each feature selects 8-bit or 16-bit deltas.">
   <defs>
     <marker id="aF3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -307,25 +364,25 @@ The reader calculates child bounds with integer floor midpoints.
   <g fill="#3c6b39"><circle cx="120" cy="108" r="3.5"/><circle cx="196" cy="96" r="3.5"/><circle cx="244" cy="150" r="3.5"/><circle cx="188" cy="196" r="3.5"/></g>
   <!-- anchor -->
   <circle cx="96" cy="170" r="5.5" class="d-hot-fill" />
-  <text class="d-sub" x="60" y="150" style="fill:#a9501c;font-size:9.5px">anchor</text>
-  <text class="d-sub" x="44" y="208" style="font-size:9.5px">(47 123 456, 8 654 321)</text>
+  <text class="d-sub" x="60" y="150" style="fill:#a9501c;font-size:12px">anchor</text>
+  <text class="d-sub" x="44" y="208" style="font-size:12px">(47 123 456, 8 654 321)</text>
   <!-- small delta hints -->
-  <text class="d-sub" x="104" y="132" style="font-size:9px">+Δ</text>
-  <text class="d-sub" x="158" y="92"  style="font-size:9px">+Δ</text>
-  <text class="d-sub" x="226" y="126" style="font-size:9px">+Δ</text>
+  <text class="d-sub" x="104" y="132" style="font-size:12px">+Δ</text>
+  <text class="d-sub" x="158" y="92"  style="font-size:12px">+Δ</text>
+  <text class="d-sub" x="226" y="126" style="font-size:12px">+Δ</text>
 
   <!-- arrow -->
   <line class="d-flow" x1="332" y1="136" x2="392" y2="136" marker-end="url(#aF3)" />
-  <text class="d-sub" x="362" y="126" text-anchor="middle" style="font-size:9px">encode</text>
+  <text class="d-sub" x="362" y="126" text-anchor="middle" style="font-size:12px">encode</text>
 
   <!-- RIGHT: encoded -->
   <rect class="d-panel" x="400" y="44" width="296" height="184" rx="12" />
   <text class="d-tag" x="416" y="66">encoded</text>
   <!-- anchor cell -->
   <rect x="416" y="78" width="120" height="30" rx="5" class="d-hot-fill" />
-  <text class="d-sub" x="476" y="97" text-anchor="middle" style="fill:#fff;font-size:9.5px">anchor X,Y (i32)</text>
-  <text class="d-sub" x="544" y="90" style="font-size:9px">stored vs the</text>
-  <text class="d-sub" x="544" y="102" style="font-size:9px">leaf's corner</text>
+  <text class="d-sub" x="476" y="97" text-anchor="middle" style="fill:#fff;font-size:12px">anchor X,Y</text>
+  <text class="d-sub" x="544" y="90" style="font-size:12px">stored vs the</text>
+  <text class="d-sub" x="544" y="108" style="font-size:12px">leaf's corner</text>
   <!-- delta cells -->
   <g stroke="#3c6b39" stroke-width="1">
     <rect x="416" y="118" width="44" height="26" rx="4" class="d-muted" />
@@ -333,15 +390,17 @@ The reader calculates child bounds with integer floor midpoints.
     <rect x="508" y="118" width="44" height="26" rx="4" class="d-muted" />
     <rect x="554" y="118" width="44" height="26" rx="4" class="d-muted" />
   </g>
-  <text class="d-sub" x="438" y="135" text-anchor="middle" style="font-size:9px">Δx,Δy</text>
-  <text class="d-sub" x="484" y="135" text-anchor="middle" style="font-size:9px">Δx,Δy</text>
-  <text class="d-sub" x="530" y="135" text-anchor="middle" style="font-size:9px">Δx,Δy</text>
-  <text class="d-sub" x="576" y="135" text-anchor="middle" style="font-size:9px">…</text>
+  <text class="d-sub" x="438" y="135" text-anchor="middle" style="font-size:12px">Δx,Δy</text>
+  <text class="d-sub" x="484" y="135" text-anchor="middle" style="font-size:12px">Δx,Δy</text>
+  <text class="d-sub" x="530" y="135" text-anchor="middle" style="font-size:12px">Δx,Δy</text>
+  <text class="d-sub" x="576" y="135" text-anchor="middle" style="font-size:12px">…</text>
   <!-- per-feature width choice -->
-  <text class="d-sub" x="416" y="170" style="font-size:10px">every |Δ| ≤ 127  →  <tspan style="fill:#3c6b39">int8</tspan>  · 2 B / point</text>
-  <text class="d-sub" x="416" y="190" style="font-size:10px">otherwise           →  <tspan style="fill:#a9501c">int16</tspan> · 4 B / point</text>
-  <text class="d-sub" x="416" y="212" style="font-size:9px">chosen once per feature (flag bit 0)</text>
+  <text class="d-sub" x="416" y="170" style="font-size:12px">every |Δ| ≤ 127  →  <tspan style="fill:#3c6b39">int8</tspan>  · 2 B / point</text>
+  <text class="d-sub" x="416" y="190" style="font-size:12px">otherwise           →  <tspan style="fill:#a9501c">int16</tspan> · 4 B / point</text>
+  <text class="d-sub" x="416" y="212" style="font-size:12px">chosen once per feature (flag bit 0)</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Anchor and delta encoding keeps common geometry records small.</figcaption>
 </figure>
 
@@ -354,15 +413,16 @@ An invalid or over-capacity feature is dropped as one unit.
 The reader does not return truncated polygons or lines.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 300" role="img" aria-label="A compact feature header is 7 bytes. A wide header is 12 bytes. Flags select delta width, polygon data, holes, and header width.">
   <text class="d-tag" x="20" y="24">A feature on disk — both rulers to scale, 1 byte = 40 px</text>
 
   <!-- compact header ruler: 7 B -->
-  <text class="d-sub" x="140" y="52" text-anchor="middle" style="font-size:9px">style</text>
-  <text class="d-sub" x="180" y="52" text-anchor="middle" style="font-size:9px">flags</text>
-  <text class="d-sub" x="220" y="52" text-anchor="middle" style="font-size:9px">pts</text>
-  <text class="d-sub" x="280" y="52" text-anchor="middle" style="font-size:9px">anchor X</text>
-  <text class="d-sub" x="360" y="52" text-anchor="middle" style="font-size:9px">anchor Y</text>
+  <text class="d-sub" x="140" y="52" text-anchor="middle" style="font-size:12px">style</text>
+  <text class="d-sub" x="180" y="52" text-anchor="middle" style="font-size:12px">flags</text>
+  <text class="d-sub" x="220" y="52" text-anchor="middle" style="font-size:12px">pts</text>
+  <text class="d-sub" x="280" y="52" text-anchor="middle" style="font-size:12px">anchor X</text>
+  <text class="d-sub" x="360" y="52" text-anchor="middle" style="font-size:12px">anchor Y</text>
   <g stroke="#20301d" stroke-width="1">
     <rect x="120" y="60" width="40" height="32" class="d-forest" />
     <rect x="160" y="60" width="40" height="32" class="d-hot-fill" />
@@ -370,12 +430,12 @@ The reader does not return truncated polygons or lines.
     <rect x="240" y="60" width="80" height="32" class="d-muted" />
     <rect x="320" y="60" width="80" height="32" class="d-muted" />
   </g>
-  <text class="d-tag" x="110" y="80" text-anchor="end" style="font-size:10px">compact · 7 B</text>
-  <text class="d-sub" x="280" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
-  <text class="d-sub" x="360" y="80" text-anchor="middle" style="font-size:9px">u16 · 2 B</text>
-  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
-  <text class="d-sub" x="180" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
-  <text class="d-sub" x="220" y="106" text-anchor="middle" style="font-size:8.5px">1 B</text>
+  <text class="d-tag" x="110" y="80" text-anchor="end" style="font-size:12px">compact · 7 B</text>
+  <text class="d-sub" x="280" y="80" text-anchor="middle" style="font-size:12px">u16 · 2 B</text>
+  <text class="d-sub" x="360" y="80" text-anchor="middle" style="font-size:12px">u16 · 2 B</text>
+  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:12px">1 B</text>
+  <text class="d-sub" x="180" y="106" text-anchor="middle" style="font-size:12px">1 B</text>
+  <text class="d-sub" x="220" y="106" text-anchor="middle" style="font-size:12px">1 B</text>
 
   <!-- wide header ruler: 12 B, same scale, same left edge -->
   <g stroke="#20301d" stroke-width="1">
@@ -385,24 +445,24 @@ The reader does not return truncated polygons or lines.
     <rect x="280" y="122" width="160" height="32" class="d-muted" />
     <rect x="440" y="122" width="160" height="32" class="d-muted" />
   </g>
-  <text class="d-tag" x="110" y="142" text-anchor="end" style="font-size:10px">wide · 12 B</text>
-  <text class="d-sub" x="240" y="142" text-anchor="middle" style="fill:#fff;font-size:9px">pts · 2 B</text>
-  <text class="d-sub" x="360" y="142" text-anchor="middle" style="font-size:9px">anchor X · i32 · 4 B</text>
-  <text class="d-sub" x="520" y="142" text-anchor="middle" style="font-size:9px">anchor Y · i32 · 4 B</text>
+  <text class="d-tag" x="110" y="142" text-anchor="end" style="font-size:12px">wide · 12 B</text>
+  <text class="d-sub" x="240" y="142" text-anchor="middle" style="fill:#fff;font-size:12px">pts · 2 B</text>
+  <text class="d-sub" x="360" y="142" text-anchor="middle" style="font-size:12px">anchor X · i32 · 4 B</text>
+  <text class="d-sub" x="520" y="142" text-anchor="middle" style="font-size:12px">anchor Y · i32 · 4 B</text>
 
   <!-- flags expand: the byte that decides which ruler you are reading -->
   <line x1="180" y1="154" x2="112" y2="182" stroke="#cf6a2a" stroke-width="1.2" />
   <g>
     <rect x="60"  y="182" width="104" height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="112" y="197" text-anchor="middle" style="font-size:9px">bit 0 · 16-bit Δ</text>
+    <text class="d-sub" x="112" y="197" text-anchor="middle" style="font-size:12px">bit 0 · 16-bit Δ</text>
     <rect x="170" y="182" width="96"  height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="218" y="197" text-anchor="middle" style="font-size:9px">bit 1 · polygon</text>
+    <text class="d-sub" x="218" y="197" text-anchor="middle" style="font-size:12px">bit 1 · polygon</text>
     <rect x="272" y="182" width="82"  height="22" rx="4" class="d-panel-2" />
-    <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:9px">bit 2 · holes</text>
+    <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:12px">bit 2 · holes</text>
     <rect x="360" y="182" width="80"  height="22" rx="4" class="d-hot-fill" />
-    <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:9px">bit 3 · wide</text>
+    <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:12px">bit 3 · wide</text>
   </g>
-  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:9px">← picks the ruler</text>
+  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:12px">← picks the ruler</text>
 
   <!-- holes layout ribbon -->
   <text class="d-tag" x="20" y="232">…and a polygon with holes, laid out</text>
@@ -415,14 +475,16 @@ The reader does not return truncated polygons or lines.
     <rect x="534" y="242" width="64"  height="34" class="d-water" />
     <rect x="598" y="242" width="98"  height="34" class="d-muted" />
   </g>
-  <text class="d-sub" x="72"  y="263" text-anchor="middle" style="fill:#fff;font-size:9.5px">7 or 12 B hdr</text>
-  <text class="d-sub" x="195" y="263" text-anchor="middle" style="font-size:9.5px">exterior deltas</text>
-  <text class="d-sub" x="305" y="263" text-anchor="middle" style="fill:#3a2c10;font-size:9px">hole cnt</text>
-  <text class="d-sub" x="372" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h1 pts</text>
-  <text class="d-sub" x="469" y="263" text-anchor="middle" style="font-size:9.5px">hole 1 deltas</text>
-  <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:9px">h2 pts</text>
-  <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:9.5px">hole 2 …</text>
+  <text class="d-sub" x="72"  y="263" text-anchor="middle" style="fill:#fff;font-size:12px">7 or 12 B hdr</text>
+  <text class="d-sub" x="195" y="263" text-anchor="middle" style="font-size:12px">exterior deltas</text>
+  <text class="d-sub" x="305" y="263" text-anchor="middle" style="fill:#3a2c10;font-size:12px">hole cnt</text>
+  <text class="d-sub" x="372" y="263" text-anchor="middle" style="fill:#fff;font-size:12px">h1 pts</text>
+  <text class="d-sub" x="469" y="263" text-anchor="middle" style="font-size:12px">hole 1 deltas</text>
+  <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:12px">h2 pts</text>
+  <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:12px">hole 2 …</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The compact header is the common form. The wide form supports large anchors or point counts.</figcaption>
 </figure>
 
@@ -431,61 +493,79 @@ A wide header uses a 16-bit point count and two 32-bit anchor components.
 Polygon holes follow the exterior ring.
 The even-odd fill rule uses all rings.
 
-### POIs: a nearest-list, not a map layer
+### POIs: services and named summits
 
 <figure class="fig">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI directory addresses one quadtree per category. Each POI record contains coordinates, subtype, name, and an opening-hours reference.">
-  <defs>
-    <marker id="aF5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">The POI section — a quadtree per category over 36-byte records</text>
-
-  <!-- directory -->
-  <rect class="d-panel-2" x="24" y="44" width="162" height="88" rx="9" />
-  <text class="d-label" x="40" y="62" style="font-size:11px">directory</text>
-  <text class="d-sub" x="40" y="78"  style="font-size:9px">count = 6 · chunk size</text>
-  <text class="d-sub" x="40" y="92"  style="font-size:9px">per cat: id · index off</text>
-  <text class="d-sub" x="40" y="104" style="font-size:9px">node count · chunk count</text>
-  <text class="d-sub" x="40" y="122" style="font-size:9px;fill:#a9501c">+ hours-pool off · count</text>
-
-  <!-- one category's index + chunks (LOD-shaped) -->
-  <line class="d-flow" x1="188" y1="80" x2="214" y2="80" marker-end="url(#aF5)" />
-  <g stroke="#3c6b39" stroke-width="1.2">
-    <rect x="220" y="56" width="96"  height="44" class="d-muted" />
-    <rect x="316" y="56" width="112" height="44" class="d-water" />
-  </g>
-  <text class="d-label" x="268" y="76" text-anchor="middle" style="font-size:10.5px">quadtree</text>
-  <text class="d-sub"   x="268" y="90" text-anchor="middle" style="font-size:9px">flat u32 · §4</text>
-  <text class="d-label" x="372" y="76" text-anchor="middle" style="fill:#fff;font-size:10.5px">POI chunks</text>
-  <text class="d-sub"   x="372" y="90" text-anchor="middle" style="fill:#dfe6e0;font-size:9px">512 B · 14 recs</text>
-  <text class="d-sub" x="324" y="118" text-anchor="middle" style="font-size:9px;fill:#a9501c">same index-then-chunks shape as a LOD</text>
-
-  <!-- one record: 36-byte ruler -->
-  <text class="d-tag" x="20" y="152">one record — a fixed 36 bytes <tspan style="fill:#a9501c">(v14)</tspan></text>
-  <g stroke="#20301d" stroke-width="1">
-    <rect x="24"  y="164" width="74"  height="34" class="d-water" />
-    <rect x="98"  y="164" width="74"  height="34" class="d-water" />
-    <rect x="172" y="164" width="19"  height="34" class="d-hot-fill" />
-    <rect x="191" y="164" width="19"  height="34" class="d-amber" />
-    <rect x="210" y="164" width="408" height="34" class="d-forest" />
-    <rect x="618" y="164" width="74"  height="34" style="fill:#cf6a2a" />
-  </g>
-  <text class="d-sub" x="61"  y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
-  <text class="d-sub" x="135" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
-  <text class="d-sub" x="181" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">sub</text>
-  <text class="d-sub" x="181" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">type</text>
-  <text class="d-sub" x="200" y="184" text-anchor="middle" style="font-size:8px">len</text>
-  <text class="d-sub" x="414" y="185" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 24 B printable ASCII</text>
-  <text class="d-sub" x="655" y="180" text-anchor="middle" style="fill:#fff;font-size:8px">Hours</text>
-  <text class="d-sub" x="655" y="192" text-anchor="middle" style="fill:#fff;font-size:7.5px">Ref u16</text>
-  <text class="d-sub" x="61"  y="214" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="135" y="214" text-anchor="middle" style="font-size:9px">4–7</text>
-  <text class="d-sub" x="181" y="214" text-anchor="middle" style="font-size:9px">8</text>
-  <text class="d-sub" x="200" y="214" text-anchor="middle" style="font-size:9px">9</text>
-  <text class="d-sub" x="414" y="214" text-anchor="middle" style="font-size:9px">10–33</text>
-  <text class="d-sub" x="655" y="214" text-anchor="middle" style="font-size:9px">34–35</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 432" role="img" aria-label="A category directory selects a spatial quadtree. Its leaf addresses a 512-byte chunk with fourteen 36-byte records. A byte ruler shows coordinates, subtype, name length, 24-byte name and two-byte trailer. Services store hours references; summits store elevation.">
+<defs><marker id="r14arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">POIs · category index to packed 36-byte records</text>
+<text class="d-title" x="20" y="60" text-anchor="start">Category directory</text>
+<rect x="20" y="74" width="165" height="115" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M20 100 L185 100" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-sub" x="30" y="92" text-anchor="start">Food</text>
+<path d="M20 122 L185 122" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-sub" x="30" y="114" text-anchor="start">Water</text>
+<path d="M20 144 L185 144" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-sub" x="30" y="136" text-anchor="start">…</text>
+<path d="M20 166 L185 166" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-sub" x="30" y="158" text-anchor="start">Summit (optional)</text>
+<path d="M185 111 H220" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r14arrow)"/>
+<text class="d-title" x="232" y="60" text-anchor="start">Category quadtree</text>
+<rect x="230" y="75" width="112" height="112" fill="#eef2df" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M286 75 L286 187" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M230 131 L342 131" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M314 131 L314 187" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M286 159 L342 159" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<rect x="314" y="159" width="28" height="28" fill="#f1cfb4" stroke="#cf6a2a" stroke-width="1.2" />
+<path d="M343 173 H386" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r14arrow)"/>
+<text class="d-title" x="403" y="60" text-anchor="start">One 512-byte chunk</text>
+<rect x="400" y="75" width="20" height="85" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="420" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="440" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="460" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="480" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="500" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="520" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="540" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="560" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="580" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="600" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="620" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="640" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="660" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="680" y="75" width="4.45" height="85" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="540" y="185" text-anchor="middle">14 × 36-byte records + 8 bytes padding</text>
+<path d="M400 160 V201 H40 V260" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M420 160 V207 H688 V260" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="65" y="235" text-anchor="start">One POI record · field widths to scale</text>
+<rect x="40" y="262" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="76.0" y="286" text-anchor="middle">Latitude</text>
+<text class="d-sub" x="76.0" y="319" text-anchor="middle">0–3</text>
+<rect x="112" y="262" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="148.0" y="286" text-anchor="middle">Longitude</text>
+<text class="d-sub" x="148.0" y="319" text-anchor="middle">4–7</text>
+<rect x="184" y="262" width="18" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="193.0" y="286" text-anchor="middle">s</text>
+<text class="d-sub" x="193.0" y="319" text-anchor="middle">8</text>
+<rect x="202" y="262" width="18" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="211.0" y="286" text-anchor="middle">n</text>
+<text class="d-sub" x="211.0" y="319" text-anchor="middle">9</text>
+<rect x="220" y="262" width="432" height="38" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="436.0" y="286" text-anchor="middle">Name · 24 bytes</text>
+<text class="d-sub" x="436.0" y="319" text-anchor="middle">10–33</text>
+<rect x="652" y="262" width="36" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="670.0" y="286" text-anchor="middle">t</text>
+<text class="d-sub" x="670.0" y="319" text-anchor="middle">34–35</text>
+<text class="d-sub" x="40" y="350" text-anchor="start">s: subtype · n: name length · t: two-byte trailer</text>
+<text class="d-title" x="40" y="380" text-anchor="start">Service categories 1–6</text>
+<text class="d-sub" x="270" y="380" text-anchor="start">Printable ASCII name; trailer = HoursRef u16</text>
+<text class="d-title" x="40" y="407" text-anchor="start">Summit category 7</text>
+<text class="d-sub" x="270" y="407" text-anchor="start">UTF-8 name; subtype 19; trailer = elevation i16 (m)</text>
 </svg>
-<figcaption>Category-specific indexes support nearest and route-corridor queries.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The 36-byte ruler is to scale. Categories share its structure; summit records use UTF-8 names and signed elevation instead of an opening-hours reference.</figcaption>
 </figure>
 
 The map has one POI quadtree for each category.
@@ -493,13 +573,17 @@ The category comes from the selected directory entry.
 It is not repeated in each record.
 
 A POI record is 36 bytes.
-It contains coordinates, subtype, a 24-byte printable-ASCII name, and `HoursRef`.
+Service records contain coordinates, subtype, a 24-byte printable-ASCII name, and `HoursRef`.
+An optional seventh category stores named summits for Peak View. Summit records use a UTF-8 name
+and a signed elevation in place of `HoursRef`. Subtype 19 identifies these records.
+See [OBCM section 7](src:specs/OBCM_Spec.md) for the shared layout and category rules.
 The same indexes support nearest-item and route-corridor queries.
 
 ### Opening hours: a pooled weekly schedule
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="A 29-byte schedule contains flags and two time intervals for each weekday. POI records reference deduplicated schedules.">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 328" role="img" aria-label="A 29-byte schedule contains flags and two time intervals for each weekday. POI records reference deduplicated schedules.">
   <defs>
     <marker id="aH7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
@@ -507,57 +591,57 @@ The same indexes support nearest-item and route-corridor queries.
 
   <!-- blob ruler: flags + Mon..Sun (each 2 slots of open_q/close_q) -->
   <g stroke="#20301d" stroke-width="1">
-    <rect x="24" y="44" width="34" height="34" class="d-amber" />
-    <rect x="58" y="44" width="88" height="34" class="d-water" />
-    <rect x="146" y="44" width="88" height="34" class="d-forest" />
-    <rect x="234" y="44" width="88" height="34" class="d-water" />
-    <rect x="322" y="44" width="88" height="34" class="d-forest" />
-    <rect x="410" y="44" width="88" height="34" class="d-water" />
-    <rect x="498" y="44" width="88" height="34" class="d-forest" />
-    <rect x="586" y="44" width="88" height="34" class="d-water" />
+    <rect x="24" y="44" width="22" height="34" class="d-amber" />
+    <rect x="46" y="44" width="88" height="34" class="d-water" />
+    <rect x="134" y="44" width="88" height="34" class="d-forest" />
+    <rect x="222" y="44" width="88" height="34" class="d-water" />
+    <rect x="310" y="44" width="88" height="34" class="d-forest" />
+    <rect x="398" y="44" width="88" height="34" class="d-water" />
+    <rect x="486" y="44" width="88" height="34" class="d-forest" />
+    <rect x="574" y="44" width="88" height="34" class="d-water" />
   </g>
-  <text class="d-sub" x="41"  y="65" text-anchor="middle" style="fill:#000;font-size:9px">flags</text>
-  <text class="d-sub" x="102" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Mon</text>
-  <text class="d-sub" x="190" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Tue</text>
-  <text class="d-sub" x="278" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Wed</text>
-  <text class="d-sub" x="366" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Thu</text>
-  <text class="d-sub" x="454" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Fri</text>
-  <text class="d-sub" x="542" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sat</text>
-  <text class="d-sub" x="630" y="65" text-anchor="middle" style="fill:#fff;font-size:10px">Sun</text>
-  <text class="d-sub" x="41"  y="92" text-anchor="middle" style="font-size:9px">0</text>
-  <text class="d-sub" x="102" y="92" text-anchor="middle" style="font-size:9px">1–4</text>
-  <text class="d-sub" x="630" y="92" text-anchor="middle" style="font-size:9px">25–28</text>
+  <text class="d-sub" x="35"  y="65" text-anchor="middle" style="fill:#000;font-size:12px">f</text>
+  <text class="d-sub" x="90" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Mon</text>
+  <text class="d-sub" x="178" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Tue</text>
+  <text class="d-sub" x="266" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Wed</text>
+  <text class="d-sub" x="354" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Thu</text>
+  <text class="d-sub" x="442" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Fri</text>
+  <text class="d-sub" x="530" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Sat</text>
+  <text class="d-sub" x="618" y="65" text-anchor="middle" style="fill:#fff;font-size:12px">Sun</text>
+  <text class="d-sub" x="35"  y="92" text-anchor="middle" style="font-size:12px">0</text>
+  <text class="d-sub" x="90" y="92" text-anchor="middle" style="font-size:12px">1–4</text>
+  <text class="d-sub" x="618" y="92" text-anchor="middle" style="font-size:12px">25–28</text>
 
   <!-- one day exploded into 2 slots × (open_q, close_q) -->
-  <line x1="58"  y1="78" x2="120" y2="110" stroke="#9aa884" stroke-width="1.1" />
-  <line x1="146" y1="78" x2="420" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="46"  y1="78" x2="120" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="134" y1="78" x2="420" y2="110" stroke="#9aa884" stroke-width="1.1" />
   <g stroke="#20301d" stroke-width="1">
     <rect x="120" y="112" width="76" height="30" class="d-panel" />
     <rect x="196" y="112" width="76" height="30" class="d-panel" />
     <rect x="272" y="112" width="76" height="30" class="d-panel-2" />
     <rect x="348" y="112" width="76" height="30" class="d-panel-2" />
   </g>
-  <text class="d-sub" x="158" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
-  <text class="d-sub" x="234" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
-  <text class="d-sub" x="310" y="131" text-anchor="middle" style="font-size:9.5px">open q</text>
-  <text class="d-sub" x="386" y="131" text-anchor="middle" style="font-size:9.5px">close q</text>
-  <text class="d-sub" x="196" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 0</text>
-  <text class="d-sub" x="348" y="156" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">slot 1</text>
-  <text class="d-sub" x="470" y="126" style="font-size:9.5px">each byte = quarter-hours</text>
-  <text class="d-sub" x="470" y="140" style="font-size:9.5px">from midnight, 0…96 (96 = 24:00)</text>
+  <text class="d-sub" x="158" y="131" text-anchor="middle" style="font-size:12px">open q</text>
+  <text class="d-sub" x="234" y="131" text-anchor="middle" style="font-size:12px">close q</text>
+  <text class="d-sub" x="310" y="131" text-anchor="middle" style="font-size:12px">open q</text>
+  <text class="d-sub" x="386" y="131" text-anchor="middle" style="font-size:12px">close q</text>
+  <text class="d-sub" x="196" y="156" text-anchor="middle" style="font-size:12px;fill:#a9501c">slot 0</text>
+  <text class="d-sub" x="348" y="156" text-anchor="middle" style="font-size:12px;fill:#a9501c">slot 1</text>
+  <text class="d-sub" x="470" y="126" style="font-size:12px">each byte = quarter-hours</text>
+  <text class="d-sub" x="470" y="140" style="font-size:12px">from midnight, 0…96 (96 = 24:00)</text>
 
   <!-- dedup pool -->
   <text class="d-tag" x="20" y="192">the pool — identical schedules collapse to one blob</text>
   <g font-family="var(--mono)">
-    <text class="d-sub" x="30" y="216" style="font-size:9.5px">POI · HoursRef 0</text>
-    <text class="d-sub" x="30" y="234" style="font-size:9.5px">POI · HoursRef 0</text>
-    <text class="d-sub" x="30" y="252" style="font-size:9.5px">POI · HoursRef 2</text>
-    <text class="d-sub" x="30" y="270" style="font-size:9.5px">POI · HoursRef 0xFFFF</text>
+    <text class="d-sub" x="30" y="216" style="font-size:12px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="234" style="font-size:12px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="252" style="font-size:12px">POI · HoursRef 2</text>
+    <text class="d-sub" x="30" y="270" style="font-size:12px">POI · HoursRef 0xFFFF</text>
   </g>
   <line class="d-flow" x1="180" y1="212" x2="300" y2="221" marker-end="url(#aH7)" />
   <line class="d-flow" x1="180" y1="230" x2="300" y2="223" marker-end="url(#aH7)" />
   <line class="d-flow" x1="180" y1="248" x2="300" y2="279" marker-end="url(#aH7)" />
-  <text class="d-sub" x="150" y="286" style="font-size:8.5px;fill:#a9501c">0xFFFF = no hours (no arrow)</text>
+  <text class="d-sub" x="30" y="312" style="font-size:12px;fill:#a9501c">0xFFFF = no hours (no arrow)</text>
 
   <!-- pool blobs -->
   <g stroke="#3c6b39" stroke-width="1.1">
@@ -565,14 +649,16 @@ The same indexes support nearest-item and route-corridor queries.
     <rect x="306" y="238" width="180" height="26" class="d-muted" />
     <rect x="306" y="266" width="180" height="26" class="d-water" />
   </g>
-  <text class="d-sub" x="316" y="227" style="fill:#fff;font-size:9.5px">blob 0 — 29 B</text>
-  <text class="d-sub" x="316" y="255" style="fill:#fff;font-size:9.5px">blob 1 — 29 B</text>
-  <text class="d-sub" x="316" y="283" style="fill:#fff;font-size:9.5px">blob 2 — 29 B</text>
-  <text class="d-sub" x="504" y="227" style="font-size:9px">count u16, then</text>
-  <text class="d-sub" x="504" y="241" style="font-size:9px">count × 29-byte blobs;</text>
-  <text class="d-sub" x="504" y="255" style="font-size:9px">blob i at</text>
-  <text class="d-sub" x="504" y="269" style="font-size:9px" font-family="var(--mono)">pool_off + 2 + i·29</text>
-</svg>
+  <text class="d-sub" x="316" y="227" style="fill:#fff;font-size:12px">blob 0 — 29 B</text>
+  <text class="d-sub" x="316" y="255" style="fill:#24331c;font-size:12px">blob 1 — 29 B</text>
+  <text class="d-sub" x="316" y="283" style="fill:#fff;font-size:12px">blob 2 — 29 B</text>
+  <text class="d-sub" x="504" y="227" style="font-size:12px">count u16, then</text>
+  <text class="d-sub" x="504" y="241" style="font-size:12px">count × 29-byte blobs;</text>
+  <text class="d-sub" x="504" y="255" style="font-size:12px">blob i at</text>
+  <text class="d-sub" x="504" y="269" style="font-size:12px" font-family="var(--mono)">byte_offset + 2 + i·29</text>
+<text class="d-sub" x="470" y="162" text-anchor="start">f: flags · ruler widths are to scale</text></svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The packer converts opening-hours text to fixed weekly schedules. The device does not parse the source grammar.</figcaption>
 </figure>
 
@@ -584,58 +670,76 @@ Seasonal or unsupported source rules set schedule flags.
 ### The navigation graph: a routable network
 
 <figure class="fig">
-<svg viewBox="0 0 720 256" role="img" aria-label="The OBCM v14 navigation section contains profiles, a node quadtree, junction records, edge geometry, and snap anchors.">
-  <defs>
-    <marker id="aN1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="22">§8 (v14) — graph · edge pool · sparse exact-snap index</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 570" role="img" aria-label="The 40-byte navigation directory addresses profiles, a node quadtree with junction chunks, an edge geometry pool, and a snap-anchor index. Search reads junctions; endpoint projection and route output also use geometry. Proportional rulers show a junction record and its 17-byte neighbor fields.">
+  <defs><marker id="software-formats-9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start">Navigation data · four regions addressed by one directory</text>
+  <rect class="d-panel" x="20" y="56" width="680" height="66" rx="8" />
+  <text class="d-title" x="360" y="81" text-anchor="middle">Navigation directory · 40 bytes</text>
+  <text class="d-sub" x="360" y="101" text-anchor="middle">Offsets, counts, chunk size, and profile count</text>
+  <path class="d-flow" d="M360 122 L360 153" />
+<path class="d-flow" d="M100 153 H625" />
+  <path class="d-flow" d="M100 153 L100 183" marker-end="url(#software-formats-9)" />
+  <path class="d-flow" d="M275 153 L275 183" marker-end="url(#software-formats-9)" />
+  <path class="d-flow" d="M450 153 L450 183" marker-end="url(#software-formats-9)" />
+  <path class="d-flow" d="M625 153 L625 183" marker-end="url(#software-formats-9)" />
+  <rect class="d-panel" x="20" y="186" width="160" height="94" rx="8" />
+  <text class="d-title" x="100" y="211" text-anchor="middle">Profiles</text>
+  <text class="d-sub" x="100" y="231" text-anchor="middle">1–8 profiles</text>
+  <text class="d-sub" x="100" y="248" text-anchor="middle">56 bytes each</text>
+  <rect class="d-panel" x="195" y="186" width="160" height="94" rx="8" />
+  <text class="d-title" x="275" y="211" text-anchor="middle">Node index</text>
+  <text class="d-sub" x="275" y="231" text-anchor="middle">Quadtree + junctions</text>
+  <text class="d-sub" x="275" y="248" text-anchor="middle">512-byte chunks</text>
+  <rect class="d-panel" x="370" y="186" width="160" height="94" rx="8" />
+  <text class="d-title" x="450" y="211" text-anchor="middle">Edge geometry</text>
+  <text class="d-sub" x="450" y="231" text-anchor="middle">Stored road shapes</text>
+  <text class="d-sub" x="450" y="248" text-anchor="middle">Exact projection</text>
+  <rect class="d-panel" x="545" y="186" width="155" height="94" rx="8" />
+  <text class="d-title" x="622.5" y="211" text-anchor="middle">Snap anchors</text>
+  <text class="d-sub" x="622.5" y="231" text-anchor="middle">Find long edges</text>
+  <text class="d-sub" x="622.5" y="248" text-anchor="middle">Near the endpoint</text>
 
-  <!-- directory -->
-  <rect class="d-panel-2" x="24" y="42" width="140" height="64" rx="9" />
-  <text class="d-label" x="38" y="60" style="font-size:11px">nav directory</text>
-  <text class="d-sub" x="38" y="76"  style="font-size:9px">40 B — resident</text>
-  <text class="d-sub" x="38" y="89"  style="font-size:9px">offsets · counts</text>
-  <text class="d-sub" x="38" y="102" style="font-size:9px">chunk size · profiles</text>
-
-  <!-- profile table -->
-  <line class="d-flow" x1="166" y1="74" x2="196" y2="74" marker-end="url(#aN1)" />
-  <rect class="d-water" x="200" y="48" width="128" height="52" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="264" y="70" text-anchor="middle" style="fill:#fff;font-size:10.5px">profile table</text>
-  <text class="d-sub" x="264" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">1..8 × 56 B</text>
-
-  <!-- quadtree -->
-  <line class="d-flow" x1="330" y1="74" x2="360" y2="74" marker-end="url(#aN1)" />
-  <rect class="d-panel" x="364" y="50" width="118" height="48" rx="9" />
-  <text class="d-label" x="423" y="70" text-anchor="middle" style="font-size:10px">node quadtree</text>
-  <text class="d-sub" x="423" y="86" text-anchor="middle" style="font-size:8.5px">flat u32 · §4</text>
-
-  <!-- junction chunks -->
-  <line class="d-flow" x1="484" y1="74" x2="514" y2="74" marker-end="url(#aN1)" />
-  <rect class="d-water" x="518" y="50" width="178" height="48" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="607" y="68" text-anchor="middle" style="fill:#fff;font-size:10px">junction records</text>
-  <text class="d-sub" x="607" y="84" text-anchor="middle" style="fill:#dfe6e0;font-size:8px">variable · 512 B chunks</text>
-  <text class="d-sub" x="607" y="114" text-anchor="middle" style="font-size:8px;fill:#a9501c">bin-packed — leaves may share a chunk</text>
-
-  <!-- edge pool (separate offset) -->
-  <line class="d-flow" x1="94" y1="106" x2="94" y2="140" marker-end="url(#aN1)" />
-  <rect class="d-muted" x="24" y="142" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="38" y="162" style="font-size:10.5px">edge pool</text>
-  <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset</text>
-  <text class="d-sub" x="184" y="158" style="font-size:8.5px;fill:#a9501c">edge id = (chunk, ordinal)</text>
-  <text class="d-sub" x="184" y="171" style="font-size:8.5px">chunk = id &gt;&gt; 5 · ordinal = id &amp; 31</text>
-  <text class="d-sub" x="184" y="184" style="font-size:8.5px">fetched for exact projection + route emit</text>
-
-  <!-- explode one junction record -->
-  <line x1="518" y1="98" x2="410" y2="150" stroke="#9aa884" stroke-width="1.1" />
-  <line x1="696" y1="98" x2="700" y2="150" stroke="#9aa884" stroke-width="1.1" />
-  <rect class="d-hot" x="392" y="150" width="308" height="96" rx="10" style="fill:#f8efe4" />
-  <text class="d-tag" x="408" y="168" style="fill:#a9501c">one junction record — 13 + 17 × degree B</text>
-  <text class="d-sub" x="408" y="186" style="font-size:9.5px">lat · lon · dense id · degree</text>
-  <text class="d-sub" x="408" y="202" style="font-size:9.5px">then <tspan style="font-weight:700">degree</tspan> × neighbor (17 B each):</text>
-  <text class="d-sub" x="420" y="218" style="font-size:8.5px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m · way-kind · ascent m</text>
-  <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord, way-kind + ascent inline — a settle relaxes with no extra fetch</text>
-</svg>
-<figcaption>Junction records include neighbor coordinates, way kind, and ascent. Edge identifiers use a chunk and record ordinal.</figcaption>
+<text class="d-title" x="20" y="324" text-anchor="start">One junction · degree 3 example · 13 + 3 × 17 = 64 bytes</text>
+<rect x="40" y="341" width="130" height="48" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="105.0" y="361" text-anchor="middle">Header</text>
+<text class="d-sub" x="105.0" y="379" text-anchor="middle">13 B</text>
+<rect x="170" y="341" width="170" height="48" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="255.0" y="361" text-anchor="middle">Neighbor A</text>
+<text class="d-sub" x="255.0" y="379" text-anchor="middle">17 B</text>
+<rect x="340" y="341" width="170" height="48" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="425.0" y="361" text-anchor="middle">Neighbor B</text>
+<text class="d-sub" x="425.0" y="379" text-anchor="middle">17 B</text>
+<rect x="510" y="341" width="170" height="48" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="595.0" y="361" text-anchor="middle">Neighbor C</text>
+<text class="d-sub" x="595.0" y="379" text-anchor="middle">17 B</text>
+<path d="M255 389 V412 H40 V449" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-title" x="65" y="436" text-anchor="start">One 17-byte neighbor entry · fields to scale</text>
+<rect x="40" y="449" width="144" height="38" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="112.0" y="474" text-anchor="middle">Neighbor ID</text>
+<text class="d-sub" x="112.0" y="508" text-anchor="middle">0–3</text>
+<rect x="184" y="449" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="220.0" y="474" text-anchor="middle">Δ lat</text>
+<text class="d-sub" x="220.0" y="508" text-anchor="middle">4–5</text>
+<rect x="256" y="449" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="292.0" y="474" text-anchor="middle">Δ lon</text>
+<text class="d-sub" x="292.0" y="508" text-anchor="middle">6–7</text>
+<rect x="328" y="449" width="144" height="38" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="400.0" y="474" text-anchor="middle">Edge ID</text>
+<text class="d-sub" x="400.0" y="508" text-anchor="middle">8–11</text>
+<rect x="472" y="449" width="72" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="508.0" y="474" text-anchor="middle">Cost m</text>
+<text class="d-sub" x="508.0" y="508" text-anchor="middle">12–13</text>
+<rect x="544" y="449" width="36" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="562.0" y="474" text-anchor="middle">Kind</text>
+<text class="d-sub" x="562.0" y="508" text-anchor="middle">14</text>
+<rect x="580" y="449" width="72" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="616.0" y="474" text-anchor="middle">Ascent</text>
+<text class="d-sub" x="616.0" y="508" text-anchor="middle">15–16</text>
+<text class="d-sub" x="20" y="543" text-anchor="start">Header: lat, lon, node ID, degree. At degree 24, the 421-byte record still fits one 512-byte chunk.</text></svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The directory addresses four regions. A junction record is 13 + 17 × degree bytes. Inline neighbor coordinates, cost, way kind, and ascent avoid another record read during relaxation.</figcaption>
 </figure>
 
 The navigation section uses 512-byte chunks.
@@ -655,66 +759,56 @@ The anchors make each accepted road discoverable within the 251 m lookup radius.
 The router then projects the endpoint onto the complete stored polyline.
 
 <figure class="fig">
-<svg viewBox="0 0 720 300" role="img" aria-label="One A-star settle reads one junction chunk. The record contains the data required to relax each neighbor.">
-  <defs>
-    <marker id="aN2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-    <marker id="aN3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">One A* settle — descend, read one chunk, relax inline</text>
-
-  <!-- 1 descend quadtree to leaf -->
-  <text class="d-sub" x="30" y="52" style="font-size:9px;fill:#6b7758">① descend to the settled node's leaf</text>
-  <!-- quadtree box -->
-  <rect x="34" y="60" width="150" height="150" fill="none" stroke="#9aa884" stroke-width="1.3" />
-  <line x1="109" y1="60" x2="109" y2="210" stroke="#9aa884" stroke-width="0.9" />
-  <line x1="34" y1="135" x2="184" y2="135" stroke="#9aa884" stroke-width="0.9" />
-  <!-- descend into SE quadrant, subdivide again -->
-  <line x1="146" y1="135" x2="146" y2="210" stroke="#c9bfa0" stroke-width="0.8" />
-  <line x1="109" y1="172" x2="184" y2="172" stroke="#c9bfa0" stroke-width="0.8" />
-  <!-- the leaf highlighted -->
-  <rect x="146" y="172" width="38" height="38" fill="#cf6a2a" fill-opacity="0.16" stroke="#cf6a2a" stroke-width="1.4" />
-  <!-- settled node point -->
-  <circle cx="165" cy="191" r="4" class="d-hot-fill" />
-  <text class="d-sub" x="150" y="228" style="font-size:8.5px;fill:#a9501c">settled node</text>
-  <text class="d-sub" x="40" y="245" style="font-size:8.5px">a point query — one leaf, not a viewport</text>
-
-  <!-- arrow: one chunk read -->
-  <line x1="196" y1="150" x2="252" y2="150" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aN2)" />
-  <text x="224" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">1 chunk read</text>
-
-  <!-- 2 the record in RAM -->
-  <text class="d-sub" x="264" y="52" style="font-size:9px;fill:#6b7758">② its record — one 512 B chunk in RAM</text>
-  <rect class="d-panel" x="264" y="60" width="180" height="150" rx="10" />
-  <text class="d-tag" x="280" y="80">junction record</text>
-  <text class="d-sub" x="280" y="100" style="font-size:9px">lat · lon · id · degree = 3</text>
-  <g stroke="#3c6b39" stroke-width="1">
-    <rect x="280" y="112" width="148" height="26" rx="4" class="d-water" />
-    <rect x="280" y="142" width="148" height="26" rx="4" class="d-water" />
-    <rect x="280" y="172" width="148" height="26" rx="4" class="d-water" />
-  </g>
-  <text class="d-sub" x="288" y="129" style="fill:#fff;font-size:8.5px">nbr A · coord · edge · cost</text>
-  <text class="d-sub" x="288" y="159" style="fill:#fff;font-size:8.5px">nbr B · coord · edge · cost</text>
-  <text class="d-sub" x="288" y="189" style="fill:#fff;font-size:8.5px">nbr C · coord · edge · cost</text>
-
-  <!-- 3 relax each neighbor -->
-  <line x1="452" y1="150" x2="508" y2="150" stroke="#3c6b39" stroke-width="2" marker-end="url(#aN3)" />
-  <text x="480" y="142" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">relax</text>
-  <text class="d-sub" x="520" y="52" style="font-size:9px;fill:#6b7758">③ relax — no further read</text>
-  <rect class="d-hot" x="520" y="60" width="180" height="150" rx="10" style="fill:#f8efe4" />
-  <text class="d-sub" x="536" y="84" style="font-size:9.5px">per neighbor, from bytes</text>
-  <text class="d-sub" x="536" y="98" style="font-size:9.5px">already in hand:</text>
-  <text class="d-sub" x="536" y="118" style="font-family:var(--mono);font-size:9px">g' = g + cost_m · w + asc · c</text>
-  <text class="d-sub" x="536" y="134" style="font-family:var(--mono);font-size:8.5px;fill:#a9501c">w  = profile(way_kind)</text>
-  <text class="d-sub" x="536" y="150" style="font-family:var(--mono);font-size:9px">h  = gc_dist(nbr, goal)</text>
-  <text class="d-sub" x="536" y="166" style="font-family:var(--mono);font-size:9px;fill:#a9501c">f  = g' + ε·h</text>
-  <text class="d-sub" x="536" y="186" style="font-size:8px">coord inline → <tspan style="font-weight:700">h</tspan>: zero fetches</text>
-  <text class="d-sub" x="536" y="197" style="font-size:8px">way-kind + ascent inline → <tspan style="font-weight:700">w</tspan>, <tspan style="font-weight:700">c</tspan>: none either</text>
-
-  <!-- edge-pool footnote -->
-  <rect class="d-panel-2" x="34" y="258" width="666" height="30" rx="8" />
-  <text class="d-sub" x="366" y="277" text-anchor="middle" style="font-size:9px">during <tspan style="font-weight:700">A*</tspan> the edge pool is untouched; exact endpoint projection and final emit stream only the geometry they need</text>
-</svg>
-<figcaption>A-star reads edge geometry only for endpoint projection and final route output.</figcaption>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 461" role="img" aria-label="A spatial quadtree identifies the settled junction leaf. One pinned 512-byte chunk contains the junction and inline neighbor data. The algorithm updates three adjacent graph nodes using costs, coordinates, way kind and ascent, without fetching neighbor records or edge geometry.">
+<defs><marker id="r17arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">One A* settle · a point lookup, one chunk, several neighbor updates</text>
+<text class="d-title" x="20" y="60" text-anchor="start">1 · Locate the junction</text>
+<rect x="28" y="83" width="164" height="164" fill="#eef2df" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M110 83 L110 247" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M28 165 L192 165" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M151 165 L151 247" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M110 206 L192 206" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<rect x="151" y="206" width="41" height="41" fill="#f1cfb4" stroke="#cf6a2a" stroke-width="1.2" />
+<circle cx="174" cy="224" r="4" fill="#cf6a2a"/>
+<text class="d-sub" x="40" y="276" text-anchor="start">Point query → one leaf</text>
+<path d="M193 223 H244" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r17arrow)"/>
+<text class="d-sub" x="218" y="203" text-anchor="middle">read</text>
+<text class="d-title" x="260" y="60" text-anchor="start">2 · Pin its 512-byte chunk</text>
+<rect x="255" y="83" width="214" height="164" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="267" y="108" text-anchor="start">Junction: lat · lon · id · degree</text>
+<text class="d-sub" x="267" y="128" text-anchor="start">Each neighbor carries:</text>
+<rect x="265" y="141" width="194" height="28" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="274" y="159" text-anchor="start">A · coordinate · edge id</text>
+<rect x="265" y="172" width="194" height="28" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="274" y="190" text-anchor="start">B · coordinate · edge id</text>
+<rect x="265" y="203" width="194" height="28" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="274" y="221" text-anchor="start">C · coordinate · edge id</text>
+<path d="M470 173 H508" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r17arrow)"/>
+<text class="d-title" x="524" y="60" text-anchor="start">3 · Relax neighbors</text>
+<path d="M574 176 L547 113" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="547" cy="113" r="7" fill="#3c6b39"/>
+<text class="d-sub" x="559" y="117" text-anchor="start">A</text>
+<path d="M574 176 L666 164" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="666" cy="164" r="7" fill="#3c6b39"/>
+<text class="d-sub" x="678" y="168" text-anchor="start">B</text>
+<path d="M574 176 L551 237" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="551" cy="237" r="7" fill="#3c6b39"/>
+<text class="d-sub" x="563" y="241" text-anchor="start">C</text>
+<circle cx="574" cy="176" r="8" fill="#cf6a2a"/>
+<text class="d-sub" x="590" y="208" text-anchor="start">settled</text>
+<text class="d-sub" x="520" y="276" text-anchor="start">No neighbor-record fetch</text>
+<path d="M20 300 L700 300" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="20" y="328" text-anchor="start">Use the bytes already in the chunk</text>
+<text class="d-sub" x="20" y="357" text-anchor="start">g′ = g + distance × road weight + ascent × climb weight</text>
+<text class="d-sub" x="20" y="382" text-anchor="start">h = distance from neighbor to goal</text>
+<text class="d-sub" x="400" y="382" text-anchor="start">f = g′ + ε × h</text>
+<text class="d-sub" x="20" y="416" text-anchor="start">The road profile supplies weights. Inline coordinates supply the heuristic.</text>
+<text class="d-sub" x="20" y="438" text-anchor="start">Edge geometry is read for endpoint projection and final route output, not neighbor relaxation.</text>
+<text class="d-sub" x="255" y="276" text-anchor="start">All entries also store cost, kind, ascent.</text></svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The junction chunk supplies the data for each relaxation. Costs include distance, road-profile weight, and directional ascent; ε weights the goal-distance heuristic.</figcaption>
 </figure>
 
 The route search uses node records only.
@@ -731,6 +825,7 @@ An optional table stores named waypoints.
 ### The file
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 215" role="img" aria-label="An OBCR v3 file contains a 128-byte header, route chunks, a chunk index, and an optional waypoint table.">
   <text class="d-tag" x="20" y="24">OBCR — the route, front to back</text>
 
@@ -756,24 +851,26 @@ An optional table stores named waypoints.
   <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 44 B</text>
 
   <!-- offsets -->
-  <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:9px">↑ Data Offset = 128</text>
-  <text class="d-sub" x="554" y="120" text-anchor="middle" style="font-size:9px">↑ Index Offset</text>
-  <text class="d-sub" x="668" y="120" text-anchor="middle" style="font-size:9px">↑ Waypoint Offset</text>
+  <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:12px">↑ Data Offset = 128</text>
+  <text class="d-sub" x="554" y="120" text-anchor="middle" style="font-size:12px">↑ Index Offset</text>
+  <text class="d-sub" x="668" y="120" text-anchor="middle" style="font-size:12px">↑ Waypoint Offset</text>
 
   <!-- explode a chunk -->
   <line x1="216" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
   <line x1="320" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
   <rect class="d-panel-2" x="232" y="150" width="308" height="44" rx="8" />
-  <text class="d-sub" x="250" y="168" style="font-size:10px">data = (point count − 1) × 6 B records:</text>
+  <text class="d-sub" x="250" y="168" style="font-size:12px">data = (point count − 1) × 6 B records:</text>
   <g stroke="#3c6b39" stroke-width="1">
     <rect x="392" y="172" width="44" height="16" class="d-muted" />
     <rect x="436" y="172" width="44" height="16" class="d-muted" />
     <rect x="480" y="172" width="44" height="16" class="d-water" />
   </g>
-  <text class="d-sub" x="414" y="184" text-anchor="middle" style="font-size:8.5px">dLon</text>
-  <text class="d-sub" x="458" y="184" text-anchor="middle" style="font-size:8.5px">dLat</text>
-  <text class="d-sub" x="502" y="184" text-anchor="middle" style="fill:#fff;font-size:8.5px">ele</text>
+  <text class="d-sub" x="414" y="184" text-anchor="middle" style="font-size:12px">dLon</text>
+  <text class="d-sub" x="458" y="184" text-anchor="middle" style="font-size:12px">dLat</text>
+  <text class="d-sub" x="502" y="184" text-anchor="middle" style="fill:#fff;font-size:12px">ele</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The writer puts the index and waypoints after streamed chunk data.</figcaption>
 </figure>
 
@@ -784,44 +881,45 @@ Each route point record stores longitude delta, latitude delta, and absolute ele
 ### Waypoints: a category and a side
 
 <figure class="fig">
-<svg viewBox="0 0 720 166" role="img" aria-label="An OBCR v3 waypoint record is 44 bytes. It contains route distance, position, elevation, category, lateral offset, and name.">
-  <text class="d-tag" x="20" y="24">One waypoint — a fixed 44 bytes <tspan style="fill:#a9501c">(v3)</tspan></text>
-  <g stroke="#20301d" stroke-width="1">
-    <rect x="24"  y="40" width="61"  height="34" class="d-forest" />
-    <rect x="85"  y="40" width="61"  height="34" class="d-water" />
-    <rect x="146" y="40" width="61"  height="34" class="d-water" />
-    <rect x="207" y="40" width="30"  height="34" class="d-muted" />
-    <rect x="237" y="40" width="15"  height="34" class="d-hot-fill" />
-    <rect x="252" y="40" width="15"  height="34" class="d-muted" />
-    <rect x="267" y="40" width="30"  height="34" class="d-hot-fill" />
-    <rect x="297" y="40" width="30"  height="34" class="d-muted" />
-    <rect x="327" y="40" width="365" height="34" class="d-forest" />
-  </g>
-  <text class="d-sub" x="54"  y="55" text-anchor="middle" style="fill:#fff;font-size:8.5px">Distance</text>
-  <text class="d-sub" x="54"  y="67" text-anchor="middle" style="fill:#e7ead8;font-size:8px">Along (u32)</text>
-  <text class="d-sub" x="115" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lon (i32)</text>
-  <text class="d-sub" x="176" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Lat (i32)</text>
-  <text class="d-sub" x="222" y="55" text-anchor="middle" style="font-size:8px">ele</text>
-  <text class="d-sub" x="222" y="67" text-anchor="middle" style="font-size:7.5px">i16</text>
-  <text class="d-sub" x="244" y="61" text-anchor="middle" style="fill:#fff;font-size:8px">c</text>
-  <text class="d-sub" x="259" y="61" text-anchor="middle" style="font-size:8px">n</text>
-  <text class="d-sub" x="282" y="55" text-anchor="middle" style="fill:#fff;font-size:8px">off</text>
-  <text class="d-sub" x="282" y="67" text-anchor="middle" style="fill:#fff;font-size:7.5px">i16</text>
-  <text class="d-sub" x="312" y="61" text-anchor="middle" style="font-size:8px">rsv</text>
-  <text class="d-sub" x="509" y="61" text-anchor="middle" style="fill:#fff;font-size:9.5px">Name — 24 B UTF-8, null-padded</text>
-  <text class="d-sub" x="54"  y="90" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="115" y="90" text-anchor="middle" style="font-size:9px">4–7</text>
-  <text class="d-sub" x="176" y="90" text-anchor="middle" style="font-size:9px">8–11</text>
-  <text class="d-sub" x="222" y="90" text-anchor="middle" style="font-size:9px">12–13</text>
-  <text class="d-sub" x="244" y="102" text-anchor="middle" style="font-size:9px">14</text>
-  <text class="d-sub" x="259" y="114" text-anchor="middle" style="font-size:9px">15</text>
-  <text class="d-sub" x="282" y="90" text-anchor="middle" style="font-size:9px">16–17</text>
-  <text class="d-sub" x="312" y="102" text-anchor="middle" style="font-size:9px">18–19</text>
-  <text class="d-sub" x="509" y="90" text-anchor="middle" style="font-size:9px">20–43</text>
-  <text class="d-sub" x="24" y="140" style="font-size:10px"><tspan style="fill:#a9501c">category</tspan> identifies the waypoint kind</text>
-  <text class="d-sub" x="24" y="156" style="font-size:10px"><tspan style="fill:#a9501c">lateral offset</tspan> is signed meters; positive is right of travel</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 272" role="img" aria-label="A proportional byte ruler shows route distance, longitude, latitude, elevation, category, name length, lateral offset, reserved bytes, and a 24-byte name buffer. Narrow fields use single-letter labels explained below.">
+<defs><marker id="r19arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">One OBCR waypoint · a 44-byte record</text>
+<text class="d-sub" x="20" y="53" text-anchor="start">44 bytes · field widths to scale · multi-byte values are little-endian</text>
+<rect x="30" y="78" width="60" height="38" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="60.0" y="102" text-anchor="middle">Along</text>
+<text class="d-sub" x="60.0" y="137" text-anchor="middle">0–3</text>
+<rect x="90" y="78" width="60" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="120.0" y="102" text-anchor="middle">Lon</text>
+<text class="d-sub" x="120.0" y="137" text-anchor="middle">4–7</text>
+<rect x="150" y="78" width="60" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="180.0" y="102" text-anchor="middle">Lat</text>
+<text class="d-sub" x="180.0" y="137" text-anchor="middle">8–11</text>
+<rect x="210" y="78" width="30" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="225.0" y="102" text-anchor="middle">e</text>
+<text class="d-sub" x="225.0" y="137" text-anchor="middle">12–13</text>
+<rect x="240" y="78" width="15" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="247.5" y="102" text-anchor="middle">c</text>
+<text class="d-sub" x="247.5" y="157" text-anchor="middle">14</text>
+<rect x="255" y="78" width="15" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="262.5" y="102" text-anchor="middle">n</text>
+<text class="d-sub" x="262.5" y="177" text-anchor="middle">15</text>
+<rect x="270" y="78" width="30" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="285.0" y="102" text-anchor="middle">o</text>
+<text class="d-sub" x="285.0" y="137" text-anchor="middle">16–17</text>
+<rect x="300" y="78" width="30" height="38" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="315.0" y="102" text-anchor="middle">r</text>
+<text class="d-sub" x="315.0" y="157" text-anchor="middle">18–19</text>
+<rect x="330" y="78" width="360" height="38" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="510.0" y="102" text-anchor="middle">Name · 24-byte UTF-8 buffer</text>
+<text class="d-sub" x="510.0" y="137" text-anchor="middle">20–43</text>
+<text class="d-sub" x="30" y="207" text-anchor="start">Along: route distance (u32) · Lon / Lat: i32 · e: elevation (i16)</text>
+<text class="d-sub" x="30" y="228" text-anchor="start">c: category · n: name length · o: signed lateral offset (i16) · r: reserved</text>
+<text class="d-sub" x="30" y="249" text-anchor="start">Lateral offset is in metres; positive means right of travel. Unused name bytes are zero.</text>
 </svg>
-<figcaption>A positive lateral offset is to the right of travel.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The byte offsets and widths match OBCR v3. The name occupies its fixed buffer even when the UTF-8 name is shorter than 24 bytes.</figcaption>
 </figure>
 
 The converter maps GPX symbols and types to canonical waypoint categories.
@@ -832,6 +930,7 @@ The signed lateral offset shows which side of the route contains the waypoint.
 ### Chunks, seams, and deltas
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 250" role="img" aria-label="Route chunks share their boundary point. Each index entry contains an anchor, bounds, and cumulative statistics.">
   <text class="d-tag" x="20" y="24">Chunks share their seam; position chains by delta</text>
 
@@ -843,17 +942,17 @@ The signed lateral offset shows which side of the route contains the waypoint.
   <g fill="#6b7758"><circle cx="92" cy="100" r="2.6"/><circle cx="196" cy="166" r="2.6"/><circle cx="288" cy="110" r="2.6"/></g>
   <!-- shared seam vertices -->
   <g fill="#cf6a2a" stroke="#20301d" stroke-width="0.8"><circle cx="150" cy="130" r="5.5"/><circle cx="250" cy="150" r="5.5"/></g>
-  <text class="d-sub" x="40"  y="178" style="font-size:9.5px">chunk 0</text>
-  <text class="d-sub" x="196" y="200" text-anchor="middle" style="font-size:9.5px">chunk 1</text>
-  <text class="d-sub" x="312" y="74"  style="font-size:9.5px">chunk 2</text>
-  <text class="d-sub" x="150" y="112" text-anchor="middle" style="fill:#a9501c;font-size:9px">shared</text>
-  <text class="d-sub" x="40" y="224" style="font-size:10px">chunk k's last point = chunk k+1's anchor</text>
+  <text class="d-sub" x="40"  y="178" style="font-size:12px">chunk 0</text>
+  <text class="d-sub" x="196" y="200" text-anchor="middle" style="font-size:12px">chunk 1</text>
+  <text class="d-sub" x="312" y="74"  style="font-size:12px">chunk 2</text>
+  <text class="d-sub" x="150" y="112" text-anchor="middle" style="fill:#a9501c;font-size:12px">shared</text>
+  <text class="d-sub" x="40" y="224" style="font-size:12px">chunk k's last point = chunk k+1's anchor</text>
 
   <!-- RIGHT: one chunk's parts -->
   <rect class="d-panel-2" x="404" y="48" width="292" height="78" rx="10" />
   <text class="d-tag" x="420" y="68">index entry (resident)</text>
-  <text class="d-sub" x="420" y="88"  style="font-size:10px">anchor (lon, lat, ele) · bbox</text>
-  <text class="d-sub" x="420" y="106" style="font-size:10px">cum distance · cum ascent · byte off/len</text>
+  <text class="d-sub" x="420" y="88"  style="font-size:12px">anchor (lon, lat, ele) · bbox</text>
+  <text class="d-sub" x="420" y="106" style="font-size:12px">cum distance · cum ascent · byte off/len</text>
 
   <rect class="d-panel" x="404" y="138" width="292" height="78" rx="10" />
   <text class="d-tag" x="420" y="158">chunk data (streamed)</text>
@@ -863,12 +962,14 @@ The signed lateral offset shows which side of the route contains the waypoint.
     <rect x="520" y="170" width="50" height="20" class="d-water" />
     <rect x="578" y="170" width="100" height="20" fill="none" stroke="none" />
   </g>
-  <text class="d-sub" x="445" y="184" text-anchor="middle" style="font-size:9px">dLon</text>
-  <text class="d-sub" x="495" y="184" text-anchor="middle" style="font-size:9px">dLat</text>
-  <text class="d-sub" x="545" y="184" text-anchor="middle" style="fill:#fff;font-size:9px">ele</text>
-  <text class="d-sub" x="588" y="184" style="font-size:11px">× (n−1)</text>
-  <text class="d-sub" x="420" y="208" style="font-size:9.5px">position = delta · elevation = absolute</text>
+  <text class="d-sub" x="445" y="184" text-anchor="middle" style="font-size:12px">dLon</text>
+  <text class="d-sub" x="495" y="184" text-anchor="middle" style="font-size:12px">dLat</text>
+  <text class="d-sub" x="545" y="184" text-anchor="middle" style="fill:#fff;font-size:12px">ele</text>
+  <text class="d-sub" x="588" y="184" style="font-size:12px">× (n−1)</text>
+  <text class="d-sub" x="420" y="208" style="font-size:12px">position = delta · elevation = absolute</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Shared seam points let a renderer draw each chunk without a gap.</figcaption>
 </figure>
 
@@ -886,6 +987,7 @@ Distance, ascent, descent, and elevation range remain exact.
 ## Recorded rides — the v3 ride object
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 258" role="img" aria-label="A recorded ride contains 20-byte samples. Finalization appends one fixed summary footer.">
   <defs>
     <marker id="rr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -893,14 +995,14 @@ Distance, ascent, descent, and elevation range remain exact.
   <text class="d-tag" x="20" y="24">The 20-byte ride sample — final bytes from the first write</text>
 
   <!-- field names -->
-  <text class="d-sub" x="106" y="56" text-anchor="middle" style="font-size:9.5px">lon (i32)</text>
-  <text class="d-sub" x="210" y="56" text-anchor="middle" style="font-size:9.5px">lat (i32)</text>
-  <text class="d-sub" x="288" y="56" text-anchor="middle" style="font-size:9.5px">ele</text>
-  <text class="d-sub" x="340" y="56" text-anchor="middle" style="font-size:9px">flags</text>
-  <text class="d-sub" x="418" y="56" text-anchor="middle" style="font-size:9.5px">t_ms (u32)</text>
-  <text class="d-sub" x="483" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">hr</text>
-  <text class="d-sub" x="509" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">cad</text>
-  <text class="d-sub" x="548" y="56" text-anchor="middle" style="fill:#a9501c;font-size:9px">pwr</text>
+  <text class="d-sub" x="106" y="56" text-anchor="middle" style="font-size:12px">lon (i32)</text>
+  <text class="d-sub" x="210" y="56" text-anchor="middle" style="font-size:12px">lat (i32)</text>
+  <text class="d-sub" x="288" y="56" text-anchor="middle" style="font-size:12px">ele</text>
+  <text class="d-sub" x="340" y="56" text-anchor="middle" style="font-size:12px">flags</text>
+  <text class="d-sub" x="418" y="56" text-anchor="middle" style="font-size:12px">t_ms (u32)</text>
+  <text class="d-sub" x="483" y="56" text-anchor="middle" style="fill:#a9501c;font-size:12px">hr</text>
+  <text class="d-sub" x="509" y="56" text-anchor="middle" style="fill:#a9501c;font-size:12px">cad</text>
+  <text class="d-sub" x="548" y="56" text-anchor="middle" style="fill:#a9501c;font-size:12px">pwr</text>
 
   <!-- ruler rects (26 px / byte, origin x=54) -->
   <g stroke="#20301d" stroke-width="1">
@@ -914,37 +1016,39 @@ Distance, ascent, descent, and elevation range remain exact.
     <rect x="522" y="64" width="52"  height="34" class="d-hot-fill" />
   </g>
   <!-- field values -->
-  <text class="d-sub" x="340" y="85" text-anchor="middle" style="font-size:8px">bit0 = seg</text>
-  <text class="d-sub" x="418" y="85" text-anchor="middle" style="fill:#e7ead8;font-size:8px">millis</text>
+  <text class="d-sub" x="340" y="85" text-anchor="middle" style="font-size:12px">bit 0</text>
+  <text class="d-sub" x="418" y="85" text-anchor="middle" style="fill:#e7ead8;font-size:12px">millis</text>
 
   <!-- byte ranges -->
-  <text class="d-sub" x="106" y="112" text-anchor="middle" style="font-size:9px">0–3</text>
-  <text class="d-sub" x="210" y="112" text-anchor="middle" style="font-size:9px">4–7</text>
-  <text class="d-sub" x="288" y="112" text-anchor="middle" style="font-size:9px">8–9</text>
-  <text class="d-sub" x="340" y="112" text-anchor="middle" style="font-size:9px">10–11</text>
-  <text class="d-sub" x="418" y="112" text-anchor="middle" style="font-size:9px">12–15</text>
-  <text class="d-sub" x="483" y="112" text-anchor="middle" style="font-size:9px">16</text>
-  <text class="d-sub" x="509" y="112" text-anchor="middle" style="font-size:9px">17</text>
-  <text class="d-sub" x="548" y="112" text-anchor="middle" style="font-size:9px">18–19</text>
-  <text class="d-sub" x="590" y="86" style="fill:#a9501c;font-size:8.5px">sensor tail</text>
-  <text class="d-sub" x="590" y="98" style="fill:#a9501c;font-size:8px">0xFF/0xFFFF = absent</text>
+  <text class="d-sub" x="106" y="112" text-anchor="middle" style="font-size:12px">0–3</text>
+  <text class="d-sub" x="210" y="112" text-anchor="middle" style="font-size:12px">4–7</text>
+  <text class="d-sub" x="288" y="112" text-anchor="middle" style="font-size:12px">8–9</text>
+  <text class="d-sub" x="340" y="112" text-anchor="middle" style="font-size:12px">10–11</text>
+  <text class="d-sub" x="418" y="112" text-anchor="middle" style="font-size:12px">12–15</text>
+  <text class="d-sub" x="483" y="112" text-anchor="middle" style="font-size:12px">16</text>
+  <text class="d-sub" x="509" y="112" text-anchor="middle" style="font-size:12px">17</text>
+  <text class="d-sub" x="548" y="112" text-anchor="middle" style="font-size:12px">18–19</text>
+  <text class="d-sub" x="590" y="86" style="fill:#a9501c;font-size:12px">sensor tail</text>
+  <text class="d-sub" x="590" y="104" style="fill:#a9501c;font-size:12px">0xFF/0xFFFF = absent</text>
 
   <!-- Finish append -->
   <rect class="d-panel-2" x="40" y="168" width="158" height="64" rx="10" />
-  <text class="d-label" x="119" y="192" text-anchor="middle" style="font-size:10.5px">ride payload</text>
-  <text class="d-sub" x="119" y="208" text-anchor="middle" style="font-size:9px">N × 20 B samples</text>
-  <text class="d-sub" x="119" y="222" text-anchor="middle" style="font-size:9px;fill:#a9501c">written in place</text>
+  <text class="d-label" x="119" y="192" text-anchor="middle" style="font-size:12px">ride payload</text>
+  <text class="d-sub" x="119" y="208" text-anchor="middle" style="font-size:12px">N × 20 B samples</text>
+  <text class="d-sub" x="119" y="222" text-anchor="middle" style="font-size:12px;fill:#a9501c">written in place</text>
 
   <line class="d-flow" x1="198" y1="200" x2="302" y2="200" marker-end="url(#rr1)" />
-  <text class="d-sub" x="250" y="190" text-anchor="middle" style="font-size:9px">Finish</text>
-  <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:8.5px">append only</text>
+  <text class="d-sub" x="250" y="190" text-anchor="middle" style="font-size:12px">Finish</text>
+  <text class="d-sub" x="250" y="216" text-anchor="middle" style="font-size:12px">append only</text>
 
   <rect class="d-panel" x="308" y="164" width="384" height="34" rx="8" />
-  <text class="d-sub" x="320" y="185" style="font-size:9.5px"><tspan class="d-label">84-byte footer</tspan> — start · totals · sensors · points · name</text>
+  <text class="d-sub" x="320" y="185" style="font-size:12px"><tspan class="d-label">84-byte footer</tspan> — start · totals · sensors · points · name</text>
 
   <rect class="d-hot" x="308" y="206" width="384" height="34" rx="8" style="fill:#f8efe4" />
-  <text class="d-sub" x="320" y="227" style="font-size:9.5px"><tspan class="d-label" style="fill:#a9501c">one commit</tspan> — final length + CRC, RECORDING cleared</text>
+  <text class="d-sub" x="320" y="227" style="font-size:12px"><tspan class="d-label" style="fill:#a9501c">one commit</tspan> — final length + CRC, RECORDING cleared</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Ride finalization does not rewrite sample data.</figcaption>
 </figure>
 
@@ -963,90 +1067,184 @@ Value `-32768` means `NODATA`.
 The sample posting and cell size are header values.
 
 <figure class="fig">
-<svg viewBox="0 0 720 340" role="img" aria-label="OBCT v1 uses an integer sample lattice, 16 by 16 sample tiles, terrain cells, and a directory-based container.">
-  <defs>
-    <marker id="aTF" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="22">§1 lattice → §2 tile → §3 cell → §4 container</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 732" role="img" aria-label="A sample lattice expands into a 16 by 16 tile and a 64 by 64 tile cell. Adjacent cells show single ownership of seam samples. A container ribbon shows its directory, optional cross-cell index and cell blocks. Indexed v3 adds progressively coarser samples and conservative bounds while retaining native heights.">
+<defs><marker id="r22arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">Terrain storage · lattice → tile → cell → indexed container</text>
+<text class="d-title" x="20" y="61" text-anchor="start">Sample lattice</text>
+<text class="d-title" x="245" y="61" text-anchor="start">One tile</text>
+<text class="d-title" x="494" y="61" text-anchor="start">One terrain cell</text>
+<path d="M35 90 L160 90" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 90 L35 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 115 L160 115" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M60 90 L60 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 140 L160 140" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M85 90 L85 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 165 L160 165" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M110 90 L110 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 190 L160 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M135 90 L135 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="35" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="140" r="4" fill="#cf6a2a"/>
+<text class="d-sub" x="20" y="222" text-anchor="start">2⁹ µdeg between samples</text>
+<text class="d-sub" x="20" y="242" text-anchor="start">Each height: signed i16 metres</text>
+<path d="M178 139 H222" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<rect x="245" y="83" width="128" height="128" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M253 83 L253 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 91 L373 91" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M261 83 L261 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 99 L373 99" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M269 83 L269 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 107 L373 107" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M277 83 L277 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 115 L373 115" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M285 83 L285 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 123 L373 123" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M293 83 L293 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 131 L373 131" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M301 83 L301 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 139 L373 139" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M309 83 L309 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 147 L373 147" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M317 83 L317 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 155 L373 155" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M325 83 L325 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 163 L373 163" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M333 83 L333 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 171 L373 171" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M341 83 L341 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 179 L373 179" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M349 83 L349 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 187 L373 187" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M357 83 L357 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 195 L373 195" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M365 83 L365 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 203 L373 203" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<rect x="285" y="147" width="8" height="8" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="245" y="232" text-anchor="start">16 × 16 samples = 512 B</text>
+<text class="d-sub" x="245" y="252" text-anchor="start">One aligned storage read</text>
+<path d="M388 139 H469" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<rect x="495" y="83" width="128" height="128" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M511 83 L511 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 99 L623 99" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M527 83 L527 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 115 L623 115" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M543 83 L543 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 131 L623 131" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M559 83 L559 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 147 L623 147" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M575 83 L575 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 163 L623 163" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M591 83 L591 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 179 L623 179" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M607 83 L607 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 195 L623 195" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<rect x="495" y="83" width="2" height="2" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M497 84 L644 98" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="642" y="117" text-anchor="start">one tile</text>
+<text class="d-sub" x="494" y="232" text-anchor="start">64 × 64 tiles · 2¹⁹ µdeg</text>
+<text class="d-sub" x="494" y="252" text-anchor="start">1024² samples · 2 MiB native</text>
+<text class="d-sub" x="494" y="270" text-anchor="start">Grid lines shown every 8 tiles</text>
+<text class="d-title" x="20" y="308" text-anchor="start">Cell edges · each sample has one owner</text>
+<rect x="24" y="331" width="110" height="75" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="134" y="331" width="110" height="75" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M134 322 L134 414" fill="none" stroke="#cf6a2a" stroke-width="1.3" />
+<circle cx="134" cy="341" r="3" fill="#33575b"/>
+<circle cx="134" cy="361" r="3" fill="#33575b"/>
+<circle cx="134" cy="381" r="3" fill="#33575b"/>
+<circle cx="134" cy="401" r="3" fill="#33575b"/>
+<text class="d-sub" x="63" y="355" text-anchor="middle">west</text>
+<text class="d-sub" x="189" y="355" text-anchor="middle">east</text>
+<text class="d-sub" x="269" y="348" text-anchor="start">The seam belongs to the east cell.</text>
+<text class="d-sub" x="269" y="371" text-anchor="start">Each cell includes its minimum edges; maximum edges belong</text>
+<text class="d-sub" x="269" y="391" text-anchor="start">to the next cell. Sampling can fetch corners across that seam.</text>
+<text class="d-title" x="20" y="449" text-anchor="start">Container · directory entries locate geographic cells</text>
+<rect x="20" y="468" width="85" height="56" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="62.5" y="490" text-anchor="middle">Header</text>
+<text class="d-sub" x="62.5" y="509" text-anchor="middle">32 B</text>
+<rect x="105" y="468" width="155" height="56" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="182.5" y="490" text-anchor="middle">Cell directory</text>
+<text class="d-sub" x="182.5" y="509" text-anchor="middle">rows × cols × u32</text>
+<rect x="260" y="468" width="155" height="56" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="337.5" y="490" text-anchor="middle">Cross-cell index</text>
+<text class="d-sub" x="337.5" y="509" text-anchor="middle">v3 · when flagged</text>
+<rect x="415" y="468" width="140" height="56" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="485.0" y="490" text-anchor="middle">Cell block 0</text>
+<text class="d-sub" x="485.0" y="509" text-anchor="middle">height levels</text>
+<rect x="555" y="468" width="145" height="56" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="627.5" y="490" text-anchor="middle">… Cell block k</text>
+<text class="d-sub" x="627.5" y="509" text-anchor="middle">height levels</text>
+<text class="d-sub" x="20" y="548" text-anchor="start">A zero directory offset means absent terrain. The ribbon is not to scale.</text>
+<text class="d-title" x="20" y="581" text-anchor="start">Indexed v3 cells keep the native heights, then add coarser samples and bounds.</text>
+<rect x="40" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M50 602 L50 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 612 L120 612" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M60 602 L60 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 622 L120 622" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M70 602 L70 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 632 L120 632" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M80 602 L80 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 642 L120 642" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M90 602 L90 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 652 L120 652" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M100 602 L100 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 662 L120 662" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M110 602 L110 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 672 L120 672" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<rect x="205" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
 
-  <!-- lattice -->
-  <rect class="d-panel-2" x="24" y="40" width="150" height="118" rx="9" />
-  <text class="d-label" x="38" y="60" style="font-size:10.5px">sample lattice</text>
-  <g stroke="#9aa884" stroke-width="0.8">
-    <line x1="42" y1="72" x2="158" y2="72" /><line x1="42" y1="88" x2="158" y2="88" />
-    <line x1="42" y1="104" x2="158" y2="104" /><line x1="42" y1="120" x2="158" y2="120" />
-    <line x1="58" y1="68" x2="58" y2="124" /><line x1="82" y1="68" x2="82" y2="124" />
-    <line x1="106" y1="68" x2="106" y2="124" /><line x1="130" y1="68" x2="130" y2="124" />
-  </g>
-  <circle cx="82" cy="88" r="3" class="d-hot-fill" />
-  <text class="d-sub" x="38" y="137" style="font-size:8.5px">posting 2&#8313; &#181;deg</text>
-  <text class="d-sub" x="38" y="149" style="font-size:8.5px">&#8776; 57 &#215; 39 m &#183; int16 m</text>
 
-  <line class="d-flow" x1="178" y1="92" x2="204" y2="92" marker-end="url(#aTF)" />
 
-  <!-- tile -->
-  <rect class="d-panel" x="208" y="40" width="150" height="118" rx="9" />
-  <text class="d-label" x="222" y="60" style="font-size:10.5px">tile</text>
-  <rect x="238" y="68" width="96" height="56" style="fill:#e7ead8;stroke:#3c6b39;stroke-width:1.2" />
-  <g stroke="#3c6b39" stroke-opacity="0.35" stroke-width="0.7">
-    <line x1="238" y1="82" x2="334" y2="82" /><line x1="238" y1="96" x2="334" y2="96" /><line x1="238" y1="110" x2="334" y2="110" />
-    <line x1="262" y1="68" x2="262" y2="124" /><line x1="286" y1="68" x2="286" y2="124" /><line x1="310" y1="68" x2="310" y2="124" />
-  </g>
-  <circle cx="238" cy="124" r="3.5" class="d-hot-fill" />
-  <text class="d-sub" x="222" y="137" style="font-size:8.5px">16 &#215; 16 = <tspan style="font-weight:700">512 B</tspan></text>
-  <text class="d-sub" x="222" y="149" style="font-size:8.5px">one SD block</text>
 
-  <line class="d-flow" x1="362" y1="92" x2="388" y2="92" marker-end="url(#aTF)" />
 
-  <!-- cell -->
-  <rect class="d-panel" x="392" y="40" width="150" height="118" rx="9" />
-  <text class="d-label" x="406" y="60" style="font-size:10.5px">terrain cell</text>
-  <rect x="422" y="68" width="88" height="56" style="fill:#dfe6e0;stroke:#3c6b39;stroke-width:1.4" />
-  <g stroke="#3c6b39" stroke-opacity="0.28" stroke-width="0.6">
-    <line x1="422" y1="82" x2="510" y2="82" /><line x1="422" y1="96" x2="510" y2="96" /><line x1="422" y1="110" x2="510" y2="110" />
-    <line x1="444" y1="68" x2="444" y2="124" /><line x1="466" y1="68" x2="466" y2="124" /><line x1="488" y1="68" x2="488" y2="124" />
-  </g>
-  <rect x="422" y="68" width="22" height="14" style="fill:#cf6a2a;fill-opacity:0.35;stroke:#cf6a2a;stroke-width:1" />
-  <text class="d-sub" x="406" y="137" style="font-size:8.5px">2&#185;&#8313; &#181;deg &#183; 64&#178; tiles</text>
-  <text class="d-sub" x="406" y="149" style="font-size:8.5px">1024&#178; samples &#183; 2 MiB</text>
 
-  <!-- half-open note -->
-  <rect class="d-panel-2" x="560" y="40" width="136" height="118" rx="9" />
-  <text class="d-tag" x="574" y="60">half-open</text>
-  <text class="d-sub" x="574" y="80" style="font-size:9px">a cell owns its</text>
-  <text class="d-sub" x="574" y="93" style="font-size:9px">minimum edges,</text>
-  <text class="d-sub" x="574" y="106" style="font-size:9px">not its maximum</text>
-  <text class="d-sub" x="574" y="126" style="font-size:8.5px;fill:#a9501c">no sample stored twice</text>
+<rect x="355" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
 
-  <!-- container ribbon -->
-  <text class="d-sub" x="24" y="190" style="font-size:9px;fill:#6b7758">the container — one format for a published cell and a map's spliced raster</text>
-  <g stroke="#20301d" stroke-width="1">
-    <rect x="24" y="200" width="86" height="40" class="d-forest" />
-    <rect x="110" y="200" width="170" height="40" class="d-amber" />
-    <rect x="280" y="200" width="138" height="40" class="d-water" />
-    <rect x="418" y="200" width="138" height="40" class="d-muted" />
-    <rect x="556" y="200" width="140" height="40" class="d-water" />
-  </g>
-  <text class="d-label" x="67" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">header</text>
-  <text class="d-sub" x="67" y="233" text-anchor="middle" style="fill:#fff;font-size:8.5px">32 B</text>
-  <text class="d-label" x="195" y="219" text-anchor="middle" style="font-size:10px">offset directory</text>
-  <text class="d-sub" x="195" y="233" text-anchor="middle" style="font-size:8.5px">rows &#215; cols &#215; u32</text>
-  <text class="d-label" x="349" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">cell block</text>
-  <text class="d-sub" x="349" y="233" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">T&#178; &#215; 512 B</text>
-  <text class="d-label" x="487" y="219" text-anchor="middle" style="font-size:10px">cell block</text>
-  <text class="d-label" x="626" y="219" text-anchor="middle" style="fill:#fff;font-size:10px">cell block</text>
 
-  <text class="d-sub" x="24" y="262" style="font-size:9px">slot = (ci &#8722; CellMinI) &#215; CellCols + (cj &#8722; CellMinJ) &#8594; a byte offset, or <tspan style="font-weight:700">0</tspan> = absent</text>
-  <text class="d-sub" x="24" y="278" style="font-size:9px;fill:#a9501c">no bbox field — the cell rectangle <tspan style="font-style:italic">is</tspan> the bounding box</text>
-
-  <rect class="d-panel-2" x="24" y="296" width="672" height="32" rx="8" />
-  <text class="d-sub" x="360" y="316" text-anchor="middle" style="font-size:9.5px">a <tspan style="font-weight:700">cell</tspan> is a 1 &#215; 1 container; a map's <tspan style="font-weight:700">spliced region</tspan> covers a selection — one format, no branch</text>
-</svg>
-<figcaption>One tile is 512 bytes. A zero directory offset means that the terrain cell is absent.</figcaption>
+<path d="M131 634 H190" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<path d="M299 634 H340" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<text class="d-sub" x="470" y="617" text-anchor="start">Same area; lattice posts farther apart.</text>
+<text class="d-sub" x="470" y="641" text-anchor="start">Conservative height / error bounds</text>
+<text class="d-sub" x="470" y="663" text-anchor="start">let Peak View skip or merge regions.</text>
+<text class="d-sub" x="20" y="710" text-anchor="start">Default lattice sizes shown above. The header stores the posting and cell size.</text>
+<path d="M225 602 L225 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 622 L285 622" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M245 602 L245 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 642 L285 642" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M265 602 L265 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 662 L285 662" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M395 602 L395 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M355 642 L435 642" fill="none" stroke="#9aa884" stroke-width="1.3" /></svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>Native height bytes retain the same lattice and tile order. Indexed OBCT v3 adds a height pyramid and conservative bounds; ordinary elevation sampling still reads native tiles.</figcaption>
 </figure>
 
 A tile contains 16 × 16 samples and is exactly 512 bytes.
-Tiles and cells use row-major order.
+Native tiles and the cell directory use row-major order. Indexed cell blocks also contain
+coarse height levels and bounds for Peak View.
 Rows increase latitude.
 The first sample is at the minimum corner.
 
@@ -1109,10 +1307,12 @@ pub trait ByteSource {
 The device implementation reads a flat-store object.
 The simulator and browser demo import OBCM into the same flat store, then read the committed map object.
 Their media differ: a temporary sparse file on the simulator and sparse memory pages in the browser.
-Other host objects still use their existing file or memory repositories.
+The browser also imports routes into its session card. Simulator routes and other host objects
+use their existing file or memory repositories.
 The `u64` offset supports large OBCM objects.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 270" role="img" aria-label="The map reader keeps small tables in memory. It streams map indexes and geometry through bounded caches. The route reader keeps its small index and streams route chunks.">
   <defs>
     <marker id="aF4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -1122,10 +1322,10 @@ The `u64` offset supports large OBCM objects.
   <!-- file on card -->
   <rect class="d-panel-2" x="36" y="48" width="128" height="180" rx="10" />
   <text class="d-tag" x="52" y="68">OBCM object</text>
-  <rect x="48" y="78" width="104" height="16" class="d-forest" /><text class="d-sub" x="100" y="90" text-anchor="middle" style="fill:#fff;font-size:8.5px">header·styles·LOD</text>
-  <rect x="48" y="96" width="104" height="56" class="d-muted" /><text class="d-sub" x="100" y="128" text-anchor="middle" style="font-size:9px">quadtree index</text>
-  <rect x="48" y="154" width="104" height="66" class="d-water" /><text class="d-sub" x="100" y="190" text-anchor="middle" style="fill:#fff;font-size:9px">geometry chunks</text>
-  <text class="d-sub" x="100" y="244" text-anchor="middle" style="font-size:9px">megabytes ≫ RAM</text>
+  <rect x="48" y="78" width="104" height="16" class="d-forest" /><text class="d-sub" x="100" y="90" text-anchor="middle" style="fill:#fff;font-size:12px">header·styles·LOD</text>
+  <rect x="48" y="96" width="104" height="56" class="d-muted" /><text class="d-sub" x="100" y="128" text-anchor="middle" style="font-size:12px">quadtree index</text>
+  <rect x="48" y="154" width="104" height="66" class="d-water" /><text class="d-sub" x="100" y="190" text-anchor="middle" style="fill:#fff;font-size:12px">geometry chunks</text>
+  <text class="d-sub" x="100" y="244" text-anchor="middle" style="font-size:12px">megabytes ≫ RAM</text>
 
   <!-- arrows -->
   <line class="d-flow" x1="170" y1="86"  x2="318" y2="86"  marker-end="url(#aF4)" />
@@ -1144,9 +1344,11 @@ The `u64` offset supports large OBCM objects.
 
   <!-- route contrast -->
   <rect class="d-panel-2" x="324" y="200" width="360" height="40" rx="10" />
-  <text class="d-sub" x="340" y="218" style="font-size:10px"><tspan style="fill:#a9501c">OBCR:</tspan> header + the whole (small, flat) index resident;</text>
-  <text class="d-sub" x="340" y="232" style="font-size:10px">only geometry chunks stream. The list is cheap to keep.</text>
+  <text class="d-sub" x="340" y="218" style="font-size:12px"><tspan style="fill:#a9501c">OBCR:</tspan> header + the whole (small, flat) index resident;</text>
+  <text class="d-sub" x="340" y="232" style="font-size:12px">only geometry chunks stream. The list is cheap to keep.</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Large map, route, terrain, and weather objects do not have to fit in RAM.</figcaption>
 </figure>
 
@@ -1191,6 +1393,7 @@ Each schema band assigns a cell size and a subset of map content.
 ### The alignment trick
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 268" role="img" aria-label="Power-of-two map cells align with an assembled map quadtree. The assembler copies geometry chunks and rebuilds global sections.">
   <defs>
     <marker id="aCA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -1209,24 +1412,24 @@ Each schema band assigns a cell size and a subset of map content.
     <rect class="d-panel-2" x="174" y="152" width="72" height="72" style="fill:#f2efe2" />
     <!-- the selection -->
     <path class="d-hot" d="M46 96 L152 96 L152 138 L128 138 L128 200 L46 200 Z" stroke-dasharray="5 3" />
-    <text class="d-sub" x="38" y="118" style="font-size:9px">18/1204/1052</text>
-    <text class="d-sub" x="110" y="118" style="font-size:9px">…/1053</text>
-    <text class="d-sub" x="182" y="118" style="font-size:9px;fill:#b9b09a">not selected</text>
+    <text class="d-sub" x="38" y="118" style="font-size:12px">cell A</text>
+    <text class="d-sub" x="110" y="118" style="font-size:12px">cell B</text>
+    <text class="d-sub" x="182" y="118" style="font-size:12px;fill:#b9b09a">unused</text>
   </g>
-  <text class="d-sub" x="30" y="243" style="font-size:9px;fill:#a9501c">selection (dashed) → the cells it touches</text>
+  <text class="d-sub" x="30" y="243" style="font-size:12px;fill:#a9501c">selection (dashed) → the cells it touches</text>
 
   <!-- arrow -->
   <line class="d-flow" x1="256" y1="150" x2="360" y2="150" marker-end="url(#aCA)" />
-  <text class="d-sub" x="308" y="132" text-anchor="middle" style="fill:#a9501c;font-size:9.5px">chunk bytes</text>
-  <text class="d-sub" x="308" y="145" text-anchor="middle" style="fill:#a9501c;font-size:9.5px">copied verbatim</text>
-  <text class="d-sub" x="308" y="172" text-anchor="middle" style="font-size:9px">no decode</text>
-  <text class="d-sub" x="308" y="184" text-anchor="middle" style="font-size:9px">no GEOS</text>
+  <text class="d-sub" x="308" y="132" text-anchor="middle" style="fill:#a9501c;font-size:12px">chunk bytes</text>
+  <text class="d-sub" x="308" y="145" text-anchor="middle" style="fill:#a9501c;font-size:12px">copied verbatim</text>
+  <text class="d-sub" x="308" y="172" text-anchor="middle" style="font-size:12px">no decode</text>
+  <text class="d-sub" x="308" y="190" text-anchor="middle" style="font-size:12px">no GEOS</text>
 
   <!-- right: the assembled tree -->
   <text class="d-label" x="392" y="52">the assembly</text>
   <text class="d-sub" x="392" y="67">bbox = grid-aligned 2ⁿ square</text>
   <circle cx="470" cy="92" r="11" class="d-forest" />
-  <text class="d-sub" x="490" y="96" style="font-size:9px">root — rebuilt</text>
+  <text class="d-sub" x="490" y="96" style="font-size:12px">root — rebuilt</text>
   <line class="d-flow" x1="463" y1="101" x2="432" y2="126" />
   <line class="d-flow" x1="477" y1="101" x2="508" y2="126" />
   <circle cx="426" cy="136" r="10" class="d-forest" />
@@ -1239,15 +1442,17 @@ Each schema band assigns a cell size and a subset of map content.
   <rect class="d-panel" x="432" y="176" width="48" height="30" rx="5" />
   <rect class="d-panel" x="488" y="176" width="48" height="30" rx="5" />
   <rect class="d-panel-2" x="544" y="176" width="48" height="30" rx="5" style="fill:#f2efe2" />
-  <text class="d-sub" x="400" y="196" text-anchor="middle" style="font-size:9px">cell</text>
-  <text class="d-sub" x="456" y="196" text-anchor="middle" style="font-size:9px">cell</text>
-  <text class="d-sub" x="512" y="196" text-anchor="middle" style="font-size:9px">cell</text>
-  <text class="d-sub" x="568" y="196" text-anchor="middle" style="font-size:9px;fill:#b9b09a">empty</text>
+  <text class="d-sub" x="400" y="196" text-anchor="middle" style="font-size:12px">cell</text>
+  <text class="d-sub" x="456" y="196" text-anchor="middle" style="font-size:12px">cell</text>
+  <text class="d-sub" x="512" y="196" text-anchor="middle" style="font-size:12px">cell</text>
+  <text class="d-sub" x="568" y="196" text-anchor="middle" style="font-size:12px;fill:#b9b09a">empty</text>
   <path class="d-hot" d="M370 170 L598 170" stroke-dasharray="4 3" />
-  <text class="d-sub" x="604" y="174" style="font-size:9px;fill:#a9501c">cell depth</text>
-  <text class="d-sub" x="392" y="228" style="font-size:9.5px">rebuilt: header · style table · upper index</text>
-  <text class="d-sub" x="392" y="243" style="font-size:9.5px">rebuilt: POIs + hours · the navigation graph</text>
+  <text class="d-sub" x="604" y="174" style="font-size:12px;fill:#a9501c">cell depth</text>
+  <text class="d-sub" x="392" y="228" style="font-size:12px">rebuilt: header · style table · upper index</text>
+  <text class="d-sub" x="392" y="243" style="font-size:12px">rebuilt: POIs + hours · the navigation graph</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Exact grid alignment preserves leaf-relative feature anchors. The assembler copies geometry bytes without decoding them.</figcaption>
 </figure>
 
