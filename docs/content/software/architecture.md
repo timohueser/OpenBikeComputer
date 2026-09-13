@@ -248,6 +248,8 @@ If a write succeeds while reader slots are full, the host retains its committed 
 retries reader acquisition. It does not repeat the write. Existing readers remain available for
 display, but only validated current card data can authorize duplicate or stale upload acceptance.
 An uncertain commit stops further weather work until the session closes and the card reopens.
+Before adopting an independently observed revision, the host confirms its exact catalog head
+through a sync barrier. Visibility in the operating system cache alone does not prove durability.
 Reopened observations age against the current clock; explicit fixture imports can use a fixed
 clock for deterministic rendering.
 
