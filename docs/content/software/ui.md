@@ -1215,8 +1215,8 @@ A gap, unknown cell, route-coverage limit, or expired frame ends the dry claim. 
 not mean dry weather.
 
 When detailed rain data cannot answer, the dashboard keeps the hourly forecast available for its
-remaining valid times. **Hourly until** shows the end of that forecast. It does not report when
-the phone last copied the data. The hourly forecast covers 24 hours from its first record and
+remaining valid times. Open **Hourly** to see the forecast times. The hourly forecast covers
+24 hours from its first record and
 describes the location used for the request. It is not a forecast for every point on a long route.
 The rain map shows only valid rain frames; hourly data does not create a replacement rain map.
 
