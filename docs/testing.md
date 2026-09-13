@@ -217,6 +217,18 @@ file makes the upload step fail. A cancelled run does not upload these reports. 
 an empty report or run tests again to obtain results. These reports cover the two Vitest suites,
 which use Node and simulated DOM environments; they are not real-browser evidence.
 
+## Web demo browser journey
+
+`web.demo-browser` is an affected end-to-end suite for the shipping landing page. It runs in
+Chromium after the existing Trunk build in the `wasm` CI job. The journey uses the real page
+controls and existing WASM observations to save and view a ride, reset for route upload, save
+again and reload. It checks rendering and rejects page errors, failed resets and stalled states.
+It does not measure exact saved-object counts or content; native tests own those assertions.
+
+The job requires the browser test step to succeed and publishes `web-demo-browser-ATTEMPT`,
+with native JUnit and diagnostics, plus a screenshot and trace on failure. See the
+[web demo README](../apps/obc-web-demo/README.md) for setup, reproduction and evidence limits.
+
 ## Swift Testing CI result artifact
 
 The existing `ios-unit` command adds `--xunit-output` without changing how tests run. With both

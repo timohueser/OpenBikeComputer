@@ -69,6 +69,7 @@ class SuiteRegistryTests(unittest.TestCase):
     def test_discovers_every_required_source(self) -> None:
         files = {
             "builder/app/src/example.test.ts": "test('x', () => {})",
+            "apps/obc-web-demo/tests/browser/demo.test.js": "test('x', () => {})",
             "tools/tests/test_tool.py": "def test_x(): pass",
             "firmware/tools/tests/test_firmware.py": "def test_x(): pass",
             "ops/weather/tests/test_weather.py": "def test_x(): pass",
@@ -89,6 +90,7 @@ class SuiteRegistryTests(unittest.TestCase):
             {
                 "rust-target",
                 "web-test",
+                "browser-test",
                 "python-test",
                 "rain-radar-test",
                 "xcuitest",
@@ -748,6 +750,7 @@ class ShippedRoutingTests(unittest.TestCase):
             "python.firmware-tools": ["test"],
             "python.weather-probe": ["test"],
             "python.builder": ["test"],
+            "web.demo-browser": ["wasm"],
         }
         for suite_id, jobs in expected.items():
             with self.subTest(suite=suite_id):
@@ -814,6 +817,7 @@ class ShippedRoutingTests(unittest.TestCase):
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
             ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
+            ("web demo browser harness", ["apps/obc-web-demo/tests/browser/ride-log.test.js"], ["clippy", "fmt", "test", "wasm"]),
             (
                 "OBCKit package source",
                 ["companion-ios/Packages/OBCKit/Sources/OBCTransport/BLE/Client.swift"],
