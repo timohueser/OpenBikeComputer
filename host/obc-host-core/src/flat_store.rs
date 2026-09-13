@@ -419,6 +419,15 @@ impl HostStore {
         if !store.has_commit_capacity(commits) {
             return Err(StoreError::ReadOnly.into());
         }
+        if kind == ObjectKind::Route && previous.is_none() {
+            let count = store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE).count();
+            if !store.entries_ok() {
+                return Err(StoreError::Media.into());
+            }
+            if count >= obc_app::MAX_ROUTES {
+                return Err(StoreError::Busy.into());
+            }
+        }
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {
             revision.0.checked_add(1).map(Revision).ok_or(StoreError::ReadOnly)

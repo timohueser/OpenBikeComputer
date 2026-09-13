@@ -1,5 +1,5 @@
-//! Importing a native OBCM into an owned temporary flat card.
-//! The original path remains the anchor for the terrain sidecar and display name.
+//! Native map import and exact persisted-card reopen.
+//! Import sessions retain the original path for terrain sidecars and the display name.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

@@ -835,6 +835,7 @@ impl CatalogState {
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
         if matches!(outcome, CatalogOutcome::Failed { .. })
+            && self.cascade.is_some()
             && matches!(self.pending, Some(CatalogIntent::DeleteTrip { .. }))
         {
             self.pending = None;
@@ -1027,6 +1028,22 @@ mod tests {
             catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
         }
         assert!(!matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { .. })));
+    }
+
+    #[test]
+    fn an_unrelated_failure_keeps_the_queued_trip_intent() {
+        for read in [false, true] {
+            let mut catalogs = with_trip(50, &[10], &[10, 99]);
+            if read {
+                catalogs.refresh_owed = true;
+            } else {
+                catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 99 }).unwrap();
+            }
+            let effect = catalogs.next_effect().unwrap();
+            catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+            catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::Unreadable });
+            assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[10, 50]);
+        }
     }
 
     /// Failure preserves the trip and unfinished members; an explicit retry can pass earlier absence.
