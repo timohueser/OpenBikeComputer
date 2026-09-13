@@ -202,6 +202,10 @@ pub enum Mode {
     /// repair failed. Evidence is preserved for the next mount; no incomplete recovery is exposed.
     /// Wire face: `readOnly` / `catalogUnreadable 1`.
     CatalogUnreadable,
+    /// The final catalog gate write or barrier failed and can have published a new catalog.
+    /// Only existing handles remain readable; a fresh mount must select durable authority.
+    /// Wire face: `readOnly` / `catalogUnreadable 1`.
+    RemountRequired,
     /// §5.6 step 1 classified the card as not a flat store. Initialization is the only transition.
     /// Wire face: `readOnly` / `unformatted 3`.
     Unformatted,
@@ -210,6 +214,8 @@ pub enum Mode {
     /// is not the card in the slot, so there is no flat store here either.
     CardTooSmall,
 }
+
+const _: () = assert!(core::mem::size_of::<Mode>() == 1, "mount mode stays in its existing byte");
 
 impl Mode {
     /// True when a commit may run.
@@ -591,6 +597,9 @@ impl<D: BlockDevice> FlatStore<D> {
     /// before publication. No committed object is addressable here, and a stale allocation token
     /// is refused by the same identity check as [`Store::write`].
     pub fn patch_allocation(&self, allocation: &Allocation, offset: u64, bytes: &[u8]) -> Result<(), StoreError> {
+        if !self.mode().writable() {
+            return Err(StoreError::ReadOnly);
+        }
         let end = offset.checked_add(bytes.len() as u64).ok_or(StoreError::Invalid)?;
         if end > allocation.written {
             return Err(StoreError::Invalid);
@@ -762,6 +771,9 @@ impl<D: BlockDevice> FlatStore<D> {
     /// identity and geometry become observable. Keeping that transition boot-scoped avoids trying
     /// to replace a shared `FlatStore` while map, route, and weather readers still hold references.
     pub fn format_media(&self, store: StoreId) -> Result<(), StoreError> {
+        if self.mode() == Mode::RemountRequired {
+            return Err(StoreError::ReadOnly);
+        }
         Self::write_empty_store(&self.dev, store)
     }
 
@@ -794,6 +806,12 @@ impl<D: BlockDevice> FlatStore<D> {
             write_blocks(dev, copy, &superblock)?;
         }
         sync(dev)
+    }
+
+    /// Stop mutations and fresh catalog reads after uncertain publication or verification.
+    /// Existing handles keep their ranges until they close; only a fresh mount clears this mode.
+    pub(crate) fn require_remount(&self) {
+        self.served.set(Served { mode: Mode::RemountRequired, ..self.served.get() });
     }
 
     /// Why this store refuses writes, if it does.
@@ -832,7 +850,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// media failure stops early with no way to say so, so a caller that cares — anything reporting a
     /// complete list, `LIST` included — asks here before it treats the list as the catalog.
     pub fn entries_ok(&self) -> bool {
-        !self.listing_failed.get()
+        self.mode().readable() && !self.listing_failed.get()
     }
 
     /// The copy the store is serving. §5.5's next commit targets the other one.
@@ -923,6 +941,9 @@ impl<D: BlockDevice> FlatStore<D> {
     /// path that abandons a transfer — a cancel, a refusal, a validator rejection, a lost link — has to
     /// come through here.
     pub fn cancel(&self, allocation: Allocation) {
+        if self.mode() == Mode::RemountRequired {
+            return;
+        }
         // Two short borrows of two different cells and no card command between them — rule 2.
         let mut rows = self.reservations.borrow_mut();
         let Some(row) = row_of(&rows, &allocation) else { return };
@@ -963,6 +984,9 @@ impl<D: BlockDevice> FlatStore<D> {
         holds[handle.slot as usize] = None;
         // Dropped before the `find` below: rule 2 — no borrow across a card command.
         drop(holds);
+        if self.mode() == Mode::RemountRequired {
+            return;
+        }
         // What the entry still names, if it is still there at all. A media failure here leaves the
         // extents allocated until the next mount rebuilds the map from the catalog, which is the safe
         // direction: never hand out an extent an entry might name. A failed read is *not* evidence the
@@ -1749,8 +1773,13 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             entry_count: header.entry_count,
             body_crc,
         };
-        write_blocks(&self.dev, catalog_gate(target), &gate.encode())?;
-        sync(&self.dev)?;
+        if let Err(error) = write_blocks(&self.dev, catalog_gate(target), &gate.encode()).and_then(|()| sync(&self.dev))
+        {
+            // Either failure can follow a complete durable gate. Do not release or rewrite
+            // allocations until a new mount selects the catalog that actually reached media.
+            self.require_remount();
+            return Err(error);
+        }
 
         // The gate landed: `target` is the truth, and everything the batch displaced is free. One
         // `set` of the whole `Served` value, which is the resident mirror of the atomic transition the
@@ -1889,8 +1918,8 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     /// Every caller in the tree drains its listing inside the request that asked for it, so nothing
     /// observes this today; it is here so that nothing has to.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
-        self.listing_failed.set(false);
         let served = self.served.get();
+        self.listing_failed.set(!served.mode.readable());
         Entries {
             dev: &self.dev,
             cursor: EntryCursor::new(served.copy, self.extents, served.entry_count),
@@ -2299,16 +2328,17 @@ impl<D: BlockDevice> Iterator for Entries<'_, D> {
     type Item = EntryMeta;
 
     fn next(&mut self) -> Option<EntryMeta> {
-        if self.index >= self.count {
-            return None;
-        }
         // A commit has landed since this listing was made, so the copy under the cursor is no longer
         // the one the store is serving and will be rewritten by the next commit. Reported through the
         // same channel a media failure is — the listing is short, and `entries_ok` says so — because
         // to the caller it is the same fact: this list is not the catalog.
-        if self.served.get().sequence != self.sequence {
+        let served = self.served.get();
+        if !served.mode.readable() || served.sequence != self.sequence {
             self.failed.set(true);
             self.index = self.count;
+            return None;
+        }
+        if self.index >= self.count {
             return None;
         }
         // A read failure ends the listing, because the signature has nowhere to put an error — but it

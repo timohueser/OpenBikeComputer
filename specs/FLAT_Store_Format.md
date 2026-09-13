@@ -373,9 +373,20 @@ would leave the card with no valid catalog at all.
    commit that reached it has just landed. Reads are still served, as for an exhausted `Revision` (§3).
 3. Write `B`'s gate; synchronize.
 
-After step 3 the store's truth is `B`. A cut anywhere before step 3 completes leaves `A` valid with
-the greater sequence and `B` invalid: the commit did not happen, and every byte it would have made
-visible is anonymous again. A cut during step 3 corrupts only the gate page, which fails its CRC.
+After step 3 succeeds, the store's truth is `B`. A cut before gate publication leaves `A` valid
+and the new payload anonymous. A cut during the gate write or its synchronization can leave either
+`A` or a complete `B` authoritative. A torn gate fails its CRC and does not certify the new body.
+
+A reported error from the final gate write or its synchronization does not prove that publication
+failed. The mounted store MUST enter `RemountRequired` and preserve its served catalog, reservations,
+and held extents until a fresh mount selects durable authority. It MUST refuse allocation, payload
+writes and patches, commits, journal checkpoints, and formatting. Cancellation MUST NOT return an
+allocation to the free map. Closing a handle releases its hold but MUST NOT reclaim extents from the
+uncertain catalog. Already open handles can still read their exact pinned bytes.
+
+Fresh opens and catalog listings MUST refuse authority in this mode, including an empty listing or
+an iterator created before the failure. The wire reports the existing `readOnly` / `catalogUnreadable`
+result. Errors before the final gate publication keep their existing retry and cancellation behavior.
 
 Step 1 exists because step 3 may otherwise leave a gate that certifies a body only half rewritten:
 `B`'s old gate would still name an old entry count and an old body CRC, both of which a partially

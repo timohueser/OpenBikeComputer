@@ -60,6 +60,8 @@ mod cost;
 #[cfg(test)]
 mod crash;
 #[cfg(test)]
+mod fence;
+#[cfg(test)]
 mod fuzz;
 #[cfg(test)]
 mod granularity;
