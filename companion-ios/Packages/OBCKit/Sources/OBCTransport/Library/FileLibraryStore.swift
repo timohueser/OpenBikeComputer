@@ -1,43 +1,37 @@
 import Foundation
 import OBCDomain
 
-/// The real `LibraryStore`: plain JSON files in an app-owned directory — the
-/// "keep it boring" choice (#256; no CoreData/SwiftData until a real need).
-///
-/// Layout under `directory`:
-///
-///     planned/<id>/route.json     versioned record (summary + canonical route)
-///     planned/<id>/source.<ext>   the original import file, byte-exact
-///     trips/<id>.json             versioned trip (name + ordered stage ids), TR5
-///     rides/<id>/summary.json     versioned ride summary (the list row)
-///     rides/<id>/points.json      versioned tracklog, compact JSON (read on demand)
-///     synced-rides.json           every ride id ever downloaded (H9)
-///     deleted-rides.json          ride ids deleted on the phone (device keeps its copy)
-///     trashed-rides.json          ride ids in Recently Deleted, with trash dates (#292)
-///
-/// Rides split summary from tracklog so launching never decodes a season of
-/// points to draw list rows. Unsupported files are skipped and left untouched.
-///
-/// Ride paths and set entries use the `RideID` raw string. Scoped identities
-/// and unscoped archived rides coexist; connection does not re-key them.
-///
-/// The JSON shape is an **app-owned schema** (versioned DTOs below), decoupled
-/// from both the domain types' memberwise layout and the device wire formats —
-/// a firmware `S0` byte-layout change never touches saved libraries. Unreadable
-/// or future-versioned files are skipped. Full-ride saves report encoding and I/O errors;
-/// other writes remain best-effort. Per-file atomic replacement is not a durable receipt.
+/// Canonical JSON library in app-private storage. Each ride has an atomic summary
+/// manifest that names an immutable points file. Lists never decode point files.
+/// Full ride writes use file and directory persistence barriers; other library
+/// features retain their own write semantics.
 public struct FileLibraryStore: LibraryStore, Sendable {
     private let directory: URL
+    private var durabilityRoot: URL
+    private var archiveCheckpoint: @Sendable (ArchiveCheckpoint) throws -> Void = { _ in }
 
-    /// `directory` is created on first use. Tests point this at a temp dir.
+    /// `directory` is created on first use. Its parent must be an existing,
+    /// durable directory that the caller can open and sync.
     public init(directory: URL) {
-        self.directory = directory
+        self.directory = directory.standardizedFileURL
+        self.durabilityRoot = directory.standardizedFileURL.deletingLastPathComponent()
+    }
+
+    /// Fault seam for the archive transaction, before each named operation.
+    enum ArchiveCheckpoint: CaseIterable { case pointsWrite, pointsSync, manifestWrite, manifestSync, publish, directorySync }
+
+    init(directory: URL, archiveCheckpoint: @escaping @Sendable (ArchiveCheckpoint) throws -> Void) {
+        self.init(directory: directory)
+        self.archiveCheckpoint = archiveCheckpoint
     }
 
     /// The production location: Application Support, backed up, app-private.
     public static func standard() -> FileLibraryStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return FileLibraryStore(directory: base.appendingPathComponent("OBCLibrary", isDirectory: true))
+        var store = FileLibraryStore(directory: base.appendingPathComponent("OBCLibrary", isDirectory: true))
+        // Library exists inside the app container; Application Support can be created below it.
+        store.durabilityRoot = base.deletingLastPathComponent()
+        return store
     }
 
     // MARK: Planned routes
@@ -183,40 +177,134 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     }
 
     public func ridePoints(_ id: RideID) -> [RidePoint]? {
-        guard let file: RidePointsFile = read(rideDir(id).appendingPathComponent("points.json")),
-            file.version == Self.rideSchemaVersion
-        else { return nil }
-        return file.ridePoints
+        guard let manifest = rideManifest(id),
+              let file: RidePointsFile = read(rideDir(id).appendingPathComponent(manifest.pointsFile)),
+              file.version == Self.rideSchemaVersion else { return nil }
+        return file.points.map(\.domain)
     }
 
     public func saveRide(_ ride: Ride) throws {
+        try commitRide(ride, downloaded: false)
+    }
+
+    public func archiveRide(_ ride: Ride) throws -> RideArchiveReceipt? {
+        if let source = ride.summary.source, !source.matches(ride.id) {
+            throw RideArchiveError.invalidSource
+        }
+        try commitRide(ride, downloaded: true)
+        return ride.summary.source.map { RideArchiveReceipt(source: $0) }
+    }
+
+    public func archivedRideSource(_ id: RideID) -> RideSource? {
+        guard let manifest = rideManifest(id), manifest.downloaded,
+              let source = manifest.summary.source, source.matches(id) else { return nil }
+        do {
+            let pointsURL = rideDir(id).appendingPathComponent(manifest.pointsFile)
+            let bytes = try Data(contentsOf: pointsURL)
+            guard bytes.count == manifest.pointsLength,
+                  CRC32.checksum(bytes) == manifest.pointsCRC32 else { return nil }
+            // A previous process can stop after rename but before the final barrier.
+            // Stabilize that visible generation before it can suppress another download.
+            try archiveCheckpoint(.pointsSync)
+            try DurableArchiveIO.syncFile(pointsURL)
+            try archiveCheckpoint(.manifestSync)
+            try DurableArchiveIO.syncFile(rideDir(id).appendingPathComponent("summary.json"))
+            try archiveCheckpoint(.directorySync)
+            try DurableArchiveIO.syncAncestors(rideDir(id), through: durabilityRoot)
+            try DurableArchiveIO.syncFile(rideDir(id).appendingPathComponent("summary.json"))
+            return source
+        } catch { return nil }
+    }
+
+    private func rideManifest(_ id: RideID) -> RideSummaryFile? {
+        guard let file: RideSummaryFile = read(rideDir(id).appendingPathComponent("summary.json")),
+              file.version == Self.rideSchemaVersion,
+              file.summary.id == id.rawValue, file.validPointsName else { return nil }
+        return file
+    }
+
+    private func commitRide(_ ride: Ride, downloaded: Bool) throws {
         let points = try encode(RidePointsFile(ride.points), formatting: [.sortedKeys])
-        let summary = try encode(RideSummaryFile(ride.summary))
+        let pointsName = "points-\(UUID().uuidString).json"
+        let manifest = RideSummaryFile(ride.summary, pointsFile: pointsName,
+                                       pointsLength: points.count, pointsCRC32: CRC32.checksum(points),
+                                       downloaded: downloaded)
+        let summary = try encode(manifest)
         let dir = rideDir(ride.id)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // Publish the list row after its tracklog. A failed save stays eligible for sync.
-        try points.write(to: dir.appendingPathComponent("points.json"), options: .atomic)
-        try summary.write(to: dir.appendingPathComponent("summary.json"), options: .atomic)
+        let summaryURL = dir.appendingPathComponent("summary.json")
+        if FileManager.default.fileExists(atPath: summaryURL.path), rideManifest(ride.id) == nil {
+            throw RideArchiveError.unreadableArchive
+        }
+        // Only our own unreferenced transaction files may occupy an unfinished archive.
+        if rideManifest(ride.id) == nil,
+           contents(of: dir).contains(where: { !RideSummaryFile.isTransactionFile($0.lastPathComponent) }) {
+            throw RideArchiveError.unreadableArchive
+        }
+        try DurableArchiveIO.createDirectory(dir, beneath: durabilityRoot)
+        let pointsURL = dir.appendingPathComponent(pointsName)
+        let pending = dir.appendingPathComponent("manifest-\(UUID().uuidString).json")
+        var published = false
+        defer {
+            if !published { try? FileManager.default.removeItem(at: pending) }
+            if !published { try? FileManager.default.removeItem(at: pointsURL) }
+        }
+        try archiveCheckpoint(.pointsWrite)
+        try points.write(to: pointsURL, options: .withoutOverwriting)
+        try archiveCheckpoint(.pointsSync)
+        try DurableArchiveIO.syncFile(pointsURL)
+        try DurableArchiveIO.syncAncestors(dir, through: durabilityRoot)
+        try archiveCheckpoint(.manifestWrite)
+        try summary.write(to: pending, options: .withoutOverwriting)
+        try archiveCheckpoint(.manifestSync)
+        try DurableArchiveIO.syncFile(pending)
+        try archiveCheckpoint(.publish)
+        try DurableArchiveIO.rename(pending, to: summaryURL)
+        published = true
+        try archiveCheckpoint(.directorySync)
+        try DurableArchiveIO.syncAncestors(dir, through: durabilityRoot)
+        try DurableArchiveIO.syncFile(summaryURL)
+        // A failed/uncertain commit keeps both generations for safe retry.
+        for file in contents(of: dir)
+        where RideSummaryFile.isTransactionFile(file.lastPathComponent)
+            && file.lastPathComponent != pointsName {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     public func saveRideSummary(_ summary: RideSummary) {
-        let dir = rideDir(summary.id)
-        ensure(dir)
-        write(RideSummaryFile(summary), to: dir.appendingPathComponent("summary.json"))
+        guard var manifest = rideManifest(summary.id) else { return }
+        // A local rename cannot change the archived device identity.
+        var updated = summary
+        updated.source = manifest.summary.source
+        manifest.summary = RideSummaryDTO(updated)
+        write(manifest, to: rideDir(summary.id).appendingPathComponent("summary.json"))
     }
 
     public func deleteRide(_ id: RideID) {
+        guard rideManifest(id) != nil else { return }
         try? FileManager.default.removeItem(at: rideDir(id))
     }
 
     public func syncedRideIDs() -> Set<RideID> {
+        syncedRideHistory().union(downloadedRideIDs())
+    }
+
+    private func syncedRideHistory() -> Set<RideID> {
         guard let file: SyncedRidesFile = read(syncedURL), file.version == Self.schemaVersion
         else { return [] }
         return Set(file.ids.map(RideID.init))
     }
 
+    private func downloadedRideIDs() -> Set<RideID> {
+        Set(contents(of: ridesDir).compactMap { dir in
+            guard let file: RideSummaryFile = read(dir.appendingPathComponent("summary.json")),
+                  file.version == Self.rideSchemaVersion, file.downloaded else { return nil }
+            return RideID(file.summary.id)
+        })
+    }
+
     public func markRideSynced(_ id: RideID) {
-        var ids = syncedRideIDs()
+        var ids = syncedRideHistory()
         guard ids.insert(id).inserted else { return }
         ensure(directory)
         write(SyncedRidesFile(version: Self.schemaVersion, ids: ids.map(\.rawValue).sorted()), to: syncedURL)
@@ -267,9 +355,8 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     // MARK: Paths + IO
 
     private static let schemaVersion = 1
-    /// Rides split summary/points into separate files (#360); planned routes and
-    /// the id sets stay on v1.
-    private static let rideSchemaVersion = 2
+    /// The summary manifest and complete canonical point records share one version.
+    private static let rideSchemaVersion = 3
     /// Trips version independently of planned routes (the `rideSchemaVersion`
     /// precedent) — used on **both** the write and the read side, so a future
     /// planned-route bump can't silently stop stored trips from loading.
@@ -339,7 +426,7 @@ public struct FileLibraryStore: LibraryStore, Sendable {
     }
 }
 
-// MARK: - On-disk schema (planned v1, rides v2)
+// MARK: - On-disk schema (planned v1, rides v3)
 
 // DTOs, not Codable on the domain types: the file shape is pinned here, so a
 // domain refactor can't silently re-shape saved libraries.
@@ -612,45 +699,71 @@ private struct WaypointDTO: Codable {
     }
 }
 
-/// `rides/<id>/summary.json` (v2) — the list row, decoded for every ride at launch.
 private struct RideSummaryFile: Codable {
-    var version: Int
+    var version = 3
     var summary: RideSummaryDTO
+    var pointsFile: String
+    var pointsLength: Int
+    var pointsCRC32: UInt32
+    var downloaded: Bool
 
-    init(_ summary: RideSummary) {
-        version = 2
+    init(_ summary: RideSummary, pointsFile: String, pointsLength: Int,
+         pointsCRC32: UInt32, downloaded: Bool) {
         self.summary = RideSummaryDTO(summary)
+        self.pointsFile = pointsFile
+        self.pointsLength = pointsLength
+        self.pointsCRC32 = pointsCRC32
+        self.downloaded = downloaded
+    }
+
+    var validPointsName: Bool {
+        pointsFile.hasPrefix("points-") && Self.isTransactionFile(pointsFile)
+    }
+
+    static func isTransactionFile(_ name: String) -> Bool {
+        for prefix in ["points-", "manifest-"] where name.hasPrefix(prefix) && name.hasSuffix(".json") {
+            return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(5))) != nil
+        }
+        return false
     }
 }
 
-/// `rides/<id>/points.json` (v2) — the tracklog, decoded one ride at a time.
 private struct RidePointsFile: Codable {
-    var version: Int
-    /// `[epochSeconds, lat, lon]` or `[epochSeconds, lat, lon, ele]` per sample.
-    var points: [[Double]]
+    var version = 3
+    var points: [RidePointDTO]
+    init(_ points: [RidePoint]) { self.points = points.map(RidePointDTO.init) }
+}
 
-    init(_ ridePoints: [RidePoint]) {
-        version = 2
-        points = ridePoints.map { point in
-            let base = [point.timestamp.timeIntervalSince1970,
-                        point.coordinate.latitude, point.coordinate.longitude]
-            return point.elevationMeters.map { base + [$0] } ?? base
-        }
+private struct RidePointDTO: Codable {
+    var timestamp: Date
+    var latitude: Double
+    var longitude: Double
+    var elevation: Double?
+    var heartRate: Int?
+    var cadence: Int?
+    var power: Int?
+    var segmentStart: Bool
+
+    init(_ point: RidePoint) {
+        timestamp = point.timestamp
+        latitude = point.coordinate.latitude
+        longitude = point.coordinate.longitude
+        elevation = point.elevationMeters
+        heartRate = point.heartRate
+        cadence = point.cadence
+        power = point.power
+        segmentStart = point.segmentStart
     }
 
-    var ridePoints: [RidePoint] {
-        points.compactMap { values in
-            guard values.count >= 3 else { return nil }
-            return RidePoint(
-                timestamp: Date(timeIntervalSince1970: values[0]),
-                coordinate: Coordinate(latitude: values[1], longitude: values[2]),
-                elevationMeters: values.count >= 4 ? values[3] : nil
-            )
-        }
+    var domain: RidePoint {
+        RidePoint(timestamp: timestamp, coordinate: Coordinate(latitude: latitude, longitude: longitude),
+                  elevationMeters: elevation, heartRate: heartRate, cadence: cadence,
+                  power: power, segmentStart: segmentStart)
     }
 }
 
 private struct RideSummaryDTO: Codable {
+    var source: RideSource?
     var id: String
     var name: String
     var date: Date
@@ -669,6 +782,7 @@ private struct RideSummaryDTO: Codable {
     var maxPower: Int?
 
     init(_ summary: RideSummary) {
+        source = summary.source
         id = summary.id.rawValue
         name = summary.name
         date = summary.date
@@ -691,7 +805,7 @@ private struct RideSummaryDTO: Codable {
             averageSpeedMps: averageSpeedMps, climbMeters: climbMeters,
             trackPreview: preview?.domain,
             avgHeartRate: avgHeartRate, maxHeartRate: maxHeartRate,
-            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower
+            avgCadence: avgCadence, avgPower: avgPower, maxPower: maxPower, source: source
         )
     }
 }

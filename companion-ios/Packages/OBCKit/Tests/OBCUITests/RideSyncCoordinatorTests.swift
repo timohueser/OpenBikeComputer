@@ -356,6 +356,72 @@ final class RideSyncCoordinatorTests: XCTestCase {
         }
     }
 
+    func testExactSourceReplacesOldRevisionAndNeverUsesHistoryAsProof() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = FileLibraryStore(directory: directory)
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        let fixture = try XCTUnwrap(control.fixtures.rides.first).ride()
+        let scope = LibraryScope(serial: "archive-test", storeID: String(repeating: "a", count: 32))
+        let id = RideID(deviceObjectID: DeviceObjectID(42), scope: scope)
+        var original = fixture
+        original.summary = RideSummary(id: id, name: fixture.summary.name, date: fixture.summary.date,
+                                       distanceMeters: fixture.summary.distanceMeters)
+        let payload = RideObjectCodec.encode(original)
+        for revision: UInt64 in [1, 2] {
+            let source = RideSource(storeID: scope.storeID, objectID: 42, revision: revision,
+                                    payloadLength: UInt64(payload.count), payloadCRC32: CRC32.checksum(payload))
+            var catalogSummary = original.summary
+            catalogSummary.name = "Stale catalog display name"
+            catalogSummary.source = source
+            library.markRideSynced(id)
+            let transport = ScriptedDownloadTransport(
+                base: MockTransport(control: control),
+                yieldedRides: [DownloadedRide(id: id, payload: payload, source: source)], failure: nil,
+                catalog: RideCatalog(rides: [catalogSummary]))
+            let coordinator = RideSyncCoordinator(transport: transport, library: library, timing: Self.stickyTiming)
+            try await startConnected(coordinator)
+            coordinator.sync()
+            try await waitFor("exact revision archived") { coordinator.syncState == .done }
+            XCTAssertEqual(library.archivedRideSource(id), source)
+            XCTAssertEqual(library.rideSummaries().first?.name, original.summary.name)
+            let next = RideSyncCoordinator(transport: transport, library: library, timing: Self.stickyTiming)
+            try await startConnected(next)
+            next.sync()
+            try await waitFor("committed source is current") { next.upToDateToastVisible }
+        }
+    }
+
+    func testCatalogAndDownloadedSourceMismatchCannotArchive() async throws {
+        let library = InMemoryLibraryStore()
+        let control = MockControl(scenario: .happyPath)
+        control.latency = .zero
+        let fixture = try XCTUnwrap(control.fixtures.rides.first).ride()
+        let scope = LibraryScope(serial: "archive-test", storeID: String(repeating: "a", count: 32))
+        let id = RideID(deviceObjectID: DeviceObjectID(42), scope: scope)
+        let payload = RideObjectCodec.encode(fixture)
+        let source = RideSource(storeID: scope.storeID, objectID: 42, revision: 1,
+                                payloadLength: UInt64(payload.count), payloadCRC32: CRC32.checksum(payload))
+        var summary = RideSummary(id: id, name: "Ride", date: fixture.summary.date, distanceMeters: 1)
+        summary.source = source
+        let wrong = RideSource(storeID: scope.storeID, objectID: 42, revision: 2,
+                               payloadLength: source.payloadLength, payloadCRC32: source.payloadCRC32)
+        let transport = ScriptedDownloadTransport(
+            base: MockTransport(control: control),
+            yieldedRides: [DownloadedRide(id: id, payload: payload, source: wrong)], failure: nil,
+            catalog: RideCatalog(rides: [summary]))
+        let coordinator = RideSyncCoordinator(transport: transport, library: library, timing: Self.stickyTiming)
+        try await startConnected(coordinator)
+        coordinator.sync()
+        try await waitFor("mismatched source rejected") {
+            coordinator.syncState == .idle && coordinator.syncProgress == nil
+        }
+        XCTAssertTrue(library.rideSummaries().isEmpty)
+        XCTAssertTrue(library.syncedRideIDs().isEmpty)
+        XCTAssertNil(coordinator.lastSyncCount)
+    }
+
     // MARK: Persistence across "relaunches" (B1S)
 
     /// #256 acceptance (H9): re-sync after a relaunch downloads nothing new.
@@ -461,6 +527,7 @@ private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let yieldedRides: [DownloadedRide]
     var failure: DeviceError? = .crcMismatch
+    var catalog: RideCatalog? = nil
 
     var state: AsyncStream<ConnectionState> { base.state }
     func connect() async throws { try await base.connect() }
@@ -470,7 +537,10 @@ private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
-    func listRides() async throws -> RideCatalog { try await base.listRides() }
+    func listRides() async throws -> RideCatalog {
+        if let catalog { return catalog }
+        return try await base.listRides()
+    }
     func rideDetail(_ id: RideID) async throws -> RideDetail { try await base.rideDetail(id) }
 
     func downloadRides(_ ids: [RideID]) -> RideDownload {
