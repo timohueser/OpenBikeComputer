@@ -164,8 +164,9 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
         }
     }
 }
+type MountedSources = (&'static FlatStore<FlatCard>, ObjectId, Revision, ObjectId, Revision);
 thread_local! {
-    static SOURCES: RefCell<Option<(&'static FlatStore<FlatCard>, ObjectId, Revision, ObjectId, Revision)>> = const { RefCell::new(None) };
+    static SOURCES: RefCell<Option<MountedSources>> = const { RefCell::new(None) };
 }
 pub fn mount_sources(
     store: &'static FlatStore<FlatCard>,

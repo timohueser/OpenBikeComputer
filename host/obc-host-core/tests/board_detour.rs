@@ -3,7 +3,7 @@ extern crate self as defmt;
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {{
-        crate::unexpected_compensation_refusal()
+        $crate::unexpected_compensation_refusal()
     }};
 }
 fn unexpected_compensation_refusal() {
