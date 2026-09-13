@@ -835,11 +835,17 @@ mod tests {
         DetourPreviewScreen::new(&DetourScreen::new(a), preview)
     }
 
+    fn preview_nav() -> NavigatorMachine {
+        let mut nav = NavigatorMachine::new();
+        nav.note_answer(PlanFamily::Detour, crate::navigator::PlanPhase::PreviewReady, &mut CoreMode::new());
+        nav
+    }
+
     #[test]
     fn preview_press_commits_once_and_back_cancels() {
         let mut rec = recording();
-        let mut nav_a = NavigatorMachine::new();
-        let mut nav_b = NavigatorMachine::new();
+        let mut nav_a = preview_nav();
+        let mut nav_b = preview_nav();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
         assert_eq!(p.anchor_m(), 1_000);
@@ -855,13 +861,13 @@ mod tests {
         let mut p2 = preview_for(&b);
         let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p2.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
-        assert!(nav_b.take_cancel(PlanFamily::Detour), "Back rings the host to drop the held detour");
+        assert!(nav_b.cancel_pending(PlanFamily::Detour), "Back rings the host to drop the held detour");
     }
 
     #[test]
     fn preview_commit_failure_reopens_press() {
         let mut rec = recording();
-        let mut nav_a = NavigatorMachine::new();
+        let mut nav_a = preview_nav();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
         let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
@@ -869,6 +875,9 @@ mod tests {
         // The splice answered — a failure, which returns the preview to the rider *and* frees
         // Navigator, so the retry has an operation slot to go out in.
         nav_a.note_commit(false);
+        let mut mode = CoreMode::new();
+        assert!(matches!(nav_a.next_effect(&mut mode), Some(NavigatorEffect::Release { .. })));
+        nav_a.released(&mut mode);
         p.set_commit_failed();
         let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a), "a failed commit can be retried");
@@ -877,14 +886,14 @@ mod tests {
     #[test]
     fn preview_goes_stale_when_the_rider_passes_the_rejoin_or_route_vanishes() {
         let mut rec = recording();
-        let mut nav_a = NavigatorMachine::new();
-        let mut nav_b = NavigatorMachine::new();
+        let mut nav_a = preview_nav();
+        let mut nav_b = preview_nav();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
         a.progress_m = p.target_m; // rode past the rejoin during the preview
         let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop), "stale preview cancels out instead of committing");
-        assert!(nav_a.take_cancel(PlanFamily::Detour));
+        assert!(nav_a.cancel_pending(PlanFamily::Detour));
         assert!(!drained_commit(&mut nav_a));
 
         let mut b = tracking_activity(1_000, 5_000);
@@ -892,7 +901,7 @@ mod tests {
         p.remap_routes(&|_| None); // the planned route vanished in a rescan
         let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
-        assert!(nav_b.take_cancel(PlanFamily::Detour));
+        assert!(nav_b.cancel_pending(PlanFamily::Detour));
     }
 
     // ---- the preview's climb figure (#1091) ----

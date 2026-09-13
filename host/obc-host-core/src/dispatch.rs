@@ -7,7 +7,7 @@
 //!
 //! ```text
 //!   let plan = host.pass(app, now, gestures, sensors, route, weather, support); // one App::run_pass
-//!   host.execute(app, &mut plan, routes, rides, tracks, trips, reader, elev, platform, trace);
+//!   host.execute(app, &mut plan, routes, rides, tracks, trips, map, elev, platform);
 //! ```
 //!
 //! [`pass`](HostLoop::pass) hands `App` this frame's inputs and returns its [`PassPlan`];
@@ -32,7 +32,7 @@ use obc_app::device_core::{
     PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
-use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
+use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlanFamily, PlannerProgress, PlannerWork};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
@@ -97,6 +97,27 @@ fn remove_object(
 pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
+    Ready(NavPlan, obc_route::RouteStats),
+}
+
+/// Sources admitted together; the reader is always made by the leased FlatMap.
+struct PlanSources {
+    map: crate::flat_store::ObjectSource,
+    original: Option<(crate::RouteLease, Box<obc_route::RouteIndex>)>,
+}
+impl PlanSources {
+    fn current(&self, map: &crate::flat_map::FlatMap, routes: &dyn RouteRepository) -> bool {
+        self.map.same_revision(&map.source())
+            && self.map.is_current()
+            && self.original.as_ref().is_none_or(|(held, _)| routes.pin_active().is_some_and(|now| held.matches(&now)))
+    }
+    fn original(&self) -> Option<obc_route::RouteReader<'_>> {
+        self.original.as_ref().map(|(source, index)| obc_route::RouteReader::new(index, source))
+    }
+}
+struct Preview {
+    ready: DetourReady,
+    sources: PlanSources,
 }
 
 /// Plan requests a host deliberately takes without starting. This is only needed by deterministic
@@ -207,7 +228,10 @@ pub struct HostLoop {
     plan_token: Option<OperationToken<NavigatorTag>>,
     /// A planned detour's bytes + frozen splice context (#882), held from the search's answer until
     /// the rider commits or cancels.
-    detour_ready: Option<DetourReady>,
+    detour_ready: Option<Preview>,
+    sources: Option<PlanSources>,
+    publication: Option<crate::RoutePublication>,
+    releasing: Option<NavigatorEffect>,
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
@@ -238,6 +262,9 @@ impl Default for HostLoop {
             plan: None,
             plan_token: None,
             detour_ready: None,
+            sources: None,
+            publication: None,
+            releasing: None,
             hold: PlanHold::NONE,
             opened_session: None,
             revision: 0,
@@ -261,7 +288,7 @@ impl HostLoop {
 
     /// Whether a plan (route or detour) is computing (the planning-spinner state).
     pub fn is_planning(&self) -> bool {
-        self.plan.is_some()
+        self.plan.is_some() || self.releasing.is_some()
     }
 
     /// The operation a frozen or running search is holding, for a host that scripts its answer.
@@ -333,10 +360,8 @@ impl HostLoop {
 
     /// Perform the plan's bounded work and leave token-carrying outcomes for the next pass.
     ///
-    /// The phases run as **separate calls** on purpose: `serve_effects` reserves the fresh
-    /// [`NavPlan`] (its ~4 KB inline tile cache) and `step_plan` reaches the ~8 KB `RouteIndex`
-    /// parse in the finish tails — nesting them in one frame stacked both and overflowed the deep
-    /// sim tour test's thread stack. Sequential calls keep only one large frame live at a time.
+    /// Acquisition, stepping and commit use separate shallow calls so their large parse and
+    /// planner frames do not overlap. FlatMap binds the reader to its exact retained source.
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &mut self,
@@ -347,7 +372,7 @@ impl HostLoop {
         rides: &mut dyn RideRepository,
         tracks: &mut dyn TrackRepository,
         trips: &mut dyn TripCatalog,
-        reader: &obc_reader::Reader,
+        map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
         platform: &mut dyn HostPlatform,
     ) {
@@ -357,8 +382,13 @@ impl HostLoop {
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
         self.sync_recorder(app, tracks);
-        self.serve_effects(app, plan, session, routes, rides, trips, tracks, platform);
-        self.step_plan(app, session, routes, reader, elev);
+        let navigation = plan.effects.navigator.take().or_else(|| self.releasing.take());
+        self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
+        if let Some(effect) = navigation {
+            if let Some(outcome) = self.serve_navigator(app, effect, routes, map, elev) {
+                deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
+            }
+        }
         self.serve_derived(app, plan, session, routes, rides);
         if let Some(scope) = routes.store_scope() {
             self.inbox.facts.note_store_revision(scope);
@@ -375,7 +405,6 @@ impl HostLoop {
         &mut self,
         app: &mut App,
         plan: &mut PassPlan,
-        session: &ActiveRouteSession,
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
@@ -394,11 +423,6 @@ impl HostLoop {
             let opened = app.recorder.object_owed(self.opened_session).is_none();
             let outcome = serve_recorder(app, effect, tracks, opened);
             deliver(&mut self.inbox.outcomes.recorder, outcome, "recorder");
-        }
-        if let Some(effect) = plan.effects.navigator.take() {
-            if let Some(outcome) = self.serve_navigator(app, effect, session, routes) {
-                deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
-            }
         }
         if let Some(effect) = plan.effects.settings.take() {
             let outcome = match effect {
@@ -515,131 +539,172 @@ impl HostLoop {
         }
     }
 
-    /// One navigation operation. `None` means the executor is still working — a search runs across
-    /// frames, and its answer arrives from [`step_plan`](Self::step_plan).
+    /// Perform only the physical operation Navigator requested in this pass.
+    #[inline(never)]
     fn serve_navigator(
         &mut self,
         app: &mut App,
         effect: NavigatorEffect,
-        session: &ActiveRouteSession,
         routes: &mut dyn RouteRepository,
+        map: &crate::flat_map::FlatMap,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let token = effect.token();
+        self.plan_token = Some(token);
+        let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         match effect {
-            NavigatorEffect::Acquire { work: PlannerWork::Route(request), .. } => {
-                self.plan_token = Some(token);
-                if !self.hold.route {
-                    self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
+            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map),
+            NavigatorEffect::Step { .. } => {
+                if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
+                    return failed(NavigatorError::SourceChanged);
                 }
-                None
+                self.step_plan(app, token, map, elev)
             }
-            NavigatorEffect::Acquire { work: PlannerWork::Detour(request), .. } => {
-                self.plan_token = Some(token);
-                self.detour_ready = None;
-                if self.hold.detour {
-                    return None;
+            NavigatorEffect::CommitRoute { .. } => {
+                if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
+                    return failed(NavigatorError::SourceChanged);
                 }
-                let started = session.index().and_then(|index| {
-                    let src = routes.active_source()?;
-                    let orig = obc_route::RouteReader::new(index, src);
-                    DetourPlan::start(&request, app.settings().bike_profile_idx, &orig)
-                });
-                match started {
-                    Some(plan) => {
-                        self.plan = Some(InflightPlan::Detour(plan));
-                        None
+                let Some(InflightPlan::Ready(plan, stats)) = self.plan.as_ref() else {
+                    return failed(NavigatorError::Workspace);
+                };
+                Some(match commit_nav_plan(app, routes, Ok(*stats), plan.bytes(), plan.tile_stats(), &mut NoTrace) {
+                    Ok(publication) => {
+                        self.publication = Some(publication);
+                        NavigatorOutcome::PlanFinished { token, route: publication.id }
                     }
-                    // The active route vanished / can't resolve the rejoin — answer now.
-                    None => Some(NavigatorOutcome::Failed {
-                        token,
-                        error: NavigatorError::Plan(obc_route::NavError::NoPath),
-                    }),
-                }
-            }
-            NavigatorEffect::CommitDetour { .. } => {
-                let ready = self.detour_ready.take();
-                let result = commit_detour(app, routes, session.index(), ready, &mut NoTrace);
-                Some(match result {
-                    Ok(route) => NavigatorOutcome::DetourCommitted { token, route },
-                    Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Store },
+                    Err(error) => NavigatorOutcome::Failed { token, error },
                 })
             }
-            // A release is Navigator telling the executor the rider walked away: drop whatever this
-            // host is holding for that family. `next_release` only issues one when the cancelled
-            // family's own operation was the live one (or nothing was), so there is never another
-            // family's search to protect here.
-            NavigatorEffect::Release { .. } => {
-                match self.plan.take() {
-                    Some(InflightPlan::Nav(_)) => {}
-                    // A detour search, or a preview with nothing running behind it.
-                    Some(InflightPlan::Detour(_)) | None => self.detour_ready = None,
+            NavigatorEffect::CommitDetour { .. } => {
+                let Some(preview) = self.detour_ready.as_ref() else { return failed(NavigatorError::Workspace) };
+                if !preview.sources.current(map, routes) {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                let Some(orig) = preview.sources.original() else { return failed(NavigatorError::Workspace) };
+                Some(match commit_detour(app, routes, &orig, &preview.ready, &mut NoTrace) {
+                    Ok(publication) => {
+                        self.publication = Some(publication);
+                        NavigatorOutcome::DetourCommitted { token, route: publication.id }
+                    }
+                    Err(error) => NavigatorOutcome::Failed { token, error },
+                })
+            }
+            NavigatorEffect::Release { family, retain_result, .. } => {
+                let keep_preview = retain_result && self.publication.is_none();
+                if !retain_result {
+                    if let Some(publication) = self.publication {
+                        match routes.retract_nav_route(publication) {
+                            Ok(()) => feed_routes(app, routes, &mut NoTrace),
+                            Err(CatalogError::RemoveFailed) => {
+                                self.releasing = Some(effect);
+                                return None;
+                            }
+                            Err(error) => eprintln!("nav release: compensation stopped ({error:?})"),
+                        }
+                    }
+                }
+                self.publication = None;
+                self.plan = None;
+                self.sources = None;
+                if family == PlanFamily::Detour && !keep_preview {
+                    self.detour_ready = None;
                 }
                 self.plan_token = None;
                 Some(NavigatorOutcome::Released { token })
             }
-            // One request runs the whole search here (#1400); stepped pacing
-            // is #1400's, with the board's typed effect staging.
-            NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
-                debug_assert!(false, "the executor paces the search: {effect:?} has no producer yet");
-                None
-            }
         }
     }
 
-    /// Step an in-flight plan **once** (the board's one-step-per-pass shape) and, on a terminal
-    /// outcome, commit and answer. Non-generic and `#[inline(never)]` so the `RouteIndex` parse
-    /// inside the finish tails never coexists with the plan-reservation frame above.
+    /// Keep the original-route parse frame separate from step and commit frames.
+    #[inline(never)]
+    fn acquire_plan(
+        &mut self,
+        app: &App,
+        token: OperationToken<NavigatorTag>,
+        work: PlannerWork,
+        routes: &dyn RouteRepository,
+        map: &crate::flat_map::FlatMap,
+    ) -> Option<NavigatorOutcome> {
+        let failed = |error| Some(NavigatorOutcome::Failed { token, error });
+        if self.plan.is_some() || self.sources.is_some() {
+            return failed(NavigatorError::Workspace);
+        }
+        if match work {
+            PlannerWork::Route(_) => self.hold.route,
+            PlannerWork::Detour(_) => self.hold.detour,
+        } {
+            return None;
+        }
+        let source = map.source();
+        if !source.is_current() {
+            return failed(NavigatorError::SourceChanged);
+        }
+        let original = match work {
+            PlannerWork::Route(request) => {
+                self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
+                None
+            }
+            PlannerWork::Detour(request) => {
+                let Some(source) = routes.pin_active() else { return failed(NavigatorError::Workspace) };
+                if app.route_ids().get(request.route) != Some(&source.id())
+                    || !routes.pin_active().is_some_and(|current| source.matches(&current))
+                {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                let Ok(index) = obc_route::RouteIndex::read(&source) else {
+                    return failed(NavigatorError::Workspace);
+                };
+                let orig = obc_route::RouteReader::new(&index, &source);
+                let Some(plan) = DetourPlan::start(&request, app.settings().bike_profile_idx, &orig) else {
+                    return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
+                };
+                self.plan = Some(InflightPlan::Detour(plan));
+                Some((source, Box::new(index)))
+            }
+        };
+        self.sources = Some(PlanSources { map: source, original });
+        Some(NavigatorOutcome::Acquired { token })
+    }
+
     #[inline(never)]
     fn step_plan(
         &mut self,
         app: &mut App,
-        session: &ActiveRouteSession,
-        routes: &mut dyn RouteRepository,
-        reader: &obc_reader::Reader,
+        token: OperationToken<NavigatorTag>,
+        map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
-    ) {
-        // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
-        // step borrow.
+    ) -> Option<NavigatorOutcome> {
         let outcome = match self.plan.as_mut() {
-            None => return,
-            Some(InflightPlan::Nav(plan)) => plan.step(reader, elev),
-            Some(InflightPlan::Detour(plan)) => plan.step(reader, elev),
+            Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
+            Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
+            _ => return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace }),
         };
-        let terminal = match outcome {
-            obc_route::Step::Running => return,
-            obc_route::Step::Done(stats) => Ok(stats),
-            obc_route::Step::Failed(e) => Err(e),
+        let stats = match outcome {
+            obc_route::Step::Running => {
+                return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Searching })
+            }
+            obc_route::Step::Failed(error) => {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) })
+            }
+            obc_route::Step::Done(stats) => stats,
         };
-        let Some(token) = self.plan_token else {
-            debug_assert!(false, "a plan runs under the operation that started it");
-            self.plan = None;
-            return;
-        };
-        let answer = match self.plan.take().expect("just stepped it") {
+        Some(match self.plan.take().expect("just stepped it") {
             InflightPlan::Nav(plan) => {
-                let result = commit_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats(), &mut NoTrace);
-                match result {
-                    Ok(route) => NavigatorOutcome::PlanFinished { token, route },
-                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
-                }
+                self.plan = Some(InflightPlan::Ready(plan, stats));
+                NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
             }
             InflightPlan::Detour(plan) => {
-                // The detour is NOT committed here — the bytes park until the rider's commit (or a
-                // cancellation's `Release` drops them). Hand the finish the resident original route
-                // so it can trim the rejoin to first tail contact (#882); the source binding must
-                // outlive the call, so it's bound here rather than inside a closure.
-                let src = routes.active_source();
-                let orig = session.index().zip(src).map(|(i, s)| obc_route::RouteReader::new(i, s));
-                let (ready, result) = plan_detour_preview(app, terminal, plan, orig.as_ref(), &mut NoTrace);
-                self.detour_ready = ready;
+                let sources = self.sources.take().expect("admitted sources");
+                let (ready, result) =
+                    plan_detour_preview(app, Ok(stats), plan, sources.original().as_ref(), &mut NoTrace);
+                self.detour_ready = ready.map(|ready| Preview { ready, sources });
                 match result {
                     Ok(preview) => NavigatorOutcome::DetourFinished { token, preview },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 }
             }
-        };
-        self.plan_token = None;
-        deliver(&mut self.inbox.outcomes.navigator, answer, "navigator");
+            InflightPlan::Ready(..) => unreachable!("only an unfinished plan steps"),
+        })
     }
 
     /// Open a ride object when Recorder owes one.
@@ -857,16 +922,7 @@ mod tests {
             let mut rides = crate::MemRideStore::new(vec![]);
             let mut tracks = RecordingTrackStore::default();
             for _ in 0..2 {
-                host.serve_effects(
-                    &mut app,
-                    &mut plan,
-                    &ActiveRouteSession::new(),
-                    &mut routes,
-                    &mut rides,
-                    &mut (),
-                    &mut tracks,
-                    &mut platform,
-                );
+                host.serve_effects(&mut app, &mut plan, &mut routes, &mut rides, &mut (), &mut tracks, &mut platform);
             }
             assert_eq!(platform.calls, 1);
             assert_eq!(host.inbox.outcomes.bond.take(), Some(BondOutcome::from_result(effect.token(), result)));
@@ -1055,7 +1111,7 @@ mod tests {
                     &mut rides,
                     &mut store,
                     &mut (),
-                    &map.reader(),
+                    &map,
                     &mut obc_route::NullElevation,
                     &mut (),
                 );
@@ -1128,3 +1184,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod planner_tests;

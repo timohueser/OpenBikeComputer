@@ -1,0 +1,258 @@
+use super::*;
+use crate::flat_map::FlatMap;
+use crate::flat_store::HostStore;
+use obc_app::device_core::TokenSource;
+use obc_storage::flat::{DisplayName, ObjectKind, Store};
+
+fn map_bytes() -> Vec<u8> {
+    use obc_pack::nav::{Edge, NavGraph, Node};
+    let coords = [(500_000, 500_000), (520_000, 500_000), (510_000, 510_000)];
+    let nodes = coords.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect();
+    let edges = [(0, 1, 2400), (0, 2, 1700), (2, 1, 1700)]
+        .into_iter()
+        .map(|(a, b, length_m)| Edge {
+            a,
+            b,
+            polyline: vec![coords[a as usize], coords[b as usize]],
+            length_m,
+            kind: 0,
+        })
+        .collect();
+    let bbox = (490_000, 490_000, 530_000, 520_000);
+    let lods =
+        [obc_pack::LodLayer { max_mpp: None, chunk_size: 2048, root: obc_pack::Node::Leaf { bbox, features: vec![] } }];
+    let profiles =
+        [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
+    obc_pack::serialize_lods(
+        &lods,
+        &[],
+        0,
+        bbox,
+        &[],
+        &NavGraph { nodes, edges },
+        &profiles,
+        &mut obc_route::NullElevation,
+    )
+    .0
+}
+
+struct Planner {
+    host: HostLoop,
+    app: App,
+    routes: crate::FlatRouteStore,
+    card: HostStore,
+    map: FlatMap,
+    tokens: TokenSource<NavigatorTag>,
+}
+impl Planner {
+    fn new() -> Self {
+        let card = HostStore::memory().unwrap();
+        let map = FlatMap::from_bytes_in(&card, &map_bytes()).unwrap();
+        let routes = crate::FlatRouteStore::new(HostStore(card.0.clone()), &[]).unwrap();
+        Self {
+            host: HostLoop::new(),
+            app: App::new(obc_app::AppState::new(500_000, 500_000, 1.0)),
+            routes,
+            card,
+            map,
+            tokens: TokenSource::new(),
+        }
+    }
+    fn call(&mut self, build: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorEffect) -> NavigatorOutcome {
+        let token = self.tokens.issue();
+        let answer = self
+            .host
+            .serve_navigator(&mut self.app, build(token), &mut self.routes, &self.map, &mut obc_route::NullElevation)
+            .unwrap();
+        assert_eq!(answer.token(), token);
+        answer
+    }
+    fn acquire_route(&mut self) {
+        assert!(matches!(
+            self.call(|token| NavigatorEffect::Acquire {
+                token,
+                work: PlannerWork::Route(obc_app::NavRequest::new((500_000, 500_000), (520_000, 500_000), "Test"))
+            }),
+            NavigatorOutcome::Acquired { .. }
+        ));
+    }
+    fn finish_steps(&mut self) -> NavigatorOutcome {
+        for _ in 0..128 {
+            let outcome = self.call(|token| NavigatorEffect::Step { token });
+            if !matches!(outcome, NavigatorOutcome::Stepped { progress: PlannerProgress::Searching, .. }) {
+                return outcome;
+            }
+        }
+        panic!("tiny graph exceeded bounded step count")
+    }
+    fn release(&mut self, family: PlanFamily, retain_result: bool) {
+        assert!(matches!(
+            self.call(|token| NavigatorEffect::Release { token, family, retain_result }),
+            NavigatorOutcome::Released { .. }
+        ));
+    }
+    fn initial_route(&mut self) -> u64 {
+        self.acquire_route();
+        assert!(matches!(self.finish_steps(), NavigatorOutcome::Stepped { progress: PlannerProgress::Reached, .. }));
+        let NavigatorOutcome::PlanFinished { route, .. } = self.call(|token| NavigatorEffect::CommitRoute { token })
+        else {
+            panic!("commit failed")
+        };
+        self.release(PlanFamily::Route, true);
+        self.routes.sync_active(Some(0));
+        route
+    }
+    fn acquire_detour(&mut self) {
+        let source = self.routes.pin_active().unwrap();
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        assert!(matches!(
+            self.call(|token| NavigatorEffect::Acquire {
+                token,
+                work: PlannerWork::Detour(obc_app::DetourRequest {
+                    route: 0,
+                    from: (500_000, 500_000),
+                    progress_m: 0,
+                    target_m: index.total_distance_m
+                })
+            }),
+            NavigatorOutcome::Acquired { .. }
+        ));
+    }
+}
+
+#[test]
+fn real_planner_waits_for_steps_and_explicit_commit_then_releases() {
+    let mut p = Planner::new();
+    p.acquire_route();
+    for _ in 0..3 {
+        let mut plan = PassPlan {
+            render: obc_app::Dirty::CLEAN,
+            next_wake_ms: None,
+            derived_needs: obc_app::device_core::derived::DerivedNeeds::NONE,
+            sources: obc_app::device_core::pass::SourceNeeds { map: false, route: false },
+            effects: obc_app::device_core::EffectSlots::new(),
+            immediate: false,
+        };
+        p.host.execute(
+            &mut p.app,
+            &mut plan,
+            &mut ActiveRouteSession::new(),
+            &mut p.routes,
+            &mut crate::MemRideStore::new(vec![]),
+            &mut crate::MemTrackStore::new(),
+            &mut (),
+            &p.map,
+            &mut obc_route::NullElevation,
+            &mut (),
+        );
+    }
+    assert!(matches!(p.host.plan, Some(InflightPlan::Nav(_))));
+    assert!(p.routes.ids().is_empty());
+    assert!(matches!(p.finish_steps(), NavigatorOutcome::Stepped { progress: PlannerProgress::Reached, .. }));
+    assert!(p.routes.ids().is_empty(), "reached is not committed");
+    assert!(matches!(p.call(|token| NavigatorEffect::CommitRoute { token }), NavigatorOutcome::PlanFinished { .. }));
+    assert!(p.host.plan.is_some(), "workspace retained until release");
+    p.release(PlanFamily::Route, true);
+    assert!(p.host.plan.is_none() && p.host.sources.is_none());
+    assert_eq!(p.routes.ids().len(), 1);
+}
+
+#[test]
+fn unrelated_commit_preserves_map_lease_but_exact_head_replacement_refuses_commit() {
+    let mut p = Planner::new();
+    p.acquire_route();
+    p.card.import(ObjectKind::MapShard, None, &mut &b"unrelated"[..], 9, DisplayName::default()).unwrap();
+    assert!(matches!(p.finish_steps(), NavigatorOutcome::Stepped { progress: PlannerProgress::Reached, .. }));
+    let held = p.map.source();
+    let bytes = map_bytes();
+    p.card
+        .import(
+            ObjectKind::MapShard,
+            Some((held.id(), held.revision())),
+            &mut &bytes[..],
+            bytes.len() as u64,
+            DisplayName::default(),
+        )
+        .unwrap();
+    assert!(!held.is_current());
+    assert!(matches!(
+        p.call(|token| NavigatorEffect::CommitRoute { token }),
+        NavigatorOutcome::Failed { error: NavigatorError::SourceChanged, .. }
+    ));
+    assert!(p.routes.ids().is_empty());
+    p.release(PlanFamily::Route, false);
+    assert!(matches!(
+        p.call(|token| NavigatorEffect::Acquire {
+            token,
+            work: PlannerWork::Route(obc_app::NavRequest::new((0, 0), (1, 1), "Stale"))
+        }),
+        NavigatorOutcome::Failed { error: NavigatorError::SourceChanged, .. }
+    ));
+}
+
+#[test]
+fn real_detour_keeps_preview_and_source_on_store_refusal_then_retries() {
+    let mut p = Planner::new();
+    p.initial_route();
+    p.acquire_detour();
+    assert!(matches!(p.finish_steps(), NavigatorOutcome::DetourFinished { .. }));
+    p.release(PlanFamily::Detour, true);
+    let reservations = {
+        let owner = p.card.0.lock().unwrap();
+        [owner.card.allocate(4096).unwrap(), owner.card.allocate(4096).unwrap()]
+    };
+    assert!(matches!(
+        p.call(|token| NavigatorEffect::CommitDetour { token }),
+        NavigatorOutcome::Failed { error: NavigatorError::Store, .. }
+    ));
+    p.release(PlanFamily::Detour, true);
+    assert!(p.host.detour_ready.is_some());
+    for allocation in reservations {
+        p.card.0.lock().unwrap().card.cancel(allocation);
+    }
+    assert!(matches!(
+        p.call(|token| NavigatorEffect::CommitDetour { token }),
+        NavigatorOutcome::DetourCommitted { .. }
+    ));
+    p.release(PlanFamily::Detour, true);
+    assert!(p.host.detour_ready.is_none());
+}
+
+#[test]
+fn retained_original_route_cannot_authorize_a_detour_after_replacement() {
+    let mut p = Planner::new();
+    p.initial_route();
+    p.acquire_detour();
+    assert!(matches!(p.finish_steps(), NavigatorOutcome::DetourFinished { .. }));
+    p.release(PlanFamily::Detour, true);
+    let held = p.routes.pin_active().unwrap();
+    let mut bytes = vec![0; obc_formats::io::ByteSource::len(&held) as usize];
+    obc_formats::io::ByteSource::read_at(&held, 0, &mut bytes).unwrap();
+    p.routes.write_nav_route(&bytes).unwrap();
+    assert!(matches!(
+        p.call(|token| NavigatorEffect::CommitDetour { token }),
+        NavigatorOutcome::Failed { error: NavigatorError::SourceChanged, .. }
+    ));
+    p.release(PlanFamily::Detour, false);
+    assert!(p.host.detour_ready.is_none());
+}
+
+#[test]
+fn cancellation_after_publication_removes_only_the_unadopted_revision() {
+    for replace in [false, true] {
+        let mut p = Planner::new();
+        p.acquire_route();
+        assert!(matches!(p.finish_steps(), NavigatorOutcome::Stepped { progress: PlannerProgress::Reached, .. }));
+        let NavigatorOutcome::PlanFinished { route, .. } = p.call(|token| NavigatorEffect::CommitRoute { token })
+        else {
+            panic!("commit failed")
+        };
+        if replace {
+            let Some(InflightPlan::Ready(plan, _)) = p.host.plan.as_ref() else { panic!("output held") };
+            assert_eq!(p.routes.write_nav_route(plan.bytes()), Some(route));
+        }
+        p.release(PlanFamily::Route, false);
+        assert_eq!(p.routes.ids().contains(&route), replace, "a newer revision is outside the abandoned operation");
+        assert!(p.host.publication.is_none() && p.host.plan.is_none());
+    }
+}

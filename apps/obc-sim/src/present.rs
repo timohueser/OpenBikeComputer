@@ -821,7 +821,7 @@ mod tests {
         store: &mut crate::routes::RouteStore,
         host: &mut obc_host_core::HostLoop,
         session: &mut obc_host_core::ActiveRouteSession,
-        reader: &obc_reader::Reader,
+        map: &obc_host_core::flat_map::FlatMap,
         tour_active: bool,
         frame_no: &mut usize,
         label: &str,
@@ -831,6 +831,7 @@ mod tests {
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
 
+        let reader = map.reader();
         // The tour rides, and it asks the way a host should: only once the device has reported the
         // card that makes a ride possible. Asking earlier is refused — kept, but with a
         // recording-error card the tour's own frames would then have to dwell on.
@@ -878,18 +879,7 @@ mod tests {
         };
         // The typed executor — the same `obc-host-core::HostLoop` gui.rs drives (the route planner's
         // lifecycle, one bounded step per frame).
-        host.execute(
-            app,
-            &mut plan,
-            session,
-            store,
-            &mut rides,
-            &mut tracks,
-            &mut no_trips,
-            reader,
-            &mut elev,
-            &mut (),
-        );
+        host.execute(app, &mut plan, session, store, &mut rides, &mut tracks, &mut no_trips, map, &mut elev, &mut ());
 
         // The wasm demo's ambient auto-restart (suppressed while a tour runs — the branch's
         // `!tour_active` gate).
@@ -908,7 +898,7 @@ mod tests {
 
         // Render the whole frame into the resident device-64 plane.
         let mut fbdev = FbDevice64::new(fb, W, H);
-        app.render_frame(Some(scratch), &mut fbdev, reader, route.as_ref(), W as f32, H as f32, |c| {
+        app.render_frame(Some(scratch), &mut fbdev, &reader, route.as_ref(), W as f32, H as f32, |c| {
             Rgb565::from(RawU16::new(c))
         });
 
@@ -951,6 +941,7 @@ mod tests {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
         let reader = Reader::new(&src, &tables, &cache);
+        let map = obc_host_core::flat_map::FlatMap::from_bytes(&bytes).unwrap();
 
         // A folder-backed route store over a temp dir seeded with the demo route, so the planner's
         // `_nav.obcr` write + rescan runs the real path.
@@ -1013,7 +1004,7 @@ mod tests {
                         &mut store,
                         &mut host,
                         &mut session,
-                        &reader,
+                        &map,
                         true,
                         &mut frame_no,
                         $label,
@@ -1035,7 +1026,7 @@ mod tests {
                         &mut store,
                         &mut host,
                         &mut session,
-                        &reader,
+                        &map,
                         true,
                         &mut frame_no,
                         $label,
@@ -1059,7 +1050,7 @@ mod tests {
                 &mut store,
                 &mut host,
                 &mut session,
-                &reader,
+                &map,
                 false,
                 &mut frame_no,
                 "ambient",
@@ -1118,7 +1109,7 @@ mod tests {
                 &mut store,
                 &mut host,
                 &mut session,
-                &reader,
+                &map,
                 false,
                 &mut frame_no,
                 "ambient reset",
@@ -1149,6 +1140,7 @@ mod tests {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
         let reader = Reader::new(&src, &tables, &cache);
+        let map = obc_host_core::flat_map::FlatMap::from_bytes(&bytes).unwrap();
 
         let dir = std::env::temp_dir().join(format!("obc626-reset-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1212,7 +1204,7 @@ mod tests {
                     store,
                     host,
                     session,
-                    &reader,
+                    &map,
                     tour,
                     &mut frame_no,
                     label,

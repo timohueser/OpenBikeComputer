@@ -132,6 +132,11 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
         StoreSource { store, handle: Some(handle), len: payload_len }
     }
 
+    /// Retained bytes remain readable after replacement, but no longer authorize planning.
+    pub fn is_current(&self) -> bool {
+        self.store.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
+    }
+
     /// Surrender the handle so the store can close it. **This is the only way out** — see the module
     /// docs.
     ///

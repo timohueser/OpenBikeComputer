@@ -50,7 +50,7 @@ pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
 pub use nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_advance, ReplaySensors};
-pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
+pub use repo::{RideRepository, RouteLease, RoutePublication, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemTrackStore};
