@@ -513,3 +513,9 @@ private func le32(_ value: UInt32) -> [UInt8] {
 private func le64(_ value: UInt64) -> [UInt8] {
     (0..<8).map { UInt8((value >> (8 * UInt64($0))) & 0xFF) }
 }
+
+struct WeatherAttemptCommandTests {
+    @Test func failedAttemptNamesItsRequest() {
+        #expect(WeatherAttemptCommand.encode(requestID: 0x78563412, started: false) == Data([8, 0x12, 0x34, 0x56, 0x78, 0]))
+    }
+}

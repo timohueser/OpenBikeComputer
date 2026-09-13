@@ -1,29 +1,7 @@
-//! The resident **weather snapshot** and its honest-state derivation (WX11, epic #1185).
-//!
-//! The screens never stream OBCW at draw time: the host samples the mounted store **once** per
-//! refresh/fix change into this compact resident snapshot ([`WeatherSnapshot::sample`] — bounded
-//! reads through the WX7 cache), and every weather screen derives what it may *claim* from the
-//! snapshot plus the frame's `now` ([`rain_outlook`]). Keeping the derivation pure and
-//! time-parameterized is what makes the honesty laws testable: expired rain can never produce a
-//! dry claim, incomplete two-hour coverage is **WEATHER UPDATE NEEDED**, and a corridor with no
-//! precipitation grid at all is the explicit hourly-only state — never a fake map, never dry.
-//!
-//! The *ride decision* (WX12, #1197) keeps [`rain_outlook`] as the one derivation — what changed
-//! is **where each frame is sampled**: with an active route the host samples frame `k` at the
-//! rider's *projected* route position for `k`'s timestamp ([`WeatherSnapshot::sample_along`] —
-//! progress advanced by a bounded recent moving-speed estimate, [`RideProjection`]), inside a
-//! conservative one-cell corridor. So DRY FOR 2 HOURS claims dryness along the ride, not just at
-//! the parked rider, and RAIN IN N MIN times the first *encounter* with rain. The known, accepted
-//! approximation: the hourly section stays a point forecast for the request coordinate applied
-//! along the projection — deliberately not "fixed" with mass point sampling (banned; a future
-//! multi-point hourly section is an OBCW/provider change). The freshness arithmetic mirrors
-//! [`WeatherReader::current_frame`]'s fail-closed rule (per-frame cap = min inter-frame spacing,
-//! bounded by [`FRAME_CURRENT_CAP_S`]) and is pinned against it by test, so what the overlay may
-//! *render* and what a screen may *say* can never disagree **about freshness**: both read the same
-//! frame table through the same cap. They may well disagree *spatially* — and that is intended:
-//! the map paints the cells under the camera, the card answers for the projected ride, so a card
-//! reading RAIN IN 20 over a map showing dry ground at the rider means rain 20 minutes *along the
-//! route*. (On the WX8 on-glass list: confirm that reads as informative rather than contradictory.)
+//! Stored weather and the dashboard outlook. Screens read a compact snapshot, never the store.
+//! Rain claims use the continuous valid coverage ahead of the rider, up to two hours. Hourly
+//! forecasts remain available when rain coverage ends. Missing data never counts as dry.
+//! Route projections widen the dry corridor for pace uncertainty; rain warnings use one cell.
 
 use obc_formats::io::ByteSource;
 use obc_formats::obcw::{HourlyRecord, HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, INTENSITY_NODATA};
@@ -35,7 +13,7 @@ use obc_weather::{Error as ReadError, WeatherCache, WeatherReader, FRAME_CURRENT
 /// treats as incomplete coverage past the last kept frame (never a silent dry claim).
 pub const SNAPSHOT_MAX_FRAMES: usize = 16;
 
-/// The two-hour claim window of the dashboard card, in seconds.
+/// Maximum rain outlook horizon, in seconds.
 pub const OUTLOOK_WINDOW_S: i64 = 2 * 3_600;
 
 /// Smallest 4-bit intensity band the outlook counts as rain (band 1 = < 0.10 mm/h).
@@ -108,7 +86,7 @@ pub struct FrameSample {
 }
 
 impl FrameSample {
-    /// May this frame stand as one honest, dry link of the two-hour coverage chain? Every reason
+    /// May this frame stand as one honest, dry link of a continuous coverage chain? Every reason
     /// it can't is fail-closed: missing data, a projection past the route end, or a pace-spread
     /// corridor that isn't wholly dry-and-covered.
     fn supports_dry_claim(&self) -> bool {
@@ -152,7 +130,7 @@ pub struct WeatherSnapshot {
     /// and tests only; the derivation itself is projection-agnostic.
     pub projected: bool,
     /// The bundle carried more frames than [`SNAPSHOT_MAX_FRAMES`]; coverage past the last kept
-    /// frame is unknown and the outlook refuses the dry claim there.
+    /// frame is unknown; a dry claim can extend only through the kept frames.
     pub frames_truncated: bool,
     /// The rain grid at its **densest** frame (the OBCW header bbox with the maximum
     /// cell dimensions across the whole table), or `None` for a frameless bundle — what the rain
@@ -418,55 +396,37 @@ impl WeatherSnapshot {
     }
 }
 
-/// What the dashboard's decision card may honestly claim at `now` — see [`rain_outlook`].
+/// The useful forecast at the rider's sampled position and time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RainOutlook {
-    /// The bundle carries no rain grid covering the rider's position: the explicit
-    /// hourly-only state. Hourly rows stay available; no rain claim of any kind is made.
+    /// Hourly forecasts remain valid, but detailed rain cannot answer here and now.
     HourlyOnly,
-    /// Rain data exists but cannot honestly answer the two-hour question at `now`: bundle
-    /// expired, nothing current, a mid-window gap, no-data samples, or a truncated table —
-    /// and nothing wet was seen in what *is* covered. Never rendered as dry.
+    /// No forecast can answer for the current time.
     UpdateNeeded,
-    /// Complete two-hour coverage, every covered sample dry.
-    Dry,
-    /// Rain reaches the position in `minutes` (0 = raining now).
-    RainIn { minutes: u16 },
-    /// Storm-grade intensity ([`STORM_MIN_INTENSITY`]) inside the window; `minutes` to the
-    /// first wet frame (0 = already wet).
-    StormIn { minutes: u16 },
+    /// Continuous covered dry weather, rounded down to whole minutes.
+    Dry {
+        minutes: u16,
+    },
+    RainIn {
+        minutes: u16,
+    },
+    StormIn {
+        minutes: u16,
+    },
 }
 
-/// Derive the dashboard headline from the snapshot at `now`. Pure and total — the honesty laws
-/// live here, in one testable place:
-///
-/// - no rain frames, or no sampled position anywhere in the grid → [`RainOutlook::HourlyOnly`];
-/// - **DRY only with complete coverage**: every 15-minute-grained instant of `[now, now+2h]`
-///   inside a current frame's honest window, with no no-data sample, no truncation, no frame
-///   projected past the route end, and no frame whose pace-spread corridor is unclaimed
-///   ([`FrameSample::supports_dry_claim`] carries the last three);
-/// - anything wet inside the covered part is reported even when coverage is partial —
-///   a gap suppresses the dry claim, never a rain warning;
-/// - nothing wet, coverage incomplete, and the rain grid doesn't even reach the rider's
-///   *current* position → [`RainOutlook::HourlyOnly`] again: the honest "no rain grid here",
-///   not a fetch instruction that would never help;
-/// - otherwise → [`RainOutlook::UpdateNeeded`] (stale is never dry).
+/// Derive a bounded rain outlook, falling back to valid hourly data. Rain warnings survive gaps;
+/// dry claims stop at the first missing sample, route limit, uncertain corridor or frame expiry.
 pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
-    if snap.frames.is_empty() || !snap.pos_in_grid {
-        return RainOutlook::HourlyOnly;
+    let fallback = if snap.hourly_at(now).is_some() { RainOutlook::HourlyOnly } else { RainOutlook::UpdateNeeded };
+    if now < snap.valid_from || now >= snap.valid_until || snap.frames.is_empty() || !snap.pos_in_grid {
+        return fallback;
     }
-    if now < snap.valid_from || now > snap.valid_until {
-        return RainOutlook::UpdateNeeded;
-    }
-    let horizon = now + OUTLOOK_WINDOW_S;
-
-    // Wet detection walks the *frames* whose honest windows overlap `[now, horizon]`, so rain is
-    // timed to the frame's real start — never quantized later by a sampling grain. A no-data
-    // sample is neither wet nor dry; the coverage walk below refuses the dry claim for it.
+    let horizon = now.saturating_add(OUTLOOK_WINDOW_S);
     let mut first_wet_at: Option<i64> = None;
     let mut max_intensity = 0u8;
     for (index, frame) in snap.frames.iter().enumerate() {
-        if snap.window_end(index) < now || frame.valid_at > horizon {
+        if snap.window_end(index) <= now || frame.valid_at > horizon {
             continue;
         }
         if frame.intensity != INTENSITY_NODATA && frame.intensity >= RAIN_MIN_INTENSITY {
@@ -474,49 +434,36 @@ pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
             max_intensity = max_intensity.max(frame.intensity);
         }
     }
-
-    // Coverage: `[now, horizon]` must be one unbroken chain of honest windows with no no-data
-    // sample — otherwise the dry claim is refused (WEATHER UPDATE NEEDED), while any rain found
-    // above still reports. A truncated table never claims dry.
-    let mut fully_covered = !snap.frames_truncated;
-    match snap.frames.iter().rposition(|f| f.valid_at <= now) {
-        None => fully_covered = false,
-        Some(start) => {
-            let mut index = start;
-            loop {
-                if !snap.frames[index].supports_dry_claim() {
-                    fully_covered = false;
-                    break;
-                }
-                let end = snap.window_end(index);
-                if end >= horizon {
-                    break;
-                }
-                match snap.frames.get(index + 1) {
-                    Some(next) if next.valid_at <= end => index += 1,
-                    _ => {
-                        fully_covered = false;
-                        break;
-                    }
-                }
-            }
-        }
+    if let Some(at) = first_wet_at {
+        let minutes = (at.saturating_sub(now) / 60).min(u16::MAX as i64) as u16;
+        return if max_intensity >= STORM_MIN_INTENSITY {
+            RainOutlook::StormIn { minutes }
+        } else {
+            RainOutlook::RainIn { minutes }
+        };
     }
 
-    match first_wet_at {
-        Some(at) => {
-            let minutes = (at.saturating_sub(now) / 60).min(u16::MAX as i64) as u16;
-            if max_intensity >= STORM_MIN_INTENSITY {
-                RainOutlook::StormIn { minutes }
-            } else {
-                RainOutlook::RainIn { minutes }
-            }
+    let Some(start) = snap.frames.iter().rposition(|f| f.valid_at <= now) else { return fallback };
+    let mut covered_until = now;
+    for index in start..snap.frames.len() {
+        let frame = &snap.frames[index];
+        if frame.valid_at > covered_until || !frame.supports_dry_claim() {
+            break;
         }
-        None if fully_covered => RainOutlook::Dry,
-        // Nothing wet, coverage incomplete — but if the grid does not cover where the rider
-        // actually *is*, the gap isn't staleness, it's absence: the explicit hourly-only state.
-        None if !snap.current_pos_in_grid => RainOutlook::HourlyOnly,
-        None => RainOutlook::UpdateNeeded,
+        let end = snap.window_end(index).min(horizon);
+        if end <= covered_until {
+            break;
+        }
+        covered_until = end;
+        if covered_until == horizon {
+            break;
+        }
+    }
+    let minutes = ((covered_until - now) / 60) as u16;
+    if minutes > 0 {
+        RainOutlook::Dry { minutes }
+    } else {
+        fallback
     }
 }
 
@@ -845,7 +792,7 @@ mod tests {
         let t0 = 1_800_000_000;
         // All dry, nine frames: covers now..now+2h exactly (frame 8 window ends at +8*900+900 = 2h+900).
         let dry = synthetic(&[0; 9], t0);
-        assert_eq!(rain_outlook(&dry, t0), RainOutlook::Dry);
+        assert_eq!(rain_outlook(&dry, t0), RainOutlook::Dry { minutes: 120 });
         // 35 minutes before frame 4 (t0+3600) turns wet: RAIN IN 35 — but the tail past the last
         // frame's window is then uncovered for a dry claim, which rain doesn't need.
         let rain = synthetic(&[0, 0, 0, 0, 4, 4, 0, 0, 0], t0);
@@ -861,22 +808,20 @@ mod tests {
         assert_eq!(rain_outlook(&stale, stale.valid_until + 1), RainOutlook::UpdateNeeded);
     }
 
-    /// Incomplete coverage refuses the dry claim: a mid-table gap wider than the cap, a no-data
-    /// sample, a truncated table, and a window reaching past the last frame's currency all say
-    /// WEATHER UPDATE NEEDED — while a wet frame inside the covered part still reports rain.
+    /// Incomplete coverage shortens the dry claim; a wet frame still reports rain.
     #[test]
-    fn incomplete_coverage_never_claims_dry() {
+    fn dry_claim_stops_at_missing_coverage() {
         let t0 = 1_800_000_000;
         // Fewer frames than the two-hour window needs.
         let short = synthetic(&[0, 0, 0], t0);
-        assert_eq!(rain_outlook(&short, t0), RainOutlook::UpdateNeeded);
+        assert_eq!(rain_outlook(&short, t0), RainOutlook::Dry { minutes: 45 });
         // A no-data sample mid-window.
         let holed = synthetic(&[0, 0, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0], t0);
-        assert_eq!(rain_outlook(&holed, t0), RainOutlook::UpdateNeeded);
-        // A truncated table can never claim dry.
+        assert_eq!(rain_outlook(&holed, t0), RainOutlook::Dry { minutes: 30 });
+        // Kept frames can still support a bounded dry claim.
         let mut truncated = synthetic(&[0; 9], t0);
         truncated.frames_truncated = true;
-        assert_eq!(rain_outlook(&truncated, t0), RainOutlook::UpdateNeeded);
+        assert_eq!(rain_outlook(&truncated, t0), RainOutlook::Dry { minutes: 120 });
         // …but rain seen inside the covered part still reports, gap or no gap.
         let wet_then_gap = synthetic(&[0, 6, 0], t0);
         assert_eq!(rain_outlook(&wet_then_gap, t0), RainOutlook::RainIn { minutes: 15 });
@@ -898,7 +843,7 @@ mod tests {
                 .unwrap();
         }
         gap.frame_cap_s = 900;
-        assert_eq!(rain_outlook(&gap, t0), RainOutlook::UpdateNeeded, "a bake gap goes dark, not dry");
+        assert_eq!(rain_outlook(&gap, t0), RainOutlook::Dry { minutes: 45 }, "the dry claim stops before the gap");
     }
 
     /// The two WX12 dry-claim blockers, at the level the derivation sees them: a frame the
@@ -908,7 +853,7 @@ mod tests {
     fn projection_blockers_refuse_dry_without_inventing_rain() {
         let t0 = 1_800_000_000;
         // Baseline: nine dry frames are an honest DRY FOR 2 HOURS.
-        assert_eq!(rain_outlook(&synthetic(&[0; 9], t0), t0), RainOutlook::Dry);
+        assert_eq!(rain_outlook(&synthetic(&[0; 9], t0), t0), RainOutlook::Dry { minutes: 120 });
 
         // The rider reaches the finish inside the window: from there the projection stands still
         // at the destination, which says nothing about where the rider will actually be.
@@ -916,8 +861,8 @@ mod tests {
         for frame in clamped.frames.iter_mut().skip(5) {
             frame.past_route_end = true;
         }
-        assert_eq!(rain_outlook(&clamped, t0), RainOutlook::UpdateNeeded, "a finished projection can't claim dry");
-        assert_eq!(rain_outlook(&clamped, t0 + 90 * 60), RainOutlook::UpdateNeeded);
+        assert_eq!(rain_outlook(&clamped, t0), RainOutlook::Dry { minutes: 75 }, "the claim stops at the route end");
+        assert_eq!(rain_outlook(&clamped, t0 + 90 * 60), RainOutlook::HourlyOnly);
 
         // …but rain parked on the destination is still worth saying.
         let mut wet_end = clamped.clone();
@@ -928,7 +873,11 @@ mod tests {
         // (deliberately) no warning either — warn early on the one-cell rule, claim dry widely.
         let mut spread = synthetic(&[0; 9], t0);
         spread.frames[4].spread_uncertain = true;
-        assert_eq!(rain_outlook(&spread, t0), RainOutlook::UpdateNeeded, "an unclaimed corridor refuses dry");
+        assert_eq!(
+            rain_outlook(&spread, t0),
+            RainOutlook::Dry { minutes: 60 },
+            "the claim stops at the uncertain corridor"
+        );
     }
 
     #[test]
@@ -977,7 +926,7 @@ mod tests {
         // The same holes with the rider *inside* the rain grid are the old, correct verdict.
         let mut inside = synthetic(&[INTENSITY_NODATA, INTENSITY_NODATA, 0, 0, 0, 0, 0, 0, 0], t0);
         inside.current_pos_in_grid = true;
-        assert_eq!(rain_outlook(&inside, t0), RainOutlook::UpdateNeeded);
+        assert_eq!(rain_outlook(&inside, t0), RainOutlook::HourlyOnly);
     }
 
     /// The strip's covering rule: inside a window the frame's sample answers, past the cap and
@@ -1330,29 +1279,16 @@ impl WeatherDomain {
         self.zoom_floor
     }
 
-    /// Apply a [`WeatherIntent`]. A repeat while a fetch is already running coalesces, which is
-    /// [`WeatherIntent::RefreshRequested`]'s own contract: the companion link is metered, and two
-    /// taps of the same button are one question. The answer already on its way *is* the answer to
-    /// the second tap, so it is dropped rather than queued behind the first.
-    ///
-    /// "Already running" is [`refreshing`](Self::refreshing) — the domain's own operation **and** a
-    /// fetch the provider plane raised on its own cadence. A tap that would stack a second radio
-    /// trip behind a fetch already in the air is the same waste whoever started it.
-    ///
-    /// The trade-off, stated because it is a real one: a rider who moves a long way and taps refresh
-    /// mid-fetch gets the fetch that was started at the old position. #1401 W2 owns the request
-    /// kernel and can revisit it against a real position delta rather than a guess.
+    /// Coalesce requests while dispatch or a phone attempt is already in progress.
     pub fn apply_intent(&mut self, intent: WeatherIntent) {
         match intent {
-            WeatherIntent::RefreshRequested => self.refresh_requested |= !self.refreshing(),
+            WeatherIntent::RefreshRequested => self.refresh_requested |= !self.request_outstanding(),
         }
     }
 
-    /// Whether a fetch is running — the screens' non-blocking UPDATING cue. Either the domain's own
-    /// operation or the provider plane's cadence: the rider is owed the cue for both, and only the
-    /// first carries a token.
+    /// Only phone activity drives the non-blocking UPDATING cue.
     pub fn refreshing(&self) -> bool {
-        self.in_flight.is_some() || self.platform_fetching
+        self.platform_fetching
     }
 
     /// Whether a requested refresh has not gone out yet (no capability, or the slot was busy).
@@ -1364,7 +1300,7 @@ impl WeatherDomain {
     /// one predicate the weather sheet's *Refresh now* row is live by (#1515 D4b): while an answer
     /// is on its way, or while a question waits for a link to carry it, there is nothing more to ask.
     pub fn request_outstanding(&self) -> bool {
-        self.refresh_requested || self.refreshing()
+        self.refresh_requested || self.in_flight.is_some() || self.refreshing()
     }
 
     /// How the last completed refresh ended, or `None` when none has completed this boot.
@@ -1470,7 +1406,8 @@ mod domain_tests {
         let Some(WeatherEffect::RequestRefresh { token }) = wx.next_effect(can_refresh()) else {
             panic!("the request goes out");
         };
-        assert!(wx.refreshing() && !wx.refresh_pending());
+        assert!(!wx.refreshing() && !wx.refresh_pending());
+        assert!(wx.request_outstanding(), "dispatch remains coalesced without claiming a fetch");
         assert!(wx.next_effect(can_refresh()).is_none(), "one refresh in flight at a time");
 
         wx.apply_outcome(WeatherOutcome::Raised { token });

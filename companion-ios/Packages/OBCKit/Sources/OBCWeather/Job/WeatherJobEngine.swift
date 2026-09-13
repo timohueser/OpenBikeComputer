@@ -248,7 +248,27 @@ public actor WeatherJobEngine {
             adopt(snapshot: snapshot, into: &job, at: now)
         }
 
-        await advance(&job)
+        // A resumed checkpoint can fetch/upload without another context read. Announce that
+        // attempt explicitly; the normal read leg already starts the device's bounded cue.
+        if case .contextRead = trigger {
+        } else if job.phase != .readingContext, let snapshot = job.snapshot,
+                  snapshot.carriesRequest, snapshot.weatherRequest.position != nil {
+            do {
+                try await link.reportAttempt(requestID: snapshot.requestID, started: true)
+            } catch {
+                recordFailure(&job, .uploadFailed, error: error)
+                return
+            }
+        }
+
+        if !(await advance(&job)), let snapshot = job.snapshot, snapshot.carriesRequest {
+            do {
+                try await link.reportAttempt(requestID: snapshot.requestID, started: false)
+            } catch {
+                // The device's bounded attempt timer clears the cue if this reply cannot arrive.
+                print("Weather: failed-attempt acknowledgement was not delivered: \(error)")
+            }
+        }
     }
 
     /// Fold a completed context read into the job — the correlation/discard rule.
@@ -320,7 +340,7 @@ public actor WeatherJobEngine {
     }
 
     /// Drive the job from its persisted phase to a terminal state or a recorded retryable failure.
-    private func advance(_ job: inout WeatherJobRecord) async {
+    private func advance(_ job: inout WeatherJobRecord) async -> Bool {
         while true {
             switch job.phase {
             case .readingContext:
@@ -334,12 +354,12 @@ public actor WeatherJobEngine {
                         // invented.
                         store.clear()
                         readConnectedMilliseconds = nil
-                        return
+                        return true
                     }
                     adopt(snapshot: receipt.snapshot, into: &job, at: now())
                 } catch {
                     recordFailure(&job, .contextReadFailed, error: error)
-                    return
+                    return false
                 }
             case .fetching:
                 guard let snapshot = job.snapshot else {
@@ -353,7 +373,7 @@ public actor WeatherJobEngine {
                     // protocol version has no phone-location fallback. Honest failure; the device
                     // re-raises once it has a fix.
                     finish(job: &job, outcome: .failed, failure: .noPosition, at: now())
-                    return
+                    return false
                 }
                 do {
                     let heldAt = snapshot.heldBundleGeneratedAtUnixSeconds.map {
@@ -381,7 +401,7 @@ public actor WeatherJobEngine {
                             lastCommitted = (snapshot.requestID, now())
                             store.clear()
                             readConnectedMilliseconds = nil
-                            return
+                            return true
                         } catch WeatherDeviceLinkError.bundleRejected {
                             // A still-supported older firmware answers unknownCommand. Fall through
                             // to the established full bundle path rather than turning compatibility
@@ -397,17 +417,17 @@ public actor WeatherJobEngine {
                             // a provider fetch failure. Keep the checkpoint at `.fetching` so the
                             // next ladder wake can revalidate before retrying the idempotent ACK.
                             recordFailure(&job, .uploadFailed, error: error)
-                            return
+                            return false
                         }
                     }
                     guard case let .bundle(built) = outcome else { continue }
                     install(built, into: &job)
                 } catch let error as WeatherBundleBuildError {
                     recordFailure(&job, .buildFailed, error: error)
-                    return
+                    return false
                 } catch {
                     recordFailure(&job, .fetchFailed, error: error)
-                    return
+                    return false
                 }
             case .bundleReady:
                 // A bundle that sat in the checkpoint too long (the app slept through its own
@@ -448,7 +468,7 @@ public actor WeatherJobEngine {
                     }
                     store.clear()
                     readConnectedMilliseconds = nil
-                    return
+                    return true
                 } catch WeatherDeviceLinkError.bundleRejected {
                     // The device says these exact bytes are not a bundle (§11.5 `error`): the same
                     // bytes reproduce the failure, so the retry must be a *rebuild*.
@@ -458,7 +478,7 @@ public actor WeatherJobEngine {
                     job.bundleBuiltAt = nil
                     job.phase = .fetching
                     recordFailure(&job, .bundleRejected, error: WeatherDeviceLinkError.bundleRejected)
-                    return
+                    return false
                 } catch WeatherDeviceLinkError.deviceBusy, WeatherDeviceLinkError.linkBusy {
                     // "Not now" — `busy` / `storageFull` / `notFound`, or the phone's transfer slot
                     // still held by a foreground transfer. None of these is a verdict on the bytes,
@@ -468,7 +488,7 @@ public actor WeatherJobEngine {
                     // a good bundle and paid for a whole corridor re-fetch, six times over.
                     job.phase = .bundleReady
                     deferRetry(&job, .deviceUnavailable)
-                    return
+                    return false
                 } catch WeatherDeviceLinkError.transferCorrupted {
                     // The wire mangled correct bytes (§11.5 `crcMismatch`). Handled exactly like a
                     // drop — keep the bundle, re-send it — but recorded as itself: folding it into
@@ -477,13 +497,13 @@ public actor WeatherJobEngine {
                     job.phase = .bundleReady
                     recordFailure(
                         &job, .transferCorrupted, error: WeatherDeviceLinkError.transferCorrupted)
-                    return
+                    return false
                 } catch {
                     // Link-class failure: the persisted bytes stay valid, and a duplicate answers
                     // `committed` — so the retry re-uploads the same bytes safely.
                     job.phase = .bundleReady
                     recordFailure(&job, .uploadFailed, error: error)
-                    return
+                    return false
                 }
             }
         }

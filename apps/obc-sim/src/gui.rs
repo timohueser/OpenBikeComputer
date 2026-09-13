@@ -1290,6 +1290,6 @@ mod sim_platform_tests {
         let mut companion = crate::weather_companion::SimCompanion::new(true);
         let mut available = SimPlatform { settings: &mut settings, panel: &mut panel, companion: Some(&mut companion) };
         assert!(available.request_weather_refresh(), "a live companion accepts the typed effect");
-        assert!(companion.refreshing(), "the accepted request becomes the shared pending level");
+        assert!(!companion.refreshing(), "queuing a request is not an active phone fetch");
     }
 }

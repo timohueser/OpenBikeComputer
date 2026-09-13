@@ -55,6 +55,12 @@ private final class ScriptedLink: WeatherDeviceLink, @unchecked Sendable {
         return try result.get()
     }
 
+    private(set) var failedRequests: [UInt32] = []
+    private(set) var startedRequests: [UInt32] = []
+    func reportAttempt(requestID: UInt32, started: Bool) async throws {
+        lock.withLock { if started { startedRequests.append(requestID) } else { failedRequests.append(requestID) } }
+    }
+
     func acknowledgeUnchanged(
         requestID: UInt32, retryAfterSeconds: UInt16
     ) async throws -> WeatherBundleUploadReceipt {
@@ -338,6 +344,7 @@ struct WeatherJobEngineTests {
         #expect(persisted?.phase == .fetching)
         #expect(persisted?.snapshot?.requestID == 7)
         #expect(persisted?.attempts == 1)
+        #expect(rig.link.failedRequests == [7])
         #expect(persisted?.notBefore != nil)
 
         // "Relaunch": a fresh engine over the same stores, after the cooldown.
@@ -347,6 +354,7 @@ struct WeatherJobEngineTests {
         await rig.engine().kick(.resume)
 
         #expect(rig.link.readCalls == 1, "the persisted context is resumed, not re-read")
+        #expect(rig.link.startedRequests == [7])
         #expect(rig.history.entries().last?.outcome == .committed)
         #expect(rig.store.load() == nil)
     }
@@ -442,6 +450,13 @@ struct WeatherJobEngineTests {
         let entry = rig.history.entries().last
         #expect(entry?.outcome == .failed)
         #expect(entry?.failureReason == .noPosition)
+        #expect(rig.link.failedRequests == [7])
+        rig.link.readResults = [.success(readReceipt(snapshot(readAt: rig.clock.now)))]
+        rig.assembler.results = [.success(builtBundle(generation: 1, at: rig.clock.now))]
+        rig.link.uploadResults = [.success(uploadReceipt())]
+        await rig.engine().kick(.deviceRaisedRequest)
+        #expect(rig.history.entries().last?.outcome == .committed)
+        #expect(rig.link.failedRequests == [7], "recovery does not report another failure")
     }
 
     @Test func aNewerRequestSupersedesAStaleBundleAndRebuilds() async {

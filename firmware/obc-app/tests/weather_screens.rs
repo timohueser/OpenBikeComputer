@@ -501,14 +501,20 @@ fn the_weather_sheet_reaches_the_request_and_the_save() {
     host.pass(&mut app, 30);
     assert_eq!(host.raised, 2, "exactly one more request reached the radio");
 
-    // …and the cue is on the frame the press produced, over content that never blanked.
+    // Dispatch alone cannot claim that a phone is fetching.
+    assert!(!app.weather().refreshing());
+    let waiting = render(&mut app, &map, Some(&dry));
+    assert!(idle.px == waiting.px, "waiting for a phone keeps the cached dashboard unchanged");
+    weather_pass(&mut app, 30, Some(&dry), |facts| facts.note_weather_refreshing(true));
+    // The phone activity fact raises the cue without blanking the forecast.
     let refreshing = render(&mut app, &map, Some(&dry));
     assert_ne!(idle.px, refreshing.px, "the UPDATING cue is visible");
     let bar_rows = 40 * 240; // the title bar band
     assert_eq!(idle.px[bar_rows..], refreshing.px[bar_rows..], "cached content stays fully visible");
 
     // Row 1: the interval editor writes the persisted field, and the pass then owes the save.
-    host.pass(&mut app, 40); // the Raised answer lands; the Refresh row is live again
+    host.pass(&mut app, 40); // the Raised answer lands
+    weather_pass(&mut app, 40, Some(&dry), |facts| facts.note_weather_refreshing(false));
     assert_eq!(app.settings().weather_refresh, WeatherRefresh::Every30, "the default the epic locks");
     assert!(app.apply_chord(obc_app::Chord::Context));
     app.apply_gesture(Gesture::Step(1)); // → the Interval row

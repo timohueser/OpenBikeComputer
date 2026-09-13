@@ -177,6 +177,9 @@ public struct WeatherBundleUploadReceipt: Equatable, Sendable {
 /// let go. Neither may hold BLE across network work — the engine's phase order is what guarantees
 /// the radio is idle throughout provider HTTP.
 public protocol WeatherDeviceLink: Sendable {
+    /// Stop the visible attempt. The device retains its request and retry schedule.
+    func reportAttempt(requestID: UInt32, started: Bool) async throws
+
     /// Connect (or ride an existing foreground session), read one authenticated
     /// `weatherRequestContext`, disconnect. The advertised request is consumed by this read
     /// (§11.3); the returned snapshot is the job's checkpoint.

@@ -83,7 +83,7 @@ impl SimCompanion {
 
     /// Whether typed urgent or cadence work is queued or pending.
     pub fn refreshing(&self) -> bool {
-        self.scheduler.has_request()
+        self.scheduler.refreshing()
     }
 
     /// One pass of the whole lifecycle. Returns fresh bundle bytes when an upload committed.
@@ -158,7 +158,11 @@ impl SimCompanion {
 
         // 3. BLE is off while HTTP runs. Nothing here touches a radio, which is exactly the
         //    property the budget depends on.
-        let bytes = live.fetch(position, now, context.request_id)?;
+        self.scheduler.attempt_started(context.request_id, now_s);
+        let bytes = live.fetch(position, now, context.request_id);
+        // This simulator fetch is synchronous; there is no active work after it returns.
+        self.scheduler.attempt_failed(context.request_id);
+        let bytes = bytes?;
 
         // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
         let incoming = held_from_bytes(&bytes)?;
@@ -258,7 +262,7 @@ mod tests {
         let mut companion = SimCompanion::new(false);
         let mut live = offline_live();
         companion.request_now();
-        assert!(companion.refreshing(), "the typed request is visible until the scheduler consumes it");
+        assert!(!companion.refreshing(), "a queued request is not an active fetch");
         let bytes = companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
         assert!(bytes.is_none());
         assert_eq!(companion.state.raises, 0, "a card-less device must not raise a weather request");
@@ -288,7 +292,7 @@ mod tests {
         companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
         assert_eq!(companion.state.raises, 1);
         assert_eq!(companion.state.last_reason, REASON_URGENT | REASON_NO_BUNDLE);
-        assert!(companion.refreshing(), "the failed fetch remains pending on its retry ladder");
+        assert!(!companion.refreshing(), "a failed fetch is not active during its retry wait");
         assert!(live.total_requests() > 0, "Off disables cadence, not a rider's typed urgent request");
 
         companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 1);
@@ -314,7 +318,7 @@ mod tests {
         let mut cadence = SimCompanion::new(true);
         let mut live = offline_live();
         cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 0);
-        assert!(cadence.refreshing(), "a cadence raise is the same visible pending level");
+        assert!(!cadence.refreshing(), "a completed synchronous attempt is no longer active");
         cadence.scheduler.commit_succeeded(1);
         cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1);
         assert!(!cadence.refreshing(), "completion clears the level before the next pass");
@@ -324,7 +328,7 @@ mod tests {
         urgent.request_now();
         for now in [0, 300, 900, 2_100] {
             urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, now);
-            assert!(urgent.refreshing(), "the urgent ladder remains pending at {now}");
+            assert!(!urgent.refreshing(), "the urgent ladder is waiting at {now}");
         }
         urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 2_160);
         assert!(!urgent.refreshing(), "the final request window lapses without a cadence fallback");

@@ -507,6 +507,37 @@ impl WeatherUnchanged {
     }
 }
 
+/// Report phone work without satisfying the request or changing retry pacing.
+pub const CMD_WEATHER_ATTEMPT: u8 = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeatherAttempt {
+    pub request_id: u32,
+    pub started: bool,
+}
+
+impl WeatherAttempt {
+    pub const ENCODED_LEN: usize = 6;
+    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
+        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
+        if bytes[0] != CMD_WEATHER_ATTEMPT {
+            return Err(DescriptorError::UnknownOp(bytes[0]));
+        }
+        let request_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+        if request_id == 0 || bytes[5] > 1 {
+            return Err(DescriptorError::Bounds);
+        }
+        Ok(Self { request_id, started: bytes[5] == 1 })
+    }
+    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        let mut out = [0; Self::ENCODED_LEN];
+        out[0] = CMD_WEATHER_ATTEMPT;
+        out[1..5].copy_from_slice(&self.request_id.to_le_bytes());
+        out[5] = self.started as u8;
+        out
+    }
+}
+
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
 /// byte** — with precedence **`busy` > `noStaged` > `invalid` > `ok`**:
