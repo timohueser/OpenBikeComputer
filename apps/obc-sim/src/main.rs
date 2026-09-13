@@ -1171,13 +1171,28 @@ fn main() {
         }
         return;
     }
-    let card::Session { map, routes, trips } = card::Session::load(&mut args).unwrap_or_else(|error| {
+    let card::Session { owner, map, routes, trips } = card::Session::load(&mut args).unwrap_or_else(|error| {
         eprintln!("session failed: {error}");
         std::process::exit(1);
     });
     let source = map.map_source();
     eprintln!("card {:?} | map {} revision {}", source.store_id(), source.id().0, source.revision().0);
     if args.create_card.is_some() {
+        if let Some(arg) = args.weather.as_deref() {
+            let b = map.reader().bbox;
+            if let Err(error) = weather_live::build(
+                owner.clone(),
+                Some(arg),
+                args.weather_now,
+                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
+                &args.live,
+                ((b.min_lat + b.max_lat) / 2, (b.min_lon + b.max_lon) / 2),
+                !args.no_card,
+            ) {
+                eprintln!("weather import failed: {error}");
+                std::process::exit(1);
+            }
+        }
         eprintln!("card created; inputs unchanged");
         return;
     }
@@ -1264,11 +1279,19 @@ fn main() {
         // `--center` have already seeded it), else the camera. The *service* never receives it —
         // it only shapes which immutable objects get Range-read.
         let wx_seed_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-        let wx_source = args
-            .weather
-            .as_ref()
-            .map(|arg| weather_live::build(arg, args.weather_now, map_bbox, &args.live, wx_seed_pos, !args.no_card))
-            .unwrap_or(weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
+        let wx_source = weather_live::build(
+            owner.clone(),
+            args.weather.as_deref(),
+            args.weather_now,
+            map_bbox,
+            &args.live,
+            wx_seed_pos,
+            !args.no_card,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("weather failed: {error}");
+            std::process::exit(1);
+        });
         let mut weather = wx_source.store;
         let weather_anchor = wx_source.clock_anchor;
         // Headless is one fetch, by design: a `--png` render must be a single, reportable
@@ -1917,6 +1940,12 @@ fn main() {
         // card and spinner timers every screen shares — so a still frame that named no bundle keeps
         // exactly the passes it always ran.
         if weather.is_some() {
+            if let Some(identity) = weather.as_ref().and_then(|w| w.installed()) {
+                host.facts().note_weather_data(obc_app::device_core::WeatherData {
+                    data: obc_app::device_core::DataIdentity::new(identity.id.0),
+                    revision: obc_app::device_core::Revision::new(u64::from(identity.revision.0)),
+                });
+            }
             // `--weather-refreshing`: the provider plane's level, reported as the external fact the
             // domain reads. The cue is the domain's answer on every host now, never a render argument.
             if args.weather_refreshing {
@@ -2041,7 +2070,7 @@ fn main() {
     }
 
     // Interactive: hand the map to the eframe host window.
-    if let Err(e) = gui::run(map, routes, trips, args) {
+    if let Err(e) = gui::run(owner, map, routes, trips, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
     }
