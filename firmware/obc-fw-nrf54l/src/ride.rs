@@ -3160,7 +3160,7 @@ async fn metadata_call(request: crate::flat_store::Request) -> Result<(), obc_ap
     let ticket = writer.try_call(request, &CATALOG_STORE_REPLY).map_err(|()| RetentionError::Busy)?;
     match writer.finish_call(ticket, &CATALOG_STORE_REPLY).await {
         Ok(crate::flat_store::Outcome::Metadata(result)) => result,
-        Err(StoreError::ReadOnly) => Err(RetentionError::RemountRequired),
+        Err(obc_storage::flat::StoreError::ReadOnly) => Err(RetentionError::RemountRequired),
         _ => Err(RetentionError::WriteFailed),
     }
 }

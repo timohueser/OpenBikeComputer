@@ -73,7 +73,7 @@ use obc_link::flat::{
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
-    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError,
+    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError, StoreId,
 };
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
