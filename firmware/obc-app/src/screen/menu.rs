@@ -187,7 +187,7 @@ impl MenuScreen {
                     MenuItem::Rides => Transition::Push(Screen::Rides(RidesScreen::new())),
                     MenuItem::Pois => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
                     MenuItem::Map => open_map(cx),
-                    MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::new())),
+                    MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::new(cx.state.user_fix))),
                     // Weather (WX11). Opening the dashboard is worth a radio trip, so the row that
                     // opens it says so — the same way the System row names its free-space refresh.
                     // This is the **only** push site of `Screen::Weather`, which is what makes it the
@@ -580,6 +580,12 @@ mod tests {
         let mut screen = MenuScreen::new();
         screen.dial.selected = 4;
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
-        assert!(matches!(screen.handle(Gesture::Press, &mut cx), Transition::Push(Screen::PeakView(_))));
+        for has_fix in [false, true] {
+            cx.state.user_fix = has_fix.then_some(obc_ports::Fix { lat: 0, lon: 0, course: None, speed_mps: None });
+            let Transition::Push(Screen::PeakView(mut peak)) = screen.handle(Gesture::Press, &mut cx) else {
+                panic!("Peak View")
+            };
+            assert_eq!(peak.tick_timers(0, 240, 320).next_wake_ms.is_some(), !has_fix);
+        }
     }
 }
