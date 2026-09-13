@@ -1283,6 +1283,17 @@ impl Screen {
         }
     }
 
+    /// Arm that debt on the drawer that **replaces the other one**
+    /// ([`App::toggle_drawer`](crate::App)): the departed sheet's rows are still on the panel, and
+    /// covering them with a sheet that arrives from the opposite edge does not take them off.
+    pub(crate) fn owe_base_draw(&mut self) {
+        match self {
+            Screen::QuickDrawer(s) => s.owe_base(),
+            Screen::ContextDrawer(s) => s.owe_base(),
+            _ => {}
+        }
+    }
+
     /// **Pre-draw acquisition** (#803): resolve any reader-backed one-shot state before drawing, so
     /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
     /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
