@@ -276,10 +276,15 @@ Do not infer state from a notification or operation log.
 </figure>
 
 Rides become downloadable after the `RECORDING` flag clears.
-The iOS client lists finished rides, downloads them, and verifies their CRC.
-Protocol v4 has no ride-possession mutation.
-The current iOS `ackRides` compatibility method sends no command.
-The board does not accept the retired `ackRides` command.
+The iOS client downloads the exact listed revision and verifies its store identity, length and CRC.
+It saves the canonical summary, samples and source identity in one atomic archive generation.
+A local archive receipt is returned only after the file and directory persistence barriers succeed.
+A failed save reports no success. A different revision or missing archive remains eligible for download.
+
+The local receipt does not change device retention state.
+Protocol v4 has no ride-possession mutation, so device rides remain unsynced and protected from
+automatic expiry. The [archive contract](src:specs/Ride_Archive_Contract.md) defines the local
+boundary and the required next device persistence boundary.
 
 ## Pairing and BLE controls
 

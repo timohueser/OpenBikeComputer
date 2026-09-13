@@ -41,8 +41,8 @@ The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
 
 - Routes are OBCR v3 files. GPX/TCX conversion happens on the phone and the device stores the OBCR
   bytes verbatim.
-- Ride bytes still use the previous decoder behind the v4 GET path. FS8 will replace it after the
-  footer layout is fixed; the phone continues to decode to `Ride` before exporting GPX.
+- Ride bytes contain recorded samples and an OBRF footer. The phone decodes them to `Ride` before
+  archiving or exporting GPX.
 - Route, ride and trip catalogs are v4 `LIST` entries.
 - Trips contain route object ids, not route bytes. Upload stages first and the trip last; deleting a
   trip does not implicitly delete its routes.
@@ -50,6 +50,15 @@ The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
 - Weather bundles are OBCW objects. A create requests object id zero; the store assigns the id.
 
 The wire codecs live under `OBCTransport/Codecs/`; interchange-file parsing lives in `OBCFormats`.
+
+## Ride archives
+
+The catalog and download path preserve StoreId, ObjectId, served Revision, verified length and CRC.
+The archive publishes canonical summary, samples, source and local sync state in one transaction.
+File and directory persistence barriers must succeed before a local archive receipt is returned.
+A changed revision or missing archive remains eligible for download. Phone deletion records are
+separate from archive proof. The client sends no device persistence receipt; device expiry remains
+blocked for unsynced rides. See the [archive contract](../specs/Ride_Archive_Contract.md).
 
 ## Weather Request
 
