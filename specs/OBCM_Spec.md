@@ -103,7 +103,7 @@ junction record still fits one pinned nav chunk. Real maps grow ~0.3–0.6 %.
 
 A map packed **without** terrain writes `Ascent M = 0` everywhere and is
 decode-valid: it routes exactly as v11 did — the degrade path, and what the
-smaller fixtures (`monaco.obcm`, `grimsel-demo.obcm`) still carry.
+terrain-free fixtures such as `monaco.obcm` still carry.
 `grimsel.obcm` is packed **with** its terrain sidecar since 2026-08-03 (#1096
 follow-up), so it exercises real integrated ascent and the traced contours.
 
