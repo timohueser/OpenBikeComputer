@@ -119,10 +119,13 @@ view priority. Completed views reuse the panorama in RAM. Movement above 20 m st
 panorama after the current job finishes. Leaving Peak View cancels generation and releases the arena.
 
 Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
-peak with the highest elevation angle. Up or Down enters Browse at the corresponding edge and
-steps through visible peaks from left to right. A step past the view edge turns the view by 15°
-and selects the first visible peak that enters. Further steps continue to turn through empty
-areas. Select returns to Live. Browse keeps its selected peak when new names become available.
+peak with the highest elevation angle. A step to the right enters Browse on the leftmost visible
+peak; a step to the left starts on the rightmost. Each further step selects the next visible peak
+in that direction without moving the view. If there is no next peak, the view turns by 15° and
+selects the first peak that enters. If no peak enters, the selected peak stays selected until it
+leaves the view. Further steps continue through empty areas. Reversing direction steps back
+through the visible peaks. Select returns to Live. Browse keeps its selected peak when new names
+become available.
 A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
 appears in the ledger.
 
