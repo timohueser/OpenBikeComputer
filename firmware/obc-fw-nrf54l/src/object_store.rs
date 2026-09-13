@@ -246,8 +246,8 @@ impl ObjectStore {
     }
 
     /// Forget the stored bond (the peer signalled it lost its keys) → next contact re-pairs.
-    pub fn clear_bond(&mut self, shared: &mut SharedStore) {
-        shared.settings.clear_bond();
+    pub fn clear_bond(&mut self, shared: &mut SharedStore) -> Result<(), obc_app::ble::BondError> {
+        shared.settings.clear_bond()
     }
 
     /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap

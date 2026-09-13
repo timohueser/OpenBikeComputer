@@ -245,7 +245,7 @@ pub(crate) async fn radio_enabled_wait() {
 
 /// Ring the Forget-phone request (called by the ride loop; the BLE lifecycle honours it in any
 /// phase — parked, advertising, or connected).
-pub fn request_forget_bond() {
+pub(crate) fn request_forget_bond() {
     FORGET_BOND.signal(());
 }
 
@@ -260,3 +260,27 @@ pub(crate) fn battery() -> u8 {
 }
 
 // ============================ CoC data-plane arming ============================
+
+// Retained request/result; FORGET_BOND and STATUS_EDGE only coalesce wakeups.
+static BOND_DELIVERY: BlockingMutex<CriticalSectionRawMutex, core::cell::RefCell<obc_app::ble::BondDelivery>> =
+    BlockingMutex::new(core::cell::RefCell::new(obc_app::ble::BondDelivery::new()));
+
+pub fn try_forget_bond(effect: obc_app::ble::BondEffect) -> Result<(), obc_app::ble::BondError> {
+    BOND_DELIVERY.lock(|slot| slot.borrow_mut().submit(effect))?;
+    FORGET_BOND.signal(());
+    Ok(())
+}
+
+pub(crate) fn begin_bond_removal() -> Option<obc_app::ble::BondEffect> {
+    BOND_DELIVERY.lock(|slot| slot.borrow_mut().begin())
+}
+
+pub(crate) fn finish_bond_removal(outcome: obc_app::ble::BondOutcome) {
+    let accepted = BOND_DELIVERY.lock(|slot| slot.borrow_mut().finish(outcome));
+    debug_assert!(accepted, "bond result must match the running request");
+    STATUS_EDGE.signal(());
+}
+
+pub fn take_bond_outcome() -> Option<obc_app::ble::BondOutcome> {
+    BOND_DELIVERY.lock(|slot| slot.borrow_mut().take_outcome())
+}

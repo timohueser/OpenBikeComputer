@@ -85,7 +85,7 @@ pub use dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 pub use dirty::Dirty;
 pub use fault::{draw_boot_fault, BootFault};
 pub use hold_hint::HoldHints;
-pub use host::{DetourPreview, DrainStatus, HostCommand, HostMailbox};
+pub use host::DetourPreview;
 pub use i18n::{t, Msg};
 pub use input::{Chord, Gesture, Gestures, DEFAULT_CHORD_MS, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;

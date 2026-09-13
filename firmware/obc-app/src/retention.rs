@@ -366,7 +366,7 @@ pub fn decode_route_retention(bytes: &[u8]) -> RouteRetentionStore {
 
 // ==================== the expiry sweep ====================
 
-/// One thing the sweep wants the host to do, drained into the typed [`HostCommand`] protocol. The
+/// One bounded action the retention sweep requests. The
 /// stamps carry the id only — the [`utc`] is filled from the wall clock at drain time (day-grain
 /// expiry is indifferent to the few seconds between the sweep and the drain), keeping this a
 /// pocket-sized 4-byte value so the pending queue stays cheap.
