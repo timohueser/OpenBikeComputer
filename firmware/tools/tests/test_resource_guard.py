@@ -278,12 +278,25 @@ class FixedEntryTests(unittest.TestCase):
   12e092: ed2d 8b04     vpush {d8, d9}
   12e096: b090          sub sp, #0x40
   12e098: f24b 3448     movw r4, #0xb348
+00041364 <obc_fw_nrf54l::storage::Writer::try_call_owned>:
+   41364: b5f0          push {r4, r5, r6, r7, lr}
+   41366: af03          add r7, sp, #0xc
+   41368: f84d 8d04     str r8, [sp, #-4]!
+   4136c: f5ad 7d7e     sub.w sp, sp, #0x3f8
+   41370: 4604          mov r4, r0
+0001affe <obc_storage::flat::store::FlatStore::current_revision>:
+   1affe: b5f0          push {r4, r5, r6, r7, lr}
+   1b000: af03          add r7, sp, #0xc
+   1b002: f84d bd04     str r11, [sp, #-4]!
+   1b006: b0c0          sub sp, #0x100
+   1b008: 4604          mov r4, r0
 """
 
     def test_captured_entries_include_alignment_and_vfp_saves(self):
         parsed = resource_guard.parse_disassembly(self.CAPTURED)
         self.assertEqual(max(resource_guard.select_poll_frames(parsed).values()), 9_944)
-        for needle, expected in [("transform", 6_376), ("finish_splice", 120)]:
+        for needle, expected in [("transform", 6_376), ("finish_splice", 120),
+                                 ("try_call_owned", 1_040), ("current_revision", 280)]:
             frames = resource_guard.select_frames(parsed, lambda name: needle in name, needle, needle)
             self.assertEqual(list(frames.values()), [expected])
             self.assertEqual(parsed.entry_cost(next(iter(frames))), expected)
@@ -324,7 +337,9 @@ class FixedEntryTests(unittest.TestCase):
         self.assertEqual(parsed.entry_cost("body_store"), 0)
 
     def test_unsupported_guarded_entry_never_passes_with_a_partial_cost(self):
-        for instruction in ["sub.w sp, sp, r0", "vpush {d15-d8}", "push {future}", "<unknown>"]:
+        for instruction in ["sub.w sp, sp, r0", "vpush {d15-d8}", "push {future}", "<unknown>",
+                            "str r8, [sp, #-8]!", "str r8, [sp], #-4", "strd r8, r9, [sp, #-8]!",
+                            "str future, [sp, #-4]!", "stmdb sp!, {r8}"]:
             with self.subTest(instruction=instruction):
                 parsed = resource_guard.parse_disassembly(
                     "00001000 <guarded::known>:\n    1000: b084 sub sp, #16\n"

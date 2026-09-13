@@ -191,6 +191,10 @@ SYMBOL_HEADER_RE = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
 # Fixed Thumb entry operations, before the first body/control-flow instruction.
 FRAME_DECREMENT_RE = re.compile(r"^subw?(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)$")
 PUSH_RE = re.compile(r"^(v?push)(?:\.w)?\s+\{([^}]*)\}$")
+SINGLE_SAVE_RE = re.compile(r"^str(?:\.w)?\s+(\w+),\s*\[sp,\s*#-(?:4|0x4)\]!$")
+STACK_STORE_WRITEBACK_RE = re.compile(
+    r"^(?:v?str\S*|v?stm\S*)\s+.*(?:\[sp\b[^\]]*\](?:!|,)|\bsp!)"
+)
 FRAME_POINTER_RE = re.compile(
     r"^(?:add(?:\.w)?\s+(?:r7|r11|fp),\s*sp,\s*#(?:0x[0-9a-fA-F]+|\d+)"
     r"|mov(?:\.w)?\s+(?:r7|r11|fp),\s*sp)$"
@@ -283,6 +287,7 @@ def parse_disassembly(disassembly: str) -> Disassembly:
         asm = instruction.group(1).split("@", 1)[0].strip()
         decrement = FRAME_DECREMENT_RE.fullmatch(asm)
         push = PUSH_RE.fullmatch(asm)
+        single_save = SINGLE_SAVE_RE.fullmatch(asm)
         if decrement:
             frames[function] = frames.get(function, 0) + int(decrement.group(1), 0)
         elif push:
@@ -293,12 +298,24 @@ def parse_disassembly(disassembly: str) -> Disassembly:
                 entry = False
             else:
                 pushes[function] = pushes.get(function, 0) + saved
+        elif single_save:
+            try:
+                saved = saved_register_bytes(single_save.group(1), False)
+            except ValueError as error:
+                unsupported[function] = str(error)
+                entry = False
+            else:
+                pushes[function] = pushes.get(function, 0) + saved
         elif FRAME_POINTER_RE.fullmatch(asm):
             continue
         else:
             # An unfamiliar entry stack mutation must not turn a partial parse into a pass.
             # Restores are epilogues, not unsupported allocations.
-            if asm == "<unknown>" or ENTRY_STACK_MUTATION_RE.search(asm):
+            if (
+                asm == "<unknown>"
+                or ENTRY_STACK_MUTATION_RE.search(asm)
+                or STACK_STORE_WRITEBACK_RE.search(asm)
+            ):
                 unsupported[function] = asm
             entry = False
     return Disassembly(
@@ -1108,7 +1125,7 @@ def parser() -> argparse.ArgumentParser:
     frames = commands.add_parser("frames", help="gate the largest stack frame of one module in any ELF")
     frames.add_argument("--elf", type=Path, required=True)
     frames.add_argument("--match", required=True, help="substring of the demangled symbol names to gate")
-    frames.add_argument("--limit", type=int, required=True, help="largest permitted single `sub sp` in bytes")
+    frames.add_argument("--limit", type=int, required=True, help="largest permitted complete fixed stack entry in bytes")
     strict = commands.add_parser("strict-align", help="prove the active ARM backend honors +strict-align")
     strict.add_argument("--probe", type=Path, default=STRICT_ALIGN_PROBE)
     strict.add_argument(
