@@ -808,6 +808,11 @@ impl<D: BlockDevice> FlatStore<D> {
         sync(dev)
     }
 
+    /// Complete a durability barrier without exposing the card to callers above the store.
+    pub(crate) fn sync_media(&self) -> Result<(), StoreError> {
+        sync(&self.dev)
+    }
+
     /// Stop mutations and fresh catalog reads after uncertain publication or verification.
     /// Existing handles keep their ranges until they close; only a fresh mount clears this mode.
     pub(crate) fn require_remount(&self) {
