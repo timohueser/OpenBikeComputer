@@ -106,8 +106,11 @@ pub fn track_lifecycle(tracks: &mut dyn TrackRepository) {
     assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "no ride → nothing to commit");
 
     // A session opens a log, and the log takes what the app stages into it.
-    assert!(tracks.open(1, Some("ride")));
-    assert!(tracks.append(sample(0)), "an open ride takes the sample it is handed");
+    assert!(tracks.open(1, Some("ride"), 0));
+    assert_eq!(
+        tracks.append_batch(&[sample(0)], Some(obc_app::RideContinuation::default())),
+        Ok(crate::AppendStatus::Accepted(1))
+    );
 
     // The finalize closes it and answers with the identity it committed.
     let saved = tracks.finalize(stats());
@@ -115,9 +118,12 @@ pub fn track_lifecycle(tracks: &mut dyn TrackRepository) {
     assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "and closes the log");
 
     // The next ride is a fresh object, and a discard leaves nothing behind.
-    assert!(tracks.open(2, Some("ride")));
-    assert!(tracks.append(sample(1_000)));
-    assert!(tracks.discard(), "a discard of an open ride succeeds");
+    assert!(tracks.open(2, Some("ride"), 1000));
+    assert_eq!(
+        tracks.append_batch(&[sample(1_000)], Some(obc_app::RideContinuation::default())),
+        Ok(crate::AppendStatus::Accepted(1))
+    );
+    assert!(tracks.discard().is_ok(), "a discard of an open ride succeeds");
     // A close with nothing open is not a failure to retry. The goal state holds either way, and a
     // store that reported it as one would put Recorder in a retry loop against an object that does
     // not exist — which is exactly what a start the card refused leaves behind.

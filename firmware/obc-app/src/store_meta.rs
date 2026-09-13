@@ -4,8 +4,7 @@
 //! is phone-detectable), not the rider's settings. They live together because the mint rule couples
 //! them.
 //!
-//! Also home to the shared [`crc16`] the persistent sidecar/line codecs guard themselves with
-//! (settings blob, arm marker, synced-ride and route-CRC sidecars included).
+//! Also home to the shared [`crc16`] used by the settings, arm-marker and identity codecs.
 
 /// CRC-16/CCITT-FALSE (poly `0x1021`, init `0xFFFF`) over `data` — small, table-free, and
 /// plenty to reject a blank/half-written blob. Guards the codec on both stores.
@@ -113,8 +112,7 @@ pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
 // The mint decision ([`store_epoch_mint`]) is a pure function so the subtle rule is host-tested
 // without the board crate; the board glue reads the card epoch file + the RRAM id-marks line, draws
 // one TRNG word, and writes back (epoch → card, id-marks → RRAM). Torn/absent/foreign file → `None`,
-// exactly the id-marks (and other sidecar) conventions. The file carries no RRAM line-size padding;
-// like `ROUTES.CRC`, it is a card record rather than the retired RRAM line.
+// exactly the id-marks conventions. The card record carries no RRAM line-size padding.
 
 /// The store-epoch file's fixed length: 12 bytes, `magic(4) · version(1) · pad(1) · epoch u32 LE ·
 /// crc16 LE` — CRC-16 over bytes `[0..10]`. A card sidecar, not an RRAM line, so no 16-byte write-line

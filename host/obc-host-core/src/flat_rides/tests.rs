@@ -54,7 +54,26 @@ fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
     assert!(rides.catalog[0].summary.synced);
     assert!(rides.inventory[0].synced);
     assert_eq!(rides.inventory[0].synced_at_utc, 0);
-    let overflow = seed(&owner);
+    let overflow = {
+        let mounted = owner.0.lock().unwrap();
+        let store = mounted.ready().unwrap();
+        let bytes = obc_formats::ride::encode_footer(&obc_formats::ride::Footer::new(
+            "overflow", 0, 0, 0, 0, 0, 0, None, None, None, None, None,
+        ));
+        let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+        store.write(&mut allocation, &bytes).unwrap();
+        let meta = EntryMeta {
+            id: store.next_object_id(),
+            revision: Revision(1),
+            kind: ObjectKind::Ride,
+            flags: EntryFlags::NONE,
+            payload_len: bytes.len() as u64,
+            payload_crc: obc_crc::crc32(&bytes),
+            name: DisplayName::default(),
+        };
+        store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).unwrap();
+        meta
+    };
     assert_eq!(rides.refresh_metadata(), Err(RetentionError::WriteFailed));
     assert_eq!(rides.inventory.len(), obc_app::MAX_RIDES, "failure keeps the prior complete snapshot");
     owner.remove(ObjectKind::Ride, overflow.id, overflow.revision).unwrap();
@@ -112,8 +131,8 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
     assert!(!rides.inventory[0].synced);
     let expected = rides.store_scope().unwrap();
     assert_eq!(rides.expire_ride(replaced.id.0, expected), Err(CatalogError::Stale));
-    assert!(!rides.open(1, None));
-    assert!(!rides.discard());
+    assert!(!rides.open(1, None, 0));
+    assert_eq!(rides.discard(), Err(obc_app::recorder::RecorderError::ReadOnly));
     let stats = RideStats {
         distance_m: 0,
         moving_time_s: 0,

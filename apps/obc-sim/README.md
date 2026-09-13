@@ -39,7 +39,7 @@ makes no chord.
 ## Map and output
 
 The ordinary OBCM path is an import input. Startup copies the map through a 16 KiB buffer into a
-temporary sparse card, then imports the route and trip fixtures. All runtime readers use that same
+temporary sparse card, then imports the route, trip and saved-ride fixtures. All runtime readers use that same
 card. Input files stay unchanged. The final reader releases the temporary card.
 
 On Unix, create a persistent card explicitly, then reopen it without importing the files again:
@@ -49,6 +49,13 @@ target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/
 target/release/obc-sim --card ride.obc
 target/release/obc-sim --import next-stage.gpx --card ride.obc
 ```
+
+After an interrupted recording, `--card` offers Continue or Discard for the last valid checkpoint.
+Continue retains its card identity and accepted totals. If Save already journalled its footer,
+startup completes the catalog commit and lists the saved ride instead. Failed recovery validation
+can show a damaged-ride card; failed durability confirmation or terminal settlement stops startup.
+Close all readers and reopen after an uncertain card write. Startup never resets or migrates a card.
+
 
 Creation refuses an existing path and exits after importing. If an import fails, it reports failure
 and leaves the partial card for inspection. Reopening never initializes or resets the file. It
@@ -123,7 +130,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 - `--gpx PATH` replays a GPX track as the location source.
 - `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
 - `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
-- `--tracks-dir DIR` mounts the ride/track store (default `tracks/`).
+- `--tracks-dir DIR` selects saved-ride import inputs and GPX export output (default `tracks/`).
+  A new session imports valid `ride-{number}.obcr` files without changing them. `--card` does not
+  import or rescan that directory. Runtime recording and the ride catalog use the shared card.
+  A successful Save can export `ride-{card-id}.gpx`; an existing output file is not overwritten.
+  Export failure leaves the committed ride on the card.
 - `--import PATH` commits a GPX as a route to `--card`, or converts it to an `.obcr` file in `--routes-dir`, then exits. No map is required.
 - `--route-retention LEVEL:AGE` commits route-retention metadata to the session card and reloads it. `LEVEL` is 0–5; `AGE` accepts
   seconds, `h`, `d`, or `unknown` (for example `3:2d`).

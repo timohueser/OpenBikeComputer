@@ -28,6 +28,15 @@ impl FlatRideStore {
         repo.refresh_metadata()?;
         Ok(repo)
     }
+    /// Import immutable saved-ride bytes as a new card object. Fixture paths are not runtime owners.
+    pub fn import(&mut self, bytes: &[u8]) -> Result<obc_app::CatalogObjectId, crate::flat_store::ImportError> {
+        let info =
+            RideInfo::read(&obc_formats::io::SliceSource(bytes)).map_err(|_| obc_storage::flat::StoreError::Invalid)?;
+        let name = obc_storage::flat::DisplayName::new(info.name.as_str()).unwrap_or_default();
+        let meta = self.owner.import(ObjectKind::Ride, None, &mut &bytes[..], bytes.len() as u64, name)?;
+        self.refresh_metadata().map_err(|_| obc_storage::flat::StoreError::Media)?;
+        Ok(meta.id.0)
+    }
 }
 
 impl RideRepository for FlatRideStore {
@@ -139,14 +148,14 @@ impl RideRepository for FlatRideStore {
 }
 
 impl TrackRepository for FlatRideStore {
-    fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+    fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
         false
     }
     fn finalize(&mut self, _stats: RideStats) -> RideClose {
         RideClose::Failed
     }
-    fn discard(&mut self) -> bool {
-        false
+    fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
+        Err(obc_app::recorder::RecorderError::ReadOnly)
     }
     fn checkpoint(
         &mut self,
