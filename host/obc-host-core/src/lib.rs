@@ -13,8 +13,8 @@
 //! - [`NavPlan`] / [`commit_nav_plan`] — the resumable route planner held across frames (one
 //!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit tail,
 //!   generic over a host's route store via [`RouteRepository`].
-//! - [`flat_map`] — owned map objects on temporary file or sparse memory media, read through
-//!   the shared flat store by the simulator and browser demo.
+//! - [`flat_map`] / [`flat_store`] — map objects and revision-pinned readers on shared
+//!   memory, temporary-file, or explicitly opened persistent Unix card media.
 //! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
 //!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
 //!   source when there is none.
@@ -23,13 +23,12 @@
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
-//! - [`FlatRouteStore`] / [`MemRideStore`] / [`MemTrackStore`] — the in-memory store family for a
-//!   host without a filesystem (the web demo; also handy in tests). Same surfaces as `obc-sim`'s
-//!   folder-backed stores, so host code drives either shape identically.
+//! - [`FlatRouteStore`] — routes on the shared host card, including a card that also owns maps.
+//! - [`MemRideStore`] / [`MemTrackStore`] — memory stores for browser hosts and tests.
 //!
 //! Deliberately **GUI-free**: no egui/eframe/winit here (that's the whole point — the web host's
-//! dependency tree must stay framework-free). The map owner selects native temporary files or
-//! browser memory; both read paths are tested on the native host.
+//! dependency tree must stay framework-free). Simulator maps use native temporary files; browser
+//! maps use memory. Persistent card APIs are available for host composition.
 
 pub mod conformance;
 mod dispatch;

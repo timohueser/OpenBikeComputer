@@ -1,5 +1,5 @@
 use super::*;
-use crate::flat_store::{HostMedia, Lease, ObjectSource, IMPORT_BUFFER_BYTES, PAGE};
+use crate::flat_store::{HostMedia, Lease, MountedStore, ObjectSource, IMPORT_BUFFER_BYTES, PAGE};
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_formats::io::SliceSource;
 use obc_formats::io::{ByteSource, Error};
@@ -70,7 +70,10 @@ fn native_and_memory_maps_render_and_read_like_the_original_bytes() {
     let oracle = render(&SliceSource(&bytes));
     assert_eq!(render(&memory.source()), oracle);
     assert_eq!(render(&native.source()), oracle);
-    assert_ne!(memory.source.0.owner.lock().unwrap().store_id(), native.source.0.owner.lock().unwrap().store_id());
+    assert_ne!(
+        memory.source.0.owner.lock().unwrap().card.store_id(),
+        native.source.0.owner.lock().unwrap().card.store_id()
+    );
     assert_eq!(memory.source.id(), ObjectId(1));
     assert_eq!(memory.source.revision(), Revision(1));
     assert_eq!(std::fs::read(input.path()).unwrap(), bytes);
@@ -104,13 +107,13 @@ fn clones_pin_the_full_identity_and_revision_until_the_last_drop() {
     let store = FlatStore::initialize(HostMedia::Memory(RefCell::default()), identity).unwrap();
     let id = ObjectId((1 << 48) + 7);
     publish(&store, id, Revision(1), b"old map");
-    let owner = Arc::new(Mutex::new(store));
+    let owner = Arc::new(Mutex::new(MountedStore::new(store)));
     let first = ObjectSource::open(owner.clone(), id, None).unwrap();
     let worker = first.clone();
-    assert_eq!(owner.lock().unwrap().store_id(), identity);
+    assert_eq!(owner.lock().unwrap().card.store_id(), identity);
     assert_eq!(worker.id(), id);
-    let free = owner.lock().unwrap().free_extents();
-    publish(&owner.lock().unwrap(), id, Revision(2), b"new");
+    let free = owner.lock().unwrap().card.free_extents();
+    publish(&owner.lock().unwrap().card, id, Revision(2), b"new");
     let head = ObjectSource::open(owner.clone(), id, None).unwrap();
     assert_eq!(head.revision(), Revision(2));
     let mut new = [0; 3];
@@ -121,13 +124,13 @@ fn clones_pin_the_full_identity_and_revision_until_the_last_drop() {
     worker.read_at(0, &mut old).unwrap();
     assert_eq!(&old, b"old map");
     assert_eq!(worker.revision(), Revision(1));
-    assert_eq!(owner.lock().unwrap().free_extents(), free - 1);
+    assert_eq!(owner.lock().unwrap().card.free_extents(), free - 1);
     drop(worker);
-    assert_eq!(owner.lock().unwrap().free_extents(), free);
-    owner.lock().unwrap().commit(&[Mutation::Remove { id, revision: Revision(2) }]).unwrap();
+    assert_eq!(owner.lock().unwrap().card.free_extents(), free);
+    owner.lock().unwrap().card.commit(&[Mutation::Remove { id, revision: Revision(2) }]).unwrap();
     head.read_at(0, &mut new).unwrap();
     drop(head);
-    assert_eq!(owner.lock().unwrap().free_extents(), free + 1);
+    assert_eq!(owner.lock().unwrap().card.free_extents(), free + 1);
 }
 
 #[test]
@@ -136,8 +139,8 @@ fn background_reader_owns_the_temporary_card_and_exact_bounds() {
     let mut input = tempfile::NamedTempFile::new().unwrap();
     std::io::Write::write_all(&mut input, &bytes).unwrap();
     let map = FlatMap::from_file(std::fs::File::open(input.path()).unwrap()).unwrap();
-    let path = match map.source.0.owner.lock().unwrap().device() {
-        HostMedia::File(file) => file.borrow().path().to_path_buf(),
+    let path = match map.source.0.owner.lock().unwrap().card.device() {
+        HostMedia::File(file) => file.borrow()._temporary.as_ref().unwrap().to_path_buf(),
         HostMedia::Memory(_) => unreachable!(),
     };
     let worker = map.source();
@@ -175,7 +178,7 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
     let mut bytes = map_bytes();
     bytes.resize(IMPORT_BUFFER_BYTES * 3 + 7, 0);
     let owner = HostStore::memory().unwrap();
-    let free = owner.0.lock().unwrap().free_extents();
+    let free = owner.0.lock().unwrap().card.free_extents();
     for _ in 0..12 {
         for (len, expected) in [
             (bytes.len() as u64 + 1, io::ErrorKind::UnexpectedEof),
@@ -185,14 +188,14 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
                 owner.import(ObjectKind::MapShard, None, &mut Bounded(&bytes), len, DisplayName::default()),
                 Err(ImportError::Io(error)) if error.kind() == expected
             ));
-            assert_eq!(owner.0.lock().unwrap().free_extents(), free, "failed import cancels its allocation");
+            assert_eq!(owner.0.lock().unwrap().card.free_extents(), free, "failed import cancels its allocation");
         }
     }
     let meta = owner
         .import(ObjectKind::MapShard, None, &mut Bounded(&bytes), bytes.len() as u64, DisplayName::default())
         .unwrap();
     assert_eq!(owner.open(meta.id, meta.revision).unwrap().len(), bytes.len() as u64);
-    let free = owner.0.lock().unwrap().free_extents();
+    let free = owner.0.lock().unwrap().card.free_extents();
     assert!(owner
         .import(
             ObjectKind::MapShard,
@@ -202,7 +205,7 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
             DisplayName::default()
         )
         .is_err());
-    assert_eq!(owner.0.lock().unwrap().free_extents(), free, "a rejected commit also cancels its allocation");
+    assert_eq!(owner.0.lock().unwrap().card.free_extents(), free, "a rejected commit also cancels its allocation");
 
     assert!(matches!(FlatMap::from_bytes(b"invalid map"), Err(MapError::Format(_))));
 }
@@ -211,7 +214,8 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
 fn browser_card_allocates_written_pages_only() {
     let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
     let map = FlatMap::from_bytes(bytes).unwrap();
-    let store = map.source.0.owner.lock().unwrap();
+    let owner = map.source.0.owner.lock().unwrap();
+    let store = &owner.card;
     let HostMedia::Memory(pages) = store.device() else { unreachable!() };
     let page_bytes = pages.borrow().len() * PAGE;
     // Two catalog copies, headers and the imported map, independent of the 32 GiB capacity.
@@ -226,4 +230,23 @@ fn browser_card_allocates_written_pages_only() {
         fixed,
         std::mem::size_of::<MapCache>()
     );
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn native_map_snapshot_is_independent_of_later_source_edits() {
+    use super::NativeMapInput;
+    use std::io::{Seek, SeekFrom, Write};
+    let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+    let mut original = tempfile::tempfile().unwrap();
+    original.write_all(bytes).unwrap();
+    let snapshot = NativeMapInput::snapshot(original.try_clone().unwrap()).unwrap();
+    original.seek(SeekFrom::Start(0)).unwrap();
+    original.write_all(b"invalid").unwrap();
+    let owner = HostStore::memory().unwrap();
+    let map = FlatMap::from_file_in(&owner, snapshot.file.into_inner()).unwrap();
+    let mut stored = vec![0; bytes.len()];
+    map.source().read_at(0, &mut stored).unwrap();
+    assert_eq!(stored, bytes);
+    assert!(matches!(FlatMap::from_file_in(&owner, original), Err(super::MapError::Format(_))));
 }
