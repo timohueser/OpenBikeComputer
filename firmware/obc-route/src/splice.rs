@@ -56,7 +56,7 @@ use heapless::Vec;
 
 use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
 use crate::reader::{
-    decode_route_points_between, for_each_waypoint, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
+    decode_route_points_between_checked, RoutePoint, RouteReader, WaypointCursor, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
 use obc_elevation::{DeadBand, ELE_DEADBAND_M};
 use obc_formats::io::{ByteSink, Error};
@@ -90,8 +90,9 @@ pub enum SpliceStep {
 
 /// The splice's coarse phase (one enum arm per bounded unit of work).
 enum Phase {
-    /// Read the two seam elevations, arm the emitter.
+    /// Read one seam elevation per step; arm the emitter after the rejoin.
     Init,
+    Rejoin,
     /// Stream `original[0..split_m]`, one chunk per step (real elevations).
     Head,
     /// Pre-measure the detour polyline length (the residual blend's denominator) and read its
@@ -102,7 +103,9 @@ enum Phase {
     Detour,
     /// Stream `original[rejoin_m..]`, one chunk per step (real elevations).
     Tail,
-    /// Re-place the original's waypoints and patch the header; terminal after this.
+    /// Re-place one stored waypoint per step, retaining at most the existing cap.
+    Waypoints,
+    /// Write the bounded index and waypoint table, then patch the header.
     Finish,
     Terminal(Result<RouteStats, Error>),
 }
@@ -154,6 +157,8 @@ pub struct Splicer {
     elev: DeadBand<f64>,
     min_ele: i16,
     max_ele: i16,
+    waypoints: Vec<WpPlace, MAX_WAYPOINTS>,
+    waypoint_cursor: Option<WaypointCursor>,
 }
 
 impl Splicer {
@@ -199,6 +204,8 @@ impl Splicer {
             elev: DeadBand::new(),
             min_ele: i16::MAX,
             max_ele: i16::MIN,
+            waypoints: Vec::new(),
+            waypoint_cursor: None,
         }
     }
 
@@ -209,16 +216,23 @@ impl Splicer {
     }
 
     /// Run one bounded unit of splicing. `orig` is the route being detoured, `detour` the
-    /// detour-only OBCR from the plan phase (in RAM), `sink` the spliced route's output —
+    /// retained detour-only OBCR from the plan phase, `sink` the spliced route's output —
     /// the caller passes the same three views every step.
     pub fn step(&mut self, orig: &RouteReader, detour: &RouteReader, sink: &mut dyn ByteSink) -> SpliceStep {
         match &self.phase {
             Phase::Init => {
-                let (Some(es), Some(er)) = (orig.elevation_at(self.split_m), orig.elevation_at(self.rejoin_m)) else {
+                let Some(ele) = orig.elevation_at(self.split_m) else {
                     return self.fail(Error::BadOffset);
                 };
-                self.ele_split = es;
-                self.ele_rejoin = er;
+                self.ele_split = ele;
+                self.phase = Phase::Rejoin;
+                SpliceStep::Running
+            }
+            Phase::Rejoin => {
+                let Some(ele) = orig.elevation_at(self.rejoin_m) else {
+                    return self.fail(Error::BadOffset);
+                };
+                self.ele_rejoin = ele;
                 match ObcrEmitter::new(sink) {
                     Ok(mut em) => {
                         // The detour's densified sample points exist **only** to carry height: the
@@ -299,7 +313,7 @@ impl Splicer {
             Phase::Tail => {
                 for _ in 0..SPLICE_CHUNKS_PER_STEP {
                     if self.tail_k >= orig.chunks().len() || self.rejoin_m >= orig.total_distance_m {
-                        self.phase = Phase::Finish;
+                        self.phase = Phase::Waypoints;
                         return SpliceStep::Running;
                     }
                     if let Err(e) =
@@ -308,6 +322,35 @@ impl Splicer {
                         return self.fail(e);
                     }
                     self.tail_k += 1;
+                }
+                SpliceStep::Running
+            }
+            Phase::Waypoints => {
+                if self.waypoint_cursor.is_none() {
+                    match WaypointCursor::new(orig.source()) {
+                        Ok(cursor) => self.waypoint_cursor = Some(cursor),
+                        Err(error) => return self.fail(error),
+                    }
+                    return SpliceStep::Running;
+                }
+                match self.waypoint_cursor.as_mut().unwrap().next(orig.source()) {
+                    Ok(Some(w)) => {
+                        let along = if w.dist_along_m <= self.split_m {
+                            Some(w.dist_along_m)
+                        } else if w.dist_along_m < self.rejoin_m {
+                            None
+                        } else {
+                            let tail_base = self
+                                .tail_first_along
+                                .unwrap_or_else(|| self.em.as_ref().map_or(0, |em| (em.cum_dist() as f32) as u32));
+                            Some(tail_base.saturating_add(w.dist_along_m - self.rejoin_m))
+                        };
+                        if let Some(along) = along {
+                            let _ = self.waypoints.push(WpPlace::from_stored(&w, along));
+                        }
+                    }
+                    Ok(None) => self.phase = Phase::Finish,
+                    Err(error) => return self.fail(error),
                 }
                 SpliceStep::Running
             }
@@ -357,7 +400,7 @@ impl Splicer {
         tail: bool,
     ) -> Result<(), Error> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let Some(n) = decode_route_points_between(orig, k, lo, hi, &mut buf) else {
+        let Some(n) = decode_route_points_between_checked(orig, k, lo, hi, &mut buf)? else {
             return Ok(());
         };
         for p in buf[..n].iter() {
@@ -425,7 +468,7 @@ impl Splicer {
         Ok(())
     }
 
-    /// Re-place the original's waypoints and patch the header — the splice's last writes.
+    /// Write the collected waypoints and patch the header — the splice's last writes.
     ///
     /// `#[inline(never)]` — `Option::take` moves the ~9 kB emitter into a local; that temporary
     /// belongs in this popped frame, never the step frame (same rationale as the planner's
@@ -437,26 +480,6 @@ impl Splicer {
         // portion — same points, same metric), detour replaced by the planner's honest length —
         // the preview's arithmetic, saturating like every stored distance.
         let override_total = ((em_total - self.det_along).max(0.0) as u32).saturating_add(self.detour_len_m);
-
-        // Waypoints: head kept verbatim, skipped span dropped, tail shifted onto the spliced
-        // distance axis. The shift base is the first tail point's spliced distance (or the
-        // spliced end for a rejoin exactly at the route end).
-        let tail_base = self.tail_first_along.unwrap_or(em_total as u32);
-        let mut wps: Vec<WpPlace, MAX_WAYPOINTS> = Vec::new();
-        let split_m = self.split_m;
-        let rejoin_m = self.rejoin_m;
-        for_each_waypoint(orig.source(), |w| {
-            let along = if w.dist_along_m <= split_m {
-                Some(w.dist_along_m)
-            } else if w.dist_along_m < rejoin_m {
-                None // on the avoided span
-            } else {
-                Some(tail_base.saturating_add(w.dist_along_m - rejoin_m))
-            };
-            if let Some(along) = along {
-                let _ = wps.push(WpPlace::from_stored(w, along));
-            }
-        })?;
 
         // The spliced route carries elevation iff one of its two sources did: the detour by the
         // plan's explicit bit, the head/tail by what a reader can honestly say about stored bytes.
@@ -480,7 +503,7 @@ impl Splicer {
             has_elevation,
         };
         let em = self.em.take().ok_or(Error::Empty)?;
-        em.finish(sink, &self.name, stats, &mut wps)
+        em.finish(sink, &self.name, stats, &mut self.waypoints)
     }
 }
 
