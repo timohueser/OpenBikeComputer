@@ -1,7 +1,8 @@
 # Ride archive and persistence receipts
 
-This contract defines the iOS archive boundary. The device receipt requirements below are pending
-implementation. They do not assign a wire opcode, metadata kind, or byte codec.
+This contract defines the iOS archive boundary and the device archive-proof boundary.
+[ARCHIVE_RIDE](FLAT_Store_Protocol.md#312-archive_ride) carries proof into
+[card retention metadata](Retention_Metadata.md). Client delivery and live ride retention remain pending.
 
 ## Source identity
 
@@ -84,22 +85,34 @@ An in-memory preview can record a completed local sync, but it returns no durabl
 A local receipt is not sent to the device by the current implementation. Device rides remain
 unsynced and protected from automatic expiry.
 
-## Required next device boundary — pending implementation
+## Device archive proof
 
-The device must accept archive proof only for the exact source tuple of the current finalized ride
-on its current card. A replaced revision, removed object, different StoreId, incomplete recording,
-or length/CRC mismatch must fail without changing retention metadata.
+ARCHIVE_RIDE accepts proof only for the exact current finalized Ride source on the mounted card.
+A replaced revision, removed object, different StoreId, recording, retained-only revision, wrong
+kind or length/CRC mismatch fails without changing metadata. No catalog sequence is required from
+the client. An unrelated commit cannot invalidate possession of unchanged bytes.
 
-Acceptance must atomically persist the card-scoped metadata through the existing RetentionMachine
-policy. Resident state and the response can report durable success only after that write commits.
-A failed or unsupported write must not create a durable `synced_at` value or permit expiry. If an
-older valid stamp exists, a failed update must not replace it with the uncommitted value.
+The synchronous storage owner inserts an exact Ride metadata row with timestamp zero. It returns
+success only after atomic commit and readback. Row presence records archive possession; zero does
+not start an expiry countdown. Invalid metadata is not absence. A failed or unsupported operation
+cannot report success. An uncertain publication or failed committed readback fences all mutations
+until remount.
 
-An exact duplicate receipt is idempotent and must not restart the retention clock. After disconnect
-or a lost response, the client can retry proof from its validated local archive. If the first
-metadata write committed, the device returns that committed result; otherwise it must complete a
-new write or return failure. Transport completion, a client UI state, and an id-only download or
-deletion marker are never substitutes for either persistence boundary.
+An exact existing proof returns its original timestamp without another write, including when the
+timestamp is zero. A duplicate cannot restart the clock. After a lost response or disconnect,
+the client can retry from its revalidated archive. If the first write committed, the device returns
+the stored proof; otherwise it must finish a new write or fail. A source that has since vanished
+or changed fails without recreating any object or proof.
 
-The next child defines the metadata kind/codec, typed executor outcomes, request correlation,
-wire encoding and read-back behavior together. The current v4 opcode table remains unchanged.
+## Pending live integration
+
+The board still reports rides unsynced. The next integration must load validated proof into both
+the newest ride summaries and the complete compact retention inventory under one checked catalog
+scope. RetentionMachine remains the sole owner of trusted-clock stamps and expiry. Its stamp
+executor may fill a zero timestamp only on an existing exact proof row; it must not create proof,
+recreate a stale row or replace a nonzero timestamp. Successful metadata changes become resident
+only through a validated catalog reload.
+
+The iOS coordinator must send new durable receipts and retry revalidated existing archives even
+when no download is needed. A historical download marker, trash entry or deletion marker is never
+proof. Physical USB/BLE lost-response, remount and power-loss acceptance remain pending.

@@ -37,11 +37,11 @@
 use obc_crc::Crc32;
 
 use super::ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision};
-use super::store::{Mode, Mutation, Policy, PutSource, Store, StoreError};
+use super::store::{ArchiveError, ArchiveSource, Mode, Mutation, Policy, PutSource, Store, StoreError};
 use super::wire::{
-    decode_request, detail, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put,
-    encode_remove, encode_status, write_stream, ArmRequest, ControlError, ErrorCode, FormatRequest, GetRequest,
-    ListRequest, ListWriter, ObjectState, Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId,
+    decode_request, detail, encode_archive, encode_arm, encode_cancel, encode_error, encode_format, encode_get,
+    encode_put, encode_remove, encode_status, write_stream, ArmRequest, ControlError, ErrorCode, FormatRequest,
+    GetRequest, ListRequest, ListWriter, ObjectState, Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId,
     StatusRequest, StatusResponse, StreamFrame, CONTROL_FLOOR, STREAM_HEADER_LEN,
 };
 
@@ -628,6 +628,30 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Request::Cancel(cancel) => self.on_cancel(store, link, header.request, cancel.transfer, out),
             Request::Arm(arm) => self.on_arm(store, policy, header.request, arm, out),
             Request::Format(format) => self.on_format(store, header.request, format, out),
+            Request::ArchiveRide(source) => self.on_archive(store, header.request, source, out),
+        }
+    }
+
+    fn on_archive(&mut self, store: &S, request: RequestId, source: ArchiveSource, out: &mut [u8]) -> Reaction {
+        if let Some(refusal) = self.busy_refusal().or_else(|| read_refusal(store.mode())) {
+            return self.emit_error(out, Opcode::ArchiveRide, request, refusal);
+        }
+        match store.archive_ride(source) {
+            Ok(result) => match encode_archive(out, request, result) {
+                Some(len) => Reaction::Send { channel: Channel::Control, len },
+                None => Reaction::Close(Channel::Control),
+            },
+            Err(error) => {
+                let refusal = match error {
+                    ArchiveError::Unsupported => Refusal::plain(ErrorCode::Unsupported),
+                    ArchiveError::SourceMismatch => bad_combination(),
+                    ArchiveError::Store(StoreError::Media) => Refusal::plain(ErrorCode::MediaIo),
+                    ArchiveError::Store(error) => {
+                        write_refusal(store.mode()).unwrap_or_else(|| allocate_refusal(error, 0))
+                    }
+                };
+                self.emit_error(out, Opcode::ArchiveRide, request, refusal)
+            }
         }
     }
 

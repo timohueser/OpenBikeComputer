@@ -1,4 +1,4 @@
-//! Protocol v4's bytes: the control frame, the eight request bodies, the response bodies, the
+//! Protocol v4's bytes: the control frame, the nine request bodies, the response bodies, the
 //! stream frame and the error body.
 //!
 //! `FLAT_Store_Protocol.md` §3 is the sole authority and every offset below is transcribed from its
@@ -13,6 +13,8 @@
 //! that never calls this code.
 
 use super::ids::{DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId, NAME_CAPACITY};
+
+use super::store::{ArchiveResult, ArchiveSource};
 
 /// The wire major this module implements. It is a transport fact (§4), never negotiated.
 pub const WIRE_MAJOR: u8 = 4;
@@ -47,6 +49,7 @@ const REMOVE_BODY_LEN: usize = 16;
 const CANCEL_BODY_LEN: usize = 4;
 const ARM_BODY_LEN: usize = 16;
 const FORMAT_BODY_LEN: usize = 32;
+const ARCHIVE_BODY_LEN: usize = 44;
 
 /// A client-chosen transfer identifier (§3.1). Nonzero: a zero one is unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +67,7 @@ pub enum Opcode {
     Cancel = 0x06,
     Arm = 0x07,
     Format = 0x08,
+    ArchiveRide = 0x09,
 }
 
 impl Opcode {
@@ -78,6 +82,7 @@ impl Opcode {
             0x06 => Opcode::Cancel,
             0x07 => Opcode::Arm,
             0x08 => Opcode::Format,
+            0x09 => Opcode::ArchiveRide,
             _ => return None,
         })
     }
@@ -98,6 +103,7 @@ impl Opcode {
             Opcode::Cancel => CANCEL_BODY_LEN,
             Opcode::Arm => ARM_BODY_LEN,
             Opcode::Format => FORMAT_BODY_LEN,
+            Opcode::ArchiveRide => ARCHIVE_BODY_LEN,
         }
     }
 }
@@ -318,7 +324,7 @@ pub struct Header {
     pub request: RequestId,
 }
 
-/// One decoded request. There are eight and there is no generic forwarding path.
+/// One decoded request. There are nine and there is no generic forwarding path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     List(ListRequest),
@@ -329,6 +335,7 @@ pub enum Request {
     Cancel(CancelRequest),
     Arm(ArmRequest),
     Format(FormatRequest),
+    ArchiveRide(ArchiveSource),
 }
 
 /// §3.3's cursor: the **pair**, plus the commit sequence the page was told.
@@ -455,11 +462,26 @@ pub fn decode_request(record: &[u8]) -> Result<(Header, Request), ControlError> 
         Opcode::Cancel => decode_cancel(body).map(Request::Cancel),
         Opcode::Arm => decode_arm(body).map(Request::Arm),
         Opcode::Format => decode_format(body).map(Request::Format),
+        Opcode::ArchiveRide => decode_archive(body).map(Request::ArchiveRide),
     };
     match decoded {
         Ok(message) => Ok((Header { opcode, request }, message)),
         Err(refusal) => refuse(refusal),
     }
+}
+
+fn decode_archive(body: &[u8]) -> Result<ArchiveSource, Refusal> {
+    let source = ArchiveSource {
+        store: StoreId(body[..16].try_into().unwrap()),
+        id: ObjectId(u64_at(body, 16)),
+        revision: Revision(u64_at(body, 24)),
+        payload_len: u64_at(body, 32),
+        payload_crc: u32_at(body, 40),
+    };
+    if source.store.0 == [0; 16] || source.id.0 == 0 || source.revision.0 == 0 || source.payload_len == 0 {
+        return Err(bad_combination());
+    }
+    Ok(source)
 }
 
 fn decode_list(body: &[u8]) -> Result<ListRequest, Refusal> {
@@ -747,6 +769,16 @@ pub fn encode_format(out: &mut [u8], request: RequestId, store: StoreId) -> Opti
     Some(total)
 }
 
+/// Writes the archive proof result. Zero timestamp means the countdown has not started.
+pub fn encode_archive(out: &mut [u8], request: RequestId, result: ArchiveResult) -> Option<usize> {
+    let total = write_header(out, Opcode::ArchiveRide, flags::RESPONSE, 16, request)?;
+    let body = &mut out[HEADER_LEN..total];
+    body.fill(0);
+    body[..8].copy_from_slice(&result.sequence.to_le_bytes());
+    body[8..12].copy_from_slice(&result.timestamp.to_le_bytes());
+    Some(total)
+}
+
 /// §3.8's stream frame. A stream record is this immediately followed by exactly `len` payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrame {
@@ -973,7 +1005,7 @@ mod tests {
         assert_eq!(refusal_of(&wrong_major), Refusal::new(ErrorCode::Unsupported, detail::unsupported::WIRE_MAJOR));
 
         let mut unknown_opcode = PUT_VECTOR;
-        unknown_opcode[5] = 0x09;
+        unknown_opcode[5] = 0x0A;
         assert_eq!(refusal_of(&unknown_opcode), Refusal::new(ErrorCode::Unsupported, detail::unsupported::OPCODE));
 
         let mut flagged = PUT_VECTOR;

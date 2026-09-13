@@ -103,6 +103,30 @@ pub enum Mutation<A> {
     Remove { id: ObjectId, revision: Revision },
 }
 
+/// Exact finalized ride bytes held in a durable client archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveSource {
+    pub store: StoreId,
+    pub id: ObjectId,
+    pub revision: Revision,
+    pub payload_len: u64,
+    pub payload_crc: u32,
+}
+
+/// The current card sequence and original retention timestamp of a validated archive proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveResult {
+    pub sequence: u64,
+    pub timestamp: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveError {
+    Unsupported,
+    SourceMismatch,
+    Store(StoreError),
+}
+
 /// The card, as the engine sees it.
 ///
 /// **Every method takes `&self`, the mutators included**, mirroring the store's own seam after
@@ -143,7 +167,8 @@ pub trait Store {
     fn cancel(&self, allocation: Self::Allocation);
 
     /// Apply `mutations` atomically and return the new catalog commit sequence. A `commit` that
-    /// returns `Err` changed nothing.
+    /// fails before publication leaves the old catalog authoritative. An uncertain gate error
+    /// fences mutations until remount; callers must not assume that every error means no commit.
     fn commit(&self, mutations: &[Mutation<Self::Allocation>]) -> Result<u64, StoreError>;
 
     /// Resolve an object. `None` takes the head; `Some(r)` takes exactly that revision.
@@ -162,6 +187,13 @@ pub trait Store {
     /// listing is a media failure with nowhere to report itself, so **every** caller that treats a
     /// listing as the catalog asks here before it does.
     fn entries_ok(&self) -> bool;
+
+    /// Persist exact archive possession without starting a retention countdown. An existing exact
+    /// proof is idempotent. Success requires validated durable metadata, never GET completion.
+    fn archive_ride(&self, source: ArchiveSource) -> Result<ArchiveResult, ArchiveError> {
+        let _ = source;
+        Err(ArchiveError::Unsupported)
+    }
 
     /// Destructively initialize the underlying media as an empty flat store. The in-memory store is
     /// intentionally not updated: a successful call is followed by a link drain and immediate

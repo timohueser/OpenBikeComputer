@@ -35,5 +35,7 @@ pub use records::{
     buffer_len as record_buffer_len, padded_len as padded_record_len, Reassembler, RecordFault,
     PREFIX_LEN as RECORD_PREFIX_LEN, USB_BINDING_MAJOR,
 };
-pub use store::{Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError};
+pub use store::{
+    ArchiveError, ArchiveResult, ArchiveSource, Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError,
+};
 pub use wire::{ErrorCode, Opcode, Refusal, RequestId, WIRE_MAJOR};

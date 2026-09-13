@@ -216,6 +216,26 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         FlatStore::entries_ok(self)
     }
 
+    fn archive_ride(&self, source: v4::ArchiveSource) -> Result<v4::ArchiveResult, v4::ArchiveError> {
+        use super::metadata::{self, Error};
+        let timestamp = metadata::archive_ride(
+            self,
+            StoreId(source.store.0),
+            ObjectId(source.id.0),
+            Revision(source.revision.0),
+            source.payload_len,
+            source.payload_crc,
+        )
+        .map_err(|error| match error {
+            Error::WrongStore | Error::Stale => v4::ArchiveError::SourceMismatch,
+            Error::Store(error) => v4::ArchiveError::Store(error_out(error)),
+            Error::RemountRequired => v4::ArchiveError::Store(v4::StoreError::ReadOnly),
+            Error::Capacity => v4::ArchiveError::Store(v4::StoreError::CatalogFull),
+            Error::Invalid | Error::DuplicateObject => v4::ArchiveError::Store(v4::StoreError::Media),
+        })?;
+        Ok(v4::ArchiveResult { sequence: self.sequence(), timestamp })
+    }
+
     fn format(&self, replacement: v4::StoreId) -> Result<(), v4::StoreError> {
         FlatStore::format_media(self, StoreId(replacement.0)).map_err(error_out)
     }

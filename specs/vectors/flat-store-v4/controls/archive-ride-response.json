@@ -1,0 +1,23 @@
+{
+  "name": "archive-ride-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "ARCHIVE_RIDE",
+    "value": 9
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 10761
+  },
+  "note": "The stored timestamp is preserved on every duplicate receipt.",
+  "body": {
+    "commitSequence": "8",
+    "timestamp": 0
+  },
+  "frame": "4f4243340409010010000000092a000008000000000000000000000000000000"
+}

@@ -7,9 +7,9 @@ use std::vec::Vec;
 use super::*;
 use crate::flat::ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 use crate::flat::wire::{
-    decode_request, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put, encode_remove,
-    encode_status, write_stream, ControlError, ListWriter, ObjectState, Opcode, Refusal, RequestId, StatusResponse,
-    StreamFrame, CONTROL_FLOOR,
+    decode_request, encode_archive, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put,
+    encode_remove, encode_status, write_stream, ControlError, ListWriter, ObjectState, Opcode, Refusal, RequestId,
+    StatusResponse, StreamFrame, CONTROL_FLOOR,
 };
 
 /// Rewrites `specs/vectors/flat-store-v4/`.
@@ -70,10 +70,10 @@ fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
     }
     // The suite's own size, so a category that stopped being produced is visible.
     let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 26);
+    assert_eq!(count(Category::Control), 29);
     assert_eq!(count(Category::Stream), 4);
     assert_eq!(count(Category::Error), 14);
-    assert_eq!(count(Category::Negative), 25);
+    assert_eq!(count(Category::Negative), 34);
 }
 
 #[test]
@@ -178,6 +178,16 @@ fn the_codec_encodes_every_response_vector_byte_for_byte() {
     let written = encode_format(&mut out, RequestId(0x0000_2A08), StoreId(REPLACEMENT_STORE)).unwrap();
     encoded("format-response", &out[..written]);
 
+    for (name, timestamp) in [("archive-ride-response", 0), ("archive-ride-response-stamped", 0x65000000)] {
+        let written = encode_archive(
+            &mut out,
+            RequestId(0x2A09),
+            crate::flat::ArchiveResult { sequence: SEQUENCE + 1, timestamp },
+        )
+        .unwrap();
+        encoded(name, &out[..written]);
+    }
+
     let written = write_stream(&mut out, RequestId(UPLOAD_REQUEST), 40_960, 1_024).unwrap();
     assert_eq!(hex(&out[..16]), hex(&find("stream-frame-of-section-3-11").bytes[..16]));
     assert_eq!(written, 16 + 1_024);
@@ -209,6 +219,9 @@ fn every_negative_vector_is_refused_with_its_stated_code_and_detail() {
         if fixture.json.contains("\"target\": \"streamRecord\"") {
             assert!(StreamFrame::split(&fixture.bytes).is_none(), "{} split", fixture.name);
             continue;
+        }
+        if fixture.json.contains("\"target\": \"controlResponse\"") {
+            continue; // The Rust device produces responses; Swift and TypeScript consume these vectors.
         }
         let outcome = decode_request(&fixture.bytes);
         if fixture.json.contains("\"disposition\": \"closeRecordStream\"") {

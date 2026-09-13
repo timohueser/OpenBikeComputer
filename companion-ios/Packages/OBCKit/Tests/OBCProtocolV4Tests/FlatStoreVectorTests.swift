@@ -65,6 +65,8 @@ struct FlatStoreVectorTests {
             let target = object["target"] as? String
             if target == "streamRecord" {
                 #expect(throws: WireError.self, "\(entry)") { try StreamRecord(decoding: bytes) }
+            } else if target == "controlResponse" {
+                #expect(throws: WireError.self, "\(entry)") { try ControlResponse(decoding: bytes) }
             } else {
                 #expect(throws: WireError.self, "\(entry)") {
                     try ControlFrame(decoding: bytes, direction: .request)
@@ -82,6 +84,21 @@ struct FlatStoreVectorTests {
         #expect(
             try ControlRequest.put(put).frame(requestID: requestID).encode()
                 == Vectors.frame(named: "put-create-request"))
+
+        let archive = ControlRequest.archiveRide(
+            storeID: try StoreID(bytes: Vectors.hex("8f2c41d96b074ea3b1559c207de83466")),
+            objectID: ObjectID(rawValue: 2), revision: Revision(rawValue: 1),
+            payloadLength: 42_137, payloadCRC32: 0x9C4A_7E21)
+        #expect(try archive.frame(requestID: RequestID(rawValue: 0x2A09)!).encode()
+            == Vectors.frame(named: "archive-ride-request"))
+        let stamped = try Vectors.frame(named: "archive-ride-response-stamped")
+        guard case .archiveRide(let result) = try ControlResponse(
+            decoding: stamped, expectedOpcode: .archiveRide, expectedRequestID: RequestID(rawValue: 0x2A09)!
+        ) else { Issue.record("Expected an archive receipt result"); return }
+        #expect(result.timestamp == 0x65000000)
+        #expect(throws: WireError.self) {
+            try ControlResponse(decoding: stamped, expectedRequestID: RequestID(rawValue: 0x2A08)!)
+        }
 
         let stream = try StreamRecord(
             requestID: requestID, offset: 40_960,

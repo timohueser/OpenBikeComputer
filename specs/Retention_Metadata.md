@@ -2,8 +2,8 @@
 
 This contract defines the payload of flat-store kind `9` (`Metadata`). The board and flat-store
 host use route rows for usage stamps and route expiry. `RetentionMachine` remains the only
-retention policy owner. Ride rows do not establish a device archive receipt: rides remain unsynced
-until the receipt policy has a complete device persistence path.
+retention policy owner. ARCHIVE_RIDE persists exact Ride archive proof. The board continues to
+report rides unsynced until live proof loading and retention execution are integrated.
 
 ## Ownership and identity
 
@@ -16,7 +16,7 @@ The header binds the payload to the mounted `StoreId`. Each row binds one source
 its full `ObjectId`, `Revision`, payload length, and payload CRC. A recording or retained
 source revision cannot validate a row. A card replacement, source replacement, or missing
 source invalidates the corresponding scope. Metadata bytes alone do not prove that a
-phone has an archive: future device admission must validate the exact archive receipt.
+phone has an archive: ARCHIVE_RIDE admits only the exact archive receipt described below.
 
 ## Bytes
 
@@ -102,3 +102,15 @@ can survive recovery, so those values alone do not release that park.
 Before an automatic removal, the retention owner rechecks clock trust, recording state, active route,
 and expiry against the loaded snapshot. The board waits for that admitted writer operation to finish
 before it processes another App transition. Rider-requested deletion remains a separate intent.
+
+## Ride archive ingress
+
+ARCHIVE_RIDE inserts a Ride row with timestamp zero only after the request matches the current
+finalized source tuple. It uses the same bounded workspace, atomic replacement and committed
+readback as route metadata. An exact existing row is a read-only duplicate and preserves its
+original timestamp. Invalid or unreadable metadata cannot become an empty default.
+
+A Ride row records archive possession independently of its timestamp. Zero starts no countdown.
+The current board still reports all rides unsynced. Live proof loading, RetentionMachine clock
+stamping and scoped ride expiry remain pending; a future stamp operation must require an existing
+exact proof and must not create one.
