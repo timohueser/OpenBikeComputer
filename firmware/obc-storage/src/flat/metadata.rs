@@ -126,7 +126,7 @@ impl<'a> Image<'a> {
         }
         let mut previous = ObjectId::NONE;
         let (mut routes, mut rides) = (0, 0);
-        for bytes in buffer[HEADER_LEN..len].chunks_exact(ROW_LEN) {
+        for bytes in buffer[HEADER_LEN..len].as_chunks::<ROW_LEN>().0 {
             let row = Row::decode(bytes)?;
             if row.id <= previous {
                 return Err(Error::Invalid);
@@ -148,7 +148,7 @@ impl<'a> Image<'a> {
         StoreId(self.buffer[16..32].try_into().unwrap())
     }
     pub fn rows(&self) -> impl Iterator<Item = Row> + '_ {
-        self.bytes()[HEADER_LEN..].chunks_exact(ROW_LEN).map(|b| Row::decode(b).unwrap())
+        self.bytes()[HEADER_LEN..].as_chunks::<ROW_LEN>().0.iter().map(|b| Row::decode(b).unwrap())
     }
 
     pub fn set(&mut self, row: Row) -> Result<(), Error> {
