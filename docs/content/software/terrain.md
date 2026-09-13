@@ -114,8 +114,9 @@ observer and reserves one place per 22.5° sector for the tallest summit. When t
 complete, it removes hidden candidates and fills their places with untested names. It can make
 two more visibility passes. These passes do not change the picture.
 
-Before a GPS fix, Peak View waits. When generation starts, the compass and partial terrain appear
-at once. A light hatch marks pending columns. Progress redraws occur at most twice per second.
+Before a GPS fix, Peak View waits. If a position is already available when the screen opens,
+the compass and pending-column hatch appear in the first frame, without a waiting screen.
+Completed terrain replaces the hatch as generation progresses. Progress redraws occur at most twice per second.
 The renderer prepares the current field of view first, then fills the rest of the circle in the
 background. Static dots show that work remains. Turning toward an unfinished view gives that
 view priority. Completed views reuse the panorama in RAM. Movement above 20 m starts another

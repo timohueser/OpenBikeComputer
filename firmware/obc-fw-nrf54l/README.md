@@ -955,8 +955,10 @@ current indexed terrain. It uses that map's terrain region and geographic summit
 the same pinned map source as navigation. No separate scene objects or fixed viewpoints are needed.
 The selected map is the lowest-ID Map object; replace that object when testing a new regional map.
 
-Open Peak View from the menu after a GPS fix. Before the first fix, the screen shows
-"Waiting for GPS...". The observer height comes from the terrain plus two metres. The normal view starts at about
+Open Peak View from the menu. An available fix opens the partial view immediately. Before the
+first fix, the screen shows "Waiting for GPS...". The real receiver attempts acquisition at boot
+for up to 150 seconds, even when no ride is recording. After that window, GPS power follows
+recording; opening Peak View does not itself wake a sleeping receiver. The observer height comes from the terrain plus two metres. The normal view starts at about
 90° horizontal width and expands upward when nearby summit elevations require more headroom.
 Shallow relief receives up to a 2.4× boost over the base 1.25× vertical scale; steep views keep the base scale. The scale is
 fixed for the observer and does not change when turning. Each bearing sector reserves one
