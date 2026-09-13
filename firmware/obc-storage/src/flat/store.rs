@@ -910,7 +910,8 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 
     /// Complete a durability barrier without exposing the card to callers above the store.
-    pub(crate) fn sync_media(&self) -> Result<(), StoreError> {
+    /// This does not validate the catalog or clear a remount requirement.
+    pub fn sync_media(&self) -> Result<(), StoreError> {
         sync(&self.dev)
     }
 
