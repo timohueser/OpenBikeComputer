@@ -186,7 +186,7 @@ uart *args:
 # VCOM. Args: [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
 # `probe-rs download` (returns cleanly,
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
-# `obc flash debug-uart` in a second terminal instead.
+# `obc rtt` in a second terminal.
 # One step: flash debug-uart firmware, then open the GPS feeder. Args: [TRACK.gpx]
 debug *args:
     #!/usr/bin/env bash
@@ -197,22 +197,29 @@ debug *args:
     _say "building debug-uart firmware…"
     ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release --features debug-uart )
     _say "flashing over J-Link…"
-    _run probe-rs download --chip nRF54L15 --verify "$elf"
-    _run probe-rs reset --chip nRF54L15
+    _run python3 "$OBC_TOOLS/board.py" download "$elf"
+    _run python3 "$OBC_TOOLS/board.py" reset
     _say "flashed — starting the feeder (Ctrl-C to stop)…"
     just --justfile '{{justfile()}}' uart ${gpx:+"$gpx"}
 
-# Attach to a running board and stream defmt/RTT — no rebuild, no reflash. Bypasses
-# cargo entirely (so nothing recompiles) and uses `probe-rs attach` on the last-built
-# ELF (attach programs nothing). Flash first with `obc flash`.
-rtt:
+# Board diagnostics or a direct operation on an exact ELF. Uses the shared Cargo runner.
+# Args: doctor | run ELF | download ELF | attach ELF | reset [--probe VID:PID:SERIAL]
+board *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/board.py" "$@"
+
+# Attach without rebuilding or flashing. Pass the matching ELF when using another build.
+# Args: [ELF] [--probe VID:PID:SERIAL] [--log FILE]
+rtt *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_probe || exit 1
     elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
-    [[ -f "$elf" ]] || { _err "no board ELF yet — flash once first:  obc flash [debug-uart]"; exit 1; }
-    _say "attaching to nRF54L15 — no rebuild, no reflash (decoding $(basename "$elf"))"
-    _run probe-rs attach --chip nRF54L15 "$elf"
+    if [[ $# -gt 0 && "$1" != --* ]]; then elf="$(_abspath "$1")"; shift; fi
+    [[ -f "$elf" ]] || { _err "no matching board ELF — pass it to: obc rtt ELF"; exit 1; }
+    _run python3 "$OBC_TOOLS/board.py" attach "$elf" "$@"
 
 # ── Map packing & the web builder ────────────────────────────────────────────
 
