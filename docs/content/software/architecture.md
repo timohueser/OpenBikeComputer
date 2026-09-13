@@ -245,7 +245,13 @@ route, metadata and trip reads from one unchanged card and catalog sequence.
 
 The shared host dispatcher retries a recording open until the repository confirms that the object exists.
 While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.
-If Save still has no object after that pass's open attempt, the repository returns `Nothing` and the session ends without a saved ride.
+Save stops new sample and total accumulation. Recorder first repairs an owed checkpoint and drains
+staged samples through acknowledged append results. A short append keeps the remaining samples
+and requests a checkpoint before retry. Only an empty staging buffer can proceed to finalization;
+the board and host executors do not append samples during that close. A failed close retries only
+the close. Discard bypasses the drain and clears staging after confirmed removal.
+If opening keeps failing while Save has staged samples, the samples and Save request stay pending.
+An empty ride with no object can still end without a saved ride.
 The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
 
 ### Semantic ports
