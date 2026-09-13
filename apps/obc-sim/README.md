@@ -98,7 +98,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
     --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
   ```
 
-  The log separates generation time and storage reads from the final cached frame's drawing time.
+  The log separates generation time from the final cached frame's drawing time.
   These are host measurements. See the [board README](../../firmware/obc-fw-nrf54l/README.md)
   for device setup and timing checks.
 

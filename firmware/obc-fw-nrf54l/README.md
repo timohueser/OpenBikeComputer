@@ -992,7 +992,7 @@ Use the ID returned by the map upload. The override selects the whole map at boo
 normal pinned source; it is ignored without `peak-view-demo`. An invalid or absent requested
 object fails to open instead of falling back to another map. Rebuild without the override to
 return to normal selection.
-RTT reports total generation time, visited cells and nodes, terrain reads, and arena size.
+RTT reports panorama generation time and the time to the first partial frame.
 Normal render/push telemetry measures cached interaction. J3 supplies USB data; J4 supplies
 programming and VCOM. Reconnect J3 after startup if it does not enumerate after a debug reset.
 
