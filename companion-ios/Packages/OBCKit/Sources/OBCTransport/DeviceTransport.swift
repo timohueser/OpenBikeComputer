@@ -196,6 +196,8 @@ public protocol DeviceObjects: Sendable {
     /// cancel / restart (whole rides are the resume granularity).
     func downloadRides(_ ids: [RideID]) -> RideDownload
     func downloadRides(from rides: [RideSummary]) -> RideDownload
+    /// Confirm exact durable client possession. Local sync counts are not this confirmation.
+    func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation
 }
 
 /// Firmware delivery and install requests, without link lifecycle, device
@@ -352,5 +354,19 @@ extension DeviceObjects {
 extension DeviceObjects {
     public func downloadRides(from rides: [RideSummary]) -> RideDownload {
         downloadRides(rides.map(\.id))
+    }
+}
+
+/// Terminal device dispositions; transport or media failures throw and can be retried later.
+public enum RideArchiveConfirmation: Equatable, Sendable {
+    case confirmed
+    case sourceUnavailable
+    case unsupported
+    case refused
+}
+
+extension DeviceObjects {
+    public func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation {
+        .unsupported
     }
 }

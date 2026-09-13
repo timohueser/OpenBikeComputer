@@ -273,9 +273,9 @@ Do not infer state from a notification or operation log.
   <rect class="d-panel" x="380" y="252" width="150" height="34" rx="9" />
   <text class="d-sub" x="455" y="273" text-anchor="middle">phone stores verified ride</text>
   <line x1="378" y1="269" x2="168" y2="269" style="stroke:#cf6a2a;stroke-width:1.6" marker-end="url(#sy-k)" />
-  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">retired — no command</text>
+  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">ARCHIVE_RIDE</text>
   <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
-  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device catalog unchanged</text>
+  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device persists archive proof</text>
 </svg>
 <figcaption>LIST supplies the store identity, commit sequence, and catalog entries. Clients use it to reconcile state.</figcaption>
 </figure>
@@ -291,14 +291,19 @@ card, object, revision, length and CRC, then commits and reads back the proof. A
 the original timestamp. A lost reply can be retried from the durable archive without starting a
 new countdown.
 
+The companion sends proof after saving a ride and after revalidating an existing archive.
+Reconnect retries these confirmations without downloading missing rides. Manual sync can download
+missing rides. If confirmation fails, the phone keeps its archive and shows the existing sync
+warning with the Resume action. A lost reply can mean the device already saved the proof; retry
+is safe. Local save counts do not establish device confirmation.
+
 This proof initially has no expiry timestamp. The board validates it before the retention policy
 starts the countdown on a trusted clock. Only an existing exact proof can receive that first stamp;
 a duplicate cannot reset it. A successful write becomes visible through a complete catalog reload.
 The policy covers up to 128 ride inventory records, including rides outside the 32-entry menu.
 Unknown clock, recording, missing proof and failed reads protect rides from automatic expiry.
-The companion does not send receipts yet. The
-[archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
-the remaining client and device acceptance work.
+The [archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
+the remaining physical acceptance.
 
 The board and flat-store host persist route-use stamps in a card metadata object.
 Each row binds to the card and the exact source revision, length, and CRC. The store replaces

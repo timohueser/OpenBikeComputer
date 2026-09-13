@@ -749,9 +749,9 @@ RequestId. A committed proof remains idempotent after remount. If the first atte
 a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
 mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
 
-The board loads validated durable proof into ride retention. Only an existing exact proof can
-receive its first trusted-clock stamp, and scoped expiry requires a durable nonzero stamp.
-Client receipt delivery remains a separate integration boundary.
+The iOS client delivers and retries receipts from its durable archives. The board loads validated
+durable proof into ride retention. Only an existing exact proof can receive its first trusted-clock
+stamp, and scoped expiry requires a durable nonzero stamp.
 
 ## 4. Firmware update
 
@@ -945,7 +945,7 @@ this link, and each has a stated successor rather than a deletion:
 | `cardFreeRead` | Nothing asks in advance. §1 refuses capability discovery, and the question *"will this map fit"* is answered at the point of decision: a `PUT` that does not fit is `noSpace`, whose context is the bytes required (§3.9). What a client can know without trying is the catalog — `LIST` carries every object's payload length. |
 | `status` (device→host, unsolicited) | There are no unsolicited control frames (§3.1). A transfer's outcome is the answer to its own `PUT`/`GET`; a store movement is the commit sequence a client reads back from `LIST` (§3.3), which is also how it learns of movements it did not cause. |
 | `transferControl` | `PUT`, `GET`, `CANCEL` (§3.5–§3.8), with `RequestId` as the transfer identifier. |
-| `command` | The imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). Bond and clock remain device-local BLE commands; the cable does not carry them. The former ride acknowledgement command is retired. Protocol v4 has no client possession mutation. |
+| `command` | The imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). Bond and clock remain device-local BLE commands; the cable does not carry them. The former ride acknowledgement command is replaced by `ARCHIVE_RIDE` (§3.12), which accepts proof of an exact durable archive. |
 | `config` read / write | The device's own settings are not objects in this store and never were. They keep the BLE characteristics that carry them today. |
 
 There is no USB mass storage binding and there will not be one: it would hand the host raw blocks and
