@@ -15,6 +15,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 import traceback
+from urllib.parse import urlsplit
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -129,7 +130,8 @@ def main():
             wait = WebDriverWait(browser, 30)
             search = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, '[aria-label="Search regions"]')))
             result["url"] = browser.current_url
-            if not result["url"].startswith("tauri://localhost/"):
+            origin = urlsplit(result["url"])
+            if (origin.scheme, origin.netloc) != ("tauri", "localhost"):
                 raise AssertionError(f"Expected embedded custom-protocol frontend, got {result['url']}")
             search.send_keys("Switzerland")
             wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Add Switzerland (994 B)"]'))).click()
