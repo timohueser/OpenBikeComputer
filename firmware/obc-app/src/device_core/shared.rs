@@ -386,12 +386,22 @@ impl Default for Capabilities {
 /// The opaque identity of a mounted store. DeviceCore compares it; only the executor knows what it
 /// names, so no path or storage handle crosses the seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StoreIdentity(u64);
+pub struct StoreIdentity([u8; 16]);
 
 impl StoreIdentity {
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+    pub const fn bytes(self) -> [u8; 16] {
+        self.0
+    }
+
     /// Name a store. The executor mints this from its own mount identity.
     pub const fn new(raw: u64) -> Self {
-        StoreIdentity(raw)
+        let bytes = raw.to_le_bytes();
+        StoreIdentity([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], 0, 0, 0, 0, 0, 0, 0, 0,
+        ])
     }
 }
 
@@ -412,6 +422,10 @@ impl DataIdentity {
 pub struct Revision(u64);
 
 impl Revision {
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
     /// The revision of a store that has committed nothing.
     pub const ZERO: Revision = Revision(0);
 
@@ -749,10 +763,10 @@ const _: () = assert!(core::mem::size_of::<TokenSource<CatalogTag>>() == 4, "a t
 const _: () = assert!(core::mem::size_of::<PlatformSupport>() <= 8, "platform support is a handful of bools");
 const _: () = assert!(core::mem::size_of::<DeviceFacts>() <= 8, "device facts are a handful of bools");
 const _: () = assert!(core::mem::size_of::<Capabilities>() <= 16, "capabilities are bools, never payloads");
-const _: () = assert!(core::mem::size_of::<StoreIdentity>() <= 8, "an opaque identity, nothing more");
+const _: () = assert!(core::mem::size_of::<StoreIdentity>() <= 16, "an opaque identity, nothing more");
 const _: () = assert!(core::mem::size_of::<DataIdentity>() <= 8, "an opaque identity, nothing more");
 const _: () = assert!(core::mem::size_of::<Revision>() <= 8, "the flat store's revision width");
-const _: () = assert!(core::mem::size_of::<StoreRevision>() <= 16, "an identity and a revision");
+const _: () = assert!(core::mem::size_of::<StoreRevision>() <= 24, "an identity and a revision");
 const _: () = assert!(core::mem::size_of::<WeatherData>() <= 16, "an identity and a revision");
 const _: () = assert!(core::mem::size_of::<FactMergeError>() <= 1, "a fieldless reason");
 const _: () = assert!(core::mem::size_of::<TransferState>() <= 1, "a two-state level");

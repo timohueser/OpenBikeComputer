@@ -206,8 +206,7 @@ impl<'a> Image<'a> {
     }
 }
 
-/// One metadata writer per mounted card. A commit error latches this owner until remount.
-/// The runtime must also stop other writers when it receives `RemountRequired`.
+/// One metadata writer per mounted card. Uncertain publication or failed readback fences the store.
 pub struct Metadata {
     store: StoreId,
     head: Option<EntryMeta>,
@@ -221,7 +220,7 @@ impl Metadata {
     }
 
     fn check<D: BlockDevice>(&self, store: &FlatStore<D>) -> Result<(), Error> {
-        if self.blocked {
+        if self.blocked || store.mode() == super::Mode::RemountRequired {
             return Err(Error::RemountRequired);
         }
         if self.store != store.store_id() {
@@ -298,6 +297,9 @@ impl Metadata {
             payload_crc: obc_crc::crc32(image.bytes()),
             name: Default::default(),
         };
+        if !store.has_open_capacity() {
+            return Err(Error::Store(StoreError::Busy));
+        }
         let sequence = store.sequence();
         let mut allocation = store.allocate(meta.payload_len)?;
         if let Err(error) = store.write(&mut allocation, image.bytes()) {
@@ -313,9 +315,13 @@ impl Metadata {
             Some(old) => store.commit(&[Mutation::Remove { id: old.id, revision: old.revision }, put]),
             None => store.commit(&[put]),
         };
-        if result.is_err() {
-            self.blocked = true; // a new gate may be durable: do not recycle its payload allocation
-            return Err(Error::RemountRequired);
+        if let Err(error) = result {
+            if store.mode() == super::Mode::RemountRequired {
+                self.blocked = true;
+                return Err(Error::RemountRequired);
+            }
+            store.cancel(allocation);
+            return Err(error.into());
         }
         self.head = Some(meta);
         let handle = store.open(id, Some(revision));
@@ -332,6 +338,7 @@ impl Metadata {
             result
         });
         if verified.is_err() {
+            store.require_remount();
             self.blocked = true;
             return Err(Error::RemountRequired);
         }
@@ -368,3 +375,98 @@ fn read_payload<D: BlockDevice>(store: &FlatStore<D>, meta: EntryMeta, bytes: &m
 
 #[cfg(test)]
 mod tests;
+
+/// Validate the catalog snapshot captured before a policy decision.
+pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequence: u64) -> Result<(), Error> {
+    if store.store_id() != expected {
+        return Err(Error::WrongStore);
+    }
+    if store.mode() == super::Mode::RemountRequired {
+        return Err(Error::RemountRequired);
+    }
+    if store.sequence() != sequence {
+        return Err(Error::Stale);
+    }
+    Ok(())
+}
+
+fn route_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId) -> Result<EntryMeta, Error> {
+    let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
+    if !store.entries_ok() {
+        return Err(Error::Store(StoreError::Media));
+    }
+    head.filter(|entry| entry.kind == ObjectKind::Route).ok_or(Error::Stale)
+}
+
+/// One serialized route stamp. Workspace is stack-local and does not cross a yield.
+#[inline(never)]
+pub fn write_route<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected: StoreId,
+    sequence: u64,
+    id: ObjectId,
+    retention: u8,
+    timestamp: u32,
+) -> Result<(), Error> {
+    check_scope(store, expected, sequence)?;
+    let target = route_head(store, id)?;
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    image.reconcile(store)?;
+    image.set(Row {
+        id,
+        revision: target.revision,
+        payload_len: target.payload_len,
+        payload_crc: target.payload_crc,
+        timestamp,
+        kind: ObjectKind::Route,
+        retention,
+    })?;
+    owner.replace(store, &mut image, Some(target))?;
+    Ok(())
+}
+
+/// Prune only from a complete catalog; absence does not create a metadata object.
+#[inline(never)]
+pub fn reconcile<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    if image.reconcile(store)? {
+        owner.replace(store, &mut image, None)?;
+    }
+    Ok(())
+}
+
+/// Feed validated route rows only after the complete read and source reconciliation succeed.
+#[inline(never)]
+pub fn read_routes<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    image.reconcile(store)?;
+    for row in image.rows().filter(|row| row.kind == ObjectKind::Route) {
+        accept(row);
+    }
+    Ok(())
+}
+
+/// A route expiry already admitted by retention against this exact catalog snapshot.
+pub fn remove_route<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected: StoreId,
+    sequence: u64,
+    id: ObjectId,
+) -> Result<(), Error> {
+    check_scope(store, expected, sequence)?;
+    let head = route_head(store, id)?;
+    store.commit(&[Mutation::Remove { id, revision: head.revision }]).map_err(|error| {
+        if store.mode() == super::Mode::RemountRequired {
+            Error::RemountRequired
+        } else {
+            Error::Store(error)
+        }
+    })?;
+    Ok(())
+}

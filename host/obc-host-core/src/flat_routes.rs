@@ -16,6 +16,7 @@ pub struct FlatRouteStore {
     revisions: Vec<Revision>,
     active: Option<ObjectSource>,
     nav_id: Option<ObjectId>,
+    metadata: Vec<obc_app::RouteRetentionMeta>,
 }
 
 impl FlatRouteStore {
@@ -25,8 +26,15 @@ impl FlatRouteStore {
 
     /// Seed a session's routes. All subsequent route mutations go through this repository.
     pub fn new(owner: HostStore, routes: &[&[u8]]) -> Result<Self, ImportError> {
-        let mut repo =
-            Self { owner, catalog: Vec::new(), ids: Vec::new(), revisions: Vec::new(), active: None, nav_id: None };
+        let mut repo = Self {
+            owner,
+            catalog: Vec::new(),
+            ids: Vec::new(),
+            revisions: Vec::new(),
+            active: None,
+            nav_id: None,
+            metadata: Vec::new(),
+        };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
                 let source = repo.owner.open(meta.id, meta.revision)?;
@@ -72,6 +80,102 @@ impl RouteRepository for FlatRouteStore {
     }
     fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
+    }
+
+    fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
+        let owner = self.owner.0.lock().ok()?;
+        let store = owner.ready().ok()?;
+        Some(scope(store))
+    }
+
+    fn refresh_metadata(
+        &mut self,
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+        use obc_storage::flat::{metadata, Store};
+        let owner = self.owner.0.lock().map_err(|_| obc_app::retention::RetentionError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| obc_app::retention::RetentionError::RemountRequired)?;
+        metadata::reconcile(store).map_err(metadata_error)?;
+        let start = scope(store);
+        let mut rows = Vec::new();
+        metadata::read_routes(store, |row| rows.push(row)).map_err(metadata_error)?;
+        let mut catalog = Vec::new();
+        let mut ids = Vec::new();
+        let mut revisions = Vec::new();
+        let mut metas = Vec::new();
+        for entry in store
+            .entries()
+            .filter(|entry| entry.kind == ObjectKind::Route && entry.flags == obc_storage::flat::EntryFlags::NONE)
+        {
+            let summary = store
+                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read(source))
+                .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?
+                .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?;
+            catalog.push(summary);
+            ids.push(entry.id.0);
+            revisions.push(entry.revision);
+            metas.push(
+                rows.iter()
+                    .find(|row| row.id == entry.id)
+                    .map(|row| {
+                        obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp)
+                    })
+                    .unwrap_or_default(),
+            );
+        }
+        if !store.entries_ok() || scope(store) != start {
+            return Err(obc_app::retention::RetentionError::Stale);
+        }
+        self.catalog = catalog;
+        self.ids = ids;
+        self.revisions = revisions;
+        self.metadata = metas;
+        Ok(Some(start))
+    }
+
+    fn retention_metas(&self) -> Vec<obc_app::RouteRetentionMeta> {
+        self.metadata.clone()
+    }
+
+    fn write_metadata(
+        &mut self,
+        effect: obc_app::retention::RetentionEffect,
+    ) -> Result<(), obc_app::retention::RetentionError> {
+        use obc_app::retention::{RetentionEffect, RetentionError};
+        let RetentionEffect::WriteRouteMetadata { scope: Some(expected), id, meta, .. } = effect else {
+            return Err(RetentionError::Unsupported);
+        };
+        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
+        obc_storage::flat::metadata::write_route(
+            store,
+            obc_storage::flat::StoreId(expected.store.bytes()),
+            expected.revision.raw(),
+            ObjectId(id),
+            meta.retention as u8,
+            meta.last_used_utc,
+        )
+        .map_err(metadata_error)
+    }
+
+    fn expire_route(
+        &mut self,
+        id: CatalogObjectId,
+        expected: obc_app::device_core::StoreRevision,
+    ) -> Result<bool, CatalogError> {
+        let owner = self.owner.0.lock().map_err(|_| CatalogError::RemoveFailed)?;
+        let store = owner.ready().map_err(|_| CatalogError::RemountRequired)?;
+        obc_storage::flat::metadata::remove_route(
+            store,
+            obc_storage::flat::StoreId(expected.store.bytes()),
+            expected.revision.raw(),
+            ObjectId(id),
+        )
+        .map(|()| true)
+        .map_err(|error| match metadata_error(error) {
+            obc_app::retention::RetentionError::Stale => CatalogError::Stale,
+            obc_app::retention::RetentionError::RemountRequired => CatalogError::RemountRequired,
+            _ => CatalogError::RemoveFailed,
+        })
     }
 
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
@@ -130,3 +234,23 @@ impl RouteRepository for FlatRouteStore {
 
 #[cfg(test)]
 mod tests;
+
+fn scope<D: obc_storage::flat::BlockDevice>(
+    store: &obc_storage::flat::FlatStore<D>,
+) -> obc_app::device_core::StoreRevision {
+    obc_app::device_core::StoreRevision {
+        store: obc_app::device_core::StoreIdentity::from_bytes(store.store_id().0),
+        revision: obc_app::device_core::Revision::new(store.sequence()),
+    }
+}
+
+fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
+    use obc_app::retention::RetentionError as E;
+    use obc_storage::flat::metadata::Error;
+    match error {
+        Error::WrongStore | Error::Stale => E::Stale,
+        Error::RemountRequired => E::RemountRequired,
+        Error::Store(StoreError::Busy) => E::Busy,
+        _ => E::WriteFailed,
+    }
+}

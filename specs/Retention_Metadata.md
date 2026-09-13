@@ -1,8 +1,9 @@
 # Card retention metadata
 
-This contract defines the payload of flat-store kind `9` (`Metadata`). It is a dormant
-storage substrate. The device does not yet produce these objects, accept archive receipts,
-or use these rows for expiry. `RetentionMachine` remains the only retention policy owner.
+This contract defines the payload of flat-store kind `9` (`Metadata`). The board and flat-store
+host use route rows for usage stamps and route expiry. `RetentionMachine` remains the only
+retention policy owner. Ride rows do not establish a device archive receipt: rides remain unsynced
+until the receipt policy has a complete device persistence path.
 
 ## Ownership and identity
 
@@ -77,13 +78,27 @@ insertion of the next revision in one batch. It never amends the authoritative p
 Existing readers can finish reading the old bytes. Success requires exact committed
 readback, then advances the draft's base revision.
 
-A payload-write failure before commit cancels its allocation and permits retry. A commit
-failure or committed readback failure returns `RemountRequired`, retains any uncertain
-allocation, and blocks further operations through that owner. No durable success is
-reported. The runtime must stop all other card writers and drop the mounted store before
-it creates a new owner. A failed final sync can follow a durable new gate: remount can
-recover the old or the complete new generation. It must validate card identity and payload
-CRC before any row becomes policy evidence. The generic store blocks all card mutations and fresh
-catalog reads after an uncertain final gate write or synchronization. A metadata committed-readback
-failure currently blocks only its metadata owner. Live policy integration MUST apply the same global
-store fence for that verification failure before another writer runs.
+A payload or catalog-body failure before publication cancels the allocation and permits retry.
+An uncertain final gate write or synchronization, or a failed committed readback, returns
+`RemountRequired`. The generic store blocks mutations and fresh catalog reads. No durable success
+is reported. Existing pinned readers can finish. Remount can recover the old or the complete new
+generation; identity and payload CRC must validate before any row becomes policy evidence.
+Metadata publication checks read-handle capacity before commit. Ordinary capacity pressure returns
+`Busy` without publication or a remount fence.
+
+## Runtime admission
+
+The runtime publishes a loaded scope only after its catalog and route metadata reads succeed.
+The scope contains the complete StoreId and catalog sequence. A route stamp or automatic removal
+carries that captured scope unchanged to the serialized writer. The writer checks it before mutation,
+and metadata publication checks its captured metadata head and exact source row.
+
+A successful metadata write invalidates the resident policy snapshot and orders a complete reload.
+It does not change the resident timestamp directly. Write and catalog-read failures wait thirty
+seconds before retry. Unsupported work is disabled by object family. Uncertain publication parks
+policy and catalog refresh until App restart and a fresh mount. The same card identity and sequence
+can survive recovery, so those values alone do not release that park.
+
+Before an automatic removal, the retention owner rechecks clock trust, recording state, active route,
+and expiry against the loaded snapshot. The board waits for that admitted writer operation to finish
+before it processes another App transition. Rider-requested deletion remains a separate intent.

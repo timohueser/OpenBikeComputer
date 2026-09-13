@@ -47,12 +47,28 @@ pub trait RouteRepository {
     fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
         Vec::new()
     }
-    /// Stamp route `id`'s `last_used` to `utc` in the retention sidecar — the sweep's clock-start /
-    /// active re-stamp, and the once-per-activation stamp
-    /// (a `RetentionEffect::WriteRouteMetadata`). Default no-op (a retention-less
-    /// host has no sidecar).
-    fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
-        let _ = (id, utc);
+    /// Current physical card identity/sequence, if this repository owns a flat card.
+    fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
+        None
+    }
+    /// Reload catalog and metadata together; only a complete validated projection returns a scope.
+    fn refresh_metadata(
+        &mut self,
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+        Ok(None)
+    }
+    fn write_metadata(
+        &mut self,
+        _effect: obc_app::retention::RetentionEffect,
+    ) -> Result<(), obc_app::retention::RetentionError> {
+        Err(obc_app::retention::RetentionError::Unsupported)
+    }
+    fn expire_route(
+        &mut self,
+        _id: CatalogObjectId,
+        _scope: obc_app::device_core::StoreRevision,
+    ) -> Result<bool, CatalogError> {
+        Err(CatalogError::Unsupported)
     }
 }
 
@@ -68,12 +84,6 @@ pub trait RideRepository {
     /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
     /// in-memory catalog is a no-op.
     fn refresh(&mut self) {}
-    /// Stamp ride `id`'s `synced_at` to `utc` in the synced sidecar (epic #638, S3) — the sweep's
-    /// legacy synced-without-stamp countdown start
-    /// (a `RetentionEffect::WriteRideMetadata`). Default no-op.
-    fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
-        let _ = (id, utc);
-    }
 }
 
 /// The open ride object the app records into while riding — one method per

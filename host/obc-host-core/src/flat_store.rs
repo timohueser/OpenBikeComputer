@@ -181,7 +181,7 @@ impl MountedStore {
         Self { card, remount_required: false }
     }
 
-    fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
+    pub(crate) fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
         if self.remount_required {
             Err(StoreError::Media)
         } else {
