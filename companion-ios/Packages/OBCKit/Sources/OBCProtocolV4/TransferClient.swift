@@ -97,19 +97,32 @@ public actor TransferClient {
     }
 
     public func get(
-        objectID: ObjectID, revision: Revision? = nil,
+        objectID: ObjectID, revision: Revision? = nil, expectedStoreID: StoreID? = nil,
         progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
     ) async throws -> (result: GetResult, payload: Data) {
         await acquire()
         defer { release() }
         try await ensureIntroduced()
+        if let expectedStoreID { try await checkStore(expectedStoreID) }
+        let downloaded: (result: GetResult, payload: Data)
         do {
-            return try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
+            downloaded = try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
         } catch is TransferLinkLost {
             try await restoreAndRefreshStore()
-            // GET has no durable effect. A fresh request id and a restart at offset zero is its
-            // complete recovery; no resume offset exists in v4.
-            return try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
+            if let expectedStoreID { try await checkStore(expectedStoreID) }
+            downloaded = try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
+        }
+        if let revision, downloaded.result.revision != revision {
+            throw TransferClientError.unexpectedResponse
+        }
+        if let expectedStoreID { try await checkStore(expectedStoreID) }
+        return downloaded
+    }
+
+    private func checkStore(_ expected: StoreID) async throws {
+        let actual = try await identifyStore()
+        guard actual == expected else {
+            throw TransferClientError.storeChanged(previous: expected, current: actual)
         }
     }
 

@@ -7,6 +7,13 @@ import OBCTransport
 /// import bytes byte-exact, and the synced-ride set survives both a ride
 /// delete and a relaunch (idempotent re-sync, H9).
 final class LibraryStoreTests: XCTestCase {
+    private func pointsURL(in directory: URL, id: String) throws -> URL {
+        let ride = directory.appendingPathComponent("rides/\(id)")
+        let data = try Data(contentsOf: ride.appendingPathComponent("summary.json"))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return ride.appendingPathComponent(try XCTUnwrap(manifest["pointsFile"] as? String))
+    }
+
     // MARK: Fixtures
 
     private func makeRecord(
@@ -294,7 +301,7 @@ final class LibraryStoreTests: XCTestCase {
         let ride = makeRide()
         try store.saveRide(ride)
         try? Data("not json".utf8).write(
-            to: dir.appendingPathComponent("rides/ride-1/points.json"))
+            to: try pointsURL(in: dir, id: "ride-1"))
 
         XCTAssertEqual(store.rideSummaries(), [ride.summary],
                        "a broken tracklog never costs the list row")
@@ -311,7 +318,7 @@ final class LibraryStoreTests: XCTestCase {
             try store.saveRide(makeRide(id: "ride-\(index)",
                                     date: Date(timeIntervalSince1970: Double(index))))
             try? Data("points deliberately unreadable".utf8).write(
-                to: dir.appendingPathComponent("rides/ride-\(index)/points.json"))
+                to: try pointsURL(in: dir, id: "ride-\(index)"))
         }
 
         XCTAssertEqual(store.rideSummaries().count, 200)
@@ -323,7 +330,7 @@ final class LibraryStoreTests: XCTestCase {
         let ride = makeRide()
         try store.saveRide(ride)
         try? FileManager.default.removeItem(
-            at: dir.appendingPathComponent("rides/ride-1/points.json"))
+            at: try pointsURL(in: dir, id: "ride-1"))
 
         XCTAssertEqual(store.rideSummaries(), [ride.summary])
         XCTAssertNil(store.ridePoints(ride.id))
@@ -335,7 +342,7 @@ final class LibraryStoreTests: XCTestCase {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
         try store.saveRide(ride)
-        let pointsURL = dir.appendingPathComponent("rides/ride-1/points.json")
+        let pointsURL = try pointsURL(in: dir, id: "ride-1")
         let pointBytes = try Data(contentsOf: pointsURL)
 
         var renamed = ride.summary
@@ -391,9 +398,7 @@ final class LibraryStoreTests: XCTestCase {
             XCTAssertThrowsError(try store.saveRide(ride))
             XCTAssertTrue(store.rideSummaries().isEmpty)
             XCTAssertTrue(store.syncedRideIDs().isEmpty)
-            if file == "summary.json" {
-                XCTAssertEqual(store.ridePoints(ride.id), ride.points, "a partial save remains unmarked")
-            }
+            XCTAssertNil(store.ridePoints(ride.id), "a failed first publication exposes no generation")
 
             try FileManager.default.removeItem(at: blocker)
             try store.saveRide(ride)
@@ -407,7 +412,7 @@ final class LibraryStoreTests: XCTestCase {
         let (store, dir) = makeFileStore()
         let ride = makeRide()
         try store.saveRide(ride)
-        let points = dir.appendingPathComponent("rides/ride-1/points.json")
+        let points = try pointsURL(in: dir, id: "ride-1")
         let summary = dir.appendingPathComponent("rides/ride-1/summary.json")
         let pointBytes = try Data(contentsOf: points)
         let summaryBytes = try Data(contentsOf: summary)
