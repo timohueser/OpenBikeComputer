@@ -32,18 +32,6 @@
 //! is rediscovered and re-issued on every later pass.
 //! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins the ride arm.
 //!
-//! ## What DeviceCore owns here, and what it does not
-//!
-//! Eight domains have a state machine: the catalog, retention and weather from #1438, the four
-//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo` — and Recorder from
-//! #1398. All eight can be reached from outside `obc-app`, so this executor serves all eight and
-//! asserts the rest stays empty.
-//!
-//! **One** domain still speaks the legacy protocol: Bond. Its removal is confirmed by a link-status
-//! fact rather than by a reply, and a domain that cannot validate a token cannot own an outcome
-//! (epic §4.3). The residual drain asks for exactly that class by name (`device_core::residual`),
-//! which is what makes running it between two passes safe.
-
 mod device_core_corpus;
 
 use std::collections::BTreeSet;
@@ -65,7 +53,7 @@ use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOu
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
 use obc_app::weather::{WeatherEffect, WeatherOutcome};
-use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, RecorderIntent, RideRetentionRecord, WarningFlags};
+use obc_app::{App, AppState, Gesture, RecorderIntent, RideRetentionRecord, WarningFlags};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
     ALL_FEEDER_KINDS,
@@ -217,6 +205,7 @@ enum Done {
     Settings(SettingsOutcome),
     Dfu(DfuOutcome),
     Storage(StorageInfoOutcome),
+    Bond(obc_app::ble::BondOutcome),
     Weather(WeatherOutcome),
     Recorder(RecorderOutcome),
     RideTrack(DerivedInput<RideTrackKey>),
@@ -299,13 +288,7 @@ impl CoreHarness {
 
     // ---- the typed executor ----
 
-    /// Serve what a host outside `obc-app` can actually cause.
-    ///
-    /// Seven domains reach this executor: the catalog and retention from #1438, the four #1397 S2
-    /// gave a machine, and Weather, whose refresh intent gained its one producer in #1549 — the
-    /// Menu row that opens the dashboard. Recorder and Bond have no machine at all, so nothing else
-    /// may appear. Asserted rather than assumed: an effect this executor cannot serve turning up
-    /// would be a silent change of who decides, and the run must stop rather than skip it.
+    /// Serve each bounded effect and preserve its token in the scripted result.
     fn serve_typed(&mut self, effects: &mut EffectSlots, done: &mut Vec<Done>) {
         if let Some(effect) = effects.catalog.take() {
             self.served.insert("catalog");
@@ -362,7 +345,14 @@ impl CoreHarness {
             self.state.weather_refreshes += 1;
             done.push(Done::Weather(WeatherOutcome::Raised { token }));
         }
-        assert!(!effects.has_pending(), "bond is the one domain a host cannot reach in Phase 1");
+        if let Some(BondEffect::Forget { token }) = effects.bond.take() {
+            self.served.insert("bond");
+            done.push(Done::Bond(obc_app::ble::BondOutcome::KeysRemoved {
+                token,
+                controller: obc_app::ble::ControllerClearance::Unconfirmed,
+            }));
+        }
+        assert!(!effects.has_pending());
         // The marks record shares the settings slot but has no script of its own, so it answers
         // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
         // preferences write — is skipped for that pass only.
@@ -507,25 +497,6 @@ impl CoreHarness {
         }
     }
 
-    // ---- the residual half, for the domains without a machine ----
-    //
-    // Recorder and Bond, and nothing else. The ride close is answered by a catalog re-feed rather
-    // than by a ride identity (#1398) and the bond removal by a link-status fact rather than by a
-    // reply (#1400). A domain that cannot validate a token cannot own an outcome (epic §4.3).
-
-    /// Asked for **by name**: the residual class, and nothing else. A class DeviceCore owns
-    /// is not filtered out of a full walk here — it is never drained, because the full walk *pulls*
-    /// from each domain as it passes and would mint the operation the pass's own effect already
-    /// carries. The harness is therefore unable to reach past its classes rather than asserting
-    /// that it did not.
-    fn serve_mailbox(&mut self, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
-        let mut mail: HostMailbox = HostMailbox::new();
-        let _ = self.state.app.drain_residual_commands(&mut mail);
-        while let Some(command) = mail.pop() {
-            self.serve_legacy(command, done, trace);
-        }
-    }
-
     /// The corpus's answers that are scripted at the **action** rather than at the request,
     /// delivered once per pass exactly as `CorpusState::run_pass` delivers them — so all three
     /// frames answer the same script.
@@ -576,15 +547,6 @@ impl CoreHarness {
         Some((revision, matches!(result, PendingSettingsResult::FailLatest)))
     }
 
-    fn serve_legacy(&mut self, command: HostCommand, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
-        let (_, _) = (done, trace);
-        match command {
-            // The bond removal is confirmed by a link fact rather than by a reply, so there is
-            // nothing to answer here.
-            HostCommand::ForgetBond => {}
-        }
-    }
-
     // ---- the two derived levels ----
 
     /// Answer each level with the key the need carried. Under a delayed runner the subject may have
@@ -605,7 +567,6 @@ impl CoreHarness {
     fn serve(&mut self, mut plan: PassPlan, trace: &mut TraceRecorder<VisibleState>) {
         let mut done = Vec::new();
         self.serve_typed(&mut plan.effects, &mut done);
-        self.serve_mailbox(&mut done, trace);
         self.serve_derived(&plan.derived_needs, &mut done);
         for item in done {
             self.deliver(item, trace);
@@ -645,11 +606,10 @@ impl TraceHarness<Action> for CoreHarness {
         self.state.apply_input(action, trace);
     }
 
-    fn run_pass(&mut self, trace: &mut TraceRecorder<Self::State>) -> Vec<Self::Outcome> {
+    fn run_pass(&mut self, _trace: &mut TraceRecorder<Self::State>) -> Vec<Self::Outcome> {
         let mut plan = self.pass();
         let mut done = Vec::new();
         self.serve_typed(&mut plan.effects, &mut done);
-        self.serve_mailbox(&mut done, trace);
         self.serve_derived(&plan.derived_needs, &mut done);
         done
     }
@@ -674,6 +634,9 @@ impl TraceHarness<Action> for CoreHarness {
             }
             Done::Dfu(outcome) => {
                 let _ = self.state.outcomes.dfu.try_put(outcome);
+            }
+            Done::Bond(outcome) => {
+                self.state.outcomes.bond.try_put(outcome).unwrap();
             }
             Done::Storage(outcome) => {
                 let _ = self.state.outcomes.storage_info.try_put(outcome);

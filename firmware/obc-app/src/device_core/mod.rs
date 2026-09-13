@@ -22,11 +22,6 @@
 //!   protocols live beside their owner: `catalog_state`, `retention`, `recorder`, `navigator`,
 //!   `settings`, `weather`, `dfu` and `ble`. There is deliberately **no** combined `Effect`,
 //!   `Outcome` or `Intent` enum anywhere.
-//! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
-//! - [`residual`] — the three legacy commands **every** typed executor still drains, as one shared
-//!   list. Both executors check it, so S6c can delete the protocol mechanically rather than
-//!   per-host.
-//!
 //! …the one deterministic frame every platform runs (#1438):
 //!
 //! - `pass` — `PassInputs` in, fourteen fixed stages, `PassPlan` out. No loop, no re-entry, no
@@ -46,17 +41,11 @@
 //! - [`feeders`] — the inventory of every public bulk feeder on `App`, with the ownership cutover
 //!   that deletes each one.
 //!
-//! …and what is left of the old protocol (#1397 S6):
-//!
-//! - [`residual`] — the one command a typed executor still drains, with the issue that retires it.
-//!   Nothing else of the legacy vocabulary survives.
-
 pub(crate) mod connections;
 pub(crate) mod core_mode;
 pub mod derived;
 pub mod feeders;
 pub mod pass;
-pub mod residual;
 mod shared;
 pub mod slots;
 pub mod storage_info;
@@ -67,7 +56,6 @@ pub use derived::{
 
 pub use core_mode::ModeState;
 pub use pass::{PassClock, PassInputs, PassPlan};
-pub use residual::{assert_residual, residual, RESIDUAL, RESIDUAL_CLASS_COUNT};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 

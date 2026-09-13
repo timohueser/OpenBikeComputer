@@ -51,7 +51,7 @@ pub use state::wait_status_change;
 // The settings→radio controls (#455): the ride loop pushes the persisted Bluetooth switch each pass
 // and rings the Bluetooth screen's Forget-phone request; the lifecycle loop below honours both.
 pub(crate) use state::set_usb_radio_inhibited;
-pub use state::{request_forget_bond, set_radio_enabled};
+pub use state::{set_radio_enabled, take_bond_outcome, try_forget_bond};
 
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
 // each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
@@ -644,27 +644,36 @@ async fn weather_request_policy_change() {
     }
 }
 
-/// Forget the bonded phone (#455): zero the RRAM bond slot (a reboot lands in open pairing), drop
-/// the bond from the host's table + the controller resolving list (the forgotten phone can't
-/// silently re-encrypt this session), and lower the paired flag — which re-opens pairing on the
-/// next connection and reads "Paired: no" on the Bluetooth screen.
+/// Remove durable keys before host keys. Controller updates have no receipt in trouble-host.
 async fn forget_bond(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
 ) {
-    {
+    let request = state::begin_bond_removal();
+    let result = {
         let mut guard = shared.lock().await;
-        store.borrow_mut().clear_bond(&mut guard);
-    }
-    let identity = stack.with_bond_information(|bonds| bonds.first().map(|b| b.identity));
-    if let Some(identity) = identity {
-        if let Err(e) = stack.remove_bond_information(identity) {
-            warn!("ble: remove_bond_information failed: {:?}", defmt::Debug2Format(&e));
+        store.borrow_mut().clear_bond(&mut guard)
+    };
+    let result = result.and_then(|()| {
+        let identity = stack.with_bond_information(|bonds| bonds.first().map(|b| b.identity));
+        if let Some(identity) = identity {
+            stack.remove_bond_information(identity).map_err(|e| {
+                warn!("ble: host key removal failed: {:?}", defmt::Debug2Format(&e));
+                obc_app::ble::BondError::HostKeysRemoveFailed
+            })?;
         }
+        publish(|s| s.paired = false);
+        Ok(obc_app::ble::ControllerClearance::Unconfirmed)
+    });
+    if let Err(error) = result {
+        warn!("ble: bond removal incomplete: {:?}", defmt::Debug2Format(&error));
     }
-    publish(|s| s.paired = false);
-    info!("ble: bond forgotten — open pairing re-armed");
+    if let Some(effect) = request {
+        let outcome = obc_app::ble::BondOutcome::from_result(effect.token(), result);
+        info!("ble: bond result {:?}", defmt::Debug2Format(&outcome));
+        state::finish_bond_removal(outcome);
+    }
 }
 
 /// The per-connection control watcher (#455): rides the background `join4` beside the serve loop

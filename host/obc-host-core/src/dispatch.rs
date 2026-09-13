@@ -16,18 +16,6 @@
 //! effect, and the executor performs no product policy: no ordering decision, no cascade, no
 //! replacement rule — those belong to the domain that decided the effect.
 //!
-//! ## What is still on the legacy protocol here, and why
-//!
-//! Exactly one command reaches [`drain_residual`](HostLoop::execute)'s mailbox:
-//!
-//! | Command | Why | Retires in |
-//! |---|---|---|
-//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1400 |
-//!
-//! `obc_app::device_core::residual` is that list as data, and its `assert_residual` is the
-//! production assertion that nothing else comes back — one list, checked by this executor and by the
-//! board's ride loop alike, so #1397 S6c can delete the protocol mechanically rather than per-host.
-//!
 //! ## What stays with the caller
 //!
 //! Input recognition, rendering, the frame's own clock — and the [`ActiveRouteSession`]. The
@@ -50,7 +38,7 @@ use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
 use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
 use obc_app::weather_alerts::AlertMarks;
-use obc_app::{App, DrainStatus, Gesture, HostCommand, HostMailbox};
+use obc_app::{App, Gesture};
 use obc_ports::{Sensors, SettingsSaveError};
 
 use crate::nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady};
@@ -162,8 +150,10 @@ pub trait HostPlatform {
         Err(StorageInfoError::NotMounted)
     }
 
-    /// Remove the bond with the paired phone. Confirmed by a link fact, never by a reply.
-    fn forget_bond(&mut self) {}
+    /// Remove durable and host keys; report controller confirmation separately.
+    fn forget_bond(&mut self) -> Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError> {
+        Err(obc_app::ble::BondError::Unsupported)
+    }
 
     /// Validate the staged update package. `None` = **this host does not answer** — nothing
     /// re-polls the platform between passes, so the operation is simply never completed and the
@@ -195,11 +185,6 @@ impl HostPlatform for () {}
 /// revision moves.
 const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
-// The residual list, the predicate and the assertion live in `obc_app::device_core::residual` since
-// #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
-// command, or S6c's deletion becomes a per-host argument instead of a compiler-verified sweep. Re-exported here so this module reads as the reference executor it is.
-use obc_app::device_core::residual::assert_residual;
-
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
 /// the keyed derived answers, and the bounded polylines a derived answer carries beside its key.
 #[derive(Default)]
@@ -212,7 +197,7 @@ struct Inbox {
 }
 
 /// The shared host loop: the next pass's inbox, the in-flight plan (stepped once per pass), a
-/// planned-but-uncommitted detour, the residual legacy mailbox, and the resident active-route
+/// planned-but-uncommitted detour, and the resident active-route
 /// parse. A host owns one for its lifetime.
 pub struct HostLoop {
     inbox: Inbox,
@@ -224,8 +209,6 @@ pub struct HostLoop {
     /// A planned detour's bytes + frozen splice context (#882), held from the search's answer until
     /// the rider commits or cancels.
     detour_ready: Option<DetourReady>,
-    /// The residual legacy mailbox — [`RESIDUAL`] and nothing else.
-    mailbox: HostMailbox,
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
@@ -256,7 +239,6 @@ impl Default for HostLoop {
             plan: None,
             plan_token: None,
             detour_ready: None,
-            mailbox: HostMailbox::new(),
             hold: PlanHold::NONE,
             opened_session: None,
             revision: 0,
@@ -378,7 +360,6 @@ impl HostLoop {
         self.sync_recorder(app, tracks);
         self.serve_effects(app, plan, session, routes, rides, trips, tracks, platform);
         self.step_plan(app, session, routes, reader, elev);
-        self.drain_residual(app, platform);
         self.serve_derived(app, plan, session, routes, rides);
     }
 
@@ -463,14 +444,9 @@ impl HostLoop {
             };
             deliver(&mut self.inbox.outcomes.weather, outcome, "weather");
         }
-        if plan.effects.bond.take().is_some() {
-            // Bond has no machine, so nothing produces a `BondEffect` and the removal arrives as
-            // the residual `ForgetBond` command instead (#1400). Performing it
-            // here as well would forget the bond **twice in one execute** — the exact
-            // double-execution `assert_residual` exists to prevent — so this refuses like every
-            // other never-produced arm, and the domain that starts emitting one has to move its
-            // removal off the residual command in the same change.
-            debug_assert!(false, "BondEffect has no producer: the bond removal is the residual ForgetBond command");
+        if let Some(obc_app::ble::BondEffect::Forget { token }) = plan.effects.bond.take() {
+            let outcome = obc_app::ble::BondOutcome::from_result(token, platform.forget_bond());
+            deliver(&mut self.inbox.outcomes.bond, outcome, "bond");
         }
         debug_assert!(!plan.effects.has_pending(), "every effect a host can be handed has an arm above");
     }
@@ -636,25 +612,6 @@ impl HostLoop {
         };
         self.plan_token = None;
         deliver(&mut self.inbox.outcomes.navigator, answer, "navigator");
-    }
-
-    // ---- the residual legacy half, for the classes with no domain executor ----
-
-    /// Drain the residual mailbox: [`RESIDUAL`] and nothing else.
-    fn drain_residual(&mut self, app: &mut App, platform: &mut dyn HostPlatform) {
-        // Asked for **by name**, not filtered out of a whole-order walk: such a walk pulls from
-        // every domain it passes — minting the operation — so it would consume an intent admitted
-        // between this executor's passes and leave its domain waiting on an answer that is never
-        // coming. This host admits its intents inside `pass`, so it never hit that; the board did,
-        // and the shape is the same on both.
-        let status = app.drain_residual_commands(&mut self.mailbox);
-        debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
-        while let Some(command) = self.mailbox.pop() {
-            assert_residual(&command);
-            match command {
-                HostCommand::ForgetBond => platform.forget_bond(),
-            }
-        }
     }
 
     /// Open a ride object when Recorder owes one.
@@ -838,6 +795,64 @@ mod tests {
     use obc_app::AppState;
     use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, TrackPoint};
     use obc_route::RideStats;
+
+    #[test]
+    fn bond_platform_results_return_once_with_the_admitted_token() {
+        use obc_app::ble::{BondError, BondOutcome, ControllerClearance};
+        struct Platform {
+            result: Result<ControllerClearance, BondError>,
+            calls: usize,
+        }
+        impl HostPlatform for Platform {
+            fn forget_bond(&mut self) -> Result<ControllerClearance, BondError> {
+                self.calls += 1;
+                self.result
+            }
+        }
+        for result in [
+            Ok(ControllerClearance::Confirmed),
+            Ok(ControllerClearance::Unconfirmed),
+            Err(BondError::StoreWriteFailed),
+            Err(BondError::StoreVerifyFailed),
+            Err(BondError::HostKeysRemoveFailed),
+            Err(BondError::QueueFull),
+        ] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            let mut host = HostLoop::new();
+            app.state.device.ble_paired = true;
+            app.state.ble_forget_requested = true;
+            let mut loc = OneFix(None);
+            let mut plan = host.pass(
+                &mut app,
+                PassClock { ride: RideClock(0), ui: InputClock(0) },
+                &[],
+                Sensors::new(&mut loc),
+                None,
+                None,
+                SUPPORT,
+            );
+            let effect = plan.effects.bond.take().unwrap();
+            plan.effects.bond.try_put(effect).unwrap();
+            let mut platform = Platform { result, calls: 0 };
+            let mut routes = crate::FlatRouteStore::from_bytes(&[]).unwrap();
+            let mut rides = crate::MemRideStore::new(vec![]);
+            let mut tracks = RecordingTrackStore::default();
+            for _ in 0..2 {
+                host.serve_effects(
+                    &mut app,
+                    &mut plan,
+                    &ActiveRouteSession::new(),
+                    &mut routes,
+                    &mut rides,
+                    &mut (),
+                    &mut tracks,
+                    &mut platform,
+                );
+            }
+            assert_eq!(platform.calls, 1);
+            assert_eq!(host.inbox.outcomes.bond.take(), Some(BondOutcome::from_result(effect.token(), result)));
+        }
+    }
 
     #[test]
     fn failed_removal_preserves_the_token_and_stops_repository_fallback() {

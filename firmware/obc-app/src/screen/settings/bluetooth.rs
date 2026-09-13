@@ -1,18 +1,7 @@
-//! The Bluetooth screen (epic #447, P8) — everything rider-facing about the radio: the on/off
-//! switch (persisted as [`Settings::ble_enabled`]), a status line (Off / Advertising / Connected,
-//! from the P1 seam), a "Paired: yes/no" row (deliberately no phone name), and the hold-guarded
-//! **Forget phone** — the *only* re-pair path now that a stored bond rejects new pairings (the S0
-//! §8 amendment).
-//!
-//! The toggle edits [`Settings`] in place like every settings screen — the host persists it and
-//! carries the change to the radio plane. Forget is a **Pause-menu (ride_control) guarded row**
-//! (owner review round 3 — the round-2 always-visible base + focus outline retired with the rest
-//! of that idiom): a plain left-aligned Body label while unselected, the `PARCHMENT_SHADE` base
-//! filling warning-red with the live hold while selected; the completed hold sets
-//! [`AppState::ble_forget_pending`](crate::AppState) for the host to drain — no extra
-//! confirmation popup, the guarded hold *is* the confirmation. With **no bond stored the row
-//! isn't drawn at all** (the round-1 grammar: delete-class actions appear only when possible),
-//! and Up/Down has nothing to select below the toggle.
+//! Bluetooth settings and the guarded phone-key removal action.
+//! The request enters DeviceCore in the next pass. Pending work disables the action;
+//! a failure permits an explicit retry even when the link reports unpaired.
+//! Unconfirmed controller cleanup asks for a restart and is never shown as completion.
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
@@ -69,7 +58,7 @@ impl BluetoothScreen {
             Gesture::Step(n) => {
                 // The bond vanishing from under the cursor (a completed forget) clamps it back
                 // onto the toggle before the step, so a step never walks a hidden row.
-                let len = rows(cx.state.device.ble_paired);
+                let len = rows(cx.state.bond_status.can_forget(cx.state.device.ble_paired));
                 self.selected = self.selected.min(len - 1);
                 self.selected = crate::screen::vocab::list::step_selection(self.selected, n, len);
                 Transition::None
@@ -82,8 +71,8 @@ impl BluetoothScreen {
             }
             // Forget phone: the guarded hold, live only while a bond is stored. Records the
             // one-shot request for the host (the pass).
-            Gesture::Hold if self.selected == FORGET && cx.state.device.ble_paired => {
-                cx.state.ble_forget_pending = true;
+            Gesture::Hold if self.selected == FORGET && cx.state.bond_status.can_forget(cx.state.device.ble_paired) => {
+                cx.state.ble_forget_requested = true;
                 Transition::None
             }
             Gesture::Back => Transition::Pop,
@@ -98,7 +87,7 @@ impl BluetoothScreen {
 
         // A stale below-the-end cursor (the bond was just forgotten) reads as the toggle row.
         let device = rx.state.device;
-        let selected = self.selected.min(rows(device.ble_paired) - 1);
+        let selected = self.selected.min(rows(rx.state.bond_status.can_forget(device.ble_paired)) - 1);
 
         // Row 0 — the radio switch.
         let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
@@ -121,12 +110,18 @@ impl BluetoothScreen {
         );
         let y1 = y0 + 62;
         cv.text(rx.t(Msg::BluetoothPaired), Point::new(info_x, y1), Font::Label, TextAlign::Left, SUBTEXT);
-        let paired = if device.ble_paired { rx.t(Msg::BluetoothYes) } else { rx.t(Msg::BluetoothNo) };
+        let paired = match rx.state.bond_status {
+            crate::ble::BondStatus::Pending => rx.t(Msg::BluetoothRemoving),
+            crate::ble::BondStatus::Failed(_) => rx.t(Msg::BluetoothRemoveFailed),
+            crate::ble::BondStatus::RestartRequired => rx.t(Msg::BluetoothRestart),
+            _ if device.ble_paired => rx.t(Msg::BluetoothYes),
+            _ => rx.t(Msg::BluetoothNo),
+        };
         cv.text(paired, Point::new(info_x, y1 + 24), Font::Body, TextAlign::Left, INK);
 
         // The Forget row, drawn only while a bond is stored — with nothing to forget the row simply
         // isn't there (the round-1 only-when-possible grammar).
-        if device.ble_paired {
+        if rx.state.bond_status.can_forget(device.ble_paired) {
             super::forget_footer(cv, w, h, rx.t(Msg::BluetoothForget), selected == FORGET, rx.hold_progress);
         }
     }
@@ -187,22 +182,22 @@ mod tests {
         assert_eq!(scr.selected, TOGGLE, "unpaired: the cursor can't leave the toggle");
         assert!(!scr.selection_is_guarded(false), "unpaired: nothing armed");
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
-        assert!(!st.ble_forget_pending, "unpaired: a hold does nothing (nothing to forget)");
+        assert!(!st.ble_forget_requested, "unpaired: a hold does nothing (nothing to forget)");
 
         st.device.ble_paired = true;
         run(&mut scr, &mut st, &mut s, Gesture::Step(1)); // → the (now present) Forget row
         assert_eq!(scr.selected, FORGET);
         assert!(scr.selection_is_guarded(true), "paired + selected: the hold fill is live");
         run(&mut scr, &mut st, &mut s, Gesture::Press);
-        assert!(!st.ble_forget_pending, "a plain press never forgets");
+        assert!(!st.ble_forget_requested, "a plain press never forgets");
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
-        assert!(st.ble_forget_pending, "the completed hold records the forget request");
+        assert!(st.ble_forget_requested, "the completed hold records the forget request");
 
         // A hold on the toggle row must not forget.
-        st.ble_forget_pending = false;
+        st.ble_forget_requested = false;
         run(&mut scr, &mut st, &mut s, Gesture::Step(-1)); // back to the toggle
         run(&mut scr, &mut st, &mut s, Gesture::Hold);
-        assert!(!st.ble_forget_pending, "a hold elsewhere doesn't forget");
+        assert!(!st.ble_forget_requested, "a hold elsewhere doesn't forget");
     }
 
     /// The bond vanishing from under the cursor (the forget completing) clamps the stale Forget

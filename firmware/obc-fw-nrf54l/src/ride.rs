@@ -690,16 +690,6 @@ impl RideExec {
     /// Whether the executor is holding something the next pass must see — an answer to consume, or
     /// an effect to serve, or a derived read it has been asked for.
     ///
-    /// `residual_pending` is the **legacy mailbox's** half, which this struct cannot see and which
-    /// now carries one thing: the rider's `ForgetBond`. It is posted by one pass and performed by
-    /// the next pass's drain, and the guarded hold that posts it leaves a static screen — so
-    /// without folding it in, that "next pass" is whenever the rider presses something else.
-    /// `App::has_pending_residual_command` is narrow on purpose; see its docs for why the wider
-    /// query would spin.
-    ///
-    /// The rider's ride **save** was the other half until #1398. It is a `RecorderEffect` in this
-    /// pass's own plan now, so `effects` covers it and it needs no term of its own.
-    ///
     /// The in-flight catalog removal is deliberately **not** here: it keeps the short animation
     /// cadence instead of an immediate re-pass, because it is a round trip to another task, and
     /// spinning at full speed against a commit that takes hundreds of milliseconds would starve the
@@ -708,8 +698,8 @@ impl RideExec {
     ///
     /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
     /// work is already decided, and parking on it would leave it sitting until the next rider input.
-    fn owed(&self, residual_pending: bool) -> bool {
-        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty() || residual_pending
+    fn owed(&self) -> bool {
+        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
     }
 
     /// Whether a store round trip is outstanding — the removal ticket. A committed removal wakes the
@@ -1583,9 +1573,17 @@ pub(crate) async fn run_app(
                 );
                 debug_assert!(false, "no retention effect is produced without a metadata store");
             }
-            if exec.effects.bond.take().is_some() {
-                defmt::error!("bond: the removal is the residual ForgetBond command (#1398/#1400)");
-                debug_assert!(false, "BondEffect has no producer");
+            if let Some(effect) = exec.effects.bond.take() {
+                if let Err(error) = crate::ble::try_forget_bond(effect) {
+                    RideExec::deliver(
+                        &mut exec.outcomes.bond,
+                        obc_app::ble::BondOutcome::Failed { token: effect.token(), error },
+                        "bond",
+                    );
+                }
+            }
+            if let Some(outcome) = crate::ble::take_bond_outcome() {
+                RideExec::deliver(&mut exec.outcomes.bond, outcome, "bond");
             }
             // ── The Ride detail's track profile and the route overview's shape (#678 T2 / #680) ──
             // Answered below, immediately before the pass that consumes them — see the derived fill.
@@ -2123,49 +2121,6 @@ pub(crate) async fn run_app(
                     synth.recenter(r.start_lon, r.start_lat);
                 }
                 prev_route = active;
-            }
-
-            // ── The residual legacy drain: one command, and the shared list says which ──
-            //
-            // `ForgetBond` is the class whose domain cannot validate an operation token, so it
-            // cannot own an outcome (epic #1433 §4.3) — the one every typed executor still drains,
-            // pinned by `obc_app::device_core::residual`. The ride close left with #1398: it is a
-            // `RecorderEffect` served in the store phase and answered with a `RecorderOutcome`.
-            //
-            // **Asked for by name**, and that is load-bearing rather than tidy: the whole-order
-            // A whole-order walk *pulls* from every domain it passes — it mints the operation
-            // as it goes — so it would take an intent admitted since this frame's pass and hand back
-            // a command this loop then declines to perform, leaving the domain holding an operation
-            // nobody answers. Everything running between here and `run_pass` is exposed to that: the
-            // debug link's route plan, the phone's remote update check, a BLE clock stamp arming a
-            // settings write.
-            //
-            // The predicate below stays as belt and braces. Anything that still reaches it is a
-            // class DeviceCore owns, and running it beside the effect that carries it would do the
-            // work twice — so the board reports and skips rather than panicking mid-ride.
-            //
-            // The mailbox — a ~600 B `Deque<HostCommand>` — is a stack temporary scoped to this
-            // block and dropped at its close, before the reconcile's `.await`, so it never enters
-            // the ride-loop task future (it would re-inflate the #808 poll frame).
-            {
-                use obc_app::device_core::residual::residual;
-                let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
-                let _ = app.drain_residual_commands(&mut mailbox);
-                while let Some(cmd) = mailbox.pop() {
-                    if !residual(&cmd) {
-                        defmt::error!(
-                            "exec: {} came back on the legacy protocol — DeviceCore owns it now, so it is skipped",
-                            defmt::Debug2Format(&cmd)
-                        );
-                        debug_assert!(false, "the residual is ForgetBond");
-                        continue;
-                    }
-                    match cmd {
-                        // The bond removal is confirmed by a link-status fact, never by a reply
-                        // (#1400).
-                        obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
-                    }
-                }
             }
 
             // Point the card at the active route's geometry, and open a ride object for the session
@@ -3135,7 +3090,7 @@ pub(crate) async fn run_app(
         let immediate = immediate || peak_view.busy();
         let next_ms = if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
-        } else if immediate || exec.owed(app.has_pending_residual_command()) {
+        } else if immediate || exec.owed() {
             Some(0)
         } else {
             next_wake_ms

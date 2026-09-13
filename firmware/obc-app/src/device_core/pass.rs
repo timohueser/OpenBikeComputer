@@ -51,16 +51,6 @@
 //! executor answers through (the pass's fact stage, [`App::apply_derived`]) refuse while a pass is in
 //! flight. The next pass consumes what an executor completed; nothing mutates mid-pass.
 //!
-//! ## What this pass does not yet own
-//!
-//! Eight domains own an operation token — the catalog, retention, weather and Recorder, and the
-//! four #1397 S2 added (Navigator, `SettingsMachine`, `DfuState`, `StorageInfo`) — and those are
-//! exactly the eight whose outcomes a pass may consume: **a domain that cannot validate a token
-//! cannot be the owner of an outcome** (epic §4.3). Bond cannot: the legacy protocol answers a bond
-//! removal with a link-status fact, so its outcome is *left in its slot*, not dropped and not
-//! guessed at. The stage where its machine will advance already exists and already runs, because
-//! the order is what #1438 pinned.
-//!
 //! **The rider's own requests do not wait for a stage.** A screen names what it wants to the domain
 //! that owns it as the gesture happens (`Ctx::recorder`, `Ctx::navigator`, `Ctx::dfu`,
 //! `Ctx::storage`), so a ride close, a plan, an update phase or a free-space refresh is already with
@@ -368,7 +358,7 @@ impl App {
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
         self.stage_weather(&mut effects, weather);
-        self.stage_platform(&mut effects);
+        self.stage_platform(&mut effects, support);
         self.stage_admission(support);
         self.stage_faults();
         // Every stage has run: whatever the visible screens draw is now final for this frame. A
@@ -386,10 +376,6 @@ impl App {
 
     /// Stage 1 — validate and consume each domain's outcome slot.
     ///
-    /// A domain accepts an outcome only while its own [`OperationToken`](super::OperationToken) is
-    /// current, which is why only a domain that *owns a token source* may consume one. Bond's stays
-    /// in its slot: an outcome nobody can validate is not something to guess at, and the slot's
-    /// capacity of one is the executor's backpressure until the owner lands.
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
@@ -440,6 +426,12 @@ impl App {
                 // pass reaches the rider together at stage 13, so a failed save shares the card
                 // with whatever else this pass found rather than displacing it.
                 self.pass.connections.faults.raise(crate::screen::WarningFlags::SETTINGS_ERROR);
+            }
+        }
+        if let Some(outcome) = outcomes.bond.take() {
+            if self.bond.apply_outcome(outcome) {
+                self.state.bond_status = self.bond.status();
+                self.ui.map_dirty = true;
             }
         }
         if let Some(outcome) = outcomes.dfu.take() {
@@ -944,13 +936,18 @@ impl App {
 
     /// Stage 11 — advance `DfuState`, `BondState` and `StorageInfo`.
     ///
-    /// The three domains whose product state is a scan result, a bond and a number of free bytes.
-    /// Two of them have their machine; `BondState`'s arrives with #1397 S6, because the legacy bond
-    /// removal is confirmed by a link-status fact rather than by a reply — a domain with nothing to
-    /// validate cannot own an outcome (epic §4.3), so it keeps the legacy path and this stage does
-    /// not reach for it.
-    fn stage_platform(&mut self, effects: &mut EffectSlots) {
+    fn stage_platform(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Platform);
+        if core::mem::take(&mut self.state.ble_forget_requested) {
+            self.bond.request(support.bonding, self.state.device.ble_paired);
+        }
+        if let Some(effect) = self.bond.next_effect() {
+            let _ = effects.bond.try_put(effect);
+        }
+        if self.state.bond_status != self.bond.status() {
+            self.state.bond_status = self.bond.status();
+            self.ui.map_dirty = true;
+        }
         if effects.dfu.is_empty() {
             if let Some(effect) = self.dfu.next_effect() {
                 let _ = effects.dfu.try_put(effect);
@@ -1493,7 +1490,7 @@ mod tests {
     /// The rider's Save becomes a `Finalize` effect in the **same** pass that applied the gesture.
     ///
     /// Routed through a stage-4 slot instead, the close would wait a pass — reinstating the wake gap
-    /// the board's `residual_pending` fold existed to paper over.
+    /// would otherwise defer the work until the next external event.
     #[test]
     fn the_riders_save_becomes_a_finalize_effect_in_the_same_pass() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1637,84 +1634,6 @@ mod tests {
         app.advance_recorder_session();
         assert!(app.recording());
         assert_eq!(app.recorder.continuation(), restored, "recovery must not zero the ride it just restored");
-    }
-
-    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
-    /// next must survive the residual drain that runs in between. A whole-order walk **pulls** from
-    /// every domain — `next_plan_effect` here — so it would take the rider's request, mint the
-    /// operation, hand back a command the executor then declines to perform, and leave Navigator
-    /// holding an operation nobody will ever answer. On the board that was a planning spinner that
-    /// redrew at ~15 Hz forever, and every later plan silently refused, because `next_plan_effect`
-    /// returns `None` while an operation is live. The drain asks for its one class by name, so it
-    /// cannot reach Navigator at all.
-    ///
-    /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
-    /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
-    /// arming a settings write. `drain_residual_commands` asks for the residual class **by
-    /// name** instead, which is what makes them safe — and this test is what says so.
-    #[test]
-    fn an_intent_admitted_between_two_passes_survives_the_residual_drain() {
-        let mut app = navigating();
-        quiet(&mut app, 10);
-
-        // A seam outside the pass admits a plan — exactly what the board's debug `N` arm does.
-        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
-            (0, 0),
-            (1, 1),
-            "Bench",
-        )));
-
-        // The executor's residual drain runs before its next pass. It must not touch Navigator.
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_residual_commands(&mut mail);
-        let mut drained = Vec::new();
-        while let Some(command) = mail.pop() {
-            drained.push(command);
-        }
-        assert!(drained.is_empty(), "the residual drain reached past its one class: {drained:?}");
-
-        let plan = quiet(&mut app, 20);
-        let mut effects = plan.effects;
-        assert!(
-            matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
-            "the plan admitted between the passes reached the executor"
-        );
-    }
-
-    /// A typed executor's wake is blind to the legacy mailbox, and one class still lives there.
-    /// `has_pending_residual_command` is what a runtime that sleeps until the next event folds in so
-    /// the bond removal costs one immediate pass rather than one wake — and after the guarded hold
-    /// that posts it, the next wake is whenever the rider presses something else.
-    ///
-    /// The other half is why it may be folded at all: the class is a **one-shot the drain clears**,
-    /// so the answer goes false again and the loop settles. The two derived cues are levels
-    /// re-derived on every drain, so `has_pending_host_command` — which includes them — would spin
-    /// forever; this test pins the difference.
-    #[test]
-    fn a_pending_residual_command_is_a_one_shot_a_runtime_can_fold_into_its_wake() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        quiet(&mut app, 10);
-        assert!(!app.has_pending_residual_command(), "nothing owed on a quiet pass");
-
-        app.state.ble_forget_pending = true;
-        quiet(&mut app, 20);
-        assert!(app.has_pending_residual_command(), "the rider's forget-phone is owed to the drain");
-
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_residual_commands(&mut mail);
-        assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
-
-        // The distinction that makes the narrow predicate necessary: a viewed ride keeps its
-        // derived need up across every drain, because a need is a *level*. Folding that into a wake
-        // would never let the runtime sleep.
-        let mut viewing = App::new(AppState::new(0, 0, 1.0));
-        viewing.set_rides(&[crate::RideEntry { id: 7, summary: ride_summary() }]);
-        viewing.activity.viewed_ride = Some(0);
-        assert!(quiet(&mut viewing, 10).derived_needs.ride_track.is_some(), "the level is up");
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = viewing.drain_residual_commands(&mut mail);
-        assert!(quiet(&mut viewing, 20).derived_needs.ride_track.is_some(), "and a drain does not clear it");
-        assert!(!viewing.has_pending_residual_command(), "…but it is not a residual, so the wake is not held");
     }
 
     /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
@@ -1923,9 +1842,12 @@ mod tests {
         app.test_start_ride();
         outcomes.recorder.try_put(crate::recorder::RecorderOutcome::Discarded { token: recorder_ops.issue() }).unwrap();
 
-        // Bond has no machine, so nothing may act on its answer.
+        // An unissued bond result is consumed and rejected.
         let mut bond_ops: TokenSource<crate::device_core::BondTag> = TokenSource::new();
-        let bond = crate::ble::BondOutcome::Forgotten { token: bond_ops.issue() };
+        let bond = crate::ble::BondOutcome::KeysRemoved {
+            token: bond_ops.issue(),
+            controller: crate::ble::ControllerClearance::Confirmed,
+        };
         outcomes.bond.try_put(bond).unwrap();
 
         let mut none = ExternalFacts::NONE;
@@ -1933,7 +1855,7 @@ mod tests {
         assert!(app.weather.installed().is_none(), "a token the domain never issued is not an answer");
         assert!(app.recording(), "and neither is a recorder token Recorder never issued");
         assert!(outcomes.recorder.is_empty(), "the owner consumed it, which is what refusing it means");
-        assert_eq!(outcomes.bond.take(), Some(bond), "an outcome with no owner is left, never dropped");
+        assert!(outcomes.bond.is_empty(), "the bond owner rejects an unissued result");
     }
 
     /// The catalog's own outcome frees its operation, so the next intent can go out — the loop that
