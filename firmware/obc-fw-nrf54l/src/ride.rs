@@ -2537,13 +2537,9 @@ pub(crate) async fn run_app(
             // three fields the tail needs are copied out here and the plan is dropped inside the
             // store phase. Only the staged `EffectSlots` and the small executor state survive to the
             // present and sleep phases.
-            let obc_app::device_core::PassPlan { mut render, next_wake_ms, derived_needs, sources, effects, immediate } =
+            let obc_app::device_core::PassPlan { render, next_wake_ms, derived_needs, sources, effects, immediate } =
                 plan;
             peak_view.reconcile(app);
-            if peak_view.refresh_view(app) {
-                render.map = true;
-                render.region = None;
-            }
             exec.needs = derived_needs;
             debug_assert!(
                 !exec.effects.has_pending(),

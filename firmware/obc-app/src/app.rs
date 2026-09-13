@@ -155,7 +155,7 @@ pub struct AppState {
     /// Installed terrain availability, captured observer framing, and current summit projections.
     /// The large panorama remains host-owned and is borrowed only while drawing.
     pub peak_view_profile: Option<crate::PeakViewProfile<'static>>,
-    pub peak_view_peaks: [crate::PeakViewPeak; 32],
+    pub peak_view_peaks: [crate::PeakViewPeak; 64],
     pub peak_view_peak_count: u8,
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
@@ -202,7 +202,7 @@ impl AppState {
             pan: None,
             compass_deg: None,
             peak_view_profile: None,
-            peak_view_peaks: [crate::PeakViewPeak::EMPTY; 32],
+            peak_view_peaks: [crate::PeakViewPeak::EMPTY; 64],
             peak_view_peak_count: 0,
             device: DeviceStatus {
                 // Stand-in until a [`FuelGauge`](obc_ports::FuelGauge) feeds a real reading on the first tick.
@@ -2291,33 +2291,11 @@ impl App {
         true
     }
 
-    pub fn set_peak_view_loading(&mut self, loading: bool, failed: bool) {
+    pub fn set_peak_view_status(&mut self, status: crate::peak_view::runtime::Status) {
         if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
-            if screen.set_loading(loading, failed) {
+            if screen.set_status(status) {
                 self.ui.map_dirty = true;
             }
-        }
-    }
-
-    pub fn set_peak_view_waiting(&mut self) {
-        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
-            if screen.set_waiting() {
-                self.ui.map_dirty = true;
-            }
-        }
-    }
-
-    pub fn set_peak_view_building(&mut self, building: bool) {
-        if let Some(Screen::PeakView(screen)) = self.ui.stack.last_mut() {
-            if screen.set_building(building) {
-                self.ui.map_dirty = true;
-            }
-        }
-    }
-
-    pub fn redraw_peak_view(&mut self) {
-        if matches!(self.ui.stack.last(), Some(Screen::PeakView(_))) {
-            self.ui.map_dirty = true;
         }
     }
 

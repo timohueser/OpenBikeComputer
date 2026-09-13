@@ -70,6 +70,7 @@ impl PeakViewPeak {
 }
 
 pub mod panorama;
+pub mod runtime;
 pub mod surface;
 pub mod terrain;
 pub use panorama::Panorama;
@@ -77,18 +78,14 @@ pub use panorama::Panorama;
 /// Observer configuration and summit projections for a panorama.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeakViewProfile<'a> {
-    /// Identity for a named test input; zero for a live observer.
-    pub id: u8,
-    pub name: &'static str,
     pub observer_lat: i32,
     pub observer_lon: i32,
     pub observer_elevation_m: i16,
     pub default_heading_q4: u16,
-    /// Relief framing used to choose the horizontal window and vertical centre.
-    pub angle_bottom_q4: i16,
-    pub angle_top_q4: i16,
-    /// Vertical exaggeration in Q8, fixed for the whole panorama (320 = 1.25×).
-    pub vertical_scale_q8: u16,
+    /// Fixed framing for the whole panorama, in quarter degrees.
+    pub fov_q4: u16,
+    pub vertical_centre_q4: i16,
+    pub vertical_span_q4: u16,
     /// Named summits sorted clockwise by [`PeakViewPeak::azimuth_q4`].
     pub peaks: &'a [PeakViewPeak],
 }
@@ -96,15 +93,13 @@ pub struct PeakViewProfile<'a> {
 impl PeakViewProfile<'_> {
     pub const fn at(lat: i32, lon: i32, elevation_m: i16) -> PeakViewProfile<'static> {
         PeakViewProfile {
-            id: 0,
-            name: "",
             observer_lat: lat,
             observer_lon: lon,
             observer_elevation_m: elevation_m,
             default_heading_q4: 0,
-            angle_bottom_q4: -32,
-            angle_top_q4: 92,
-            vertical_scale_q8: 320,
+            fov_q4: 241,
+            vertical_centre_q4: 30,
+            vertical_span_q4: 178,
             peaks: &[],
         }
     }
@@ -117,9 +112,6 @@ impl PeakViewProfile<'_> {
     /// Frame the observer's relief once; turning keeps the same scale and horizon position.
     pub fn set_ground(&mut self, ground_m: f32) {
         self.observer_elevation_m = libm::roundf(ground_m + 2.0) as i16;
-        if self.id != 0 {
-            return;
-        }
         let (highest, relief) = self
             .peaks
             .iter()
@@ -134,44 +126,54 @@ impl PeakViewProfile<'_> {
             .fold((0.0f32, None::<f32>), |(highest, relief), angle| {
                 (highest.max(angle), Some(relief.unwrap_or(0.0).max(angle.abs())))
             });
-        // A shallow skyline needs more pixels. Keep the ordinary scale for steep views
-        // or absent height metadata, and cap the boost at 3× rather than magnifying noise.
-        self.vertical_scale_q8 = relief
-            .map(|angle_q4| libm::roundf(320.0 * (56.0 / angle_q4.max(1.0)).clamp(1.0, 2.4)) as u16)
-            .unwrap_or(320);
-        if highest <= 96.0 {
-            return;
-        }
-        let top = (libm::ceilf(highest) as i32 + 40).min(340);
-        let bottom = -60;
-        let centre = (top + bottom) / 2;
-        let span = ((top - bottom) * 50 + 71) / 72;
-        self.angle_bottom_q4 = (centre - span / 2) as i16;
-        self.angle_top_q4 = self.angle_bottom_q4 + span as i16;
+        // Boost shallow relief by at most 2.4×; steep views use the base 1.25× scale.
+        let boost = relief.map(|angle| (56.0 / angle.max(1.0)).clamp(1.0, 2.4)).unwrap_or(1.0);
+        let (fov, centre) = if highest > 96.0 {
+            let top = (libm::ceilf(highest) as i32 + 40).min(340);
+            (((top + 60) * 50 + 71) / 72 * 72 / 37, (top - 60) / 2)
+        } else {
+            (241, 30)
+        };
+        self.fov_q4 = fov as u16;
+        self.vertical_centre_q4 = (centre as f32 / boost) as i16;
+        // 222 / 240 chart aspect, with the base 1.25× vertical scale.
+        self.vertical_span_q4 = (fov as f32 * 0.74 / boost).max(1.0) as u16;
     }
 
     pub fn horizontal_fov_q4(&self) -> i32 {
-        (i32::from(self.angle_top_q4) - i32::from(self.angle_bottom_q4)).max(1) * 72 / 37
+        i32::from(self.fov_q4)
     }
 
-    /// Terrain and labels share the same vertical projection on the 240×222 chart.
     pub fn vertical_bounds_q4(&self) -> (i32, i32) {
-        let scale = i32::from(self.vertical_scale_q8.max(1));
-        let span = (self.horizontal_fov_q4() * 37 * 256 / (40 * scale)).max(1);
-        let centre = (i32::from(self.angle_top_q4) + i32::from(self.angle_bottom_q4)) / 2 * 320 / scale;
-        let bottom = centre - span / 2;
+        let span = i32::from(self.vertical_span_q4.max(1));
+        let bottom = i32::from(self.vertical_centre_q4) - span / 2;
         (bottom, bottom + span)
     }
 }
 
-/// Keep a tall landmark and a strong height/distance candidate per bearing sector.
-/// DEM visibility is resolved by the renderer.
+pub const MAX_PEAKS: usize = 64;
+pub type Candidates = heapless::Vec<PeakViewPeak, MAX_PEAKS>;
+
+/// Apparent elevation above the observer, with a positive offset for unsigned ranking.
+pub fn apparent_size(peak: &PeakViewPeak, observer_height: i16) -> u32 {
+    peak.elevation_m
+        .map(|height| {
+            ((libm::atan2f(f32::from(height) - f32::from(observer_height), peak.distance_m as f32).to_degrees() + 90.0)
+                * 10_000.0) as u32
+        })
+        .unwrap_or(0)
+}
+
+/// Reserve each sector's tallest landmark, then fill the remaining slots by apparent size.
+/// Existing visible peaks survive a refill. Already tested names are excluded from both passes.
 pub fn collect_summits(
     reader: &obc_reader::Reader<'_>,
     position: (i32, i32),
-    out: &mut heapless::Vec<PeakViewPeak, 32>,
+    observer_height: i16,
+    tested: &[PeakName],
+    out: &mut Candidates,
 ) -> Result<(), obc_reader::Error> {
-    out.clear();
+    let mut landmarks = [None::<PeakViewPeak>; 16];
     reader.visit_summits_within((position.1, position.0), 100_000, |summit| {
         let mut peak = PeakViewPeak {
             name: PeakName::new(summit.name.as_str()),
@@ -180,32 +182,99 @@ pub fn collect_summits(
             elevation_m: summit.elevation_m,
             ..PeakViewPeak::EMPTY
         };
-        peak.project(position.0, position.1);
-        if peak.distance_m < 30 || peak.distance_m > 100_000 {
+        if tested.contains(&peak.name) || out.iter().any(|old| old.name == peak.name) {
             return;
         }
-        peak.score =
-            (u32::from(peak.elevation_m.unwrap_or(0).max(0) as u16) + 100) * 20_000 / (peak.distance_m + 20_000);
-        retain_candidate(out, peak);
+        peak.project(position.0, position.1);
+        if !(30..=100_000).contains(&peak.distance_m) {
+            return;
+        }
+        peak.score = apparent_size(&peak, observer_height);
+        let slot = &mut landmarks[usize::from(peak.azimuth_q4 / 90)];
+        if slot.is_none_or(|old| (peak.elevation_m, rank(&peak)) > (old.elevation_m, rank(&old))) {
+            *slot = Some(peak);
+        }
+    })?;
+    for peak in landmarks.iter().flatten() {
+        if !out.is_full() && !out.iter().any(|old| old.name == peak.name) {
+            let _ = out.push(*peak);
+        }
+    }
+    // A second bounded scan fills all remaining slots, regardless of sector density.
+    reader.visit_summits_within((position.1, position.0), 100_000, |summit| {
+        let mut peak = PeakViewPeak {
+            name: PeakName::new(summit.name.as_str()),
+            lat: summit.lat,
+            lon: summit.lon,
+            elevation_m: summit.elevation_m,
+            ..PeakViewPeak::EMPTY
+        };
+        if tested.contains(&peak.name) || out.iter().any(|old| old.name == peak.name) {
+            return;
+        }
+        peak.project(position.0, position.1);
+        if !(30..=100_000).contains(&peak.distance_m) {
+            return;
+        }
+        peak.score = apparent_size(&peak, observer_height);
+        if !out.is_full() {
+            let _ = out.push(peak);
+            return;
+        }
+        let replace = out
+            .iter()
+            .enumerate()
+            .filter(|(_, old)| !old.visible && !landmarks.iter().flatten().any(|landmark| landmark.name == old.name))
+            .min_by_key(|(_, old)| rank(old))
+            .map(|(i, _)| i);
+        if let Some(i) = replace {
+            if rank(&peak) > rank(&out[i]) {
+                out[i] = peak;
+            }
+        }
     })?;
     out.sort_unstable_by_key(|peak| peak.azimuth_q4);
     Ok(())
 }
 
-fn retain_candidate(out: &mut heapless::Vec<PeakViewPeak, 32>, peak: PeakViewPeak) {
-    let mut sector = out.iter().enumerate().filter(|(_, old)| old.azimuth_q4 / 90 == peak.azimuth_q4 / 90);
-    let (Some((a, _)), Some((b, _))) = (sector.next(), sector.next()) else {
-        let _ = out.push(peak);
-        return;
-    };
-    let score = |p: &PeakViewPeak| (p.score, core::cmp::Reverse(p.distance_m), p.lat, p.lon);
-    let height = |p: &PeakViewPeak| (p.elevation_m, score(p));
-    let (landmark, other) = if height(&out[a]) >= height(&out[b]) { (a, b) } else { (b, a) };
-    if height(&peak) > height(&out[landmark]) {
-        let replace = if score(&out[a]) < score(&out[b]) { a } else { b };
-        out[replace] = peak;
-    } else if score(&peak) > score(&out[other]) {
-        out[other] = peak;
+fn rank(peak: &PeakViewPeak) -> (u32, core::cmp::Reverse<u32>, i32, i32) {
+    (peak.score, core::cmp::Reverse(peak.distance_m), peak.lat, peak.lon)
+}
+
+/// At most two label-only passes, with exact bounded name history.
+#[derive(Default)]
+pub struct SummitSearch {
+    tested: heapless::Vec<PeakName, 128>,
+    rounds: u8,
+}
+impl SummitSearch {
+    pub fn refill(
+        &mut self,
+        builder: &mut surface::Builder,
+        reader: &obc_reader::Reader<'_>,
+    ) -> Result<bool, obc_reader::Error> {
+        if self.rounds == 2 || builder.peaks.iter().all(|peak| peak.visible) {
+            return Ok(false);
+        }
+        self.rounds += 1;
+        for peak in &builder.peaks {
+            if !self.tested.contains(&peak.name) {
+                self.tested.push(peak.name).expect("two bounded candidate passes");
+            }
+        }
+        let mut candidates = Candidates::new();
+        candidates.extend(builder.peaks.iter().filter(|peak| peak.visible).copied());
+        let retained = candidates.len();
+        let profile = builder.profile();
+        collect_summits(
+            reader,
+            (profile.observer_lat, profile.observer_lon),
+            profile.observer_elevation_m,
+            &self.tested,
+            &mut candidates,
+        )?;
+        builder.refill(&candidates);
+        Ok(candidates.len() > retained)
     }
 }
 
@@ -247,7 +316,7 @@ mod tests {
         let peaks = [PeakViewPeak { elevation_m: Some(1250), distance_m: 16_500, ..PeakViewPeak::EMPTY }];
         let mut profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 0) };
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_scale_q8, 768);
+        assert_eq!(profile.vertical_span_q4, 74);
         assert_eq!(profile.horizontal_fov_q4(), 241);
         let bounds = profile.vertical_bounds_q4();
         assert!(bounds.0 < 0 && bounds.1 >= 48, "retain ground below and label space above the horizon");
@@ -255,45 +324,54 @@ mod tests {
         profile.peaks = &[];
         assert_eq!(profile.detached().vertical_bounds_q4(), bounds, "heading and visibility do not rescale it");
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_scale_q8, 320, "missing height metadata does not imply flat terrain");
+        assert_eq!(profile.vertical_span_q4, 178, "missing height metadata does not imply flat terrain");
         let steep = [PeakViewPeak { elevation_m: Some(-500), distance_m: 1000, ..peaks[0] }];
         profile.peaks = &steep;
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_scale_q8, 320, "steep terrain below the observer also needs vertical room");
+        assert_eq!(profile.vertical_span_q4, 178, "steep terrain below the observer also needs vertical room");
     }
 
     #[test]
-    fn nearby_candidates_do_not_crowd_out_a_taller_landmark() {
-        let candidates = [
-            PeakViewPeak {
-                name: PeakName::new("Near"),
-                elevation_m: Some(1200),
-                score: 620,
-                azimuth_q4: 660,
-                ..PeakViewPeak::EMPTY
-            },
-            PeakViewPeak {
-                name: PeakName::new("Neighbour"),
-                elevation_m: Some(900),
-                score: 605,
-                azimuth_q4: 650,
-                ..PeakViewPeak::EMPTY
-            },
-            PeakViewPeak {
-                name: PeakName::new("Tall"),
-                elevation_m: Some(1400),
-                score: 560,
-                azimuth_q4: 709,
-                ..PeakViewPeak::EMPTY
-            },
-        ];
-        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-            let mut selected = heapless::Vec::new();
-            for i in order {
-                retain_candidate(&mut selected, candidates[i]);
-            }
-            selected.sort_unstable_by_key(|peak| peak.azimuth_q4);
-            assert_eq!(&selected[..], &[candidates[0], candidates[2]]);
-        }
+    fn query_fills_dense_sectors_reserves_landmarks_and_skips_tested_names() {
+        use obc_formats::io::SliceSource;
+        use obcm_testkit::{build_poi_map, PoiSpec};
+        let mut records: std::vec::Vec<_> = (0..200)
+            .map(|i| PoiSpec {
+                lat: 10000 + i * 100,
+                lon: 0,
+                subtype: 19,
+                name: std::format!("Peak {i}"),
+                hours_ref: 3200,
+            })
+            .collect();
+        records.push(PoiSpec { lat: 500000, lon: 0, subtype: 19, name: "Landmark".into(), hours_ref: 4634 });
+        let bytes = build_poi_map((-100000, -100000, 100000, 600000), 4096, &[(7, records)]);
+        let source = SliceSource(&bytes);
+        let tables = obc_reader::MapTables::parse(&source).unwrap();
+        let cache = std::boxed::Box::new(obc_reader::MapCache::new());
+        let reader = obc_reader::Reader::new(&source, &tables, &cache);
+        let mut selected = Candidates::new();
+        collect_summits(&reader, (0, 0), 3100, &[], &mut selected).unwrap();
+        assert_eq!(selected.len(), 64);
+        assert!(selected.iter().any(|p| p.name.as_str() == "Landmark"));
+        assert!(selected.iter().any(|p| p.name.as_str() == "Peak 0"));
+        let mut tested = heapless::Vec::<_, 128>::new();
+        tested.extend(selected.iter().map(|p| p.name));
+        let mut survivor = selected[0];
+        survivor.visible = true;
+        selected.clear();
+        selected.push(survivor).unwrap();
+        collect_summits(&reader, (0, 0), 3100, &tested, &mut selected).unwrap();
+        assert_eq!(selected.len(), 64);
+        assert!(selected.contains(&survivor));
+        assert!(selected.iter().all(|p| p.visible || !tested.contains(&p.name)));
+    }
+
+    #[test]
+    fn apparent_size_uses_the_observer_height() {
+        let hump = PeakViewPeak { elevation_m: Some(3200), distance_m: 2000, ..PeakViewPeak::EMPTY };
+        let landmark = PeakViewPeak { elevation_m: Some(4634), distance_m: 10000, ..hump };
+        assert!(apparent_size(&landmark, 3100) > apparent_size(&hump, 3100));
+        assert!(apparent_size(&hump, 3100) > apparent_size(&hump, 3300));
     }
 }

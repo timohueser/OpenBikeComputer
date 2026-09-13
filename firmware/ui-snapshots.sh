@@ -125,18 +125,18 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 "$SIM" "$MAP" --boot --script "p p h" --routes-dir "$TRIPDIR" --expect-screen TripDelete --png "$OUT/trip-delete-confirm.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --expect-screen Menu --png "$OUT/menu.png"
 # Peak View's geographic fixture: Live follows the preset's stopped-compass heading;
-# Select freezes that panorama and keeps the current summit in the MANUAL ledger.
+# Select freezes that panorama and selects its most prominent visible summit.
 # Geographic fixture files are independent from MAP. `f` finishes the full panorama before capture or Browse input.
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
+"$SIM" "$MAP" --boot --peak-view scheidegg --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-scheidegg.png"
+"$SIM" "$MAP" --boot --peak-view glockner --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-glockner.png"
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f p" --expect-screen PeakView --png "$OUT/peak-view-browse.png"
 # A heading outside the initial west-facing crop proves that Live mode discovers a different set
 # of named ridge summits from the fixture's full-circle peak catalog.
 "$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
-# Two Up steps select Rote Nase on the inner ridge below Stockhorn at a nearby bearing.
-# Both distance bands must remain Browse targets instead of collapsing into one outer-silhouette name.
+# Up enters Browse from the right edge and steps left through the ridge candidates.
 "$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
-# One Down step enters Browse and selects Matterhorn. Generic labels are selection-independent:
-# selecting it keeps the other labels in place.
+# Down enters Browse from the left edge and steps right. Generic labels stay in place.
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
