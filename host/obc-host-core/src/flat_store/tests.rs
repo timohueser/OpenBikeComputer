@@ -40,7 +40,7 @@ fn native_map_and_routes_share_persistent_identity_and_revision_leases() {
     assert_eq!(new_map.source().revision(), Revision(2));
     assert_eq!(bytes(&map.source()), MAP);
     assert!(matches!(map.replace_from_file(input(MAP)), Err(MapError::Storage(StoreError::NotFound))));
-    assert_eq!(routes.delete_by_id(map_id.0), Ok(false));
+    assert_eq!(routes.delete_by_id(map_id.0), Err(obc_app::catalog_state::CatalogError::Unsupported));
     let removed = routes.ids()[0];
     assert_eq!(routes.delete_by_id(removed), Ok(true));
     drop((owner, routes, old, map, new_map));

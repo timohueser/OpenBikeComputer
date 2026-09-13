@@ -1,5 +1,5 @@
-//! Importing a native OBCM into an owned temporary flat card.
-//! The original path remains the anchor for the terrain sidecar and display name.
+//! Native map import and exact persisted-card reopen.
+//! Import sessions retain the original path for terrain sidecars and the display name.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -52,13 +52,25 @@ pub struct LoadedMap {
 }
 
 impl LoadedMap {
+    #[cfg(test)]
     pub fn open(source: MapSource) -> Result<Self, LoadError> {
+        let store = obc_host_core::flat_store::HostStore::temporary()
+            .map_err(|error| LoadError::Import(source.path.clone(), MapError::from(error)))?;
+        Self::open_in(source, &store)
+    }
+
+    pub fn open_in(source: MapSource, store: &obc_host_core::flat_store::HostStore) -> Result<Self, LoadError> {
         let name = source.display_name();
-        let map = FlatMap::from_file(source.file).map_err(|err| match err {
+        let map = FlatMap::from_file_in(store, source.file).map_err(|err| match err {
             MapError::Format(err) => LoadError::NotObcm(err),
             other => LoadError::Import(source.path.clone(), other),
         })?;
         Ok(Self { name, path: source.path, map })
+    }
+
+    pub fn reopen(store: &obc_host_core::flat_store::HostStore) -> Result<Self, MapError> {
+        let map = FlatMap::open_only_in(store)?;
+        Ok(Self { name: "Card map".into(), path: PathBuf::new(), map })
     }
 
     pub fn display_name(&self) -> &str {
@@ -73,7 +85,11 @@ impl LoadedMap {
     }
 
     pub fn elevation(&self) -> Box<dyn obc_route::ElevationSource> {
-        obc_host_core::terrain::resolve(&self.path)
+        if self.path.as_os_str().is_empty() {
+            Box::new(obc_route::NullElevation)
+        } else {
+            obc_host_core::terrain::resolve(&self.path)
+        }
     }
 
     pub fn planner_map(&self) -> &obc_host_core::flat_map::FlatMap {

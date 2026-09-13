@@ -39,12 +39,12 @@ use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
 use crate::rides::RideStore;
-use crate::routes::RouteStore;
 use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
-use crate::trips::TripStore;
+use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
+
 use crate::Args;
 
 mod housing;
@@ -185,7 +185,7 @@ impl obc_ports::ClockSource for SimClock {
 
 /// Launch the simulator window. `map` is opened once before this — for the process lifetime, as
 /// the device parses its map once at boot — and the per-frame [`Reader`] is a cheap view over it.
-pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
+pub fn run(map: LoadedMap, store: RouteStore, trip_store: TripStore, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
@@ -197,7 +197,7 @@ pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
     eframe::run_native(
         "OBC Simulator",
         options,
-        Box::new(move |_cc| Ok(Box::new(SimGui::new(map, args)) as Box<dyn eframe::App>)),
+        Box::new(move |_cc| Ok(Box::new(SimGui::new(map, store, trip_store, args)) as Box<dyn eframe::App>)),
     )
 }
 
@@ -261,7 +261,7 @@ struct SimGui {
     /// [`RefreshResult::Installed`] — the fetch landed. A first sighting is not a refresh, which
     /// `WeatherDomain::note_installed` already knows.
     wx_installed: u64,
-    /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
+    /// The card route projection and its retained active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
     /// re-fed alongside the route catalog so a rescan re-resolves the trips' stage ids.
@@ -368,7 +368,13 @@ struct SimGui {
 }
 
 impl SimGui {
-    fn new(map: LoadedMap, args: Args) -> Self {
+    fn note_card_commit(&mut self) {
+        if let Some(scope) = self.store.store_scope() {
+            self.host.facts().note_store_revision(scope);
+        }
+    }
+
+    fn new(map: LoadedMap, store: RouteStore, trip_store: TripStore, args: Args) -> Self {
         // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
@@ -434,8 +440,6 @@ impl SimGui {
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
         let mut app = App::new_idle(state);
-        let store = RouteStore::open(args.routes_dir());
-        let trip_store = TripStore::open(args.routes_dir());
         let ride_store = RideStore::open(args.tracks_dir());
         let tracks = TrackStore::open(args.tracks_dir());
         // Seed the live settings from the persisted store, falling back to defaults on a first
@@ -561,6 +565,7 @@ impl SimGui {
             kbd_select: false,
             kbd_back: false,
         };
+        gui.note_card_commit();
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
@@ -641,7 +646,7 @@ impl SimGui {
                 // live bundle is left to age, per `sync_clock`'s own rule.
                 w.sync_clock(now, true);
                 let src = self.store.active_source();
-                let route = match (self.session.index(), src.as_ref()) {
+                let route = match (self.session.index(), src) {
                     (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                     _ => None,
                 };
@@ -694,12 +699,6 @@ impl SimGui {
         }
         self.app.set_sensor_status(&sensor_status);
 
-        // Mirror the sim's route-retention sidecar into the app each frame (auto-expiry epic #638,
-        // S3), pairwise with the fed catalog ids — cheap, and it keeps the sweep reading
-        // device-truth retention even on frames nothing re-fed the catalog.
-        let metas = self.store.retention_metas();
-        self.app.set_route_meta(&metas);
-
         // ── One DeviceCore pass ──────────────────────────────────────────────────────────────
         // The active route is opened once from the resident session (no per-frame `RouteIndex`
         // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
@@ -709,7 +708,7 @@ impl SimGui {
         let gestures = core::mem::take(&mut self.pending_gestures);
         let mut plan = {
             let route_src = self.store.active_source();
-            let route = match (self.session.index(), route_src.as_ref()) {
+            let route = match (self.session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
@@ -829,7 +828,7 @@ impl SimGui {
         // the bytes under it, and the frame must draw what is there now.
         self.session.sync(&self.app, &mut self.store);
         let route_src = self.store.active_source();
-        let route = match (self.session.index(), route_src.as_ref()) {
+        let route = match (self.session.index(), route_src) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -1198,9 +1197,10 @@ impl eframe::App for SimGui {
         for path in dropped {
             let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
             if is_gpx {
-                match self.store.import_gpx(&path) {
+                match crate::routes::import_gpx(&mut self.store, &path) {
                     Ok(s) => {
                         self.gpx_error = None;
+                        self.note_card_commit();
                         eprintln!(
                             "imported {} | {} km, +{} m",
                             path.display(),
@@ -1210,11 +1210,6 @@ impl eframe::App for SimGui {
                     }
                     Err(e) => self.gpx_error = Some(e),
                 }
-                // A GPX drop is the one thing that moves this store **behind** the executor, so it
-                // is reported as the store revision it is: the next pass arms the domain's owed
-                // refresh and the executor re-reads the whole catalog — routes,
-                // their retention metas, the trips that group them and the rides beside them.
-                self.host.note_store_commit();
             }
         }
 
