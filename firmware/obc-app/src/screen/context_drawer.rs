@@ -787,6 +787,12 @@ impl ContextDrawerScreen {
         self.needs_base = false;
     }
 
+    /// Take on the debt from outside: this sheet **replaces the other drawer**, whose rows are still
+    /// on the panel, so its first frame has to draw the base to take them off.
+    pub(crate) fn owe_base(&mut self) {
+        self.needs_base = true;
+    }
+
     /// Begin a horizontal transition to `to`, which becomes the live page at once (so `handle` and
     /// the render key already speak about the destination) while the slide draws both.
     fn slide_to(&mut self, to: Page, now_ms: u32) {
