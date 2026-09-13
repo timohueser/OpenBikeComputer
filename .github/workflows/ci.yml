@@ -805,6 +805,29 @@ jobs:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install web demo browser runner
+        working-directory: apps/obc-web-demo/tests/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+      - name: Shipping web demo browser journey
+        id: browser-journey
+        run: npm test --prefix apps/obc-web-demo/tests/browser
+      - name: Require browser journey execution
+        if: ${{ !cancelled() }}
+        env:
+          JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
+        run: test "$JOURNEY_OUTCOME" = success
+      - name: Upload web demo browser evidence
+        if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-demo-browser-${{ github.run_attempt }}
+          path: .artifacts/web-demo/
+          if-no-files-found: error
       # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
       # the library must carry no filesystem and no native dependency. Building it for wasm32 with
       # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call

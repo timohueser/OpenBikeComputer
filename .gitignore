@@ -95,6 +95,7 @@ tools/obc.local
 # drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
 # got committed by accident (and the server mounted nothing).
 builder/app/node_modules/
+apps/obc-web-demo/tests/browser/node_modules/
 builder/app/dist/
 builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of

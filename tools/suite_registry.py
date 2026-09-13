@@ -263,6 +263,7 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
 def discover_paths(root: Path) -> list[Discovered]:
     rules = (
         ("web-test", "builder/app", ("*.test.ts", "*.test.tsx", "*.test.js")),
+        ("browser-test", "apps/obc-web-demo/tests/browser", ("*.test.js",)),
         ("python-test", "tools/tests", ("test_*.py",)),
         ("python-test", "firmware/tools/tests", ("test_*.py",)),
         ("python-test", "ops/weather/tests", ("test_*.py",)),

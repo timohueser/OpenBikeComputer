@@ -1,0 +1,12 @@
+{
+  "name": "obc-web-demo-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-demo', { recursive: true, force: true })\"",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
