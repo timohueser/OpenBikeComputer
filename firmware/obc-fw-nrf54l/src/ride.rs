@@ -733,7 +733,7 @@ impl RideExec {
     }
 }
 
-/// The GPS power state the ride wants: deep-sleep when not tracking, full-power fixes while riding, or
+/// The GPS power state the ride wants: stopped GNSS when not tracking, full-power fixes while riding, or
 /// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`SensorControl::set_power`]) only on a change.
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
@@ -1114,9 +1114,8 @@ pub(crate) async fn run_app(
         }
 
         // ── Sensor presence → warning (issue #504), real-sensor build, once ──
-        // The sensor task publishes its boot I²C probe result a moment after boot; map any chip that
-        // didn't answer to a dismissable warning card. `try_take` yields once, so this fires a single
-        // pass; an empty flag set is a no-op.
+        // The sensor task publishes once GPS responds or its startup deadline passes. Map chips
+        // absent at that point to a dismissable warning; this is not a live-availability stream.
         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
         if let Some(p) = consumer.take_presence() {
             let mut w = obc_app::WarningFlags::NONE;

@@ -318,7 +318,7 @@ The device also wakes for input, sensor data, and the watchdog guard.
   <path class="d-flow" d="M540 190 C 500 224, 420 224, 360 200" marker-end="url(#lpF)" stroke-dasharray="4 4" />
   <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:9.5px">arm the next wake, sleep again</text>
   <rect x="250" y="252" width="420" height="26" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
-  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (nothing animating · GPS asleep): just the ~10 s watchdog-feed guard tick</text>
+  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (no animation · GNSS stopped): ~10 s watchdog-feed guard</text>
 </svg>
 <figcaption>The device sleeps between events. A hardware timer generates the display COM signal without CPU work.</figcaption>
 </figure>
