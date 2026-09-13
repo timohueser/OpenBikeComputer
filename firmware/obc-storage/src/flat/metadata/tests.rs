@@ -500,20 +500,24 @@ fn invalid_metadata_or_nonfinal_heads_never_authorize_ride_policy() {
     let store = FlatStore::initialize(&disk, CARD).unwrap();
     let ride = publish(&store, ObjectKind::Ride, b"ride");
     archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
+    let allocation = store.allocate(1024).unwrap();
     store
-        .commit(&[Mutation::Put { meta: EntryMeta { flags: EntryFlags::RETAINED, ..ride }, source: PutSource::Amend }])
+        .commit(&[
+            Mutation::Put { meta: EntryMeta { flags: EntryFlags::RETAINED, ..ride }, source: PutSource::Amend },
+            Mutation::Put {
+                meta: EntryMeta {
+                    revision: Revision(2),
+                    flags: EntryFlags::RECORDING,
+                    payload_len: 0,
+                    payload_crc: 0,
+                    ..ride
+                },
+                source: PutSource::Fresh(allocation),
+            },
+        ])
         .unwrap();
     assert_eq!(write_ride(&store, CARD, store.sequence(), ride.id, 1234), Err(Error::Stale));
     assert_eq!(remove_ride(&store, CARD, store.sequence(), ride.id), Err(Error::Stale));
-    let recording = publish(&store, ObjectKind::Ride, b"recording");
-    store
-        .commit(&[Mutation::Put {
-            meta: EntryMeta { flags: EntryFlags::RECORDING, ..recording },
-            source: PutSource::Amend,
-        }])
-        .unwrap();
-    assert_eq!(write_ride(&store, CARD, store.sequence(), recording.id, 1234), Err(Error::Stale));
-    assert_eq!(remove_ride(&store, CARD, store.sequence(), recording.id), Err(Error::Stale));
     let target = publish(&store, ObjectKind::Ride, b"finalized");
     let head = store.entries().find(|entry| entry.kind == ObjectKind::Metadata).unwrap();
     store.commit(&[Mutation::Remove { id: head.id, revision: head.revision }]).unwrap();

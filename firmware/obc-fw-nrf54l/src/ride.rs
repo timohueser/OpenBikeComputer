@@ -1431,14 +1431,20 @@ pub(crate) async fn run_app(
                     //
                     // A full request queue is not an answer: the effect simply was not taken this
                     // pass, so the domain re-offers it.
-                    CatalogEffect::ExpireObject { token, object, scope } => {
+                    CatalogEffect::ExpireObject { token, object, kind, scope } => {
                         // No App transition can occur between this policy admission and the writer's reply.
-                        let result = if app.retention_expiry_due(object, scope) {
+                        let result = if app.retention_expiry_due(object, kind, scope) {
                             let id = obc_storage::flat::ObjectId(object);
-                            let request = if app.route_ids().contains(&object) {
-                                crate::flat_store::Request::ExpireRoute { id, scope }
-                            } else {
-                                crate::flat_store::Request::ExpireRide { id, scope }
+                            let request = match kind {
+                                obc_app::catalog_state::CatalogObjectKind::Route => {
+                                    crate::flat_store::Request::ExpireRoute { id, scope }
+                                }
+                                obc_app::catalog_state::CatalogObjectKind::Ride => {
+                                    crate::flat_store::Request::ExpireRide { id, scope }
+                                }
+                                obc_app::catalog_state::CatalogObjectKind::Trip => {
+                                    unreachable!("retention does not expire trips")
+                                }
                             };
                             metadata_call(request).await.map_err(catalog_metadata_error)
                         } else {

@@ -69,20 +69,26 @@ fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
 fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_into() {
     let owner = HostStore::memory().unwrap();
     let retained = seed(&owner);
-    let recording = seed(&owner);
     let replaced = seed(&owner);
-    for head in [retained, recording, replaced] {
+    for head in [retained, replaced] {
         receipt(&owner, head);
     }
     {
         let owner = owner.0.lock().unwrap();
         let store = owner.ready().unwrap();
+        let allocation = store.allocate(1024).unwrap();
         store
             .commit(&[
                 Mutation::Put { meta: EntryMeta { flags: EntryFlags::RETAINED, ..retained }, source: PutSource::Amend },
                 Mutation::Put {
-                    meta: EntryMeta { flags: EntryFlags::RECORDING, ..recording },
-                    source: PutSource::Amend,
+                    meta: EntryMeta {
+                        revision: Revision(2),
+                        flags: EntryFlags::RECORDING,
+                        payload_len: 0,
+                        payload_crc: 0,
+                        ..retained
+                    },
+                    source: PutSource::Fresh(allocation),
                 },
             ])
             .unwrap();

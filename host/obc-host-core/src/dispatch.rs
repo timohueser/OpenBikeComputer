@@ -24,7 +24,7 @@
 //! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
 //! [`ActiveRouteSession::sync`] and lends it to both.
 
-use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogObjectKind, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -525,14 +525,14 @@ impl HostLoop {
                 feed_rides(app, rides, &mut NoTrace);
                 CatalogOutcome::CatalogRead { token, scope }
             }
-            CatalogEffect::ExpireObject { token, object, scope } => {
-                if !app.retention_expiry_due(object, scope) {
+            CatalogEffect::ExpireObject { token, object, kind, scope } => {
+                if !app.retention_expiry_due(object, kind, scope) {
                     return CatalogOutcome::Failed { token, error: CatalogError::Stale };
                 }
-                let result = if app.route_ids().contains(&object) {
-                    routes.expire_route(object, scope)
-                } else {
-                    rides.expire_ride(object, scope)
+                let result = match kind {
+                    CatalogObjectKind::Route => routes.expire_route(object, scope),
+                    CatalogObjectKind::Ride => rides.expire_ride(object, scope),
+                    CatalogObjectKind::Trip => Err(CatalogError::Unsupported),
                 };
                 match result {
                     Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
