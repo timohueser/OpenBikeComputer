@@ -209,7 +209,7 @@ the 32 KB below it belongs to [`obc-boot`](../obc-boot/README.md), which must be
 chip once (`cd ../obc-boot && cargo run --release`; it survives every app reflash, since
 probe-rs only writes each ELF's own address range). A device without it shows no LED
 blink and never boots; the recovery recipe is in that README. Everything below — flashing,
-RTT, `cargo rtt`, the flash-twice retry quirk — then works exactly as before.
+RTT and application flashing use the shared board runner described below.
 
 From this crate directory (it's a standalone crate built for `thumbv8m.main-none-eabihf`;
 `cargo run` flashes + streams defmt/RTT over the on-board J-Link via probe-rs):
@@ -279,6 +279,45 @@ this bench's store gets phase one: initialize, then every measurement above, end
 own `recovered_ride`, §7.2's ride end, and the whole ride read back byte for byte against the payload
 phase one generated. A third reset finds no ride recording and starts phase one over.
 
+### Board connection diagnostics and recovery
+
+Use `obc board doctor` before reflashing a board that appears unresponsive. It reports
+probe-rs version, connected probes, serial ports, serial-port owners, active probe-rs
+processes, and native USB enumeration. It does not reset the device or send UART commands.
+The command supports macOS and Linux; Linux uses `lsusb` for native USB enumeration.
+Both hosts use `lsof` to identify open sessions.
+
+All `obc` flash/debug/RTT commands and both standalone Cargo runners use
+[`tools/board.py`](../../tools/board.py). The runner selects `nRF54LM20A`, prints the
+ELF path and SHA-256, and holds one per-user lock across worktrees for the duration of
+flash, reset, or RTT. A busy lock reports its owner instead of killing it. Direct
+probe-rs and SEGGER commands do not share this lock; stop those sessions first.
+This harness supports one board session at a time, including when multiple probes are attached.
+Select a probe with `PROBE_RS_PROBE=VID:PID:SERIAL` or `obc board … --probe VID:PID:SERIAL`.
+Probe selection is noninteractive, so an ambiguous selection fails instead of waiting for input.
+
+`obc rtt [ELF] --log /tmp/obc-rtt.log` attaches without compiling, programming, or
+resetting. Use the exact ELF for the installed image, including its compile-time
+`DEFMT_LOG` setting. If no ELF is given, the command uses this worktree's last release
+build. `cargo rtt` can rebuild before attaching; it never programs the device, so a
+rebuilt ELF can be the wrong decoder for the installed image.
+
+| Symptom | Check and recovery |
+| --- | --- |
+| Probe busy / exclusive-access error | Use `obc board doctor`. Stop the owning RTT, debugger, or programmer session with Ctrl-C. Wait for it to exit, then retry. Do not kill all probe processes. |
+| Flash read-back mismatch | Keep verification enabled and double buffering disabled. Preserve the failing output and ELF. Do not use an erase-all or run an unverified image. |
+| RTT stops or cannot decode | Confirm the ELF and firmware version match. Close and reattach RTT. Use `obc board reset` only when restarting the application is intended; an idle device may legitimately produce no logs. |
+| VCOM writes succeed but commands have no effect | J4 carries VCOM. Confirm the `debug-uart` image, correct CDC port, baud, and Board Configurator HWFC OFF. Close any other serial owner. Open the port once for the session. A write return value alone does not prove delivery. |
+| VCOM remains unresponsive after those checks | Power-cycle the DK/interface MCU. A target reset does not reset the J-Link bridge. With both cables connected, unplugging only one may leave the board powered. |
+| J3 device is absent from host USB enumeration | J3 is the separate native device cable, VID:PID `1209:0001`. Check the RTT VBUS/device-plane lines, then reconnect J3. J4 serial ports do not prove J3 is working. |
+| J3 enumerates but the application cannot connect | Close the desktop/browser session that owns the interface. Reconnect J3 and open a fresh protocol session. Enumeration alone is not proof that a HELLO or data transfer works. Do not automatically replay a write after a disconnect. |
+
+The installed probe-rs version and the DK's interface firmware are separate components.
+probe-rs 0.32.0 adds RTT fixes, but its release notes do not claim to fix the nRF54LM20A
+flashing issue. Keep the programming workaround after an upgrade. The older macOS
+64-byte VCOM limitation documented for SAM3U-based J-Link OB probes is not evidence
+that the nRF5340-based bridge on this DK needs that workaround.
+
 #### Serial map ingest — putting a real map on the card
 
 Before either phase, the bench advertises on the DK's VCOM UART for ten seconds. If a host answers
@@ -303,24 +342,23 @@ python3 tools/bench_ingest.py --port /dev/cu.usbmodem*133 \
     --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
     --kind map --name monaco.obcm
 
-# shell 2, from this directory. The committed runner is `probe-rs run --chip nRF54LM20A --verify`,
-# so this flashes WITH the RRAM read-back check .cargo/config.toml explains — keep it.
-pkill probe-rs
+# shell 2, from this directory. Stop an existing RTT session with Ctrl-C first.
+# The shared runner uses verified programming with double buffering disabled.
 cargo run --release --bin flat_store_bench
 ```
 
-`--verify` is not optional on this part: probe-rs 0.31's program path corrupts the first write after
-a code change often enough to matter, and on an RRAM device that is a boot HardFault at a random PC.
-The check turns it into an immediate, loud failure — if it trips, just run it again. (There is no
-`cargo run --verify`; `--verify` lives in the runner string, not in cargo's argument list. To pass
-anything to probe-rs from cargo it would have to be `cargo run -- …`.)
+The board runner keeps `--verify` enabled and passes `--disable-double-buffering`.
+The latter avoids concurrent debugger RAM writes during RRAM programming. Upstream
+[probe-rs issue #3775](https://github.com/probe-rs/probe-rs/issues/3775) reports this
+workaround for nRF54LM20A/J-Link corruption. A failed verification stops the command;
+the runner does not retry it or start an unverified image.
 
-If you would rather flash and attach as two steps — reflashing without dropping an RTT session, say
-— run probe-rs directly and keep the flag:
+To download and attach separately, from the repository root:
 
 ```bash
-probe-rs download --chip nRF54LM20A --verify target/thumbv8m.main-none-eabihf/release/flat_store_bench
-probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+obc board download firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/flat_store_bench
+obc board reset
+obc rtt firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/flat_store_bench
 ```
 
 `sim-monaco`'s `monaco.obcm` is 718,336 B, which is about **63 s** at the wire's default 115,200
@@ -775,8 +813,8 @@ confirmed on glass through 2026-08-07 — but against the v1 plane. **Enumeratio
 run**, because the plane under it is a different one.
 
 1. With **J3 empty**, flash `cargo run --release` over **J4** — the plain default build; no feature
-   flag selects the plane any more (remember the flash-twice quirk and keep `--verify`; retry 2–3×
-   if probe-rs errors).
+   flag selects the plane any more. The shared runner verifies each flash with double buffering
+   disabled. If it fails, use `obc board doctor` before another attempt.
 2. **The board must reach the ride loop and stay there.** RTT shows
    `usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in`, then the map
    renders and the session keeps logging. No `DAP FAULT`, no reset loop. This is the #936

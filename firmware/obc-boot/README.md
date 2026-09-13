@@ -82,13 +82,13 @@ cargo build --release --features rtt
 
 ```sh
 cd firmware/obc-boot
-cargo run --release        # probe-rs run --chip nRF54LM20A --verify  (or: obc flash-boot)
+cargo run --release        # shared verified board runner (or: obc flash-boot)
 ```
 
-**The flash-twice DK quirk applies here too:** the first probe-rs flash after
-powering the DK up often fails (or `--verify` reports a mismatch) — just run the
-command again. `--verify` is what turns the silent RRAM corruption into a loud
-failure, so a retry is always safe.
+The shared runner verifies each flash with double buffering disabled. If a flash
+fails, preserve the output and use `obc board doctor` before another attempt. See
+the [board connection guide](../obc-fw-nrf54l/README.md#board-connection-diagnostics-and-recovery)
+for diagnostics and recovery.
 
 After flashing, a power cycle should show one short LED0 blink (the bootloader)
 and then the app booting exactly as before.
