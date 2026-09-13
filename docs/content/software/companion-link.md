@@ -291,11 +291,14 @@ card, object, revision, length and CRC, then commits and reads back the proof. A
 the original timestamp. A lost reply can be retried from the durable archive without starting a
 new countdown.
 
-This proof initially has no expiry timestamp. The companion does not send it yet, and the board
-continues to report rides unsynced and protected from automatic expiry. Live integration will let
-the existing retention policy start the countdown when the clock is trusted. The
+This proof initially has no expiry timestamp. The board validates it before the retention policy
+starts the countdown on a trusted clock. Only an existing exact proof can receive that first stamp;
+a duplicate cannot reset it. A successful write becomes visible through a complete catalog reload.
+The policy covers up to 128 ride inventory records, including rides outside the 32-entry menu.
+Unknown clock, recording, missing proof and failed reads protect rides from automatic expiry.
+The companion does not send receipts yet. The
 [archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
-the remaining integration work.
+the remaining client and device acceptance work.
 
 The board and flat-store host persist route-use stamps in a card metadata object.
 Each row binds to the card and the exact source revision, length, and CRC. The store replaces

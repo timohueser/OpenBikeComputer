@@ -1,9 +1,9 @@
 # Card retention metadata
 
 This contract defines the payload of flat-store kind `9` (`Metadata`). The board and flat-store
-host use route rows for usage stamps and route expiry. `RetentionMachine` remains the only
-retention policy owner. ARCHIVE_RIDE persists exact Ride archive proof. The board continues to
-report rides unsynced until live proof loading and retention execution are integrated.
+host use route rows for usage stamps and ride rows for archive proof and retention stamps.
+`RetentionMachine` remains the only retention policy owner. ARCHIVE_RIDE persists exact Ride
+archive proof; a later trusted-clock stamp starts the countdown.
 
 ## Ownership and identity
 
@@ -39,15 +39,15 @@ There is no padding or trailing data after the last row.
 | 8 | 8 | nonzero source `Revision` |
 | 16 | 8 | source payload length |
 | 24 | 4 | source payload CRC-32 |
-| 28 | 4 | UTC seconds: last route use or confirmed ride archive time |
+| 28 | 4 | UTC seconds: last route use or first trusted ride retention stamp |
 | 32 | 2 | source kind: route `1` or finalized ride `3` |
 | 34 | 1 | route retention selection; zero for a ride |
 | 35 | 5 | zero |
 
 Route retention values are `0` forever, `1` one day, `2` one week, `3` two weeks,
 `4` one month, and `5` two months. Zero timestamps mean no recorded time; a zero ride
-time cannot authorize expiry. Absence of a ride row means unsynced. Policy integration
-must preserve that protection.
+time cannot authorize expiry. Absence of a ride row means unsynced. An existing zero ride
+row proves archive possession but has no running retention clock.
 
 Rows have strictly increasing object IDs, with no duplicates. At most 64 route rows and
 128 ride rows fit in 7,712 bytes. The 32-entry ride menu does not limit reconciliation.
@@ -82,14 +82,19 @@ A payload or catalog-body failure before publication cancels the allocation and 
 An uncertain final gate write or synchronization, or a failed committed readback, returns
 `RemountRequired`. The generic store blocks mutations and fresh catalog reads. No durable success
 is reported. Existing pinned readers can finish. Remount can recover the old or the complete new
-generation; identity and payload CRC must validate before any row becomes policy evidence.
+generation. Policy reads validate identity and payload CRC, reconcile against the complete catalog,
+and complete a media sync barrier before exposing any rows. A live-medium remount can expose an
+unflushed gate; a failed barrier fences the store and returns no policy rows.
 Metadata publication checks read-handle capacity before commit. Ordinary capacity pressure returns
 `Busy` without publication or a remount fence.
 
 ## Runtime admission
 
-The runtime publishes a loaded scope only after its catalog and route metadata reads succeed.
-The scope contains the complete StoreId and catalog sequence. A route stamp or automatic removal
+The runtime publishes a loaded scope only after its complete catalog and metadata reads succeed.
+Only current finalized Ride heads with flags NONE enter the 32 full summaries and 128 compact
+retention records. Malformed summaries, failed scans and inventory overflow refuse the refresh.
+Proof updates both projections, including zero timestamps and rides outside the visible menu.
+The scope contains the complete StoreId and catalog sequence. A metadata stamp or automatic removal
 carries that captured scope unchanged to the serialized writer. The writer checks it before mutation,
 and metadata publication checks its captured metadata head and exact source row.
 
@@ -112,6 +117,15 @@ sequence. It repeats the media sync barrier before acknowledgment, because a liv
 can read an unflushed gate. A failed barrier fences mutations until remount. Invalid or unreadable metadata cannot become an empty default.
 
 A Ride row records archive possession independently of its timestamp. Zero starts no countdown.
-The current board still reports all rides unsynced. Live proof loading, RetentionMachine clock
-stamping and scoped ride expiry remain pending; a future stamp operation must require an existing
-exact proof and must not create one.
+`WriteRideMetadata` requires a nonzero trusted timestamp from RetentionMachine and an existing
+exact Ride proof row. It may fill only a zero timestamp. It cannot create proof, recreate a
+reconciled-away row, or overwrite a nonzero timestamp. A duplicate stamp completes a durability
+barrier without a new commit. The first stamp can proceed for a finalized ride while another ride
+records; recording still blocks automatic removal.
+
+Ride removal requires the admitted policy scope, a current finalized Ride head and a durable
+nonzero proof. The executor checks those facts but does not choose the clock or expiry deadline.
+The existing hourly sweep, recording protection and one-removal-per-pass limit remain in force.
+The FlatRideStore host adapter shares HostStore with routes and uses the same metadata operations.
+A mismatched card or catalog scope cannot publish a combined authoritative snapshot. This adapter
+refuses recording operations; the native recorder and its runtime conversion remain separate.
