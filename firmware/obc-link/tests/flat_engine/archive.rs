@@ -158,12 +158,33 @@ fn receipt_failure_retry_and_uncertain_readback_use_the_global_fence() {
         } else {
             assert!(!answer.is_error());
         }
+        if matches!(fault, Some((MediaOp::Sync, _))) {
+            // A live-medium mount sees the pending gate, even though it is not durable yet.
+            drop(device);
+            device = boot(&media);
+            assert_eq!(rows(&device)[0].timestamp, 0);
+            media.fault_next(MediaOp::Sync);
+            let unconfirmed = Answer::of(device.control(&request).answer());
+            expect_error(&unconfirmed, ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE);
+            assert!(media.fired());
+            drop(device);
+            device = boot(&media);
+            let sequence = device.store.sequence();
+            let before = disk.ledger().len();
+            assert!(!Answer::of(device.control(&request).answer()).is_error());
+            assert_eq!(device.store.sequence(), sequence);
+            let trace = disk.ledger();
+            assert_eq!(trace[before..].iter().filter(|(_, op, _)| *op == MediaOp::Sync).count(), 1);
+            assert!(!trace[before..].iter().any(|(_, op, _)| *op == MediaOp::Write));
+        }
         drop(device);
         disk.reboot();
         let mut reopened = boot(&disk);
+        assert_eq!(rows(&reopened)[0].timestamp, 0, "proof survives power loss before another receipt");
+        let sequence = reopened.store.sequence();
         let answer = Answer::of(reopened.control(&request).answer());
         assert!(!answer.is_error());
-        assert_eq!(rows(&reopened)[0].timestamp, 0);
+        assert_eq!(reopened.store.sequence(), sequence, "reopen retry does not create a replacement proof");
         (syncs, reads)
     }
     let (syncs, reads) = run(None);

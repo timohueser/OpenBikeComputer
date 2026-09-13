@@ -98,8 +98,10 @@ not start an expiry countdown. Invalid metadata is not absence. A failed or unsu
 cannot report success. An uncertain publication or failed committed readback fences all mutations
 until remount.
 
-An exact existing proof returns its original timestamp without another write, including when the
-timestamp is zero. A duplicate cannot restart the clock. After a lost response or disconnect,
+An exact existing proof returns its original timestamp without another payload write or commit,
+including when the timestamp is zero. It repeats the media sync barrier before acknowledgment.
+This makes a proof durable even when a live-medium remount read a gate left pending by a failed
+final sync. A failed repeat barrier fences mutations until remount. A duplicate cannot restart the clock. After a lost response or disconnect,
 the client can retry from its revalidated archive. If the first write committed, the device returns
 the stored proof; otherwise it must finish a new write or fail. A source that has since vanished
 or changed fails without recreating any object or proof.

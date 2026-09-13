@@ -508,6 +508,11 @@ pub fn archive_ride<D: BlockDevice>(
     let mut image = owner.load(store, &mut bytes)?;
     image.reconcile(store)?;
     if let Some(row) = image.rows().find(|row| row.matches(target)) {
+        // A live-medium remount can read a gate whose previous final sync failed.
+        if store.device().sync().is_err() {
+            store.require_remount();
+            return Err(Error::RemountRequired);
+        }
         return Ok(row.timestamp);
     }
     if !store.mode().writable() {
