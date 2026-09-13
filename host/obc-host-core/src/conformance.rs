@@ -106,7 +106,7 @@ pub fn track_lifecycle(tracks: &mut dyn TrackRepository) {
     assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "no ride → nothing to commit");
 
     // A session opens a log, and the log takes what the app stages into it.
-    tracks.open(1, Some("ride"));
+    assert!(tracks.open(1, Some("ride")));
     assert!(tracks.append(sample(0)), "an open ride takes the sample it is handed");
 
     // The finalize closes it and answers with the identity it committed.
@@ -115,7 +115,7 @@ pub fn track_lifecycle(tracks: &mut dyn TrackRepository) {
     assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "and closes the log");
 
     // The next ride is a fresh object, and a discard leaves nothing behind.
-    tracks.open(2, Some("ride"));
+    assert!(tracks.open(2, Some("ride")));
     assert!(tracks.append(sample(1_000)));
     assert!(tracks.discard(), "a discard of an open ride succeeds");
     // A close with nothing open is not a failure to retry. The goal state holds either way, and a
