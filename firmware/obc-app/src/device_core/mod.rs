@@ -22,6 +22,7 @@
 //!   protocols live beside their owner: `catalog_state`, `retention`, `recorder`, `navigator`,
 //!   `settings`, `weather`, `dfu` and `ble`. There is deliberately **no** combined `Effect`,
 //!   `Outcome` or `Intent` enum anywhere.
+//!
 //! …the one deterministic frame every platform runs (#1438):
 //!
 //! - `pass` — `PassInputs` in, fourteen fixed stages, `PassPlan` out. No loop, no re-entry, no

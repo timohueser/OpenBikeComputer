@@ -644,17 +644,29 @@ async fn weather_request_policy_change() {
     }
 }
 
+/// A disconnect can cancel the mutex wait. Preserve the consumed request wake for the next phase.
+struct ForgetWakeGuard(bool);
+
+impl Drop for ForgetWakeGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            FORGET_BOND.signal(());
+        }
+    }
+}
+
 /// Remove durable keys before host keys. Controller updates have no receipt in trouble-host.
 async fn forget_bond(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     store: &core::cell::RefCell<ObjectStore>,
     shared: &SharedStoreMutex,
 ) {
+    let mut wake = ForgetWakeGuard(true);
+    let mut guard = shared.lock().await;
+    // No await after admission: disconnect cannot interrupt either key removal or its receipt.
     let request = state::begin_bond_removal();
-    let result = {
-        let mut guard = shared.lock().await;
-        store.borrow_mut().clear_bond(&mut guard)
-    };
+    let result = store.borrow_mut().clear_bond(&mut guard);
+    drop(guard);
     let result = result.and_then(|()| {
         let identity = stack.with_bond_information(|bonds| bonds.first().map(|b| b.identity));
         if let Some(identity) = identity {
@@ -674,6 +686,7 @@ async fn forget_bond(
         info!("ble: bond result {:?}", defmt::Debug2Format(&outcome));
         state::finish_bond_removal(outcome);
     }
+    wake.0 = false;
 }
 
 /// The per-connection control watcher (#455): rides the background `join4` beside the serve loop
