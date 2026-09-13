@@ -107,8 +107,9 @@ before it processes another App transition. Rider-requested deletion remains a s
 
 ARCHIVE_RIDE inserts a Ride row with timestamp zero only after the request matches the current
 finalized source tuple. It uses the same bounded workspace, atomic replacement and committed
-readback as route metadata. An exact existing row is a read-only duplicate and preserves its
-original timestamp. Invalid or unreadable metadata cannot become an empty default.
+readback as route metadata. An exact existing row preserves its original timestamp and catalog
+sequence. It repeats the media sync barrier before acknowledgment, because a live-medium remount
+can read an unflushed gate. A failed barrier fences mutations until remount. Invalid or unreadable metadata cannot become an empty default.
 
 A Ride row records archive possession independently of its timestamp. Zero starts no countdown.
 The current board still reports all rides unsynced. Live proof loading, RetentionMachine clock

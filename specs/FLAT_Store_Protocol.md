@@ -727,7 +727,10 @@ fences further mutations until remount.
 
 The hook validates and reconciles the card metadata, then inserts the exact Ride row with timestamp
 zero through an atomic metadata replacement and readback. An exact existing row returns its stored
-timestamp without writing or changing the catalog sequence. It MUST NOT restart the countdown.
+timestamp without writing payload or changing the catalog sequence. Before acknowledging a
+duplicate, the hook MUST complete a media sync barrier: a live-medium remount can read a gate whose
+previous final sync failed. A failed duplicate barrier fences mutations until remount and returns
+no success. A duplicate MUST NOT restart the countdown.
 The serialized storage writer owns the whole operation; it does not call back into App or read a
 client clock. A zero timestamp records possession only. RetentionMachine owns the later first
 trusted-clock stamp and expiry.
