@@ -60,6 +60,9 @@ pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &m
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
     app.set_rides(rides.catalog());
+    if let Some(records) = rides.retention_inventory() {
+        app.set_ride_retention_inventory(records);
+    }
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
@@ -416,7 +419,7 @@ impl HostLoop {
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
         if let Some(effect) = plan.effects.retention.take() {
-            let outcome = serve_retention(effect, routes);
+            let outcome = serve_retention(effect, routes, rides);
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
@@ -515,8 +518,17 @@ impl HostLoop {
                         }
                     }
                 };
-                rides.refresh();
+                let ride_scope = match rides.refresh_metadata() {
+                    Ok(scope) => scope,
+                    Err(error) => return CatalogOutcome::Failed { token, error: catalog_metadata_error(error) },
+                };
                 trips.rescan();
+                if routes.store_scope() != scope
+                    || rides.store_scope() != ride_scope
+                    || ride_scope.is_some_and(|ride_scope| Some(ride_scope) != scope)
+                {
+                    return CatalogOutcome::Failed { token, error: CatalogError::Stale };
+                }
                 feed_routes(app, routes, &mut NoTrace);
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
@@ -524,13 +536,15 @@ impl HostLoop {
                 CatalogOutcome::CatalogRead { token, scope }
             }
             CatalogEffect::ExpireObject { token, object, scope } => {
-                if !app.route_ids().contains(&object) {
-                    return CatalogOutcome::Failed { token, error: CatalogError::Unsupported };
-                }
                 if !app.retention_expiry_due(object, scope) {
                     return CatalogOutcome::Failed { token, error: CatalogError::Stale };
                 }
-                match routes.expire_route(object, scope) {
+                let result = if app.route_ids().contains(&object) {
+                    routes.expire_route(object, scope)
+                } else {
+                    rides.expire_ride(object, scope)
+                };
+                match result {
                     Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
                     Err(error) => CatalogOutcome::Failed { token, error },
                 }
@@ -791,14 +805,30 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
 }
 
 /// Report only the repository's typed persistence result.
-fn serve_retention(effect: RetentionEffect, routes: &mut dyn RouteRepository) -> RetentionOutcome {
+fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> CatalogError {
+    if error == obc_app::retention::RetentionError::RemountRequired {
+        CatalogError::RemountRequired
+    } else {
+        CatalogError::Unreadable
+    }
+}
+
+fn serve_retention(
+    effect: RetentionEffect,
+    routes: &mut dyn RouteRepository,
+    rides: &mut dyn RideRepository,
+) -> RetentionOutcome {
     let token = effect.token();
-    match (effect, routes.write_metadata(effect)) {
+    let result = match effect {
+        RetentionEffect::WriteRouteMetadata { .. } => routes.write_metadata(effect),
+        RetentionEffect::WriteRideMetadata { .. } => rides.write_metadata(effect),
+    };
+    match (effect, result) {
         (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
             RetentionOutcome::RouteMetadataWritten { token, id }
         }
+        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => RetentionOutcome::RideMetadataWritten { token, id },
         (_, Err(error)) => RetentionOutcome::Failed { token, error },
-        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
     }
 }
 
@@ -1187,3 +1217,7 @@ mod tests {
 
 #[cfg(test)]
 mod planner_tests;
+
+#[cfg(test)]
+#[path = "dispatch_ride_retention_tests.rs"]
+mod ride_retention_tests;

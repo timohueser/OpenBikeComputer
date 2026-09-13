@@ -265,7 +265,7 @@ impl RouteRepository for FlatRouteStore {
 #[cfg(test)]
 mod tests;
 
-fn scope<D: obc_storage::flat::BlockDevice>(
+pub(crate) fn scope<D: obc_storage::flat::BlockDevice>(
     store: &obc_storage::flat::FlatStore<D>,
 ) -> obc_app::device_core::StoreRevision {
     obc_app::device_core::StoreRevision {
@@ -274,7 +274,7 @@ fn scope<D: obc_storage::flat::BlockDevice>(
     }
 }
 
-fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
+pub(crate) fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
     use obc_app::retention::RetentionError as E;
     use obc_storage::flat::metadata::Error;
     match error {

@@ -33,7 +33,9 @@
 pub mod conformance;
 mod dispatch;
 pub mod flat_map;
+mod flat_rides;
 mod flat_routes;
+pub use flat_rides::FlatRideStore;
 pub mod flat_store;
 pub use flat_routes::FlatRouteStore;
 mod frame;

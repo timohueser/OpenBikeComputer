@@ -1433,15 +1433,14 @@ pub(crate) async fn run_app(
                     // pass, so the domain re-offers it.
                     CatalogEffect::ExpireObject { token, object, scope } => {
                         // No App transition can occur between this policy admission and the writer's reply.
-                        let result = if !app.route_ids().contains(&object) {
-                            Err(CatalogError::Unsupported)
-                        } else if app.retention_expiry_due(object, scope) {
-                            metadata_call(crate::flat_store::Request::ExpireRoute {
-                                id: obc_storage::flat::ObjectId(object),
-                                scope,
-                            })
-                            .await
-                            .map_err(catalog_metadata_error)
+                        let result = if app.retention_expiry_due(object, scope) {
+                            let id = obc_storage::flat::ObjectId(object);
+                            let request = if app.route_ids().contains(&object) {
+                                crate::flat_store::Request::ExpireRoute { id, scope }
+                            } else {
+                                crate::flat_store::Request::ExpireRide { id, scope }
+                            };
+                            metadata_call(request).await.map_err(catalog_metadata_error)
                         } else {
                             Err(CatalogError::Stale)
                         };
@@ -1599,13 +1598,15 @@ pub(crate) async fn run_app(
                 if let Some(effect) = exec.effects.retention.take() {
                     use obc_app::retention::{RetentionEffect, RetentionOutcome};
                     let token = effect.token();
-                    let result = metadata_call(crate::flat_store::Request::WriteRouteMetadata { effect }).await;
+                    let result = metadata_call(crate::flat_store::Request::WriteMetadata { effect }).await;
                     let outcome = match (effect, result) {
                         (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
                             RetentionOutcome::RouteMetadataWritten { token, id }
                         }
+                        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => {
+                            RetentionOutcome::RideMetadataWritten { token, id }
+                        }
                         (_, Err(error)) => RetentionOutcome::Failed { token, error },
-                        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
                     };
                     RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
                 }

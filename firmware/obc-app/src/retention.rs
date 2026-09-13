@@ -782,8 +782,10 @@ impl RetentionMachine {
         *self = Self::new();
         self.ops = ops;
     }
-    pub(crate) fn route_due(&mut self, id: crate::CatalogObjectId, view: &RetentionView) -> bool {
-        view.now_utc.is_some() && !view.recording && self.still_due(SweepKind::DeleteRoute, id, view)
+    pub(crate) fn object_due(&mut self, id: crate::CatalogObjectId, view: &RetentionView) -> bool {
+        view.now_utc.is_some()
+            && !view.recording
+            && (self.still_due(SweepKind::DeleteRoute, id, view) || self.still_due(SweepKind::DeleteRide, id, view))
     }
 
     /// The next **expiry intent** for `CatalogMachine`, with the whole policy re-derived from live
