@@ -308,12 +308,8 @@ mod terrain_tests {
                 &mut (),
             );
             if let Some(outcome) = host.outcomes().navigator.take() {
-                if matches!(outcome, NavigatorOutcome::Acquired { .. }) && replace.is_some() {
-                    session
-                        .map
-                        .planner_map()
-                        .replace_from_file(std::fs::File::open(replace.unwrap()).unwrap())
-                        .unwrap();
+                if let Some(path) = replace.filter(|_| matches!(outcome, NavigatorOutcome::Acquired { .. })) {
+                    session.map.planner_map().replace_from_file(std::fs::File::open(path).unwrap()).unwrap();
                     replaced = true;
                 }
                 source_changed |= matches!(
