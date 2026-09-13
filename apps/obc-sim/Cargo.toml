@@ -10,6 +10,7 @@ description = "Desktop simulator for OBCM maps using embedded-graphics (same ren
 external-fixtures = []
 
 [dependencies]
+obc-storage = { path = "../../firmware/obc-storage" }
 obc-fixtures = { path = "../../host/obc-fixtures" }
 obc-reader = { path = "../../firmware/obc-reader" }
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary

@@ -234,8 +234,7 @@ Settled frames neither reopen the source nor scan the catalog.
 
 The browser card remains volatile. It allocates memory in 16 KiB pages; released pages remain
 available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
-route uses one page instead of a retained byte vector. Native ride recording keeps its existing
-host repository and files.
+route uses one page instead of a retained byte vector.
 
 Native weather uses the same card owner as the map, routes and trips. Files, generated demos and
 HTTP responses are import inputs. The [weather adapter](src:host/obc-host-core/src/flat_weather.rs)
@@ -257,7 +256,7 @@ Catalog deletion retains the selected object kind, so equal numeric IDs in separ
 cannot redirect a removal. The domain removes a trip's member routes before the trip object.
 A failed member stops that cascade. The trip and remaining members stay stored; an explicit retry
 can pass members that were already removed. Catalog scope is published only after complete
-route, metadata and trip reads from one unchanged card and catalog sequence.
+route, metadata, trip and ride reads from one unchanged card and catalog sequence.
 
 The shared host dispatcher retries a recording open until the repository confirms that the object exists.
 While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.
@@ -269,7 +268,7 @@ the close. Discard bypasses the drain and clears staging after confirmed removal
 If opening keeps failing while Save has staged samples, the samples and Save request stay pending.
 An empty ride with no object can still end without a saved ride.
 
-The board accepts a complete staged batch together with its precise App totals. If the remaining
+The board and native card recorder accept a complete staged batch together with its precise App totals. If the remaining
 buffer cannot hold the batch, it accepts none of it and checkpoints the previous accepted boundary.
 A periodic checkpoint also uses that boundary while samples remain staged. With no staged samples,
 a checkpoint can capture newer barometric totals without adding a GPS point. A failed checkpoint
@@ -277,7 +276,28 @@ replays its original bytes, totals and start time before it can accept any newer
 
 Host adapters can still report a partial append. An adapter without a recovery journal reports an
 unsupported checkpoint. Recorder then continues the pending work without claiming that the ride is
-recoverable. Native card recording and recovery remain a separate integration step.
+recoverable.
+
+Native recording and the saved-ride catalog share the same card owner as map, routes, trips and
+weather. The [physical recorder](src:host/obc-host-core/src/flat_recorder.rs) reserves one recording
+object and keeps only the bounded sample delta, CRC, continuation and final footer in memory.
+Checkpoints write the real tail journal. Save journals one footer, then clears the recording flag
+on that exact object. GPX export follows the successful card commit; an export failure does not
+reverse Save. Folder ride files are import inputs for a new session, not live storage or sync proof.
+
+Before native startup offers recovery, it validates the recording key, sample boundary and
+[shared continuation bytes](src:firmware/obc-app/src/recorder/continuation.rs), then confirms the
+observed card state with a durability barrier. Continue attaches to the same object and rebases
+new sample times from the current pass clock. It retains the original trusted UTC start and the
+accepted sensor and barometric totals. Recovery uses bounded journal reads and takes no normal
+object-reader slot.
+
+A recovered footer is a pending Save, not a resumable ride. Startup completes its exact catalog
+amendment before feeding the App or saved-ride catalog. Failure stops startup; it cannot offer
+Continue or append another footer. An uncertain catalog write or failed recovery confirmation
+fences every writer on the shared owner until close and reopen. Damaged-ride removal checks the
+captured card, object, revision and recording flag under that owner before mutation. Only a real
+archive receipt can grant sync proof; the simulator has no direct synced-state control.
 The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
 
 ### Semantic ports

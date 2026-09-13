@@ -27,6 +27,8 @@
 //! sensor summary accrue here (#1398 R1), so a session edge is the only thing that can zero them
 //! and the footer is read from the machine that minted the close.
 
+pub mod continuation;
+
 use obc_elevation::DeadBand;
 use obc_map_scene::ground_dist_m;
 use obc_ports::{Fix, TrackPoint};
@@ -876,6 +878,11 @@ impl RecorderMachine {
     }
 
     // ══ The world → the ride ═══════════════════════════════════════════════════════════════════
+
+    /// Current pass clock used to attach a recovered physical recording.
+    pub fn now_ms(&self) -> u32 {
+        self.sensor_now_ms
+    }
 
     /// Record the ride-clock ms of the current pass (see [`sensor_now_ms`](Self::sensor_now_ms)), so
     /// the `live_*_display` accessors judge freshness on the same clock samples record on.

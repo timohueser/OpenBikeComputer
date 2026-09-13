@@ -4,7 +4,9 @@ use crate::{
     map_file::{LoadedMap, MapSource},
     Args, Injection,
 };
-use obc_host_core::{flat_store::HostStore, FlatRouteStore, FlatTripStore, RouteRepository};
+use obc_host_core::{
+    flat_store::HostStore, FlatRideRecorder, FlatRideStore, FlatRouteStore, FlatTripStore, RouteRepository,
+};
 use std::path::{Path, PathBuf};
 
 pub struct Session {
@@ -12,6 +14,8 @@ pub struct Session {
     pub map: LoadedMap,
     pub routes: FlatRouteStore,
     pub trips: FlatTripStore,
+    pub rides: FlatRideStore,
+    pub tracks: crate::track::TrackStore,
 }
 
 pub fn persistent(path: &str, create: bool) -> Result<HostStore, String> {
@@ -34,6 +38,7 @@ impl Session {
             (_, Some(path)) => persistent(path, true)?,
             _ => HostStore::temporary().map_err(|error| error.to_string())?,
         };
+        let recorder = FlatRideRecorder::new(owner.clone()).map_err(|error| format!("ride recovery: {error:?}"))?;
         let map = if args.card.is_some() {
             LoadedMap::reopen(&owner).map_err(|error| format!("reopen map: {error}"))?
         } else {
@@ -84,8 +89,13 @@ impl Session {
                 other => other,
             };
         }
+        let mut rides = FlatRideStore::new(owner.clone()).map_err(|error| format!("rides: {error:?}"))?;
+        if args.card.is_none() {
+            crate::rides::import(Path::new(&args.tracks_dir()), &mut rides)?;
+        }
+        let tracks = crate::track::TrackStore::new(recorder, owner.clone(), args.tracks_dir());
         routes.refresh_metadata().map_err(|error| format!("route metadata: {error:?}"))?;
-        Ok(Self { owner, map, routes, trips })
+        Ok(Self { owner, map, routes, trips, rides, tracks })
     }
 }
 

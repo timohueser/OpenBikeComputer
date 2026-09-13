@@ -169,6 +169,14 @@ pub trait RideRepository {
     }
 }
 
+/// The physical batch result; no accepted prefix is hidden by a later refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendStatus {
+    Cancelled,
+    Accepted(u16),
+    NeedsCheckpoint,
+}
+
 /// The open ride object the app records into while riding — one method per
 /// [`RecorderEffect`](obc_app::recorder::RecorderEffect), plus the session edge that opens the
 /// object.
@@ -178,9 +186,9 @@ pub trait RideRepository {
 /// no sink either: the app stages its own samples and this writes the ones it is handed (#1553).
 pub trait TrackRepository {
     /// Open a ride object for `session`, to be saved under `name`. Return true only when that
-    /// object is open. False leaves no object; the dispatcher retries on the next execution.
-    /// Recorder opens exactly one ride at a time, so any previous object is already closed.
-    fn open(&mut self, session: u32, name: Option<&str>) -> bool;
+    /// object is attached. False leaves the open owed; an uncertain publication may still exist
+    /// and its owner must refuse further writes until remount. Recovery attaches the same object.
+    fn open(&mut self, session: u32, name: Option<&str>, now_ms: u32) -> bool;
 
     /// Close the open ride into a durable ride object.
     ///
@@ -189,10 +197,9 @@ pub trait TrackRepository {
     /// how a store says there was no object to close, which is over rather than owed.
     fn finalize(&mut self, stats: RideStats) -> RideClose;
 
-    /// Delete the open ride and its journal. `false` is a **failure** and Recorder re-offers the
-    /// same discard — the same rule [`finalize`](Self::finalize) follows, because a close that did
-    /// not happen must not read as one that did.
-    fn discard(&mut self) -> bool;
+    /// Delete the open ride and its journal. Return success only after confirmed removal.
+    /// A write error permits retry; ReadOnly tells Recorder that this boot cannot mutate the object.
+    fn discard(&mut self) -> Result<(), RecorderError>;
 
     /// Checkpoint the accepted payload boundary. `continuation` is fresh only with no App-staged
     /// samples; otherwise retain the context accepted with the payload. A failed attempt must
@@ -203,6 +210,20 @@ pub trait TrackRepository {
         _continuation: Option<RideContinuation>,
     ) -> Result<CheckpointStatus, RecorderError> {
         Ok(CheckpointStatus::Unsupported)
+    }
+
+    /// Accept a batch and its observation boundary. Legacy adapters report their actual prefix.
+    fn append_batch(
+        &mut self,
+        points: &[TrackPoint],
+        _continuation: Option<RideContinuation>,
+    ) -> Result<AppendStatus, RecorderError> {
+        let written = points.iter().take_while(|point| self.append(**point)).count() as u16;
+        if written == 0 && !points.is_empty() {
+            Err(RecorderError::Write)
+        } else {
+            Ok(AppendStatus::Accepted(written))
+        }
     }
 
     /// Append one staged sample to the open ride. `false` means the medium refused it: Recorder
