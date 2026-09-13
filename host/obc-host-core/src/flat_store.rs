@@ -1,4 +1,4 @@
-//! Shared session card and revision-pinned sources for native and browser hosts.
+//! Shared host card and revision-pinned sources for native and browser hosts.
 
 use std::{
     cell::RefCell,
@@ -9,8 +9,8 @@ use std::{
 
 use obc_formats::io::{ByteSource, Error};
 use obc_storage::flat::{
-    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mutation, ObjectId, ObjectKind, PutSource,
-    Revision, Store, StoreError, StoreId,
+    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind,
+    PutSource, Revision, Store, StoreError, StoreId,
 };
 
 const BLOCK: u64 = 512;
@@ -23,6 +23,8 @@ pub const IMPORT_BUFFER_BYTES: usize = 16 * 1024;
 pub enum ImportError {
     Io(io::Error),
     Storage(StoreError),
+    Mount(Mode),
+    RemountRequired,
 }
 
 impl From<io::Error> for ImportError {
@@ -40,6 +42,8 @@ impl std::fmt::Display for ImportError {
         match self {
             Self::Io(error) => write!(f, "object import: {error}"),
             Self::Storage(error) => write!(f, "object storage: {error:?}"),
+            Self::Mount(mode) => write!(f, "host card cannot be mounted: {mode:?}"),
+            Self::RemountRequired => write!(f, "host card commit is uncertain; close all readers and reopen"),
         }
     }
 }
@@ -48,7 +52,42 @@ impl std::fmt::Display for ImportError {
 pub(crate) enum HostMedia {
     Memory(RefCell<BTreeMap<u64, Box<[u8; PAGE]>>>),
     #[cfg(not(target_arch = "wasm32"))]
-    File(RefCell<tempfile::NamedTempFile>),
+    File(RefCell<NativeCard>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct NativeCard {
+    file: std::fs::File,
+    pub(crate) _temporary: Option<tempfile::TempPath>,
+    #[cfg(test)]
+    fail_sync_after: std::cell::Cell<Option<usize>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeCard {
+    fn locked(file: std::fs::File, temporary: Option<tempfile::TempPath>) -> io::Result<Self> {
+        file.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => io::Error::from(io::ErrorKind::WouldBlock),
+            std::fs::TryLockError::Error(error) => error,
+        })?;
+        Ok(Self {
+            file,
+            _temporary: temporary,
+            #[cfg(test)]
+            fail_sync_after: std::cell::Cell::new(None),
+        })
+    }
+    fn sync(&self) -> io::Result<()> {
+        self.file.sync_all()?;
+        #[cfg(test)]
+        if let Some(left) = self.fail_sync_after.get() {
+            self.fail_sync_after.set(left.checked_sub(1).filter(|&left| left != 0));
+            if left == 1 {
+                return Err(io::Error::other("injected failure after successful file sync"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl HostMedia {
@@ -91,8 +130,8 @@ impl BlockDevice for HostMedia {
             Self::File(file) => {
                 use std::io::{Seek, SeekFrom};
                 let mut file = file.borrow_mut();
-                file.seek(SeekFrom::Start(offset))?;
-                file.read_exact(buf)
+                file.file.seek(SeekFrom::Start(offset))?;
+                file.file.read_exact(buf)
             }
         }
     }
@@ -117,8 +156,8 @@ impl BlockDevice for HostMedia {
             Self::File(file) => {
                 use std::io::{Seek, SeekFrom, Write};
                 let mut file = file.borrow_mut();
-                file.seek(SeekFrom::Start(offset))?;
-                file.write_all(buf)
+                file.file.seek(SeekFrom::Start(offset))?;
+                file.file.write_all(buf)
             }
         }
     }
@@ -127,12 +166,31 @@ impl BlockDevice for HostMedia {
         match self {
             Self::Memory(_) => Ok(()),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::File(file) => file.borrow().as_file().sync_all(),
+            Self::File(file) => file.borrow().sync(),
         }
     }
 }
 
-type Owner = Arc<Mutex<FlatStore<HostMedia>>>;
+pub(crate) struct MountedStore {
+    pub(crate) card: FlatStore<HostMedia>,
+    remount_required: bool,
+}
+
+impl MountedStore {
+    pub(crate) fn new(card: FlatStore<HostMedia>) -> Self {
+        Self { card, remount_required: false }
+    }
+
+    fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
+        if self.remount_required {
+            Err(StoreError::Media)
+        } else {
+            Ok(&self.card)
+        }
+    }
+}
+
+type Owner = Arc<Mutex<MountedStore>>;
 
 pub(crate) struct Lease {
     pub(crate) owner: Owner,
@@ -145,7 +203,7 @@ impl Drop for Lease {
     fn drop(&mut self) {
         // A poisoned owner has already failed. Still return its handle during unwind.
         let store = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        store.close(self.handle.take().expect("the last reader owns the handle"));
+        store.card.close(self.handle.take().expect("the last reader owns the handle"));
     }
 }
 
@@ -156,9 +214,10 @@ pub struct ObjectSource(pub(crate) Arc<Lease>);
 impl ObjectSource {
     pub(crate) fn open(owner: Owner, id: ObjectId, revision: Option<Revision>) -> Result<Self, StoreError> {
         let store = owner.lock().map_err(|_| StoreError::Media)?;
-        let handle = store.open(id, revision)?;
-        let len = store.handle_len(&handle).expect("a just-opened handle resolves");
-        let store_id = store.store_id();
+        let card = store.ready()?;
+        let handle = card.open(id, revision)?;
+        let len = card.handle_len(&handle).expect("a just-opened handle resolves");
+        let store_id = card.store_id();
         drop(store);
         Ok(Self(Arc::new(Lease { owner, handle: Some(handle), len, store_id })))
     }
@@ -193,7 +252,7 @@ impl ByteSource for ObjectSource {
         let handle = self.0.handle.as_ref().unwrap();
         let mut done = 0;
         while done < buf.len() {
-            match store.read(handle, offset + done as u64, &mut buf[done..]) {
+            match store.card.read(handle, offset + done as u64, &mut buf[done..]) {
                 Ok(0) | Err(_) => return Err(Error::Io),
                 Ok(n) => done += n,
             }
@@ -202,8 +261,8 @@ impl ByteSource for ObjectSource {
     }
 }
 
-/// One session card. Moving it into the route repository gives that repository sole mutation
-/// ownership. Object readers keep the card alive after the front-end owner drops.
+/// One host card owner. Object readers keep its media and exclusive native file lock
+/// alive after the front-end owner drops. An uncertain commit requires a fresh mount.
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
@@ -213,15 +272,56 @@ impl HostStore {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn temporary() -> Result<Self, ImportError> {
-        let card = tempfile::NamedTempFile::new()?;
-        card.as_file().set_len(CARD_BYTES)?;
+        let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
+        let card = NativeCard::locked(file, Some(path))?;
+        card.file.set_len(CARD_BYTES)?;
         Self::new(HostMedia::File(RefCell::new(card)))
     }
 
     fn new(media: HostMedia) -> Result<Self, ImportError> {
         let mut identity = [0; 16];
         getrandom::getrandom(&mut identity).map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(Self(Arc::new(Mutex::new(FlatStore::initialize(media, StoreId(identity))?))))
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?)))))
+    }
+
+    /// Create a new sparse Unix card under an existing directory. Never overwrite a path.
+    /// Success includes file and parent-directory sync barriers.
+    /// If initialization or the final directory barrier fails, leave the file for inspection.
+    #[cfg(unix)]
+    pub fn create_file(path: impl AsRef<std::path::Path>) -> Result<Self, ImportError> {
+        let path = path.as_ref();
+        let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(path)?;
+        let card = NativeCard::locked(file, None)?;
+        card.file.set_len(CARD_BYTES)?;
+        let owner = Self::new(HostMedia::File(RefCell::new(card)))?;
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(owner)
+    }
+
+    /// Mount an existing Unix card, including the common store's recording recovery.
+    /// This never initializes or resets a card. Exhausted readable stores remain read-only.
+    #[cfg(unix)]
+    pub fn open_file(path: impl AsRef<std::path::Path>) -> Result<Self, ImportError> {
+        let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let card = NativeCard::locked(file, None)?;
+        let metadata = card.file.metadata()?;
+        if !metadata.is_file() || metadata.len() != CARD_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected a regular 32 GiB host card").into());
+        }
+        let store = FlatStore::mount(HostMedia::File(RefCell::new(card)));
+        if !store.mode().readable() {
+            return Err(ImportError::Mount(store.mode()));
+        }
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(store)))))
+    }
+
+    pub fn store_id(&self) -> Result<StoreId, StoreError> {
+        Ok(self.0.lock().map_err(|_| StoreError::Media)?.card.store_id())
+    }
+
+    pub fn mode(&self) -> Result<Mode, StoreError> {
+        Ok(self.0.lock().map_err(|_| StoreError::Media)?.ready()?.mode())
     }
 
     pub fn open(&self, id: ObjectId, revision: Revision) -> Result<ObjectSource, StoreError> {
@@ -230,15 +330,17 @@ impl HostStore {
 
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
-        let entries = store.entries().collect();
-        if !store.entries_ok() {
+        let card = store.ready()?;
+        let entries = card.entries().collect();
+        if !card.entries_ok() {
             return Err(StoreError::Media);
         }
         Ok(entries)
     }
 
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
-        let store = self.0.lock().map_err(|_| StoreError::Media)?;
+        let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
+        let store = owner.ready()?;
         let head = store.entries().filter(|entry| entry.id == id).max_by_key(|entry| entry.revision.0);
         if !store.entries_ok() {
             return Err(StoreError::Media);
@@ -250,8 +352,11 @@ impl HostStore {
         if head.revision != revision {
             return Err(StoreError::RevisionConflict { current: head.revision });
         }
-        store.commit(&[Mutation::Remove { id, revision }])?;
-        Ok(())
+        let result = store.commit(&[Mutation::Remove { id, revision }]);
+        if result == Err(StoreError::Media) {
+            owner.remount_required = true;
+        }
+        result.map(|_| ())
     }
 
     /// Return the committed metadata. Opening a reader is a separate, retryable operation.
@@ -263,12 +368,17 @@ impl HostStore {
         len: u64,
         name: DisplayName,
     ) -> Result<EntryMeta, ImportError> {
-        let store = self.0.lock().map_err(|_| StoreError::Media)?;
+        let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
+        if owner.remount_required {
+            return Err(ImportError::RemountRequired);
+        }
+        let store = &owner.card;
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {
             revision.0.checked_add(1).map(Revision).ok_or(StoreError::ReadOnly)
         })?;
         let mut allocation = store.allocate(len)?;
+        let mut committing = false;
         let result = (|| {
             let mut buffer = [0; IMPORT_BUFFER_BYTES];
             let mut crc = obc_crc::Crc32::new();
@@ -293,6 +403,7 @@ impl HostStore {
                 name,
             };
             let put = Mutation::Put { meta, source: PutSource::Fresh(allocation) };
+            committing = true;
             if let Some((_, old_revision)) = previous {
                 store.commit(&[Mutation::Remove { id, revision: old_revision }, put])?;
             } else {
@@ -300,9 +411,18 @@ impl HostStore {
             }
             Ok(meta)
         })();
+        if committing && matches!(result, Err(ImportError::Storage(StoreError::Media))) {
+            // The final gate can reach disk before its write or sync reports failure.
+            // Keep its reservation and refuse reuse until a fresh mount chooses the catalog.
+            owner.remount_required = true;
+            return Err(ImportError::RemountRequired);
+        }
         if result.is_err() {
             store.cancel(allocation);
         }
         result
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests;
