@@ -351,6 +351,10 @@ mod terrain_tests {
         .unwrap();
         let source = session.map.map_source();
         let identity = (source.store_id(), source.id(), source.revision());
+        let mut pois = heapless::Vec::new();
+        session.map.reader().nearest_pois(obc_reader::PoiCategory::Water, (512, 512), &mut pois).unwrap();
+        assert_eq!(pois.len(), 1, "the CLI fixture exposes one real Route here destination");
+        assert_eq!(pois[0].name, "Terrain goal");
         let before = plan(&mut session, None).unwrap();
         drop(source);
         drop(session);

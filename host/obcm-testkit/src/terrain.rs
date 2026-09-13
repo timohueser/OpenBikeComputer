@@ -52,7 +52,7 @@ pub fn map(offset: i16) -> Vec<u8> {
     bytes.resize(poi_index, FILLER);
     bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.resize(poi_chunk, FILLER);
-    bytes.extend_from_slice(&pack_poi_chunk(&[pack_poi_record(8192, 8192, 0, "Terrain goal", 0xffff)], 512));
+    bytes.extend_from_slice(&pack_poi_chunk(&[pack_poi_record(8192, 8192, 1, "Terrain goal", 0xffff)], 512));
     bytes.extend_from_slice(&hours_pool(&[]));
     bytes.resize(align_up(bytes.len()), FILLER);
     let nav = bytes.len();
