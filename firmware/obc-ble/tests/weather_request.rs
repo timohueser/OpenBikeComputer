@@ -1000,3 +1000,77 @@ fn no_storage_means_no_requests_at_all() {
     let fresh = s.poll(RETRY_LADDER_S[0] + 1, WeatherRefresh::Every30, true, true, BundleFacts::NONE).expect("re-arm");
     assert_ne!(fresh.request_id, raise.request_id);
 }
+
+#[test]
+fn updating_tracks_phone_attempts_not_the_retry_ladder() {
+    use obc_ble::weather_request::WEATHER_ATTEMPT_TIMEOUT_S;
+    for (ride, refresh) in [(false, WeatherRefresh::Off), (true, WeatherRefresh::Every15)] {
+        let mut sched = DueScheduler::new();
+        if !ride {
+            sched.open_weather();
+        }
+        let first = sched.poll(0, refresh, ride, true, BundleFacts::NONE).unwrap();
+        assert!(!sched.refreshing(), "an absent phone or unread fixless request is not a fetch");
+        assert!(!sched.attempt_started(0, 1));
+        assert!(sched.attempt_started(first.request_id, 1));
+        assert!(sched.refreshing());
+        assert!(!sched.attempt_failed(first.request_id + 1));
+        assert!(sched.refreshing(), "a crossed reply cannot clear this request");
+        assert!(sched.attempt_failed(first.request_id));
+        assert!(!sched.refreshing());
+        assert_eq!(sched.pending_request_id(), Some(first.request_id));
+        assert_eq!(sched.next_wake_s(refresh, ride, true), Some(300));
+        let retry = sched.poll(300, refresh, ride, true, BundleFacts::NONE).unwrap();
+        assert_eq!(retry.request_id, first.request_id);
+        assert!(!sched.refreshing());
+        sched.attempt_started(retry.request_id, 301);
+        sched.attempt_started(retry.request_id, 350);
+        assert_eq!(sched.next_wake_s(refresh, ride, true), Some(301 + WEATHER_ATTEMPT_TIMEOUT_S));
+        assert!(sched.poll(301 + WEATHER_ATTEMPT_TIMEOUT_S, refresh, ride, true, BundleFacts::NONE).is_none());
+        assert!(!sched.refreshing(), "a lost phone cannot retain the cue");
+        assert_eq!(sched.next_wake_s(refresh, ride, true), Some(900));
+        sched.attempt_started(retry.request_id, 500);
+        assert!(sched.unchanged_succeeded(retry.request_id, 501, 120));
+        assert!(!sched.refreshing());
+        assert_eq!(sched.pending_request_id(), None);
+        sched.open_weather();
+        let next = sched.poll(700, refresh, ride, true, BundleFacts::NONE).unwrap();
+        sched.attempt_started(next.request_id, 701);
+        sched.commit_succeeded(702);
+        assert!(!sched.refreshing());
+    }
+}
+
+#[test]
+fn failed_attempt_command_is_bounded_and_correlated() {
+    use obc_ble::{DescriptorError, WeatherAttempt};
+    let failed = WeatherAttempt { request_id: 0x78563412, started: false };
+    assert_eq!(failed.encode(), [8, 0x12, 0x34, 0x56, 0x78, 0]);
+    assert_eq!(WeatherAttempt::decode(&failed.encode()), Ok(failed));
+    assert_eq!(WeatherAttempt::decode(&[8, 0, 0, 0, 0, 0]), Err(DescriptorError::Bounds));
+    assert!(WeatherAttempt::decode(&[8, 1, 0, 0]).is_err());
+    assert!(WeatherAttempt::decode(&[8, 1, 0, 0, 0, 2]).is_err());
+    assert!(WeatherAttempt::decode(&[7, 1, 0, 0, 0]).is_err());
+}
+
+#[test]
+fn a_new_position_retries_fixless_work_without_changing_its_owner() {
+    for ride in [false, true] {
+        let mut sched = DueScheduler::new();
+        if !ride {
+            sched.open_weather();
+        }
+        let first = sched.poll(0, WeatherRefresh::Every15, ride, true, BundleFacts::NONE).unwrap();
+        assert!(!sched.refreshing());
+        sched.attempt_failed(first.request_id);
+        sched.position_available(10);
+        let retry = sched.poll(10, WeatherRefresh::Every15, ride, true, BundleFacts::NONE).unwrap();
+        assert_eq!(retry.request_id, first.request_id);
+        assert_eq!(retry.reason & REASON_URGENT, first.reason & REASON_URGENT);
+        assert_eq!(sched.next_wake_s(WeatherRefresh::Every15, ride, true), Some(310));
+        sched.attempt_started(retry.request_id, 11);
+        assert!(sched.refreshing());
+        sched.commit_succeeded(12);
+        assert!(!sched.refreshing());
+    }
+}

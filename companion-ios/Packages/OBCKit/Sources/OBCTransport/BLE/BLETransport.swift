@@ -108,7 +108,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var weatherUploadToken: UUID?
     private enum WeatherDelivery: Sendable {
         case bundle(Data)
-        case unchanged(requestID: UInt32, retryAfterSeconds: UInt16)
+        case command(Data)
     }
     private var weatherUploadPayload: WeatherDelivery?
     private var weatherUploadDeadline: DispatchWorkItem?
@@ -661,10 +661,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public func acknowledgeWeatherUnchanged(
         requestID: UInt32, retryAfterSeconds: UInt16
     ) async throws -> WeatherBundleUpload {
+        try await sendWeatherCommand(WeatherUnchangedCommand.encode(
+            requestID: requestID, retryAfterSeconds: retryAfterSeconds))
+    }
+
+    public func reportWeatherAttempt(requestID: UInt32, started: Bool) async throws -> WeatherBundleUpload {
+        try await sendWeatherCommand(WeatherAttemptCommand.encode(requestID: requestID, started: started))
+    }
+
+    private func sendWeatherCommand(_ command: Data) async throws -> WeatherBundleUpload {
         let token = UUID()
-        let delivery = WeatherDelivery.unchanged(
-            requestID: requestID, retryAfterSeconds: retryAfterSeconds
-        )
+        let delivery = WeatherDelivery.command(command)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation {
@@ -836,7 +843,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         case .bundle:
             guard characteristics[GATT.objectControl] != nil, characteristics[GATT.psm] != nil
             else { return }
-        case .unchanged:
+        case .command:
             guard characteristics[GATT.command] != nil, let status = characteristics[GATT.status]
             else { return }
             // The command result is the durable acknowledgement. Do not write until the notify is
@@ -863,26 +870,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         switch delivery {
         case .bundle(let payload):
             await runWeatherUploadExchange(payload, token: token)
-        case .unchanged(let requestID, let retryAfterSeconds):
-            await runWeatherUnchangedExchange(
-                requestID: requestID, retryAfterSeconds: retryAfterSeconds, token: token
-            )
+        case .command(let bytes):
+            await runWeatherCommandExchange(bytes, token: token)
         }
     }
 
-    /// Command-only fast path for a request whose held bundle is still the newest available
-    /// revision. Object traffic moved to v4, but §11 keeps this seven-byte authenticated command
-    /// and its `commandResult` acknowledgement on the command/status GATT pair.
-    private func runWeatherUnchangedExchange(
-        requestID: UInt32, retryAfterSeconds: UInt16, token: UUID
-    ) async {
+    private func runWeatherCommandExchange(_ bytes: Data, token: UUID) async {
         do {
-            let result = try await exchangeCommand(
-                WeatherUnchangedCommand.encode(
-                    requestID: requestID, retryAfterSeconds: retryAfterSeconds
-                ),
-                command: WeatherUnchangedCommand.commandByte
-            )
+            let result = try await exchangeCommand(bytes, command: bytes[0])
             switch result.status {
             case .ok:
                 queue.async { [weak self] in self?.completeWeatherUpload(token: token) }

@@ -505,6 +505,8 @@ pub const RETRY_LADDER_S: [u64; 3] = [5 * 60, 10 * 60, 20 * 60];
 /// board advertising budget: a raise returned by `poll` must remain pending for the interval in
 /// which the companion can actually discover and read it.
 pub const WEATHER_REQUEST_WINDOW_S: u64 = 60;
+/// Bound the visible attempt if a phone disappears after reading the request.
+pub const WEATHER_ATTEMPT_TIMEOUT_S: u64 = 120;
 
 /// When a held bundle stops counting as one for the `reason` word: OBCW v1 carries 24 hourly
 /// records, so a bundle a day old has nothing left to say and the request advertises
@@ -619,6 +621,7 @@ pub struct DueScheduler {
     /// A successful phone-side conditional check can prove the held bytes are still current without
     /// uploading them. Until this monotonic instant, an urgent reopen reuses the held bundle.
     source_defer_until_s: Option<u64>,
+    attempt_deadline_s: Option<u64>,
 }
 
 impl DueScheduler {
@@ -631,6 +634,7 @@ impl DueScheduler {
             started_s: None,
             urgent_queued: false,
             source_defer_until_s: None,
+            attempt_deadline_s: None,
         }
     }
 
@@ -638,6 +642,15 @@ impl DueScheduler {
     /// pending the raise re-uses its id (one request, not parallel jobs) with a fresh fast ladder.
     pub fn open_weather(&mut self) {
         self.urgent_queued = true;
+    }
+
+    /// Retry a request when its missing position becomes available, preserving its id and owner.
+    pub fn position_available(&mut self, now_s: u64) {
+        if let Some(p) = &mut self.pending {
+            p.next_raise_s = now_s;
+            p.raises = 0;
+            p.final_raise = false;
+        }
     }
 
     /// Whether an urgent request is queued or any request is pending.
@@ -652,6 +665,7 @@ impl DueScheduler {
     /// would re-raise the same request against the same upstream a second later, forever.
     pub fn commit_succeeded(&mut self, now_s: u64) {
         self.pending = None;
+        self.attempt_deadline_s = None;
         self.last_commit_s = Some(now_s);
         self.boot_anchor_s = None;
         self.source_defer_until_s = None;
@@ -666,10 +680,34 @@ impl DueScheduler {
             return false;
         }
         self.pending = None;
+        self.attempt_deadline_s = None;
         self.last_commit_s = Some(now_s);
         self.boot_anchor_s = None;
         self.source_defer_until_s = Some(now_s.saturating_add(retry_after_s as u64));
         true
+    }
+
+    /// A secured phone read a context with a usable position. Duplicate reads do not extend it.
+    pub fn attempt_started(&mut self, request_id: u32, now_s: u64) -> bool {
+        if self.pending_request_id() != Some(request_id) {
+            return false;
+        }
+        self.attempt_deadline_s.get_or_insert(now_s.saturating_add(WEATHER_ATTEMPT_TIMEOUT_S));
+        true
+    }
+
+    /// End this attempt without satisfying the request or changing its retry schedule.
+    pub fn attempt_failed(&mut self, request_id: u32) -> bool {
+        if self.pending_request_id() != Some(request_id) {
+            return false;
+        }
+        self.attempt_deadline_s = None;
+        true
+    }
+
+    /// Advertising and retry waits are not an active phone attempt.
+    pub fn refreshing(&self) -> bool {
+        self.attempt_deadline_s.is_some()
     }
 
     /// Whether a request is currently pending (raised and not yet satisfied).
@@ -691,6 +729,9 @@ impl DueScheduler {
         store_ready: bool,
         bundle: BundleFacts,
     ) -> Option<Raise> {
+        if self.attempt_deadline_s.is_some_and(|at| now_s >= at) {
+            self.attempt_deadline_s = None;
+        }
         if self.started_s.is_none() {
             self.started_s = Some(now_s);
         }
@@ -702,6 +743,7 @@ impl DueScheduler {
         // inserting a card is the honest re-arm.
         if !store_ready {
             self.pending = None;
+            self.attempt_deadline_s = None;
             self.urgent_queued = false;
             return None;
         }
@@ -721,6 +763,7 @@ impl DueScheduler {
             let urgent = p.reason & REASON_URGENT != 0;
             if !urgent && (!ride_active || refresh.minutes().is_none()) {
                 self.pending = None;
+                self.attempt_deadline_s = None;
             }
         }
 
@@ -759,6 +802,7 @@ impl DueScheduler {
             }
             if p.final_raise {
                 self.pending = None;
+                self.attempt_deadline_s = None;
                 return None;
             }
             p.raises = p.raises.saturating_add(1);
@@ -816,6 +860,14 @@ impl DueScheduler {
     /// when only an event edge (ride start, urgent, commit, a setting change, a card mount) can
     /// wake it. The caller sleeps until this — never a periodic tick.
     pub fn next_wake_s(&self, refresh: WeatherRefresh, ride_active: bool, store_ready: bool) -> Option<u64> {
+        let request = self.next_request_wake_s(refresh, ride_active, store_ready);
+        match (request, self.attempt_deadline_s) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn next_request_wake_s(&self, refresh: WeatherRefresh, ride_active: bool, store_ready: bool) -> Option<u64> {
         if !store_ready {
             return None;
         }

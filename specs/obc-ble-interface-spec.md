@@ -1106,6 +1106,7 @@ A write of `cmd u8` + fixed args. Every command is answered with a
 | `5` | `setClock` | `utc u32 · offset_min i16` | the phone stamps the device's UTC clock + local offset on **every connect** (auto-expiry #638). Stamps the wall-clock set-point, **persists** the offset, and marks the clock *trusted* for the boot — the retention sweep's safety gate. Sent immediately after encryption, **before** `ackRides`. Validated → `error` on a malformed length, `utc < 1577836800`, or `\|offset_min\| > 840`; no store-revision bump (the clock is not an object). See below |
 | `6` | `setRouteRetention` | `object_id u16 · retention u8` | the phone sets a stored route's **retention level** (`0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months, auto-expiry #638) **without re-uploading** the route. Writes the level in the device's retention store **without touching `last_used`** (changing retention never resets the usage clock) and bumps the **route** store revision **only on a real change** (the app sees the fresh `expires_at` in the next `routeList`). Additive on protocol v2 — no `protocolVersion` bump. See below |
 | `7` | `weatherUnchanged` | `request_id u32 · retry_after_s u16` | finish that live weather request after the phone conditionally checked both providers and found no revision newer than the held bundle. `retry_after_s` is `0...3600` and suppresses repeated manual probes only; a mismatched/non-live id answers `notFound`, malformed values answer `error` (§11.1) |
+| `8` | `weatherAttempt` | `request_id u32 · started u8` | report a phone attempt for that live request: `1` starts a bounded activity cue; `0` ends a failed attempt. Neither satisfies the request nor changes its retry cadence. A non-live id answers `notFound`; zero id, wrong length, or `started > 1` answers `error`. |
 | `8`–`15` | — | — | reserved (identify/find-my-device, factory reset, …) |
 
 **Next free command: `8`.** (`setClock` landed at `5` and `setRouteRetention`
@@ -2021,6 +2022,23 @@ bundle being **accepted** — any upload §11.6 answers `committed`, the duplica
 ignored-but-successful rows included — or a matching `weatherUnchanged` command being accepted
 after the phone's conditional checks. Each is the phone's complete answer; an advertising window
 closing is not.
+
+#### Visible update activity
+
+A pending request is not an active fetch. Advertising, an absent phone, and retry waits do not
+show UPDATING. A successfully served, authenticated context read starts activity only when the
+served context has a valid position and names the live request. A resumed phone job that does
+not read the context again sends `weatherAttempt(started=1)` before it resumes work.
+
+The activity deadline is 120 monotonic seconds after it starts. Duplicate start reports during
+that attempt do not extend the deadline. A matching `weatherAttempt(started=0)`, matching bundle
+commit, accepted `weatherUnchanged`, request cancellation, or deadline expiry clears activity.
+A failure or activity timeout preserves the pending request and its retry ladder. If the phone
+cannot deliver a failure report, the deadline still clears the cue. No failure is acknowledged
+as a successful update. These signals do not change the validity of stored forecasts.
+
+A missing position remains a valid diagnostic request, but cannot start an attempt from a read.
+When a position becomes available, the board re-arms pending work with the same request id.
 
 ### 11.4 `weatherRequestContext` — the request context (v1)
 

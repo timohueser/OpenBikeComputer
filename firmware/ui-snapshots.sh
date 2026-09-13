@@ -496,12 +496,14 @@ WXRAIN="p d d d d w p d p"
 # anchors on the bundle's first frame (no --clock), so every derivation is byte-stable.
 WXNAV="p d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:dry --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-dry.png"
+"$SIM" "$MAP" --boot --weather demo:dry --weather-now 1800002400 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-partial.png"
+"$SIM" "$MAP" --boot --weather demo:dry --weather-now 1800012000 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-hourly-fallback.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-rain.png"
 # A *current* storm is a storm the alert engine fires on, on every host, from stage 10 (#1549):
 # two classes trip, the rider dismisses both, and what is left underneath is the dashboard this
 # frame has always photographed — byte-identical, with the cards the device really shows named.
 "$SIM" "$MAP" --boot --weather demo:storm --script "d p f d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-storm.png"
-# Honest states: frames outrun (stale -> WEATHER UPDATE NEEDED), a frameless hourly-only bundle,
+# Rain frames expired with hourly data still valid, a frameless hourly-only bundle,
 # no store at all, and the non-blocking refresh cue over cached content.
 "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-hourly-only.png"
