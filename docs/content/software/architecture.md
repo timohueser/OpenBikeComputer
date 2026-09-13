@@ -204,7 +204,8 @@ A skin can reorder styles within either band. This uses the existing cell bytes 
 The reader requests only the required tables and chunks.
 The device reads these bytes from a flat-store object.
 The simulator and browser demo also read their maps through the shared flat store.
-At startup, the simulator imports the OBCM input into a temporary sparse card file with a 16 KiB buffer.
+At startup, a temporary simulator session imports the map, route and trip inputs into one sparse card.
+Map import uses a 16 KiB buffer. Explicit Unix sessions can create or reopen a persistent card.
 The browser imports its embedded OBCM into sparse memory pages.
 Both hosts then read one pinned object revision through an owned source.
 The simulator and its background terrain worker share that source; the last reader releases it and removes the temporary card.
@@ -212,26 +213,35 @@ See the [shared host store](src:host/obc-host-core/src/flat_store.rs) and
 [map reader](src:host/obc-host-core/src/flat_map.rs).
 
 The host library also provides an explicit persistent card owner on Unix systems.
-Maps and routes can share this owner. A new card gets a new store identity.
+Simulator maps, routes and trips share this owner. A new card gets a new store identity.
 Opening an existing card preserves its store, object, and revision identities.
 Creation never overwrites an existing path. Opening never formats an invalid card.
 The shared store applies its normal recording recovery during mount.
 The owner holds an exclusive file lock until the last object reader closes.
 A failed commit can have reached the file. In that case, the owner stops further changes and
 requires a fresh mount to select the durable catalog. Existing readers keep their pinned bytes.
-The simulator still uses its temporary map card and folder route repository.
-Persistent Windows cards and simulator integration remain separate work.
+Reopening does not import the input files again and does not reset the card.
+Persistent Windows cards remain unsupported. Reopened simulator cards use `NullElevation` for
+planning. Embedded map terrain remains available to Peak View; planner sidecar ownership is still
+separate. Ordinary OBCM sessions keep their external terrain sidecar lookup.
 
 The browser imports its routes into the same session card as the map. Its
 [route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata
-and binds active readers to an exact object revision. A computed route replaces the prior
-revision under the same allocated object ID. Old readers remain valid until their last lease drops.
+and binds active readers to an exact object revision. Computed routes use fresh object IDs.
+An explicit route replacement keeps its object ID and advances its revision.
+Old readers remain valid until their last lease drops.
 Settled frames neither reopen the source nor scan the catalog.
 
 The browser card remains volatile. It allocates memory in 16 KiB pages; released pages remain
 available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
-route uses one page instead of a retained byte vector. Simulator route and trip folders, weather,
-and ride recording keep their existing host repositories and files.
+route uses one page instead of a retained byte vector. Native weather and ride recording keep
+their existing host repositories and files.
+
+Catalog deletion retains the selected object kind, so equal numeric IDs in separate repositories
+cannot redirect a removal. The domain removes a trip's member routes before the trip object.
+A failed member stops that cascade. The trip and remaining members stay stored; an explicit retry
+can pass members that were already removed. Catalog scope is published only after complete
+route, metadata and trip reads from one unchanged card and catalog sequence.
 
 The shared host dispatcher retries a recording open until the repository confirms that the object exists.
 While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.
@@ -377,10 +387,8 @@ Planning stays bound to its admitted sources. The board checks its boot-long map
 the exact card, map object and revision. The host retains the admitted map lease and, for a detour,
 the exact original route through preview and commit. A changed current source invalidates the
 result; the executor cannot substitute the latest map or route halfway through the operation.
-Native folder source checks and cleanup use retained snapshots and the observed generation;
-external file edits become visible to these checks only after a rescan.
 
-Publication creates a fresh OBCR object or host route file. It does not overwrite the original
+Publication creates a fresh OBCR object. It does not overwrite the original
 route. The standard catalog and route-load path handles the completed object. Flat-store
 publication requires capacity for both the publication commit and a cleanup commit if cancellation
 arrives after publication. Cleanup removes only the result of that cancelled operation.
