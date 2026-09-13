@@ -142,6 +142,33 @@ pub trait RideRepository {
     /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
     /// in-memory catalog is a no-op.
     fn refresh(&mut self) {}
+    /// Complete catalog and durable policy refresh. Legacy stores have no card authority.
+    fn refresh_metadata(
+        &mut self,
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+        self.refresh();
+        Ok(None)
+    }
+    fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
+        None
+    }
+    /// Full retention inventory when the summary catalog is capped for display.
+    fn retention_inventory(&self) -> Option<&[obc_app::RideRetentionRecord]> {
+        None
+    }
+    fn write_metadata(
+        &mut self,
+        _effect: obc_app::retention::RetentionEffect,
+    ) -> Result<(), obc_app::retention::RetentionError> {
+        Err(obc_app::retention::RetentionError::Unsupported)
+    }
+    fn expire_ride(
+        &mut self,
+        _id: CatalogObjectId,
+        _scope: obc_app::device_core::StoreRevision,
+    ) -> Result<bool, CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
 }
 
 /// The open ride object the app records into while riding — one method per

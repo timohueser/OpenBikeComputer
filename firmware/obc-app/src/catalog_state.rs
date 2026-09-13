@@ -325,6 +325,18 @@ impl CatalogState {
         }
     }
 
+    /// Overlay a fully validated proof during a catalog refresh, in both resident projections.
+    pub(crate) fn set_ride_archive_proof(&mut self, id: CatalogObjectId, timestamp: u32) {
+        if let Some(record) = self.ride_inventory.iter_mut().find(|record| record.id == id) {
+            record.synced = true;
+            record.synced_at_utc = timestamp;
+            if let Some(ride) = self.rides.iter_mut().find(|ride| ride.id == id) {
+                ride.summary.synced = true;
+                ride.summary.synced_at_utc = timestamp;
+            }
+        }
+    }
+
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<&RideEntry> {

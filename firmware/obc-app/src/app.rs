@@ -1499,6 +1499,12 @@ impl App {
         self.catalogs.set_ride_retention_inventory(records);
     }
 
+    /// Apply an exact durable archive row after the complete catalog and metadata reads succeed.
+    /// The caller must finish the refresh under its unchanged store scope before policy can run.
+    pub fn set_ride_archive_proof(&mut self, id: crate::CatalogObjectId, timestamp: u32) {
+        self.catalogs.set_ride_archive_proof(id, timestamp);
+    }
+
     /// The resident ride catalog (paired entries) — what the Rides screen lists.
     pub fn rides(&self) -> &[RideEntry] {
         self.catalogs.rides()

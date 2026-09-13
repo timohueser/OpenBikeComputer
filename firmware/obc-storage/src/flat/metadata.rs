@@ -390,12 +390,12 @@ pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequ
     Ok(())
 }
 
-fn route_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId) -> Result<EntryMeta, Error> {
+fn source_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId, kind: ObjectKind) -> Result<EntryMeta, Error> {
     let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
     if !store.entries_ok() {
         return Err(Error::Store(StoreError::Media));
     }
-    head.filter(|entry| entry.kind == ObjectKind::Route).ok_or(Error::Stale)
+    head.filter(|entry| entry.kind == kind).ok_or(Error::Stale)
 }
 
 /// One serialized route stamp. Workspace is stack-local and does not cross a yield.
@@ -409,7 +409,7 @@ pub fn write_route<D: BlockDevice>(
     timestamp: u32,
 ) -> Result<(), Error> {
     check_scope(store, expected, sequence)?;
-    let target = route_head(store, id)?;
+    let target = source_head(store, id, ObjectKind::Route)?;
     let mut bytes = [0u8; MAX_LEN];
     let mut owner = Metadata::new(store);
     let mut image = owner.load(store, &mut bytes)?;
@@ -439,16 +439,91 @@ pub fn reconcile<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Feed validated route rows only after the complete read and source reconciliation succeed.
+/// Feed policy rows only after complete source validation and a durability barrier.
 #[inline(never)]
-pub fn read_routes<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
+pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
     let mut bytes = [0u8; MAX_LEN];
     let mut owner = Metadata::new(store);
     let mut image = owner.load(store, &mut bytes)?;
     image.reconcile(store)?;
-    for row in image.rows().filter(|row| row.kind == ObjectKind::Route) {
+    durable(store)?;
+    for row in image.rows() {
         accept(row);
     }
+    Ok(())
+}
+
+/// Read route policy through the same complete card metadata validation.
+pub fn read_routes<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
+    read_rows(store, |row| {
+        if row.kind == ObjectKind::Route {
+            accept(row);
+        }
+    })
+}
+
+fn durable<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
+    // A live-medium remount can read a gate whose previous final sync failed.
+    if store.sync_media().is_err() {
+        store.require_remount();
+        return Err(Error::RemountRequired);
+    }
+    Ok(())
+}
+
+/// Start the policy clock only for an existing exact archive proof. Repeated stamps preserve it.
+#[inline(never)]
+pub fn write_ride<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected: StoreId,
+    sequence: u64,
+    id: ObjectId,
+    timestamp: u32,
+) -> Result<(), Error> {
+    check_scope(store, expected, sequence)?;
+    if timestamp == 0 {
+        return Err(Error::Invalid);
+    }
+    let target = source_head(store, id, ObjectKind::Ride)?;
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    image.reconcile(store)?;
+    let row = image.rows().find(|row| row.matches(target)).ok_or(Error::Stale)?;
+    if row.timestamp != 0 {
+        return durable(store);
+    }
+    image.set(Row { timestamp, ..row })?;
+    owner.replace(store, &mut image, Some(target))?;
+    Ok(())
+}
+
+/// Remove a ride only after policy admission and a durable exact nonzero archive stamp.
+#[inline(never)]
+pub fn remove_ride<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected: StoreId,
+    sequence: u64,
+    id: ObjectId,
+) -> Result<(), Error> {
+    check_scope(store, expected, sequence)?;
+    let target = source_head(store, id, ObjectKind::Ride)?;
+    let mut proof = false;
+    read_rows(store, |row| proof |= row.matches(target) && row.timestamp != 0)?;
+    if !proof {
+        return Err(Error::Stale);
+    }
+    remove(store, target)
+}
+
+fn remove<D: BlockDevice>(store: &FlatStore<D>, head: EntryMeta) -> Result<(), Error> {
+    store.commit(&[Mutation::Remove { id: head.id, revision: head.revision }]).map_err(|error| {
+        if store.mode() == super::Mode::RemountRequired {
+            Error::RemountRequired
+        } else {
+            Error::Store(error)
+        }
+    })?;
     Ok(())
 }
 
@@ -460,15 +535,8 @@ pub fn remove_route<D: BlockDevice>(
     id: ObjectId,
 ) -> Result<(), Error> {
     check_scope(store, expected, sequence)?;
-    let head = route_head(store, id)?;
-    store.commit(&[Mutation::Remove { id, revision: head.revision }]).map_err(|error| {
-        if store.mode() == super::Mode::RemountRequired {
-            Error::RemountRequired
-        } else {
-            Error::Store(error)
-        }
-    })?;
-    Ok(())
+    let head = source_head(store, id, ObjectKind::Route)?;
+    remove(store, head)
 }
 
 /// Persist possession of the exact current finalized ride. Duplicate receipts preserve the stamp
@@ -508,11 +576,7 @@ pub fn archive_ride<D: BlockDevice>(
     let mut image = owner.load(store, &mut bytes)?;
     image.reconcile(store)?;
     if let Some(row) = image.rows().find(|row| row.matches(target)) {
-        // A live-medium remount can read a gate whose previous final sync failed.
-        if store.sync_media().is_err() {
-            store.require_remount();
-            return Err(Error::RemountRequired);
-        }
+        durable(store)?;
         return Ok(row.timestamp);
     }
     if !store.mode().writable() {

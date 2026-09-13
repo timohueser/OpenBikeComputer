@@ -652,7 +652,7 @@ impl App {
     pub fn retention_expiry_due(&mut self, id: crate::CatalogObjectId, scope: super::StoreRevision) -> bool {
         self.catalogs.loaded_scope == Some(scope)
             && self.pass.store == Some(scope)
-            && self.with_retention(|retention, view| retention.route_due(id, view))
+            && self.with_retention(|retention, view| retention.object_due(id, view))
     }
 
     /// Stage 6 — advance `CatalogMachine`.
@@ -2065,5 +2065,35 @@ mod tests {
         ]);
         app.force_retention_sweep();
         (app, 10)
+    }
+    #[test]
+    fn durable_ride_overlay_covers_the_full_inventory_and_expiry_rechecks_live_policy() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let entries: std::vec::Vec<_> =
+            (1..=crate::UI_RIDES_CAP as u64).map(|id| crate::RideEntry { id, summary: ride_summary() }).collect();
+        let records: std::vec::Vec<_> = (1..=crate::MAX_RIDES as u64)
+            .map(|id| crate::RideRetentionRecord { id, synced: false, synced_at_utc: 0 })
+            .collect();
+        app.set_rides(&entries);
+        app.set_ride_retention_inventory(&records);
+        app.set_ride_archive_proof(1, 0);
+        app.set_ride_archive_proof(128, 1_600_000_000);
+        app.set_ride_archive_proof(129, 1_600_000_000);
+        assert!(app.rides()[0].summary.synced);
+        assert_eq!(app.catalogs.ride_records().len(), 128);
+        assert!(app.catalogs.ride_records()[127].synced);
+        app.test_mount_store();
+        let scope = app.pass.store.unwrap();
+        assert!(!app.retention_expiry_due(128, scope), "unknown clock protects even a nonzero proof");
+        trust_clock(&mut app);
+        assert!(!app.retention_expiry_due(1, scope), "zero stamp starts a clock, never expires");
+        assert!(!app.retention_expiry_due(2, scope), "unsynced is protected");
+        assert!(app.retention_expiry_due(128, scope));
+        app.test_start_ride();
+        assert!(!app.retention_expiry_due(128, scope), "recording blocks expiry");
+        app.test_end_ride();
+        assert!(app.retention_expiry_due(128, scope));
+        app.begin_catalog_refresh();
+        assert!(!app.retention_expiry_due(128, scope), "partial refresh has no authority");
     }
 }
