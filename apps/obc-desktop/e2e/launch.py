@@ -107,9 +107,7 @@ def main():
                                f'exec {shlex.quote(str(binary))} "$@"\n')
             wrapper.chmod(0o755)
             environment = {**os.environ, "OBC_CATALOG_URL": catalog_url, "RUST_BACKTRACE": "1",
-                           "XDG_DATA_HOME": scratch, "XDG_CONFIG_HOME": scratch, "XDG_CACHE_HOME": scratch,
-                           # Xvfb has no hardware compositor. Keep this override in the harness.
-                           "WEBKIT_DISABLE_COMPOSITING_MODE": "1"}
+                           "XDG_DATA_HOME": scratch, "XDG_CONFIG_HOME": scratch, "XDG_CACHE_HOME": scratch}
             process = subprocess.Popen(["tauri-driver"], env=environment, stdout=driver_log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
 

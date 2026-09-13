@@ -1247,7 +1247,7 @@ jobs:
         run: |
           sudo apt-get update
           webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
-          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick
+          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
           pip install -r apps/obc-desktop/e2e/requirements.txt
           cargo install tauri-driver --version 2.0.6 --locked
           chmod +x apps/obc-desktop/target/release/obc-desktop
@@ -1256,7 +1256,7 @@ jobs:
         id: launch
         env:
           OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a python3 apps/obc-desktop/e2e/launch.py
+        run: xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
       - name: Upload Linux launch evidence
         if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

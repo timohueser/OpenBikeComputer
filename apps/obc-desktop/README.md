@@ -90,12 +90,12 @@ On a Linux test host with no OBC device attached, first build the release app as
 from the repository root:
 
 ```sh
-sudo apt-get install webkit2gtk-driver xvfb imagemagick
+sudo apt-get install webkit2gtk-driver xvfb imagemagick dbus-daemon
 cargo install tauri-driver --version 2.0.6 --locked
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r apps/obc-desktop/e2e/requirements.txt
-xvfb-run -a python3 apps/obc-desktop/e2e/launch.py
+xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
 ```
 
 Use a WebKit driver with the same version as the installed WebKitGTK runtime. CI installs an
@@ -107,10 +107,8 @@ file. The setup follows the [Tauri WebDriver CI guide](https://v2.tauri.app/deve
 application and driver logs, rendered HTML, and a screenshot. A failed journey also captures
 `failure.png` when a webview session is available. CI uploads `desktop-launch-linux-ATTEMPT`
 after an executed success or failure. ImageMagick captures the X11 display if the session fails
-before WebDriver can take a screenshot. The harness disables WebKit compositing for Xvfb;
-this is a test-host setting, not a production app setting. See the
-[Tauri Linux graphics guide](https://v2.tauri.app/develop/debug/linux-graphics/).
-The suite uses bounded state waits with no retries and
+before WebDriver can take a screenshot. `dbus-run-session` gives the app and desktop portal
+services a private session bus with the Xvfb display. The suite uses bounded state waits with no retries and
 requires the app process to exit when its WebDriver session closes.
 
 This suite covers Linux software launch and catalog integration. It does not establish USB
