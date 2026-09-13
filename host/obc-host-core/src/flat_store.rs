@@ -222,6 +222,24 @@ impl ObjectSource {
         Ok(Self(Arc::new(Lease { owner, handle: Some(handle), len, store_id })))
     }
 
+    /// Exact source identity, independent of unrelated catalog commits.
+    pub fn same_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.owner, &other.0.owner)
+            && self.store_id() == other.store_id()
+            && self.id() == other.id()
+            && self.revision() == other.revision()
+    }
+
+    /// A retained old revision stays readable, but cannot authorize new planner work.
+    pub fn is_current(&self) -> bool {
+        let Ok(owner) = self.0.owner.lock() else { return false };
+        let Ok(card) = owner.ready() else { return false };
+        if card.store_id() != self.store_id() {
+            return false;
+        }
+        card.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
+    }
+
     pub fn store_id(&self) -> StoreId {
         self.0.store_id
     }
@@ -368,11 +386,38 @@ impl HostStore {
         len: u64,
         name: DisplayName,
     ) -> Result<EntryMeta, ImportError> {
+        self.import_with_capacity(kind, previous, input, len, name, 1)
+    }
+
+    pub(crate) fn import_computed_route(&self, bytes: &[u8]) -> Result<EntryMeta, ImportError> {
+        self.import_with_capacity(
+            ObjectKind::Route,
+            None,
+            &mut &bytes[..],
+            bytes.len() as u64,
+            DisplayName::default(),
+            2,
+        )
+    }
+
+    fn import_with_capacity(
+        &self,
+        kind: ObjectKind,
+        previous: Option<(ObjectId, Revision)>,
+        input: &mut impl Read,
+        len: u64,
+        name: DisplayName,
+        commits: u64,
+    ) -> Result<EntryMeta, ImportError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         if owner.remount_required {
             return Err(ImportError::RemountRequired);
         }
         let store = &owner.card;
+        // A computed route needs one later commit to retract an abandoned publication.
+        if !store.has_commit_capacity(commits) {
+            return Err(StoreError::ReadOnly.into());
+        }
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {
             revision.0.checked_add(1).map(Revision).ok_or(StoreError::ReadOnly)

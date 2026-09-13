@@ -1177,6 +1177,10 @@ fn serve(
             Ok(Outcome::Wrote(allocation))
         }
         Request::PublishComputedRoute { allocation, name } => {
+            #[cfg(has_nav)]
+            if !planner_map_current() {
+                return Err(StoreError::NotFound);
+            }
             // Publishing can race a queued cancellation. Reserve one further catalog sequence for
             // the exact-revision compensating remove before making the route visible; otherwise a
             // publish at u64::MAX would succeed and leave a ghost that no later commit can retract.
@@ -1666,6 +1670,13 @@ pub(crate) fn reconcile_weather(
 /// revision the renderer is drawing from alive while an upload commits over it, and this image has
 /// no state in which the map stops being needed.
 static mut MAP_SOURCE: MaybeUninit<obc_storage::flat::StoreSource<'static, FlatCard>> = MaybeUninit::uninit();
+
+/// Called only by the ride task after a map was opened successfully at boot.
+#[cfg(has_nav)]
+pub(crate) fn planner_map_current() -> bool {
+    // SAFETY: run_app starts only with the initialized, session-long map source.
+    unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref().is_current() }
+}
 
 /// The open map's §9 display name, truncated to what the System-settings row shows.
 ///
