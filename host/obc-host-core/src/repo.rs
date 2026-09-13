@@ -84,9 +84,10 @@ pub trait RideRepository {
 /// reconstructed it from an action plus a session id would be deciding it a second time. There is
 /// no sink either: the app stages its own samples and this writes the ones it is handed (#1553).
 pub trait TrackRepository {
-    /// Open a ride object for `session`, to be saved under `name`. Called on the session edge —
+    /// Open a ride object for `session`, to be saved under `name`. Return true only when that
+    /// object is open. False leaves no object; the dispatcher retries on the next execution.
     /// Recorder opens exactly one ride at a time, so any previous object is already closed.
-    fn open(&mut self, session: u32, name: Option<&str>);
+    fn open(&mut self, session: u32, name: Option<&str>) -> bool;
 
     /// Close the open ride into a durable ride object.
     ///
