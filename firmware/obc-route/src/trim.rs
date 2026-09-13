@@ -1,7 +1,9 @@
 //! Resumable first-contact trim. Each step visits at most one source chunk.
 use crate::convert::{EmitStats, ObcrEmitter, WpPlace};
 use crate::geo::{inflated_bbox, project_to_segment};
-use crate::reader::{decode_route_points_between, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS};
+use crate::reader::{
+    decode_route_points_between_checked, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
+};
 use heapless::Vec;
 use obc_elevation::{DeadBand, ELE_DEADBAND_M};
 use obc_formats::io::{ByteSink, Error};
@@ -104,7 +106,9 @@ impl Tail {
     }
 }
 
-/// The caller keeps this workspace only while trimming, and supplies unchanged source views.
+/// First sustained contact advances the rejoin; a final landing near the target is a no-op.
+/// The caller retains unchanged source views and a fresh sink through all steps. A no-op leaves
+/// the sink untouched. On failure discard the sink; optional trimming can keep the untrimmed leg.
 pub struct Trimmer {
     phase: Phase,
     target_m: u32,
@@ -180,7 +184,7 @@ impl Trimmer {
                         return Ok(TrimStep::Running);
                     }
                     let stride = ((hi - lo) as f32 / (TRIM_TAIL_MAX_PTS - 1) as f32).max(TRIM_MIN_SAMPLE_M);
-                    if let Some(n) = decode_route_points_between(orig, k, lo, hi, &mut buf) {
+                    if let Some(n) = decode_route_points_between_checked(orig, k, lo, hi, &mut buf)? {
                         for p in &buf[..n] {
                             let p = (p.lon, p.lat);
                             if self.tail.pts.is_empty() {

@@ -55,9 +55,9 @@ pub mod profile;
 pub mod reader;
 pub mod ride;
 pub mod splice;
-mod trim;
 pub mod symbol;
 pub mod track;
+mod trim;
 pub mod trip;
 
 pub use climb::{
@@ -81,6 +81,6 @@ pub use reader::{
 };
 pub use ride::{encode_summary_footer, RideInfo, RideStats};
 pub use splice::{splice_detour, SpliceStep, Splicer};
-pub use trim::{trim_detour_to_tail, TrimOutcome, TrimStep, Trimmer};
 pub use track::track_to_gpx;
+pub use trim::{trim_detour_to_tail, TrimOutcome, TrimStep, Trimmer};
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};
