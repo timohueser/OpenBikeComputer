@@ -321,10 +321,10 @@ const NAV_ROUTE_RESERVE: u64 = 128 + 256 * (1_530 + 44);
 static NAV_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
 
 #[cfg(has_nav)]
-struct NavStageSink<'a> {
-    stage: &'a mut [u8; crate::arena::NAV_OUTPUT_STAGE_BYTES],
-    appended: usize,
-    patch_len: usize,
+pub(crate) struct NavStageSink<'a> {
+    pub(crate) stage: &'a mut [u8; crate::arena::NAV_OUTPUT_STAGE_BYTES],
+    pub(crate) appended: usize,
+    pub(crate) patch_len: usize,
 }
 
 #[cfg(has_nav)]
@@ -617,10 +617,10 @@ struct RenderedFrame {
     render_us: u64,
 }
 
-/// Platform features available for this boot. Route metadata uses the card writer; ride receipts
-/// remain unsupported. Detour still needs a bounded store-backed splice source.
+/// Platform features available for this boot. Detours use sealed temporary card storage and the
+/// shared planner arena; metadata changes go through the card writer.
 const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_core::PlatformSupport {
-    detour: false,
+    detour: cfg!(has_nav),
     settings_persistence: true,
     dfu: true,
     weather: true,
@@ -902,6 +902,8 @@ pub(crate) async fn run_app(
     // bounded step per pass. Guards the planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
+    #[cfg(has_nav)]
+    let mut detour = crate::detour::Executor::new();
     // The scratch arena's **nav arm**, held for the whole search (#1146 P2) — many passes, by
     // design: the A* table, the tile cache and the planner all have to survive from one bounded step
     // to the next. This loop is the arena's sole owner-switcher, and the Recalculating freeze is what
@@ -1641,158 +1643,177 @@ pub(crate) async fn run_app(
             let mut nav_cancel = false;
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
-                match effect {
-                    #[cfg(has_nav)]
-                    NavigatorEffect::Acquire { token, work: PlannerWork::Route(request) } => {
-                        if !crate::flat_store::planner_map_current() {
-                            RideExec::deliver(
-                                &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
-                                "navigator",
-                            );
-                        } else {
-                            // Since #1146 P2 the planner slot lives in the scratch arena, so the search
-                            // must *take* the arena first — and a cable transfer streaming into the same
-                            // store outranks a reroute, which `nav_take_arena` enforces by asking the
-                            // arena who holds it. A refusal names the holder and answers the operation,
-                            // so no spinner hangs behind a half-claim and the freeze comes off.
-                            let refusal = match nav_take_arena(app, &mut nav_guard) {
-                                Err(why) => Some(why),
-                                // Impossible through the UI (the planning screen blocks a second
-                                // confirm), and fail-closed rather than lending one reply slot to two
-                                // live tickets: refuse the *new* operation so the rider gets the failure
-                                // card instead of a spinner nothing will ever resolve.
-                                Ok(()) if nav_run.is_some() => {
-                                    debug_assert!(false, "a second route plan arrived while one was active");
-                                    if let Some(run) = nav_run.as_mut() {
-                                        run.cancel_requested = true;
-                                    }
-                                    Some("a plan is already running")
-                                }
-                                Ok(()) => {
-                                    let mut bufs = NavBuffers {
-                                        guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
-                                        elev: &mut *nav.elev,
-                                    };
-                                    nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
-                                    exec.nav_token = Some(token);
-                                    nav_run = Some(NavRun {
-                                        allocation: None,
-                                        io: NavIo::NeedAllocate,
-                                        cancel_requested: false,
-                                        io_started: Instant::now(),
-                                        t0: Instant::now(),
-                                        phase_us: [0; 3],
-                                        write_us: 0,
-                                        #[cfg(feature = "sd-bench")]
-                                        read_perf: [crate::card_io::ReadPerf::ZERO; 3],
-                                    });
-                                    None
-                                }
-                            };
-                            if let Some(why) = refusal {
-                                defmt::warn!("nav: cannot start a plan ({=str}) — refusing the operation", why);
+                #[cfg(has_nav)]
+                let detour_effect = detour.accepts(&effect);
+                #[cfg(not(has_nav))]
+                let detour_effect = false;
+                #[cfg(has_nav)]
+                if detour_effect {
+                    if let Some(outcome) =
+                        detour.accept(effect, app, flat, &mut nav_guard, app.settings().bike_profile_idx)
+                    {
+                        RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                    }
+                }
+                if !detour_effect {
+                    match effect {
+                        #[cfg(has_nav)]
+                        NavigatorEffect::Acquire { token, work: PlannerWork::Route(request) } => {
+                            if !crate::flat_store::planner_map_current() {
                                 RideExec::deliver(
                                     &mut exec.outcomes.navigator,
-                                    NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                    NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
                                     "navigator",
                                 );
-                            }
-                        }
-                    }
-                    // The `ble` image ships without the router (the 256 KB DK's statics), so the
-                    // workspace this operation asks for does not exist in it.
-                    #[cfg(not(has_nav))]
-                    NavigatorEffect::Acquire { token, work: PlannerWork::Route(_) } => {
-                        defmt::warn!("nav: router not built into the ble image (256K DK) — refusing the operation");
-                        RideExec::deliver(
-                            &mut exec.outcomes.navigator,
-                            NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
-                            "navigator",
-                        );
-                    }
-                    // `PlatformSupport::detour = false` on this board: #882's splice holds the
-                    // planned detour's OBCR in RAM until the rider commits, and the board has one
-                    // flat-store reservation and no heap to read it from while it writes. That is
-                    // Gate 4 item 5 (#1400).
-                    //
-                    // **This arm is reachable today**, and says so rather than asserting otherwise:
-                    // nothing consults `Capabilities::navigator` yet, so the ride menu's Detour row
-                    // is still live and a rider pressing it produces this operation. It is refused
-                    // — the capability is absent, not the path — and the refusal must not read as a
-                    // fault: an unanswered one would wedge the Recalculating freeze for the rest of
-                    // the ride, and a fabricated `NoPath` would tell the rider the device searched.
-                    // A `warn`, not an `error`, because a rider pressing a row the firmware still
-                    // offers is an expected condition; the alarm class is for effects nobody should
-                    // ever have decided.
-                    NavigatorEffect::Acquire { token, work: PlannerWork::Detour(_) }
-                    | NavigatorEffect::CommitDetour { token } => {
-                        defmt::warn!("nav: detour is not supported on this board — refusing the operation");
-                        RideExec::deliver(
-                            &mut exec.outcomes.navigator,
-                            NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
-                            "navigator",
-                        );
-                    }
-                    NavigatorEffect::Release { token, retain_result, .. } => {
-                        nav_cancel = true;
-                        #[cfg(has_nav)]
-                        {
-                            exec.nav_token = Some(token);
-                            if let Some(run) = nav_run.as_mut() {
-                                if let NavIo::Published(id) = run.io {
-                                    run.io = if retain_result {
-                                        NavIo::Complete
-                                    } else {
-                                        NavIo::NeedPublishCompensation(id)
-                                    };
+                            } else {
+                                // Since #1146 P2 the planner slot lives in the scratch arena, so the search
+                                // must *take* the arena first — and a cable transfer streaming into the same
+                                // store outranks a reroute, which `nav_take_arena` enforces by asking the
+                                // arena who holds it. A refusal names the holder and answers the operation,
+                                // so no spinner hangs behind a half-claim and the freeze comes off.
+                                let refusal = match nav_take_arena(app, &mut nav_guard) {
+                                    Err(why) => Some(why),
+                                    // Impossible through the UI (the planning screen blocks a second
+                                    // confirm), and fail-closed rather than lending one reply slot to two
+                                    // live tickets: refuse the *new* operation so the rider gets the failure
+                                    // card instead of a spinner nothing will ever resolve.
+                                    Ok(()) if nav_run.is_some() => {
+                                        debug_assert!(false, "a second route plan arrived while one was active");
+                                        if let Some(run) = nav_run.as_mut() {
+                                            run.cancel_requested = true;
+                                        }
+                                        Some("a plan is already running")
+                                    }
+                                    Ok(()) => {
+                                        let mut bufs = NavBuffers {
+                                            guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
+                                            elev: &mut *nav.elev,
+                                        };
+                                        nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
+                                        exec.nav_token = Some(token);
+                                        nav_run = Some(NavRun {
+                                            allocation: None,
+                                            io: NavIo::NeedAllocate,
+                                            cancel_requested: false,
+                                            io_started: Instant::now(),
+                                            t0: Instant::now(),
+                                            phase_us: [0; 3],
+                                            write_us: 0,
+                                            #[cfg(feature = "sd-bench")]
+                                            read_perf: [crate::card_io::ReadPerf::ZERO; 3],
+                                        });
+                                        None
+                                    }
+                                };
+                                if let Some(why) = refusal {
+                                    defmt::warn!("nav: cannot start a plan ({=str}) — refusing the operation", why);
+                                    RideExec::deliver(
+                                        &mut exec.outcomes.navigator,
+                                        NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                        "navigator",
+                                    );
                                 }
                             }
                         }
+                        // The `ble` image ships without the router (the 256 KB DK's statics), so the
+                        // workspace this operation asks for does not exist in it.
                         #[cfg(not(has_nav))]
-                        let _ = retain_result;
-                        #[cfg(not(has_nav))]
-                        RideExec::deliver(
-                            &mut exec.outcomes.navigator,
-                            NavigatorOutcome::Released { token },
-                            "navigator",
-                        );
-                    }
-                    #[cfg(has_nav)]
-                    NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
-                        let next = nav_run.as_ref().and_then(|run| match (&effect, &run.io) {
-                            (NavigatorEffect::Step { .. }, NavIo::Ready) => Some(NavIo::StepRequested),
-                            (NavigatorEffect::CommitRoute { .. }, NavIo::ReadyCommit(stats)) => {
-                                Some(NavIo::NeedFinish(obc_route::Step::Done(*stats)))
-                            }
-                            _ => None,
-                        });
-                        let error = if !crate::flat_store::planner_map_current() {
-                            Some(NavigatorError::SourceChanged)
-                        } else if next.is_none() {
-                            Some(NavigatorError::Workspace)
-                        } else {
-                            None
-                        };
-                        if let Some(error) = error {
+                        NavigatorEffect::Acquire { token, work: PlannerWork::Route(_) } => {
+                            defmt::warn!("nav: router not built into the ble image (256K DK) — refusing the operation");
                             RideExec::deliver(
                                 &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Failed { token, error },
+                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
                                 "navigator",
                             );
-                        } else if let Some(run) = nav_run.as_mut() {
-                            exec.nav_token = Some(token);
-                            run.io = next.unwrap();
+                        }
+                        NavigatorEffect::Acquire { token, work: PlannerWork::Detour(_) }
+                        | NavigatorEffect::CommitDetour { token } => {
+                            defmt::warn!("nav: detour is not supported on this board — refusing the operation");
+                            RideExec::deliver(
+                                &mut exec.outcomes.navigator,
+                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                "navigator",
+                            );
+                        }
+                        NavigatorEffect::Release { token, retain_result, .. } => {
+                            nav_cancel = true;
+                            #[cfg(has_nav)]
+                            {
+                                exec.nav_token = Some(token);
+                                if let Some(run) = nav_run.as_mut() {
+                                    if let NavIo::Published(id) = run.io {
+                                        run.io = if retain_result {
+                                            NavIo::Complete
+                                        } else {
+                                            NavIo::NeedPublishCompensation(id)
+                                        };
+                                    }
+                                }
+                            }
+                            #[cfg(not(has_nav))]
+                            let _ = retain_result;
+                            #[cfg(not(has_nav))]
+                            RideExec::deliver(
+                                &mut exec.outcomes.navigator,
+                                NavigatorOutcome::Released { token },
+                                "navigator",
+                            );
+                        }
+                        #[cfg(has_nav)]
+                        NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
+                            let next = nav_run.as_ref().and_then(|run| match (&effect, &run.io) {
+                                (NavigatorEffect::Step { .. }, NavIo::Ready) => Some(NavIo::StepRequested),
+                                (NavigatorEffect::CommitRoute { .. }, NavIo::ReadyCommit(stats)) => {
+                                    Some(NavIo::NeedFinish(obc_route::Step::Done(*stats)))
+                                }
+                                _ => None,
+                            });
+                            let error = if !crate::flat_store::planner_map_current() {
+                                Some(NavigatorError::SourceChanged)
+                            } else if next.is_none() {
+                                Some(NavigatorError::Workspace)
+                            } else {
+                                None
+                            };
+                            if let Some(error) = error {
+                                RideExec::deliver(
+                                    &mut exec.outcomes.navigator,
+                                    NavigatorOutcome::Failed { token, error },
+                                    "navigator",
+                                );
+                            } else if let Some(run) = nav_run.as_mut() {
+                                exec.nav_token = Some(token);
+                                run.io = next.unwrap();
+                            }
+                        }
+                        #[cfg(not(has_nav))]
+                        NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
+                            RideExec::deliver(
+                                &mut exec.outcomes.navigator,
+                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                "navigator",
+                            );
                         }
                     }
-                    #[cfg(not(has_nav))]
-                    NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
-                        RideExec::deliver(
-                            &mut exec.outcomes.navigator,
-                            NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
-                            "navigator",
-                        );
-                    }
+                }
+            }
+
+            #[cfg(has_nav)]
+            if let Some(writer) = crate::flat_store::writer() {
+                if let Some(outcome) = detour.poll(
+                    app,
+                    flat,
+                    writer,
+                    &mut nav_guard,
+                    flat_map,
+                    map_tables,
+                    map_cache,
+                    &mut *nav.elev,
+                    &NAV_STORE_REPLY,
+                ) {
+                    RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                    prev_active = None;
+                    index_route = None;
                 }
             }
 
@@ -1966,9 +1987,11 @@ pub(crate) async fn run_app(
                                         .ok()
                                         .and_then(obc_storage::flat::DisplayName::new);
                                     match name {
-                                        Some(name) => {
-                                            crate::flat_store::Request::PublishComputedRoute { allocation, name }
-                                        }
+                                        Some(name) => crate::flat_store::Request::PublishComputedRoute {
+                                            allocation,
+                                            name,
+                                            original: None,
+                                        },
                                         None => {
                                             publishing = false;
                                             final_outcome = obc_route::Step::Failed(obc_route::NavError::NoPath);

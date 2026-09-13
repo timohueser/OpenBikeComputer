@@ -440,10 +440,18 @@ pub(crate) enum Request {
         bytes: &'static [u8],
         header: &'static [u8],
     },
+    Seal {
+        allocation: Allocation,
+        out: &'static mut Option<obc_storage::flat::SealedAllocation<'static>>,
+    },
+    ReleaseSealed {
+        sealed: obc_storage::flat::SealedAllocation<'static>,
+    },
     /// Publish a freshly generated route under the store's next id.
     PublishComputedRoute {
         allocation: Allocation,
         name: DisplayName,
+        original: Option<(ObjectId, Revision)>,
     },
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
     /// so this can never remove a later replacement that happens to share the object id.
@@ -636,6 +644,13 @@ impl Writer {
     pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, ()> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|_| ())
+    }
+
+    pub(crate) fn try_call_owned(&self, request: Request, reply: &'static Reply) -> Result<Ticket, Request> {
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|error| match error {
+            embassy_sync::channel::TrySendError::Full(job) => job.request,
+        })
     }
 
     /// Take this ticket's answer without parking. Older orphaned answers are discarded exactly as
@@ -1145,7 +1160,7 @@ fn remove_head(
 /// waits on), and this paragraph is the note that says so at the site rather than in an issue.
 #[inline(never)]
 fn serve(
-    store: &FlatStore<FlatCard>,
+    store: &'static FlatStore<FlatCard>,
     engine: &mut BoardEngine,
     policy: &mut BoardPolicy,
     request: Request,
@@ -1198,7 +1213,20 @@ fn serve(
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
         }
-        Request::PublishComputedRoute { allocation, name } => {
+        Request::Seal { allocation, out } => {
+            *out = Some(store.seal(allocation)?);
+            Ok(Outcome::Done)
+        }
+        Request::ReleaseSealed { sealed } => {
+            store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
+            Ok(Outcome::Done)
+        }
+        Request::PublishComputedRoute { allocation, name, original } => {
+            if let Some((id, revision)) = original {
+                if store.current_revision(id)? != Some(revision) {
+                    return Err(StoreError::NotFound);
+                }
+            }
             #[cfg(has_nav)]
             if !planner_map_current() {
                 return Err(StoreError::NotFound);
@@ -1782,6 +1810,18 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
 /// The active route's held revision. One route is streamed by the matcher/renderer at a time; this
 /// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
 static mut ROUTE_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
+
+/// Take another reader of the exact active route, never a replacement found through a stale menu.
+#[cfg(has_nav)]
+pub(crate) fn planner_original(
+    store: &'static FlatStore<FlatCard>,
+    id: ObjectId,
+) -> Result<obc_storage::flat::StoreSource<'static, FlatCard>, StoreError> {
+    let source = unsafe { &*core::ptr::addr_of!(ROUTE_SOURCE) };
+    let source =
+        source.as_ref().filter(|source| source.id() == id && source.is_current()).ok_or(StoreError::NotFound)?;
+    store.source(id, Some(source.revision()))
+}
 
 /// Reconcile the held route revision to the app's selected flat `ObjectId` and return its source.
 /// A replace at the same id reopens because the catalog revision is part of the key.
