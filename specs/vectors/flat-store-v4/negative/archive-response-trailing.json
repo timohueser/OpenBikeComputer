@@ -1,0 +1,11 @@
+{
+  "name": "archive-response-trailing",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlResponse",
+  "note": "Clients reject malformed archive responses.",
+  "expect": {
+    "disposition": "rejectResponse"
+  },
+  "bytes": "4f4243340409010010000000092a00000800000000000000000000000000000000"
+}

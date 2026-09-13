@@ -56,7 +56,7 @@ export const NAME_CAPACITY = 48;
 
 // --- opcodes, flags, kinds ------------------------------------------------------
 
-/** §3.2's opcode table. Eight, and there is no generic forwarding path. */
+/** §3.2's opcode table. Nine, and there is no generic forwarding path. */
 export const Opcode = {
     List: 0x01,
     Status: 0x02,
@@ -66,6 +66,7 @@ export const Opcode = {
     Cancel: 0x06,
     Arm: 0x07,
     Format: 0x08,
+    ArchiveRide: 0x09,
 } as const;
 export type Opcode = (typeof Opcode)[keyof typeof Opcode];
 
@@ -78,6 +79,7 @@ const OPCODE_NAMES: Readonly<Record<Opcode, string>> = {
     [Opcode.Cancel]: "CANCEL",
     [Opcode.Arm]: "ARM",
     [Opcode.Format]: "FORMAT",
+    [Opcode.ArchiveRide]: "ARCHIVE_RIDE",
 };
 
 /** The spec's own name for an opcode, for a message a person will read. */
@@ -95,6 +97,7 @@ const REQUEST_BODY_LEN: Readonly<Record<Opcode, number>> = {
     [Opcode.Cancel]: 4,
     [Opcode.Arm]: 16,
     [Opcode.Format]: 32,
+    [Opcode.ArchiveRide]: 44,
 };
 
 /** §3.1's flag bits. Requests carry none. */
@@ -448,6 +451,19 @@ export interface FormatRequest {
     readonly replacementStoreId: string;
 }
 
+export interface ArchiveRideRequest {
+    readonly storeId: string;
+    readonly objectId: bigint;
+    readonly revision: bigint;
+    readonly payloadLength: bigint;
+    readonly payloadCrc32: number;
+}
+
+export interface ArchiveRideResponse {
+    readonly commitSequence: bigint;
+    readonly timestamp: number;
+}
+
 /** One decoded request, tagged by its opcode. */
 export type Request =
     | { readonly opcode: typeof Opcode.List; readonly body: ListRequest }
@@ -457,7 +473,8 @@ export type Request =
     | { readonly opcode: typeof Opcode.Remove; readonly body: ObjectRef }
     | { readonly opcode: typeof Opcode.Cancel; readonly body: CancelRequest }
     | { readonly opcode: typeof Opcode.Arm; readonly body: ArmRequest }
-    | { readonly opcode: typeof Opcode.Format; readonly body: FormatRequest };
+    | { readonly opcode: typeof Opcode.Format; readonly body: FormatRequest }
+    | { readonly opcode: typeof Opcode.ArchiveRide; readonly body: ArchiveRideRequest };
 
 /** A decoded request and the `RequestId` its answer must echo. */
 export interface DecodedRequest {
@@ -568,6 +585,14 @@ function decodeRequestBody(opcode: Opcode, body: Uint8Array): Request | Refusal 
                 opcode,
                 body: { packageObjectId: view.getBigUint64(0, true), expectedRevision: view.getBigUint64(8, true) },
             };
+        case Opcode.ArchiveRide: {
+            const source = { storeId: hex(body.subarray(0, 16)), objectId: view.getBigUint64(16, true),
+                revision: view.getBigUint64(24, true), payloadLength: view.getBigUint64(32, true),
+                payloadCrc32: view.getUint32(40, true) };
+            if (/^0+$/.test(source.storeId) || source.objectId === 0n || source.revision === 0n || source.payloadLength === 0n)
+                return badCombination();
+            return { opcode, body: source };
+        }
         case Opcode.Format: {
             const expectedStoreId = hex(body.subarray(0, 16));
             const replacementStoreId = hex(body.subarray(16, 32));
@@ -752,7 +777,8 @@ export type Response =
     | { readonly opcode: typeof Opcode.Remove; readonly body: { readonly commitSequence: bigint } }
     | { readonly opcode: typeof Opcode.Cancel; readonly body: { readonly cancelled: boolean } }
     | { readonly opcode: typeof Opcode.Arm; readonly body: ArmResponse }
-    | { readonly opcode: typeof Opcode.Format; readonly body: FormatResponse };
+    | { readonly opcode: typeof Opcode.Format; readonly body: FormatResponse }
+    | { readonly opcode: typeof Opcode.ArchiveRide; readonly body: ArchiveRideResponse };
 
 /** A decoded response: the `RequestId` it echoes, and either a body or the refusal it carried. */
 export type DecodedResponse =
@@ -899,6 +925,10 @@ function decodeResponseBody(opcode: number, body: Uint8Array, more: boolean): Re
                     commitSequence: view.getBigUint64(8, true),
                 },
             };
+        case Opcode.ArchiveRide:
+            expect(16);
+            if (view.getUint32(12, true) !== 0) throw new ResponseError("Archive response reserved bytes must be zero.");
+            return { opcode: Opcode.ArchiveRide, body: { commitSequence: view.getBigUint64(0, true), timestamp: view.getUint32(8, true) } };
         case Opcode.Format:
             expect(16);
             return { opcode: Opcode.Format, body: { storeId: hex(body) } };
@@ -1128,4 +1158,24 @@ export function unhex(text: string, bytes: number): Uint8Array {
 function isZero(bytes: Uint8Array): boolean {
     for (const byte of bytes) if (byte !== 0) return false;
     return true;
+}
+
+export function encodeArchiveRideRequest(requestId: number, request: ArchiveRideRequest): Uint8Array {
+    const body = new Uint8Array(44);
+    body.set(unhex(request.storeId, 16));
+    const view = new DataView(body.buffer);
+    view.setBigUint64(16, request.objectId, true);
+    view.setBigUint64(24, request.revision, true);
+    view.setBigUint64(32, request.payloadLength, true);
+    view.setUint32(40, request.payloadCrc32, true);
+    if ("code" in decodeRequestBody(Opcode.ArchiveRide, body)) throw new RangeError("Invalid archive source.");
+    return encodeControl(Opcode.ArchiveRide, 0, requestId, body);
+}
+
+export function encodeArchiveRideResponse(requestId: number, response: ArchiveRideResponse): Uint8Array {
+    const body = new Uint8Array(16);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, response.commitSequence, true);
+    view.setUint32(8, response.timestamp, true);
+    return encodeControl(Opcode.ArchiveRide, Flags.Response, requestId, body);
 }

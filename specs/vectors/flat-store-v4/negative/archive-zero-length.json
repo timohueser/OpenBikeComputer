@@ -1,0 +1,15 @@
+{
+  "name": "archive-zero-length",
+  "suite": "flat-store-v4",
+  "kind": "negative",
+  "target": "controlRecord",
+  "note": "A receipt requires a complete nonzero source identity and length.",
+  "expect": {
+    "disposition": "errorResponse",
+    "code": "invalidRequest",
+    "codeValue": 3,
+    "detail": "badCombination",
+    "detailValue": 3
+  },
+  "bytes": "4f424334040900002c000000092a00008f2c41d96b074ea3b1559c207de83466020000000000000001000000000000000000000000000000217e4a9c"
+}
