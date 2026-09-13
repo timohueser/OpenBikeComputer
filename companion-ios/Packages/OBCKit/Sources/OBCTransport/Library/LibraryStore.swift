@@ -111,6 +111,11 @@ extension LibraryStore {
         throw RideArchiveError.unsupportedStore
     }
     public func archivedRideSource(_ id: RideID) -> RideSource? { nil }
+
+    /// Revalidates the complete archive and its persistence barriers before minting a receipt.
+    public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? {
+        archivedRideSource(id).map { RideArchiveReceipt(source: $0) }
+    }
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs

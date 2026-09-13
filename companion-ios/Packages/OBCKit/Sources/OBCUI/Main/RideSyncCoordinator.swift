@@ -3,30 +3,8 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// The main screen's ride-sync state machine (B7), extracted from
-/// `MainScreenModel` (#358). Depends only on the link and stored-object
-/// capabilities plus the `LibraryStore` it persists into.
-///
-/// **The SYNC button contract:** idle → syncing ("N of M rides") → done
-/// ("Synced N new rides just now", ~2 s check) → idle — driven off the
-/// `downloadRides` `RideDownload`. "New" means not in the `LibraryStore`'s
-/// synced set (B1S) — persistent, so a relaunch never re-counts. Each landed
-/// payload decodes through `RideObjectCodec` into the canonical `Ride`
-/// and persists at once, so a drop mid-batch keeps what arrived (H10) by
-/// construction. A drop surfaces as `syncInterruption` ("Got 2 of 5 rides." +
-/// Resume); `resumeSync()` restarts the stalled batch at **whole-ride
-/// granularity** — rides that fully landed stay, the rest are re-sent whole
-/// (transfers restart, not resume — the spec's principle 4).
-///
-/// **Division of labor with the model:** persistence happens *here*, per
-/// landed ride — `library.saveRide` + `markRideSynced` the moment the bytes
-/// arrive is exactly what makes a dropped batch keep its partial. The owning
-/// model only mirrors each landed ride into its in-memory list via the
-/// `onRideLanded` callback (a plain closure — an `AsyncStream` seam would add
-/// ordering questions for no benefit on one actor). The #303 protocol-version
-/// gate stays with the model (it belongs to the reload/identity path) and is
-/// injected as `canSync`; the link gate lives here, off the coordinator's own
-/// `transport.state` subscription.
+/// Saves each completed ride independently, then confirms its exact durable archive on the
+/// device. Reconnect reconciles saved archives; only an explicit sync downloads missing rides.
 @MainActor @Observable
 public final class RideSyncCoordinator {
     /// Ride-count progress for the syncing caption ("3 of 5 rides").
@@ -41,6 +19,24 @@ public final class RideSyncCoordinator {
     public struct SyncInterruption: Equatable, Sendable {
         public var landed: Int
         public var total: Int
+        public var reason: Reason = .download
+
+        public enum Reason: Equatable, Sendable {
+            case download, confirmationPending, unsupported, sourceUnavailable, refused
+        }
+
+        public var title: String {
+            reason == .download ? "Sync interrupted." : "Device confirmation pending."
+        }
+        public var message: String {
+            switch reason {
+            case .download: "Got \(landed) of \(total) rides."
+            case .confirmationPending: "Your rides are saved on this phone. Retry to confirm them on the device."
+            case .unsupported: "Your rides are saved on this phone. This device does not support archive confirmation."
+            case .sourceUnavailable: "Your rides are saved on this phone. The device ride changed or is no longer available."
+            case .refused: "Your rides are saved on this phone. The device refused archive confirmation."
+            }
+        }
     }
 
     /// Pacing — injectable so the coordinator tests run in milliseconds.
@@ -172,6 +168,7 @@ public final class RideSyncCoordinator {
                     // be stale, or a *different* device's). The next sync's list
                     // read re-establishes it.
                     hiddenRideCount = 0
+                    reconcileArchives()
                 }
                 wasConnected = state == .connected
             }
@@ -184,27 +181,27 @@ public final class RideSyncCoordinator {
         syncDropWatch?.cancel()
     }
 
-    // MARK: Sync (the SYNC button)
-
-    /// Pull new tracked rides off the device. No-ops unless the link is up and
-    /// no sync is running (the button is disabled when unreachable — S4 dims
-    /// link-bound actions). Starting fresh over a waiting interruption is fine:
-    /// what landed is marked synced, so the new batch is exactly the remainder.
+    /// Explicit sync downloads missing rides and retries device archive confirmation.
     public func sync() {
-        // The #303 veto is consulted inside `runSync`, after `identitySettled`
-        // — a tap in the sub-second window before the identity read lands must
-        // wait for the verdict, not silently no-op.
         guard connection == .connected, syncState != .syncing else { return }
+        startSync(downloadMissing: true)
+    }
+
+    private func reconcileArchives() {
+        guard syncState != .syncing, activeDownload == nil,
+              library.rideSummaries().contains(where: { $0.source != nil }) else { return }
+        startSync(downloadMissing: false)
+    }
+
+    private func startSync(downloadMissing: Bool) {
         syncTask?.cancel()
         syncDropWatch?.cancel()
-        // Tear down a superseded (interrupted-but-waiting) batch so its runner
-        // stops competing for the transfer slot and its stalled stream finishes —
-        // the cancelled old `runSync` then can't yield a late ride into the new
-        // sync's shared state.
         activeDownload?.handle.cancel()
         syncInterruption = nil
         activeDownload = nil
-        syncTask = Task { await runSync() }
+        upToDateToastVisible = false
+        syncState = .syncing
+        syncTask = Task { await runSync(downloadMissing: downloadMissing) }
     }
 
     /// H10's Resume: restart the dropped batch at whole-ride granularity —
@@ -212,89 +209,81 @@ public final class RideSyncCoordinator {
     /// its start. The consuming loop never stopped (it's awaiting the stalled
     /// stream), so rides simply start landing again.
     public func resumeSync() {
-        guard let interruption = syncInterruption, let download = activeDownload else { return }
+        guard let interruption = syncInterruption else { return }
+        guard let download = activeDownload, interruption.reason == .download else {
+            sync()
+            return
+        }
         syncInterruption = nil
         syncState = .syncing
         syncProgress = SyncProgress(done: interruption.landed, total: interruption.total)
         download.handle.resume()
     }
 
-    private func runSync() async {
-        syncState = .syncing
+    private func runSync(downloadMissing: Bool) async {
+        defer { if !Task.isCancelled { syncTask = nil } }
         lastSyncCount = nil
-        // The #303 gate, in order: wait for the identity read to settle, then
-        // ask. A veto lands the button back at idle — the model's mismatch
-        // banner is the explanation, not a toast. Decoding an incompatible
-        // device's ride objects would be the exact "silently proceed" the
-        // version check exists to prevent.
         await identitySettled()
         guard !Task.isCancelled else { return }
         guard canSync() else {
             syncState = .idle
             return
         }
-        // The mirror trues up per sync (see its doc): a ride synced by an
-        // earlier batch — or tombstoned by a phone-side delete — is not "new".
         syncedRideIDs = library.syncedRideIDs()
-
         do {
             let catalog = try await transport.listRides()
-            // Canceled = a newer sync superseded this one and owns the shared
-            // state now — touch nothing (same rule at every check below).
-            guard !Task.isCancelled else { return }
+            try Task.checkCancellation()
             onRideCatalogRead()
-            // The v2 header's truncation signal: some rides are unsyncable until
-            // the rider frees space on the device (spec §7.4). Surface it from the
-            // list read whether or not there's anything fresh to fetch.
             hiddenRideCount = catalog.hiddenRideCount
-
-            let onDevice = catalog.rides
             let deleted = library.deletedRideIDs().union(library.trashedRideIDs().keys)
-            let fresh = onDevice.filter { summary in
-                guard !deleted.contains(summary.id) else { return false }
+            var fresh: [RideSummary] = []
+            var receipts: [RideArchiveReceipt] = []
+            for summary in catalog.rides where !deleted.contains(summary.id) {
                 if let source = summary.source {
-                    return library.archivedRideSource(summary.id) != source
+                    if let receipt = library.archivedRideReceipt(summary.id), receipt.source == source {
+                        receipts.append(receipt)
+                    } else if downloadMissing {
+                        fresh.append(summary)
+                    }
+                } else if downloadMissing && !syncedRideIDs.contains(summary.id) {
+                    fresh.append(summary)
                 }
-                return !syncedRideIDs.contains(summary.id)
             }
+
+            var confirmationFailure: SyncInterruption.Reason?
+            for receipt in receipts {
+                if let failure = try await confirm(receipt) { confirmationFailure = failure }
+            }
+            try Task.checkCancellation()
             guard !fresh.isEmpty else {
-                // H9 — a quiet toast, straight back to idle (no empty "done").
                 syncState = .idle
-                upToDateToastVisible = true
+                if let confirmationFailure {
+                    syncInterruption = SyncInterruption(landed: 0, total: 0, reason: confirmationFailure)
+                } else if downloadMissing {
+                    upToDateToastVisible = true
+                }
                 return
             }
 
             syncProgress = SyncProgress(done: 0, total: fresh.count)
             let download = transport.downloadRides(from: fresh)
             activeDownload = download
-            // A drop stalls the download streams open (that's what makes the
-            // batch restartable, whole rides at a time). Watch the link and
-            // surface H10 with what landed; the loop below just keeps awaiting
-            // the stalled stream until Resume — or a new sync — moves things.
-            // Held locally too: a superseded task must cancel ITS watch, never
-            // the one a newer sync installed in the shared property.
             let dropWatch = Task { [weak self, transport] in
                 for await state in transport.state
                 where state == .outOfRange || state == .disconnected {
-                    guard let self else { return }
-                    if Task.isCancelled { break }
+                    guard let self, !Task.isCancelled else { return }
                     interruptSync()
                 }
             }
             syncDropWatch = dropWatch
+            defer { dropWatch.cancel() }
             var landed = 0
             var batchFailed = false
             do {
                 for try await downloaded in download.rides {
-                    // A superseding sync (or a fresh sync over a waiting
-                    // interruption) cancels this task; a late ride yielded by the
-                    // old stalled stream must not mutate the new sync's shared
-                    // state (double-persist, clobbered progress / activeDownload).
-                    guard !Task.isCancelled else { return }
-                    guard let summary = fresh.first(where: { $0.id == downloaded.id }) else {
-                        throw DeviceError.readFailed
-                    }
-                    guard downloaded.source == summary.source else { throw DeviceError.readFailed }
+                    try Task.checkCancellation()
+                    guard let summary = fresh.first(where: { $0.id == downloaded.id }),
+                          downloaded.source == summary.source else { throw DeviceError.readFailed }
                     var ride = try RideObjectCodec.decode(downloaded.payload, id: downloaded.id)
                     if let source = downloaded.source {
                         guard source.matches(downloaded.id),
@@ -304,7 +293,6 @@ public final class RideSyncCoordinator {
                         }
                         ride.summary.source = source
                     } else {
-                        // Stand-ins supply display metadata separately from their fixture payload.
                         let decoded = ride.summary
                         ride.summary = summary
                         if ride.summary.trackPreview == nil { ride.summary.trackPreview = decoded.trackPreview }
@@ -314,36 +302,30 @@ public final class RideSyncCoordinator {
                         ride.summary.avgPower = decoded.avgPower
                         ride.summary.maxPower = decoded.maxPower
                     }
-                    _ = try library.archiveRide(ride)
+                    let receipt = try library.archiveRide(ride)
                     syncedRideIDs.insert(downloaded.id)
                     onRideLanded(ride)
                     landed += 1
                     syncProgress = SyncProgress(done: landed, total: fresh.count)
+                    if let receipt, let failure = try await confirm(receipt) {
+                        confirmationFailure = failure
+                    }
                 }
             } catch {
-                // A transfer, decode or save error stops the batch; earlier saves remain.
                 batchFailed = true
                 download.handle.cancel()
             }
-            // The transfer is over one way or another: the watch has done its
-            // job (leaving it running would fire H10 on a later, harmless drop).
-            dropWatch.cancel()
-            guard !Task.isCancelled else { return }
+            try Task.checkCancellation()
+            let outcome = await download.handle.outcome
+            try Task.checkCancellation()
             syncProgress = nil
             syncInterruption = nil
             activeDownload = nil
-            guard !batchFailed else {
+            if batchFailed || outcome != .completed || confirmationFailure != nil {
                 syncState = .idle
-                return
-            }
-            let outcome = await download.handle.outcome
-            // Re-check after the outcome await too: a superseding `sync()` can
-            // land while this task is suspended here (its `handle.cancel()` is
-            // exactly what resolves a superseded batch's outcome) — resuming
-            // without this guard would clobber the new sync's `.syncing`/counts.
-            guard !Task.isCancelled else { return }
-            guard outcome == .completed else {
-                syncState = .idle
+                syncInterruption = SyncInterruption(
+                    landed: landed, total: fresh.count,
+                    reason: batchFailed || outcome != .completed ? .download : confirmationFailure!)
                 return
             }
 
@@ -356,11 +338,29 @@ public final class RideSyncCoordinator {
             guard !Task.isCancelled else { return }
             lastSyncCount = nil
         } catch {
-            // Only the ride list read can land here (transfer-stream errors are
-            // handled above) — no watch or download exists yet.
             guard !Task.isCancelled else { return }
             syncProgress = nil
             syncState = .idle
+            // A failed reconnect catalog cannot establish which archived sources still match.
+            syncInterruption = SyncInterruption(
+                landed: 0, total: 0, reason: downloadMissing ? .download : .confirmationPending)
+        }
+    }
+
+    private func confirm(_ receipt: RideArchiveReceipt) async throws -> SyncInterruption.Reason? {
+        try Task.checkCancellation()
+        do {
+            let result = try await transport.confirmRideArchive(receipt)
+            try Task.checkCancellation()
+            switch result {
+            case .confirmed: return nil
+            case .sourceUnavailable: return .sourceUnavailable
+            case .unsupported: return .unsupported
+            case .refused: return .refused
+            }
+        } catch {
+            try Task.checkCancellation()
+            return .confirmationPending
         }
     }
 
