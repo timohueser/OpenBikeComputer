@@ -286,10 +286,16 @@ It saves the canonical summary, samples and source identity in one atomic archiv
 A local archive receipt is returned only after the file and directory persistence barriers succeed.
 A failed save reports no success. A different revision or missing archive remains eligible for download.
 
-The local receipt does not change device retention state.
-Protocol v4 has no ride-possession mutation, so device rides remain unsynced and protected from
-automatic expiry. The [archive contract](src:specs/Ride_Archive_Contract.md) defines the local
-boundary and the required next device persistence boundary.
+Protocol v4 can persist proof that a client holds the exact finalized ride. The device checks the
+card, object, revision, length and CRC, then commits and reads back the proof. A duplicate keeps
+the original timestamp. A lost reply can be retried from the durable archive without starting a
+new countdown.
+
+This proof initially has no expiry timestamp. The companion does not send it yet, and the board
+continues to report rides unsynced and protected from automatic expiry. Live integration will let
+the existing retention policy start the countdown when the clock is trusted. The
+[archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
+the remaining integration work.
 
 The board and flat-store host persist route-use stamps in a card metadata object.
 Each row binds to the card and the exact source revision, length, and CRC. The store replaces

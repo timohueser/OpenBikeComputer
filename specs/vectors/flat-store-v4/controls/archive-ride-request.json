@@ -1,0 +1,26 @@
+{
+  "name": "archive-ride-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "ARCHIVE_RIDE",
+    "value": 9
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 44,
+    "requestId": 10761
+  },
+  "note": "Exact client archive possession; no client clock or catalog sequence.",
+  "body": {
+    "storeId": "8f2c41d96b074ea3b1559c207de83466",
+    "objectId": "2",
+    "revision": "1",
+    "payloadLength": "42137",
+    "payloadCrc32": 2622127649
+  },
+  "frame": "4f424334040900002c000000092a00008f2c41d96b074ea3b1559c207de834660200000000000000010000000000000099a4000000000000217e4a9c"
+}

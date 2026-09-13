@@ -366,6 +366,8 @@ pub enum Target {
     Unanswerable,
     /// A stream record that does not split into a frame and its payload.
     StreamRecord,
+    /// Malformed response, consumed by the client codecs.
+    ControlResponse,
 }
 
 fn negative(name: &str, note: &str, target: Target, bytes: Vec<u8>) -> Fixture {
@@ -378,12 +380,20 @@ fn negative(name: &str, note: &str, target: Target, bytes: Vec<u8>) -> Fixture {
             .num("detailValue", i64::from(detail.1)),
         Target::Unanswerable => Json::new().str("disposition", "closeRecordStream"),
         Target::StreamRecord => Json::new().str("disposition", "terminateTransfer"),
+        Target::ControlResponse => Json::new().str("disposition", "rejectResponse"),
     };
     let json = Json::new()
         .str("name", name)
         .str("suite", "flat-store-v4")
         .str("kind", "negative")
-        .str("target", if matches!(target, Target::StreamRecord) { "streamRecord" } else { "controlRecord" })
+        .str(
+            "target",
+            match target {
+                Target::StreamRecord => "streamRecord",
+                Target::ControlResponse => "controlResponse",
+                _ => "controlRecord",
+            },
+        )
         .str("note", note)
         .obj("expect", expect)
         .str("bytes", &hex(&bytes))
@@ -758,6 +768,82 @@ pub fn fixtures() -> Vec<Fixture> {
         Json::new().str("storeId", &hex(&REPLACEMENT_STORE)),
     ));
 
+    let mut archive_request = header(0x09, 0, 44, 0x0000_2A09);
+    bytes_at(&mut archive_request, HEADER_LEN, &STORE);
+    u64_at(&mut archive_request, HEADER_LEN + 16, RIDE_ID);
+    u64_at(&mut archive_request, HEADER_LEN + 24, RIDE_REVISION);
+    u64_at(&mut archive_request, HEADER_LEN + 32, ROUTE_LEN);
+    u32_at(&mut archive_request, HEADER_LEN + 40, ROUTE_CRC);
+    all.push(control(
+        "archive-ride-request",
+        "Exact client archive possession; no client clock or catalog sequence.",
+        "request",
+        ("ARCHIVE_RIDE", 0x09),
+        archive_request.clone(),
+        Json::new()
+            .str("storeId", &hex(&STORE))
+            .big("objectId", RIDE_ID)
+            .big("revision", RIDE_REVISION)
+            .big("payloadLength", ROUTE_LEN)
+            .num("payloadCrc32", i64::from(ROUTE_CRC)),
+    ));
+    for (name, timestamp) in [("archive-ride-response", 0), ("archive-ride-response-stamped", 0x65000000)] {
+        let mut response = header(0x09, 1, 16, 0x0000_2A09);
+        u64_at(&mut response, HEADER_LEN, SEQUENCE + 1);
+        u32_at(&mut response, HEADER_LEN + 8, timestamp);
+        all.push(control(
+            name,
+            "The stored timestamp is preserved on every duplicate receipt.",
+            "response",
+            ("ARCHIVE_RIDE", 0x09),
+            response,
+            Json::new().big("commitSequence", SEQUENCE + 1).num("timestamp", i64::from(timestamp)),
+        ));
+    }
+    for (name, offset, len) in [("store", 0, 16), ("object", 16, 8), ("revision", 24, 8), ("length", 32, 8)] {
+        let mut bad = archive_request.clone();
+        bad[HEADER_LEN + offset..HEADER_LEN + offset + len].fill(0);
+        all.push(negative(
+            &format!("archive-zero-{name}"),
+            "A receipt requires a complete nonzero source identity and length.",
+            Target::ControlRecord { code: ("invalidRequest", 3), detail: ("badCombination", 3) },
+            bad,
+        ));
+    }
+    for (name, bytes) in [
+        ("archive-request-short", archive_request[..archive_request.len() - 1].to_vec()),
+        ("archive-request-trailing", {
+            let mut b = archive_request.clone();
+            b.push(0);
+            b
+        }),
+    ] {
+        let detail = if name.ends_with("short") { ("truncated", 3) } else { ("trailing", 4) };
+        all.push(negative(
+            name,
+            "The receipt request has exactly 44 body bytes.",
+            Target::ControlRecord { code: ("invalidFrame", 2), detail },
+            bytes,
+        ));
+    }
+    let mut response = header(0x09, 1, 16, 0x0000_2A09);
+    u64_at(&mut response, HEADER_LEN, SEQUENCE + 1);
+    for (name, bad) in [
+        ("archive-response-reserved", {
+            let mut b = response.clone();
+            b[HEADER_LEN + 12] = 1;
+            b
+        }),
+        ("archive-response-short", response[..response.len() - 1].to_vec()),
+        ("archive-response-trailing", {
+            let mut b = response;
+            b.push(0);
+            b
+        }),
+    ] {
+        all.push(negative(name, "Clients reject malformed archive responses.", Target::ControlResponse, bad));
+    }
+
     // -- streams ----------------------------------------------------------------------------------
     let kilobyte: Vec<u8> = (0..1_024).map(|index| (index % 251) as u8).collect();
     all.push(stream_fixture(
@@ -952,10 +1038,10 @@ pub fn fixtures() -> Vec<Fixture> {
     ));
 
     let mut unknown_opcode = put_create_request();
-    unknown_opcode[5] = 0x09;
+    unknown_opcode[5] = 0x0A;
     all.push(negative(
         "unknown-opcode",
-        "Seven opcodes, and no generic forwarding path.",
+        "Nine opcodes, and no generic forwarding path.",
         Target::ControlRecord { code: ("unsupported", 1), detail: ("opcode", 1) },
         unknown_opcode,
     ));

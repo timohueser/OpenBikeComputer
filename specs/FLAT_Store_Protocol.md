@@ -306,6 +306,7 @@ carry the same value (§3.8). That is why there is no session identifier in this
 | `0x06` | `CANCEL` | none |
 | `0x07` | `ARM` | one commit, then the boot handoff and a reboot |
 | `0x08` | `FORMAT` | replaces the entire card with an empty store, then reboots |
+| `0x09` | `ARCHIVE_RIDE` | persists exact client archive possession without starting an expiry countdown |
 
 An unknown opcode is `unsupported`. There is no generic forwarding path.
 
@@ -693,6 +694,63 @@ A complete `LIST` response, `RequestId 0x00002A02`, both entries, no further pag
 00c0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 00d0  00 00 00 00 00 00 00 00
 ```
+
+### 3.12 `ARCHIVE_RIDE`
+
+The client MUST send this request only after its archive persistence barriers complete, or after
+it revalidates an existing durable archive. GET completion, a UI flag and deletion history are not
+archive proof. See [the archive contract](Ride_Archive_Contract.md).
+
+**Request — 44 bytes**
+
+| Offset | Type | Field |
+| :-- | :-- | :-- |
+| 0 | 16 bytes | `StoreId` |
+| 16 | `u64` | `ObjectId` |
+| 24 | `u64` | `Revision` |
+| 32 | `u64` | payload length |
+| 40 | `u32` | payload CRC-32/IEEE |
+
+The StoreId MUST be nonzero. ObjectId, Revision and payload length MUST each be nonzero.
+CRC zero is valid. The device MUST match every field against a current Ride entry whose flags are
+exactly `NONE`. An absent object, wrong card, replaced revision, retained-only revision, recording,
+wrong kind or content mismatch returns `invalidRequest / badCombination` without changing metadata.
+The request has no catalog sequence: unrelated commits do not invalidate exact archive possession.
+
+The shared engine invokes a synchronous archive hook in its Store adapter. Stores without that
+hook return `unsupported / 0`; an active transfer returns `busy / transfer`. Unreadable cards
+return the existing `readOnly` detail. Exhausted but readable cards can acknowledge an existing
+proof; they refuse a new metadata commit. Other storage errors retain the existing `busy`,
+`noSpace` and `readOnly` mappings. An unreadable or invalid metadata payload returns `mediaIo / 0`,
+never an empty default. An uncertain commit or committed readback failure returns no success and
+fences further mutations until remount.
+
+The hook validates and reconciles the card metadata, then inserts the exact Ride row with timestamp
+zero through an atomic metadata replacement and readback. An exact existing row returns its stored
+timestamp without writing payload or changing the catalog sequence. Before acknowledging a
+duplicate, the hook MUST complete a media sync barrier: a live-medium remount can read a gate whose
+previous final sync failed. A failed duplicate barrier fences mutations until remount and returns
+no success. A duplicate MUST NOT restart the countdown.
+The serialized storage writer owns the whole operation; it does not call back into App or read a
+client clock. A zero timestamp records possession only. RetentionMachine owns the later first
+trusted-clock stamp and expiry.
+
+**Response — 16 bytes**
+
+| Offset | Type | Field |
+| :-- | :-- | :-- |
+| 0 | `u64` | current catalog commit sequence |
+| 8 | `u32` | stored timestamp; zero means no countdown has started |
+| 12 | 4 bytes | reserved, zero |
+
+The opcode and RequestId correlate the response. No stream records accompany it. If the response
+is lost, the client can restore the link, check StoreId and retry the exact source with a new
+RequestId. A committed proof remains idempotent after remount. If the first attempt did not commit,
+a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
+mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
+
+The current board continues to load rides as unsynced. Client delivery and live retention loading,
+clock stamping and scoped ride expiry are separate integration boundaries.
 
 ## 4. Firmware update
 

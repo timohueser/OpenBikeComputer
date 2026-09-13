@@ -505,6 +505,9 @@ export class MockDevice {
             case Opcode.Arm:
                 await this.serveArm(requestId, request.body);
                 return;
+            case Opcode.ArchiveRide:
+                await this.send(encodeErrorResponse(request.opcode, requestId, refusal(ErrorCode.Unsupported)));
+                return;
             case Opcode.Format:
                 await this.serveFormat(requestId, request.body);
                 return;
