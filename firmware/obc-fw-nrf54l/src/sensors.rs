@@ -24,7 +24,7 @@
 //! heading is **never stored** — it only orients a heading-up *map while the rider is stopped*. So it
 //! runs on its **own cadence, decoupled from the GPS fix**: ~5 Hz while stationary (lively as you
 //! rotate the device by hand, independent of a slow / power-saving fix rate), and silent while moving
-//! (the GPS course is the heading then) or idle (the receiver is asleep). See [`sensor_task`].
+//! (the GPS course is the heading then) or idle (GNSS processing is stopped). See [`sensor_task`].
 //!
 //! ## Event-driven, with a robust fallback (the "no fix" story)
 //! The task waits on the **TX-Ready edge** so it does **zero** bus work between fixes. But TX-Ready
@@ -36,12 +36,12 @@
 //! simply pauses. Every stage logs over RTT (defmt) so acquisition is watchable live.
 //!
 //! ## Power management
-//! Continuous tracking is ~20 mA — left on while idle it would flatten the pack in days. So after one
-//! **boot fix** (which sets the clock + warms the ephemeris), the task follows the app's
-//! [`GpsPower`] request: **deep-sleep** (`RXM-PMREQ` backup, ~µA, zero bus traffic) whenever a ride
-//! isn't running, waking on a DDC poke for a fast *warm* fix when one starts; full-power fixes while
-//! riding, or the M10's on-chip **low-power** tracking when the `power_saver` toggle is on. The
-//! `RXM-PMREQ` / `CFG-PM` encodings live host-tested in [`obc_sensors::ubx`].
+//! After boot acquisition, the task follows the app's [`GpsPower`] request. When idle, it sends
+//! `CFG-RST` controlled GNSS stop and parks without DDC polling. Tracking resumes with controlled
+//! GNSS start, which works over I²C and retains receiver configuration and navigation data. This
+//! is not backup sleep; idle current has not been measured. While riding, the task requests full
+//! power or the M10's on-chip low-power tracking when `power_saver` is on. The command encodings
+//! live host-tested in [`obc_sensors::ubx`].
 
 use defmt::{debug, error, info, warn};
 use embassy_futures::select::{select, select4, Either, Either4};
@@ -80,7 +80,7 @@ const ACC_CAP: usize = 300;
 
 /// Bound on the boot-fix acquisition: the task holds awake at most this long for the first fix —
 /// which sets the clock + warms the ephemeris — before dropping into the power-managed steady state,
-/// so a boot under cover (no sky) still eventually deep-sleeps when idle.
+/// so a boot under cover (no sky) still eventually stops GNSS processing when idle.
 const BOOT_ACQUIRE_TIMEOUT_S: u64 = 150;
 
 /// Per-board **hard-iron offset** (µT) subtracted from each magnetometer axis before the heading.
@@ -140,9 +140,9 @@ struct FixState {
 ///
 /// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock + warms the
 ///    ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
-///    boot still gets one fix before it can deep-sleep.
-/// 2. **Steady state** — honour the app's [`GpsPower`] request: deep-sleep (`RXM-PMREQ` backup, zero
-///    bus traffic) when idle; full- (or `power_saver` low-) power fixes while riding. Each waking
+///    boot gets an acquisition window before GNSS can stop.
+/// 2. **Steady state** — honour the app's [`GpsPower`] request: stop GNSS processing with no DDC
+///    polling when idle; full- (or `power_saver` low-) power fixes while riding. Each waking
 ///    cycle waits for a TX-Ready edge / poll timeout / rate change / power change, then drains +
 ///    publishes through [`drain_and_publish`]. While **riding and stationary** it *also* ticks the
 ///    compass on its own [`COMPASS_INTERVAL_MS`] cadence (the heading isn't logged, so it's decoupled
@@ -158,7 +158,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
     // --- Boot probe: loud RTT so a wiring/power fault is obvious before anything else. ---
     let baro_addr = probe_bmp581(&mut twim).await;
     let icm_addr = probe_icm20948(&mut twim).await;
-    let gps_ok = probe_m10(&mut twim).await;
+    let mut gps_ok = probe_m10(&mut twim).await;
 
     if let Some(addr) = baro_addr {
         configure_bmp581(&mut twim, addr).await;
@@ -167,19 +167,22 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
         configure_icm20948(&mut twim, addr).await;
     }
     if gps_ok {
+        set_gnss_running(&mut twim, true).await;
         configure_m10(&mut twim, DEFAULT_INTERVAL_S).await;
     } else {
-        warn!("sensors: GPS not answering — the loop will keep polling so a late-powered module is picked up");
+        warn!("sensors: GPS not answering — retrying during boot acquisition");
     }
 
     // Whether the compass is live — the AK09916 magnetometer is read at AK_ADDR through the ICM's
     // bypass, so only its *presence* (a successful ICM probe + config) matters at read time.
     let compass_ok = icm_addr.is_some();
 
-    // Surface the probe result on glass (issue #504): any chip that didn't answer becomes a
-    // dismissable warning the ride loop raises. Published once — a missing module is a wiring/power
-    // fault, not a transient. (A missing GPS *module* is distinct from "no fix yet".)
-    link.dispatch_presence(SensorPresence { gps: gps_ok, altimeter: baro_addr.is_some(), compass: compass_ok });
+    // The warning bundle is published once: immediately when GPS responds, otherwise after the
+    // bounded startup window. A receiver still starting must not leave a stale missing-GPS warning.
+    let mut presence = SensorPresence { gps: gps_ok, altimeter: baro_addr.is_some(), compass: compass_ok };
+    if gps_ok {
+        link.dispatch_presence(presence);
+    }
 
     let mut acc = [0u8; ACC_CAP];
     let mut acc_len = 0usize;
@@ -188,12 +191,28 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
 
     // --- Phase 1: boot acquisition. Hold awake until the first valid fix or a bounded timeout,
     // ignoring the app's power request — so the clock gets set and the ephemeris warms even on an idle
-    // boot, before the steady state below is allowed to deep-sleep. ---
+    // boot, before the steady state below can stop GNSS processing. ---
     info!("sensors: boot acquisition — holding awake for the first fix (≤ {=u64}s)", BOOT_ACQUIRE_TIMEOUT_S);
     let boot_deadline = Instant::now() + Duration::from_secs(BOOT_ACQUIRE_TIMEOUT_S);
     loop {
-        wait_data_event(&mut txready, interval_s, &mut st).await;
-        if drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await {
+        if gps_ok {
+            wait_data_event(&mut txready, interval_s, &mut st).await;
+        } else {
+            // An absent receiver cannot supply a useful TX-Ready edge. Keep its probes at the
+            // normal poll cadence even if that unconnected input is noisy.
+            Timer::at((Instant::now() + poll_deadline(interval_s)).min(boot_deadline)).await;
+            if Instant::now() >= boot_deadline {
+                break;
+            }
+            gps_ok = probe_m10(&mut twim).await;
+            if gps_ok {
+                set_gnss_running(&mut twim, true).await;
+                configure_m10(&mut twim, interval_s).await;
+                presence.gps = true;
+                link.dispatch_presence(presence);
+            }
+        }
+        if gps_ok && drain_and_publish(&mut twim, &mut acc, &mut acc_len, baro_addr, &mut st, link).await {
             break; // got the boot fix
         }
         if Instant::now() >= boot_deadline {
@@ -204,40 +223,43 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
             break;
         }
     }
+    if !gps_ok {
+        error!("sensors: GPS did not answer during boot acquisition — check wiring / power");
+        link.dispatch_presence(presence);
+    }
 
-    // --- Phase 2: power-managed steady state. Honour the app's requested GpsPower — deep-sleep when
+    // --- Phase 2: power-managed steady state. Honour the app's requested GpsPower — stop GNSS when
     // idle, full / low-power fixes while riding — and keep streaming fixes. ---
     let mut power = GpsPower::Active;
-    let mut asleep = false; // so backup is commanded once on entry, not re-sent each parked iteration
-                            // Absolute deadline for the next DDC poll fallback. Absolute (not a fresh `Timer::after` each
-                            // iteration) so the stationary compass ticks below don't keep restarting it — which would starve
-                            // a TX-Ready-less receiver's stationary fixes. Reset only after an actual fix cycle / rate change.
+    // Send STOP once per idle entry, even if its write fails.
+    let mut parked = false;
+    // Absolute deadline: compass ticks must not restart it and starve DDC fallback polling.
     let mut next_poll = Instant::now() + poll_deadline(interval_s);
     loop {
         if power == GpsPower::Sleep {
-            if !asleep {
-                enter_backup(&mut twim).await;
-                asleep = true;
+            if !parked {
+                set_gnss_running(&mut twim, false).await;
+                parked = true;
             }
-            // Asleep: zero DDC traffic. Wait only for a power change (or a rate change to apply on
-            // the next wake — `CFG-RATE` can't take effect while the receiver is in backup).
+            // No DDC polling while idle. Apply rate changes when tracking resumes.
             match select(link.wait_power(), link.wait_rate()).await {
                 Either::First(p) => power = p,
                 Either::Second(s) => {
                     interval_s = s.max(1);
-                    continue; // still asleep — re-park; the new rate applies on the next wake
+                    continue; // still idle — re-park; apply the new rate on resume
                 }
             }
             if power == GpsPower::Sleep {
                 continue; // a redundant Sleep request — stay parked
             }
-            // Woken → poke the receiver out of backup and re-assert config at the current rate/mode.
-            asleep = false;
-            wake_receiver(&mut twim).await;
+            parked = false;
+            set_gnss_running(&mut twim, true).await;
+            // Configuration reads use a separate buffer; discard any partial pre-stop frame.
+            acc_len = 0;
             configure_m10(&mut twim, interval_s).await;
             set_power_mode(&mut twim, power).await;
-            st.had_fix = false; // re-acquiring from a warm start
-            st.stationary = false; // motion state unknown until the first warm fix → compass off
+            st.had_fix = false; // acquiring again after GNSS start
+            st.stationary = false; // motion state unknown until the first new fix → compass off
             next_poll = Instant::now() + poll_deadline(interval_s);
             continue;
         }
@@ -273,7 +295,7 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
                 if p != power {
                     power = p;
                     if power == GpsPower::Sleep {
-                        info!("sensors: tracking stopped → GPS will deep-sleep");
+                        info!("sensors: tracking stopped → requesting GNSS stop");
                     } else {
                         info!("sensors: GPS power → {=str}", power_name(power));
                         set_power_mode(&mut twim, power).await;
@@ -361,8 +383,8 @@ async fn drain_and_publish(
 
     // The key acquisition line — watch fixType climb 0→3 and hAcc fall as the receiver locks.
     debug!(
-        "NAV-PVT fix={=u8} sats={=u8} hAcc={=u32}mm pDOP={=u16} lat={=i32} lon={=i32}",
-        pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
+        "NAV-PVT iTOW={=u32} fix={=u8} sats={=u8} hAcc={=u32}mm pDOP={=u16} lat={=i32} lon={=i32}",
+        pvt.itow, pvt.fix_type, pvt.num_sv, pvt.hacc_mm, pvt.pdop, pvt.lat, pvt.lon
     );
 
     // Publish the receiver's UTC time the moment it's valid + fully resolved — **before**
@@ -419,28 +441,17 @@ fn power_name(p: GpsPower) -> &'static str {
     }
 }
 
-/// Put the M10 into **backup** deep sleep — `RXM-PMREQ`, infinite duration. The
-/// receiver keeps its RTC + ephemeris on ~µA and wakes on the next DDC activity, so the restart is a
-/// fast *warm* fix. Best-effort: a failed write is logged, not fatal.
-async fn enter_backup(twim: &mut Twim<'static>) {
-    let mut frame = [0u8; 24];
-    let Some(n) = ubx::pmreq_backup(&mut frame) else { return };
+/// Send a controlled GNSS start/stop without clearing receiver configuration or navigation data.
+/// CFG-RST has no ACK. A successful write confirms only that the command was sent.
+async fn set_gnss_running(twim: &mut Twim<'static>, running: bool) {
+    let mut frame = [0u8; 12];
+    let Some(n) = ubx::cfg_gnss_running(&mut frame, running) else { return };
+    let action = if running { "start" } else { "stop" };
     if twim.write(M10_ADDR, &frame[..n]).await.is_err() {
-        warn!("sensors: RXM-PMREQ (sleep) write failed — GPS may keep tracking");
+        warn!("sensors: CFG-RST GNSS {=str} write failed", action);
     } else {
-        info!("sensors: GPS → deep sleep (RXM-PMREQ backup); zero bus traffic until tracking resumes");
+        info!("sensors: CFG-RST GNSS {=str} sent", action);
     }
-}
-
-/// Wake the M10 from backup: any DDC activity wakes it, but the first transaction can be
-/// lost while it powers up, so poke the byte-count register a few times with a short settle.
-async fn wake_receiver(twim: &mut Twim<'static>) {
-    for _ in 0..3 {
-        let mut cnt = [0u8; 2];
-        let _ = twim.write_read(M10_ADDR, &[DDC_COUNT_REG], &mut cnt).await;
-        Timer::after_millis(20).await;
-    }
-    info!("sensors: GPS woken from backup");
 }
 
 /// Set the M10's tracking power mode: full power, or the on-chip low-power tracking when
@@ -479,14 +490,13 @@ async fn probe_bmp581(twim: &mut Twim<'static>) -> Option<u8> {
     None
 }
 
-/// Probe the SAM-M10Q by reading its DDC byte-count register; log whether it answers.
+/// Probe the SAM-M10Q by reading its DDC byte-count register. Absence is reported at the deadline.
 async fn probe_m10(twim: &mut Twim<'static>) -> bool {
     let mut cnt = [0u8; 2];
     if twim.write_read(M10_ADDR, &[DDC_COUNT_REG], &mut cnt).await.is_ok() {
         info!("SAM-M10Q alive @ {=u8:#04x} ({=u16} DDC bytes pending)", M10_ADDR, u16::from_be_bytes(cnt));
         true
     } else {
-        error!("SAM-M10Q no ACK on DDC {=u8:#04x} — check Qwiic wiring / 3V3 / V_BCKP", M10_ADDR);
         false
     }
 }
