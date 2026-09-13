@@ -97,7 +97,10 @@
             worker = new Worker(new URL("../../lib/assemble/assemble.worker.ts", import.meta.url), {
                 type: "module",
             });
-            worker.onmessage = onWorkerMessage;
+            const current = worker;
+            worker.onmessage = (event) => {
+                if (worker === current) void onWorkerMessage(event);
+            };
             // The worker's own code answers every failure with an `error`
             // message — these two fire for what that code never sees: the
             // script failing to boot at all (a lost chunk after a deploy) and
@@ -106,9 +109,11 @@
             // every failure, and the worker is dropped — a worker that could
             // not boot stays broken, so the next request must spawn fresh.
             worker.onerror = (e) => {
+                if (worker !== current) return;
                 workerFailed(e.message || "the assembly worker failed to start");
             };
             worker.onmessageerror = () => {
+                if (worker !== current) return;
                 workerFailed("a message to the assembly worker could not be delivered");
             };
         }
@@ -257,6 +262,8 @@
         if (!isWorkerResponse(msg)) return;
         switch (msg.type) {
             case "estimate-result":
+                if (msg.estimateId !== estimateGeneration || estimateLedger !== ledger) return;
+                estimateOnDisk = msg.onDisk;
                 estimate = msg.estimate;
                 estimatePending = false;
                 estimateError = null;
@@ -349,6 +356,7 @@
                 }
                 break;
             case "error":
+                if (msg.estimateId !== undefined && (msg.estimateId !== estimateGeneration || estimateLedger !== ledger)) return;
                 // Two conversations share this worker, and their failures are
                 // different facts (#1041 A3): an error during a run belongs to
                 // the run, but an error answering the background *estimate*
@@ -672,9 +680,12 @@
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (!resolution || !indices || !l || !ready) {
+        if (!resolution || !indices || !l || !ready || !estimate?.fits) {
             throw new Error("This map is not ready to assemble yet.");
         }
+        const admittedEstimate = estimate;
+        const admissionId = estimateGeneration;
+        const requireDisk = estimateOnDisk;
         // Native desktop saving still opens its output session under the click
         // that started a download. Direct device delivery never opens a save
         // destination, and the web host uses an ordinary browser download.
@@ -688,6 +699,10 @@
             }
         }
         if (destroyed) throw new DOMException("the map builder was closed", "AbortError");
+        if (estimateGeneration !== admissionId || estimate !== admittedEstimate || !ready) {
+            await picked?.discard();
+            throw new Error("The map selection changed. Wait for its memory check before trying again.");
+        }
         const runId = ++nextRunId;
         out.runId = runId;
         activeRunId = runId;
@@ -775,6 +790,10 @@
             }
         }
 
+        if (requireDisk && !cellStore) {
+            throw new Error("The storage required for this map is no longer available. Retry the memory check.");
+        }
+
         try {
             await runOp(() =>
                 downloadCells(fetchPlan, {
@@ -840,12 +859,13 @@
         asmPhase = "open";
         const req: AssembleWorkerRequest = {
             type: "assemble",
+            requireDisk,
             cells,
             // One or the other, never a mix: `cells` carries buffers when there
             // was nowhere to put them, `sourceCells` names files in OPFS when
             // there was. The worker decides how it reads the latter — through
-            // sync access handles if it has them (#1116 B2), by reading them
-            // back into memory if not.
+            // sync access handles, or by reading them into memory only when
+            // the admitted mode permits buffering. Required disk mode refuses.
             sourceCells: cellStore ? sourceCells : undefined,
             cellStore: cellStore?.revision,
             knownEmpty: plan.knownEmpty,
@@ -954,6 +974,9 @@
     // --- the memory projection, before the download -----------------------
 
     let estimate = $state<MemoryEstimate | null>(null);
+    let estimateLedger = $state.raw<typeof ledger>(null);
+    let estimateOnDisk = false;
+    let estimateGeneration = 0;
     let estimatePending = $state(false);
     /** The estimate's own failure channel (#1041 A3) — never mixed into the
      *  run's. Cleared by the next request; retried by bumping the nonce. */
@@ -969,6 +992,9 @@
     $effect(() => {
         void estimateNonce; // the retry button's lever
         const l = ledger;
+        const estimateId = ++estimateGeneration;
+        estimate = null;
+        estimateLedger = null;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
         if (!l || !l.isFinal || l.cellCount === 0 || !idle) {
             // Every exit clears the pending flag (#1041 A3): a selection that
@@ -991,13 +1017,14 @@
             // same two checks `begin` runs before a byte is fetched: a store this
             // browser will write, with room for the WHOLE run (`runDiskNeed` —
             // cells, output, spill; terrain never goes to disk). The worker ANDs
-            // in its own sync-handle probe. Responses arrive in request order, so
-            // a stale answer is overwritten, never kept.
+            // in its own sync-handle probe. The generation excludes stale probes and replies.
             void (async () => {
                 const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
-                if (destroyed) return;
+                if (destroyed || estimateId !== estimateGeneration || l !== ledger) return;
+                estimateLedger = l;
                 ensureWorker().postMessage({
                     type: "estimate",
+                    estimateId,
                     networkBandBytes,
                     totalCellBytes,
                     terrainBytes,
@@ -1007,7 +1034,10 @@
                 } satisfies AssembleWorkerRequest);
             })();
         }, 500);
-        return () => clearTimeout(timer);
+        return () => {
+            clearTimeout(timer);
+            if (estimateId === estimateGeneration) estimateGeneration += 1;
+        };
     });
 
     const memoryRefusal = $derived.by(() => {
@@ -1150,6 +1180,8 @@
             refusal === null &&
             !running &&
             !clearingCells &&
+            estimate !== null &&
+            estimateLedger === l &&
             !estimatePending &&
             // An unanswered projection keeps the mandatory pre-download check
             // honest: the button waits for the retry, not forever (A3).

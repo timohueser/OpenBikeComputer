@@ -9,7 +9,7 @@ import {
 } from "./workerProtocol";
 
 function assembleReq(cells: WorkerCell[]): Extract<AssembleWorkerRequest, { type: "assemble" }> {
-    return { type: "assemble", cells, knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {} };
+    return { type: "assemble", requireDisk: false, cells, knownEmpty: [], schemaJson: "{}", skinJson: "{}", options: {} };
 }
 
 /** A structurally complete estimate, since the validator only checks the object's presence. */
@@ -61,7 +61,7 @@ describe("requestTransferList", () => {
         expect(
             requestTransferList({
                 type: "estimate",
-                networkBandBytes: 1,
+                estimateId: 1,                networkBandBytes: 1,
                 totalCellBytes: 2,
                 terrainBytes: 0,
                 onDisk: true,
@@ -114,7 +114,7 @@ describe("isWorkerResponse", () => {
             // routinely larger than anything that could have crossed the port.
             { type: "stored-map", sha256: "b".repeat(64), byteLength: 8_800_000_000 },
             { type: "done", warnings: [], summary: summary() },
-            { type: "estimate-result", estimate: est(true) },
+            { type: "estimate-result", estimateId: 1, onDisk: true, estimate: est(true) },
             { type: "error", code: "capacity", message: "too big" },
         ];
         for (const msg of messages) expect(isWorkerResponse(msg)).toBe(true);
@@ -140,6 +140,7 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse({ type: "reading", mode: "telepathy", cells: 1 })).toBe(false);
         expect(isWorkerResponse({ type: "writing", mode: "telepathy" })).toBe(false);
         expect(isWorkerResponse({ type: "estimate-result", estimate: null })).toBe(false);
+        expect(isWorkerResponse({ type: "estimate-result", estimate: est(true) })).toBe(false);
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
         // A `file` whose bytes are not bytes: the one field the download screen dereferences.
         expect(isWorkerResponse({ type: "file", sha256: "a".repeat(64), byteLength: 1, bytes: [1] })).toBe(false);
