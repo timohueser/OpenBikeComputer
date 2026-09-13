@@ -106,10 +106,10 @@ struct ReadDuringWrite {
 impl BlockDevice for &ReadDuringWrite {
     type Error = DiskError;
     fn block_count(&self) -> Result<u64, DiskError> {
-        self.disk.block_count()
+        (&self.disk).block_count()
     }
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), DiskError> {
-        self.disk.read(lba, buf)
+        (&self.disk).read(lba, buf)
     }
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), DiskError> {
         if let (Some(store), Some(sealed)) = (self.store.get(), self.sealed.get()) {
@@ -120,10 +120,10 @@ impl BlockDevice for &ReadDuringWrite {
             assert_eq!(bytes, [0x62; 777]);
             self.reads.set(self.reads.get() + 1);
         }
-        self.disk.write(lba, buf)
+        (&self.disk).write(lba, buf)
     }
     fn sync(&self) -> Result<(), DiskError> {
-        self.disk.sync()
+        (&self.disk).sync()
     }
 }
 #[test]
