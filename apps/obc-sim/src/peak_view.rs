@@ -37,7 +37,7 @@ use obc_app::{
 };
 use obc_formats::io::{ByteSource, Error};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
@@ -51,8 +51,6 @@ use std::{
 struct FileSource {
     file: RefCell<File>,
     len: u64,
-    reads: Cell<u32>,
-    bytes: Cell<u64>,
 }
 impl ByteSource for FileSource {
     fn len(&self) -> u64 {
@@ -62,8 +60,6 @@ impl ByteSource for FileSource {
         let mut file = self.file.borrow_mut();
         file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
         file.read_exact(buf).map_err(|_| Error::Io)?;
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + buf.len() as u64);
         Ok(())
     }
 }
@@ -125,10 +121,8 @@ fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<B
             let file = File::open(&path)
                 .map_err(|e| format!("{}: {e}. Run obc fixtures sync sim-peak-view first.", path.display()))?;
             let len = file.metadata().map_err(|e| e.to_string())?.len();
-            let source = FileSource { file: RefCell::new(file), len, reads: Cell::new(0), bytes: Cell::new(0) };
-            let result = generate_surface(&source, None, *preset.profile(), position, worker);
-            eprintln!("peak-view: {} terrain reads / {} bytes", source.reads.get(), source.bytes.get());
-            result
+            let source = FileSource { file: RefCell::new(file), len };
+            generate_surface(&source, None, *preset.profile(), position, worker)
         }
     }
 }
@@ -195,13 +189,7 @@ fn generate_surface(
         }
         if builder.complete() {
             if !picture_reported {
-                eprintln!(
-                    "peak-view: generated in {:.0} ms; {} samples, {} missing; core+cache {} bytes",
-                    started.elapsed().as_secs_f64() * 1000.0,
-                    builder.samples,
-                    builder.missing,
-                    std::mem::size_of::<Builder>() + std::mem::size_of::<Terrain<'_>>()
-                );
+                eprintln!("peak-view: generated in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
                 picture_reported = true;
             }
             if let Some(reader) = reader {
