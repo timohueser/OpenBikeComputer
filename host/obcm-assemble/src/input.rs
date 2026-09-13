@@ -171,21 +171,18 @@ fn read_style_bands(src: &dyn ByteSource) -> Result<Vec<(u8, bool)>> {
         .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;
-    table
-        .as_chunks::<STYLE_RECORD_LEN>()
-        .0
-        .iter()
-        .map(|r| {
-            let z = r[1] as i8;
-            if z > obc_map_scene::RAIN_BAND_GAP_LOW && z < obc_map_scene::RAIN_BAND_GAP_HIGH {
-                return Err(Error::Input(format!(
-                    "cell style {} places z_index {z} inside the reserved rain band gap",
-                    r[0]
-                )));
-            }
-            Ok((r[0], z >= obc_map_scene::RAIN_BELOW_Z))
-        })
-        .collect()
+    let mut styles = Vec::with_capacity(count);
+    for r in table.as_chunks::<STYLE_RECORD_LEN>().0 {
+        let z = r[1] as i8;
+        if z > obc_map_scene::RAIN_BAND_GAP_LOW && z < obc_map_scene::RAIN_BAND_GAP_HIGH {
+            return Err(Error::Input(format!(
+                "cell style {} places z_index {z} inside the reserved rain band gap",
+                r[0]
+            )));
+        }
+        styles.push((r[0], z >= obc_map_scene::RAIN_BELOW_Z));
+    }
+    Ok(styles)
 }
 
 /// OBCA §4.1's cross-cell preconditions: one OBCM version (the reader already enforced it), one
