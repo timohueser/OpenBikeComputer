@@ -18,7 +18,7 @@
 //     one. The page then opens a `Blob` on it and saves it. This is the path that
 //     matters: a DACH map is a single ~9 GiB object, larger than the wasm32 address
 //     space it would otherwise have to fit in.
-//   * **`file`** — the browser could not serve a sink, so the map was buffered and
+//   * **`file`** — the admitted mode permits buffering and no sink opened, so
 //     its bytes ride the port with the buffer in the transfer list. They *move*
 //     rather than copy, so the worker's copy is gone the moment the message is
 //     queued.
@@ -94,6 +94,7 @@ export interface WorkerTerrain {
 export type AssembleWorkerRequest =
     | {
           type: "estimate";
+          estimateId: number;
           networkBandBytes: number;
           totalCellBytes: number;
           /** The terrain squares' share of the total — resident whatever the
@@ -112,6 +113,8 @@ export type AssembleWorkerRequest =
       }
     | {
           type: "assemble";
+          /** The accepted projection requires disk-backed input, output and scratch. Terrain stays resident. */
+          requireDisk: boolean;
           cells: WorkerCell[];
           /** The cells the download left in OPFS instead of in memory (#1116
            *  B2), with `cellStore` naming the revision directory they are in.
@@ -182,8 +185,8 @@ export type AssembleWorkerResponse =
     | ({ type: "stored-map" } & WorkerStoredMap)
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary; io?: IoStats }
-    | { type: "estimate-result"; estimate: MemoryEstimate }
-    | { type: "error"; code: AssembleErrorCode; message: string };
+    | { type: "estimate-result"; estimateId: number; onDisk: boolean; estimate: MemoryEstimate }
+    | { type: "error"; code: AssembleErrorCode; message: string; estimateId?: number };
 
 /** The transfer list for an `assemble` request: every cell's buffer moves into
  *  the worker rather than copying — the main thread has no further use for
@@ -250,9 +253,10 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
         case "done":
             return Array.isArray(m.warnings) && typeof m.summary === "object" && m.summary !== null;
         case "estimate-result":
-            return typeof m.estimate === "object" && m.estimate !== null;
+            return Number.isSafeInteger(m.estimateId) && typeof m.onDisk === "boolean" && typeof m.estimate === "object" && m.estimate !== null;
         case "error":
-            return typeof m.code === "string" && CODES.has(m.code) && typeof m.message === "string";
+            return typeof m.code === "string" && CODES.has(m.code) && typeof m.message === "string" &&
+                (m.estimateId === undefined || Number.isSafeInteger(m.estimateId));
         default:
             return false;
     }

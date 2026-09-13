@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { mount, tick, unmount } from "svelte";
+import { SvelteMap } from "svelte/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface TestCellStore {
@@ -25,6 +26,9 @@ const seams = vi.hoisted(() => ({
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
     workerAssemble: 0,
+    requireDisk: false,
+    holdEstimates: false,
+    estimateReplies: [] as Array<(error?: boolean) => void>,
     workerTerminate: 0,
     plan: { items: [], totalBytes: 0, knownEmpty: [] } as {
         items: Array<{ band: string | null; cell: { id: string; sha256: string; bytes: number; partial?: boolean } }>;
@@ -68,13 +72,14 @@ class AssembleWorker {
     onerror: ((event: ErrorEvent) => void) | null = null;
     onmessageerror: (() => void) | null = null;
 
-    postMessage(request: { type?: string }) {
+    postMessage(request: { type?: string; estimateId?: number; onDisk?: boolean; requireDisk?: boolean }) {
         if (request.type === "estimate") {
-            queueMicrotask(() =>
-                this.onmessage?.(
+            const reply = (error = false) => this.onmessage?.(
                     new MessageEvent("message", {
-                        data: {
+                        data: error ? { type: "error", estimateId: request.estimateId, code: "internal", message: "stale estimate" } : {
                             type: "estimate-result",
+                            estimateId: request.estimateId,
+                            onDisk: request.onDisk,
                             estimate: {
                                 engineBytes: 1,
                                 inputBytes: 1,
@@ -87,10 +92,12 @@ class AssembleWorker {
                             },
                         },
                     }),
-                ),
-            );
+                );
+            seams.estimateReplies.push(reply);
+            if (!seams.holdEstimates) queueMicrotask(() => reply());
         } else if (request.type === "assemble") {
             seams.workerAssemble += 1;
+            seams.requireDisk = request.requireDisk ?? false;
             queueMicrotask(() => {
                 this.onmessage?.(
                     new MessageEvent("message", {
@@ -149,6 +156,9 @@ describe("direct assembler delivery", () => {
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
         seams.workerAssemble = 0;
+        seams.requireDisk = false;
+        seams.holdEstimates = false;
+        seams.estimateReplies = [];
         seams.workerTerminate = 0;
         seams.plan = { items: [], totalBytes: 0, knownEmpty: [] };
     });
@@ -158,6 +168,91 @@ describe("direct assembler delivery", () => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
         document.body.replaceChildren();
+    });
+
+    it("refuses lost required cell storage before downloading", async () => {
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(job.error).toContain("storage required");
+        expect(seams.downloadCells).not.toHaveBeenCalled();
+        expect(seams.workerAssemble).toBe(0);
+        await unmount(component);
+    });
+
+    it("carries disk admission after the running effect clears the estimate", async () => {
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        seams.openCellStore.mockResolvedValue(testCellStore());
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.requireDisk).toBe(true);
+        expect(seams.workerAssemble).toBe(1);
+        await unmount(component);
+    });
+
+    it("ignores stale estimate success and failure while a new selection is pending", async () => {
+        seams.holdEstimates = true;
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        const ledgers = new SvelteMap([["current", store.ledger]]);
+        const changing = { ...store, get ledger() { return ledgers.get("current")!; } };
+        const { component, target } = await mountReadyStep({ store: changing });
+        const oldReply = seams.estimateReplies[0];
+        seams.hasRoomFor.mockResolvedValue(false);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        ledgers.set("current", { ...store.ledger, totalBytes: 8 });
+        await expectSecondRunRefused(component);
+        await tick();
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+        await tick();
+        expect(seams.estimateReplies).toHaveLength(2);
+        oldReply();
+        oldReply(true);
+        await tick();
+        expect(target.textContent).not.toContain("stale estimate");
+        await expectSecondRunRefused(component);
+        seams.estimateReplies[1]();
+        oldReply();
+        await tick();
+        vi.useRealTimers();
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.workerAssemble).toBe(1);
+        expect(seams.requireDisk).toBe(false);
+        await unmount(component);
+    });
+
+    it("does not post an old storage probe after a newer selection was estimated", async () => {
+        let finishOld!: (value: boolean) => void;
+        seams.cellStoreWritable.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+        const ledgers = new SvelteMap([["current", store.ledger]]);
+        const changing = { ...store, get ledger() { return ledgers.get("current")!; } };
+        const { component } = await mountReadyStep({ store: changing });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        ledgers.set("current", { ...store.ledger, totalBytes: 8 });
+        await tick();
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+        await tick();
+        expect(seams.estimateReplies).toHaveLength(1);
+        finishOld(true);
+        await Promise.resolve();
+        await tick();
+        expect(seams.estimateReplies).toHaveLength(1);
+        vi.useRealTimers();
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const job = new DeviceJob("map");
+        await job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "sent");
+        expect(seams.workerAssemble).toBe(1);
+        expect(seams.requireDisk).toBe(false);
+        await unmount(component);
     });
 
     it("makes the Step 3 Cancel abort PUT before it can commit", async () => {
@@ -782,11 +877,11 @@ const store = {
 };
 
 async function mountReadyStep(
-    props: { onSendReadyChange?: (ready: boolean) => void } = {},
+    props: { onSendReadyChange?: (ready: boolean) => void; store?: typeof store } = {},
 ) {
     const target = document.createElement("div");
     document.body.append(target);
-    const component = mount(DownloadStep, { target, props: { store: store as never, ...props } });
+    const component = mount(DownloadStep, { target, props: { ...props, store: (props.store ?? store) as never } });
     await tick();
     vi.advanceTimersByTime(500);
     await Promise.resolve();
