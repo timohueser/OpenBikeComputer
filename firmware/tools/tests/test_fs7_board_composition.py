@@ -83,17 +83,32 @@ class Fs7BoardCompositionTests(unittest.TestCase):
             self.assertIn("Ok(Err(_))", section, "definitively malformed objects remain omittable")
 
         rescan = body(RIDE, "fn read_catalogs", "/// A `no_std`")
-        self.assertIn("if routes_loaded && trips_loaded", rescan)
-        self.assertIn("routes_loaded && trips_loaded && rides_loaded", rescan)
+        stages = [
+            "app.begin_catalog_refresh()",
+            "Request::ReconcileMetadata",
+            "let start = crate::flat_store::retention_scope(flat)",
+            "load_routes(flat, app)",
+            "load_trips(flat, app)",
+            "load_rides(flat, app)",
+            "if !routes_loaded || !trips_loaded || !rides_loaded",
+            "return Err(CatalogError::Unreadable)",
+            "load_retention(flat, app).map_err(catalog_metadata_error)?",
+            "if start != crate::flat_store::retention_scope(flat)",
+            "return Err(CatalogError::Stale)",
+            "Ok(start)",
+        ]
+        for previous, following in zip(stages, stages[1:]):
+            self.assertLess(
+                rescan.index(previous),
+                rescan.index(following),
+                "policy scope requires a complete catalog and metadata load at one stable identity",
+            )
 
-        # The answer a partial read owes, and the *only* thing this executor owes it (#1541). A
-        # store that did not move raises no new revision, so nothing outside the domain would ever
-        # order the read again: `Unreadable` is what arms `CatalogState::refresh_owed`, and the next
-        # pass re-offers the read. Both halves are pinned, because either alone is the bug — the
-        # answer without the arm is a menu stuck until the next commit, and a re-read composed here
-        # beside it is a second refresh policy.
+        # The executor returns the captured scope or the actual failure. Retry remains owned by
+        # CatalogState; a removal does not compose a second rescan beside its outcome.
         served = body(RIDE, "if let Some(effect) = exec.effects.catalog.take() {", "// The in-flight removal")
-        self.assertIn("CatalogOutcome::Failed { token, error: CatalogError::Unreadable }", served)
+        self.assertIn("Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) }", served)
+        self.assertIn("Err(error) => CatalogOutcome::Failed { token, error }", served)
         self.assertNotIn("read_catalogs", served.split("CatalogEffect::RemoveObject", 1)[1])
 
     def test_menu_loader_retains_only_bounded_object_open_keys(self) -> None:

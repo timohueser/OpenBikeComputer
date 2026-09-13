@@ -1010,6 +1010,10 @@ impl<D: BlockDevice> FlatStore<D> {
     /// This is the length the handle keeps reading, not the entry's current one: §2.1 promises a
     /// handle serves the revision it opened, and an amend that trimmed the entry since does not
     /// shorten a reader that is already past it.
+    pub(crate) fn has_open_capacity(&self) -> bool {
+        self.holds.borrow().iter().any(Option::is_none)
+    }
+
     pub fn handle_len(&self, handle: &Handle) -> Option<u64> {
         let holds = self.holds.borrow();
         holds[handle.slot as usize]

@@ -323,7 +323,7 @@ impl PassState {
 
 // Layout tripwire: the coordinator's own state is wires and levels — a growth here means domain
 // state drifted into the sequencer.
-const _: () = assert!(core::mem::size_of::<PassState>() <= 288, "connections, a few levels, the test recorder");
+const _: () = assert!(core::mem::size_of::<PassState>() <= 344, "connections, a few levels, the test recorder");
 
 impl App {
     /// Run one DeviceCore pass: fourteen stages, once each, in [`PassStage::ORDER`].
@@ -346,7 +346,7 @@ impl App {
         // outcome, fact or gesture, so an earlier component acts on them ahead of new user input.
         self.pass.connections.promote_deferred();
 
-        self.stage_outcomes(outcomes);
+        self.stage_outcomes(outcomes, now.ui.0);
         self.stage_facts(facts, derived, targets);
         self.stage_input(now, gestures, sensors, route);
         self.stage_ui(now);
@@ -376,9 +376,22 @@ impl App {
 
     /// Stage 1 — validate and consume each domain's outcome slot.
     ///
-    fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
+    fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots, now_ms: u32) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
+            if self.catalogs.accepts(outcome) {
+                match outcome {
+                    crate::catalog_state::CatalogOutcome::Failed {
+                        error: crate::catalog_state::CatalogError::Unreadable,
+                        ..
+                    } => self.catalogs.defer_read(now_ms),
+                    crate::catalog_state::CatalogOutcome::Failed {
+                        error: crate::catalog_state::CatalogError::Unsupported,
+                        ..
+                    } => self.retention.reject_expiry(),
+                    _ => {}
+                }
+            }
             // The catalog's verdict on a removal is retention's: the expiry candidate for an object
             // the store no longer holds is retired at stage 5 of this pass, rather than surviving
             // until the re-read the removal ordered lands (#1548).
@@ -387,7 +400,24 @@ impl App {
             }
         }
         if let Some(outcome) = outcomes.retention.take() {
-            self.retention.apply_outcome(outcome);
+            if self.retention.apply_outcome(outcome) {
+                use crate::retention::{RetentionError, RetentionOutcome};
+                match outcome {
+                    RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. } => {
+                        self.catalogs.loaded_scope = None;
+                        self.catalogs.remount_required = true;
+                    }
+                    RetentionOutcome::Failed { error: RetentionError::Unsupported, .. } => {}
+                    RetentionOutcome::Failed { error: RetentionError::WriteFailed | RetentionError::Busy, .. }
+                    | RetentionOutcome::Cancelled { .. } => {
+                        self.retention.defer_write(now_ms);
+                    }
+                    _ => {
+                        self.catalogs.loaded_scope = None;
+                        self.catalogs.note_store_moved();
+                    }
+                }
+            }
         }
         if let Some(outcome) = outcomes.recorder.take() {
             // Recorder's verdict on the close. A committed ride tells the catalog at stage 6 of this
@@ -456,6 +486,16 @@ impl App {
         self.pass.record(PassStage::Facts);
         if let Some(store) = facts.store_revision() {
             if self.pass.store != Some(store) {
+                if self.pass.store.is_none_or(|old| old.store != store.store) {
+                    self.retention.reset_store();
+                    if self.pass.store.is_some() {
+                        self.catalogs.change_store();
+                    }
+                    self.catalogs.remount_required = false;
+                    let _ = self.pass.connections.catalog_removal.take();
+                    self.catalogs.loaded_scope = self.catalogs.loaded_scope.filter(|scope| scope.store == store.store);
+                    let _ = self.pass.connections.expiry.take();
+                }
                 self.pass.store = Some(store);
                 // The fact says the store moved; it does not order a re-read. The **domain** owes
                 // the read from here on, and stage 6 admits it — so a commit that arrives while the
@@ -558,26 +598,7 @@ impl App {
         }
     }
 
-    /// Stage 5 — advance `RetentionMachine`.
-    ///
-    /// Its inbox first, and in that order: the removal stage 1 accepted, then what Navigator and the
-    /// catalog decided *after* it ran last pass. The removal leads because an expiry candidate for
-    /// an object the store no longer holds is not a candidate, whoever ordered the removal. Then the
-    /// domain's own advance, then the one expiry intent and the one sidecar write it may have this
-    /// pass. The expiry goes into a same-pass slot because the catalog runs next — an auto-expired
-    /// object leaves by exactly the path a rider-deleted one does.
-    ///
-    /// Each inbox value goes to a domain **entry point that re-derives its own rule**: a delivered
-    /// id is a pass old, and only the domain can say whether it still qualifies. An activation in
-    /// particular must not stamp a route that has no expiry clock, and must queue nothing at all
-    /// without a trusted clock — the two guards
-    /// [`note_route_activated`](crate::retention::RetentionMachine::note_route_activated) applies,
-    /// which are the same ones the sweep applies.
-    /// The sidecar write is *offered* only on a device that has somewhere to put it
-    /// ([`PlatformSupport::retention_metadata`]) — but the candidate is **decided, mirrored and
-    /// consumed either way**. Leaving it queued would park the whole sweep: `maybe_sweep` returns
-    /// early while the queue is non-empty, so the first stamp would be the last hourly sweep the
-    /// device ever ran. See [`consume_unstored_stamp`](App::consume_unstored_stamp).
+    /// Retention decisions use only the catalog snapshot that completed its metadata read.
     fn stage_retention(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Retention);
         if let Some(removal) = self.pass.connections.catalog_removal.take() {
@@ -589,7 +610,7 @@ impl App {
             if let Some(parked) = self.pass.connections.expiry.take() {
                 let stale = matches!(
                     parked,
-                    CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } if id == removal.object
+                    CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } | CatalogIntent::ExpireObject { id, .. } if id == removal.object
                 );
                 if !stale {
                     let _ = self.pass.connections.expiry.try_put(parked);
@@ -602,79 +623,36 @@ impl App {
         if self.pass.connections.catalog_identity.take().is_some() {
             self.retention.note_catalog_changed();
         }
+        let Some(scope) = self.catalogs.loaded_scope.filter(|scope| Some(*scope) == self.pass.store) else { return };
+        if !support.retention_metadata {
+            return;
+        }
         self.retention_tick();
-
         if self.pass.connections.expiry.is_empty() {
-            if let Some(intent) = self.with_retention(|retention, view| retention.next_expiry(view)) {
-                let _ = self.pass.connections.expiry.try_put(intent);
+            if let Some(CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id }) =
+                self.with_retention(|retention, view| retention.next_expiry(view))
+            {
+                let _ = self.pass.connections.expiry.try_put(CatalogIntent::ExpireObject { id, scope });
             }
         }
         if effects.retention.is_empty() {
-            if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
-                self.mirror_stamp(effect);
-                if support.retention_metadata {
-                    let _ = effects.retention.try_put(effect);
-                } else {
-                    self.consume_unstored_stamp(effect);
-                }
+            if let Some(mut effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
+                effect.bind(scope);
+                let _ = effects.retention.try_put(effect);
             }
         }
     }
 
-    /// Answer a stamp on a platform with **no durable metadata store** — the mirror above is the
-    /// whole of the write, so the operation is already over when it is decided.
-    ///
-    /// **The candidate must leave the queue, and that is the load-bearing half.** `maybe_sweep`
-    /// returns early while the queue is non-empty, so a stamp that is decided and never consumed
-    /// stops the hourly sweep for the rest of the boot — and with it every auto-expiry the device
-    /// would have run (#638). One committed route upload under a trusted clock is enough to reach
-    /// that state, and nothing about it is visible: the queue is domain-private, the sweep simply
-    /// never fires again.
-    ///
-    /// [`RouteMetadataWritten`](crate::retention::RetentionOutcome::RouteMetadataWritten) is the
-    /// honest answer rather than a claim of durability. The outcome says *the operation is over*;
-    /// what claims persistence is the resident mirror, and on such a platform that mirror is
-    /// per-boot by construction — the board's `load_rides` feeds `synced: false, synced_at_utc: 0`
-    /// on every catalog read, so nothing survives a reboot and nothing pretends to. `Cancelled`
-    /// would be the lie: it re-queues, which is exactly the state this exists to avoid.
-    ///
-    /// This is the legacy drain's own behaviour, moved to the one path that still runs: the adapter
-    /// mirrored and answered on dispatch, because a protocol with no acknowledgement has no other
-    /// terminal event.
-    fn consume_unstored_stamp(&mut self, effect: crate::retention::RetentionEffect) {
-        use crate::retention::{RetentionEffect, RetentionOutcome};
-        let outcome = match effect {
-            RetentionEffect::WriteRouteMetadata { token, id, .. } => {
-                RetentionOutcome::RouteMetadataWritten { token, id }
-            }
-            RetentionEffect::WriteRideMetadata { token, id, .. } => RetentionOutcome::RideMetadataWritten { token, id },
-        };
-        self.retention.apply_outcome(outcome);
+    /// Invalidates admission before any catalog feeder mutates the resident projection.
+    pub fn begin_catalog_refresh(&mut self) {
+        self.catalogs.loaded_scope = None;
     }
 
-    /// Mirror a decided sidecar stamp into the resident view, the moment the effect leaves.
-    ///
-    /// Retention re-derives its candidates from that view, so without this the *same* stamp is
-    /// rediscovered on the pass after the executor answers it — an endless sidecar write, one per
-    /// pass, for the rest of the boot, on a device whose whole power budget is not waking up.
-    ///
-    /// The value written is the one the effect carries, not a guess: the durable write is still the
-    /// executor's, and a failure re-queues the stamp through
-    /// [`apply_outcome`](crate::retention::RetentionMachine::apply_outcome) as before. The legacy
-    /// mirror belongs to whoever decides the stamp; this is that mirror on the
-    /// path that replaces it.
-    fn mirror_stamp(&mut self, effect: crate::retention::RetentionEffect) {
-        match effect {
-            crate::retention::RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
-                self.catalogs.stamp_route_last_used(id, meta.last_used_utc);
-            }
-            crate::retention::RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
-                // Both, because a ride outside the newest-32 display catalog must stop re-enqueuing
-                // its stamp too (finding #876-2).
-                self.catalogs.stamp_ride_synced_at(id, synced_at);
-                self.catalogs.stamp_inventory_synced_at(id, synced_at);
-            }
-        }
+    /// The existing retention owner rechecks volatile policy before the executor queues expiry.
+    pub fn retention_expiry_due(&mut self, id: crate::CatalogObjectId, scope: super::StoreRevision) -> bool {
+        self.catalogs.loaded_scope == Some(scope)
+            && self.pass.store == Some(scope)
+            && self.with_retention(|retention, view| retention.route_due(id, view))
     }
 
     /// Stage 6 — advance `CatalogMachine`.
@@ -682,7 +660,7 @@ impl App {
     /// The rider's own request outranks an expiry, and both outrank the store's own re-read, exactly
     /// as the legacy drain has it: a hold-to-delete is something someone is watching happen. Only
     /// the two deletions are *admitted* here — the re-read is owed inside `CatalogMachine` and taken
-    /// by [`next_effect`](crate::catalog_state::CatalogState::next_effect) when nothing else is
+    /// by [`next_effect`](crate::catalog_state::CatalogState::next_effect_at) when nothing else is
     /// pending, which is that same priority without a second copy of the refresh to lose or double.
     ///
     /// An admitted deletion of the **followed** route reaches Navigator in this pass — the rider is
@@ -716,7 +694,7 @@ impl App {
                 self.pass.connections.catalog_identity.defer(CatalogIdentityChanged { revision: store.revision });
             }
         }
-        if let Some(effect) = self.catalogs.next_effect() {
+        if let Some(effect) = self.catalogs.next_effect_at(self.ui.now_ms) {
             let _ = effects.catalog.try_put(effect);
         }
     }
@@ -1024,6 +1002,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn test_mount_store(&mut self) {
         self.pass.store = Some(StoreRevision { store: super::StoreIdentity::new(1), revision: Revision::new(1) });
+        self.catalogs.loaded_scope = self.pass.store;
         self.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
     }
 
@@ -1228,6 +1207,7 @@ mod tests {
     fn navigating() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("alpha"), summary("beta")], &[11, 22]);
+        app.test_mount_store();
         app.activate_route(0);
         app
     }
@@ -1312,7 +1292,7 @@ mod tests {
 
         let mut effects = plan.effects;
         assert!(
-            matches!(effects.catalog.take(), Some(CatalogEffect::RemoveObject { object: 22, .. })),
+            matches!(effects.catalog.take(), Some(CatalogEffect::ExpireObject { object: 22, .. })),
             "the expired route left as a catalog removal in the pass retention decided it"
         );
     }
@@ -1386,54 +1366,16 @@ mod tests {
         assert!(!app.retention.has(SweepKind::StampRoute), "and no second candidate either");
     }
 
-    /// A device with no durable retention metadata (`PlatformSupport::retention_metadata = false` —
-    /// the board since FS7/FS8) emits **no** sidecar effect, and keeps emitting none. But it still
-    /// *decides* the stamp, mirrors it into the resident view, and **consumes the candidate**.
-    ///
-    /// That last part is the one that bites, and it is invisible: `maybe_sweep` returns early while
-    /// the stamp queue is non-empty, so a candidate that is never consumed makes the first stamp the
-    /// last hourly sweep the device ever runs — and auto-expiry (#638) stops for the rest of the
-    /// boot with nothing to see. One committed route upload under a trusted clock reaches it.
-    ///
-    /// So all three are asserted together: no effect, a mirror that moved, and a sweep that still
-    /// produces expiries afterwards.
     #[test]
-    fn no_metadata_store_still_consumes_the_stamp_so_the_sweep_keeps_running() {
-        let mut app = navigating();
-        trust_clock(&mut app);
-        let now = app.wall_unix_now();
-        // Route 11 is stale-but-live under a Week1 clock (so it earns a use stamp on activation);
-        // route 22 is a month past its Week1 deadline and is the expiry the sweep must still find.
-        app.set_route_meta(&[
-            expiring(Retention::Week1, now.saturating_sub(3600)),
-            expiring(Retention::Week1, now.saturating_sub(30 * 24 * 3600)),
-        ]);
-
-        let plan = quiet_without_metadata(&mut app, 10);
-        assert!(plan.effects.retention.is_empty(), "there is nowhere durable to write it");
-
-        // (a) the queue drains. It is domain-private, so ask the way the sweep does: a queued stamp
-        // is what `has` reports, and an unconsumed one is what would park `maybe_sweep`.
-        assert!(!app.retention.has(SweepKind::StampRoute), "the candidate was consumed, not left queued");
-
-        // (b) the mirror moved — which is also what stops the same stamp being rediscovered next
-        // pass, since retention re-derives its candidates from that view.
-        assert_eq!(
-            app.route_metas().first().map(|m| m.last_used_utc),
-            Some(now),
-            "the resident last_used carries the stamp the effect decided"
-        );
-
-        // (c) and the sweep still runs. With the queue parked this produces nothing at all, ever.
-        app.force_retention_sweep();
-        let mut sweeps = 0;
-        for ms in [20, 30, 40, 50] {
+    fn unsupported_metadata_never_mirrors_or_authorizes_expiry() {
+        let (mut app, _) = expiring_app();
+        let before = app.route_metas().to_vec();
+        for ms in [10, 20, 30, 3_600_010] {
             let plan = quiet_without_metadata(&mut app, ms);
-            if matches!(plan.effects.catalog, ref slot if !slot.is_empty()) {
-                sweeps += 1;
-            }
+            assert!(plan.effects.retention.is_empty());
+            assert!(plan.effects.catalog.is_empty());
+            assert_eq!(app.route_metas(), before);
         }
-        assert!(sweeps > 0, "the hourly sweep never reached the expired route — the queue parked it");
     }
 
     /// The delivered id is a pass old, so the domain re-derives the rule rather than trusting it:
@@ -1665,7 +1607,7 @@ mod tests {
         let plan = pass_with(&mut app, ms + 20, &[], &mut outcomes, &mut none);
         let mut effects = plan.effects;
         assert!(
-            matches!(effects.catalog.take(), Some(CatalogEffect::RemoveObject { object: 22, .. })),
+            matches!(effects.catalog.take(), Some(CatalogEffect::ExpireObject { object: 22, .. })),
             "nothing was lost to the busy pass"
         );
     }
@@ -1704,7 +1646,7 @@ mod tests {
 
         // The same revision again is the same edge, and the answered read starts nothing new.
         let mut outcomes = OutcomeSlots::new();
-        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: effect.token() }).unwrap();
+        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: effect.token(), scope: None }).unwrap();
         let mut same = committed(4);
         let plan = pass_with(&mut app, 30, &[], &mut outcomes, &mut same);
         assert!(plan.effects.catalog.is_empty(), "one commit, one refresh");
@@ -1732,14 +1674,9 @@ mod tests {
         );
     }
 
-    /// A read the store could not answer is **re-offered by the domain**, once per pass.
-    ///
-    /// Nothing else would ever order it again: the store did not move, so it raises no revision.
-    /// This is the retry the board used to keep privately, and every host has it now. Arming fills
-    /// no deferred slot, so the pass does not ask to come straight back — a card that has stopped
-    /// answering costs one read per wake rather than a loop spinning against it.
+    /// An unreadable catalog waits thirty seconds before retrying, without requesting busy passes.
     #[test]
-    fn a_failed_read_is_re_offered_once_per_pass() {
+    fn a_failed_read_waits_for_the_retry_deadline() {
         let mut app = navigating();
         quiet(&mut app, 10);
         quiet(&mut app, 20); // the boot activation's deferred value, consumed
@@ -1759,15 +1696,17 @@ mod tests {
         let plan = pass_with(&mut app, 40, &[], &mut outcomes, &mut none);
         assert!(!plan.immediate, "the retry is per wake — arming never asks for an immediate pass");
         let mut effects = plan.effects;
-        let second = effects.catalog.take().expect("the failed read is re-offered");
+        assert!(effects.catalog.take().is_none(), "failure waits instead of polling the card each pass");
+        let mut effects = quiet(&mut app, 30_040).effects;
+        let second = effects.catalog.take().expect("the failed read is re-offered after its deadline");
         assert!(matches!(second, CatalogEffect::ReadCatalog { .. }));
         assert_ne!(first.token(), second.token(), "a new operation, not the old one resurrected");
 
         // …and once it lands, nothing is owed.
         let mut outcomes = OutcomeSlots::new();
-        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: second.token() }).unwrap();
+        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: second.token(), scope: None }).unwrap();
         let mut none = ExternalFacts::NONE;
-        let plan = pass_with(&mut app, 50, &[], &mut outcomes, &mut none);
+        let plan = pass_with(&mut app, 30_050, &[], &mut outcomes, &mut none);
         assert!(plan.effects.catalog.is_empty(), "the read landed, so the store is no longer ahead of us");
     }
 
@@ -1797,7 +1736,7 @@ mod tests {
         assert!(matches!(read, CatalogEffect::ReadCatalog { .. }));
 
         let mut outcomes = OutcomeSlots::new();
-        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: read.token() }).unwrap();
+        outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token: read.token(), scope: None }).unwrap();
         let mut none = ExternalFacts::NONE;
         let plan = pass_with(&mut app, 40, &[], &mut outcomes, &mut none);
         assert!(plan.effects.catalog.is_empty(), "one read, not one per reason");

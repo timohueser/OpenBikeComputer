@@ -224,8 +224,8 @@ domain_slots! {
 // every pass and a growth here means a payload crept into a message. `OutcomeSlots` is dominated by
 // `DfuOutcome`'s two fixed 32-byte version strings — see `dfu.rs` for why that one is allowed to be
 // the biggest thing in the protocol.
-const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 160, "nine bounded effects, no payloads");
-const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 224, "nine bounded outcomes, no payloads");
+const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 216, "nine bounded effects, no payloads");
+const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 248, "nine bounded outcomes, no payloads");
 
 #[cfg(test)]
 mod tests {
@@ -304,7 +304,7 @@ mod tests {
         first.catalog.try_put(CatalogEffect::ReadCatalog { token: catalog_ops.issue() }).unwrap();
         first
             .retention
-            .try_put(RetentionEffect::WriteRouteMetadata { token: retention_ops.issue(), id: 1, meta })
+            .try_put(RetentionEffect::WriteRouteMetadata { token: retention_ops.issue(), scope: None, id: 1, meta })
             .unwrap();
         first.recorder.try_put(RecorderEffect::Checkpoint { token: recorder_ops.issue() }).unwrap();
         first.navigator.try_put(NavigatorEffect::Step { token: navigator_ops.issue() }).unwrap();
@@ -319,7 +319,12 @@ mod tests {
         second.catalog.try_put(CatalogEffect::RemoveObject { token: catalog_ops.issue(), object: 9 }).unwrap();
         second
             .retention
-            .try_put(RetentionEffect::WriteRideMetadata { token: retention_ops.issue(), id: 2, synced_at: 5 })
+            .try_put(RetentionEffect::WriteRideMetadata {
+                token: retention_ops.issue(),
+                scope: None,
+                id: 2,
+                synced_at: 5,
+            })
             .unwrap();
         second.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
         let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
@@ -345,7 +350,7 @@ mod tests {
         let mut storage_ops: TokenSource<StorageInfoTag> = TokenSource::new();
 
         let mut first = OutcomeSlots::new();
-        first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue() }).unwrap();
+        first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue(), scope: None }).unwrap();
         first
             .retention
             .try_put(RetentionOutcome::RouteMetadataWritten { token: retention_ops.issue(), id: 1 })

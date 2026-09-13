@@ -93,14 +93,6 @@ impl RideStore {
             self.rescan();
         }
     }
-
-    /// Start the process-local retention countdown if this ride has no stamp yet.
-    pub fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
-        if utc != 0 && !self.synced.contains_key(&id) {
-            self.synced.insert(id, utc);
-            self.rescan();
-        }
-    }
 }
 
 /// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the ride catalog + per-ride track
@@ -118,9 +110,6 @@ impl obc_host_core::RideRepository for RideStore {
     /// A `Save` just wrote a fresh desktop ride object; re-scan so it appears in the Rides menu live.
     fn refresh(&mut self) {
         self.rescan();
-    }
-    fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
-        self.stamp_synced_at(id, utc)
     }
 }
 
