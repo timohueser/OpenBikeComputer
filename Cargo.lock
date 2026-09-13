@@ -3146,6 +3146,7 @@ dependencies = [
  "js-sys",
  "obc-app",
  "obc-display",
+ "obc-elevation",
  "obc-host-core",
  "obc-ports",
  "obc-reader",
