@@ -135,9 +135,9 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # of named ridge summits from the fixture's full-circle peak catalog.
 "$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
 # Up enters Browse from the right edge and steps left through the ridge candidates.
-"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
 # Down enters Browse from the left edge and steps right. Generic labels stay in place.
-"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
 # synced/retention metadata boundary lands.

@@ -80,25 +80,33 @@ impl PeakViewScreen {
         };
         match g {
             Gesture::Step(n) => {
+                if n == 0 {
+                    return Transition::None;
+                }
                 let mut heading = self.heading_q4(cx.state);
                 if self.browse_heading_q4.is_none() {
-                    let visible = visible_indices(profile, heading);
-                    self.select(profile, if n >= 0 { visible.first() } else { visible.last() }.copied());
+                    self.selected = None;
                 }
                 for _ in 0..n.unsigned_abs() {
                     let visible = visible_indices(profile, heading);
                     let current = self.selected_index(profile).and_then(|i| visible.iter().position(|old| *old == i));
-                    let next = current.and_then(|at| {
+                    let next = if let Some(at) = current {
                         let next = at as i32 + n.signum();
                         (0..visible.len() as i32).contains(&next).then(|| visible[next as usize])
-                    });
+                    } else {
+                        if n > 0 { visible.first() } else { visible.last() }.copied()
+                    };
                     if next.is_some() {
                         self.select(profile, next);
                     } else {
                         heading = normalize_q4(i32::from(heading) + 60 * n.signum()) as u16;
                         let entered = visible_indices(profile, heading);
                         let mut new = entered.iter().copied().filter(|i| !visible.contains(i));
-                        self.select(profile, if n >= 0 { new.next() } else { new.next_back() });
+                        let next = if n > 0 { new.next() } else { new.next_back() };
+                        self.select(
+                            profile,
+                            next.or_else(|| self.selected_index(profile).filter(|i| entered.contains(i))),
+                        );
                     }
                 }
                 self.browse_heading_q4 = Some(heading);
@@ -117,7 +125,10 @@ impl PeakViewScreen {
                 }
                 Transition::None
             }
-            Gesture::Back if self.browse_heading_q4.take().is_some() => Transition::None,
+            Gesture::Back if self.browse_heading_q4.take().is_some() => {
+                self.selected = None;
+                Transition::None
+            }
             Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
@@ -417,8 +428,7 @@ mod tests {
             score: 3,
         },
     ];
-    // The wide angle range gives this profile a ~104-degree derived window, so the three peaks
-    // spread across the circle stay selectable from the headings the tests use.
+    // A wide window keeps the peaks selectable from the headings used below.
     static PROFILE: PeakViewProfile<'static> = PeakViewProfile {
         observer_lat: 0,
         observer_lon: 0,
@@ -500,6 +510,8 @@ mod tests {
         screen.handle(Gesture::Press, &mut cx);
         assert_eq!(screen.selected, None);
         screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
         assert_eq!(screen.browse_heading_q4, Some(0));
         cx.state.peak_view_peaks[0] = PEAKS[2];
@@ -508,12 +520,70 @@ mod tests {
         assert_eq!(screen.selected_index(&current_profile(cx.state).unwrap()), Some(1));
         screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(60));
+        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
         screen.handle(Gesture::Step(2), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(180));
         screen.handle(Gesture::Press, &mut cx);
         assert_eq!(screen.heading_q4(cx.state), 0);
         screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        screen.handle(Gesture::Step(-1), &mut cx);
         assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+    }
+
+    #[test]
+    fn browse_visits_every_peak_across_empty_space_and_reverses_without_skips() {
+        let mut state = AppState::new(0, 0, 1.0);
+        state.peak_view_profile = Some(PeakViewProfile { fov_q4: 240, ..PROFILE });
+        state.compass_deg = Some(0.0);
+        // Two peaks enter together at 40 degrees; two more share the same bearing.
+        for (i, bearing) in [340, 0, 40, 44, 110, 110, 180, 280].into_iter().enumerate() {
+            state.peak_view_peaks[i] =
+                PeakViewPeak { lat: i as i32, azimuth_q4: bearing * 4, distance_m: 1000 + i as u32, ..PEAKS[0] };
+        }
+        state.peak_view_peak_count = 8;
+        let mut activity = Activity::new(Mode::Idle);
+        let mut settings = Settings::default();
+        let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
+        for (direction, expected) in [(1, [0, 1, 2, 3, 4, 5, 6, 7, 0]), (-1, [1, 0, 7, 6, 5, 4, 3, 2, 1])] {
+            let mut screen = PeakViewScreen::new();
+            screen.set_status(Status::Ready);
+            let mut visited = std::vec::Vec::new();
+            for _ in 0..40 {
+                let heading = screen.heading_q4(cx.state);
+                screen.handle(Gesture::Step(direction), &mut cx);
+                let turn = bearing_delta_q4(screen.heading_q4(cx.state), heading);
+                assert!(turn == 0 || turn == direction * 60);
+                if let Some((id, _)) = screen.selected {
+                    if visited.last() != Some(&id) {
+                        visited.push(id);
+                    }
+                }
+                if visited.len() == expected.len() {
+                    break;
+                }
+            }
+            assert_eq!(visited, expected);
+        }
+
+        let mut screen = PeakViewScreen::new();
+        screen.set_status(Status::Ready);
+        screen.handle(Gesture::Step(2), &mut cx);
+        assert_eq!(screen.selected, Some((1, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(60));
+        assert_eq!(screen.selected, Some((2, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.selected, Some((3, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(120));
+        assert_eq!(screen.selected, Some((3, 0)));
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((2, 0)));
+        screen.handle(Gesture::Step(4), &mut cx);
+        assert_eq!(screen.selected, None);
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((3, 0)));
     }
 
     #[test]
