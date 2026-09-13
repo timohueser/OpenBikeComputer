@@ -50,7 +50,7 @@ fn sealing_revokes_every_writable_copy_without_publishing_or_spending_a_hold() {
     assert_eq!(store.entries().count(), 0);
     source.read_at(0, &mut actual).unwrap();
     assert_eq!(actual, expected);
-    store.release_sealed(sealed);
+    store.release_sealed(sealed).unwrap();
     let reused = store.allocate(2048).unwrap();
     store.cancel(stale);
     assert!(matches!(store.allocate(1), Err(StoreError::Busy)));
@@ -78,11 +78,21 @@ fn failed_seal_keeps_cleanup_and_fenced_seals_cannot_free_uncertain_space() {
     let other_disk = self::disk();
     let other = FlatStore::initialize(&other_disk, ID).unwrap();
     assert_eq!(other.sealed_source(&sealed).read_at(0, &mut [0; 4]), Err(Error::Io));
+    let sealed = other.release_sealed(sealed).expect_err("wrong mount returns the cleanup owner");
+    store.release_sealed(sealed).unwrap();
+    let mut allocation = store.allocate(1024).unwrap();
+    store.write(&mut allocation, b"tail").unwrap();
+    fault.fault_next(MediaOp::Write);
+    assert!(matches!(store.seal(allocation), Err(StoreError::Media)));
+    let sealed = store.seal(allocation).unwrap();
+    let mut retried = [0; 4];
+    store.sealed_source(&sealed).read_at(0, &mut retried).unwrap();
+    assert_eq!(&retried, b"tail");
     store.require_remount();
     let before = disk.ops();
     assert!(matches!(store.seal(allocation), Err(StoreError::ReadOnly)));
     let occupied = store.free_extents();
-    store.release_sealed(sealed);
+    store.release_sealed(sealed).unwrap();
     assert_eq!(store.free_extents(), occupied);
     assert_eq!(disk.ops(), before);
 }
@@ -132,6 +142,6 @@ fn sealed_reads_need_no_reservation_borrow_while_other_output_flushes() {
     assert_eq!(card.reads.get(), 2);
     card.store.set(None);
     card.sealed.set(None);
-    store.release_sealed(sealed_b);
-    store.release_sealed(sealed);
+    store.release_sealed(sealed_b).unwrap();
+    store.release_sealed(sealed).unwrap();
 }
