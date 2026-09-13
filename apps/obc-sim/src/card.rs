@@ -8,6 +8,7 @@ use obc_host_core::{flat_store::HostStore, FlatRouteStore, FlatTripStore, RouteR
 use std::path::{Path, PathBuf};
 
 pub struct Session {
+    pub owner: HostStore,
     pub map: LoadedMap,
     pub routes: FlatRouteStore,
     pub trips: FlatTripStore,
@@ -40,7 +41,7 @@ impl Session {
             LoadedMap::open_in(source, &owner).map_err(|error| error.to_string())?
         };
         let mut routes = FlatRouteStore::new(owner.clone(), &[]).map_err(|error| error.to_string())?;
-        let mut trips = FlatTripStore::new(owner).map_err(|error| format!("trips: {error:?}"))?;
+        let mut trips = FlatTripStore::new(owner.clone()).map_err(|error| format!("trips: {error:?}"))?;
         if args.card.is_none() {
             let files = input_files(Path::new(&args.routes_dir()), args.routes_dir.is_some())?;
             let mut route_ids = Vec::new();
@@ -84,7 +85,7 @@ impl Session {
             };
         }
         routes.refresh_metadata().map_err(|error| format!("route metadata: {error:?}"))?;
-        Ok(Self { map, routes, trips })
+        Ok(Self { owner, map, routes, trips })
     }
 }
 
