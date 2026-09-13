@@ -523,6 +523,22 @@ ownership = [{ kind = "rust-package", name = "obc-skin-preview" }]
 # Non-Rust test sources are owned by explicit roots or Swift target names.
 
 [[suite]]
+id = "web.demo-browser"
+surface = "web"
+level = "end-to-end"
+command = "npm test --prefix apps/obc-web-demo/tests/browser"
+fixtures = ["embedded-demo-assets"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["apps/obc-web-demo/**", "apps/obc-sim/assets/**", "docs/index.html", "docs/Trunk.toml"]
+platforms = ["linux", "macos"]
+coverage_component = "web"
+ownership = [
+  { kind = "path", source = "browser-test", pattern = "apps/obc-web-demo/tests/browser/*.test.js" },
+  { kind = "workflow", pattern = "npm test --prefix apps/obc-web-demo/tests/browser" },
+]
+
+[[suite]]
 id = "web.builder-vitest"
 surface = "web"
 level = "component"
