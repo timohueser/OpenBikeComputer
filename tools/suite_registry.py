@@ -449,7 +449,7 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
     if not words:
         errors.append(f"{suite_id}: command is empty")
         return
-    known_tools = {"bash", "cargo", "npm", "python3", "swift", "trunk", "xcodebuild"}
+    known_tools = {"bash", "cargo", "npm", "python3", "swift", "trunk", "xcodebuild", "xvfb-run"}
     expect_executable = True
     skip_cd_path = False
     for word in words:

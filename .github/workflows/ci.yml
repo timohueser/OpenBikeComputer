@@ -1223,13 +1223,56 @@ jobs:
           cargo build --release --locked --target x86_64-apple-darwin
           file target/x86_64-apple-darwin/release/obc-desktop
 
+  # Launch the existing Linux release artifact with its embedded frontend.
+  desktop-launch:
+    needs: [selection, desktop]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-launch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-desktop-linux-x86_64
+          path: apps/obc-desktop/target/release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: Install Linux launch dependencies
+        run: |
+          sudo apt-get update
+          webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
+          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
+          pip install -r apps/obc-desktop/e2e/requirements.txt
+          cargo install tauri-driver --version 2.0.6 --locked
+          chmod +x apps/obc-desktop/target/release/obc-desktop
+          dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
+      - name: Launch the release frontend and select a catalog region
+        id: launch
+        env:
+          OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
+        run: xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
+      - name: Upload Linux launch evidence
+        if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-launch-linux-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-launch
+          if-no-files-found: error
+          retention-days: 7
+
   # Single aggregate gate: make THIS the required status check on main/develop. It reports every
   # planned suite against the jobs the plan routed it to, so a job the plan never selected is
   # "not selected" and a selected job that was skipped is a failure. A failed `selection` job
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, catalog-ownership-guard, retention-ownership-guard, one-home-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, test-weather, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, catalog-ownership-guard, retention-ownership-guard, one-home-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, test-weather, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop, desktop-launch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
