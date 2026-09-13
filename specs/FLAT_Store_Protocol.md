@@ -189,6 +189,36 @@ a `PUT` admission is built from them. `journal` is the ride exception the epic g
 A binding may of course name them differently or fold the four facts into one; what is normative is
 that each is reachable and that nothing else is.
 
+**Local sealed producer storage.**
+
+A local producer may seal an unpublished allocation for immutable reads while it writes another
+allocation. This adds no wire opcode, catalog entry, or durable record. The existing two reservation
+slots remain the bound. A sealed allocation uses no open-object hold row.
+
+`seal` MUST flush a partial tail block before it returns the sealed owner. It MUST rotate the
+reservation nonce only after that write succeeds. Every prior writable token MUST then fail write,
+patch, reseal, and fresh publication checks; cancel with a prior token MUST NOT free the reservation.
+A failed seal MUST leave the input token valid for retry or cancellation. Seal does not make the
+payload durable across remount.
+
+The sealed owner MUST be non-copyable, bound to its originating mount, and keep that mount alive.
+It retains a private cleanup capability and an immutable ranges/length snapshot. Its byte source
+MUST borrow that owner and MUST NOT borrow the reservation table while it reads. Thus a reader of
+sealed leg A remains serviceable while a writer holds reservation B during a card command.
+Wrong-mount cleanup MUST return the unchanged owner. Cleanup on a mount that requires remount MUST
+retain uncertain extents until remount, as for ordinary allocations.
+
+The board passes a seal-result slot inside its held planner arena to the serialized writer. A
+pending ticket owns that slot until completion; the executor MUST NOT read, overwrite, change the
+arena phase, or release the arena during that interval. Cancellation drains the ticket before it
+consumes the result. A full request queue MUST return any non-copyable cleanup owner to the caller.
+
+A detour retains the boot map lease and another reference to the exact active route revision.
+That reference shares the active route's hold row. A replaced original can continue to occupy its
+old row; the existing swap row covers that overlap, and further contention returns `Busy`. The six
+hold rows and two reservation rows do not grow. A recording start or transfer that cannot reserve
+space while detour output uses both slots MUST refuse through its existing bounded path.
+
 **Every operation takes a shared reference to the store, the mutators included.** A store is shared,
 not owned: a mounted map holds its object open for the life of the image while an upload
 commits and a ride journals, and an exclusive write half makes that shape un-expressible rather than
@@ -749,9 +779,9 @@ RequestId. A committed proof remains idempotent after remount. If the first atte
 a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
 mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
 
-The board loads validated durable proof into ride retention. Only an existing exact proof can
-receive its first trusted-clock stamp, and scoped expiry requires a durable nonzero stamp.
-Client receipt delivery remains a separate integration boundary.
+The iOS client delivers and retries receipts from its durable archives. The board loads validated
+durable proof into ride retention. Only an existing exact proof can receive its first trusted-clock
+stamp, and scoped expiry requires a durable nonzero stamp.
 
 ## 4. Firmware update
 
@@ -945,7 +975,7 @@ this link, and each has a stated successor rather than a deletion:
 | `cardFreeRead` | Nothing asks in advance. §1 refuses capability discovery, and the question *"will this map fit"* is answered at the point of decision: a `PUT` that does not fit is `noSpace`, whose context is the bytes required (§3.9). What a client can know without trying is the catalog — `LIST` carries every object's payload length. |
 | `status` (device→host, unsolicited) | There are no unsolicited control frames (§3.1). A transfer's outcome is the answer to its own `PUT`/`GET`; a store movement is the commit sequence a client reads back from `LIST` (§3.3), which is also how it learns of movements it did not cause. |
 | `transferControl` | `PUT`, `GET`, `CANCEL` (§3.5–§3.8), with `RequestId` as the transfer identifier. |
-| `command` | The imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). Bond and clock remain device-local BLE commands; the cable does not carry them. The former ride acknowledgement command is retired. Protocol v4 has no client possession mutation. |
+| `command` | The imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). Bond and clock remain device-local BLE commands; the cable does not carry them. The former ride acknowledgement command is replaced by `ARCHIVE_RIDE` (§3.12), which accepts proof of an exact durable archive. |
 | `config` read / write | The device's own settings are not objects in this store and never were. They keep the BLE characteristics that carry them today. |
 
 There is no USB mass storage binding and there will not be one: it would hand the host raw blocks and

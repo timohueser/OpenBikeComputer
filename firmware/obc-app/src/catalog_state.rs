@@ -728,7 +728,7 @@ impl CatalogState {
     /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
     /// intent it has already decided about. A cascade is the one arm that puts it back, and it
     /// advances [`cascade`](CatalogState::cascade) every time it does — the ordinal only ever grows
-    /// and the stage list is bounded, so the walk always reaches the folder and releases the slot.
+    /// and the stage list is bounded. The walk reaches the folder or stops at its first failure.
     #[cfg(test)]
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
         self.next_effect_at(0)
@@ -826,16 +826,21 @@ impl CatalogState {
     /// The resident catalogs are not touched here: what is *in* the store reaches them through the
     /// refresh feed, and inventing a removal locally would make the two disagree until it did.
     ///
-    /// A cascade step reads the same as any other answer, including a failed one. The walk advanced
-    /// when the step went out, so a member the store refused is **left behind** rather than retried:
-    /// the folder still goes, and the leftover route comes back as an unfiled row the rider can
-    /// delete. Retrying instead would spin a cascade against a card that has stopped answering.
+    /// A failed cascade stops before any later member or the trip object is removed. The stored
+    /// trip keeps its stage references, so an explicit retry can pass already-absent members.
     pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) -> Option<CatalogObjectId> {
         if !self.ops.is_current(outcome.token()) {
             return None;
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
+        if matches!(outcome, CatalogOutcome::Failed { .. })
+            && self.cascade.is_some()
+            && matches!(self.pending, Some(CatalogIntent::DeleteTrip { .. }))
+        {
+            self.pending = None;
+            self.cascade = None;
+        }
         // A completed removal moved the store, so the resident catalogs are behind it — both
         // `existed` verdicts, because an object the store did not have may still be a resident row.
         // A read the store could not answer is still owed, and nothing else would order it again.
@@ -1025,18 +1030,40 @@ mod tests {
         assert!(!matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { .. })));
     }
 
-    /// A member the store refused is left behind rather than retried: the ordinal advanced when the
-    /// step went out, so the folder still goes and the leftover route reappears as an unfiled row.
-    /// Retrying would spin the cascade against a card that has stopped answering.
     #[test]
-    fn a_failed_member_step_does_not_stall_the_cascade() {
+    fn an_unrelated_failure_keeps_the_queued_trip_intent() {
+        for read in [false, true] {
+            let mut catalogs = with_trip(50, &[10], &[10, 99]);
+            if read {
+                catalogs.refresh_owed = true;
+            } else {
+                catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 99 }).unwrap();
+            }
+            let effect = catalogs.next_effect().unwrap();
+            catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+            catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::Unreadable });
+            assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[10, 50]);
+        }
+    }
+
+    /// Failure preserves the trip and unfinished members; an explicit retry can pass earlier absence.
+    #[test]
+    fn a_failed_member_stops_the_cascade_until_explicit_retry() {
         let mut catalogs = with_trip(50, &[10, 20], &[10, 20]);
         catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
-
-        let effect = catalogs.next_effect().expect("the first member");
-        catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::RemoveFailed });
-
-        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50], "the walk moved on and finished");
+        let first = catalogs.next_effect().unwrap();
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: first.token(), object: 10, existed: true });
+        let second = catalogs.next_effect().unwrap();
+        catalogs.apply_outcome(CatalogOutcome::Failed { token: second.token(), error: CatalogError::RemoveFailed });
+        let read = catalogs.next_effect().unwrap();
+        assert!(matches!(read, CatalogEffect::ReadCatalog { .. }), "earlier success still needs a reload");
+        catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token(), scope: None });
+        assert!(catalogs.next_effect().is_none(), "no automatic continuation or retry");
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+        let first = catalogs.next_effect().unwrap();
+        assert!(matches!(first, CatalogEffect::RemoveObject { object: 10, kind: CatalogObjectKind::Route, .. }));
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: first.token(), object: 10, existed: false });
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50]);
     }
 
     /// **Ordinal stability.** The walk holds a cursor, not a copy of the member list, so the only

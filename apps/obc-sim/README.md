@@ -38,11 +38,27 @@ makes no chord.
 
 ## Map and output
 
-The OBCM path is an import input. Startup streams it through a 16 KiB buffer into a temporary
-sparse flat-store card. Map and Peak View readers share the committed object; the final reader
-releases the temporary card. The input OBCM and its terrain sidecar remain unchanged. Import adds
-one startup write of the map payload and store metadata; the complete map is not held in RAM.
+The ordinary OBCM path is an import input. Startup copies the map through a 16 KiB buffer into a
+temporary sparse card, then imports the route and trip fixtures. All runtime readers use that same
+card. Input files stay unchanged. The final reader releases the temporary card.
 
+On Unix, create a persistent card explicitly, then reopen it without importing the files again:
+
+```sh
+target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/ --weather forecast.obcw
+target/release/obc-sim --card ride.obc
+target/release/obc-sim --import next-stage.gpx --card ride.obc
+```
+
+Creation refuses an existing path and exits after importing. If an import fails, it reports failure
+and leaves the partial card for inspection. Reopening never initializes or resets the file. It
+requires exactly one readable map, complete route and trip catalogs, and valid installed weather
+when present. The last reader keeps the card's exclusive file lock, even after the session closes.
+Persistent cards are not supported on Windows; ordinary temporary sessions remain available.
+
+A reopened map is labelled **Card map**. Planner elevation uses `NullElevation` in this mode;
+it does not infer a path to an external terrain sidecar. Embedded map terrain remains available
+to Peak View. Ordinary OBCM sessions keep the existing `.obcd` sidecar lookup for planning.
 
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
@@ -106,10 +122,10 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 - `--gpx PATH` replays a GPX track as the location source.
 - `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
-- `--routes-dir DIR` mounts a route store (default `routes/`).
+- `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
 - `--tracks-dir DIR` mounts the ride/track store (default `tracks/`).
-- `--import PATH` converts a GPX into the route store and exits; no map is required.
-- `--route-retention LEVEL:AGE` stamps route-retention metadata. `LEVEL` is 0–5; `AGE` accepts
+- `--import PATH` commits a GPX as a route to `--card`, or converts it to an `.obcr` file in `--routes-dir`, then exits. No map is required.
+- `--route-retention LEVEL:AGE` commits route-retention metadata to the session card and reloads it. `LEVEL` is 0–5; `AGE` accepts
   seconds, `h`, `d`, or `unknown` (for example `3:2d`).
 
 ## Device state
@@ -140,7 +156,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   `upload-replace=ID`, `trip-upload=N`, `map-transfer=receiving:RECEIVED/TOTAL`,
   `map-transfer=installed`, `map-transfer=failed:KIND`, or `warning=LIST`. Warning tokens are
   `gps,altimeter,compass,map,rec`; map-transfer failure kinds are `storage`, `damaged`, `notamap`,
-  and `refused`. `trip-upload=N` names the file `TP{N}.OBT` in the `--routes-dir`, and the map-transfer figures
+  and `refused`. `trip-upload=N` names the file `TP{N}.OBT` in the `--routes-dir` and is not available with `--card`. The map-transfer figures
   are kibibytes — the unit the board's own progress seam carries. An aborted or unplugged transfer
   has no form: it clears the card rather than raising one.
 - `--dfu STATE` selects one complete DFU fixture state: `scan=KIND`, `progress=KIND`,
@@ -153,7 +169,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 These are independent product controls, not part of the simulator-fixture consolidation:
 
-- `--weather FILE.obcw|demo[:SCENARIO]|live` loads one weather bundle, deterministic demo, or live service.
+- `--weather FILE.obcw|demo[:SCENARIO]|live` imports weather from a file, deterministic demo, or live service
+  into the session card. `--card` without this flag reopens the installed bundle. No folder data is
+  migrated. A failed import leaves the prior committed data available; an uncertain commit requires
+  closing the session and reopening the card. Reader-slot pressure after a successful commit retries
+  reader acquisition without importing again.
   Demo scenarios are `scattered` (the default), `drizzle`, `frontal`, `storm`, `dry`, `incoming`,
   `stormahead`, `rainahead`, `gusty`, and `hourly`.
 - `--weather-now UNIX` overrides the freshness instant.

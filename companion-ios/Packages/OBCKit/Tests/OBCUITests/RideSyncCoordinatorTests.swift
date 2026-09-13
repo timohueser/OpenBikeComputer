@@ -42,7 +42,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
     /// The coordinator's link mirror fills from the replayed `state` stream —
     /// wait for it before pressing Sync (the gate reads it synchronously).
     private func startConnected(_ coordinator: RideSyncCoordinator) async throws {
-        try await waitFor("link up") { coordinator.connection == .connected }
+        try await waitFor("link up") { coordinator.connection == .connected && coordinator.syncState != .syncing }
     }
 
     // MARK: Stream lifecycle (#356)
@@ -296,10 +296,9 @@ final class RideSyncCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(library.rideSummaries().count, 2, "the partial batch persists")
         XCTAssertEqual(library.syncedRideIDs().count, 2)
-        // A failed outcome is terminal: no confirm line, no H10 banner (the
-        // stream finished — there's nothing to resume), no up-to-date toast.
+        // A retry starts a fresh batch; the two saved rides remain excluded.
         XCTAssertNil(coordinator.lastSyncCount)
-        XCTAssertNil(coordinator.syncInterruption)
+        XCTAssertEqual(coordinator.syncInterruption?.landed, 2)
         XCTAssertFalse(coordinator.upToDateToastVisible)
     }
 
@@ -342,7 +341,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
             XCTAssertEqual(library.rideSummaries().map(\.id), [first.summary.id])
             XCTAssertFalse(try XCTUnwrap(library.ridePoints(first.summary.id)).isEmpty)
             XCTAssertNil(coordinator.lastSyncCount, "transport completion cannot override a local failure")
-            XCTAssertNil(coordinator.syncInterruption)
+            XCTAssertEqual(coordinator.syncInterruption?.landed, 1)
             XCTAssertFalse(coordinator.upToDateToastVisible)
 
             if !malformedPayload { try FileManager.default.removeItem(at: blocker) }
@@ -537,6 +536,7 @@ private struct ScriptedDownloadTransport: DeviceLink, DeviceObjects {
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail { try await base.routeDetail(id) }
     func uploadRoute(_ route: RouteBlob) -> TransferHandle { base.uploadRoute(route) }
     func deleteRoute(_ id: DeviceObjectID) async throws { try await base.deleteRoute(id) }
+    func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation { .confirmed }
     func listRides() async throws -> RideCatalog {
         if let catalog { return catalog }
         return try await base.listRides()

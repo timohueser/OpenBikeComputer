@@ -444,7 +444,9 @@ impl CoreHarness {
     /// [`a_commit_reported_with_its_own_finalize_still_orders_one_read`] runs that pairing.
     fn serve_recorder(&mut self, effect: RecorderEffect) -> RecorderOutcome {
         match effect {
-            RecorderEffect::Checkpoint { token } => RecorderOutcome::Checkpointed { token },
+            RecorderEffect::Checkpoint { token } => {
+                RecorderOutcome::Checkpointed { token, status: obc_app::recorder::CheckpointStatus::Durable }
+            }
             RecorderEffect::Finalize { token } => {
                 if std::mem::take(&mut self.state.fail_next_finalize) {
                     // A typed reason, not a generic warning event: the ride is still on the store.

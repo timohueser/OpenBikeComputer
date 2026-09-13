@@ -204,7 +204,8 @@ A skin can reorder styles within either band. This uses the existing cell bytes 
 The reader requests only the required tables and chunks.
 The device reads these bytes from a flat-store object.
 The simulator and browser demo also read their maps through the shared flat store.
-At startup, the simulator imports the OBCM input into a temporary sparse card file with a 16 KiB buffer.
+At startup, a temporary simulator session imports the map, route and trip inputs into one sparse card.
+Map import uses a 16 KiB buffer. Explicit Unix sessions can create or reopen a persistent card.
 The browser imports its embedded OBCM into sparse memory pages.
 Both hosts then read one pinned object revision through an owned source.
 The simulator and its background terrain worker share that source; the last reader releases it and removes the temporary card.
@@ -212,30 +213,71 @@ See the [shared host store](src:host/obc-host-core/src/flat_store.rs) and
 [map reader](src:host/obc-host-core/src/flat_map.rs).
 
 The host library also provides an explicit persistent card owner on Unix systems.
-Maps and routes can share this owner. A new card gets a new store identity.
+Simulator maps, routes and trips share this owner. A new card gets a new store identity.
 Opening an existing card preserves its store, object, and revision identities.
 Creation never overwrites an existing path. Opening never formats an invalid card.
 The shared store applies its normal recording recovery during mount.
 The owner holds an exclusive file lock until the last object reader closes.
 A failed commit can have reached the file. In that case, the owner stops further changes and
 requires a fresh mount to select the durable catalog. Existing readers keep their pinned bytes.
-The simulator still uses its temporary map card and folder route repository.
-Persistent Windows cards and simulator integration remain separate work.
+Reopening does not import the input files again and does not reset the card.
+Persistent Windows cards remain unsupported. Reopened simulator cards use `NullElevation` for
+planning. Embedded map terrain remains available to Peak View; planner sidecar ownership is still
+separate. Ordinary OBCM sessions keep their external terrain sidecar lookup.
 
 The browser imports its routes into the same session card as the map. Its
 [route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata
-and binds active readers to an exact object revision. A computed route replaces the prior
-revision under the same allocated object ID. Old readers remain valid until their last lease drops.
+and binds active readers to an exact object revision. Computed routes use fresh object IDs.
+An explicit route replacement keeps its object ID and advances its revision.
+Old readers remain valid until their last lease drops.
 Settled frames neither reopen the source nor scan the catalog.
 
 The browser card remains volatile. It allocates memory in 16 KiB pages; released pages remain
 available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
-route uses one page instead of a retained byte vector. Simulator route and trip folders, weather,
-and ride recording keep their existing host repositories and files.
+route uses one page instead of a retained byte vector. Native ride recording keeps its existing
+host repository and files.
+
+Native weather uses the same card owner as the map, routes and trips. Files, generated demos and
+HTTP responses are import inputs. The [weather adapter](src:host/obc-host-core/src/flat_weather.rs)
+validates each input before atomic replacement and retains an exact revision reader. Reopening a
+card loads its installed weather without importing again. An absent bundle means no weather;
+unreadable, malformed or multiple current bundles cause an error.
+
+A weather upload completes after the matching committed revision has a validated reader.
+If a write succeeds while reader slots are full, the host retains its committed identity and
+retries reader acquisition. It does not repeat the write. Existing readers remain available for
+display, but only validated current card data can authorize duplicate or stale upload acceptance.
+An uncertain commit stops further weather work until the session closes and the card reopens.
+Before adopting an independently observed revision, the host confirms its exact catalog head
+through a sync barrier. Visibility in the operating system cache alone does not prove durability.
+Reopened observations age against the current clock; explicit fixture imports can use a fixed
+clock for deterministic rendering.
+
+Catalog deletion retains the selected object kind, so equal numeric IDs in separate repositories
+cannot redirect a removal. The domain removes a trip's member routes before the trip object.
+A failed member stops that cascade. The trip and remaining members stay stored; an explicit retry
+can pass members that were already removed. Catalog scope is published only after complete
+route, metadata and trip reads from one unchanged card and catalog sequence.
 
 The shared host dispatcher retries a recording open until the repository confirms that the object exists.
 While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.
-If Save still has no object after that pass's open attempt, the repository returns `Nothing` and the session ends without a saved ride.
+Save stops new sample and total accumulation. Recorder first repairs an owed checkpoint and drains
+staged samples through acknowledged append results. A short append keeps the remaining samples
+and requests a checkpoint before retry. Only an empty staging buffer can proceed to finalization;
+the board and host executors do not append samples during that close. A failed close retries only
+the close. Discard bypasses the drain and clears staging after confirmed removal.
+If opening keeps failing while Save has staged samples, the samples and Save request stay pending.
+An empty ride with no object can still end without a saved ride.
+
+The board accepts a complete staged batch together with its precise App totals. If the remaining
+buffer cannot hold the batch, it accepts none of it and checkpoints the previous accepted boundary.
+A periodic checkpoint also uses that boundary while samples remain staged. With no staged samples,
+a checkpoint can capture newer barometric totals without adding a GPS point. A failed checkpoint
+replays its original bytes, totals and start time before it can accept any newer context.
+
+Host adapters can still report a partial append. An adapter without a recovery journal reports an
+unsupported checkpoint. Recorder then continues the pending work without claiming that the ride is
+recoverable. Native card recording and recovery remain a separate integration step.
 The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
 
 ### Semantic ports
@@ -364,8 +406,8 @@ They do not start another step or publish a completed plan on their own.
 
 | Operation | Executor work | Result Navigator waits for |
 | --- | --- | --- |
-| Acquire | Claim the workspace and retain the admitted map source. A host detour also retains its original route source. | Sources and workspace are held. |
-| Step | Run one bounded [NavPlanner](src:firmware/obc-route/src/nav.rs) step against those sources. | Search or output progress, a detour preview, or failure. |
+| Acquire | Claim the workspace and retain the admitted map source. A detour also retains its original route source. | Sources and workspace are held. |
+| Step | Run one bounded search, trim, or preview step against those sources. | Search or output progress, a detour preview, or failure. |
 | Commit | Publish the completed route, or the detour the rider accepted. | The new durable route identifier, or failure. |
 | Release | Finish pending storage work, cancel unused allocations or remove a cancelled publication, then return the workspace. | Cleanup is complete and the arena is available. |
 
@@ -374,19 +416,36 @@ Release after successful planning keeps the accepted route or detour preview. Re
 memory is not a cancellation result. Workspace refusal, planner failure and storage failure remain distinct.
 
 Planning stays bound to its admitted sources. The board checks its boot-long map lease against
-the exact card, map object and revision. The host retains the admitted map lease and, for a detour,
-the exact original route through preview and commit. A changed current source invalidates the
+the exact card, map object and revision. Both executors retain the exact original route through detour preview and commit.
+The host also retains its admitted map lease. A changed current source invalidates the
 result; the executor cannot substitute the latest map or route halfway through the operation.
-Native folder source checks and cleanup use retained snapshots and the observed generation;
-external file edits become visible to these checks only after a rescan.
 
-Publication creates a fresh OBCR object or host route file. It does not overwrite the original
+Publication creates a fresh OBCR object. It does not overwrite the original
 route. The standard catalog and route-load path handles the completed object. Flat-store
 publication requires capacity for both the publication commit and a cleanup commit if cancellation
 arrives after publication. Cleanup removes only the result of that cancelled operation.
 
-Host detour planning uses this same lifecycle. Board detours still return a workspace refusal:
-temporary detour storage and streamed splicing are not available on the board yet.
+The [board detour executor](src:firmware/obc-fw-nrf54l/src/detour.rs) writes a temporary leg into
+one of the card store's two reservation slots. It seals the leg before reading it. A sealed leg has
+one owner and cannot be changed by an old write token. It is not a catalog object.
+
+Trim and splice run in bounded phases. If trim finds sustained contact with the route tail, it
+writes the shorter leg into the other slot, seals it, and releases the first leg. An optional trim
+failure keeps the original leg and its preview figures. Preview retains only the sealed leg, the
+original route lease, and small frozen figures. It releases the arena so rendering can resume.
+
+When the rider accepts the preview, commit takes the same arena again. It reads the original and
+sealed leg while it writes the spliced route into the other reservation. A failed commit keeps the
+preview for retry. Cancellation drains any pending writer request before it releases the arena.
+The same 128 KiB arena serves planning, transforms, rendering, and cable transfer; the detour path
+adds no permanent route index or output buffer.
+
+The [resource guard](src:firmware/tools/resource_guard.py) reads the linked Cortex-M33 instructions.
+Its fixed stack-entry measurements include split local allocations and saved integer and
+floating-point registers. Each selected direct-call chain counts those entry costs once, including
+the task entry. Parsing stops when the function body begins. These checks do not measure body
+stack adjustments, indirect calls, interrupt preemption, or physical stack high-water. A passing
+single-entry check does not prove that a nested call path fits the available stack.
 
 The router projects each endpoint onto stored road geometry.
 It accepts roads within 100 m.

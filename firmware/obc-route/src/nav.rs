@@ -1275,16 +1275,14 @@ impl NavPlanner {
         Ok(false)
     }
 
-    /// Consume the emitter and patch the header — the plan's last writes.
+    /// Finish the emitter in place and patch the header — the plan's last writes.
     ///
     /// The elevation figures are read off the emit phase's [`EleFill`] (EL7): the dead-banded
     /// totals over the *emitted* point stream and the raw min/max over the samples that resolved.
     /// The distance total is untouched — it stays the summed raw edge `length_m` (N3), never the
     /// emitter's re-measured polyline, and densifying the polyline does not change it.
     ///
-    /// `#[inline(never)]` for the same reason as [`arm_emitter`](Self::arm_emitter):
-    /// `Option::take` moves the ~9 kB emitter into a local; that temporary belongs in this
-    /// popped frame, never in the step frame.
+    /// Keep the final chunk/index write scratch separate from the planner step frame.
     #[inline(never)]
     fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
         let (min_ele_m, max_ele_m, ascent_m, descent_m) = self.ele.stats();
@@ -1299,7 +1297,7 @@ impl NavPlanner {
             // `0 m` throughout is a real sea-level route, not an elevation-less one.
             has_elevation: self.ele.seen,
         };
-        let Some(em) = self.em.take() else {
+        let Some(em) = self.em.as_mut() else {
             return Err(NavError::NoPath); // unreachable: Emit always arms it
         };
         em.finish(sink, &self.name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
