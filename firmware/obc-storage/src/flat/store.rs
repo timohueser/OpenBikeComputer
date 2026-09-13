@@ -706,10 +706,12 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 
     /// Consume the sole cleanup capability. A fenced mount retains the reservation until remount.
-    pub fn release_sealed(&self, sealed: SealedAllocation<'_>) {
-        if sealed.mount == self as *const Self as usize {
-            self.cancel(sealed.allocation);
+    pub fn release_sealed<'a>(&self, sealed: SealedAllocation<'a>) -> Result<(), SealedAllocation<'a>> {
+        if sealed.mount != self as *const Self as usize {
+            return Err(sealed);
         }
+        self.cancel(sealed.allocation);
+        Ok(())
     }
 
     pub(super) fn read_sealed(
