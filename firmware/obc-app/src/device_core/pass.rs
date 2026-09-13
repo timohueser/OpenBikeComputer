@@ -346,7 +346,7 @@ impl App {
         // outcome, fact or gesture, so an earlier component acts on them ahead of new user input.
         self.pass.connections.promote_deferred();
 
-        self.stage_outcomes(outcomes);
+        self.stage_outcomes(outcomes, now.ui.0);
         self.stage_facts(facts, derived, targets);
         self.stage_input(now, gestures, sensors, route);
         self.stage_ui(now);
@@ -376,7 +376,7 @@ impl App {
 
     /// Stage 1 — validate and consume each domain's outcome slot.
     ///
-    fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
+    fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots, now_ms: u32) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
             if self.catalogs.accepts(outcome) {
@@ -384,7 +384,7 @@ impl App {
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unreadable,
                         ..
-                    } => self.catalogs.defer_read(self.ui.now_ms),
+                    } => self.catalogs.defer_read(now_ms),
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unsupported,
                         ..
@@ -410,7 +410,7 @@ impl App {
                     RetentionOutcome::Failed { error: RetentionError::Unsupported, .. } => {}
                     RetentionOutcome::Failed { error: RetentionError::WriteFailed | RetentionError::Busy, .. }
                     | RetentionOutcome::Cancelled { .. } => {
-                        self.retention.defer_write(self.ui.now_ms);
+                        self.retention.defer_write(now_ms);
                     }
                     _ => {
                         self.catalogs.loaded_scope = None;
@@ -660,7 +660,7 @@ impl App {
     /// The rider's own request outranks an expiry, and both outrank the store's own re-read, exactly
     /// as the legacy drain has it: a hold-to-delete is something someone is watching happen. Only
     /// the two deletions are *admitted* here — the re-read is owed inside `CatalogMachine` and taken
-    /// by [`next_effect`](crate::catalog_state::CatalogState::next_effect) when nothing else is
+    /// by [`next_effect`](crate::catalog_state::CatalogState::next_effect_at) when nothing else is
     /// pending, which is that same priority without a second copy of the refresh to lose or double.
     ///
     /// An admitted deletion of the **followed** route reaches Navigator in this pass — the rider is

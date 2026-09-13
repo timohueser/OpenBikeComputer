@@ -215,6 +215,7 @@ pub enum Action {
     DeleteRide,
     CascadeDeleteTrip,
     RenameRouteBehindAFailingRead,
+    RetryCatalogRead,
     StartRoutePlan,
     CancelRoutePlan,
     DeliverLateRouteResult,
@@ -509,7 +510,7 @@ impl CorpusState {
     /// admits a catalog mutation, a route plan and a ride recording. A fresh `App` has never been
     /// told it has a store, and `Capabilities` is the pass *before*'s level, so this has to run
     /// before any gesture that depends on one.
-    fn mount_store(&mut self) {
+    pub fn mount_store(&mut self) {
         struct NoFix;
         impl LocationSource for NoFix {
             fn poll(&mut self) -> Option<obc_ports::Fix> {
@@ -519,7 +520,7 @@ impl CorpusState {
         let mut location = NoFix;
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
-        self.app.run_pass(PassInputs {
+        let mut plan = self.app.run_pass(PassInputs {
             now: PassClock { ride: RideClock(0), ui: InputClock(0) },
             gestures: &[],
             sensors: Sensors::new(&mut location),
@@ -531,6 +532,25 @@ impl CorpusState {
             derived: DerivedInputs::NONE,
             targets: DerivedTargets::NONE,
         });
+        if let Some(obc_app::catalog_state::CatalogEffect::ReadCatalog { token }) = plan.effects.catalog.take() {
+            let scope = facts.store_revision();
+            let mut outcomes = OutcomeSlots::new();
+            outcomes.catalog.try_put(obc_app::catalog_state::CatalogOutcome::CatalogRead { token, scope }).unwrap();
+            self.app.run_pass(PassInputs {
+                now: PassClock { ride: RideClock(0), ui: InputClock(0) },
+                gestures: &[],
+                sensors: Sensors::new(&mut location),
+                route: None,
+                weather: None,
+                support: EVERY_CAPABILITY,
+                outcomes: &mut outcomes,
+                facts: &mut facts,
+                derived: DerivedInputs::NONE,
+                targets: DerivedTargets::NONE,
+            });
+        }
+        self.store_revision = 1;
+        self.facts.note_store_revision(facts.store_revision().unwrap());
     }
 
     fn tick_without_fix(&mut self) {
@@ -602,6 +622,7 @@ impl CorpusState {
             // The store moved and the *first* read of it will not answer. The rename is what makes
             // the retry rider-visible: until a read lands, the menu still shows the old name, so a
             // re-offer that never happened is a scenario that settles on stale rows.
+            Action::RetryCatalogRead => self.app.advance_animations(InputClock(30_010)),
             Action::RenameRouteBehindAFailingRead => {
                 self.routes[2] = route("Delta");
                 self.catalog_read_fail_once = true;
@@ -694,10 +715,12 @@ impl CorpusState {
                 self.pending_settings_result = Some(PendingSettingsResult::PersistLatest);
             }
             Action::StampRouteUse => {
+                self.mount_store();
                 self.app.stamp_clock_ble(1_720_000_000, 60);
                 self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
             }
             Action::StampRideSync => {
+                self.mount_store();
                 self.app.stamp_clock_ble(1_720_000_000, 60);
                 let mut stamped = self.rides[0].clone();
                 stamped.summary.synced = true;
@@ -714,6 +737,7 @@ impl CorpusState {
                 self.tick_without_fix();
             }
             Action::DeleteExpiredObject => {
+                self.mount_store();
                 self.app.stamp_clock_ble(1_720_000_000, 60);
                 self.app.set_route_meta(&[
                     obc_app::RouteRetentionMeta::new(obc_app::Retention::Day1, 1),
@@ -1183,7 +1207,13 @@ pub const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "catalog.refresh-retry",
         requirements: &[Requirement::CatalogRefreshRetry],
-        actions: &[Action::RenameRouteBehindAFailingRead, Action::Settle],
+        actions: &[
+            Action::RenameRouteBehindAFailingRead,
+            Action::Settle,
+            Action::Settle,
+            Action::Settle,
+            Action::RetryCatalogRead,
+        ],
     },
     Scenario {
         name: "navigation.plan-cancel-late-replacement",
@@ -1378,6 +1408,7 @@ pub fn clock_watermark(action: Action) -> u32 {
         // could not be shortened, and the partial-write row would never be reached.
         Action::RideFixes => 10_001,
         Action::RetrySettingsPersist => 4_002,
+        Action::RetryCatalogRead => 30_010,
         Action::RetryExpiredDelete => 5_002,
         Action::SleepPastDeleteBackoff => 9_002,
         _ => 0,
@@ -1388,6 +1419,7 @@ pub fn action_name(action: Action) -> &'static str {
     match action {
         Action::Settle => "settle",
         Action::StoreChanged => "store-changed",
+        Action::RetryCatalogRead => "retry-catalog-read",
         Action::RefreshCatalogs => "refresh-catalogs",
         Action::UploadFirstRoute => "upload-first-route",
         Action::UploadSecondRoute => "upload-second-route",

@@ -142,7 +142,7 @@ pub(crate) struct CatalogState {
     /// The resident catalogs are behind the store, and a re-read has not gone out yet. Armed by
     /// [`note_store_moved`](CatalogState::note_store_moved) (the store-revision fact), by a
     /// completed removal, and by a read the store could not answer; spent by
-    /// [`next_effect`](CatalogState::next_effect) once nothing is pending.
+    /// [`next_effect`](CatalogState::next_effect_at) once nothing is pending.
     ///
     /// A **bit, not a counter**, and that is the whole coalescing rule: a delete that also moves
     /// the store arms the same bit twice and costs one read, not two.

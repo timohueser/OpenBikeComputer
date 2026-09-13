@@ -461,6 +461,12 @@ pub fn remove_route<D: BlockDevice>(
 ) -> Result<(), Error> {
     check_scope(store, expected, sequence)?;
     let head = route_head(store, id)?;
-    store.commit(&[Mutation::Remove { id, revision: head.revision }])?;
+    store.commit(&[Mutation::Remove { id, revision: head.revision }]).map_err(|error| {
+        if store.mode() == super::Mode::RemountRequired {
+            Error::RemountRequired
+        } else {
+            Error::Store(error)
+        }
+    })?;
     Ok(())
 }
