@@ -18,8 +18,7 @@
 // sync handle is an exclusive lock. The map is then announced as a `stored-map`
 // carrying only its identity, and the page opens a `Blob` on the known entry. A
 // browser that cannot serve a sink buffers the map instead and gets it as a `file`
-// with the bytes transferred — honest, and the reason a country-scale selection is
-// refused there rather than attempted.
+// with the bytes transferred only when its admitted mode permits buffering.
 //
 // The input side is the mirror of that (#1116 B2). A request with `sourceCells`
 // brings no cell buffers at all: the download left them in OPFS, and *this* thread
@@ -28,15 +27,15 @@
 // cannot be opened during it — the opener is async and the run cannot await), handed
 // to the engine as a read callback, and closed in a `finally`, because a handle is
 // an exclusive lock and a leaked one would make the next run fail to open the same
-// cell. A browser with OPFS but no sync handles reads them back into memory instead
-// and assembles as it always did.
+// cell. An explicitly buffered admission may read cells into memory if sync handles
+// are unavailable. A disk-backed admission fails instead.
 //
 // The `finally` covers every ending except the one that skips all code: a cancel,
 // which is `worker.terminate()`. A sync access handle's lock belongs to the agent
 // that opened it, so terminating this one releases them — which is just as well,
 // since there is no way to run anything here afterwards.
 
-import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources } from "./bridge";
+import { AssembleError, assembleCells, estimateMemory, type AssembleCell, type AssembleSources, type AssembleResult } from "./bridge";
 import {
     openCellReader,
     openMapSink,
@@ -60,13 +59,14 @@ function post(res: AssembleWorkerResponse): void {
     self.postMessage(res, { transfer: responseTransferList(res) });
 }
 
-function postError(cause: unknown): void {
+function postError(cause: unknown, estimateId?: number): void {
     if (cause instanceof AssembleError) {
-        post({ type: "error", code: cause.code, message: cause.message });
+        post({ type: "error", code: cause.code, message: cause.message, estimateId });
     } else {
         post({
             type: "error",
             code: "internal",
+            estimateId,
             message: cause instanceof Error ? cause.message : String(cause),
         });
     }
@@ -100,13 +100,14 @@ function sinkMethods(sink: MapSink) {
     };
 }
 
-async function openSources(store: string, cells: WorkerSourceCell[]): Promise<Opened> {
+async function openSources(store: string, cells: WorkerSourceCell[], requireDisk: boolean): Promise<Opened> {
     const keys = cells.map((c) => c.key);
     if (await syncReadsAvailable()) {
         const reader = await openCellReader(store, keys);
         post({ type: "reading", mode: "streamed", cells: cells.length });
         return { sources: { cells, read: (slot, offset, into) => reader.read(slot, offset, into) }, extra: [], reader };
     }
+    if (requireDisk) throw new AssembleError("capacity", "The required disk-backed cell reader is no longer available.");
     const bytes = await readCellBytes(store, keys);
     post({ type: "reading", mode: "buffered", cells: cells.length });
     return { extra: cells.map((c, i) => ({ ...c, bytes: bytes[i] })), reader: null };
@@ -124,6 +125,8 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             const onDisk = req.onDisk && (await syncReadsAvailable());
             post({
                 type: "estimate-result",
+                estimateId: req.estimateId,
+                onDisk,
                 estimate: await estimateMemory(
                     req.networkBandBytes,
                     req.totalCellBytes,
@@ -135,68 +138,68 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             });
             return;
         }
-        // Named apart from the estimate branch's `onDisk` boolean on purpose: this is the list of
-        // cells the download left in OPFS, not a verdict about whether it could.
         const fromDisk = req.sourceCells ?? [];
         let opened: Opened = { extra: [], reader: null };
-        if (fromDisk.length > 0 && req.cellStore) {
-            opened = await openSources(req.cellStore, fromDisk);
-        } else {
-            post({ type: "reading", mode: "memory", cells: req.cells.length });
-        }
-        // Asked for and answered before the run, because the handle cannot be
-        // opened once the blocking call has started. A browser that cannot serve it
-        // buffers the map in wasm memory instead — an honest path rather than a
-        // failure, and the one the memory projection already refused a country on.
-        const sink: MapSink | null = await openMapSink();
-        post({ type: "writing", mode: sink ? "disk" : "memory" });
-        // The engine's spill (#1116 D2) goes to OPFS whenever this worker can hold
-        // sync handles at all — it is worth wiring even when the cells arrived in
-        // memory, because from D3 on the spill is the merge's own edge stream.
-        // `null` falls back to spilling inside wasm, which is correct and priced
-        // honestly, just not the point.
-        const scratch: ScratchFiles | null = (await syncReadsAvailable()) ? await openScratchStore() : null;
+        let sink: MapSink | null = null;
+        let scratch: ScratchFiles | null = null;
+        let result: AssembleResult | undefined;
         let io: IoStats | undefined;
-        let result;
         try {
-            result = await assembleCells(
-                [...req.cells, ...opened.extra],
-                req.schemaJson,
-                req.skinJson,
-                req.options,
-                (phase, fraction) => {
-                    post({ type: "progress", phase, fraction });
-                },
-                req.knownEmpty,
-                // The raster, when the catalog publishes one. A terrain-less catalog
-                // sends nothing here and the map is written with an empty §1.3 region.
-                req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
-                opened.sources,
-                // Adapted rather than passed through: the store's sink is a file and
-                // knows nothing about identities. `sealed` has genuinely nothing to
-                // do here — the same digest and length arrive on the result, from the
-                // same place — but the seam requires it, and a sink that could not
-                // report a finished file would be one whose bytes nobody can name.
-                sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
-                scratch ?? undefined,
-            );
-        } finally {
-            // The moment the run is over, whether it finished or threw: every
-            // handle is an exclusive lock on a file the next run will want — and,
-            // for the sink, one the *page* is about to want. The spill is further
-            // *deleted*, not just unlocked: it means nothing outside this run and
-            // holds country-scale quota.
-            opened.reader?.close();
-            sink?.close();
-            await scratch?.discard();
-            // The run's OPFS ledger, whatever the outcome: every crossing into
-            // the browser's storage, by channel, with its wall-clock cost. It
-            // rides the `done` message because a worker's own console does not
-            // reliably surface — and it is the first number an in-tab slowness
-            // report needs.
-            io = takeIoStats();
-        }
-        try {
+            try {
+                if (req.requireDisk && (req.cells.length > 0 || (fromDisk.length > 0 && !req.cellStore))) {
+                    throw new AssembleError("capacity", "This assembly requires its downloaded cells to stay on disk.");
+                }
+                if (fromDisk.length > 0 && req.cellStore) {
+                    opened = await openSources(req.cellStore, fromDisk, req.requireDisk);
+                } else {
+                    post({ type: "reading", mode: "memory", cells: req.cells.length });
+                }
+                sink = await openMapSink();
+                if (req.requireDisk && !sink) {
+                    throw new AssembleError("capacity", "The required disk-backed map output is no longer available.");
+                }
+                scratch = (await syncReadsAvailable()) ? await openScratchStore() : null;
+                if (req.requireDisk && !scratch) {
+                    throw new AssembleError("capacity", "The required disk-backed assembly scratch is no longer available.");
+                }
+                post({ type: "writing", mode: sink ? "disk" : "memory" });
+                result = await assembleCells(
+                    [...req.cells, ...opened.extra],
+                    req.schemaJson,
+                    req.skinJson,
+                    req.options,
+                    (phase, fraction) => {
+                        post({ type: "progress", phase, fraction });
+                    },
+                    req.knownEmpty,
+                    // The raster, when the catalog publishes one. A terrain-less catalog
+                    // sends nothing here and the map is written with an empty §1.3 region.
+                    req.terrain ? { lattice: req.terrain, cells: req.terrainCells ?? [] } : undefined,
+                    opened.sources,
+                    // Adapted rather than passed through: the store's sink is a file and
+                    // knows nothing about identities. `sealed` has genuinely nothing to
+                    // do here — the same digest and length arrive on the result, from the
+                    // same place — but the seam requires it, and a sink that could not
+                    // report a finished file would be one whose bytes nobody can name.
+                    sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
+                    scratch ?? undefined,
+                );
+            } finally {
+                // The moment the run is over, whether it finished or threw: every
+                // handle is an exclusive lock on a file the next run will want — and,
+                // for the sink, one the *page* is about to want. The spill is further
+                // *deleted*, not just unlocked: it means nothing outside this run and
+                // holds country-scale quota.
+                opened.reader?.close();
+                sink?.close();
+                await scratch?.discard();
+                // The run's OPFS ledger, whatever the outcome: every crossing into
+                // the browser's storage, by channel, with its wall-clock cost. It
+                // rides the `done` message because a worker's own console does not
+                // reliably surface — and it is the first number an in-tab slowness
+                // report needs.
+                io = takeIoStats();
+            }
             // One map, announced once. A sunk one is an identity — the page reads the
             // bytes off disk itself, now that the handle above is closed; a buffered
             // one rides across with its buffer in the transfer list.
@@ -212,9 +215,9 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
             }
             post({ type: "done", warnings: [...result.warnings], summary: result.summary, io });
         } finally {
-            result.release();
+            result?.release();
         }
     } catch (cause) {
-        postError(cause);
+        postError(cause, req.type === "estimate" ? req.estimateId : undefined);
     }
 };
