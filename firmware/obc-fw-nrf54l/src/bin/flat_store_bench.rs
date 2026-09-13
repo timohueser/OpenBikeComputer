@@ -129,17 +129,14 @@
 //!     --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
 //!     --kind map --name monaco.obcm
 //!
-//! # 2. flash + run the bench (a second shell). The committed runner already carries `--verify`.
-//! pkill probe-rs
+//! # 2. Stop an existing RTT session with Ctrl-C, then flash + run the bench.
 //! cd firmware/obc-fw-nrf54l
 //! cargo run --release --bin flat_store_bench
 //! ```
 //!
-//! Keep the read-back check: `.cargo/config.toml` sets the runner to `probe-rs run --chip
-//! nRF54LM20A --verify` because probe-rs 0.31 corrupts the first RRAM write after a code change
-//! often enough to matter, and on this part that is a boot HardFault at a random PC. (`cargo run
-//! --verify` is not a thing — the flag is in the runner, not in cargo's arguments.) To flash and
-//! attach separately, `probe-rs download --chip nRF54LM20A --verify <elf>` then `probe-rs run`.
+//! The shared board runner verifies each flash with double buffering disabled. From the
+//! repository root, use `obc board download <elf>`, `obc board reset`, and `obc rtt <elf>` to
+//! program and attach separately. The board README describes connection diagnostics.
 //!
 //! `sim-monaco`'s `monaco.obcm` is 718,336 bytes, which at [`INGEST_BAUD`]'s 115,200 8N1 is **about
 //! 63 s** on the wire (10 bits a byte, plus ~2 ms of USB turnaround per 8 KiB chunk). Raising

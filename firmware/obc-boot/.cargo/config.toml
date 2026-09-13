@@ -1,4 +1,4 @@
-# Build for the nRF54L15's Cortex-M33 (ARMv8-M Mainline, hard-float ABI), and on
+# Build for the nRF54LM20's Cortex-M33 (ARMv8-M Mainline, hard-float ABI), and on
 # `cargo run` flash + stream over the DK's onboard SEGGER J-Link via probe-rs.
 # Same pattern as ../obc-fw-nrf54l/.cargo/config.toml — the target is picked up by
 # **working directory**, so build this crate from inside its own directory (see README).
@@ -11,9 +11,8 @@ target = "thumbv8m.main-none-eabihf"
 # with byte-wise `from_le_bytes`, and this forbids the backend from fusing those into
 # alignment-assuming word loads (LDRD/LDM fault on unaligned regardless of CCR.UNALIGN_TRP).
 rustflags = ["-C", "target-feature=+strict-align"]
-# `--verify`: read the RRAM back after programming (the nRF54L15 DK's first flash after a
-# code change is corruption-prone; --verify turns that into a loud failure — just rerun).
-runner = "probe-rs run --chip nRF54LM20A --verify"
+# Use the same verified, single-buffered runner as the application.
+runner = "python3 ../../tools/board.py run"
 
 [env]
 DEFMT_LOG = "info"
