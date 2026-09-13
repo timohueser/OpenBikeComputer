@@ -187,7 +187,10 @@ impl Recorder {
 
                 let sample_anchors_valid = total == 0 || (first_t_ms.is_some() && last_t_ms.is_some());
                 if total.is_multiple_of(SAMPLE_LEN as u64) && sample_anchors_valid {
-                    let resumed = if total == 0 {
+                    let initial = total == 0
+                        && recovered.checkpoint_sequence == 0
+                        && recovered.resume.iter().all(|byte| *byte == 0);
+                    let resumed = if initial {
                         Some((obc_app::RideContinuation::default(), None))
                     } else {
                         decode_resume(&recovered.resume)

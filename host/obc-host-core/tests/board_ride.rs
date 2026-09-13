@@ -17,6 +17,11 @@ pub mod blocking_mutex {
 }
 pub mod signal {
     pub struct Signal<M, T>(core::marker::PhantomData<fn() -> (M, T)>);
+    impl<M, T> Default for Signal<M, T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
     impl<M, T> Signal<M, T> {
         pub const fn new() -> Self {
             Self(core::marker::PhantomData)
@@ -161,4 +166,36 @@ fn failed_checkpoint_replays_before_a_new_context_only_checkpoint() {
     let (reopened, recovered) = recover(media, *store.device());
     assert_eq!(recovered.recovered_continuation(), Some(barometric));
     assert_eq!(recovered_points(reopened), points);
+}
+
+#[test]
+fn empty_payload_preserves_valid_context_and_rejects_invalid_checkpoint_metadata() {
+    use obc_storage::flat::{RideCheckpoint, Store, RIDE_RESUME_LEN};
+    let _owner = RECORDER.lock().unwrap();
+    let (media, store, _, _) = setup();
+    let (reopened, mut recorder) = recover(media, *store.device());
+    assert_eq!(reopened.recovered_ride().unwrap().checkpoint_sequence, 0);
+    assert_eq!(recorder.recovered_continuation(), Some(RideContinuation::default()));
+    complete(recorder.open(reopened, 2, "ride", 0));
+    let barometric = RideContinuation { climb_m: 3.125, descent_m: 1.25, ..RideContinuation::default() };
+    assert_eq!(complete(recorder.checkpoint(10_000, &stats(), Some(barometric))), Ok(CheckpointStatus::Durable));
+    let (mut reopened, recorder) = recover(media, *store.device());
+    assert_eq!(reopened.recovered_ride().unwrap().payload_len(), 0);
+    assert_eq!(recorder.recovered_continuation(), Some(barometric));
+    for resume in [[0; RIDE_RESUME_LEN], [1; RIDE_RESUME_LEN]] {
+        let recovery = reopened.recovered_ride().unwrap();
+        reopened
+            .journal(RideCheckpoint {
+                id: recovery.id,
+                revision: recovery.revision,
+                append: &[],
+                payload_crc: 0,
+                resume: &resume,
+            })
+            .unwrap();
+        let (next, recorder) = recover(media, *store.device());
+        assert_eq!(recorder.recovered_continuation(), None);
+        assert_eq!(recorder.recovery_damage(), Some(obc_app::RideDamage::Metadata));
+        reopened = next;
+    }
 }
