@@ -44,9 +44,9 @@ pub struct Cell<'a> {
     /// The §8.6 profile table, verbatim — copied into the output after every cell is checked to
     /// agree (§4.3).
     pub profile_table: Vec<u8>,
-    /// The style table's ids and count, for the §4.1 agreement check. Values are the cell's
-    /// placeholders and are replaced by the skin (§4.7), so only the ids matter.
-    pub style_ids: Vec<u8>,
+    /// Canonical style ids and whether each draws above rain. The skin may restyle within each
+    /// band, but cannot change this assignment (§4.1/§4.7).
+    pub style_bands: Vec<(u8, bool)>,
     pub bytes: u64,
 }
 
@@ -96,7 +96,7 @@ impl<'a> Cell<'a> {
             (reader.lods().to_vec(), reader.poi_directory().clone(), *reader.nav_directory())
         };
         let profile_table = read_at(src, nav.profile_table_offset, nav.profile_count * NAV_PROFILE_LEN)?;
-        let style_ids = read_style_ids(src)?;
+        let style_bands = read_style_bands(src)?;
         Ok(Cell {
             id: input.id,
             band: input.band,
@@ -106,7 +106,7 @@ impl<'a> Cell<'a> {
             pois,
             nav,
             profile_table,
-            style_ids,
+            style_bands,
             bytes: src.len(),
         })
     }
@@ -162,9 +162,8 @@ pub fn read_at(src: &dyn ByteSource, offset: u64, len: usize) -> Result<Vec<u8>>
     Ok(out)
 }
 
-/// The style table's ids, in table order. The values are the cell's schema placeholders — only the
-/// **id set** is part of the §4.1 agreement, because the skin replaces everything else.
-fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
+/// Preserve the canonical band assignment from the table already read for style ids.
+fn read_style_bands(src: &dyn ByteSource) -> Result<Vec<(u8, bool)>> {
     let header = read_at(src, 0, HEADER_LEN)?;
     // Through the file's own `Offset Scale` (§1.1) — the header is 49 bytes, so since v14 the table
     // does not start where the header ends and the field is the only thing that says where it does.
@@ -172,11 +171,25 @@ fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
         .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;
-    Ok(table.as_chunks::<STYLE_RECORD_LEN>().0.iter().map(|r| r[0]).collect())
+    table
+        .as_chunks::<STYLE_RECORD_LEN>()
+        .0
+        .iter()
+        .map(|r| {
+            let z = r[1] as i8;
+            if z > obc_map_scene::RAIN_BAND_GAP_LOW && z < obc_map_scene::RAIN_BAND_GAP_HIGH {
+                return Err(Error::Input(format!(
+                    "cell style {} places z_index {z} inside the reserved rain band gap",
+                    r[0]
+                )));
+            }
+            Ok((r[0], z >= obc_map_scene::RAIN_BELOW_Z))
+        })
+        .collect()
 }
 
 /// OBCA §4.1's cross-cell preconditions: one OBCM version (the reader already enforced it), one
-/// style-id assignment, one profile table. A hole or a partial cell is legal — silently is not.
+/// style-id and rain-band assignment, one profile table. A hole or a partial cell is legal — silently is not.
 pub fn check_agreement(cells: &[Cell<'_>], accept_partial: bool) -> Result<()> {
     let Some(first) = cells.first() else {
         return Err(Error::Input(
@@ -198,14 +211,14 @@ pub fn check_agreement(cells: &[Cell<'_>], accept_partial: bool) -> Result<()> {
         }
     }
     for c in cells {
-        if c.style_ids != first.style_ids {
+        if c.style_bands != first.style_bands {
             return Err(Error::Input(format!(
-                "cells {} and {} disagree on the style table's id set ({} vs {} entries) — they are not one schema \
+                "cells {} and {} disagree on the style table's id/band assignment ({} vs {} entries) — they are not one schema \
                  revision (OBCA §4.1)",
                 first.id,
                 c.id,
-                first.style_ids.len(),
-                c.style_ids.len()
+                first.style_bands.len(),
+                c.style_bands.len()
             )));
         }
         if c.profile_table != first.profile_table {
