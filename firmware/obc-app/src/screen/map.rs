@@ -252,6 +252,8 @@ impl MapScreen {
         if warning_up {
             if rx.no_fix {
                 draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
+            } else if rx.navigation.dist_to_route_m == u32::MAX {
+                draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapOffRoute).trim_end());
             } else {
                 let mut s: heapless::String<20> = heapless::String::new();
                 super::vocab::fmt::write_distance_coarse(
@@ -1093,6 +1095,92 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::screen::{Screen, Transition};
     use crate::Settings;
+
+    #[test]
+    fn unavailable_route_geometry_renders_only_the_existing_off_route_labels() {
+        use crate::harness::support::{build_min_obcm, Buf, OnceFix};
+        use crate::screen::{apply, StatisticsScreen};
+        use embedded_graphics::pixelcolor::Rgb888;
+        use obc_formats::io::{ByteSource, Error, SliceSource};
+        use obc_ports::{Fix, RideClock, Sensors};
+        use obc_route::{RouteIndex, RouteReader};
+
+        struct Unreadable;
+        impl ByteSource for Unreadable {
+            fn len(&self) -> u64 {
+                4096
+            }
+            fn read_at(&self, _: u64, _: &mut [u8]) -> Result<(), Error> {
+                Err(Error::Io)
+            }
+        }
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../specs/vectors/route-plain.obcr"));
+        let source = SliceSource(bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let good = RouteReader::new(&index, &source);
+        let empty = RouteIndex::empty();
+        let map_bytes = build_min_obcm(0);
+        let map_source = SliceSource(&map_bytes);
+        let tables = obc_reader::MapTables::parse(&map_source).unwrap();
+        let cache = obc_reader::MapCache::new();
+        let map = obc_reader::Reader::new(&map_source, &tables, &cache);
+        let color = |c| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        };
+        for route in [RouteReader::new(&empty, &source), RouteReader::new(&index, &Unreadable)] {
+            for units in [Units::Metric, Units::Imperial] {
+                let mut app = crate::App::new(crate::AppState::new(0, 0, 0.05));
+                app.settings.units = units;
+                let fix = Fix::at(good.start_lat, good.start_lon);
+                app.tick(RideClock(0), Sensors::new(&mut OnceFix(Some(fix))), None);
+                app.navigator.set_active_route(Some(0));
+                app.navigator.refresh_route_profile(Some(&good));
+                app.navigator.match_fix(fix, &route);
+                assert!(app.navigator.route_state().off_route);
+                assert_eq!(app.navigator.route_state().dist_to_route_m, u32::MAX);
+                for statistics in [false, true] {
+                    let screen = if statistics {
+                        Screen::Statistics(StatisticsScreen::new())
+                    } else {
+                        Screen::Map(MapScreen::new())
+                    };
+                    apply(&mut app.ui.stack, Transition::Root(screen));
+                    let mut actual = Buf::new(240, 320);
+                    let mut scratch = Box::new(obc_render::RenderScratch::new());
+                    app.render_frame(Some(&mut scratch), &mut actual, &map, Some(&route), 240.0, 320.0, color);
+                    let mut expected = Buf::new(240, 320);
+                    let mut canvas = Canvas::new(&mut expected, &color);
+                    let rows = if statistics {
+                        super::super::vocab::chrome::title_frame(
+                            &mut canvas,
+                            240,
+                            320,
+                            crate::t(Msg::StatsTitle, app.settings.language),
+                            crate::t(Msg::StatsOff, app.settings.language).trim_end(),
+                        );
+                        8..28
+                    } else {
+                        draw_status_chip(
+                            &mut canvas,
+                            240,
+                            320,
+                            crate::t(Msg::MapOffRoute, app.settings.language).trim_end(),
+                        );
+                        (320 - CHIP_H - CHIP_MARGIN + 10)..(320 - CHIP_MARGIN - 10)
+                    };
+                    // The whole text row must match the label-only chrome, including its centering.
+                    for y in rows {
+                        for x in 10..230 {
+                            if statistics || (60..180).contains(&x) {
+                                assert_eq!(actual.get(x, y), expected.get(x, y), "label at ({x}, {y})");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn translated_hint_pills_pad_actual_ink_evenly() {

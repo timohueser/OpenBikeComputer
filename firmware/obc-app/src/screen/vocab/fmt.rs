@@ -38,18 +38,18 @@ pub(crate) fn distance_figure(value: f32) -> heapless::String<8> {
 /// chip, the Up ahead rows, the detour figures. Metric: `NNNm` below 1 km, `N.Nkm` to one decimal
 /// below 100 km, whole `NNNkm` above. Imperial: `NNNft` below 1000 ft, `N.Nmi` below 100 mi, whole
 /// `NNNmi` above. Rounds to the readout's own grain (nearest tenth / whole).
-pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<8> {
+pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<10> {
     let mut s = heapless::String::new();
     if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
+        let ft = (d_m as f32 * FT_PER_M) as u64;
         if ft < 1000 {
             let _ = write!(s, "{ft}ft");
-        } else if ft < 100 * FT_PER_MI {
+        } else if ft < 100 * u64::from(FT_PER_MI) {
             // One decimal mile, rounded to the nearest tenth.
-            let tenths = (ft * 10 + FT_PER_MI / 2) / FT_PER_MI;
+            let tenths = (ft * 10 + u64::from(FT_PER_MI) / 2) / u64::from(FT_PER_MI);
             let _ = write!(s, "{}.{}mi", tenths / 10, tenths % 10);
         } else {
-            let _ = write!(s, "{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
+            let _ = write!(s, "{}mi", (ft + u64::from(FT_PER_MI) / 2) / u64::from(FT_PER_MI));
         }
     } else if d_m < 1000 {
         let _ = write!(s, "{d_m}m");
@@ -58,7 +58,7 @@ pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<8> {
         let tenths = (d_m + 50) / 100;
         let _ = write!(s, "{}.{}km", tenths / 10, tenths % 10);
     } else {
-        let _ = write!(s, "{}km", (d_m + 500) / 1000);
+        let _ = write!(s, "{}km", (u64::from(d_m) + 500) / 1000);
     }
     s
 }
@@ -69,14 +69,14 @@ pub(crate) fn distance_short(d_m: u32, units: Units) -> heapless::String<8> {
 /// Map's off-route pill, the POI distance columns and the Up ahead side hint.
 pub(crate) fn write_distance_coarse<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32, units: Units) {
     if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
-        if ft >= FT_PER_MI {
-            let _ = write!(s, "{prefix}{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
+        let ft = (d_m as f32 * FT_PER_M) as u64;
+        if ft >= u64::from(FT_PER_MI) {
+            let _ = write!(s, "{prefix}{}mi", (ft + u64::from(FT_PER_MI) / 2) / u64::from(FT_PER_MI));
         } else {
             let _ = write!(s, "{prefix}{ft}ft");
         }
     } else if d_m >= 1000 {
-        let _ = write!(s, "{prefix}{}km", (d_m + 500) / 1000);
+        let _ = write!(s, "{prefix}{}km", (u64::from(d_m) + 500) / 1000);
     } else {
         let _ = write!(s, "{prefix}{d_m}m");
     }
@@ -88,8 +88,8 @@ pub(crate) fn write_distance_coarse<const N: usize>(s: &mut heapless::String<N>,
 /// every language.
 pub(crate) fn write_distance_away<const N: usize>(s: &mut heapless::String<N>, d_m: u32, units: Units, away: &str) {
     if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
-        if ft >= FT_PER_MI {
+        let ft = (d_m as f32 * FT_PER_M) as u64;
+        if ft >= u64::from(FT_PER_MI) {
             let _ = write!(s, "{:.1} mi {away}", ft as f32 / FT_PER_MI as f32);
         } else {
             let _ = write!(s, "{ft} ft {away}");
@@ -114,9 +114,9 @@ pub(crate) fn write_distance_spaced<const N: usize>(s: &mut heapless::String<N>,
             let _ = write!(s, "{}.{} mi", mi10 / 10, mi10 % 10);
         }
     } else {
-        let km10 = (dist_m + 50) / 100; // tenths of a km
+        let km10 = (u64::from(dist_m) + 50) / 100; // tenths of a km
         if km10 >= 1000 {
-            let _ = write!(s, "{} km", (dist_m + 500) / 1000);
+            let _ = write!(s, "{} km", (u64::from(dist_m) + 500) / 1000);
         } else {
             let _ = write!(s, "{}.{} km", km10 / 10, km10 % 10);
         }
@@ -397,6 +397,23 @@ mod tests {
         // 100 mi = 528000 ft ≈ 160934 m — the decimal→whole-miles crossover.
         assert_eq!(distance_short(160_000, Units::Imperial).as_str(), "99.4mi", "just under 100 mi keeps a decimal");
         assert_eq!(distance_short(200_000, Units::Imperial).as_str(), "124mi", "well past 100 mi is whole miles");
+    }
+
+    #[test]
+    fn distance_rounding_preserves_large_u32_values() {
+        for metres in [u32::MAX - 1, u32::MAX] {
+            for (units, short, spaced) in
+                [(Units::Metric, "4294967km", "4294967 km"), (Units::Imperial, "2668769mi", "2668769 mi")]
+            {
+                assert_eq!(distance_short(metres, units).as_str(), short);
+                let mut value: heapless::String<24> = heapless::String::new();
+                write_distance_coarse(&mut value, "", metres, units);
+                assert_eq!(value.as_str(), short);
+                value.clear();
+                write_distance_spaced(&mut value, metres, units);
+                assert_eq!(value.as_str(), spaced);
+            }
+        }
     }
 
     /// The coarse chip readout compacts straight to a whole large unit — no decimal band at all,
