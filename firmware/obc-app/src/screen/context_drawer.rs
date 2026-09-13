@@ -900,7 +900,7 @@ impl ContextDrawerScreen {
     /// place looks the same in the other.
     ///
     /// **The row does not state its value, and that is measured rather than chosen.** A label plus
-    /// the longest choice is 284 px of `Body` glyphs on a 204 px row (`de`'s *Campingplatz*, `es`'s
+    /// the longest choice is 284 px of `Body` glyphs on a 212 px row (`de`'s *Campingplatz*, `es`'s
     /// *Alojamiento*), so a one-line row cannot carry both, and a two-line row does not fit the
     /// 44 px pitch the ride sheet already ships. The editor one press away is where the value is
     /// spelled out and where the committed one is marked — the same division the quick drawer's
@@ -908,7 +908,7 @@ impl ContextDrawerScreen {
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         let facts = rx.context_facts();
         for (i, row) in self.menu.rows.iter().enumerate() {
-            let area = rect(x + 14, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 36, ROW_H - 4);
+            let area = rect(x + 14, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 28, ROW_H - 4);
             let live = row.action.available(&facts);
             super::vocab::rows::row_cursor(cv, area, i as u8 == self.selected, false);
             let ink = if live { palette::INK } else { palette::CONTOUR };
@@ -1494,13 +1494,14 @@ mod tests {
         use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
-        // The draw's own geometry: the row area starts 14 px into the sheet and is `w - 36` wide;
-        // the label starts 14 px inside it, the chevron takes the last 18 and the slider the last
-        // 54 (50 px wide, 4 px margin).
-        let area_w = W - 36;
+        // The draw's own geometry: the row area is inset 14 px from both screen edges (10 px
+        // inside the 4 px sheet margin on each side, so the cursor sits centred in the sheet) and
+        // is `w - 28` wide; the label starts 14 px inside it, the chevron takes the last 18 and the
+        // slider the last 54 (50 px wide, 4 px margin).
+        let area_w = W - 28;
         let door_room = area_w - 14 - 18 - MIN_CLEAR;
         let switch_room = area_w - 14 - 54 - MIN_CLEAR;
-        assert_eq!((door_room, switch_room), (164, 128), "the two row budgets, pinned");
+        assert_eq!((door_room, switch_room), (172, 136), "the two row budgets, pinned");
         // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
         // sheet's own right inset is 12.
         let choice_room = W - 48 - 12;
