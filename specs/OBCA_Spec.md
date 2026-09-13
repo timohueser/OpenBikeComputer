@@ -365,10 +365,11 @@ A baked cell MUST be a complete, valid OBCM file of the catalog's OBCM version, 
 - the POI section and the nav section MUST be present, per `OBCM_Spec.md` §7/§8, and MUST be
   **empty** unless the cell's band carries them;
 - its style table MUST be the schema revision's **canonical table** (§6.2) — right ids, right
-  count, right order, placeholder values — and its `Marker Color` the schema's placeholder. Both
-  are replaced at assembly by the chosen skin.
+  count, right order, placeholder values — and its `Marker Color` the schema's placeholder.
+  Each style's z value MUST be at most 16 or at least 24. This side of the reserved rain gap is
+  the canonical baseline for skin stamping; the skin may replace values only within that band (§4.7).
 
-The consequence of writing the full ladder is worth stating plainly: **band membership is not
+The consequence of writing the full ladder is worth stating plainly: **geometry-band membership is not
 recorded in the cell's bytes**. It is a property of the schema revision, read from the catalog
 (§6). A producer MUST NOT infer a cell's band from which of its LODs happen to be non-empty (a
 legitimately empty cell — open sea — is indistinguishable that way).
@@ -563,7 +564,9 @@ known-empty identities (§3.8). It MUST refuse to proceed if:
 
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
 - the cells do not all belong to the same schema revision; or
-- two cells disagree on the style table's id set or count, or on the `OBCM_Spec.md` §8.6 profile table; or
+- two cells disagree on the style table's ordered ids or rain-band membership, or on the
+  `OBCM_Spec.md` §8.6 profile table; or
+- a cell style's z value is inside the reserved gap (16, 24); or
 - any selected cell is missing, and the caller has not accepted the resulting hole; or
 - any selected cell is `partial`, and the caller has not accepted the reduced coverage.
 
@@ -699,12 +702,16 @@ A **skin** is the presentation half of a preset: per feature type a color, weigh
 
 - resolve each feature type's style **id** from the schema revision's canonical assignment (§6.2)
   — the skin MUST NOT introduce, remove, reorder, or renumber ids;
+- before any output write, compare the resolved ids and rain-band membership against the cells'
+  canonical table. Reject z values inside (16, 24) or on the opposite side of the gap. This check
+  also applies when a local schema omits the style assignment and the skin supplies explicit ids;
 - write the style table with the schema's ids in the schema's order and the skin's values in the
   other seven bytes of each 8-byte record (`OBCM_Spec.md` §2);
 - write the skin's `Marker Color` into the header.
 
 That is the entire cost of a restyle: ~2 KB of the output. It is why the builder can offer a style
-editor with no re-bake and no server. An assembler MUST reject a skin that does not cover every id
+editor with no re-bake and no server. Styles may reorder freely within either rain band.
+An assembler MUST reject a skin that does not cover every id
 in the schema's table, and MUST reject one that names a feature type the schema does not have —
 silently defaulting a missing style would ship a map with an invisible layer.
 
@@ -1327,8 +1334,9 @@ into chunk bytes, so it is the identity of a cell store.
 Critically, the schema also fixes the **style-id assignment**: `obc-pack` numbers feature types
 `1`-based in config document order (`OBCM_Spec.md` §2), and those ids are referenced by every
 feature header in every chunk. A schema revision therefore has one **canonical style table** — one
-id per feature type, in one order — and a skin may change only the other seven bytes of each
-record plus the header's `Marker Color`. That is the byte-level meaning of the schema/skin split,
+id per feature type, in one order, with one rain-band assignment. A skin may change the other
+seven bytes of each record plus the header's `Marker Color`, but MUST preserve each style's side
+of the reserved rain gap (§4.7). That is the byte-level meaning of the schema/skin split,
 and it is what makes a restyle free (§4.7).
 
 The hosted catalog has **exactly one** schema: the 14-LOD bikepacking ladder. It is the ladder
