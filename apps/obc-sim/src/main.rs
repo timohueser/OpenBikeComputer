@@ -39,10 +39,10 @@ use framebuffer::Framebuffer;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
 };
+use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
-use rides::RideStore;
 use track::TrackStore;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -1171,10 +1171,11 @@ fn main() {
         }
         return;
     }
-    let card::Session { owner, map, routes, trips } = card::Session::load(&mut args).unwrap_or_else(|error| {
-        eprintln!("session failed: {error}");
-        std::process::exit(1);
-    });
+    let card::Session { owner, map, routes, trips, rides, tracks } =
+        card::Session::load(&mut args).unwrap_or_else(|error| {
+            eprintln!("session failed: {error}");
+            std::process::exit(1);
+        });
     let source = map.map_source();
     eprintln!("card {:?} | map {} revision {}", source.store_id(), source.id().0, source.revision().0);
     if args.create_card.is_some() {
@@ -1456,7 +1457,7 @@ fn main() {
         app.set_trips(&trip_store.inputs());
         // Load the simulator tracks folder so the Rides screen (#454) lists its v3 fixtures and
         // process-local synced flags.
-        let mut ride_store = RideStore::open(args.tracks_dir());
+        let mut ride_store = rides;
         app.set_rides(ride_store.catalog());
         // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
@@ -1473,7 +1474,8 @@ fn main() {
         let mut elev = map.elevation();
         // The open ride log. Opened here, above the script, because every settling pass reconciles
         // it against the app's tracking session exactly as a frame loop does.
-        let mut tracks = TrackStore::open(args.tracks_dir());
+        let mut tracks = tracks;
+        tracks.offer_recovery(&mut app);
         // The resident active-route parse, shared by every settle and by the final render.
         let mut session = ActiveRouteSession::new();
         // What only this host can do: the fixed card-free figure, and the `--dfu` answers.
@@ -2070,7 +2072,7 @@ fn main() {
     }
 
     // Interactive: hand the map to the eframe host window.
-    if let Err(e) = gui::run(owner, map, routes, trips, args) {
+    if let Err(e) = gui::run(owner, map, routes, trips, rides, tracks, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
     }

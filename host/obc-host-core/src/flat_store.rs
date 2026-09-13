@@ -62,7 +62,7 @@ pub(crate) struct NativeCard {
     #[cfg(test)]
     fail_sync_after: std::cell::Cell<Option<usize>>,
     #[cfg(test)]
-    fail_sync_before: std::cell::Cell<Option<usize>>,
+    pub(crate) fail_sync_before: std::cell::Cell<Option<usize>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -201,6 +201,15 @@ impl MountedStore {
             return Err(StoreError::Media);
         }
         Ok(())
+    }
+
+    /// Catalog publication can become durable before its final sync reports an error.
+    pub(crate) fn commit(&mut self, mutations: &[Mutation]) -> Result<u64, StoreError> {
+        let result = self.ready()?.commit(mutations);
+        if result == Err(StoreError::Media) {
+            self.remount_required = true;
+        }
+        result
     }
 
     pub(crate) fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
@@ -441,12 +450,18 @@ impl HostStore {
         if !store.has_commit_capacity(commits) {
             return Err(StoreError::ReadOnly.into());
         }
-        if kind == ObjectKind::Route && previous.is_none() {
-            let count = store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE).count();
+        if matches!(kind, ObjectKind::Route | ObjectKind::Ride) && previous.is_none() {
+            let count = store
+                .entries()
+                .filter(|entry| {
+                    entry.kind == kind && (entry.flags == EntryFlags::NONE || entry.flags == EntryFlags::RECORDING)
+                })
+                .count();
             if !store.entries_ok() {
                 return Err(StoreError::Media.into());
             }
-            if count >= obc_app::MAX_ROUTES {
+            let capacity = if kind == ObjectKind::Route { obc_app::MAX_ROUTES } else { obc_app::MAX_RIDES };
+            if count >= capacity {
                 return Err(StoreError::Busy.into());
             }
         }
