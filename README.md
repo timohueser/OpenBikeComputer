@@ -55,7 +55,7 @@ This repository contains all the software and hardware files needed to build the
   </tr>
   <tr>
     <td align="center" width="33%">
-      <img src="docs/assets/device/menu.webp" width="200" alt="The main menu, a compass dial with the Routes station selected">
+      <img src="docs/assets/device/peak-view.webp" width="200" alt="Peak View shows the Eiger and Mönch from Kleine Scheidegg, with the Eiger's height and distance">
     </td>
     <td align="center" width="33%">
       <img src="docs/assets/device/weather.webp" width="200" alt="The weather screen shows rain in 34 minutes and the next two hours">
@@ -65,7 +65,7 @@ This repository contains all the software and hardware files needed to build the
     </td>
   </tr>
   <tr>
-    <td align="center"><sub>Reach every screen from one dial.</sub></td>
+    <td align="center"><sub>Identify the peaks around you.</sub></td>
     <td align="center"><sub>Know when the rain arrives.</sub></td>
     <td align="center"><sub>Find a shop, and when it opens.</sub></td>
   </tr>
