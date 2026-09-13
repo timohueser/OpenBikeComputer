@@ -408,7 +408,8 @@ impl HostLoop {
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
-            let outcome = serve_recorder(app, effect, tracks);
+            let opened = app.recorder.object_owed(self.opened_session).is_none();
+            let outcome = serve_recorder(app, effect, tracks, opened);
             deliver(&mut self.inbox.outcomes.recorder, outcome, "recorder");
         }
         if let Some(effect) = plan.effects.navigator.take() {
@@ -669,13 +670,13 @@ impl HostLoop {
     /// host runs its pass first, so it never sees that window — the board does, and both ask the
     /// same question of the same domain rather than each keeping a rule.
     ///
-    /// The save name is read on this edge rather than every pass, which makes it one ≤48-byte clone
-    /// per ride instead of one per frame: the name is frozen when the ride opens, so a mid-ride
-    /// route swap cannot rename a ride that is already recording.
+    /// Read the save name only while an open is owed. A failed open stays owed; success freezes
+    /// the name, so a later route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
         let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
-        self.opened_session = Some(id);
-        tracks.open(id, active_route_name(app).as_deref());
+        if tracks.open(id, active_route_name(app).as_deref()) {
+            self.opened_session = Some(id);
+        }
     }
 
     // ---- the two derived levels ----
@@ -766,7 +767,15 @@ fn serve_retention(
 /// `CatalogMachine`'s to order — Recorder tells it through the `RideFinalized` connection, so one
 /// saved ride is one catalog read (#1541's rule, applied to the last producer that kept its own copy
 /// of it).
-fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepository) -> RecorderOutcome {
+fn serve_recorder(
+    app: &App,
+    effect: RecorderEffect,
+    tracks: &mut dyn TrackRepository,
+    opened: bool,
+) -> RecorderOutcome {
+    if !opened && matches!(effect, RecorderEffect::Append { .. } | RecorderEffect::Checkpoint { .. }) {
+        return RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
+    }
     match effect {
         RecorderEffect::Checkpoint { token } => match tracks.checkpoint() {
             true => RecorderOutcome::Checkpointed { token },
@@ -780,9 +789,11 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
         // The footer facts come from Recorder, which stamped its wall-clock anchor as it minted
         // this close — nothing assembles them a second time on the way out.
         RecorderEffect::Finalize { token } => {
-            for point in app.recorder.staged() {
-                if !tracks.append(*point) {
-                    break; // the medium refused; the footer is still the honest total
+            if opened {
+                for point in app.recorder.staged() {
+                    if !tracks.append(*point) {
+                        break; // the medium refused; the footer is still the honest total
+                    }
                 }
             }
             match tracks.finalize(app.recorder.ride_stats()) {
@@ -889,11 +900,15 @@ mod tests {
         open: bool,
         points: Vec<TrackPoint>,
         footer: Option<RideStats>,
+        failed_opens: usize,
+        open_attempts: usize,
     }
 
     impl TrackRepository for RecordingTrackStore {
-        fn open(&mut self, _session: u32, _name: Option<&str>) {
-            self.open = true;
+        fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+            self.open_attempts += 1;
+            self.open = self.open_attempts > self.failed_opens;
+            self.open
         }
 
         fn finalize(&mut self, stats: RideStats) -> RideClose {
@@ -910,7 +925,13 @@ mod tests {
             true
         }
 
+        fn checkpoint(&mut self) -> bool {
+            assert!(self.open, "no checkpoint against an absent recorder");
+            true
+        }
+
         fn append(&mut self, point: TrackPoint) -> bool {
+            assert!(self.open, "no append against an absent recorder");
             self.points.push(point);
             true
         }
@@ -950,6 +971,90 @@ mod tests {
         (app, host)
     }
 
+    #[test]
+    fn failed_open_retries_before_serving_samples_or_checkpoints() {
+        let bytes = obcm_testkit::build_file(
+            (0, 0, 4000, 4000),
+            &[],
+            &[obcm_testkit::LodSpec { max_mpp: f32::INFINITY, index: vec![], chunks: vec![], chunk_size: 4096 }],
+        );
+        let map = crate::flat_map::FlatMap::from_bytes(&bytes).unwrap();
+        // Exercise both the append and checkpoint ranks, then the unchanged never-opened Save.
+        for (start, save) in [(7_000, false), (11_000, false), (7_000, true)] {
+            let (mut app, mut host) = ride_with_a_staged_tail(4);
+            let expected = app.recorder.staged().to_vec();
+            let mut store =
+                RecordingTrackStore { failed_opens: if save { usize::MAX } else { 1 }, ..Default::default() };
+            let mut routes = crate::FlatRouteStore::from_bytes(&[]).unwrap();
+            let mut rides = crate::MemRideStore::new(vec![]);
+            let mut session = ActiveRouteSession::new();
+            if save {
+                app.recorder.request(RecorderIntent::Save);
+            }
+            for step in 0..4 {
+                let now = start + step * 1_000;
+                let mut loc = OneFix(None);
+                let mut plan = host.pass(
+                    &mut app,
+                    PassClock { ride: RideClock(now), ui: InputClock(now) },
+                    &[],
+                    Sensors::new(&mut loc),
+                    None,
+                    None,
+                    SUPPORT,
+                );
+                let first_token = (step == 0).then(|| {
+                    let effect = plan.effects.recorder.take().unwrap();
+                    assert!(match (save, start) {
+                        (true, _) => matches!(effect, RecorderEffect::Finalize { .. }),
+                        (_, 11_000) => matches!(effect, RecorderEffect::Checkpoint { .. }),
+                        _ => matches!(effect, RecorderEffect::Append { .. }),
+                    });
+                    plan.effects.recorder.try_put(effect).unwrap();
+                    effect.token()
+                });
+                host.execute(
+                    &mut app,
+                    &mut plan,
+                    &mut session,
+                    &mut routes,
+                    &mut rides,
+                    &mut store,
+                    &mut (),
+                    &map.reader(),
+                    &mut obc_route::NullElevation,
+                    &mut (),
+                );
+                if let Some(token) = first_token {
+                    assert_eq!(host.opened_session, None, "a failed open stays owed");
+                    assert!(store.points.is_empty());
+                    assert_eq!(app.recorder.staged(), expected);
+                    let outcome = host.inbox.outcomes.recorder.take().unwrap();
+                    assert_eq!(
+                        outcome,
+                        if save {
+                            RecorderOutcome::Discarded { token }
+                        } else {
+                            RecorderOutcome::Failed { token, error: RecorderError::Write }
+                        }
+                    );
+                    host.inbox.outcomes.recorder.try_put(outcome).unwrap();
+                }
+            }
+            assert!(app.recorder.staged().is_empty());
+            if save {
+                assert_eq!(store.open_attempts, 1, "a terminal close does not reopen");
+                assert_eq!(app.recorder.session(), None);
+                assert!(store.points.is_empty());
+                assert!(store.footer.is_none(), "no object was committed");
+            } else {
+                assert_eq!(store.open_attempts, 2, "one retry, then the session stays acknowledged");
+                assert_eq!(host.opened_session, app.recorder.session());
+                assert_eq!(store.points, expected, "the staged samples reach the object once, in order");
+            }
+        }
+    }
+
     /// **The close writes the samples it was holding.** A ride whose tail no append reached is
     /// saved with that tail in the ride object, ahead of the footer — because the footer's distance
     /// and moving time already count the ground those samples cover, and an object whose figures
@@ -974,7 +1079,7 @@ mod tests {
         let effect = plan.effects.recorder.take().expect("the rider's Save is a close");
         assert!(matches!(effect, RecorderEffect::Finalize { .. }), "{effect:?}");
 
-        let outcome = serve_recorder(&app, effect, &mut store);
+        let outcome = serve_recorder(&app, effect, &mut store, true);
         assert!(matches!(outcome, RecorderOutcome::Finalized { .. }), "{outcome:?}");
 
         assert_eq!(store.points.len(), 4, "every staged sample reached the ride object");
