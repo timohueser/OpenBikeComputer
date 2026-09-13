@@ -164,39 +164,58 @@ pub struct WeatherSource {
     pub clock_anchor: Option<i64>,
 }
 
-/// Resolve `--weather`: `live` fetches from the service, everything else is the existing
-/// fixture/demo path.
+/// Open installed weather on the session card. Files, demos and HTTP are import boundaries.
 pub fn build(
-    arg: &str,
+    owner: obc_host_core::flat_store::HostStore,
+    arg: Option<&str>,
     now_override: Option<i64>,
     map_bbox: (i32, i32, i32, i32),
     config: &LiveConfig,
     position: (i32, i32),
     store_ready: bool,
-) -> WeatherSource {
-    if arg != "live" {
-        let store = SimWeather::from_arg(arg, now_override, map_bbox);
-        let clock_anchor = store.as_ref().and_then(|store| store.effective_now());
-        return WeatherSource { store, live: None, clock_anchor };
-    }
-    // Live weather is dated by the real clock, not by its own newest frame: a bundle whose
-    // freshest observation is 40 minutes old must read WEATHER UPDATE NEEDED, and it only can if
-    // "now" is genuinely now. `--weather-now` still wins, because that is the deterministic
-    // stale-scenario tool.
+) -> Result<WeatherSource, String> {
+    let is_live = arg == Some("live");
     let now = now_override.unwrap_or_else(|| chrono::Utc::now().timestamp());
-    let mut live = LiveWeather::new(config);
-    // §11.7: a device with no storage raises no request, so the companion never fetches — and the
-    // seed fetch is that same request. `--no-card` therefore issues no HTTP at all, which is the
-    // observable form of the rule.
     if !store_ready {
-        return WeatherSource { store: None, live: Some(live), clock_anchor: Some(now) };
+        return Ok(WeatherSource {
+            store: None,
+            live: is_live.then(|| LiveWeather::new(config)),
+            clock_anchor: is_live.then_some(now),
+        });
     }
-    let store = live.fetch(position, now, 1).and_then(|bytes| SimWeather::from_bytes(bytes, now_override));
-    if store.is_none() {
-        eprintln!(
-            "--weather live: no bundle ({})",
-            live.report.error.as_deref().unwrap_or("the service answered but the bundle was unreadable")
-        );
+    if !is_live {
+        let store = match arg {
+            Some(arg) => SimWeather::from_arg(owner, arg, now_override, map_bbox)?,
+            None => SimWeather::open(owner, now_override)?,
+        };
+        // Explicit fixture imports use their fixture instant. Reopened card data ages against
+        // the current clock; opening the card must not make an old observation look fresh.
+        let clock_anchor = if arg.is_none() { store.installed().map(|_| now) } else { store.effective_now() };
+        let store = (store.installed().is_some() || store.pending().is_some()).then_some(store);
+        return Ok(WeatherSource { store, live: None, clock_anchor });
     }
-    WeatherSource { store, live: Some(live), clock_anchor: Some(now) }
+    let mut store = SimWeather::open(owner, now_override)?;
+    let mut live = LiveWeather::new(config);
+    if let Some(bytes) = live.fetch(position, now, 1) {
+        let source = obc_formats::io::SliceSource(&bytes);
+        let reader = obc_weather::WeatherReader::open(&source).map_err(|e| format!("weather: {e:?}"))?;
+        let header = reader.header();
+        let incoming = obc_ble::BundleIdentity { generation: header.generation, generated_at: header.generated_at };
+        let held = store
+            .validated_identity()
+            .map(|(generation, generated_at, _)| obc_ble::BundleIdentity { generation, generated_at });
+        if obc_ble::classify_upload(incoming, held) == obc_ble::UploadDisposition::Commit {
+            match store.install(&bytes) {
+                Ok(obc_host_core::flat_weather::WeatherInstall::Adopted(_)) => {}
+                Ok(obc_host_core::flat_weather::WeatherInstall::AwaitingReader { identity, error }) => {
+                    eprintln!("weather committed {identity:?}; reader: {error}")
+                }
+                Err(error) => {
+                    live.report.error = Some(error.to_string());
+                    eprintln!("weather upload: {error}");
+                }
+            }
+        }
+    }
+    Ok(WeatherSource { store: Some(store), live: Some(live), clock_anchor: Some(now) })
 }

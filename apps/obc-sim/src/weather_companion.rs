@@ -20,6 +20,7 @@ use obc_ble::{
 
 use crate::weather_live::LiveWeather;
 use crate::weather_store::SimWeather;
+use obc_host_core::flat_weather::{WeatherIdentity, WeatherInstall};
 
 /// What the last lifecycle pass did, for the dev panel. Outside the emulated device pixels.
 #[derive(Debug, Clone, Default)]
@@ -63,6 +64,7 @@ pub struct SimCompanion {
     /// §11.7's rule: no card ⇒ no requests, urgent included, because every upload would be
     /// answered `error` and the phone would burn its battery on the loop.
     store_ready: bool,
+    awaiting: Option<(u32, WeatherIdentity)>,
 }
 
 impl Default for SimCompanion {
@@ -73,7 +75,7 @@ impl Default for SimCompanion {
 
 impl SimCompanion {
     pub fn new(store_ready: bool) -> Self {
-        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), store_ready }
+        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), store_ready, awaiting: None }
     }
 
     /// Queue the typed urgent request that the app asked the platform to raise.
@@ -86,24 +88,74 @@ impl SimCompanion {
         self.scheduler.refreshing()
     }
 
-    /// One pass of the whole lifecycle. Returns fresh bundle bytes when an upload committed.
-    ///
-    /// `store` is the currently held bundle (for the §11.4 bundle-identity fields and the
-    /// scheduler's age arithmetic); `None` means the device holds nothing, which the scheduler
-    /// turns into `REASON_NO_BUNDLE` and an immediate request.
-    pub fn poll(
-        &mut self,
-        app: &obc_app::App,
-        store: Option<&SimWeather>,
-        live: &mut LiveWeather,
-        now: i64,
-    ) -> Option<Vec<u8>> {
-        // §11.8: the *raw* byte the rider's setting encodes, exactly as the board passes it. The
-        // typed enum is only for the scheduler's own arithmetic; collapsing an unknown byte to the
-        // default before it reaches the context would misreport the rider's cadence to the phone.
+    /// Finish accepted uploads only after the matching current card reader is adopted.
+    pub fn poll(&mut self, app: &obc_app::App, store: &mut SimWeather, live: &mut LiveWeather, now: i64) {
+        if store.remount_required() {
+            return;
+        }
+        if self.awaiting.is_some() || store.pending().is_some() {
+            if !store.refresh(now) {
+                return;
+            }
+            if let Some((request, identity)) = self.awaiting.take() {
+                if store.installed() == Some(identity) {
+                    self.complete(request, now, true);
+                }
+            }
+            return;
+        }
         let refresh_raw = app.settings().weather_refresh as u8;
         let fallback = (app.state.cam_lat, app.state.cam_lon);
-        self.run(&app.weather_request_inputs(), refresh_raw, store.and_then(held_of), fallback, live, now)
+        let Some(bytes) = self.run(&app.weather_request_inputs(), refresh_raw, held_of(store), fallback, live, now)
+        else {
+            return;
+        };
+        let Some(request) = self.scheduler.pending_request_id() else { return };
+        self.accept(store, &bytes, request, now);
+    }
+
+    fn complete(&mut self, request: u32, now: i64, committed: bool) {
+        if self.scheduler.pending_request_id() != Some(request) {
+            return;
+        }
+        self.scheduler.commit_succeeded(now.max(0) as u64);
+        self.state.pending_request_id = None;
+        if committed {
+            self.state.commits += 1;
+        } else {
+            self.state.rejected += 1;
+        }
+    }
+
+    fn accept(&mut self, store: &mut SimWeather, bytes: &[u8], request: u32, now: i64) {
+        if !store.refresh(now) {
+            return;
+        }
+        let Some(incoming) = held_from_bytes(bytes) else { return };
+        let disposition = classify_upload(bundle_identity(incoming), held_of(store).map(bundle_identity));
+        self.state.last_disposition = Some(match disposition {
+            UploadDisposition::Commit => "commit pending",
+            UploadDisposition::DuplicateIgnored => "duplicate ignored",
+            UploadDisposition::StaleIgnored => "stale ignored",
+        });
+        if disposition != UploadDisposition::Commit {
+            self.complete(request, now, false);
+            return;
+        }
+        match store.install(bytes) {
+            Ok(WeatherInstall::Adopted(_)) => {
+                self.state.last_disposition = Some("committed");
+                self.complete(request, now, true);
+            }
+            Ok(WeatherInstall::AwaitingReader { identity, error }) => {
+                eprintln!("weather committed {identity:?}; reader: {error}");
+                self.awaiting = Some((request, identity));
+            }
+            Err(error) => {
+                eprintln!("weather upload: {error}");
+                self.state.last_disposition = Some("store refused");
+            }
+        }
     }
 
     /// The lifecycle without the `App`: the scheduler's levels, the context fill, the fetch and
@@ -164,34 +216,13 @@ impl SimCompanion {
         self.scheduler.attempt_failed(context.request_id);
         let bytes = bytes?;
 
-        // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
-        let incoming = held_from_bytes(&bytes)?;
-        let disposition = classify_upload(bundle_identity(incoming), held.map(bundle_identity));
-        self.state.last_disposition = Some(match disposition {
-            UploadDisposition::Commit => "commit",
-            UploadDisposition::DuplicateIgnored => "duplicate ignored",
-            UploadDisposition::StaleIgnored => "stale ignored",
-        });
-        // §11: *any* accepted upload finishes the request — including one the store then refuses
-        // as not-newer. Pacing follows acceptance, not novelty, or a device holding a current
-        // bundle would retry forever.
-        self.scheduler.commit_succeeded(now_s);
-        self.state.pending_request_id = None;
-        match disposition {
-            UploadDisposition::Commit => {
-                self.state.commits += 1;
-                Some(bytes)
-            }
-            _ => {
-                self.state.rejected += 1;
-                None
-            }
-        }
+        // Upload acceptance and scheduler completion belong to the real card boundary.
+        Some(bytes)
     }
 }
 
 fn held_of(store: &SimWeather) -> Option<RequestContextBundle> {
-    let (generation, generated_at, crc32) = store.validated_identity();
+    let (generation, generated_at, crc32) = store.validated_identity()?;
     Some(RequestContextBundle { generation, generated_at, crc32 })
 }
 
@@ -252,6 +283,92 @@ mod tests {
             position: Some(obc_app::ble::WeatherFix { lat_udeg: 48_060_000, lon_udeg: 7_900_000, fix_utc: 0 }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn upload_completion_tracks_real_card_adoption_and_current_duplicate_or_stale_verdicts() {
+        use crate::weather_store::DemoScenario;
+        use obc_host_core::flat_store::HostStore;
+        let owner = HostStore::memory().unwrap();
+        let mut store = SimWeather::open(owner.clone(), None).unwrap();
+        let mut demo = SimWeather::demo(
+            HostStore::memory().unwrap(),
+            Some(DemoScenario::Dry),
+            (7_000_000, 46_000_000, 9_000_000, 48_000_000),
+            None,
+        )
+        .unwrap();
+        let first = demo.bytes();
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.request_now();
+        companion.run(&parked(), 0, None, (0, 0), &mut live, 1);
+        let request = companion.scheduler.pending_request_id().unwrap();
+        companion.accept(&mut store, &first[..511], request, 1);
+        assert_eq!(companion.scheduler.pending_request_id(), Some(request));
+        assert_eq!(companion.state.commits, 0);
+        companion.accept(&mut store, &first, request, 1);
+        let installed = store.installed().unwrap();
+        assert_eq!(companion.scheduler.pending_request_id(), None);
+        assert_eq!(companion.state.commits, 1);
+        for now in [2, 3] {
+            companion.request_now();
+            companion.run(&parked(), 0, held_of(&store), (0, 0), &mut live, now);
+            let request = companion.scheduler.pending_request_id().unwrap();
+            if now == 3 {
+                demo.sync_clock(1_800_001_000, true);
+                SimWeather::from_bytes(owner.clone(), demo.bytes(), None).unwrap();
+                assert!(store.installed().is_none(), "retained reader cannot classify a replaced head");
+            }
+            companion.accept(&mut store, &first, request, now);
+            assert_eq!(companion.scheduler.pending_request_id(), None);
+        }
+        assert_eq!(companion.state.last_disposition, Some("stale ignored"));
+        assert_eq!(companion.state.rejected, 2);
+        assert_eq!(store.installed().unwrap().id, installed.id);
+        assert_eq!(store.installed().unwrap().revision.0, installed.revision.0 + 1);
+        assert_eq!(companion.state.commits, 1, "ignored uploads never publish another revision");
+    }
+
+    #[test]
+    fn committed_upload_waits_for_exact_reader_without_fetching_or_writing_again() {
+        use crate::weather_store::DemoScenario;
+        use obc_host_core::{flat_store::HostStore, FlatRouteStore};
+        const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+        let owner = HostStore::memory().unwrap();
+        let routes = FlatRouteStore::new(owner.clone(), &[ROUTE; 5]).unwrap();
+        let mut holds: Vec<_> = routes.ids().iter().map(|id| routes.source(*id).unwrap()).collect();
+        let mut store =
+            SimWeather::demo(owner, Some(DemoScenario::Dry), (7_000_000, 46_000_000, 9_000_000, 48_000_000), None)
+                .unwrap();
+        let mut newer = SimWeather::demo(
+            HostStore::memory().unwrap(),
+            Some(DemoScenario::Dry),
+            (7_000_000, 46_000_000, 9_000_000, 48_000_000),
+            None,
+        )
+        .unwrap();
+        newer.sync_clock(1_800_001_000, true);
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.request_now();
+        companion.run(&parked(), 0, held_of(&store), (0, 0), &mut live, 1);
+        let request = companion.scheduler.pending_request_id().unwrap();
+        companion.accept(&mut store, &newer.bytes(), request, 1);
+        let (_, identity) = companion.awaiting.unwrap();
+        assert_eq!(store.pending(), Some(identity));
+        assert_eq!(companion.scheduler.pending_request_id(), Some(request));
+        assert_eq!(companion.state.commits, 0);
+        let app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
+        companion.poll(&app, &mut store, &mut live, 2);
+        assert_eq!(companion.state.raises, 1);
+        assert_eq!(companion.state.commits, 0);
+        holds.pop();
+        companion.poll(&app, &mut store, &mut live, 7);
+        assert_eq!(store.installed(), Some(identity));
+        assert_eq!(companion.scheduler.pending_request_id(), None);
+        assert_eq!(companion.state.commits, 1);
+        assert_eq!(companion.state.raises, 1, "reader retry does not fetch another upload");
     }
 
     /// §11.7: a device with no storage raises **nothing** — not even the no-bundle request that

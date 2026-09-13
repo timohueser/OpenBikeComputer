@@ -2865,6 +2865,7 @@ dependencies = [
  "obc-replay",
  "obc-route",
  "obc-storage",
+ "obc-weather",
  "obcm-testkit",
  "tempfile",
 ]

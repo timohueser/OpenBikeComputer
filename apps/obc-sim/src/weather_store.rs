@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+use obc_host_core::flat_store::HostStore;
+use obc_host_core::flat_weather::{FlatWeatherStore, WeatherError, WeatherIdentity, WeatherInstall};
 use std::path::Path;
 
 /// The `--weather demo:<scenario>` cell patterns (WX10 look-tuning material): each is a pure
@@ -101,15 +103,12 @@ impl DemoScenario {
     }
 }
 
-/// The sim's loaded weather store for the frame loop (WX10): one validated bundle held
-/// resident (a host convenience — the device streams from the flat card; the *shared* path is the adapter +
-/// renderer this hands each frame), plus the WX7 fixed cache, which is keyed by
-/// generation + bundle CRC and therefore survives across frames and reloads safely.
+/// A revision-pinned weather reader on the same card as the map, plus the fixed tile cache.
 pub struct SimWeather {
-    bytes: Vec<u8>,
-    /// Full-validation proof for `bytes`: sampling and rain leases fast-reopen from this rather
-    /// than CRC-walking/decoding every tile on each GUI frame.
-    mount: obc_weather::ValidatedBundle,
+    card: FlatWeatherStore,
+    /// Retry source reconciliation at most once per five seconds after an acquisition failure.
+    retry_at: Option<i64>,
+    remount_required: bool,
     cache: obc_weather::WeatherCache,
     /// `--weather-now` override; `None` treats the bundle's own first frame as current — the
     /// deterministic-fixture default that makes `--weather <file.obcw> --png` render rain out of the box.
@@ -145,7 +144,12 @@ impl SimWeather {
     /// bundle over the loaded map's bbox ([`demo`](Self::demo) — scenarios in [`DemoScenario`];
     /// `demo:hourly` builds an hourly-only bundle with **no** rain frames, the WX11 explicit
     /// hourly-only state); anything else is one OBCW file ([`load`](Self::load)).
-    pub fn from_arg(arg: &str, now_override: Option<i64>, map_bbox: (i32, i32, i32, i32)) -> Option<Self> {
+    pub fn from_arg(
+        owner: HostStore,
+        arg: &str,
+        now_override: Option<i64>,
+        map_bbox: (i32, i32, i32, i32),
+    ) -> Result<Self, String> {
         if let Some(rest) = arg.strip_prefix("demo") {
             let scenario = match rest.strip_prefix(':').unwrap_or("") {
                 "" | "scattered" => Some(DemoScenario::Scattered),
@@ -162,12 +166,12 @@ impl SimWeather {
                     eprintln!(
                         "--weather demo:{other}: unknown scenario (scattered|drizzle|frontal|storm|dry|incoming|stormahead|rainahead|gusty|hourly)"
                     );
-                    return None;
+                    return Err(format!("unknown weather scenario: {other}"));
                 }
             };
-            Some(Self::demo(scenario, map_bbox, now_override))
+            Self::demo(owner, scenario, map_bbox, now_override)
         } else {
-            Self::load(Path::new(arg), now_override)
+            Self::load(owner, Path::new(arg), now_override)
         }
     }
 
@@ -178,8 +182,7 @@ impl SimWeather {
         if let Some(now) = self.now_override {
             return Some(now);
         }
-        let source = obc_formats::io::SliceSource(&self.bytes);
-        let reader = self.mount.reader(&source).ok()?;
+        let reader = self.card.reader().ok()??;
         Some(reader.frame(0).map(|f| f.valid_at).unwrap_or(reader.header().valid_from))
     }
 
@@ -192,62 +195,115 @@ impl SimWeather {
         pos: Option<(i32, i32)>,
         projection: Option<(&obc_route::RouteReader<'_>, obc_app::RideProjection)>,
     ) -> Option<obc_app::WeatherSnapshot> {
-        let source = obc_formats::io::SliceSource(&self.bytes);
-        let reader = self.mount.reader(&source).ok()?;
+        let reader = self.card.reader().ok()??;
         obc_app::WeatherSnapshot::sample_along(&reader, &mut self.cache, pos, projection).ok()
     }
 
-    /// The held bundle's bytes — the companion reads its generation/timestamp for the §11.4
-    /// context and producer-generation comparison.
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> Vec<u8> {
+        use obc_formats::io::ByteSource;
+        let source = self.card.source().unwrap();
+        let mut bytes = vec![0; source.len() as usize];
+        source.read_at(0, &mut bytes).unwrap();
+        bytes
     }
 
-    /// Header identity from the store's one full-validation pass. Companion polling uses this
-    /// instead of reopening and CRC-walking the whole resident bundle every GUI frame.
-    pub fn validated_identity(&self) -> (u32, i64, u32) {
-        let header = self.mount.header();
-        (header.generation, header.generated_at, header.crc32)
-    }
-
-    /// Adopt an in-memory bundle (the `--weather live` path, and the companion's commit): the
-    /// bytes must still be a valid OBCW object, so a service that answered with nonsense produces
-    /// `None` rather than a store the screens would have to defend against.
-    ///
-    /// No `demo_recipe`, deliberately — a live bundle is a real observation and must **age**.
-    /// Re-stamping it onto the clock the way a demo bundle is re-anchored would turn a stalled
-    /// baker into a permanently fresh-looking nowcast, which is the exact lie the epic forbids.
-    pub fn from_bytes(bytes: Vec<u8>, now_override: Option<i64>) -> Option<Self> {
-        let source = obc_formats::io::SliceSource(&bytes);
-        let mount = obc_weather::WeatherReader::open(&source).ok()?.validated();
-        Some(Self { bytes, mount, cache: obc_weather::WeatherCache::new(), now_override, demo_recipe: None, anchor: 0 })
-    }
-
-    /// Load and validate one OBCW file. `None` when the file is missing or malformed.
-    pub fn load(path: &Path, now_override: Option<i64>) -> Option<Self> {
-        Self::from_bytes(std::fs::read(path).ok()?, now_override)
-    }
-
-    /// A deterministic in-memory demo bundle over `(west, south, east, north)` microdegrees: a
-    /// 48 × 48-cell grid, nine 15-minute frames (the radar-de policy shape, so the WX11 two-hour
-    /// derivations have full coverage) whose cells come from the chosen [`DemoScenario`],
-    /// drifting two cells east per frame — or **no** frames at all (`None`: the hourly-only
-    /// bundle). Exercises the exact adapter → renderer path against any loaded map — cell edges
-    /// stay hard (nearest-neighbour, no smoothing), so the scenarios double as look-tuning
-    /// material for the WX10/WX11 review rounds.
-    pub fn demo(scenario: Option<DemoScenario>, bbox: (i32, i32, i32, i32), now_override: Option<i64>) -> Self {
-        let bytes = Self::demo_bundle(scenario, bbox, DEMO_GENERATED_AT);
-        let mount = obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&bytes))
-            .expect("generated demo weather is valid")
-            .validated();
-        Self {
-            bytes,
-            mount,
+    pub fn open(owner: HostStore, now_override: Option<i64>) -> Result<Self, String> {
+        let store = Self {
+            card: FlatWeatherStore::open(owner).map_err(|e| e.to_string())?,
             cache: obc_weather::WeatherCache::new(),
             now_override,
-            demo_recipe: Some((scenario, bbox)),
-            anchor: DEMO_GENERATED_AT,
+            demo_recipe: None,
+            anchor: 0,
+            retry_at: None,
+            remount_required: false,
+        };
+        store.report();
+        Ok(store)
+    }
+
+    fn report(&self) {
+        if let (Some(id), Some((generation, _, crc))) = (self.installed(), self.validated_identity()) {
+            eprintln!(
+                "weather card {:?} | object {} revision {} | generation {} crc {crc:08x}",
+                id.store, id.id.0, id.revision.0, generation
+            );
         }
+    }
+
+    /// Only a validated current head can authorize upload classification or installed-data facts.
+    pub fn validated_identity(&self) -> Option<(u32, i64, u32)> {
+        let header = self.card.current_header()?;
+        Some((header.generation, header.generated_at, header.crc32))
+    }
+    pub fn installed(&self) -> Option<WeatherIdentity> {
+        self.card.current_header()?;
+        self.card.identity()
+    }
+    pub fn remount_required(&self) -> bool {
+        self.remount_required
+    }
+    pub fn pending(&self) -> Option<WeatherIdentity> {
+        self.card.pending()
+    }
+
+    pub fn refresh(&mut self, now: i64) -> bool {
+        if self.remount_required {
+            return false;
+        }
+        if self.retry_at.is_some_and(|last| now >= last && now < last.saturating_add(5)) {
+            return false;
+        }
+        match self.card.refresh() {
+            Ok(_) => {
+                self.retry_at = None;
+                true
+            }
+            Err(error) => {
+                eprintln!("weather read: {error}");
+                self.remount_required = matches!(error, WeatherError::RemountRequired);
+                self.retry_at = Some(now);
+                false
+            }
+        }
+    }
+    pub fn install(&mut self, bytes: &[u8]) -> Result<WeatherInstall, WeatherError> {
+        let result = self.card.install(bytes);
+        if matches!(result, Ok(WeatherInstall::Adopted(_))) {
+            self.report();
+        }
+        if matches!(result, Err(WeatherError::RemountRequired)) {
+            self.remount_required = true;
+        }
+        result
+    }
+
+    pub fn from_bytes(owner: HostStore, bytes: Vec<u8>, now_override: Option<i64>) -> Result<Self, String> {
+        let mut store = Self::open(owner, now_override)?;
+        // Startup has no competing reader acquisition. If one is unavailable, retain the
+        // successful publication and report its exact identity; the loop will reconcile it.
+        match store.install(&bytes).map_err(|e| e.to_string())? {
+            WeatherInstall::Adopted(_) => {}
+            WeatherInstall::AwaitingReader { identity, error } => {
+                eprintln!("weather committed {identity:?}; reader: {error}")
+            }
+        }
+        Ok(store)
+    }
+    pub fn load(owner: HostStore, path: &Path, now_override: Option<i64>) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        Self::from_bytes(owner, bytes, now_override)
+    }
+    pub fn demo(
+        owner: HostStore,
+        scenario: Option<DemoScenario>,
+        bbox: (i32, i32, i32, i32),
+        now_override: Option<i64>,
+    ) -> Result<Self, String> {
+        let mut store = Self::from_bytes(owner, Self::demo_bundle(scenario, bbox, DEMO_GENERATED_AT), now_override)?;
+        store.demo_recipe = Some((scenario, bbox));
+        store.anchor = DEMO_GENERATED_AT;
+        Ok(store)
     }
 
     /// Encode the demo bundle with every timestamp anchored at `generated_at` — the pure half of
@@ -349,16 +405,34 @@ impl SimWeather {
     /// stale states — those stay reachable headlessly via `--weather-now`, by design; do not
     /// "fix" the re-stamp away.
     pub fn sync_clock(&mut self, now: i64, live: bool) {
+        if self.card.pending().is_some() && !self.refresh(now) {
+            return;
+        }
         let Some((scenario, bbox)) = self.demo_recipe else { return };
         let threshold = if live { DEMO_REANCHOR_LIVE_S } else { DEMO_REANCHOR_SCRIPTED_S };
         if self.now_override.is_some() || (now - self.anchor).abs() <= threshold {
             return;
         }
-        self.bytes = Self::demo_bundle(scenario, bbox, now);
-        self.mount = obc_weather::WeatherReader::open(&obc_formats::io::SliceSource(&self.bytes))
-            .expect("re-anchored bundle valid")
-            .validated();
-        self.anchor = now;
+        if !self.refresh(now) {
+            return;
+        }
+        // An already committed re-anchor needs only its reader, never another revision.
+        if self.card.current_header().is_some_and(|h| h.generated_at == now) {
+            self.anchor = now;
+            return;
+        }
+        match self.install(&Self::demo_bundle(scenario, bbox, now)) {
+            Ok(WeatherInstall::Adopted(_)) => self.anchor = now,
+            Ok(WeatherInstall::AwaitingReader { error, .. }) => {
+                self.anchor = now;
+                eprintln!("weather demo committed; reader: {error}");
+                self.retry_at = Some(now);
+            }
+            Err(error) => {
+                eprintln!("weather demo re-anchor: {error}");
+                self.retry_at = Some(now);
+            }
+        }
         // The tile cache keys on generation + bundle CRC, so the re-anchored bytes miss cleanly.
     }
 
@@ -380,8 +454,7 @@ impl SimWeather {
         frame: impl FnOnce(Option<&mut dyn obc_render::RainOverlaySource>) -> R,
     ) -> R {
         // No self-sync: the caller synced this frame and knows whether its clock is live.
-        let source = obc_formats::io::SliceSource(&self.bytes);
-        let Ok(reader) = self.mount.reader(&source) else {
+        let Ok(Some(reader)) = self.card.reader() else {
             return frame(None);
         };
         let now = self.now_override.unwrap_or(now);
@@ -404,9 +477,9 @@ mod tests {
         let mut path = std::env::temp_dir();
         path.push(format!("obc-weather-{}-{}.obcw", std::process::id(), line!()));
         std::fs::write(&path, WEATHER).unwrap();
-        assert_eq!(SimWeather::load(&path, None).unwrap().bytes(), WEATHER);
+        assert_eq!(SimWeather::load(HostStore::temporary().unwrap(), &path, None).unwrap().bytes(), WEATHER);
         std::fs::write(&path, &WEATHER[..511]).unwrap();
-        assert!(SimWeather::load(&path, None).is_none());
+        assert!(SimWeather::load(HostStore::temporary().unwrap(), &path, None).is_err());
         std::fs::remove_file(path).unwrap();
     }
 }
@@ -423,20 +496,21 @@ mod sync_clock_tests {
     /// no-op (the churn invariant: the anchor must actually move — review #1230 F2).
     #[test]
     fn a_drifted_clock_reanchors_the_demo_bundle() {
-        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
+        let mut w = SimWeather::demo(HostStore::temporary().unwrap(), Some(DemoScenario::Storm), BBOX, None).unwrap();
         let forward = DEMO_GENERATED_AT + 12_000_000;
-        let before = w.bytes.clone();
+        let before = w.bytes();
         w.sync_clock(forward, true);
-        assert_ne!(w.bytes, before, "forward drift re-stamps");
-        let after_first = w.bytes.clone();
+        assert_ne!(w.bytes(), before, "forward drift re-stamps");
+        let after_first = w.bytes();
         w.sync_clock(forward, true);
-        assert_eq!(w.bytes, after_first, "same-instant repeat is a byte no-op (no churn)");
+        assert_eq!(w.bytes(), after_first, "same-instant repeat is a byte no-op (no churn)");
         w.sync_clock(forward + 1, true);
-        assert_eq!(w.bytes, after_first, "inside the live threshold from the NEW anchor");
+        assert_eq!(w.bytes(), after_first, "inside the live threshold from the NEW anchor");
         let real_now = DEMO_GENERATED_AT - 12_000_000; // months before the fixture instant
         w.sync_clock(real_now, true);
-        assert_ne!(w.bytes, before, "bundle must re-stamp onto the drifted clock");
-        let source = obc_formats::io::SliceSource(&w.bytes);
+        assert_ne!(w.bytes(), before, "bundle must re-stamp onto the drifted clock");
+        let bytes = w.bytes();
+        let source = obc_formats::io::SliceSource(&bytes);
         let reader = obc_weather::WeatherReader::open(&source).expect("re-anchored bundle valid");
         let mut cache = obc_weather::WeatherCache::new();
         let current = reader.current_frame(real_now, &mut cache).expect("io");
@@ -447,32 +521,38 @@ mod sync_clock_tests {
     /// is pinned to the fixture instant) stay byte-identical.
     #[test]
     fn a_pinned_clock_keeps_the_bundle_bytes() {
-        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
-        let before = w.bytes.clone();
+        let mut w = SimWeather::demo(HostStore::temporary().unwrap(), Some(DemoScenario::Storm), BBOX, None).unwrap();
+        let before = w.bytes();
         w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_LIVE_S, true);
-        assert_eq!(w.bytes, before, "no re-stamp inside the live threshold");
+        assert_eq!(w.bytes(), before, "no re-stamp inside the live threshold");
         w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_SCRIPTED_S, false);
-        assert_eq!(w.bytes, before, "a scripted clock ignores script-reachable elapse (I = 301 s)");
+        assert_eq!(w.bytes(), before, "a scripted clock ignores script-reachable elapse (I = 301 s)");
         w.sync_clock(DEMO_GENERATED_AT + DEMO_REANCHOR_SCRIPTED_S + 1, false);
-        assert_ne!(w.bytes, before, "a real-world --clock jump still lands the anchor");
+        assert_ne!(w.bytes(), before, "a real-world --clock jump still lands the anchor");
     }
 
     /// A store loaded from disk is a real bundle — it ages truthfully, never re-stamps.
     #[test]
     fn a_disk_loaded_bundle_never_reanchors() {
-        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, None);
+        let mut w = SimWeather::demo(HostStore::temporary().unwrap(), Some(DemoScenario::Storm), BBOX, None).unwrap();
         w.demo_recipe = None; // the load() shape, without needing a fixture on disk
-        let before = w.bytes.clone();
+        let before = w.bytes();
         w.sync_clock(DEMO_GENERATED_AT + 12_000_000, true);
-        assert_eq!(w.bytes, before, "no recipe, no re-stamp");
+        assert_eq!(w.bytes(), before, "no recipe, no re-stamp");
     }
 
     /// `--weather-now` is the deterministic stale-scenario tool — it must always win.
     #[test]
     fn a_now_override_disables_reanchoring() {
-        let mut w = SimWeather::demo(Some(DemoScenario::Storm), BBOX, Some(DEMO_GENERATED_AT + 1_500));
-        let before = w.bytes.clone();
+        let mut w = SimWeather::demo(
+            HostStore::temporary().unwrap(),
+            Some(DemoScenario::Storm),
+            BBOX,
+            Some(DEMO_GENERATED_AT + 1_500),
+        )
+        .unwrap();
+        let before = w.bytes();
         w.sync_clock(DEMO_GENERATED_AT + 12_000_000, true);
-        assert_eq!(w.bytes, before, "override pins the bundle");
+        assert_eq!(w.bytes(), before, "override pins the bundle");
     }
 }

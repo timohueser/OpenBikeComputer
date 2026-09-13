@@ -68,9 +68,8 @@ pub struct WeatherReader<'a, S: ByteSource + ?Sized> {
 /// header and one matching-header read. This is the mount token filesystem hosts retain beside an open file;
 /// its fields are private, so callers cannot turn an unvalidated header into a fast reader.
 ///
-/// The source must remain byte-stable while the token is used. The device guarantees that by
-/// holding one immutable flat-store revision; the simulator replaces the token whenever it
-/// replaces or re-anchors its byte vector.
+/// The source must remain byte-stable while the token is used. Device and native simulator
+/// readers retain an immutable flat-store revision for the lifetime of its validation token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidatedBundle {
     header: Header,
