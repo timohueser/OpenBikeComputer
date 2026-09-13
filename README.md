@@ -9,7 +9,7 @@
 **An open-source GPS computer for bikepacking.**
 
 [Live browser demo](https://openbikecomputer.com/#demo) ·
-[Documentation](https://openbikecomputer.com/software/architecture/) ·
+[Documentation](https://openbikecomputer.com/docs/software/architecture/) ·
 [Contributing](CONTRIBUTING.md)
 
 [<img src="docs/assets/og-card.png" width="100%" alt="OpenBikeComputer concept render with the device showing an offline map of the Grimsel Pass">](https://openbikecomputer.com/#demo)
@@ -165,7 +165,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 The root Cargo workspace contains the shared `firmware/`, `host/`, and `apps/` crates. The nRF54L
 board image, bootloader, and Tauri desktop app use standalone Cargo roots so that their platform
 dependencies do not burden normal host builds. The
-[architecture guide](https://openbikecomputer.com/software/architecture/) explains the boundaries
+[architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries
 and the shared render path.
 
 ## Other open bike computers

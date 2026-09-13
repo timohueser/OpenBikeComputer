@@ -39,7 +39,7 @@
        JS below owns the frame loop and the canvas). wasm-opt only runs on --release builds,
        so dev (trunk serve) stays fast while release ships a small, size-optimised binary. -->
   <link data-trunk rel="rust" href="../apps/obc-web-demo/Cargo.toml" data-wasm-opt="z" />
-  <!-- Ship the placeholder docs page (dist/docs/index.html) until real docs exist. -->
+  <!-- Ship the generated documentation under dist/docs/. -->
   <link data-trunk rel="copy-dir" href="docs" />
   <!-- The blog ("expedition log") — rendered by the same build_docs.py pre_build hook. -->
   <link data-trunk rel="copy-dir" href="blog" />

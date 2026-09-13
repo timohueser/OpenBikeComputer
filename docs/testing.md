@@ -114,7 +114,7 @@ selected suites without an executable CI route are errors; a selection error nev
 obc test affected --base origin/develop [--head REF] [--dry-run]
 obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
 obc test -p obc-weather                  # focused package work, no registry involved
-obc test fixtures -p obc-wx-bake canonical_mosaic
+obc test fixtures -p obc-wx-bake
 obc test full                            # cross-cutting changes only
 ```
 

@@ -23,8 +23,8 @@
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 
   --head-h: 60px;
-  --sidebar-w: 268px;
-  --toc-w: 220px;
+  --sidebar-w: 240px;
+  --toc-w: 200px;
   --content-max: 760px;
 }
 
@@ -132,7 +132,7 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 }
 
 /* ----------------------------------------------------------------- content */
-.content { min-width: 0; padding: 0 46px; }
+.content { min-width: 0; padding: 0 28px; }
 .prose { max-width: var(--content-max); margin: 0 auto; padding: 40px 0 24px; }
 
 .prose h1, .prose h2, .prose h3, .prose h4 {
@@ -180,7 +180,7 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 .srclink {
   font-family: var(--mono); font-size: 0.9em;
   text-decoration: none; border-bottom: 1px dashed var(--line-strong);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .srclink::before { content: "›_ "; color: var(--coral); font-weight: 700; }
 .srclink:hover { border-bottom-color: var(--forest); }
@@ -220,27 +220,34 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 
 /* ----------------------------------------------------------------- figures */
 figure.fig {
-  margin: 30px 0; padding: 20px 20px 14px;
+  margin: 30px 0; padding: 16px 16px 14px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 10px 28px rgba(36, 51, 28, 0.07);
 }
 figure.fig svg { display: block; width: 100%; height: auto; }
+.diagram-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.diagram-scroll svg { min-width: var(--diagram-width, 720px); }
+.diagram-scroll:focus-visible { outline: 2px solid var(--forest); outline-offset: 4px; }
+.diagram-hint { margin-top: 8px; color: var(--ink-soft); font-size: 12px; }
+@media (min-width: 821px) {
+  .diagram-hint { display: none; }
+}
 figure.fig figcaption {
   margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line);
-  font-family: var(--serif); font-style: italic; font-size: 15px; color: var(--ink-soft);
-  text-align: center;
+  font-family: var(--sans); font-size: 14px; color: var(--ink-soft);
+  text-align: left;
 }
 figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; color: var(--ink); font-family: var(--sans); }
 
 /* shared SVG diagram language (classes used by the hand-built figures) */
-.fig svg text { font-family: var(--mono); fill: var(--ink); }
-.fig .d-label { font-family: var(--mono); font-size: 12px; fill: var(--ink); }
-.fig .d-sub { font-family: var(--mono); font-size: 10.5px; fill: var(--ink-faint); }
-.fig .d-title { font-family: var(--sans); font-weight: 700; font-size: 13px; fill: var(--ink); }
-.fig .d-tag { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.12em; fill: var(--ink-faint); text-transform: uppercase; }
+.fig svg text { font-family: var(--sans); fill: var(--ink); }
+.fig .d-label { font-family: var(--sans); font-size: 14px; fill: var(--ink); }
+.fig .d-sub { font-family: var(--sans); font-size: 12px; fill: var(--ink-soft); }
+.fig .d-title { font-family: var(--sans); font-weight: 650; font-size: 14px; fill: var(--ink); }
+.fig .d-tag { font-family: var(--sans); font-size: 11px; font-weight: 650; letter-spacing: 0.04em; fill: var(--ink-soft); }
 .fig .d-panel { fill: #f7f4e6; stroke: var(--forest); stroke-width: 1.5; }
+.fig .d-focus { fill: #f8efe4; stroke: var(--coral); stroke-width: 2; }
 .fig .d-panel-2 { fill: #eae4cb; stroke: var(--line-strong); stroke-width: 1.2; }
 .fig .d-stroke { fill: none; stroke: var(--ink); stroke-width: 1.6; }
 .fig .d-flow { fill: none; stroke: var(--forest); stroke-width: 2; }
@@ -250,7 +257,7 @@ figure.fig figcaption b, figure.fig figcaption strong { font-style: normal; colo
 .fig .d-forest { fill: var(--forest); }
 .fig .d-water { fill: var(--water); }
 .fig .d-muted { fill: var(--parchment-3); }
-.fig .d-num { font-family: var(--mono); font-weight: 700; font-size: 11px; fill: #fff; }
+.fig .d-num { font-family: var(--mono); font-weight: 700; font-size: 12px; fill: #fff; }
 
 /* ----------------------------------------------------------------- on-this-page */
 .toc {
