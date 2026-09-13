@@ -434,6 +434,10 @@ impl SimGui {
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
         let mut app = App::new_idle(state);
+        if app.state.user_fix.is_some() {
+            let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
+        }
         let store = RouteStore::open(args.routes_dir());
         let trip_store = TripStore::open(args.routes_dir());
         let ride_store = RideStore::open(args.tracks_dir());

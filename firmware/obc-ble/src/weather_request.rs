@@ -585,8 +585,8 @@ struct Pending {
 /// The rules, from the epic + spec §11 (+ the two decisions locked in #1221's review round):
 /// - **Scheduled requests only while a ride is active**; a pending scheduled request is dropped the
 ///   moment the ride stops (or the cadence is set `Off`). Urgent requests survive both.
-/// - **Opening Weather is urgent** ([`open_weather`](Self::open_weather)) — raised immediately,
-///   even outside a ride, even with refresh `Off`.
+/// - **Opening Weather is urgent** ([`open_weather`](Self::open_weather)) — obtains a current position, then raises,
+///   even outside a ride, even with refresh `Off`. Acquisition is bounded to 150 seconds.
 /// - **No storage, no requests** (`store_ready`): a card-less device would answer every upload
 ///   `error`, which is exactly §11.7's phone-burning loop — so it never advertises a request at
 ///   all, urgent included, and a pending request is dropped the moment the card goes away.
@@ -622,6 +622,7 @@ pub struct DueScheduler {
     /// uploading them. Until this monotonic instant, an urgent reopen reuses the held bundle.
     source_defer_until_s: Option<u64>,
     attempt_deadline_s: Option<u64>,
+    position_deadline_s: Option<u64>,
 }
 
 impl DueScheduler {
@@ -635,6 +636,7 @@ impl DueScheduler {
             urgent_queued: false,
             source_defer_until_s: None,
             attempt_deadline_s: None,
+            position_deadline_s: None,
         }
     }
 
@@ -644,13 +646,9 @@ impl DueScheduler {
         self.urgent_queued = true;
     }
 
-    /// Retry a request when its missing position becomes available, preserving its id and owner.
-    pub fn position_available(&mut self, now_s: u64) {
-        if let Some(p) = &mut self.pending {
-            p.next_raise_s = now_s;
-            p.raises = 0;
-            p.final_raise = false;
-        }
+    /// A due request needs a current position before it can contact the phone.
+    pub fn needs_position(&self) -> bool {
+        self.position_deadline_s.is_some()
     }
 
     /// Whether an urgent request is queued or any request is pending.
@@ -727,6 +725,7 @@ impl DueScheduler {
         refresh: WeatherRefresh,
         ride_active: bool,
         store_ready: bool,
+        position_available: bool,
         bundle: BundleFacts,
     ) -> Option<Raise> {
         if self.attempt_deadline_s.is_some_and(|at| now_s >= at) {
@@ -745,6 +744,7 @@ impl DueScheduler {
             self.pending = None;
             self.attempt_deadline_s = None;
             self.urgent_queued = false;
+            self.position_deadline_s = None;
             return None;
         }
         // Seed the reboot anchor once: a bundle whose age is known counts as "satisfied age_s ago";
@@ -766,6 +766,32 @@ impl DueScheduler {
                 self.attempt_deadline_s = None;
             }
         }
+
+        let due = self.urgent_queued
+            || match self.pending {
+                Some(p) => now_s >= p.next_raise_s && !p.final_raise,
+                None => {
+                    ride_active
+                        && refresh.minutes().is_some_and(|minutes| {
+                            self.anchor_s().is_none_or(|anchor| now_s as i64 >= anchor + minutes as i64 * 60)
+                        })
+                }
+            };
+        if due && !position_available {
+            // Bound background acquisition. A later manual open can retry; scheduled work waits
+            // for its normal cadence. No phone attempt or advertising budget starts without GPS.
+            let deadline = *self.position_deadline_s.get_or_insert(now_s.saturating_add(150));
+            if now_s >= deadline {
+                self.position_deadline_s = None;
+                self.urgent_queued = false;
+                self.pending = None;
+                self.attempt_deadline_s = None;
+                self.last_commit_s = None;
+                self.boot_anchor_s = Some(now_s as i64);
+            }
+            return None;
+        }
+        self.position_deadline_s = None;
 
         let no_bundle_bit = if bundle.usable() { 0 } else { REASON_NO_BUNDLE };
         let location_bit = if bundle.location_changed { REASON_OUT_OF_AREA } else { 0 };
@@ -860,7 +886,7 @@ impl DueScheduler {
     /// when only an event edge (ride start, urgent, commit, a setting change, a card mount) can
     /// wake it. The caller sleeps until this — never a periodic tick.
     pub fn next_wake_s(&self, refresh: WeatherRefresh, ride_active: bool, store_ready: bool) -> Option<u64> {
-        let request = self.next_request_wake_s(refresh, ride_active, store_ready);
+        let request = self.position_deadline_s.or_else(|| self.next_request_wake_s(refresh, ride_active, store_ready));
         match (request, self.attempt_deadline_s) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),

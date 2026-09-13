@@ -513,11 +513,8 @@ pub enum ClockTrust {
     Ble,
 }
 
-/// How stale the last GPS fix may be (map-plane ms) and still serve in the weather request context
-/// as "where the rider is" (WX8, #1193): a 30-second-old fix is still the rider to within metres,
-/// while a tunnel or indoor stop past that reads as *no position*. The request still raises for
-/// diagnostics/retry, but today's companion cannot fetch until a fresh device fix arrives.
-pub const WEATHER_FIX_FRESH_MS: u32 = 30_000;
+/// Maximum age of a position reused by Peak View or a weather request.
+pub const POSITION_FIX_FRESH_MS: u32 = 30_000;
 
 const NO_FIX_FLOOR_MS: u32 = 5_000;
 const NO_FIX_INTERVALS: u32 = 3;
@@ -942,6 +939,12 @@ impl App {
             // staleness check + render read with. Off `AppState`, so a stationary fix that moves
             // nothing doesn't force a redraw here.
             self.tick_state.last_fix_ms = Some(self.ui.now_ms);
+            if let Some(Screen::PeakView(screen)) = self.ui.stack.iter_mut().rev().find(|screen| !screen.is_overlay()) {
+                if screen.needs_position() {
+                    screen.set_status(crate::peak_view::runtime::Status::Building(0));
+                    self.ui.map_dirty = true;
+                }
+            }
             // Arm the map-referenced altimeter's one terrain read for this fix (EL8, epic #1068).
             // Nothing is sampled here — `tick` holds no elevation source, and an SD tile read does
             // not belong in the middle of the fix path anyway. The host drains it right after this
@@ -1001,7 +1004,7 @@ impl App {
                 let stopped = self.state.user_fix.and_then(|f| f.course).is_none();
                 let peak_view_active = matches!(self.ui.stack.last(), Some(Screen::PeakView(_)));
                 let map_uses_compass = self.state.heading_up && self.state.pan.is_none();
-                if stopped && (map_uses_compass || peak_view_active) {
+                if (stopped && map_uses_compass) || peak_view_active {
                     let changed = self.state.compass_deg != Some(heading);
                     self.state.compass_deg = Some(heading);
                     if changed && peak_view_active {
@@ -2286,10 +2289,8 @@ impl App {
         if self.state.peak_view_profile.is_none() {
             return false;
         }
-        screen::apply(
-            &mut self.ui.stack,
-            screen::Transition::Push(Screen::PeakView(screen::PeakViewScreen::new(self.state.user_fix))),
-        );
+        let screen = screen::PeakViewScreen::new(self.fresh_position());
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::PeakView(screen)));
         self.ui.map_dirty = true;
         true
     }
@@ -2300,6 +2301,19 @@ impl App {
                 self.ui.map_dirty = true;
             }
         }
+    }
+
+    /// A recent receiver fix, never an undated coordinate restored from storage.
+    pub fn fresh_position(&self) -> Option<Fix> {
+        self.tick_state
+            .last_fix_ms
+            .filter(|at| self.ui.now_ms.wrapping_sub(*at) <= POSITION_FIX_FRESH_MS)
+            .and(self.state.user_fix)
+    }
+
+    /// Held until the open view receives a current position, including under a drawer.
+    pub fn peak_view_needs_position(&self) -> bool {
+        self.peak_view_base().is_some_and(|screen| screen.needs_position())
     }
 
     pub fn peak_view_heading_q4(&self) -> u16 {
@@ -2666,7 +2680,7 @@ impl App {
     /// wire type.
     ///
     /// Honesty rules (the spec's flags-not-sentinels discipline):
-    /// - **position** is served only while the last fix is *fresh* (≤ [`WEATHER_FIX_FRESH_MS`])
+    /// - **position** is served only while the last fix is *fresh* (≤ [`POSITION_FIX_FRESH_MS`])
     ///   **and** the wall clock was established from a real source this boot — a fix the app can't
     ///   date has no `fix_utc` to give, and the spec guards all three fields with one bit. The
     ///   fix's UTC is the wall clock read back by the fix's age, exact to the second at the 1 Hz
@@ -2680,17 +2694,10 @@ impl App {
     pub fn weather_request_inputs(&self) -> crate::ble::WeatherRequestInputs {
         let now_utc = if self.clock_trusted() { Some(self.wall_unix_now()) } else { None };
         // The fresh fix + its age on the map-plane clock (the same timebase `last_fix_ms` stamps).
-        let fresh = match (self.state.user_fix, self.tick_state.last_fix_ms) {
-            (Some(fix), Some(at_ms)) => {
-                let age_ms = self.ui.now_ms.wrapping_sub(at_ms);
-                if age_ms <= WEATHER_FIX_FRESH_MS {
-                    Some((fix, age_ms))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
+        let fresh = self
+            .fresh_position()
+            .zip(self.tick_state.last_fix_ms)
+            .map(|(fix, at)| (fix, self.ui.now_ms.wrapping_sub(at)));
         let position = match (fresh, now_utc) {
             (Some((fix, age_ms)), Some(now)) => Some(crate::ble::WeatherFix {
                 lat_udeg: fix.lat,
@@ -3030,7 +3037,7 @@ impl App {
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
             now_ms: ui.now_ms,
         };
-        let t = ui.stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
+        let mut t = ui.stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
         let depth_before = ui.stack.len();
         // Whether this transition actually changes the stack (Pop/Home at the root are no-ops).
         // A change invalidates any in-flight hold's target — see `hold_cancel_pending`.
@@ -3039,6 +3046,9 @@ impl App {
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
             screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
         };
+        if let screen::Transition::Push(Screen::PeakView(screen)) = &mut t {
+            *screen = screen::PeakViewScreen::new(self.fresh_position());
+        }
         screen::apply(&mut self.ui.stack, t);
         // Admit Start before the next gesture, after its requested screen transition, so a
         // recovery decision takes precedence over the requested riding view.
@@ -4098,6 +4108,68 @@ mod tests {
 
     // --- no-GPS-fix freshness + banner edge ---
 
+    #[test]
+    fn peak_view_acquires_once_while_idle_and_rejects_stale_positions_on_reentry() {
+        use crate::peak_view::runtime::{Failed, Lifecycle, Platform, Progress};
+        #[derive(Default)]
+        struct Job(usize);
+        impl Platform for Job {
+            fn start(&mut self, _: &mut App, _: (i32, i32)) -> bool {
+                self.0 += 1;
+                true
+            }
+            fn step(&mut self, _: &mut App) -> Result<Progress, Failed> {
+                Ok(Progress { complete: true, revision: 1 })
+            }
+            fn cancel(&mut self) {}
+        }
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.state.peak_view_profile = Some(crate::PeakViewProfile::at(0, 0, 0));
+        let fix = Fix::at(7_961_000, 46_585_000);
+        app.state.user_fix = Some(fix);
+        app.show_peak_view();
+        assert!(app.peak_view_needs_position(), "an undated cached fix cannot start terrain");
+        let mut lifecycle = Lifecycle::default();
+        let mut job = Job::default();
+        lifecycle.update(&mut app, &mut job, 0);
+        assert_eq!(job.0, 0);
+        assert!(!lifecycle.busy());
+        app.apply_chord(Chord::Quick);
+        assert!(app.peak_view_needs_position(), "the drawer keeps its base request");
+        tick_fix(&mut app, fix, 1000);
+        assert!(!app.peak_view_needs_position(), "a new fix at the same coordinate fulfills the request");
+        app.apply_chord(Chord::Quick);
+        lifecycle.update(&mut app, &mut job, 1000);
+        assert_eq!(job.0, 1);
+        assert!(!app.recording());
+        app.ui.now_ms = 40_000;
+        assert!(!app.peak_view_needs_position(), "an open panorama does not repeatedly wake GPS");
+        app.apply_gesture(Gesture::Back);
+        lifecycle.reconcile(&app);
+        app.show_peak_view();
+        assert!(app.peak_view_needs_position(), "reopening checks the age again");
+        app.apply_gesture(Gesture::Back);
+        assert!(!app.peak_view_needs_position(), "leaving cancels acquisition");
+        tick_fix(&mut app, fix, 41_000);
+        app.show_peak_view();
+        assert!(!app.peak_view_needs_position(), "a recent fix skips the waiting screen");
+    }
+
+    #[test]
+    fn menu_peak_entry_applies_the_same_freshness_rule() {
+        for fresh in [false, true] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            app.state.peak_view_profile = Some(crate::PeakViewProfile::at(0, 0, 0));
+            tick_fix(&mut app, Fix::at(0, 0), 0);
+            app.ui.now_ms = if fresh { POSITION_FIX_FRESH_MS } else { POSITION_FIX_FRESH_MS + 1 };
+            app.escape_to_menu();
+            app.apply_gesture(Gesture::Step(4));
+            app.apply_gesture(Gesture::Press);
+            assert!(app.peak_view_is_base());
+            assert_eq!(app.peak_view_needs_position(), !fresh);
+        }
+    }
+
     /// Tick once with a single fix at the map-plane clock `now_ms` (set so `last_fix_ms` and
     /// `has_live_fix` share a timebase), no route / other sensors.
     fn tick_fix(app: &mut App, fix: Fix, now_ms: u32) {
@@ -4392,12 +4464,12 @@ mod tests {
     }
 
     #[test]
-    fn peak_view_adopts_the_stopped_compass_even_when_the_map_is_north_up() {
+    fn peak_view_adopts_compass_even_with_a_cached_moving_fix_and_north_up_map() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.state.heading_up = false;
         assert!(app.ui.stack.push(Screen::PeakView(crate::screen::PeakViewScreen::new(app.state.user_fix))).is_ok());
         app.ui.map_dirty = false;
-        tick_with(&mut app, Fix::at(0, 0), 215.0);
+        tick_with(&mut app, moving(45.0), 215.0);
         assert_eq!(app.state.compass_deg, Some(215.0));
         assert!(app.ui.map_dirty, "a stopped compass turn repaints the visible panorama");
     }

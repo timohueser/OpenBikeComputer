@@ -415,7 +415,8 @@ mod tests {
         assert!(app.show_peak_view());
         runtime.update(&mut app);
         assert!(runtime.job.receiver.is_none(), "no fabricated observer before GPS");
-        app.state.user_fix = Some(obc_ports::Fix { lat: 200_000, lon: 200_000, course: None, speed_mps: Some(0.0) });
+        let mut loc = crate::sim_location::SimLocationSource::new(Some(obc_ports::Fix::at(200_000, 200_000)));
+        app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         runtime.update(&mut app);
         let cancelled = Arc::clone(&runtime.job.cancel);
         assert!(runtime.job.receiver.is_some());
