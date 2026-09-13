@@ -1812,7 +1812,10 @@ mod tests {
         assert_eq!(append(&mut rec, 3_000, 1), 3, "three were offered");
         assert_eq!(rec.staged().len(), 2, "one reached the medium, two did not");
 
-        assert_eq!(append(&mut rec, 3_001, 2), 2, "the retry offers exactly what is left");
+        let repair = rec.next_effect(CAN_RECORD, at(3_001)).unwrap();
+        assert!(matches!(repair, RecorderEffect::Checkpoint { .. }));
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token() });
+        assert_eq!(append(&mut rec, 3_002, 2), 2, "the retry offers exactly what is left");
         assert!(rec.staged().is_empty());
         // The order survived the partial: the last sample written is the last fix recorded.
         assert_eq!(third.t_ms, 2_000, "and the tail of the batch is the tail of the ride");
@@ -1834,7 +1837,10 @@ mod tests {
         assert_eq!(rec.staged(), staged.as_slice(), "every sample is still owed, in order");
         assert_eq!(rec.continuation(), before, "and a write that never happened credited nothing");
         assert_eq!(rec.ride_stats(), stats, "so the footer facts are exactly what the fixes made them");
-        assert_eq!(append(&mut rec, 3_001, 3), 3, "the retry is the same batch");
+        let repair = rec.next_effect(CAN_RECORD, at(3_001)).unwrap();
+        assert!(matches!(repair, RecorderEffect::Checkpoint { .. }));
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token() });
+        assert_eq!(append(&mut rec, 3_002, 3), 3, "the retry is the same batch");
     }
 
     /// **The checkpoint outranks the append**, and that is what stops a blocked journal starving its
@@ -2309,7 +2315,10 @@ mod tests {
 
         rec.request(RecorderIntent::Save);
         let clock = FooterClock { unix_at_anchor: 1_720_000_500, anchor_ms: 5_000, trusted: true };
-        let effect = rec.next_effect(CAN_RECORD, clock).expect("the close outranks the staged samples");
+        let drain = rec.next_effect(CAN_RECORD, clock).unwrap();
+        assert!(matches!(drain, RecorderEffect::Append { samples: 6, .. }));
+        rec.apply_outcome(RecorderOutcome::Appended { token: drain.token(), samples: 6 });
+        let effect = rec.next_effect(CAN_RECORD, clock).expect("the drained Save can finalize");
         assert!(matches!(effect, RecorderEffect::Finalize { .. }), "{effect:?}");
 
         let stats = rec.ride_stats();
