@@ -325,7 +325,7 @@ mod terrain_tests {
             if step > 2 && !host.is_planning() && session.routes.ids().len() > before {
                 let source = session.routes.source(*session.routes.ids().last().unwrap()).unwrap();
                 let summary = obc_route::RouteSummary::read(&source).unwrap();
-                assert!(summary.total_ascent_m > 0);
+                assert!(summary.climb_m > 0);
                 let mut bytes = vec![0; source.len() as usize];
                 source.read_at(0, &mut bytes).unwrap();
                 return Some(bytes);
