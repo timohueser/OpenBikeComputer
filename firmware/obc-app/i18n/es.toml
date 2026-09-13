@@ -589,7 +589,7 @@ dismiss = "CERRAR"
 
 # --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
 [route_context]
-bike_type = "Tipo bici"
+bike_type = "Tipo de bici"
 
 # --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
 [weather_context]

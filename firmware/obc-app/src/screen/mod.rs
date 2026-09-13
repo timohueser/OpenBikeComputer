@@ -1255,12 +1255,13 @@ impl Screen {
 
     /// Whether this overlay still **owes** the screen below a draw (#1559, #1515 D5).
     ///
-    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and two things
+    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and three things
     /// stop a sheet doing only that: a **page slide**, whose two pages travel through the inset
     /// margin either side of the sheet and whose differing page heights shrink it, giving back rows
-    /// that still hold sheet pixels; and a **shorter sheet swapped in** for a taller one. One draw
-    /// answers both: covering is cheap, uncovering is not. Only a drawer ever answers anything but
-    /// `false`.
+    /// that still hold sheet pixels; a **shorter sheet swapped in** for a taller one; and **one
+    /// drawer replacing the other**, whose rows at the opposite edge are still on the panel. One
+    /// draw answers all three: covering is cheap, uncovering is not. Only a drawer ever answers
+    /// anything but `false`.
     ///
     /// The answer is a debt carried until a frame pays it, not a per-frame flag — see
     /// [`clear_base_debt`](Screen::clear_base_debt).
@@ -1279,6 +1280,17 @@ impl Screen {
         match self {
             Screen::QuickDrawer(s) => s.clear_base_debt(),
             Screen::ContextDrawer(s) => s.clear_base_debt(),
+            _ => {}
+        }
+    }
+
+    /// Arm that debt on the drawer that **replaces the other one**
+    /// ([`App::toggle_drawer`](crate::App)): the departed sheet's rows are still on the panel, and
+    /// covering them with a sheet that arrives from the opposite edge does not take them off.
+    pub(crate) fn owe_base_draw(&mut self) {
+        match self {
+            Screen::QuickDrawer(s) => s.owe_base(),
+            Screen::ContextDrawer(s) => s.owe_base(),
             _ => {}
         }
     }

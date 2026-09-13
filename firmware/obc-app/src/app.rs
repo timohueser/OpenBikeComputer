@@ -2396,6 +2396,15 @@ impl App {
         };
         if closed != Some(opening) {
             screen::apply(&mut self.ui.stack, screen::Transition::Push(drawer));
+            // The other drawer was on the panel a frame ago and the frozen base under it was never
+            // redrawn, so the incoming sheet owes the draw that takes those rows off — the same
+            // debt a shorter sheet swapped in for a taller one carries (#1559: covering is cheap,
+            // uncovering is not).
+            if closed.is_some() {
+                if let Some(top) = self.ui.stack.last_mut() {
+                    top.owe_base_draw();
+                }
+            }
         }
         // The stack moved either way, so the frame is dirty and any hold charging underneath was
         // aimed at a screen the sheet has just covered (or uncovered) — the #480 rule, which a
@@ -4170,6 +4179,34 @@ mod tests {
 
         assert!(app.apply_chord(crate::input::Chord::Quick), "the same chord closes it");
         assert!(app.base_needs_reader(), "…and the uncovered map needs it again");
+    }
+
+    /// The two drawers are mutually exclusive on the stack, and the panel has to agree: the sheet
+    /// that replaces the other arrives over rows the departed sheet still holds (the frozen base
+    /// was never redrawn under it), so its first frame draws the base — and only its first.
+    /// Without this the board kept the quick drawer's ink at the top while the context sheet slid
+    /// up from the bottom.
+    #[test]
+    fn the_drawer_that_replaces_the_other_owes_one_base_draw() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.set_resident_frame(true);
+
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        assert!(app.sheet_only(), "a sheet opening over a standing map draws itself alone");
+
+        assert!(app.apply_chord(crate::input::Chord::Context));
+        assert!(matches!(app.ui.stack.last(), Some(Screen::ContextDrawer(_))), "the context sheet swapped in");
+        assert!(!app.sheet_only(), "the quick drawer's rows are still on the panel: this frame draws the base");
+        app.ui.spend_base_draw();
+        assert!(app.sheet_only(), "…and the frame that drew it ends the debt; the open goes on sheet-only");
+
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        assert!(matches!(app.ui.stack.last(), Some(Screen::QuickDrawer(_))), "and back the other way");
+        assert!(!app.sheet_only(), "the context sheet's rows are on the panel now");
+
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the same chord closes it");
+        assert!(app.apply_chord(crate::input::Chord::Quick), "a sheet opening over nothing but the map…");
+        assert!(app.sheet_only(), "…owes it nothing");
     }
 
     /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the

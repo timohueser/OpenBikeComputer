@@ -308,11 +308,11 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
     use obc_ports::Fix;
     use obcm_testkit::{build_poi_map, PoiSpec};
 
-    // `fr` and `es` are re-authored rather than carried over from the deleted settings row: "Type
-    // de vélo" / "Tipo de bici" are 12 monospace characters and overrun the sheet's 164 px
-    // row-label budget, where the settings screen had a whole 240 px line to itself.
-    assert_eq!(t(Msg::RouteContextBikeType, Language::Fr), "Type v\u{e9}lo");
-    assert_eq!(t(Msg::RouteContextBikeType, Language::Es), "Tipo bici");
+    // "Type de vélo" / "Tipo de bici" are 12 monospace characters — 168 px in `Font::Body`, which
+    // the centred row's 172 px label budget holds (the width test in `context_drawer` pins both
+    // numbers). The clipped "Type vélo" / "Tipo bici" the row used to force are gone.
+    assert_eq!(t(Msg::RouteContextBikeType, Language::Fr), "Type de v\u{e9}lo");
+    assert_eq!(t(Msg::RouteContextBikeType, Language::Es), "Tipo de bici");
     for lang in [Language::De, Language::Fr, Language::Es] {
         assert_ne!(
             t(Msg::RouteContextBikeType, lang),
