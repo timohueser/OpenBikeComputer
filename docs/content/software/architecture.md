@@ -271,15 +271,16 @@ the close. Discard bypasses the drain and clears staging after confirmed removal
 If opening keeps failing while Save has staged samples, the samples and Save request stay pending.
 An empty ride with no object can still end without a saved ride.
 
-The board and native card recorder accept a complete staged batch together with its precise App totals. If the remaining
+The board and shared host card recorder accept a complete staged batch together with its precise App totals. If the remaining
 buffer cannot hold the batch, it accepts none of it and checkpoints the previous accepted boundary.
 A periodic checkpoint also uses that boundary while samples remain staged. With no staged samples,
 a checkpoint can capture newer barometric totals without adding a GPS point. A failed checkpoint
 replays its original bytes, totals and start time before it can accept any newer context.
 
-Host adapters can still report a partial append. An adapter without a recovery journal reports an
-unsupported checkpoint. Recorder then continues the pending work without claiming that the ride is
-recoverable.
+Host adapters can still report a partial append. A medium without durable recovery reports an
+unsupported checkpoint. Recorder then continues the pending work without a persistent recovery
+claim. The browser memory card first completes the real journal operation; a file card reports a
+durable checkpoint only after its storage barrier succeeds.
 
 Native recording and the saved-ride catalog share the same card owner as map, routes, trips and
 weather. The [physical recorder](src:host/obc-host-core/src/flat_recorder.rs) reserves one recording
@@ -301,7 +302,17 @@ Continue or append another footer. An uncertain catalog write or failed recovery
 fences every writer on the shared owner until close and reopen. Damaged-ride removal checks the
 captured card, object, revision and recording flag under that owner before mutation. Only a real
 archive receipt can grant sync proof; the simulator has no direct synced-state control.
-The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
+The browser uses the same physical recorder and saved-ride reader on its memory card. Each saved
+ride ID names a finalized object with recorded samples and totals. The catalog starts empty; it
+contains no example sync proof. A new page creates a new card identity and loses the previous
+page's objects.
+
+A demo baseline reset preserves committed objects. It first asks Recorder to discard the open
+ride and consumes the exact acknowledgment in the old App. Only then can it replace App and the
+host loop, seek playback or run the guided pre-roll. Pending or failed cleanup cannot acknowledge
+a reset through an old matching screen. Failure keeps the old session available and stops commands
+that depend on that reset. A reset also refuses while Navigator owns work or sources that still
+need release. Pausing playback or saving a ride does not start another recording.
 
 ### Semantic ports
 

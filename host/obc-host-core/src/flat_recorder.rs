@@ -130,6 +130,11 @@ impl FlatRideRecorder {
         Ok(recorder)
     }
 
+    /// No live, closing or recovered object is owned by this adapter.
+    pub fn is_idle(&self) -> bool {
+        matches!(self.state, State::Idle)
+    }
+
     pub fn offer_recovery(&self, app: &mut App) {
         match &self.state {
             State::Live(live) if live.session.is_none() => app.offer_recovered_ride(live.continuation),
@@ -307,7 +312,8 @@ impl TrackRepository for FlatRideRecorder {
             live.pending = Some(continuation::encode(live.continuation, live.start));
         }
         flush(&self.owner, live, &self.delta).map_err(recorder_error)?;
-        Ok(CheckpointStatus::Durable)
+        let owner = self.owner.0.lock().map_err(|_| RecorderError::ReadOnly)?;
+        Ok(if owner.persistent { CheckpointStatus::Durable } else { CheckpointStatus::Unsupported })
     }
 
     fn finalize(&mut self, stats: RideStats) -> RideClose {

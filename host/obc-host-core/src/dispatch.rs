@@ -290,6 +290,16 @@ impl HostLoop {
         self.plan.is_some() || self.releasing.is_some()
     }
 
+    /// Navigator owns work or sources that must be released before replacing this host loop.
+    pub fn owns_navigation(&self) -> bool {
+        self.plan_token.is_some()
+            || self.plan.is_some()
+            || self.sources.is_some()
+            || self.detour_ready.is_some()
+            || self.publication.is_some()
+            || self.releasing.is_some()
+    }
+
     /// The operation a frozen or running search is holding, for a host that scripts its answer.
     pub fn plan_token(&self) -> Option<OperationToken<NavigatorTag>> {
         self.plan_token
