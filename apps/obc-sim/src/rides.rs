@@ -16,10 +16,10 @@ pub fn import(directory: &Path, rides: &mut FlatRideStore) -> Result<(), String>
     files.sort();
     for path in files {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
-        if !name
+        if name
             .strip_prefix("ride-")
             .and_then(|name| name.strip_suffix(".obcr"))
-            .is_some_and(|digits| digits.parse::<u64>().is_ok())
+            .is_none_or(|digits| digits.parse::<u64>().is_err())
         {
             continue;
         }
