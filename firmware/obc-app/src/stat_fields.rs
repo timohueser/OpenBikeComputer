@@ -416,7 +416,7 @@ fn next_of_category<'a>(cat: PoiCategory, cx: &'a Readout<'a>) -> Option<(u32, &
 /// waypoint name fits; the tile drawer ellipsis-truncates one that overflows the tile width.
 pub struct StatCell {
     pub caption: heapless::String<24>,
-    pub value: heapless::String<8>,
+    pub value: heapless::String<10>,
     pub arrow: bool,
     /// Where the value sits in the tile: [`Left`](TextAlign::Left) for the number-only built-in
     /// fields, [`Right`](TextAlign::Right) for the wide [`NextWaypoint`](StatField::NextWaypoint)
@@ -425,7 +425,8 @@ pub struct StatCell {
 }
 
 impl StatCell {
-    fn new(caption: heapless::String<24>, value: heapless::String<8>, arrow: bool) -> Self {
+    fn new(caption: heapless::String<24>, value: impl AsRef<str>, arrow: bool) -> Self {
+        let value = heapless::String::try_from(value.as_ref()).expect("stat values fit the value buffer");
         StatCell { caption, value, arrow, value_align: TextAlign::Left }
     }
 }
