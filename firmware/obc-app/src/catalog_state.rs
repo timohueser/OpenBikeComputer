@@ -607,7 +607,7 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
     /// Automatic removal, bound to the catalog used by retention.
-    ExpireObject { id: CatalogObjectId, scope: StoreRevision },
+    ExpireObject { id: CatalogObjectId, kind: CatalogObjectKind, scope: StoreRevision },
     /// Delete one route.
     DeleteRoute { id: CatalogObjectId },
     /// Delete one ride.
@@ -629,7 +629,12 @@ pub enum CatalogObjectKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
     /// Revalidate live retention policy before admitting this exact snapshot.
-    ExpireObject { token: OperationToken<CatalogTag>, object: CatalogObjectId, scope: StoreRevision },
+    ExpireObject {
+        token: OperationToken<CatalogTag>,
+        object: CatalogObjectId,
+        kind: CatalogObjectKind,
+        scope: StoreRevision,
+    },
     /// Re-read the object store into the resident catalogs.
     ReadCatalog { token: OperationToken<CatalogTag> },
     /// Remove one object of the family selected by the domain.
@@ -763,8 +768,8 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
-            CatalogIntent::ExpireObject { id, scope } => {
-                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, scope }
+            CatalogIntent::ExpireObject { id, kind, scope } => {
+                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, kind, scope }
             }
             CatalogIntent::DeleteRoute { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id, kind: CatalogObjectKind::Route }

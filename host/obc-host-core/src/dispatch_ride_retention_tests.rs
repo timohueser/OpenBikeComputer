@@ -159,5 +159,78 @@ fn host_refuses_mixed_card_catalogs_and_stale_stamp_and_expiry_effects() {
         &mut (),
     );
     assert!(matches!(outcome, CatalogOutcome::Failed { error: CatalogError::Stale, .. }));
-    assert!(!rig.app.retention_expiry_due(archived.id.0, scope));
+    assert!(!rig.app.retention_expiry_due(archived.id.0, CatalogObjectKind::Ride, scope));
+}
+
+#[test]
+fn legacy_ride_expiry_never_selects_a_same_id_protected_flat_route() {
+    let route = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+    let owner = HostStore::memory().unwrap();
+    let mut rig = Rig::new(owner);
+    rig.routes = FlatRouteStore::new(HostStore(rig.owner.0.clone()), &[route]).unwrap();
+    let route_id = rig.routes.ids()[0];
+    // A legacy family may use a different namespace with the same numeric identity.
+    struct LegacyRide(Vec<obc_app::RideEntry>);
+    impl RideRepository for LegacyRide {
+        fn catalog(&self) -> &[obc_app::RideEntry] {
+            &self.0
+        }
+        fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
+            panic!("automatic expiry is not a manual delete")
+        }
+        fn fill_track(&self, _: u64, _: &mut obc_route::Profile) -> Option<Vec<(i32, i32)>> {
+            None
+        }
+    }
+    let head = seed(&rig.owner);
+    let mut archive = FlatRideStore::new(HostStore(rig.owner.0.clone())).unwrap().catalog()[0].clone();
+    rig.owner.remove(obc_storage::flat::ObjectKind::Ride, head.id, head.revision).unwrap();
+    archive.id = route_id;
+    archive.summary.synced = true;
+    archive.summary.synced_at_utc = 1;
+    let mut legacy = LegacyRide(vec![archive]);
+    for tick in 1..=3 {
+        rig.host.facts().note_store_revision(rig.routes.store_scope().unwrap());
+        let mut loc = NoFix;
+        let mut plan = rig.host.pass(
+            &mut rig.app,
+            PassClock { ride: RideClock(tick * 1000), ui: InputClock(tick * 1000) },
+            &[],
+            Sensors::new(&mut loc),
+            None,
+            None,
+            PlatformSupport { retention_metadata: true, ..Default::default() },
+        );
+        rig.host.serve_effects(
+            &mut rig.app,
+            &mut plan,
+            &mut rig.routes,
+            &mut legacy,
+            &mut (),
+            &mut MemTrackStore::new(),
+            &mut (),
+        );
+    }
+    rig.app.stamp_clock_ble(1_700_000_000, 0);
+    rig.host.facts().note_store_revision(rig.routes.store_scope().unwrap());
+    let mut loc = NoFix;
+    let mut plan = rig.host.pass(
+        &mut rig.app,
+        PassClock { ride: RideClock(50_000), ui: InputClock(50_000) },
+        &[],
+        Sensors::new(&mut loc),
+        None,
+        None,
+        PlatformSupport { retention_metadata: true, ..Default::default() },
+    );
+    // The captured view has a due ride and a Never route at the same id.
+    let scope = rig.routes.store_scope().unwrap();
+    assert!(!rig.app.retention_expiry_due(route_id, CatalogObjectKind::Route, scope));
+    assert!(rig.app.retention_expiry_due(route_id, CatalogObjectKind::Ride, scope));
+    let effect = plan.effects.catalog.take().expect("the due ride emits one expiry");
+    assert!(matches!(effect, CatalogEffect::ExpireObject { kind: CatalogObjectKind::Ride, .. }));
+    let result = rig.host.serve_catalog(&mut rig.app, effect, &mut rig.routes, &mut legacy, &mut ());
+    assert!(matches!(result, CatalogOutcome::Failed { error: CatalogError::Unsupported, .. }));
+    assert_eq!(rig.routes.ids(), &[route_id]);
+    assert_eq!(rig.routes.store_scope(), Some(scope));
 }

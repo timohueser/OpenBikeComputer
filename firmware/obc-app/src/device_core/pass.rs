@@ -629,12 +629,17 @@ impl App {
         }
         self.retention_tick();
         if self.pass.connections.expiry.is_empty() {
-            if let Some(CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id }) =
-                self.with_retention(|retention, view| retention.next_expiry(view))
-            {
-                let _ = self.pass.connections.expiry.try_put(CatalogIntent::ExpireObject { id, scope });
+            if let Some(intent) = self.with_retention(|retention, view| retention.next_expiry(view)) {
+                use crate::catalog_state::CatalogObjectKind;
+                let (id, kind) = match intent {
+                    CatalogIntent::DeleteRoute { id } => (id, CatalogObjectKind::Route),
+                    CatalogIntent::DeleteRide { id } => (id, CatalogObjectKind::Ride),
+                    _ => unreachable!("retention expires routes and rides only"),
+                };
+                let _ = self.pass.connections.expiry.try_put(CatalogIntent::ExpireObject { id, kind, scope });
             }
         }
+
         if effects.retention.is_empty() {
             if let Some(mut effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
                 effect.bind(scope);
@@ -649,10 +654,15 @@ impl App {
     }
 
     /// The existing retention owner rechecks volatile policy before the executor queues expiry.
-    pub fn retention_expiry_due(&mut self, id: crate::CatalogObjectId, scope: super::StoreRevision) -> bool {
+    pub fn retention_expiry_due(
+        &mut self,
+        id: crate::CatalogObjectId,
+        kind: crate::catalog_state::CatalogObjectKind,
+        scope: super::StoreRevision,
+    ) -> bool {
         self.catalogs.loaded_scope == Some(scope)
             && self.pass.store == Some(scope)
-            && self.with_retention(|retention, view| retention.object_due(id, view))
+            && self.with_retention(|retention, view| retention.object_due(id, kind, view))
     }
 
     /// Stage 6 — advance `CatalogMachine`.
@@ -2084,16 +2094,31 @@ mod tests {
         assert!(app.catalogs.ride_records()[127].synced);
         app.test_mount_store();
         let scope = app.pass.store.unwrap();
-        assert!(!app.retention_expiry_due(128, scope), "unknown clock protects even a nonzero proof");
+        assert!(
+            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
+            "unknown clock protects even a nonzero proof"
+        );
         trust_clock(&mut app);
-        assert!(!app.retention_expiry_due(1, scope), "zero stamp starts a clock, never expires");
-        assert!(!app.retention_expiry_due(2, scope), "unsynced is protected");
-        assert!(app.retention_expiry_due(128, scope));
+        assert!(
+            !app.retention_expiry_due(1, crate::catalog_state::CatalogObjectKind::Ride, scope),
+            "zero stamp starts a clock, never expires"
+        );
+        assert!(
+            !app.retention_expiry_due(2, crate::catalog_state::CatalogObjectKind::Ride, scope),
+            "unsynced is protected"
+        );
+        assert!(app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope));
         app.test_start_ride();
-        assert!(!app.retention_expiry_due(128, scope), "recording blocks expiry");
+        assert!(
+            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
+            "recording blocks expiry"
+        );
         app.test_end_ride();
-        assert!(app.retention_expiry_due(128, scope));
+        assert!(app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope));
         app.begin_catalog_refresh();
-        assert!(!app.retention_expiry_due(128, scope), "partial refresh has no authority");
+        assert!(
+            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
+            "partial refresh has no authority"
+        );
     }
 }

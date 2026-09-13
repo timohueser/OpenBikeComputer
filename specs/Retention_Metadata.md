@@ -106,7 +106,9 @@ can survive recovery, so those values alone do not release that park.
 
 Before an automatic removal, the retention owner rechecks clock trust, recording state, active route,
 and expiry against the loaded snapshot. The board waits for that admitted writer operation to finish
-before it processes another App transition. Rider-requested deletion remains a separate intent.
+before it processes another App transition. The admitted object family is carried through the
+expiry effect, policy recheck and physical removal; overlapping legacy IDs cannot select another
+family. Rider-requested deletion remains a separate intent.
 
 ## Ride archive ingress
 

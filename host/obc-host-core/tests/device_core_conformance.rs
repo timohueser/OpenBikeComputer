@@ -467,12 +467,7 @@ impl CoreHarness {
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
         use obc_app::catalog_state::CatalogObjectKind;
         let kind = match effect {
-            CatalogEffect::RemoveObject { kind, .. } => Some(kind),
-            CatalogEffect::ExpireObject { object, .. } => Some(if self.state.route_ids.contains(&object) {
-                CatalogObjectKind::Route
-            } else {
-                CatalogObjectKind::Ride
-            }),
+            CatalogEffect::RemoveObject { kind, .. } | CatalogEffect::ExpireObject { kind, .. } => Some(kind),
             CatalogEffect::ReadCatalog { .. } => None,
         };
         match effect {
