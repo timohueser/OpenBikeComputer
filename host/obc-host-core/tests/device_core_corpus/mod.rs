@@ -295,6 +295,7 @@ pub enum ScreenState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleState {
+    pub bond_status: obc_app::ble::BondStatus,
     pub screen: ScreenState,
     pub stack_depth: usize,
     pub mode: Mode,
@@ -770,7 +771,10 @@ impl CorpusState {
                 .facts
                 .note_update_result(UpdateResult::Failed { why: DfuFailure::Reverted, staged: Some(clamp("v3")) })
                 .expect("no verdict pending"),
-            Action::ForgetBond => self.app.state.ble_forget_pending = true,
+            Action::ForgetBond => {
+                self.app.state.device.ble_paired = true;
+                self.app.state.ble_forget_requested = true;
+            }
             Action::ScanCardSpace => {
                 self.app.apply_gesture(Gesture::Press);
                 self.app.apply_gesture(Gesture::Step(-1));
@@ -896,6 +900,7 @@ pub fn visible_state(
         other => ScreenState::Other(other.name()),
     };
     VisibleState {
+        bond_status: app.state.bond_status,
         screen,
         stack_depth: app.debug_stack_len(),
         mode: app.mode(),

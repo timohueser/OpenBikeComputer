@@ -8,10 +8,12 @@ import OBCDomain
 public struct DownloadedRide: Equatable, Sendable {
     public let id: RideID
     public let payload: Data
+    public let source: RideSource?
 
-    public init(id: RideID, payload: Data) {
+    public init(id: RideID, payload: Data, source: RideSource? = nil) {
         self.id = id
         self.payload = payload
+        self.source = source
     }
 }
 

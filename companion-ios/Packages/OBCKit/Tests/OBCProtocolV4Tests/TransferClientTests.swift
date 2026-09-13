@@ -468,3 +468,88 @@ private extension Data {
         }
     }
 }
+
+@Suite("Pinned archive GET")
+struct ArchiveGetTests {
+    @Test(arguments: ArchiveGetLink.Fault.allCases)
+    fileprivate func checksStoreRevisionAndVerifiedContent(_ fault: ArchiveGetLink.Fault) async throws {
+        let link = ArchiveGetLink(fault: fault)
+        let client = TransferClient(link: link)
+        do {
+            let downloaded = try await client.get(objectID: ObjectID(rawValue: 42),
+                                                  revision: Revision(rawValue: 3), expectedStoreID: link.storeID)
+            #expect(fault == .none)
+            #expect(downloaded.payload == link.payload)
+            #expect(downloaded.result.revision.rawValue == 3)
+            #expect(downloaded.result.payloadCRC32 == CRC32.checksum(link.payload))
+        } catch let error as TransferClientError {
+            switch fault {
+            case .none: Issue.record("Unexpected GET failure: \(error)")
+            case .revision: #expect(error == .unexpectedResponse)
+            case .checksum: #expect(error == .checksumMismatch)
+            case .store: #expect(error == .storeChanged(previous: link.storeID, current: link.otherStoreID))
+            }
+        }
+    }
+}
+
+private actor ArchiveGetLink: TransferLink {
+    enum Fault: CaseIterable, Sendable { case none, revision, checksum, store }
+    nonisolated let maximumStreamPayload = 512
+    nonisolated let storeID = try! StoreID(bytes: Data(repeating: 0xA5, count: 16))
+    nonisolated let otherStoreID = try! StoreID(bytes: Data(repeating: 0xB6, count: 16))
+    nonisolated let payload = Data("verified ride bytes".utf8)
+    let fault: Fault
+    var pending: ControlFrame?
+    var getID: RequestID?
+    var sentStream = false
+    var listCount = 0
+    var streamWaiter: CheckedContinuation<Data, Error>?
+    var streamCancelled = false
+
+    init(fault: Fault) { self.fault = fault }
+
+    func sendControlRecord(_ record: Data) async throws {
+        let frame = try ControlFrame(decoding: record, direction: .request)
+        pending = frame
+        if frame.opcode == .get { getID = frame.requestID }
+    }
+
+    func receiveControlRecord() async throws -> Data {
+        guard let frame = pending else { throw TransferClientError.unexpectedResponse }
+        pending = nil
+        var body = Data()
+        switch frame.opcode {
+        case .list:
+            listCount += 1
+            body.append(fault == .store && listCount == 3 ? otherStoreID.bytes : storeID.bytes)
+            body.appendLE(UInt64(1))
+        case .get:
+            body.appendLE(UInt64(fault == .revision ? 4 : 3))
+            body.appendLE(UInt64(payload.count))
+            body.appendLE(CRC32.checksum(payload) ^ (fault == .checksum ? 1 : 0))
+            body.appendLE(UInt32(0))
+        default: throw TransferClientError.unexpectedResponse
+        }
+        return ControlFrame(opcode: frame.opcode, flags: ControlFrame.responseFlag,
+                            requestID: frame.requestID, payload: body).encode()
+    }
+
+    func receiveStreamRecord() async throws -> Data {
+        if streamCancelled || Task.isCancelled { throw CancellationError() }
+        if !sentStream, let getID {
+            sentStream = true
+            return try StreamRecord(requestID: getID, offset: 0, payload: payload).encode()
+        }
+        return try await withCheckedThrowingContinuation { streamWaiter = $0 }
+    }
+
+    func cancelStreamReceive() async {
+        streamCancelled = true
+        streamWaiter?.resume(throwing: CancellationError())
+        streamWaiter = nil
+    }
+    func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
+    func cancelControlReceive() async {}
+    func restore() async throws { throw TransferLinkLost() }
+}

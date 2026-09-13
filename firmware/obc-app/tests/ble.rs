@@ -4,23 +4,13 @@
 //! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
 //! view or a static screen whose status is unchanged.
 
-use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty, HostCommand, HostMailbox};
+use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty};
 
 mod common;
 
 fn connected() -> BleStatus {
     BleStatus { link: BleLink::Connected, passkey: None, paired: true }
 }
-
-/// Whether a `ForgetBond` is pending. The bond removal is one of the three residual commands: it is
-/// confirmed by a link-status fact rather than a reply, so it stays on the old protocol until #1400.
-fn took_forget(app: &mut App) -> bool {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_residual_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::ForgetBond))
-}
-
-// --- the state seam ----------------------------------------------------------
 
 #[test]
 fn set_ble_status_records_link_paired_and_passkey() {
@@ -48,16 +38,6 @@ fn set_ble_status_records_link_paired_and_passkey() {
 
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert_eq!(app.state.device.ble_link, BleLink::Advertising, "back to the powered-and-unlinked default");
-}
-
-/// The Forget-phone one-shot: the `ForgetBond` command drains the screen's pending request once.
-#[test]
-fn take_ble_forget_is_a_one_shot() {
-    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    assert!(!took_forget(&mut app), "nothing pending at boot");
-    app.state.ble_forget_pending = true; // as the Bluetooth screen's guarded hold sets it
-    assert!(took_forget(&mut app), "the pending request drains…");
-    assert!(!took_forget(&mut app), "…exactly once");
 }
 
 // --- the indicator's dirty contract (on the connected-glyph screens) --------
@@ -230,4 +210,48 @@ fn a_link_change_does_not_repaint_the_map_or_statistics() {
     let _ = app.take_dirty();
     app.set_ble_status(BleStatus::DISCONNECTED);
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "a link change never redraws Statistics");
+}
+
+#[test]
+fn forget_requires_its_exact_result_even_after_disconnect_and_allows_explicit_retry() {
+    use obc_app::ble::{BondError, BondOutcome, BondStatus, ControllerClearance};
+    use obc_app::device_core::{ExternalFacts, OutcomeSlots};
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.state.device.ble_paired = true;
+    app.state.ble_forget_requested = true;
+    let first = common::quiet_pass(&mut app, 1).effects.bond.take().unwrap();
+    assert_eq!(app.state.bond_status, BondStatus::Pending);
+    app.set_ble_status(BleStatus::DISCONNECTED);
+    assert!(common::quiet_pass(&mut app, 2).effects.bond.is_empty());
+    assert_eq!(app.state.bond_status, BondStatus::Pending, "a disconnect proves no deletion");
+    let mut outcomes = OutcomeSlots::new();
+    let mut facts = ExternalFacts::NONE;
+    let failed = BondOutcome::Failed { token: first.token(), error: BondError::StoreWriteFailed };
+    outcomes.bond.try_put(failed).unwrap();
+    common::pass(&mut app, 3, &mut outcomes, &mut facts, None);
+    assert_eq!(app.state.bond_status, BondStatus::Failed(BondError::StoreWriteFailed));
+    assert!(common::quiet_pass(&mut app, 4).effects.bond.is_empty(), "no automatic destructive retry");
+    app.state.ble_forget_requested = true;
+    let retry = common::quiet_pass(&mut app, 5).effects.bond.take().unwrap();
+    assert_ne!(first.token(), retry.token());
+    outcomes
+        .bond
+        .try_put(BondOutcome::KeysRemoved { token: first.token(), controller: ControllerClearance::Confirmed })
+        .unwrap();
+    common::pass(&mut app, 6, &mut outcomes, &mut facts, None);
+    assert_eq!(app.state.bond_status, BondStatus::Pending, "a stale success cannot finish the retry");
+    let partial = BondOutcome::KeysRemoved { token: retry.token(), controller: ControllerClearance::Unconfirmed };
+    outcomes.bond.try_put(partial).unwrap();
+    common::pass(&mut app, 7, &mut outcomes, &mut facts, None);
+    assert_eq!(app.state.bond_status, BondStatus::RestartRequired);
+    outcomes
+        .bond
+        .try_put(BondOutcome::KeysRemoved { token: retry.token(), controller: ControllerClearance::Confirmed })
+        .unwrap();
+    common::pass(&mut app, 8, &mut outcomes, &mut facts, None);
+    assert_eq!(app.state.bond_status, BondStatus::RestartRequired, "terminal answers are one-shot");
+    let mut restarted = App::new_idle(AppState::new(0, 0, 1.0));
+    outcomes.bond.try_put(partial).unwrap();
+    common::pass(&mut restarted, 9, &mut outcomes, &mut facts, None);
+    assert_eq!(restarted.state.bond_status, BondStatus::Idle, "reset does not inherit an operation");
 }

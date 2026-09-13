@@ -1,24 +1,4 @@
-//! The **residual** app → host protocol (#1397 S6).
-//!
-//! DeviceCore's pass speaks bounded effects and token-carrying outcomes. What is left here is the
-//! short list of things a typed executor still performs on the old protocol, because their domains
-//! cannot validate an operation token and so cannot own an outcome:
-//!
-//! - [`HostCommand`] — one command, drained through
-//!   [`App::drain_residual_commands`](crate::App::drain_residual_commands) into a caller-owned
-//!   [`HostMailbox`]. [`device_core::residual`](crate::device_core::residual) is the list as data,
-//!   with the issue that retires each one.
-//!
-//! The command has **exactly one** pending instance inside `App` — a flag, no internal queue and no
-//! allocation — and it is a one-shot the drain clears. Draining is loss-free: a command moves into
-//! the mailbox only if room exists, so a full mailbox leaves the rest latched
-//! ([`DrainStatus::MailboxFull`]) rather than dropping one.
-//!
-//! Answers do not come back here. A bond removal is confirmed by a link-status fact, which the pass
-//! already consumes. The ride close left with #1398: it is a `RecorderEffect` answered by a
-//! `RecorderOutcome`, so Recorder validates its own verdict.
-
-use crate::device_core::residual::RESIDUAL_CLASS_COUNT;
+//! Host planning values.
 
 /// What the board host must do when a computed-route publication answers. Cancellation can arrive
 /// while the synchronous store task is committing, so the answer is not automatically a success:
@@ -67,38 +47,6 @@ pub const fn nav_compensation_disposition(status: NavCompensationStatus) -> NavC
     }
 }
 
-/// The one thing a typed executor still performs on the old protocol.
-///
-/// Payloads are bounded by construction: small `Copy` enums. No catalog, profile, or geometry ever
-/// rides in a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostCommand {
-    /// Forget the paired phone (epic #447, P8): clear the bond store and drop the bonded
-    /// connection. Still here because the removal is confirmed by a link-status fact rather than by
-    /// a reply (#1400). One-shot, guarded-hold-posted.
-    ForgetBond,
-}
-
-/// One command class per [`HostCommand`] variant — [`RESIDUAL_CLASSES`] names them in the order the
-/// drain asks for them.
-///
-/// [`RESIDUAL_CLASSES`]: crate::device_core::residual::RESIDUAL_CLASSES
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostCommandClass {
-    ForgetBond,
-}
-
-impl HostCommand {
-    /// This command's class. The residual table's own cross-check is its only reader: production
-    /// asks for a class by name and never asks a command what it is.
-    #[cfg(test)]
-    pub(crate) fn class(&self) -> HostCommandClass {
-        match self {
-            HostCommand::ForgetBond => HostCommandClass::ForgetBond,
-        }
-    }
-}
-
 /// A planned detour's preview figures (#882), carried by
 /// [`NavigatorOutcome::DetourFinished`](crate::navigator::NavigatorOutcome): the cost
 /// delta the HUD line shows (`detour length − skipped span length`, signed — a detour around a
@@ -121,70 +69,3 @@ pub struct DetourPreview {
     /// genuinely flat detour is `Some(0)` and must still show a figure.
     pub ascent_m: Option<u32>,
 }
-
-/// What [`App::drain_residual_commands`](crate::App::drain_residual_commands) reports about a drain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use]
-pub enum DrainStatus {
-    /// Every pending command was moved into the mailbox.
-    Complete,
-    /// The mailbox filled before every class was drained. **Nothing was lost**: the remaining
-    /// classes stay latched in the app and come out of the next drain — the saturation policy is
-    /// backpressure, never a silent drop. Unreachable when the mailbox is empty and sized
-    /// `N >= RESIDUAL_CLASSES.len()`.
-    MailboxFull,
-}
-
-/// A caller-owned, compile-time-bounded FIFO of drained [`HostCommand`]s. The host allocates it
-/// (stack or its own static — `App` never grows by it), fills it once per pass via
-/// [`App::drain_residual_commands`](crate::App::drain_residual_commands), and pops it.
-///
-/// Nothing is coalesced: the class is a one-shot, and each drained instance is a distinct request.
-#[derive(Debug)]
-pub struct HostMailbox<const N: usize = RESIDUAL_CLASS_COUNT> {
-    q: heapless::Deque<HostCommand, N>,
-}
-
-impl<const N: usize> HostMailbox<N> {
-    /// An empty mailbox.
-    pub const fn new() -> Self {
-        HostMailbox { q: heapless::Deque::new() }
-    }
-
-    /// Pop the next command in canonical order, or `None` when empty.
-    pub fn pop(&mut self) -> Option<HostCommand> {
-        self.q.pop_front()
-    }
-
-    /// How many commands are queued (clippy pairs it with [`is_empty`](Self::is_empty); the
-    /// protocol tests assert exact batch sizes through it).
-    pub fn len(&self) -> usize {
-        self.q.len()
-    }
-
-    /// Whether the mailbox is empty.
-    pub fn is_empty(&self) -> bool {
-        self.q.is_empty()
-    }
-
-    /// Whether the mailbox is full — the drain's backpressure signal.
-    pub fn is_full(&self) -> bool {
-        self.q.is_full()
-    }
-
-    /// Queue one drained command. Returns `false` — leaving the command with the caller — only when
-    /// the mailbox is full (the drain checks room first, so its pushes never fail).
-    pub(crate) fn push(&mut self, cmd: HostCommand) -> bool {
-        self.q.push_back(cmd).is_ok()
-    }
-}
-
-impl<const N: usize> Default for HostMailbox<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// Layout tripwire: a residual command is an id or a small enum, never a catalog or profile. The
-// mailbox is caller-owned, so `App` grows by none of this.
-const _: () = assert!(core::mem::size_of::<HostCommand>() <= 16, "HostCommand grew — re-check the payload budget");

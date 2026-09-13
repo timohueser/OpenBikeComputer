@@ -56,7 +56,7 @@ use obc_ports::{
 /// run on different executors / priorities on the board.
 type Sig<T> = Signal<CriticalSectionRawMutex, T>;
 
-/// Which sensors answered the boot I²C probe — the sensor task's probe results, carried to the app
+/// Which sensors answered during startup — the sensor task's results, carried to the app
 /// so a missing module surfaces as a dismissable warning rather than only an RTT line. A missing
 /// GPS is distinct from "no fix yet" (the receiver is there, just no sky): this is the *module*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +70,8 @@ pub struct SensorPresence {
 }
 
 /// The GPS receiver's requested power state. The ride loop derives one from whether a ride is active
-/// and the `power_saver` toggle, and the sensor task drives the M10 to match: deep sleep when idle
-/// (~µA vs. the ~20 mA of continuous tracking), full-power fixes while riding, or the M10's on-chip
-/// low-power tracking when `power_saver` is on.
+/// and the `power_saver` toggle. The sensor task requests stopped GNSS processing when idle,
+/// full-power fixes while riding, or the M10's on-chip low-power tracking when `power_saver` is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpsPower {
     /// Riding, full-power continuous fixes at the configured rate.
@@ -80,8 +79,8 @@ pub enum GpsPower {
     /// Riding with `power_saver` on — the M10's low-power tracking mode (lower power, same rate, at
     /// the cost of some fix latency).
     LowPower,
-    /// Not tracking — deep sleep (`RXM-PMREQ` backup); woken on the next [`Active`](GpsPower::Active)
-    /// / [`LowPower`](GpsPower::LowPower) request for a fast warm fix.
+    /// Not tracking — stop GNSS processing and park host polling. Resume on the next
+    /// [`Active`](GpsPower::Active) / [`LowPower`](GpsPower::LowPower) request.
     Sleep,
 }
 
@@ -262,7 +261,7 @@ impl SensorTaskLink<'_> {
         self.0.publish(&self.0.heading, deg);
     }
 
-    /// Publish the boot probe result (once, after the sensor task probes all three chips). Pulses the
+    /// Publish the startup result once, after GPS responds or its acquisition deadline passes. Pulses the
     /// event so the ride loop wakes and drains it via [`SensorConsumer::take_presence`].
     pub fn dispatch_presence(&self, p: SensorPresence) {
         self.0.publish(&self.0.presence, p);
@@ -380,7 +379,7 @@ impl<'a> SensorConsumer<'a> {
         SensorCadence(&self.0.cadence)
     }
 
-    /// Drain the boot probe result — `Some` exactly once, on the pass after the task publishes it,
+    /// Drain the startup result — `Some` exactly once, on the pass after the task publishes it,
     /// then `None`. The ride loop maps any absent sensor to a warning flag (issue #504).
     pub fn take_presence(&self) -> Option<SensorPresence> {
         self.0.presence.try_take()
