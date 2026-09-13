@@ -100,10 +100,10 @@ impl FlatRideRecorder {
             let card = mounted.ready()?;
             let mut recording = None;
             for entry in card.entries() {
-                if entry.flags == EntryFlags::RECORDING {
-                    if entry.kind != ObjectKind::Ride || recording.replace(entry).is_some() {
-                        return Err(StoreError::Invalid);
-                    }
+                if entry.flags == EntryFlags::RECORDING
+                    && (entry.kind != ObjectKind::Ride || recording.replace(entry).is_some())
+                {
+                    return Err(StoreError::Invalid);
                 }
             }
             if !card.entries_ok() {
