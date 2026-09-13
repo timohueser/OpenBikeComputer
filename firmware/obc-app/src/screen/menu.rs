@@ -523,15 +523,13 @@ mod tests {
     use crate::{AppState, Settings};
 
     static PEAK_PROFILE: crate::PeakViewProfile<'static> = crate::PeakViewProfile {
-        id: 250,
-        name: "test",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 0,
-        angle_bottom_q4: -4,
-        angle_top_q4: 4,
-        vertical_scale_q8: 320,
+        fov_q4: 15,
+        vertical_centre_q4: 0,
+        vertical_span_q4: 11,
         peaks: &[],
     };
 

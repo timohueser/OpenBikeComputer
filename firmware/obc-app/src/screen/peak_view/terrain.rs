@@ -1,5 +1,5 @@
 //! Draw completed bearings from RAM and mark pending bearings without inventing terrain.
-use super::{fov_q4, palette, COMPASS_H};
+use super::{palette, COMPASS_H};
 use crate::peak_view::{panorama::ROWS, Panorama, PeakViewProfile};
 use obc_render::Surface;
 
@@ -16,7 +16,7 @@ pub(super) fn draw(
     if w < 2 || bottom <= COMPASS_H {
         return;
     }
-    let fov = fov_q4(profile);
+    let fov = profile.horizontal_fov_q4();
     for x in 0..w {
         let bearing = (i32::from(heading) - fov / 2 + x * fov / (w - 1)).rem_euclid(1440) as u16;
         if !terrain.ready_at_bearing_q4(bearing) {
