@@ -2228,8 +2228,7 @@ fn a_put_that_does_not_continue_the_revision_chain_is_refused() {
     assert_eq!(snapshot(&mut store), model.snapshot(), "a refused commit changed the card");
 }
 
-/// A commit that returns `Err` changed nothing, and a batch the structural rules refuse never reaches
-/// the card.
+/// A batch refused by structural validation performs no card writes and preserves both catalogs.
 #[test]
 fn a_refused_batch_leaves_the_catalog_untouched() {
     let route = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);

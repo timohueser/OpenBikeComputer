@@ -212,6 +212,11 @@ A link loss has the same transfer result.
 
 ### Reconciliation
 
+A storage error during the final catalog write can occur after the new revision reached the card.
+The store then blocks further writes, allocation reuse, and fresh catalog reads until it is mounted
+again. Existing readers keep their exact revision. The link reports a read-only, unreadable catalog;
+clients must reconcile after the device mounts the card again.
+
 Use STATUS after an interrupted replacement.
 A committed result confirms the requested revision.
 An absent or superseded result means that replacement did not become the head.
@@ -290,8 +295,8 @@ The shared card store has a dormant metadata format for route-use and ride-archi
 It binds each row to the card and the exact source revision, length, and CRC. It replaces
 the metadata object atomically and checks the committed bytes before it reports success.
 Clients can list and read this object but cannot upload or remove it. The device does not
-yet write these stamps or use them for expiry. A future policy integration must stop card
-writers and remount after an uncertain commit. See the
+yet write these stamps or use them for expiry. The shared store stops card writers after an uncertain
+catalog commit and requires a fresh mount. See the
 [metadata contract](src:specs/Retention_Metadata.md).
 
 ## Pairing and BLE controls

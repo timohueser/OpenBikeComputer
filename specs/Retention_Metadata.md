@@ -83,5 +83,7 @@ allocation, and blocks further operations through that owner. No durable success
 reported. The runtime must stop all other card writers and drop the mounted store before
 it creates a new owner. A failed final sync can follow a durable new gate: remount can
 recover the old or the complete new generation. It must validate card identity and payload
-CRC before any row becomes policy evidence. The generic store does not enforce a global
-writer latch; live policy integration must establish that runtime boundary first.
+CRC before any row becomes policy evidence. The generic store blocks all card mutations and fresh
+catalog reads after an uncertain final gate write or synchronization. A metadata committed-readback
+failure currently blocks only its metadata owner. Live policy integration MUST apply the same global
+store fence for that verification failure before another writer runs.
