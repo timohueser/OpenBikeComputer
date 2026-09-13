@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 pub type FlatCard = &'static sim::FaultOnce<&'static sim::SparseDisk>;
 pub type Reply = crate::signal::Signal<crate::blocking_mutex::raw::CriticalSectionRawMutex, ()>;
+#[allow(clippy::large_enum_variant)] // Match the board's owned, inline commit batch.
 pub enum Request {
     Allocate { bytes: u64 },
     Commit { batch: heapless::Vec<Mutation, 8> },

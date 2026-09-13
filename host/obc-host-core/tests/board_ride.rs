@@ -130,13 +130,13 @@ fn whole_batch_refusal_keeps_the_checkpoint_at_its_accepted_boundary() {
     assert_eq!(complete(recorder.checkpoint(20_000, &stats, None)), Ok(CheckpointStatus::Durable));
     assert_eq!(writer.attempts.borrow()[0].append.len(), 15 * SAMPLE_LEN);
     // A power cut here restores exactly the previous accepted context, including unrounded sensors.
-    let (reopened, mut recorder) = recover(media, *store.device());
+    let (reopened, mut recorder) = recover(media, store.device());
     assert_eq!(recorder.recovered_continuation(), Some(context(15)));
     assert_eq!(recovered_points(reopened), first);
     complete(recorder.open(reopened, 2, "ride", 15_000));
     assert_eq!(recorder.append(&tail, context(17)), AppendResult::Accepted);
     assert_eq!(complete(recorder.checkpoint(21_000, &stats, None)), Ok(CheckpointStatus::Durable));
-    let (reopened, recorder) = recover(media, *store.device());
+    let (reopened, recorder) = recover(media, store.device());
     assert_eq!(recorder.recovered_continuation(), Some(context(17)));
     assert_eq!(recovered_points(reopened), [first.as_slice(), &tail].concat());
 }
@@ -155,7 +155,7 @@ fn failed_checkpoint_replays_before_a_new_context_only_checkpoint() {
     let newer = obc_route::RideStats { clock_trusted: true, unix_at_anchor: 1_000_000, anchor_ms: 20_000, ..stats };
     assert_eq!(complete(recorder.checkpoint(20_000, &newer, Some(context(9)))), Ok(CheckpointStatus::Durable));
     assert_eq!(writer.attempts.borrow()[0], writer.attempts.borrow()[1]);
-    let (reopened, mut recovered) = recover(media, *store.device());
+    let (reopened, mut recovered) = recover(media, store.device());
     assert_eq!(recovered.recovered_continuation(), Some(context(2)));
     assert_eq!(recovered_points(reopened), points);
     complete(recovered.open(reopened, 2, "ride", 20_000));
@@ -163,7 +163,7 @@ fn failed_checkpoint_replays_before_a_new_context_only_checkpoint() {
     barometric.climb_m += 3.125;
     barometric.descent_m += 1.25;
     assert_eq!(complete(recovered.checkpoint(30_000, &newer, Some(barometric))), Ok(CheckpointStatus::Durable));
-    let (reopened, recovered) = recover(media, *store.device());
+    let (reopened, recovered) = recover(media, store.device());
     assert_eq!(recovered.recovered_continuation(), Some(barometric));
     assert_eq!(recovered_points(reopened), points);
 }
@@ -173,13 +173,13 @@ fn empty_payload_preserves_valid_context_and_rejects_invalid_checkpoint_metadata
     use obc_storage::flat::{RideCheckpoint, Store, RIDE_RESUME_LEN};
     let _owner = RECORDER.lock().unwrap();
     let (media, store, _, _) = setup();
-    let (reopened, mut recorder) = recover(media, *store.device());
+    let (reopened, mut recorder) = recover(media, store.device());
     assert_eq!(reopened.recovered_ride().unwrap().checkpoint_sequence, 0);
     assert_eq!(recorder.recovered_continuation(), Some(RideContinuation::default()));
     complete(recorder.open(reopened, 2, "ride", 0));
     let barometric = RideContinuation { climb_m: 3.125, descent_m: 1.25, ..RideContinuation::default() };
     assert_eq!(complete(recorder.checkpoint(10_000, &stats(), Some(barometric))), Ok(CheckpointStatus::Durable));
-    let (mut reopened, recorder) = recover(media, *store.device());
+    let (mut reopened, recorder) = recover(media, store.device());
     assert_eq!(reopened.recovered_ride().unwrap().payload_len(), 0);
     assert_eq!(recorder.recovered_continuation(), Some(barometric));
     for resume in [[0; RIDE_RESUME_LEN], [1; RIDE_RESUME_LEN]] {
@@ -193,7 +193,7 @@ fn empty_payload_preserves_valid_context_and_rejects_invalid_checkpoint_metadata
                 resume: &resume,
             })
             .unwrap();
-        let (next, recorder) = recover(media, *store.device());
+        let (next, recorder) = recover(media, store.device());
         assert_eq!(recorder.recovered_continuation(), None);
         assert_eq!(recorder.recovery_damage(), Some(obc_app::RideDamage::Metadata));
         reopened = next;
