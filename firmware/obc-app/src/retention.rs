@@ -617,6 +617,9 @@ pub(crate) struct RetentionMachine {
     /// happen: the adapter answers synchronously in the same call. The real executor owes either an
     /// outcome on every path or a bound here.
     inflight_write: Option<(SweepKind, crate::CatalogObjectId)>,
+    retry_at: Option<u32>,
+    parked: bool,
+    unsupported: u8,
 }
 
 impl RetentionMachine {
@@ -629,6 +632,9 @@ impl RetentionMachine {
             delete_inflight: None,
             ops: crate::device_core::TokenSource::new(),
             inflight_write: None,
+            retry_at: None,
+            parked: false,
+            unsupported: 0,
         }
     }
 
@@ -666,6 +672,8 @@ impl RetentionMachine {
             };
             collect_sweep_actions(&inputs, queue);
         });
+        let unsupported = self.unsupported;
+        self.queue.retain(|action| unsupported & action.family() == 0);
     }
 
     /// Take the next queued **metadata write** as a typed effect, or `None` when no stamp is queued,
@@ -678,9 +686,13 @@ impl RetentionMachine {
     /// id: day-grain expiry is indifferent to the seconds between discovery and dispatch.
     pub(crate) fn next_metadata_effect(&mut self, view: &RetentionView) -> Option<RetentionEffect> {
         let now = view.now_utc?;
-        if self.inflight_write.is_some() {
+        if self.parked
+            || self.retry_at.is_some_and(|at| view.now_ms.wrapping_sub(at) >= (1 << 31))
+            || self.inflight_write.is_some()
+        {
             return None; // one sidecar write at a time
         }
+        self.retry_at = None;
         for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
             let Some(id) = self.peek(kind) else { continue };
             let effect = if matches!(kind, SweepKind::StampRoute) {
@@ -689,11 +701,12 @@ impl RetentionMachine {
                 let retention = view.route(id).map(|(_, meta)| meta.retention).unwrap_or_default();
                 RetentionEffect::WriteRouteMetadata {
                     token: self.ops.issue(),
+                    scope: None,
                     id,
                     meta: RouteRetentionMeta { retention, last_used_utc: now },
                 }
             } else {
-                RetentionEffect::WriteRideMetadata { token: self.ops.issue(), id, synced_at: now }
+                RetentionEffect::WriteRideMetadata { token: self.ops.issue(), scope: None, id, synced_at: now }
             };
             self.take(kind); // the stamp leaves the queue; a failure re-queues it in `apply_outcome`
             self.inflight_write = Some((kind, id));
@@ -708,24 +721,69 @@ impl RetentionMachine {
     /// A failed or abandoned write **re-queues its stamp**. The direction is safe either way — an
     /// unwritten stamp reads back as unknown, which never deletes — but re-queuing means the retry
     /// costs one pass rather than waiting for the next hourly sweep to rediscover it.
-    pub(crate) fn apply_outcome(&mut self, outcome: RetentionOutcome) {
+    pub(crate) fn apply_outcome(&mut self, outcome: RetentionOutcome) -> bool {
         if !self.ops.is_current(outcome.token()) {
-            return;
+            return false;
+        }
+        if let Some((kind, id)) = self.inflight_write {
+            let matches = match outcome {
+                RetentionOutcome::RouteMetadataWritten { id: written, .. } => {
+                    kind == SweepKind::StampRoute && id == written
+                }
+                RetentionOutcome::RideMetadataWritten { id: written, .. } => {
+                    kind == SweepKind::StampRide && id == written
+                }
+                _ => true,
+            };
+            if !matches {
+                return false;
+            }
         }
         self.ops.invalidate(); // terminal: a repeat of this outcome is no longer current
         let Some((kind, id)) = self.inflight_write.take() else {
-            return;
+            return false;
         };
-        if matches!(outcome, RetentionOutcome::Failed { .. } | RetentionOutcome::Cancelled { .. }) {
+        if matches!(outcome, RetentionOutcome::Failed { error: RetentionError::Unsupported, .. }) {
+            self.disable(kind);
+        } else if matches!(outcome, RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. }) {
+            self.parked = true;
+            self.queue.clear();
+        } else if matches!(outcome, RetentionOutcome::Failed { .. } | RetentionOutcome::Cancelled { .. }) {
             let _ = match kind {
                 SweepKind::StampRoute => self.ensure_stamp_route(id),
                 SweepKind::StampRide => self.ensure_stamp_ride(id),
-                // `next_metadata_effect` returns before it records an in-flight write for the delete
-                // kinds — expiries are intents, not effects — so this is unreachable. Written out
-                // rather than caught by a `_` arm so the invariant is checked where it is relied on.
-                SweepKind::DeleteRoute | SweepKind::DeleteRide => false,
+                _ => false,
             };
         }
+        true
+    }
+
+    fn disable(&mut self, kind: SweepKind) {
+        let family = if matches!(kind, SweepKind::StampRoute | SweepKind::DeleteRoute) { 1 } else { 2 };
+        self.unsupported |= family;
+        self.queue.retain(|action| action.family() != family);
+        self.delete_inflight = None;
+    }
+
+    pub(crate) fn reject_expiry(&mut self) {
+        if let Some((id, _)) = self.delete_inflight {
+            if let Some(action) = self.queue.iter().find(|action| action.id() == id).copied() {
+                self.disable(if action.family() == 1 { SweepKind::DeleteRoute } else { SweepKind::DeleteRide });
+            }
+        }
+    }
+
+    pub(crate) fn defer_write(&mut self, now_ms: u32) {
+        self.retry_at = Some(now_ms.wrapping_add(30_000));
+    }
+    pub(crate) fn reset_store(&mut self) {
+        let mut ops = core::mem::replace(&mut self.ops, crate::device_core::TokenSource::new());
+        ops.invalidate();
+        *self = Self::new();
+        self.ops = ops;
+    }
+    pub(crate) fn route_due(&mut self, id: crate::CatalogObjectId, view: &RetentionView) -> bool {
+        view.now_utc.is_some() && !view.recording && self.still_due(SweepKind::DeleteRoute, id, view)
     }
 
     /// The next **expiry intent** for `CatalogMachine`, with the whole policy re-derived from live
@@ -745,7 +803,12 @@ impl RetentionMachine {
     /// than ending the walk, so what actually holds the next candidate back is the one in-flight
     /// slot: with one removal outstanding the catalog has no room for a second, of any class.
     pub(crate) fn next_expiry(&mut self, view: &RetentionView) -> Option<CatalogIntent> {
-        if view.now_utc.is_none() || view.recording {
+        if self.parked
+            || self.inflight_write.is_some()
+            || self.retry_at.is_some_and(|at| view.now_ms.wrapping_sub(at) >= (1 << 31))
+            || view.now_utc.is_none()
+            || view.recording
+        {
             return None; // defer — invariants 1 & 4, evaluated at execution time
         }
         for kind in [SweepKind::DeleteRoute, SweepKind::DeleteRide] {
@@ -939,6 +1002,9 @@ impl RetentionMachine {
     /// Ensure a `StampRoute(id)` is queued (idempotent — skips a duplicate). Returns whether one is
     /// queued afterwards (`false` only when the queue was full and the push failed).
     fn ensure_stamp_route(&mut self, id: crate::CatalogObjectId) -> bool {
+        if self.unsupported & 1 != 0 {
+            return false;
+        }
         if self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
             return true;
         }
@@ -986,6 +1052,9 @@ impl RetentionMachine {
     /// Ensure a `StampRide(id)` is queued (idempotent) — the ride twin of
     /// [`ensure_stamp_route`](Self::ensure_stamp_route). Returns whether one is queued afterwards.
     fn ensure_stamp_ride(&mut self, id: crate::CatalogObjectId) -> bool {
+        if self.unsupported & 2 != 0 {
+            return false;
+        }
         if self.queue.iter().any(|a| matches!(a, SweepAction::StampRide(q) if *q == id)) {
             return true;
         }
@@ -1051,6 +1120,13 @@ impl SweepKind {
 }
 
 impl SweepAction {
+    fn family(self) -> u8 {
+        match self {
+            Self::StampRoute(_) | Self::DeleteRoute(_) => 1,
+            Self::StampRide(_) | Self::DeleteRide(_) => 2,
+        }
+    }
+
     /// The durable object id this action targets.
     fn id(self) -> crate::CatalogObjectId {
         match self {
@@ -1491,7 +1567,7 @@ mod tests {
         rt.advance(&view(Some(now), &ids, &metas, &rides));
 
         let effect = rt.next_metadata_effect(&view(Some(now), &ids, &metas, &rides));
-        let Some(RetentionEffect::WriteRouteMetadata { token, id, meta }) = effect else {
+        let Some(RetentionEffect::WriteRouteMetadata { token, id, meta, .. }) = effect else {
             panic!("the unknown last_used is stamped, not deleted")
         };
         assert_eq!(id, 10);
@@ -1513,6 +1589,52 @@ mod tests {
         rt.apply_outcome(RetentionOutcome::RouteMetadataWritten { token: retry_token, id: 10 });
         rt.apply_outcome(RetentionOutcome::Failed { token: retry_token, error: RetentionError::WriteFailed });
         assert!(!rt.has(SweepKind::StampRoute), "a repeated outcome cannot resurrect a written stamp");
+    }
+
+    #[test]
+    fn card_change_invalidates_old_tokens_and_retry_deadlines_are_consumed() {
+        let ids = [10];
+        let metas = [RouteRetentionMeta::new(Retention::Day1, 0)];
+        let mut rt = RetentionMachine::new();
+        let mut v = view(Some(500_000), &ids, &metas, &[]);
+        rt.advance(&v);
+        let old = rt.next_metadata_effect(&v).unwrap();
+        rt.reset_store();
+        rt.advance(&v);
+        let current = rt.next_metadata_effect(&v).unwrap();
+        assert_ne!(old.token(), current.token());
+        assert!(!rt.apply_outcome(RetentionOutcome::RouteMetadataWritten { token: old.token(), id: 10 }));
+        assert!(rt.apply_outcome(RetentionOutcome::Failed { token: current.token(), error: RetentionError::Busy }));
+        rt.defer_write(u32::MAX - 20_000);
+        v.now_ms = 9_998;
+        assert!(rt.next_metadata_effect(&v).is_none());
+        v.now_ms = 9_999;
+        let retry = rt.next_metadata_effect(&v).unwrap();
+        assert!(rt.retry_at.is_none());
+        assert!(rt.apply_outcome(RetentionOutcome::RouteMetadataWritten { token: retry.token(), id: 10 }));
+        rt.note_route_uploaded(10, &v);
+        v.now_ms = 0x8000_ffff;
+        assert!(rt.next_metadata_effect(&v).is_some(), "an old deadline never becomes future again");
+    }
+
+    #[test]
+    fn unsupported_rides_leave_route_work_available_and_remount_parks_both() {
+        let ids = [10];
+        let metas = [RouteRetentionMeta::new(Retention::Day1, 0)];
+        let rides = [RideRetentionRecord { id: 7, synced: true, synced_at_utc: 0 }];
+        let mut rt = RetentionMachine::new();
+        let v = view(Some(500_000), &ids, &metas, &rides);
+        rt.test_push(SweepAction::StampRide(7));
+        let ride = rt.next_metadata_effect(&v).unwrap();
+        rt.apply_outcome(RetentionOutcome::Failed { token: ride.token(), error: RetentionError::Unsupported });
+        rt.advance(&v);
+        assert!(!rt.has(SweepKind::StampRide));
+        let route = rt.next_metadata_effect(&v).unwrap();
+        assert!(matches!(route, RetentionEffect::WriteRouteMetadata { .. }));
+        rt.apply_outcome(RetentionOutcome::Failed { token: route.token(), error: RetentionError::RemountRequired });
+        rt.advance(&v);
+        assert!(rt.next_metadata_effect(&v).is_none());
+        assert!(rt.next_expiry(&v).is_none());
     }
 
     /// The route-upload `last_used` stamp (epic #638 S4): `note_route_uploaded` enqueues exactly one
@@ -1565,7 +1687,7 @@ mod tests {
 // device-local sidecar write: two bounded metadata writes that bump no store revision.
 
 use crate::catalog_state::CatalogIntent;
-use crate::device_core::{OperationToken, RetentionTag};
+use crate::device_core::{OperationToken, RetentionTag, StoreRevision};
 use crate::CatalogObjectId;
 
 /// What the rest of the device asks of retention.
@@ -1584,12 +1706,33 @@ pub enum RetentionIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionEffect {
     /// Write route `id`'s retention level and last-used stamp to the route-retention sidecar.
-    WriteRouteMetadata { token: OperationToken<RetentionTag>, id: CatalogObjectId, meta: RouteRetentionMeta },
+    WriteRouteMetadata {
+        token: OperationToken<RetentionTag>,
+        scope: Option<StoreRevision>,
+        id: CatalogObjectId,
+        meta: RouteRetentionMeta,
+    },
     /// Write ride `id`'s `synced_at` stamp to the synced-set sidecar.
-    WriteRideMetadata { token: OperationToken<RetentionTag>, id: CatalogObjectId, synced_at: u32 },
+    WriteRideMetadata {
+        token: OperationToken<RetentionTag>,
+        scope: Option<StoreRevision>,
+        id: CatalogObjectId,
+        synced_at: u32,
+    },
 }
 
 impl RetentionEffect {
+    pub fn scope(&self) -> Option<StoreRevision> {
+        match self {
+            Self::WriteRouteMetadata { scope, .. } | Self::WriteRideMetadata { scope, .. } => *scope,
+        }
+    }
+    pub(crate) fn bind(&mut self, value: StoreRevision) {
+        match self {
+            Self::WriteRouteMetadata { scope, .. } | Self::WriteRideMetadata { scope, .. } => *scope = Some(value),
+        }
+    }
+
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<RetentionTag> {
         match self {
@@ -1603,6 +1746,10 @@ impl RetentionEffect {
 /// Why a metadata write failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionError {
+    Unsupported,
+    Stale,
+    Busy,
+    RemountRequired,
     /// The sidecar write failed. Retention is the safe-direction store: an unwritten stamp reads
     /// back as unknown, which never deletes — so this is retried, never escalated.
     WriteFailed,
@@ -1635,6 +1782,6 @@ impl RetentionOutcome {
 
 // Layout tripwires: an identity plus the two-field sidecar record, never the sidecar itself.
 const _: () = assert!(core::mem::size_of::<RetentionIntent>() <= 24, "an identity and a stamp");
-const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 24, "a token, an identity and a stamp");
+const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 56, "a token, an identity and a stamp");
 const _: () = assert!(core::mem::size_of::<RetentionOutcome>() <= 16, "a token and an identity");
 const _: () = assert!(core::mem::size_of::<RetentionError>() <= 1, "a verdict, not a report");

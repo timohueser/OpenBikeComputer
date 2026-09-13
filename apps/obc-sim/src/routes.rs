@@ -296,9 +296,6 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
         self.retention_metas()
     }
-    fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
-        self.stamp_route_used(id, utc)
-    }
 }
 
 /// Retention sidecars remain their frozen u16 format; the simulator's object identity is wider.

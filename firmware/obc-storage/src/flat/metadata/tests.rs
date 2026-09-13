@@ -181,7 +181,7 @@ fn malformed_duplicate_and_failed_catalog_reads_never_become_empty_defaults() {
 }
 
 #[test]
-fn commit_error_requires_remount_without_resident_success() {
+fn prepublication_commit_error_keeps_old_metadata_and_allows_retry() {
     let disk = SparseDisk::blank(BLOCKS, 4);
     let device = FaultOnce::new(&disk);
     let store = FlatStore::initialize(&device, CARD).unwrap();
@@ -193,10 +193,9 @@ fn commit_error_requires_remount_without_resident_success() {
     owner.replace(&store, &mut image, Some(target)).unwrap();
     image.set(Row { timestamp: 9999, ..row(target) }).unwrap();
     store.device().fault_next(MediaOp::Sync);
-    assert_eq!(owner.replace(&store, &mut image, Some(target)), Err(Error::RemountRequired));
+    assert_eq!(owner.replace(&store, &mut image, Some(target)), Err(Error::Store(StoreError::Media)));
     assert!(store.device().fired());
-    assert_eq!(owner.replace(&store, &mut image, Some(target)), Err(Error::RemountRequired));
-    assert!(matches!(owner.load(&store, &mut bytes), Err(Error::RemountRequired)));
+    assert_eq!(owner.load(&store, &mut bytes).unwrap().rows().next().unwrap().timestamp, 1234);
     disk.reboot();
     let reopened = FlatStore::mount(&disk);
     let mut owner = Metadata::new(&reopened);
@@ -314,4 +313,54 @@ fn reloading_the_writer_does_not_refresh_an_older_images_publication_authority()
     assert_eq!(owner.replace(&store, &mut old, Some(route)), Err(Error::Stale));
     let mut synthetic = Image::empty(CARD, &mut other).unwrap();
     assert_eq!(owner.replace(&store, &mut synthetic, None), Err(Error::Stale));
+}
+
+#[test]
+fn a_full_read_handle_table_refuses_before_publication_and_retries_after_close() {
+    let disk = SparseDisk::blank(BLOCKS, 9);
+    let store = FlatStore::initialize(&disk, CARD).unwrap();
+    let route = publish(&store, ObjectKind::Route, b"route");
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let object = publish(&store, ObjectKind::Ride, b"ride");
+        handles.push(store.open(object.id, Some(object.revision)).unwrap());
+    }
+    let sequence = store.sequence();
+    assert_eq!(write_route(&store, CARD, sequence, route.id, 1, 1234), Err(Error::Store(StoreError::Busy)));
+    assert_eq!(store.sequence(), sequence);
+    assert!(store.mode().writable());
+    store.close(handles.pop().unwrap());
+    write_route(&store, CARD, sequence, route.id, 1, 1234).unwrap();
+    for handle in handles {
+        store.close(handle);
+    }
+}
+
+#[test]
+fn committed_readback_failure_fences_every_writer_until_remount() {
+    fn run(fail_read: Option<u32>) -> u32 {
+        let disk = SparseDisk::blank(BLOCKS, 10);
+        let device = FaultOnce::new(&disk);
+        let store = FlatStore::initialize(&device, CARD).unwrap();
+        let target = publish(&store, ObjectKind::Route, b"route");
+        let sequence = store.sequence();
+        let before = disk.ledger().len();
+        if let Some(skip) = fail_read {
+            device.fault_after(MediaOp::Read, skip);
+        }
+        let result = write_route(&store, CARD, sequence, target.id, 1, 1234);
+        let reads = disk.ledger()[before..].iter().filter(|(_, op, _)| *op == MediaOp::Read).count() as u32;
+        if fail_read.is_some() {
+            assert!(device.fired());
+            assert_eq!(result, Err(Error::RemountRequired));
+            assert!(store.sequence() > sequence, "publication preceded the failed readback");
+            assert_eq!(store.mode(), super::super::Mode::RemountRequired);
+            assert!(matches!(store.allocate(1), Err(StoreError::ReadOnly)));
+        } else {
+            result.unwrap();
+        }
+        reads
+    }
+    let reads = run(None);
+    run(Some(reads - 1));
 }

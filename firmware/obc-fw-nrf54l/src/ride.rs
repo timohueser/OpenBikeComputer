@@ -177,13 +177,17 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
 /// same-id route replacement reach `on_route_uploaded` and drop every piece of geometry-derived
 /// state from the displaced revision before rendering resumes.
 #[inline(never)]
-fn read_catalogs(
+async fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
     weather_bundle: &mut Option<crate::flat_store::FlatWeather>,
     weather_sample_key: &mut Option<WeatherSampleKey>,
-) -> bool {
+) -> Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError> {
+    use obc_app::catalog_state::CatalogError;
+    app.begin_catalog_refresh();
+    metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
+    let start = crate::flat_store::retention_scope(flat);
     // Drop the held revision before rebuilding identity/index state. A replace at the same ObjectId
     // must reopen the new revision, not keep rendering the hold.
     crate::flat_store::reconcile_route(flat, None);
@@ -209,7 +213,14 @@ fn read_catalogs(
     if routes_loaded && trips_loaded {
         note_catalog_uploads(app, facts);
     }
-    routes_loaded && trips_loaded && rides_loaded
+    if !routes_loaded || !trips_loaded || !rides_loaded {
+        return Err(CatalogError::Unreadable);
+    }
+    crate::flat_store::load_retention(flat, app).map_err(catalog_metadata_error)?;
+    if start != crate::flat_store::retention_scope(flat) {
+        return Err(CatalogError::Stale);
+    }
+    Ok(start)
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
@@ -594,17 +605,8 @@ struct RenderedFrame {
     render_us: u64,
 }
 
-/// What this firmware image and this hardware implement **at all** — constant for a boot, and the
-/// place the two things the board genuinely cannot do are said out loud rather than answered as
-/// failures (`Capabilities`' own rule).
-///
-/// - `detour: false` — #882's flow holds the planned detour's OBCR in RAM until the rider commits
-///   and then stream-splices it into a derived route. The host does that with a `Vec`; the board has
-///   one flat-store reservation and no heap, so the splice has nowhere to read the detour from while
-///   it writes. That is a storage design with its own acceptance — Gate 4 item 5, #1400.
-/// - `retention_metadata: false` — FS7/FS8 removed the FAT sidecars and #1398 supplies the
-///   ObjectId-keyed replacement. A route-use stamp is mirrored in the resident view and is never
-///   durable, which is a stated capability now instead of a dropped command.
+/// Platform features available for this boot. Route metadata uses the card writer; ride receipts
+/// remain unsupported. Detour still needs a bounded store-backed splice source.
 const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_core::PlatformSupport {
     detour: false,
     settings_persistence: true,
@@ -612,14 +614,13 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
     weather: true,
     bonding: true,
     storage_space_report: true,
-    retention_metadata: false,
+    retention_metadata: true,
 };
 
 /// The board's store identity for [`ExternalFacts::note_store_revision`]. One card mounted once at
 /// boot, for the life of the boot: the identity half never moves and only the revision does. A
 /// remount would be a different identity — and the board faults out rather than remounting, so there
 /// is nothing here that could report a store it has unmounted.
-const BOARD_STORE: obc_app::device_core::StoreIdentity = obc_app::device_core::StoreIdentity::new(1);
 
 /// One in-flight `CatalogEffect::RemoveObject` on the flat store's **ticketed** writer path: the
 /// storage task's answer slip, and the operation token that answer has to carry back.
@@ -1401,16 +1402,16 @@ pub(crate) async fn run_app(
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
                         let read =
-                            read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key);
+                            read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key)
+                                .await;
                         prev_active = None; // force reconcile_route/track to re-run against the new indexing
                         index_route = None; // and the chunk index to rebuild off the freshly-opened file
 
                         // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
                         // (#1541) — one per pass, which is one per wake.
-                        let outcome = if read {
-                            CatalogOutcome::CatalogRead { token }
-                        } else {
-                            CatalogOutcome::Failed { token, error: CatalogError::Unreadable }
+                        let outcome = match read {
+                            Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) },
+                            Err(error) => CatalogOutcome::Failed { token, error },
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
@@ -1423,6 +1424,26 @@ pub(crate) async fn run_app(
                     //
                     // A full request queue is not an answer: the effect simply was not taken this
                     // pass, so the domain re-offers it.
+                    CatalogEffect::ExpireObject { token, object, scope } => {
+                        // No App transition can occur between this policy admission and the writer's reply.
+                        let result = if !app.route_ids().contains(&object) {
+                            Err(CatalogError::Unsupported)
+                        } else if app.retention_expiry_due(object, scope) {
+                            metadata_call(crate::flat_store::Request::ExpireRoute {
+                                id: obc_storage::flat::ObjectId(object),
+                                scope,
+                            })
+                            .await
+                            .map_err(catalog_metadata_error)
+                        } else {
+                            Err(CatalogError::Stale)
+                        };
+                        let outcome = match result {
+                            Ok(()) => CatalogOutcome::ObjectRemoved { token, object, existed: true },
+                            Err(error) => CatalogOutcome::Failed { token, error },
+                        };
+                        RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
+                    }
                     CatalogEffect::RemoveObject { token, object } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
@@ -1566,11 +1587,21 @@ pub(crate) async fn run_app(
             // The domains with no board executor at all. Each is answered rather than dropped, so a
             // domain that starts producing one cannot wedge behind an executor that ignored it —
             // and the loud line names the slice that owes it.
-            if exec.effects.retention.take().is_some() {
-                defmt::error!(
-                    "retention: a sidecar write reached the board — PlatformSupport::retention_metadata is false"
-                );
-                debug_assert!(false, "no retention effect is produced without a metadata store");
+            // Reuse the catalog reply only when no earlier catalog ticket owns it.
+            if exec.catalog.is_none() {
+                if let Some(effect) = exec.effects.retention.take() {
+                    use obc_app::retention::{RetentionEffect, RetentionOutcome};
+                    let token = effect.token();
+                    let result = metadata_call(crate::flat_store::Request::WriteRouteMetadata { effect }).await;
+                    let outcome = match (effect, result) {
+                        (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
+                            RetentionOutcome::RouteMetadataWritten { token, id }
+                        }
+                        (_, Err(error)) => RetentionOutcome::Failed { token, error },
+                        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
+                    };
+                    RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
+                }
             }
             if let Some(effect) = exec.effects.bond.take() {
                 if let Err(error) = crate::ble::try_forget_bond(effect) {
@@ -2320,10 +2351,7 @@ pub(crate) async fn run_app(
                 // spends when it *issues* the read, not when the read is answered. Sampling before
                 // the effects split the two arms across consecutive passes, so the bit was armed,
                 // spent, and armed again, and the domain read the store twice for one save.
-                exec.facts.note_store_revision(obc_app::device_core::StoreRevision {
-                    store: BOARD_STORE,
-                    revision: obc_app::device_core::Revision::new(flat.sequence()),
-                });
+                exec.facts.note_store_revision(crate::flat_store::retention_scope(flat));
                 peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
@@ -3123,5 +3151,26 @@ pub(crate) async fn run_app(
             Timer::after_millis(ms as u64),
         )
         .await;
+    }
+}
+
+async fn metadata_call(request: crate::flat_store::Request) -> Result<(), obc_app::retention::RetentionError> {
+    use obc_app::retention::RetentionError;
+    let writer = crate::flat_store::writer().ok_or(RetentionError::Unsupported)?;
+    let ticket = writer.try_call(request, &CATALOG_STORE_REPLY).map_err(|()| RetentionError::Busy)?;
+    match writer.finish_call(ticket, &CATALOG_STORE_REPLY).await {
+        Ok(crate::flat_store::Outcome::Metadata(result)) => result,
+        Err(StoreError::ReadOnly) => Err(RetentionError::RemountRequired),
+        _ => Err(RetentionError::WriteFailed),
+    }
+}
+
+fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> obc_app::catalog_state::CatalogError {
+    use obc_app::{catalog_state::CatalogError as C, retention::RetentionError as E};
+    match error {
+        E::Stale => C::Stale,
+        E::RemountRequired => C::RemountRequired,
+        E::Unsupported => C::Unsupported,
+        _ => C::Unreadable,
     }
 }

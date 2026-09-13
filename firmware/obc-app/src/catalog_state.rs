@@ -147,6 +147,9 @@ pub(crate) struct CatalogState {
     /// A **bit, not a counter**, and that is the whole coalescing rule: a delete that also moves
     /// the store arms the same bit twice and costs one read, not two.
     refresh_owed: bool,
+    pub(crate) loaded_scope: Option<StoreRevision>,
+    pub(crate) remount_required: bool,
+    read_retry_at: Option<u32>,
 }
 
 impl CatalogState {
@@ -181,6 +184,9 @@ impl CatalogState {
             cascade: None,
             in_flight: false,
             refresh_owed: false,
+            loaded_scope: None,
+            remount_required: false,
+            read_retry_at: None,
         }
     );
 
@@ -270,15 +276,6 @@ impl CatalogState {
         }
     }
 
-    /// Optimistically stamp route `id`'s `last_used` in the resident meta (the sweep/activation
-    /// mirror of the host's sidecar write) so a re-derivation before the host's rescan lands doesn't
-    /// re-enqueue the same stamp. A no-op if the id isn't resident.
-    pub(crate) fn stamp_route_last_used(&mut self, id: CatalogObjectId, utc: u32) {
-        if let Some(p) = self.route_ids.iter().position(|&x| x == id) {
-            self.route_meta[p].last_used_utc = utc;
-        }
-    }
-
     // ---- trips ----
 
     /// Replace the resident trip catalog (epic #526, TR2), resolving each trip's stage ids against
@@ -328,17 +325,6 @@ impl CatalogState {
         }
     }
 
-    /// Optimistically stamp ride `id`'s `synced_at` in the **inventory** (the sweep's mirror of the
-    /// host's sidecar write, the full-inventory twin of
-    /// [`stamp_ride_synced_at`](CatalogState::stamp_ride_synced_at)) so a re-derivation before the
-    /// host's rescan lands doesn't re-enqueue the same stamp for a ride outside the display catalog.
-    /// Only ever fills a `0` stamp. A no-op if the id isn't in the inventory.
-    pub(crate) fn stamp_inventory_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
-        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == id && r.synced_at_utc == 0) {
-            r.synced_at_utc = utc;
-        }
-    }
-
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<&RideEntry> {
@@ -381,20 +367,6 @@ impl CatalogState {
     pub(crate) fn remap_ride(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.rides.iter().position(|ride| ride.id == id)
-    }
-
-    /// Optimistically stamp ride `id`'s `synced_at` in the resident summary (the sweep's mirror of
-    /// the host's sidecar write) so a re-derivation before the host's rescan lands doesn't re-enqueue
-    /// the same stamp. Only ever fills a `0` stamp (never re-stamps). A no-op if the id isn't
-    /// resident. Returns whether it changed a summary (drives the map repaint).
-    pub(crate) fn stamp_ride_synced_at(&mut self, id: CatalogObjectId, utc: u32) -> bool {
-        if let Some(p) = self.rides.iter().position(|ride| ride.id == id) {
-            if self.rides[p].summary.synced_at_utc == 0 {
-                self.rides[p].summary.synced_at_utc = utc;
-                return true;
-            }
-        }
-        false
     }
 
     // ---- keyed derived data (#1437) ----
@@ -610,7 +582,7 @@ impl CatalogState {
 // Bulk stays out. A catalog read fills the resident catalogs through their existing feeders and the
 // outcome reports only that the operation is over.
 
-use crate::device_core::{CatalogTag, OperationToken};
+use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 /// What the UI (or another domain) asks of the catalog.
 ///
@@ -622,6 +594,8 @@ use crate::device_core::{CatalogTag, OperationToken};
 /// [`apply_outcome`](CatalogState::apply_outcome)), and lives in one bit rather than in this slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
+    /// Automatic removal, bound to the catalog used by retention.
+    ExpireObject { id: CatalogObjectId, scope: StoreRevision },
     /// Delete one route.
     DeleteRoute { id: CatalogObjectId },
     /// Delete one ride.
@@ -633,6 +607,8 @@ pub enum CatalogIntent {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
+    /// Revalidate live retention policy before admitting this exact snapshot.
+    ExpireObject { token: OperationToken<CatalogTag>, object: CatalogObjectId, scope: StoreRevision },
     /// Re-read the object store into the resident catalogs.
     ReadCatalog { token: OperationToken<CatalogTag> },
     /// Remove one object. Deliberately namespace-free: routes, rides and trips are all objects to
@@ -644,7 +620,9 @@ impl CatalogEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogEffect::ReadCatalog { token } | CatalogEffect::RemoveObject { token, .. } => *token,
+            CatalogEffect::ReadCatalog { token }
+            | CatalogEffect::RemoveObject { token, .. }
+            | CatalogEffect::ExpireObject { token, .. } => *token,
         }
     }
 }
@@ -652,6 +630,9 @@ impl CatalogEffect {
 /// Why a catalog operation failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogError {
+    Stale,
+    RemountRequired,
+    Unsupported,
     /// The store could not be read.
     Unreadable,
     /// The store refused or failed the removal. A *missing* object is not this — see
@@ -664,7 +645,7 @@ pub enum CatalogError {
 pub enum CatalogOutcome {
     /// The catalogs were re-read. No revision: that arrives as an external *fact*, and all a read
     /// owes back is that the operation is over.
-    CatalogRead { token: OperationToken<CatalogTag> },
+    CatalogRead { token: OperationToken<CatalogTag>, scope: Option<StoreRevision> },
     /// `object` is gone from the store. `existed` is `false` when it was already absent — the
     /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
     /// the cascade (the goal state holds) and must not read as a failure.
@@ -679,7 +660,7 @@ impl CatalogOutcome {
     /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogOutcome::CatalogRead { token }
+            CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
@@ -723,18 +704,48 @@ impl CatalogState {
     /// intent it has already decided about. A cascade is the one arm that puts it back, and it
     /// advances [`cascade`](CatalogState::cascade) every time it does — the ordinal only ever grows
     /// and the stage list is bounded, so the walk always reaches the folder and releases the slot.
+    #[cfg(test)]
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
-        if self.in_flight {
+        self.next_effect_at(0)
+    }
+
+    pub(crate) fn change_store(&mut self) {
+        self.ops.invalidate();
+        self.in_flight = false;
+        self.pending = None;
+        self.cascade = None;
+        self.loaded_scope = None;
+        self.read_retry_at = None;
+    }
+
+    pub(crate) fn accepts(&self, outcome: CatalogOutcome) -> bool {
+        self.ops.is_current(outcome.token())
+    }
+
+    pub(crate) fn defer_read(&mut self, now_ms: u32) {
+        self.read_retry_at = Some(now_ms.wrapping_add(30_000));
+    }
+
+    pub(crate) fn next_effect_at(&mut self, now_ms: u32) -> Option<CatalogEffect> {
+        if self.remount_required || self.in_flight {
             return None;
         }
         let Some(intent) = self.pending.take() else {
+            if self.read_retry_at.is_some_and(|at| now_ms.wrapping_sub(at) >= (1 << 31)) {
+                return None;
+            }
+            self.read_retry_at = None;
             if !core::mem::take(&mut self.refresh_owed) {
                 return None;
             }
             self.in_flight = true;
+            self.loaded_scope = None;
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
+            CatalogIntent::ExpireObject { id, scope } => {
+                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, scope }
+            }
             CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
             }
@@ -799,24 +810,34 @@ impl CatalogState {
         // it: the walk keeps its `DeleteTrip` in `pending` until the folder, and `next_effect` only
         // reaches the owed read when nothing is pending. One bit, spent once, after the folder.
         match outcome {
+            CatalogOutcome::Failed { error: CatalogError::RemountRequired, .. } => {
+                self.remount_required = true;
+                self.loaded_scope = None;
+                self.refresh_owed = false;
+                None
+            }
+            CatalogOutcome::CatalogRead { scope, .. } => {
+                self.loaded_scope = scope;
+                self.read_retry_at = None;
+                None
+            }
             CatalogOutcome::ObjectRemoved { object, .. } => {
+                self.loaded_scope = None;
                 self.refresh_owed = true;
                 Some(object)
             }
-            CatalogOutcome::Failed { error: CatalogError::Unreadable, .. } => {
+            CatalogOutcome::Failed { error: CatalogError::Unreadable | CatalogError::Stale, .. } => {
                 self.refresh_owed = true;
                 None
             }
-            CatalogOutcome::Failed { .. } | CatalogOutcome::CatalogRead { .. } | CatalogOutcome::Cancelled { .. } => {
-                None
-            }
+            CatalogOutcome::Failed { .. } | CatalogOutcome::Cancelled { .. } => None,
         }
     }
 
     /// Note that the object store moved underneath us — the store-revision fact, read at stage 2.
     /// The fact is a level; the owed bit is what turns it into a read.
     pub(crate) fn note_store_moved(&mut self) {
-        self.refresh_owed = true;
+        self.refresh_owed = !self.remount_required;
     }
 
     /// Note that Recorder committed a ride — the `RideFinalized` connection, taken at stage 6.
@@ -826,14 +847,14 @@ impl CatalogState {
     /// entry point is so the producer is named at the call site rather than inferred from a level
     /// that happens to have moved.
     pub(crate) fn note_ride_finalized(&mut self) {
-        self.refresh_owed = true;
+        self.refresh_owed = !self.remount_required;
     }
 }
 
 // Layout tripwires: an identity, a revision, a count — never a catalog.
-const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 16, "a request with one identity");
-const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 16, "a token and one identity");
-const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 16, "a token, an identity and a flag");
+const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 40, "a request with one identity");
+const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 40, "a token and one identity");
+const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 40, "a token, an identity and a flag");
 const _: () = assert!(core::mem::size_of::<CatalogError>() <= 1, "a verdict, not a report");
 
 #[cfg(test)]
@@ -865,7 +886,11 @@ impl CatalogState {
             cascade,
             in_flight,
             refresh_owed,
+            loaded_scope,
+            remount_required,
+            read_retry_at,
         } = self;
+        assert!(loaded_scope.is_none() && !remount_required && read_retry_at.is_none());
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
         assert!(rides.is_empty() && ride_inventory.is_empty(), "no rides catalogued");
@@ -1030,7 +1055,7 @@ mod tests {
                 "and it is a read: {read:?} (existed {existed})"
             );
 
-            catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token() });
+            catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token(), scope: None });
             assert!(catalogs.next_effect().is_none(), "and one — a second would walk the whole store again");
         }
     }
@@ -1048,13 +1073,13 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::RemoveObject { token, object } => {
+                CatalogEffect::RemoveObject { token, object } | CatalogEffect::ExpireObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
                 }
                 CatalogEffect::ReadCatalog { token } => {
                     let _ = steps.push(None);
-                    catalogs.apply_outcome(CatalogOutcome::CatalogRead { token });
+                    catalogs.apply_outcome(CatalogOutcome::CatalogRead { token, scope: None });
                 }
             }
         }

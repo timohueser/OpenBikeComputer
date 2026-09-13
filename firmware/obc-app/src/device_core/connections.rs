@@ -281,7 +281,7 @@ const _: () = assert!(core::mem::size_of::<RideFinalized>() <= 8, "one durable i
 const _: () = assert!(core::mem::size_of::<CatalogIdentityChanged>() <= 8, "one revision");
 const _: () = assert!(core::mem::size_of::<RouteActivated>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<FaultNotices>() <= 4, "a bit set");
-const _: () = assert!(core::mem::size_of::<Connections>() <= 192, "eight bounded slots");
+const _: () = assert!(core::mem::size_of::<Connections>() <= 240, "eight bounded slots");
 
 #[cfg(test)]
 mod tests {
