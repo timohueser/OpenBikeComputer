@@ -230,8 +230,13 @@ impl ObcrEmitter {
     /// Reserve the v3 header on `sink`; the body follows immediately
     /// (`data_offset = HEADER_FULL_LEN`).
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
-        sink.write(&[0u8; HEADER_FULL_LEN])?;
-        Ok(ObcrEmitter {
+        Self::begin(sink)?;
+        Ok(Self::empty())
+    }
+
+    /// Construct in the owner's workspace before streaming starts. No sink write occurs here.
+    pub(crate) fn empty() -> Self {
+        ObcrEmitter {
             enc: Encoder::new(HEADER_FULL_LEN as u32),
             cum_dist: 0.0,
             prev: None,
@@ -241,7 +246,12 @@ impl ObcrEmitter {
             last_kept: None,
             pending: None,
             ele_keep_m: 0,
-        })
+        }
+    }
+
+    /// Start an empty emitter's stream without moving its bounded index and chunk buffers.
+    pub(crate) fn begin(sink: &mut dyn ByteSink) -> Result<(), Error> {
+        sink.write(&[0u8; HEADER_FULL_LEN])
     }
 
     /// Keep a candidate whose height differs from the last kept vertex by at least `threshold_m`,
@@ -311,9 +321,10 @@ impl ObcrEmitter {
 
     /// Flush the trailing point, write the chunk index + waypoint table, and backfill the
     /// header. `Error::Empty` if no point was ever pushed. `wps` is the (already collected)
-    /// waypoint set — pass an empty one for a waypoint-free route.
+    /// waypoint set — pass an empty one for a waypoint-free route. Call once; after any error
+    /// discard this stream. The owner keeps the emitter in place until its terminal phase.
     pub(crate) fn finish(
-        mut self,
+        &mut self,
         sink: &mut dyn ByteSink,
         name: &str,
         stats: EmitStats,

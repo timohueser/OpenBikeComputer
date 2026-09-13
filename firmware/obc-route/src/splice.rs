@@ -122,7 +122,7 @@ pub struct Splicer {
     /// override's detour term.
     detour_len_m: u32,
     name: heapless::String<NAME_CAP>,
-    em: Option<ObcrEmitter>,
+    em: ObcrEmitter,
     /// Per-phase chunk cursors.
     head_k: usize,
     det_k: usize,
@@ -185,7 +185,7 @@ impl Splicer {
             rejoin_m,
             detour_len_m,
             name,
-            em: None,
+            em: ObcrEmitter::empty(),
             head_k: 0,
             det_k: 0,
             tail_k: 0,
@@ -233,20 +233,12 @@ impl Splicer {
                     return self.fail(Error::BadOffset);
                 };
                 self.ele_rejoin = ele;
-                match ObcrEmitter::new(sink) {
-                    Ok(mut em) => {
-                        // The detour's densified sample points exist **only** to carry height: the
-                        // emitter's purely planar decimator would drop the one standing on a crest
-                        // of a straight ramp and hand the profile back the flat line #1091 is about.
-                        // Same threshold, same reason as the nav emit that produced them. Left off
-                        // when the detour has no elevation, which is what keeps that case's bytes
-                        // identical to the pre-#1091 splice.
-                        if self.det_sampled {
-                            em.keep_elevation_detail(ELE_SPLICE_KEEP_M);
-                        }
-                        self.em = Some(em);
-                    }
-                    Err(e) => return self.fail(e),
+                if let Err(error) = ObcrEmitter::begin(sink) {
+                    return self.fail(error);
+                }
+                // Preserve the sampled heights that the planner deliberately densified.
+                if self.det_sampled {
+                    self.em.keep_elevation_detail(ELE_SPLICE_KEEP_M);
                 }
                 self.phase = Phase::Head;
                 SpliceStep::Running
@@ -340,9 +332,7 @@ impl Splicer {
                         } else if w.dist_along_m < self.rejoin_m {
                             None
                         } else {
-                            let tail_base = self
-                                .tail_first_along
-                                .unwrap_or_else(|| self.em.as_ref().map_or(0, |em| (em.cum_dist() as f32) as u32));
+                            let tail_base = self.tail_first_along.unwrap_or_else(|| (self.em.cum_dist() as f32) as u32);
                             Some(tail_base.saturating_add(w.dist_along_m - self.rejoin_m))
                         };
                         if let Some(along) = along {
@@ -376,8 +366,7 @@ impl Splicer {
         self.min_ele = self.min_ele.min(ele);
         self.max_ele = self.max_ele.max(ele);
         self.elev.push(ele as f64);
-        let em = self.em.as_mut().ok_or(Error::Empty)?;
-        em.push(sink, lon, lat, ele, self.elev.ascent() as u32)?;
+        self.em.push(sink, lon, lat, ele, self.elev.ascent() as u32)?;
         self.last_pushed = Some((lon, lat));
         Ok(())
     }
@@ -406,8 +395,7 @@ impl Splicer {
         for p in buf[..n].iter() {
             self.push_point(sink, p.lon, p.lat, p.ele)?;
             if tail && self.tail_first_along.is_none() {
-                let em = self.em.as_ref().ok_or(Error::Empty)?;
-                self.tail_first_along = Some(em.cum_dist() as u32);
+                self.tail_first_along = Some(self.em.cum_dist() as u32);
             }
         }
         Ok(())
@@ -470,12 +458,10 @@ impl Splicer {
 
     /// Write the collected waypoints and patch the header — the splice's last writes.
     ///
-    /// `#[inline(never)]` — `Option::take` moves the ~9 kB emitter into a local; that temporary
-    /// belongs in this popped frame, never the step frame (same rationale as the planner's
-    /// `finish_emit`).
+    /// Keep the final chunk/index write scratch separate from the per-step decode frame.
     #[inline(never)]
     fn finish_splice(&mut self, orig: &RouteReader, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
-        let em_total = self.em.as_ref().ok_or(Error::Empty)?.cum_dist() as f32;
+        let em_total = self.em.cum_dist() as f32;
         // Head + seams + tail measured by the emitter (`det_along` is exactly the emitted detour
         // portion — same points, same metric), detour replaced by the planner's honest length —
         // the preview's arithmetic, saturating like every stored distance.
@@ -502,8 +488,7 @@ impl Splicer {
             total_distance_m: Some(override_total),
             has_elevation,
         };
-        let em = self.em.take().ok_or(Error::Empty)?;
-        em.finish(sink, &self.name, stats, &mut self.waypoints)
+        self.em.finish(sink, &self.name, stats, &mut self.waypoints)
     }
 }
 

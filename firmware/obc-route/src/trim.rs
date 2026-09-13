@@ -122,7 +122,7 @@ pub struct Trimmer {
     arc: f32,
     trim_index: usize,
     rejoin_m: u32,
-    emitter: Option<ObcrEmitter>,
+    emitter: ObcrEmitter,
     band: DeadBand<f64>,
     min_ele: i16,
     max_ele: i16,
@@ -143,7 +143,7 @@ impl Trimmer {
             arc: 0.0,
             trim_index: 0,
             rejoin_m: target_m,
-            emitter: None,
+            emitter: ObcrEmitter::empty(),
             band: DeadBand::new(),
             min_ele: i16::MAX,
             max_ele: i16::MIN,
@@ -255,11 +255,10 @@ impl Trimmer {
                 }
             }
             Phase::Begin => {
-                let mut emitter = ObcrEmitter::new(sink)?;
+                ObcrEmitter::begin(sink)?;
                 if self.has_elevation {
-                    emitter.keep_elevation_detail(ELE_DEADBAND_M as i16);
+                    self.emitter.keep_elevation_detail(ELE_DEADBAND_M as i16);
                 }
-                self.emitter = Some(emitter);
                 self.chunk = 0;
                 self.distinct = 0;
                 self.phase = Phase::Emit;
@@ -273,13 +272,7 @@ impl Trimmer {
                     self.min_ele = self.min_ele.min(ele);
                     self.max_ele = self.max_ele.max(ele);
                     self.band.push(f64::from(ele));
-                    self.emitter.as_mut().ok_or(Error::Empty)?.push(
-                        sink,
-                        p.lon,
-                        p.lat,
-                        ele,
-                        self.band.ascent() as u32,
-                    )?;
+                    self.emitter.push(sink, p.lon, p.lat, ele, self.band.ascent() as u32)?;
                     if self.distinct == self.trim_index {
                         self.phase = Phase::Finish;
                         break;
@@ -301,12 +294,8 @@ impl Trimmer {
                     total_distance_m: None,
                     has_elevation: self.has_elevation,
                 };
-                let stats = self.emitter.take().ok_or(Error::Empty)?.finish(
-                    sink,
-                    detour.name(),
-                    stats,
-                    &mut Vec::<WpPlace, MAX_WAYPOINTS>::new(),
-                )?;
+                let stats =
+                    self.emitter.finish(sink, detour.name(), stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
                 return Ok(TrimStep::Done(Some(TrimOutcome {
                     rejoin_m: self.rejoin_m,
                     detour_len_m: stats.total_distance_m,
