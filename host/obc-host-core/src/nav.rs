@@ -317,7 +317,7 @@ mod tests {
     use crate::{FlatRouteStore, RouteRepository};
 
     #[test]
-    fn a_detour_can_splice_and_replace_its_own_flat_route() {
+    fn a_detour_can_splice_its_own_flat_route_into_a_fresh_object() {
         const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
         let mut routes = FlatRouteStore::from_bytes(&[]).unwrap();
         let id = routes.write_nav_route(ROUTE).unwrap();
@@ -334,13 +334,11 @@ mod tests {
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         let source = routes.pin_active().unwrap();
         let original = obc_route::RouteReader::new(&index, &source);
-        assert_eq!(
-            commit_detour(&mut app, &mut routes, &original, &ready, &mut crate::trace::NoTrace).map(|p| p.id),
-            Ok(id)
-        );
-        assert!(routes.sync_active(Some(0)));
+        let published = commit_detour(&mut app, &mut routes, &original, &ready, &mut crate::trace::NoTrace).unwrap();
+        assert_ne!(published.id, id);
+        assert!(routes.sync_active(Some(1)));
         assert!(obc_route::RouteIndex::read(routes.active_source().unwrap()).is_ok());
-        assert_eq!(routes.ids(), &[id]);
-        assert!(!routes.sync_active(Some(0)));
+        assert_eq!(routes.ids(), &[id, published.id]);
+        assert!(!routes.sync_active(Some(1)));
     }
 }

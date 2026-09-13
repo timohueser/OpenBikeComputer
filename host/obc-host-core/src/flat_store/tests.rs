@@ -131,7 +131,7 @@ fn malformed_map_and_short_input_preserve_existing_catalog() {
 
 #[test]
 fn exhausted_counter_mount_remains_readable_and_refuses_writes() {
-    for exhausted in [Mode::RevisionSpaceExhausted, Mode::SequenceSpaceExhausted] {
+    for exhausted in [Mode::RevisionSpaceExhausted, Mode::SequenceSpaceExhausted, Mode::ReadWrite] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("card.obc");
         let owner = HostStore::create_file(&path).unwrap();
@@ -156,8 +156,9 @@ fn exhausted_counter_mount_remains_readable_and_refuses_writes() {
             body[512 + 16..512 + 24].copy_from_slice(&u64::MAX.to_le_bytes());
             Revision(u64::MAX)
         } else {
-            body[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
-            gate[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+            let sequence = if exhausted == Mode::ReadWrite { u64::MAX - 1 } else { u64::MAX };
+            body[24..32].copy_from_slice(&sequence.to_le_bytes());
+            gate[24..32].copy_from_slice(&sequence.to_le_bytes());
             meta.revision
         };
         gate[36..40].copy_from_slice(&obc_crc::crc32(&body).to_le_bytes());
@@ -174,10 +175,19 @@ fn exhausted_counter_mount_remains_readable_and_refuses_writes() {
         assert_eq!(owner.mode().unwrap(), exhausted);
         assert_eq!(owner.store_id().unwrap(), identity);
         assert_eq!(bytes(&owner.open(meta.id, revision).unwrap()), ROUTE);
-        assert!(matches!(
-            owner.import(ObjectKind::Route, None, &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default()),
-            Err(ImportError::Storage(StoreError::ReadOnly))
-        ));
+        assert!(matches!(owner.import_computed_route(ROUTE), Err(ImportError::Storage(StoreError::ReadOnly))));
+        assert_eq!(owner.entries().unwrap().len(), 1);
+        if exhausted == Mode::ReadWrite {
+            // One slot remains for ordinary writes, but not publication plus compensation.
+            assert!(owner
+                .import(ObjectKind::Route, None, &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default())
+                .is_ok());
+        } else {
+            assert!(matches!(
+                owner.import(ObjectKind::Route, None, &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default()),
+                Err(ImportError::Storage(StoreError::ReadOnly))
+            ));
+        }
     }
 }
 

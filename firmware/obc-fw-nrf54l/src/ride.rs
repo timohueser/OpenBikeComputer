@@ -1836,6 +1836,7 @@ pub(crate) async fn run_app(
                                             NavIo::Ready
                                         };
                                     }
+                                    _ if run.cancel_requested => cancelled = true,
                                     _ => finished = Some(Err(NavigatorError::Store)),
                                 }
                             }
@@ -1971,6 +1972,8 @@ pub(crate) async fn run_app(
                                     run.io_started = Instant::now();
                                     run.io = NavIo::Finishing { ticket, outcome: final_outcome, publishing };
                                 }
+                            } else if run.cancel_requested {
+                                cancelled = true;
                             } else {
                                 finished = Some(Err(NavigatorError::Store));
                             }

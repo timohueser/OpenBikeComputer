@@ -21,6 +21,11 @@ use obc_host_core::VecSink;
 /// FatFs twin is `/routes/_NAV.OBR` (embedded-sdmmc can't write the 4-char LFN extension).
 const NAV_ROUTE_FILE: &str = "_nav.obcr";
 
+fn next_generation() -> u64 {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 struct RouteBytes(std::sync::Arc<[u8]>);
 impl obc_formats::io::ByteSource for RouteBytes {
     fn len(&self) -> u64 {
@@ -120,8 +125,7 @@ impl RouteStore {
     /// session-stable id from the registry (fresh files get the next one).
     pub fn rescan(&mut self) {
         self.invalidate_active();
-        static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        self.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.generation = next_generation();
         self.catalog.clear();
         self.paths.clear();
         self.ids.clear();
@@ -292,8 +296,24 @@ impl obc_host_core::RouteRepository for RouteStore {
         self.delete_by_id(id)
     }
     fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<obc_host_core::RoutePublication> {
-        let id = self.write_nav_route(bytes)?;
-        Some(obc_host_core::RoutePublication { id, revision: self.generation, store: None })
+        use std::io::Write;
+        std::fs::create_dir_all(&self.dir).ok()?;
+        for _ in 0..64 {
+            let out = self.dir.join(format!("_nav-{}.obcr", next_generation()));
+            let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&out) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return None,
+            };
+            if file.write_all(bytes).is_err() {
+                let _ = std::fs::remove_file(&out);
+                return None;
+            }
+            self.rescan();
+            let i = self.paths.iter().position(|path| path == &out)?;
+            return Some(obc_host_core::RoutePublication { id: self.ids[i], revision: self.generation, store: None });
+        }
+        None
     }
     fn retract_nav_route(&mut self, publication: obc_host_core::RoutePublication) -> Result<(), CatalogError> {
         if publication.store.is_some() || publication.revision != self.generation {
@@ -390,6 +410,21 @@ mod tests {
         let mut store = RouteStore::open(&dir);
         obc_host_core::conformance::route_identity_remap(&mut store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fresh_publication_cleanup_preserves_the_original_file() {
+        use obc_host_core::RouteRepository;
+        let dir = temp_route_dir("publication");
+        let mut store = RouteStore::open(&dir);
+        let original = store.write_nav_route(ROUTE).unwrap();
+        let publication = store.publish_nav_route(ROUTE).unwrap();
+        assert_ne!(publication.id, original);
+        store.retract_nav_route(publication).unwrap();
+        assert!(store.ids.contains(&original));
+        assert!(!store.ids.contains(&publication.id));
+        assert_eq!(std::fs::read(dir.join(NAV_ROUTE_FILE)).unwrap(), ROUTE);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
