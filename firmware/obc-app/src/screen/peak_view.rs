@@ -284,6 +284,31 @@ fn vertical_name<'a>(name: &str, cells: i32, out: &'a mut heapless::String<24>) 
     out.as_str()
 }
 
+/// Show every name that fits. Apparent elevation breaks collisions; selection does not rearrange labels.
+fn annotation_indices(profile: &PeakViewProfile, heading: u16, w: i32) -> heapless::Vec<usize, 64> {
+    let mut indices = visible_indices(profile, heading);
+    indices.sort_unstable_by_key(|i| {
+        let peak = &profile.peaks[*i];
+        (core::cmp::Reverse(peak.score), peak.distance_m, peak.lat, peak.lon)
+    });
+    let x = |i: usize| {
+        bearing_x(profile.peaks[i].azimuth_q4, heading, w, profile.horizontal_fov_q4())
+            .unwrap_or(0)
+            .clamp(6, w.max(12) - 6)
+    };
+    let mut count = 0;
+    for at in 0..indices.len() {
+        let i = indices[at];
+        if indices[..count].iter().any(|old| (x(i) - x(*old)).abs() < 15) {
+            continue;
+        }
+        indices[count] = i;
+        count += 1;
+    }
+    indices.truncate(count);
+    indices
+}
+
 fn draw_peak_annotations(
     cv: &mut impl Surface,
     profile: &PeakViewProfile,
@@ -292,48 +317,18 @@ fn draw_peak_annotations(
     w: i32,
     bottom: i32,
 ) {
-    // Keep the ten strongest visible candidates, then take the first five that do not collide.
-    // This base set never depends on selection: choosing Matterhorn may recolor its own label, but
-    // it must not free a slot and make an unrelated name suddenly appear.
-    let mut ranked: [Option<(usize, u32)>; 10] = [None; 10];
-    for (i, peak) in profile.peaks.iter().enumerate() {
-        if !peak_is_visible(profile, i, heading_q4) {
-            continue;
-        }
-        for slot in 0..ranked.len() {
-            if ranked[slot].is_none_or(|(_, score)| peak.score > score) {
-                for move_to in (slot + 1..ranked.len()).rev() {
-                    ranked[move_to] = ranked[move_to - 1];
-                }
-                ranked[slot] = Some((i, peak.score));
-                break;
-            }
-        }
-    }
-
-    let mut label_x = [i32::MIN; 5];
-    let mut labels = 0;
-    for candidate in ranked.into_iter().flatten() {
-        if labels == label_x.len() {
-            break;
-        }
-        let peak = &profile.peaks[candidate.0];
-        let anchor = peak.azimuth_q4;
-        let x = bearing_x(anchor, heading_q4, w, profile.horizontal_fov_q4()).unwrap_or(0);
-        if label_x[..labels].iter().any(|old| (x - *old).abs() < 15) {
-            continue;
-        }
+    for i in annotation_indices(profile, heading_q4, w) {
+        let peak = &profile.peaks[i];
+        let x = bearing_x(peak.azimuth_q4, heading_q4, w, profile.horizontal_fov_q4()).unwrap_or(0);
         let summit_y = angle_y(profile, peak.angle_q4, bottom);
         let headroom = (summit_y - LABEL_GAP - COMPASS_H - 2).max(12);
         let mut caption = heapless::String::<24>::new();
         let name = vertical_name(peak.name.as_str(), headroom / 6, &mut caption);
         let label_bottom = (summit_y - LABEL_GAP).max(COMPASS_H + 14);
-        let color = if Some(candidate.0) == selected { palette::WOOD } else { palette::INK };
+        let color = if Some(i) == selected { palette::WOOD } else { palette::INK };
         let leader_top = (summit_y - LABEL_GAP + 1).max(COMPASS_H + 2);
         cv.vline(x, leader_top, (summit_y - leader_top).max(0), 1, color);
-        cv.text_ccw(name, Point::new(x - 6, label_bottom), Font::Label, 2, color);
-        label_x[labels] = x;
-        labels += 1;
+        cv.text_ccw(name, Point::new((x - 6).clamp(0, (w - 12).max(0)), label_bottom), Font::Label, 2, color);
     }
 
     if let Some(i) = selected {
@@ -492,6 +487,28 @@ mod tests {
         assert_eq!(&visible_indices(&STACKED_PROFILE, 120)[..], &[0, 1, 2]);
         let hidden = [PEAKS[0], PeakViewPeak { visible: false, ..PEAKS[2] }];
         assert_eq!(&visible_indices(&PeakViewProfile { peaks: &hidden, ..PROFILE }, 0)[..], &[0]);
+    }
+
+    #[test]
+    fn annotations_fill_available_space_and_rank_only_collisions() {
+        let mut peaks = [PEAKS[0]; 16];
+        for (i, peak) in peaks.iter_mut().enumerate() {
+            peak.lat = i as i32;
+            peak.azimuth_q4 = 20 * i as u16;
+            peak.score = 100 - i as u32;
+        }
+        // Ten high-ranked candidates collide. The six lower-ranked names still have room.
+        for peak in &mut peaks[..10] {
+            peak.azimuth_q4 = 0;
+        }
+        let profile = PeakViewProfile { fov_q4: 320, peaks: &peaks, ..PROFILE };
+        let labels = annotation_indices(&profile, 160, 256);
+        assert_eq!(&labels[..], &[0, 10, 11, 12, 13, 14, 15]);
+        let reordered: std::vec::Vec<_> = peaks.iter().rev().copied().collect();
+        let reordered = PeakViewProfile { peaks: &reordered, ..profile };
+        let selected: std::vec::Vec<_> =
+            annotation_indices(&reordered, 160, 256).into_iter().map(|i| reordered.peaks[i].lat).collect();
+        assert_eq!(selected, [0, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]

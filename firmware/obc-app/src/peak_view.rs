@@ -97,9 +97,9 @@ impl PeakViewProfile<'_> {
             observer_lon: lon,
             observer_elevation_m: elevation_m,
             default_heading_q4: 0,
-            fov_q4: 241,
+            fov_q4: 360,
             vertical_centre_q4: 30,
-            vertical_span_q4: 178,
+            vertical_span_q4: 266,
             peaks: &[],
         }
     }
@@ -130,9 +130,9 @@ impl PeakViewProfile<'_> {
         let boost = relief.map(|angle| (56.0 / angle.max(1.0)).clamp(1.0, 2.4)).unwrap_or(1.0);
         let (fov, centre) = if highest > 96.0 {
             let top = (libm::ceilf(highest) as i32 + 40).min(340);
-            (((top + 60) * 50 + 71) / 72 * 72 / 37, (top - 60) / 2)
+            ((((top + 60) * 50 + 71) / 72 * 72 / 37).max(360), (top - 60) / 2)
         } else {
-            (241, 30)
+            (360, 30)
         };
         self.fov_q4 = fov as u16;
         self.vertical_centre_q4 = (centre as f32 / boost) as i16;
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(profile.observer_elevation_m, 1002);
         let mut flat = PeakViewProfile::at(46_000_000, 8_000_000, 0);
         flat.set_ground(1000.0);
-        assert_eq!(flat.horizontal_fov_q4(), 241, "the ordinary frame keeps its 60-degree window");
+        assert_eq!(flat.horizontal_fov_q4(), 360, "the ordinary frame keeps its 90-degree window");
         assert!(!moved((46_000_000, 8_000_000), (46_000_050, 8_000_000)));
         assert!(moved((46_000_000, 8_000_000), (46_000_200, 8_000_000)));
     }
@@ -316,19 +316,19 @@ mod tests {
         let peaks = [PeakViewPeak { elevation_m: Some(1250), distance_m: 16_500, ..PeakViewPeak::EMPTY }];
         let mut profile = PeakViewProfile { peaks: &peaks, ..PeakViewProfile::at(0, 0, 0) };
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 74);
-        assert_eq!(profile.horizontal_fov_q4(), 241);
+        assert_eq!(profile.vertical_span_q4, 110);
+        assert_eq!(profile.horizontal_fov_q4(), 360);
         let bounds = profile.vertical_bounds_q4();
         assert!(bounds.0 < 0 && bounds.1 >= 48, "retain ground below and label space above the horizon");
         profile.default_heading_q4 = 720;
         profile.peaks = &[];
         assert_eq!(profile.detached().vertical_bounds_q4(), bounds, "heading and visibility do not rescale it");
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 178, "missing height metadata does not imply flat terrain");
+        assert_eq!(profile.vertical_span_q4, 266, "missing height metadata does not imply flat terrain");
         let steep = [PeakViewPeak { elevation_m: Some(-500), distance_m: 1000, ..peaks[0] }];
         profile.peaks = &steep;
         profile.set_ground(200.0);
-        assert_eq!(profile.vertical_span_q4, 178, "steep terrain below the observer also needs vertical room");
+        assert_eq!(profile.vertical_span_q4, 266, "steep terrain below the observer also needs vertical room");
     }
 
     #[test]
