@@ -30,9 +30,6 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
-/// The one weather product the simulator mounts (#1549). The board reads an identity out of the flat
-/// store's catalog head; the sim has one bundle at a time, so the identity is a constant and the
-/// revision is what moves.
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
@@ -614,7 +611,7 @@ impl SimGui {
         if let Some(identity) = self.weather.as_ref().and_then(|w| w.installed()) {
             self.host.facts().note_weather_data(obc_app::device_core::WeatherData {
                 data: obc_app::device_core::DataIdentity::new(identity.id.0),
-                revision: obc_app::device_core::Revision::new(u64::from(identity.revision.0)),
+                revision: obc_app::device_core::Revision::new(identity.revision.0),
             });
         }
         let next = match self.weather.as_mut() {

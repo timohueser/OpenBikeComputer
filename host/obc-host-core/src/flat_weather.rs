@@ -1,8 +1,8 @@
 //! One validated weather bundle on the session card, with revision-pinned readers.
-use crate::flat_store::{HostStore, ImportError, ObjectSource};
+use crate::flat_store::{HostMedia, HostStore, ImportError, ObjectSource};
 use obc_formats::io::SliceSource;
 use obc_storage::flat::{
-    DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, Store, StoreError, StoreId,
+    DisplayName, EntryFlags, EntryMeta, FlatStore, ObjectId, ObjectKind, Revision, Store, StoreError, StoreId,
 };
 use obc_weather::{ValidatedBundle, WeatherReader};
 
@@ -80,6 +80,9 @@ impl FlatWeatherStore {
     fn head(&self) -> Result<Option<(StoreId, EntryMeta)>, WeatherError> {
         let owner = self.owner.0.lock().map_err(|_| WeatherError::RemountRequired)?;
         let store = owner.ready().map_err(|_| WeatherError::RemountRequired)?;
+        Self::head_of(store)
+    }
+    fn head_of(store: &FlatStore<HostMedia>) -> Result<Option<(StoreId, EntryMeta)>, WeatherError> {
         if store.mode() == obc_storage::flat::Mode::RemountRequired {
             return Err(WeatherError::RemountRequired);
         }
@@ -114,6 +117,15 @@ impl FlatWeatherStore {
         // The input source is immutable, but another writer can supersede its head during validation.
         if !source.is_current() || self.head()? != Some((store, head)) {
             return Err(WeatherError::Storage(StoreError::NotFound));
+        }
+        if self.pending != Some(identity) {
+            // A reopened file can expose an unflushed gate through the OS cache. Validation is
+            // not a durability barrier. Check this exact singleton and sync under one owner lock.
+            let mut owner = self.owner.0.lock().map_err(|_| WeatherError::RemountRequired)?;
+            if Self::head_of(owner.ready().map_err(|_| WeatherError::RemountRequired)?)? != Some((store, head)) {
+                return Err(WeatherError::Storage(StoreError::NotFound));
+            }
+            owner.confirm_durable().map_err(|_| WeatherError::RemountRequired)?;
         }
         self.held = Some(Bundle { source, validated });
         self.pending = None;

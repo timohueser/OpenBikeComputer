@@ -1943,7 +1943,7 @@ fn main() {
             if let Some(identity) = weather.as_ref().and_then(|w| w.installed()) {
                 host.facts().note_weather_data(obc_app::device_core::WeatherData {
                     data: obc_app::device_core::DataIdentity::new(identity.id.0),
-                    revision: obc_app::device_core::Revision::new(u64::from(identity.revision.0)),
+                    revision: obc_app::device_core::Revision::new(identity.revision.0),
                 });
             }
             // `--weather-refreshing`: the provider plane's level, reported as the external fact the

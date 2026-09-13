@@ -61,6 +61,8 @@ pub(crate) struct NativeCard {
     pub(crate) _temporary: Option<tempfile::TempPath>,
     #[cfg(test)]
     fail_sync_after: std::cell::Cell<Option<usize>>,
+    #[cfg(test)]
+    fail_sync_before: std::cell::Cell<Option<usize>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,9 +77,18 @@ impl NativeCard {
             _temporary: temporary,
             #[cfg(test)]
             fail_sync_after: std::cell::Cell::new(None),
+            #[cfg(test)]
+            fail_sync_before: std::cell::Cell::new(None),
         })
     }
     fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(left) = self.fail_sync_before.get() {
+            self.fail_sync_before.set(left.checked_sub(1).filter(|&left| left != 0));
+            if left == 1 {
+                return Err(io::Error::other("injected failure before file sync"));
+            }
+        }
         self.file.sync_all()?;
         #[cfg(test)]
         if let Some(left) = self.fail_sync_after.get() {
@@ -179,6 +190,17 @@ pub(crate) struct MountedStore {
 impl MountedStore {
     pub(crate) fn new(card: FlatStore<HostMedia>) -> Self {
         Self { card, remount_required: false }
+    }
+
+    /// Confirm a catalog observed through the live OS cache before granting durable authority.
+    /// Call under the owner lock after checking the expected head; failure fences all writers.
+    pub(crate) fn confirm_durable(&mut self) -> Result<(), StoreError> {
+        self.ready()?;
+        if self.card.device().sync().is_err() {
+            self.remount_required = true;
+            return Err(StoreError::Media);
+        }
+        Ok(())
     }
 
     pub(crate) fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
