@@ -416,17 +416,37 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// batch — are both worse than the ~1 KB [`REQUEST_QUEUE_BYTES`] accounts for.
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
+    ReconcileMetadata,
+    WriteRouteMetadata {
+        effect: obc_app::retention::RetentionEffect,
+    },
+    ExpireRoute {
+        id: ObjectId,
+        scope: obc_app::device_core::StoreRevision,
+    },
     /// §6's extent reservation.
-    Allocate { bytes: u64 },
+    Allocate {
+        bytes: u64,
+    },
     /// Append a staged planner step and optionally backfill its completed OBCR header. Replies with
     /// the advanced allocation. Patch-first ordering keeps the caller's old token cancellable if
     /// the append fails.
-    WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
+    WriteComputedRoute {
+        allocation: Allocation,
+        bytes: &'static [u8],
+        header: &'static [u8],
+    },
     /// Publish a freshly generated route under the store's next id.
-    PublishComputedRoute { allocation: Allocation, name: DisplayName },
+    PublishComputedRoute {
+        allocation: Allocation,
+        name: DisplayName,
+    },
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
     /// so this can never remove a later replacement that happens to share the object id.
-    RemoveComputedRoute { id: ObjectId, revision: Revision },
+    RemoveComputedRoute {
+        id: ObjectId,
+        revision: Revision,
+    },
     /// `CatalogEffect::RemoveObject` — the device UI's own removal, on the **answering** path.
     ///
     /// Namespace-free by design: FS7 numbers every object out of one id space, so the head at `id`
@@ -434,15 +454,25 @@ pub(crate) enum Request {
     /// this is. Replies with whether the entry was there
     /// ([`Outcome::Removed`]) — a subject that vanished before the commit is a **success** for the
     /// goal state (#1433 §13), not a failure, and only the store can tell the two apart.
-    RemoveObject { id: ObjectId },
+    RemoveObject {
+        id: ObjectId,
+    },
     /// §5.5's atomic batch. Replies with the commit sequence.
-    Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
+    Commit {
+        batch: heapless::Vec<Mutation, MAX_BATCH>,
+    },
     /// §7.2's ride checkpoint.
-    Journal { checkpoint: RideCheckpoint<'static> },
+    Journal {
+        checkpoint: RideCheckpoint<'static>,
+    },
     /// Give a reservation back without publishing it.
-    Cancel { allocation: Allocation },
+    Cancel {
+        allocation: Allocation,
+    },
     /// Return a hold row. Refused rather than obeyed while another reader holds it (`flat::source`).
-    Close { handle: Handle },
+    Close {
+        handle: Handle,
+    },
 
     // ── the protocol-v4 engine (FS7.5-c3a) ──────────────────────────────────────────────────────
     //
@@ -459,20 +489,39 @@ pub(crate) enum Request {
     /// borrow rather than a copy for the same reason [`Request::Write`]'s bytes are: a request
     /// outlives the statement that sent it, and a `LIST` page or a stream record is up to a link
     /// ceiling of bytes that would otherwise be memcpy'd twice per record.
-    Control { link: Link, record: &'static [u8], out: &'static mut [u8] },
+    Control {
+        link: Link,
+        record: &'static [u8],
+        out: &'static mut [u8],
+    },
     /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
-    Stream { link: Link, record: &'static [u8], out: &'static mut [u8] },
+    Stream {
+        link: Link,
+        record: &'static [u8],
+        out: &'static mut [u8],
+    },
     /// A USB stream record whose upload owns the arena's double 64 KiB stage.
-    StreamStaged { record: &'static [u8], out: &'static mut [u8] },
+    StreamStaged {
+        record: &'static [u8],
+        out: &'static mut [u8],
+    },
     /// One arena-local USB map batch. Records were validated and packed by the cable adapter; the
     /// engine rechecks ownership and continuity before issuing the single media write.
-    StreamStagedBatch { request: RequestId, offset: u64, len: usize, out: &'static mut [u8] },
+    StreamStagedBatch {
+        request: RequestId,
+        offset: u64,
+        len: usize,
+        out: &'static mut [u8],
+    },
     /// Join any card DMA that still borrows the USB arena before its guard is released.
     FinishUsbStage,
     /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
     /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
     /// stalls a download.
-    Pump { link: Link, out: &'static mut [u8] },
+    Pump {
+        link: Link,
+        out: &'static mut [u8],
+    },
     /// **This** link came up with these record ceilings (§5.1, §5.2).
     ///
     /// It re-pins `link`'s ceilings and releases `link`'s transfer if it had one — and touches
@@ -482,11 +531,16 @@ pub(crate) enum Request {
     /// It carries a **validated** [`Ceilings`], not two numbers, so §5.1's floor refusal never
     /// reaches this queue: [`Ceilings::for_ble`] is where a link is judged, the adapter closes the
     /// channel on `None`, and nothing here has to answer a transport verdict with a `StoreError`.
-    LinkUp { link: Link, ceilings: Ceilings },
+    LinkUp {
+        link: Link,
+        ceilings: Ceilings,
+    },
     /// §3.8's third form of cancel: **this** link went away. Answers nobody, because there is nobody
     /// left to answer — and releases only what that link held, so an unplugged cable is not a reason
     /// to kill a phone's download.
-    LinkLost { link: Link },
+    LinkLost {
+        link: Link,
+    },
     /// The live transfer's `RequestId`, if one owns the engine.
     ///
     /// The one *read* on this queue, and it earns its place: §5's cross-channel ordering makes an
@@ -496,7 +550,9 @@ pub(crate) enum Request {
     LiveTransfer,
     /// Whether this exact request is a map upload owned by USB. This is the admission proof for the
     /// cable-only arena arm; app-facing map progress intentionally carries no link identity.
-    UsbMapUpload { request: RequestId },
+    UsbMapUpload {
+        request: RequestId,
+    },
 }
 
 /// What one [`Request`] produced.
@@ -505,6 +561,7 @@ pub(crate) enum Request {
 /// only what is reached.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
+    Metadata(Result<(), obc_app::retention::RetentionError>),
     Allocated(Allocation),
     /// The allocation, advanced by the bytes written.
     Wrote(Allocation),
@@ -1086,6 +1143,31 @@ fn serve(
     request: Request,
 ) -> Result<Outcome, StoreError> {
     match request {
+        Request::ReconcileMetadata => {
+            Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(retention_error)))
+        }
+        Request::WriteRouteMetadata { effect } => {
+            use obc_app::retention::{RetentionEffect, RetentionError};
+            let result = match effect {
+                RetentionEffect::WriteRouteMetadata { scope: Some(scope), id, meta, .. } => {
+                    obc_storage::flat::metadata::write_route(
+                        store,
+                        StoreId(scope.store.bytes()),
+                        scope.revision.raw(),
+                        ObjectId(id),
+                        meta.retention as u8,
+                        meta.last_used_utc,
+                    )
+                    .map_err(retention_error)
+                }
+                _ => Err(RetentionError::Unsupported),
+            };
+            Ok(Outcome::Metadata(result))
+        }
+        Request::ExpireRoute { id, scope } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::remove_route(store, StoreId(scope.store.bytes()), scope.revision.raw(), id)
+                .map_err(retention_error),
+        )),
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
         Request::WriteComputedRoute { mut allocation, bytes, header } => {
             if !header.is_empty() {
@@ -1895,4 +1977,41 @@ pub(crate) fn fill_ride_track(
         defmt::warn!("flat: ride track fill for object {=u64} failed", ride);
     }
     valid
+}
+
+/// Exact physical catalog identity, also used for admitted policy work.
+pub(crate) fn retention_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
+    obc_app::device_core::StoreRevision {
+        store: obc_app::device_core::StoreIdentity::from_bytes(store.store_id().0),
+        revision: obc_app::device_core::Revision::new(store.sequence()),
+    }
+}
+
+fn retention_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
+    use obc_app::retention::RetentionError as E;
+    use obc_storage::flat::metadata::Error;
+    match error {
+        Error::Stale | Error::WrongStore => E::Stale,
+        Error::RemountRequired => E::RemountRequired,
+        Error::Store(StoreError::Busy) => E::Busy,
+        _ => E::WriteFailed,
+    }
+}
+
+#[inline(never)]
+pub(crate) fn load_retention(
+    store: &FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+) -> Result<(), obc_app::retention::RetentionError> {
+    let mut metas = [obc_app::RouteRetentionMeta::default(); obc_app::MAX_ROUTES];
+    let ids = app.route_ids();
+    obc_storage::flat::metadata::read_routes(store, |row| {
+        if let Some(index) = ids.iter().position(|&id| id == row.id.0) {
+            metas[index] = obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp);
+        }
+    })
+    .map_err(retention_error)?;
+    let len = ids.len();
+    app.set_route_meta(&metas[..len]);
+    Ok(())
 }

@@ -24,7 +24,7 @@
 //! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
 //! [`ActiveRouteSession::sync`] and lends it to both.
 
-use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -183,7 +183,7 @@ impl HostPlatform for () {}
 /// The one store a frame-stepped host mounts. These hosts have exactly one set of repositories for
 /// their whole life, so the identity half of a [`StoreRevision`] is a constant and only the
 /// revision moves.
-const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
+const REPOSITORY_STORE: StoreIdentity = StoreIdentity::new(1);
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
 /// the keyed derived answers, and the bounded polylines a derived answer carries beside its key.
@@ -243,7 +243,7 @@ impl Default for HostLoop {
             opened_session: None,
             revision: 0,
         };
-        host.inbox.facts.note_store_revision(StoreRevision { store: HOST_STORE, revision: Revision::new(0) });
+        host.inbox.facts.note_store_revision(StoreRevision { store: REPOSITORY_STORE, revision: Revision::new(0) });
         host
     }
 }
@@ -293,7 +293,7 @@ impl HostLoop {
         self.revision = self.revision.wrapping_add(1);
         self.inbox
             .facts
-            .note_store_revision(StoreRevision { store: HOST_STORE, revision: Revision::new(self.revision) });
+            .note_store_revision(StoreRevision { store: REPOSITORY_STORE, revision: Revision::new(self.revision) });
     }
 
     /// Run **one** DeviceCore pass: whatever the executor handed back, this frame's input, and the
@@ -361,6 +361,9 @@ impl HostLoop {
         self.serve_effects(app, plan, session, routes, rides, trips, tracks, platform);
         self.step_plan(app, session, routes, reader, elev);
         self.serve_derived(app, plan, session, routes, rides);
+        if let Some(scope) = routes.store_scope() {
+            self.inbox.facts.note_store_revision(scope);
+        }
     }
 
     // ---- one arm per domain effect ----
@@ -385,7 +388,7 @@ impl HostLoop {
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
         if let Some(effect) = plan.effects.retention.take() {
-            let outcome = serve_retention(effect, routes, rides);
+            let outcome = serve_retention(effect, routes);
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
@@ -475,13 +478,39 @@ impl HostLoop {
     ) -> CatalogOutcome {
         match effect {
             CatalogEffect::ReadCatalog { token } => {
+                app.begin_catalog_refresh();
+                let scope = match routes.refresh_metadata() {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        return CatalogOutcome::Failed {
+                            token,
+                            error: if error == obc_app::retention::RetentionError::RemountRequired {
+                                CatalogError::RemountRequired
+                            } else {
+                                CatalogError::Unreadable
+                            },
+                        }
+                    }
+                };
                 rides.refresh();
                 trips.rescan();
                 feed_routes(app, routes, &mut NoTrace);
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
                 feed_rides(app, rides, &mut NoTrace);
-                CatalogOutcome::CatalogRead { token }
+                CatalogOutcome::CatalogRead { token, scope }
+            }
+            CatalogEffect::ExpireObject { token, object, scope } => {
+                if !app.route_ids().contains(&object) {
+                    return CatalogOutcome::Failed { token, error: CatalogError::Unsupported };
+                }
+                if !app.retention_expiry_due(object, scope) {
+                    return CatalogOutcome::Failed { token, error: CatalogError::Stale };
+                }
+                match routes.expire_route(object, scope) {
+                    Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
+                    Err(error) => CatalogOutcome::Failed { token, error },
+                }
             }
             CatalogEffect::RemoveObject { token, object } => remove_object(token, object, routes, rides, trips),
         }
@@ -697,24 +726,15 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
     debug_assert!(refused.is_ok(), "{domain} answered twice in one execute: {refused:?}");
 }
 
-/// The sidecar writes. A repository stamp cannot report a failure, so the answer *is* the write —
-/// what matters is that it carries the operation's token back, which the legacy protocol had no way
-/// to do (the old stamp was fire-and-forget). A host whose sidecar *can* fail answers
-/// [`RetentionOutcome::Failed`] instead and the domain re-queues the candidate.
-fn serve_retention(
-    effect: RetentionEffect,
-    routes: &mut dyn RouteRepository,
-    rides: &mut dyn RideRepository,
-) -> RetentionOutcome {
-    match effect {
-        RetentionEffect::WriteRouteMetadata { token, id, meta } => {
-            routes.stamp_route_used(id, meta.last_used_utc);
+/// Report only the repository's typed persistence result.
+fn serve_retention(effect: RetentionEffect, routes: &mut dyn RouteRepository) -> RetentionOutcome {
+    let token = effect.token();
+    match (effect, routes.write_metadata(effect)) {
+        (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
             RetentionOutcome::RouteMetadataWritten { token, id }
         }
-        RetentionEffect::WriteRideMetadata { token, id, synced_at } => {
-            rides.stamp_synced_at(id, synced_at);
-            RetentionOutcome::RideMetadataWritten { token, id }
-        }
+        (_, Err(error)) => RetentionOutcome::Failed { token, error },
+        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
     }
 }
 

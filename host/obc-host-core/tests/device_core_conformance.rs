@@ -443,11 +443,11 @@ impl CoreHarness {
                         refeed: Refeed::None,
                     };
                 }
-                Done::Catalog { outcome: CatalogOutcome::CatalogRead { token }, refeed: Refeed::All }
+                Done::Catalog { outcome: CatalogOutcome::CatalogRead { token, scope: None }, refeed: Refeed::All }
             }
             // One object out of the store, and nothing else. The namespace probe order is the real
             // executor's; the re-read a completed removal implies is the domain's.
-            CatalogEffect::RemoveObject { token, object } => {
+            CatalogEffect::RemoveObject { token, object } | CatalogEffect::ExpireObject { token, object, .. } => {
                 // Counted before the probe, so a removal for an object that already left the store
                 // counts too — that is exactly the event #1548 removes.
                 self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
@@ -982,7 +982,7 @@ impl CoreHarness {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::RemoveObject { .. } => return effect,
+                CatalogEffect::RemoveObject { .. } | CatalogEffect::ExpireObject { .. } => return effect,
                 CatalogEffect::ReadCatalog { .. } => {
                     self.answer_catalog(effect);
                 }

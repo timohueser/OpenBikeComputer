@@ -119,9 +119,6 @@ impl obc_host_core::RideRepository for RideStore {
     fn refresh(&mut self) {
         self.rescan();
     }
-    fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
-        self.stamp_synced_at(id, utc)
-    }
 }
 
 /// The object id a desktop `ride-{id}.obcr` fixture path names, or `None` for every file this store

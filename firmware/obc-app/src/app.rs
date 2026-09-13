@@ -6621,11 +6621,21 @@ mod tests {
         ms: u32,
         /// What the store reports for a removal. `false` is a transient failure the domain retries.
         store_ok: bool,
+        started: bool,
+        written: Option<crate::retention::RetentionEffect>,
+        removed: heapless::Vec<crate::CatalogObjectId, 192>,
     }
 
     impl Sweeper {
         fn new() -> Self {
-            Sweeper { outcomes: crate::device_core::OutcomeSlots::new(), ms: 0, store_ok: true }
+            Sweeper {
+                outcomes: crate::device_core::OutcomeSlots::new(),
+                ms: 0,
+                store_ok: true,
+                started: false,
+                written: None,
+                removed: heapless::Vec::new(),
+            }
         }
 
         /// One pass: run it, record what it asked for, and answer it for the next one.
@@ -6633,6 +6643,10 @@ mod tests {
             use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
             use crate::retention::{RetentionEffect, RetentionOutcome};
             let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
+            if !self.started {
+                app.test_mount_store();
+                self.started = true;
+            }
             self.ms += 1;
             let ms = self.ms.max(app.ui.now_ms);
             let mut loc = NoFix;
@@ -6650,6 +6664,7 @@ mod tests {
                 targets: crate::device_core::DerivedTargets::NONE,
             });
             if let Some(effect) = plan.effects.retention.take() {
+                self.written = Some(effect);
                 let token = effect.token();
                 let outcome = match effect {
                     RetentionEffect::WriteRouteMetadata { id, .. } => {
@@ -6666,19 +6681,70 @@ mod tests {
             if let Some(effect) = plan.effects.catalog.take() {
                 let token = effect.token();
                 match effect {
-                    CatalogEffect::RemoveObject { object, .. } => {
+                    CatalogEffect::RemoveObject { object, .. } | CatalogEffect::ExpireObject { object, .. } => {
                         let _ = out.push(SweepOp::Remove(object));
+                        if self.store_ok {
+                            self.removed.push(object).unwrap();
+                        }
                         let _ = self.outcomes.catalog.try_put(if self.store_ok {
                             CatalogOutcome::ObjectRemoved { token, object, existed: true }
                         } else {
                             CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed }
                         });
                     }
-                    // The re-read a completed removal orders (#1541). These tests re-feed the
-                    // catalog themselves where they mean the store to have changed, so answering
-                    // the operation is the whole of what this executor owes it.
+                    // Publish the fake store changes through the same catalog feeders as a host.
                     CatalogEffect::ReadCatalog { .. } => {
-                        let _ = self.outcomes.catalog.try_put(CatalogOutcome::CatalogRead { token });
+                        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::MAX_ROUTES }> =
+                            heapless::Vec::new();
+                        let mut routes = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
+                        let mut metas = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
+                        for (i, &id) in app.route_ids().iter().enumerate() {
+                            if !self.removed.contains(&id) {
+                                ids.push(id).unwrap();
+                                routes.push(app.catalogs.routes()[i].clone()).unwrap();
+                                metas.push(app.route_metas()[i]).unwrap();
+                            }
+                        }
+                        app.set_routes_with_meta(&routes, &ids, &metas);
+                        let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
+                            heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
+                        inventory.retain(|ride| !self.removed.contains(&ride.id));
+                        let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
+                        rides.retain(|ride| !self.removed.contains(&ride.id));
+                        app.set_rides(&rides);
+                        app.set_ride_retention_inventory(&inventory);
+                        if let Some(effect) = self.written.take() {
+                            match effect {
+                                RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
+                                    let mut metas: heapless::Vec<RouteRetentionMeta, { crate::MAX_ROUTES }> =
+                                        heapless::Vec::from_slice(app.route_metas()).unwrap();
+                                    if let Some(index) = app.route_ids().iter().position(|&candidate| candidate == id) {
+                                        metas[index] = meta;
+                                    }
+                                    app.set_route_meta(&metas);
+                                }
+                                RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
+                                    let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
+                                    for ride in rides.iter_mut().filter(|ride| ride.id == id) {
+                                        ride.summary.synced_at_utc = synced_at;
+                                    }
+                                    app.set_rides(&rides);
+                                    let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
+                                        heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
+                                    for ride in inventory.iter_mut().filter(|ride| ride.id == id) {
+                                        ride.synced_at_utc = synced_at;
+                                    }
+                                    app.set_ride_retention_inventory(&inventory);
+                                }
+                            }
+                        }
+                        let _ = self.outcomes.catalog.try_put(CatalogOutcome::CatalogRead {
+                            token,
+                            scope: app.catalogs.loaded_scope.or(Some(crate::device_core::StoreRevision {
+                                store: crate::device_core::StoreIdentity::new(1),
+                                revision: crate::device_core::Revision::new(1),
+                            })),
+                        });
                     }
                 }
             }
@@ -7070,31 +7136,13 @@ mod tests {
     #[test]
     fn batched_deletes_all_execute_exactly_once() {
         let (mut app, now) = trusted_app();
-        let mut live: heapless::Vec<crate::CatalogObjectId, 4> = heapless::Vec::from_slice(&[10, 11, 12]).unwrap();
-        let rescan = |app: &mut App, live: &[crate::CatalogObjectId]| {
-            let sums: heapless::Vec<RouteSummary, 4> = live.iter().map(|_| summary("x")).collect();
-            let metas: heapless::Vec<RouteRetentionMeta, 4> = live.iter().map(|_| expired(now)).collect();
-            app.set_routes_with_meta(&sums, live, &metas);
-        };
-        rescan(&mut app, &live);
-        app.retention_tick(); // three delete candidates queued at once
-
-        let mut deleted: heapless::Vec<crate::CatalogObjectId, 8> = heapless::Vec::new();
-        for _ in 0..12 {
-            for c in &drain_once(&mut app) {
-                if let SweepOp::Remove(id) = c {
-                    let _ = deleted.push(*id);
-                    // Storage succeeds: the id leaves the catalog on the next rescan.
-                    if let Some(p) = live.iter().position(|x| x == id) {
-                        live.remove(p);
-                    }
-                    rescan(&mut app, &live);
-                }
-            }
-            if !app.retention.has(SweepKind::DeleteRoute) {
-                break;
-            }
-        }
+        app.set_routes_with_meta(&[summary("A"), summary("B"), summary("C")], &[10, 11, 12], &[expired(now); 3]);
+        let mut host = Sweeper::new();
+        let deleted: heapless::Vec<crate::CatalogObjectId, 8> = host
+            .rounds(&mut app, 16)
+            .iter()
+            .filter_map(|op| if let SweepOp::Remove(id) = op { Some(*id) } else { None })
+            .collect();
         assert_eq!(deleted.len(), 3, "every expired route was deleted: {deleted:?}");
         for id in [10u64, 11, 12] {
             assert_eq!(deleted.iter().filter(|&&x| x == id).count(), 1, "id {id} executed exactly once");
@@ -7175,7 +7223,7 @@ mod tests {
         assert!(host.pass(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches");
 
         host.pass(&mut app); // the answer lands at stage 1 of this pass
-        assert_eq!(app.route_ids(), &[10], "the catalogs are still behind the store");
+        assert!(app.route_ids().is_empty(), "the executor has served the removal’s re-read");
         assert!(!app.retention.has(SweepKind::DeleteRoute), "and the candidate is already retired");
     }
 
