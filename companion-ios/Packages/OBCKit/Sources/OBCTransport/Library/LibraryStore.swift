@@ -65,6 +65,8 @@ public protocol LibraryStore: Sendable {
     func archiveRide(_ ride: Ride) throws -> RideArchiveReceipt?
     /// Source of a complete current archive, distinct from download/deletion history.
     func archivedRideSource(_ id: RideID) -> RideSource?
+    /// Revalidate durable storage before returning proof for an existing archive.
+    func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt?
     /// Update a ride's summary without touching its stored points — the rename
     /// (H12) write path; re-encoding a full tracklog to change a name would be
     /// the exact whole-ride coupling #360 removed.
@@ -112,10 +114,7 @@ extension LibraryStore {
     }
     public func archivedRideSource(_ id: RideID) -> RideSource? { nil }
 
-    /// Revalidates the complete archive and its persistence barriers before minting a receipt.
-    public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? {
-        archivedRideSource(id).map { RideArchiveReceipt(source: $0) }
-    }
+    public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? { nil }
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs

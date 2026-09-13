@@ -1,14 +1,15 @@
 import Foundation
 import Testing
+import Observation
 import OBCDomain
 import OBCMock
 @testable import OBCTransport
 @testable import OBCUI
 
-@Suite("Durable archive confirmation")
+@Suite("Durable archive confirmation", .timeLimit(.minutes(1)))
 @MainActor
 struct ArchiveReceiptSyncTests {
-    private enum Failure: Error { case write, deadline }
+    private enum Failure: Error { case write }
 
     private func directory() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -43,12 +44,18 @@ struct ArchiveReceiptSyncTests {
         return (RideSyncCoordinator(transport: transport, library: library,
                                    timing: .init(syncDoneHold: .zero, syncedLineHold: .seconds(300))), peer, control)
     }
-    private func wait(_ condition: () async -> Bool) async throws {
-        let limit = ContinuousClock.now.advanced(by: .seconds(5))
-        while !(await condition()) {
-            guard ContinuousClock.now < limit else { throw Failure.deadline }
-            await Task.yield()
+    private func wait(_ condition: () -> Bool) async {
+        while !condition() {
+            await withCheckedContinuation { continuation in
+                withObservationTracking { _ = condition() } onChange: {
+                    Task { @MainActor in continuation.resume() }
+                }
+            }
         }
+    }
+    private func waitConnection(_ sync: RideSyncCoordinator, _ state: ConnectionState) async {
+        // Connection is intentionally excluded from observation in the coordinator.
+        while sync.connection != state { await Task.yield() }
     }
 
     @Test func newArchiveAndReconnectConfirmWithoutDownloadingAgain() async throws {
@@ -57,17 +64,18 @@ struct ArchiveReceiptSyncTests {
         let library = FileLibraryStore(directory: dir)
         let ride = ride()
         let (sync, peer, control) = setup([ride], library: library, failures: 1)
-        try await wait { sync.connection == .connected }
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { sync.syncInterruption?.reason == .confirmationPending }
+        await wait { sync.syncInterruption?.reason == .confirmationPending }
         #expect(library.archivedRideSource(ride.id) == ride.summary.source)
         #expect(sync.lastSyncCount == nil)
         #expect(await peer.downloads == [[ride.id]])
         #expect(await peer.receipts == [ride.summary.source!])
         control.connection = .outOfRange
-        try await wait { sync.connection == .outOfRange }
+        await waitConnection(sync, .outOfRange)
         control.connection = .connected
-        try await wait { await peer.receipts.count == 2 && sync.syncState == .idle }
+        await peer.waitForReceipts(2)
+        await wait { sync.syncState == .idle }
         #expect(sync.syncInterruption == nil)
         #expect(await peer.downloads == [[ride.id]])
         #expect(await peer.receipts == [ride.summary.source!, ride.summary.source!])
@@ -80,9 +88,10 @@ struct ArchiveReceiptSyncTests {
         _ = try FileLibraryStore(directory: dir).archiveRide(original)
         let library = FileLibraryStore(directory: dir)
         let (sync, peer, _) = setup([original], library: library)
-        try await wait { await peer.receipts.count == 1 && sync.syncState == .idle }
+        await peer.waitForReceipts(1)
+        await wait { sync.syncState == .idle }
         sync.sync()
-        try await wait { sync.upToDateToastVisible }
+        await wait { sync.upToDateToastVisible }
         #expect(await peer.receipts.count == 2)
         #expect(await peer.downloads.isEmpty)
     }
@@ -94,15 +103,15 @@ struct ArchiveReceiptSyncTests {
         let first = ride(), second = ride(42)
         let (sync, peer, _) = setup([first, second], library: library)
         await peer.setPartial(true)
-        try await wait { sync.connection == .connected }
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { sync.syncInterruption?.reason == .download }
+        await wait { sync.syncInterruption?.reason == .download }
         #expect(library.archivedRideSource(first.id) == first.summary.source)
         #expect(library.archivedRideSource(second.id) == nil)
         #expect(await peer.receipts == [first.summary.source!])
         await peer.setPartial(false)
         sync.resumeSync()
-        try await wait { sync.lastSyncCount == 1 }
+        await wait { sync.lastSyncCount == 1 }
         #expect(await peer.downloads == [[first.id, second.id], [second.id]])
         #expect(library.archivedRideSource(second.id) == second.summary.source)
     }
@@ -112,9 +121,9 @@ struct ArchiveReceiptSyncTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let library = FileLibraryStore(directory: dir, archiveCheckpoint: { _ in throw Failure.write })
         let (sync, peer, _) = setup([ride()], library: library)
-        try await wait { sync.connection == .connected }
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { sync.syncInterruption != nil }
+        await wait { sync.syncInterruption != nil }
         #expect(await peer.receipts.isEmpty)
         #expect(library.rideSummaries().isEmpty)
     }
@@ -144,7 +153,8 @@ struct ArchiveReceiptSyncTests {
                                                             payloadLength: 1, payloadCRC32: 0))
         }
         let (sync, peer, _) = setup([current], library: library)
-        try await wait { sync.connection == .connected && sync.syncState == .idle }
+        await waitConnection(sync, .connected)
+        await wait { sync.syncState == .idle }
         #expect(await peer.receipts.isEmpty)
         #expect(await peer.downloads.isEmpty, "reconnect does not download new rides")
     }
@@ -156,15 +166,15 @@ struct ArchiveReceiptSyncTests {
         let original = ride()
         let (sync, peer, control) = setup([original], library: library)
         await peer.holdFirstConfirmation()
-        try await wait { sync.connection == .connected }
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { await peer.isHolding }
+        await peer.waitForReceipts(1)
         control.connection = .outOfRange
-        try await wait { sync.syncInterruption != nil }
+        await wait { sync.syncInterruption != nil }
         control.connection = .connected
-        try await wait { sync.connection == .connected }
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { sync.upToDateToastVisible }
+        await wait { sync.upToDateToastVisible }
         #expect(await peer.receipts.count == 2)
         await peer.releaseConfirmation()
         for _ in 0..<20 { await Task.yield() }
@@ -183,7 +193,7 @@ struct ArchiveReceiptSyncTests {
         _ = try library.archiveRide(original)
         let (sync, peer, _) = setup([original], library: library)
         await peer.setConfirmation(result)
-        try await wait { sync.syncInterruption != nil }
+        await wait { sync.syncInterruption != nil }
         #expect(sync.lastSyncCount == nil)
         #expect(!sync.upToDateToastVisible)
         #expect(library.archivedRideSource(original.id) == original.summary.source)
@@ -198,11 +208,23 @@ struct ArchiveReceiptSyncTests {
     }
 
     @Test func inMemorySaveIsNotDurableProof() async throws {
-        let (sync, peer, _) = setup([ride()], library: InMemoryLibraryStore())
-        try await wait { sync.connection == .connected }
+        let original = ride()
+        let library = InMemoryLibraryStore()
+        let (sync, peer, control) = setup([original], library: library)
+        await waitConnection(sync, .connected)
         sync.sync()
-        try await wait { sync.lastSyncCount == 1 }
+        await wait { sync.lastSyncCount == 1 && sync.syncState == .idle }
+        #expect(library.archivedRideSource(original.id) == original.summary.source)
+        #expect(library.archivedRideReceipt(original.id) == nil)
+        sync.sync()
+        await wait { sync.upToDateToastVisible }
+        control.connection = .outOfRange
+        await waitConnection(sync, .outOfRange)
+        control.connection = .connected
+        await waitConnection(sync, .connected)
+        await wait { sync.syncState == .idle }
         #expect(await peer.receipts.isEmpty)
+        #expect(await peer.downloads == [[original.id]])
     }
 }
 
@@ -215,7 +237,18 @@ private actor ReceiptPeer {
     var confirmation: RideArchiveConfirmation = .confirmed
     var holdFirst = false
     var held: CheckedContinuation<Void, Never>?
-    var isHolding: Bool { held != nil }
+    private var receiptWaiter: (Int, CheckedContinuation<Void, Never>)?
+    func waitForReceipts(_ count: Int) async {
+        if receipts.count < count {
+            await withCheckedContinuation { receiptWaiter = (count, $0) }
+        }
+    }
+    private func received() {
+        if let (count, continuation) = receiptWaiter, receipts.count >= count {
+            receiptWaiter = nil
+            continuation.resume()
+        }
+    }
     func holdFirstConfirmation() { holdFirst = true }
     func releaseConfirmation() { held?.resume(); held = nil }
     func setConfirmation(_ value: RideArchiveConfirmation) { confirmation = value }
@@ -226,8 +259,9 @@ private actor ReceiptPeer {
         receipts.append(receipt.source)
         if holdFirst {
             holdFirst = false
-            await withCheckedContinuation { held = $0 }
+            await withCheckedContinuation { held = $0; received() }
         }
+        received()
         if failures > 0 { failures -= 1; throw DeviceError.writeFailed }
         return confirmation
     }

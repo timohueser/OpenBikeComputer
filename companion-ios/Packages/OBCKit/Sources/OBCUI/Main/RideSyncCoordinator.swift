@@ -242,7 +242,7 @@ public final class RideSyncCoordinator {
                 if let source = summary.source {
                     if let receipt = library.archivedRideReceipt(summary.id), receipt.source == source {
                         receipts.append(receipt)
-                    } else if downloadMissing {
+                    } else if downloadMissing && library.archivedRideSource(summary.id) != source {
                         fresh.append(summary)
                     }
                 } else if downloadMissing && !syncedRideIDs.contains(summary.id) {
