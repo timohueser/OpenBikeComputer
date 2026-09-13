@@ -329,12 +329,7 @@ impl Builder {
         let max_distance = if terrain.level(self.level + 1).is_none() {
             100_000.0
         } else {
-            match g.posting_log2 {
-                0..=9 => 10_000.0,
-                10 => 20_000.0,
-                11 => 40_000.0,
-                _ => 100_000.0,
-            }
+            (25_000.0 * (1u32 << g.posting_log2) as f32 / 512.0).min(100_000.0)
         };
         self.geometry = g;
         let posting = (1u32 << g.posting_log2) as f32;
@@ -731,7 +726,14 @@ impl Builder {
             let horizon = if bottom < ROWS { self.thresholds[bottom] } else { f32::NEG_INFINITY };
             // Half a pixel keeps sampled summit coordinates stable at raster boundaries.
             let tolerance = 0.5 * self.radians_per_row * (1.0 + slope * slope);
-            self.peaks[i].visible = slope + tolerance >= horizon.max(front_slope);
+            // Native DEM vertices can undershoot a narrow summit. Test its recorded elevation
+            // against foreground terrain, while keeping the label anchored to the sampled surface.
+            let target_slope = self.peaks[i]
+                .elevation_m
+                .map(|height| (f32::from(height) - f32::from(self.profile.observer_elevation_m)) / d - CURVATURE * d)
+                .unwrap_or(slope)
+                .max(slope);
+            self.peaks[i].visible = target_slope + tolerance >= horizon.max(front_slope);
             self.peaks[i].angle_q4 = libm::roundf(libm::atanf(slope).to_degrees() * 4.0) as i16;
             self.peaks[i].azimuth_q4 = self.bearings[ray];
         }
@@ -1000,10 +1002,16 @@ mod tests {
         }
         for vertical_scale_q8 in [320, 768] {
             // Include a ridge inside 200 m and a summit hidden by only about 0.27°.
-            for (near_x, near_height, summit_height, visible) in
-                [(2, 40.0, 200, false), (20, 60.0, 160, false), (20, 60.0, 200, true)]
-            {
-                let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: Some(summit_height), ..PeakViewPeak::EMPTY };
+            for (near_x, near_height, summit_height, recorded_height, visible) in [
+                (2, 40.0, 200, Some(200), false),
+                (20, 60.0, 160, Some(160), false),
+                (20, 60.0, 200, Some(200), true),
+                (20, 60.0, 200, Some(160), true),
+                (20, 60.0, 160, Some(200), true),
+                (20, 80.0, 160, Some(200), false),
+                (20, 60.0, 160, None, false),
+            ] {
+                let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: recorded_height, ..PeakViewPeak::EMPTY };
                 peak.project(0, 0);
                 let peaks = [peak];
                 let profile = PeakViewProfile {
@@ -1021,6 +1029,8 @@ mod tests {
                     "summit {summit_height} m, foreground at {near_x}, scale {vertical_scale_q8}"
                 );
                 assert!(job.peaks[0].angle_q4 > 0, "the distant summit was sampled");
+                let surface_angle = libm::atan2f(f32::from(summit_height), peak.distance_m as f32).to_degrees() * 4.0;
+                assert!((f32::from(job.peaks[0].angle_q4) - surface_angle).abs() <= 1.0, "anchor stays on the DEM");
             }
         }
     }
@@ -1068,7 +1078,10 @@ mod tests {
         while !moving.view_ready(720) {
             moving.step(&mut Hills, 1);
         }
-        assert!(moving.progress() < 55, "a quick turn gets priority over unrelated bearings");
+        assert!(
+            !moving.view_ready(360) && !moving.view_ready(1080),
+            "a quick turn gets priority over unrelated bearings"
+        );
         assert!(moving.view_ready(1430));
         while !moving.complete() {
             moving.step(&mut Hills, 127);
