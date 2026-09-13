@@ -232,7 +232,10 @@ destructive and explicit.
 
 ### 2.1 What a caller may rely on
 
-- A `commit` that returns is durable. A `commit` that returns `Err` changed nothing.
+- A `commit` that returns `Ok` is durable. A commit error reports no success and leaves the
+  served catalog unchanged. A media error can occur after the new gate is durable, so remount
+  can recover the old or the complete new generation. After an uncertain commit, the owner
+  must stop mutations and retain its allocation until remount; it must not cancel or reuse it.
 - Bytes written to an `Allocation` that is never committed are unreachable and their space is free
   again at the next mount, or immediately on `cancel`. There is no cleanup step and nothing to sweep.
 - An open `Handle` keeps reading the revision it resolved, even across a commit that replaces or
@@ -462,10 +465,11 @@ expected `Revision` must be the value the device last reported for it. Zero is n
 either field.
 
 A `PUT` naming an entry that carries `RECORDING` or `RESERVED` is refused `invalidRequest`, and a
-`PUT` of kind `3` (ride) or `8` (rollback reserve) is refused the same way whether it creates or
-replaces: those two kinds are produced by the device, and a client that could overwrite a ride
+`PUT` of kind `3` (ride), `8` (rollback reserve), or `9` (metadata) is refused the same way whether it creates or
+replaces: those kinds are produced by the device, and a client that could overwrite a ride
 mid-recording or a rollback reserve mid-update would be writing where the store and the bootloader
-already are.
+already are. Metadata writes require device policy admission under
+[Retention_Metadata.md](Retention_Metadata.md); remote writes cannot establish archive proof.
 
 The request's flag word says what this upload should do, not what the resulting entry carries:
 `RECORDING`, `RETAINED` and `RESERVED` are the format contract's entry flags, they appear in a `LIST`
@@ -490,7 +494,8 @@ Request, 16 bytes: `ObjectId u64`, expected `Revision u64`. One commit removes t
 its extents; a retained previous revision of the same object goes with it. Response, 8 bytes: the new
 catalog commit sequence.
 
-A `REMOVE` of an entry carrying `RECORDING` or `RESERVED` is `invalidRequest`. Stopping a ride and
+A `REMOVE` of metadata kind `9`, or an entry carrying `RECORDING` or `RESERVED`, is
+`invalidRequest`. Metadata removal is device-owned. Stopping a ride and
 settling an armed update are device-local acts, not wire ones, and freeing either object's extents
 under the store or the bootloader is exactly what those flags exist to prevent.
 

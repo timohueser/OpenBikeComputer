@@ -25,6 +25,11 @@
       "sha256": "2df773e7017751f4be5245d540685a190862608fdc03244c731ae01480f6b220"
     },
     {
+      "name": "list-response-metadata",
+      "file": "controls/list-response-metadata.json",
+      "sha256": "98f9bfa67d0ad423b5fc05bd8d1e12049b69db94ec0f0a3c5f3b8edcbb72a97e"
+    },
+    {
       "name": "list-response-empty-catalog",
       "file": "controls/list-response-empty-catalog.json",
       "sha256": "070b37f9cd79958958f0c7a95fc41f1f5680e0d465b1cc25c317283364a8e9a5"
@@ -303,7 +308,7 @@
     {
       "name": "put-unknown-kind",
       "file": "negative/put-unknown-kind.json",
-      "sha256": "4f54b309546d82ead242ec17a3c0f5bc4c22defbe746db1a8d29b4d4af7473ce"
+      "sha256": "2829567d75705d2d4f58b007ba4689dbca18ecc9941fa55ee1392d18a8ddc49e"
     },
     {
       "name": "list-cursor-fields-without-the-cursor-bit",
@@ -318,7 +323,7 @@
     {
       "name": "list-unknown-kind-filter",
       "file": "negative/list-unknown-kind-filter.json",
-      "sha256": "1a8a399ae1501c74e94d08bd2de23c8c39e01d5ae936c22a9824f76ca8d288d7"
+      "sha256": "d9510841925944bda0976d23144114145fc0f57833812ffd4a573341203560af"
     },
     {
       "name": "status-naming-object-zero",

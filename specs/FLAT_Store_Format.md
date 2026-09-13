@@ -120,6 +120,7 @@ same numbers and defines no others.
 | 6 | map set manifest | ~~names shards by `ObjectId`; a set activates when its manifest commits~~ — **retired with `OBCA_Spec.md` §5** (#1420). No producer writes this kind after FS7.5b; the value is not reissued |
 | 7 | update package | OBCU image |
 | 8 | firmware rollback reserve | extents owned by the store, payload written by the bootloader (§5.3) |
+| 9 | metadata | device-owned card retention payload; [contract](Retention_Metadata.md) |
 
 ## 4. Superblock
 

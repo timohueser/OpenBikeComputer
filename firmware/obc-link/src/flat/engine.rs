@@ -1126,7 +1126,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                     head.revision.0,
                 ));
             }
-            if head.flags.is_untouchable() {
+            if head.kind == ObjectKind::Metadata || head.flags.is_untouchable() {
                 return Err(bad_combination());
             }
             if head.kind != put.kind {
@@ -1195,7 +1195,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 head.revision.0,
             ));
         }
-        if head.flags.is_untouchable() {
+        if head.kind == ObjectKind::Metadata || head.flags.is_untouchable() {
             return Err(bad_combination());
         }
         // §3.7: "a retained previous revision of the same object goes with it".

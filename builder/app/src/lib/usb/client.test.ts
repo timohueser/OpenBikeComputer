@@ -330,13 +330,24 @@ describe("PUT", () => {
         });
     });
 
-    it("refuses the two kinds the device produces itself", async () => {
+    it("refuses the kinds the device produces itself", async () => {
         await withDevice({}, async ({ client }) => {
-            for (const kind of [ObjectKind.Ride, ObjectKind.RollbackReserve]) {
+            for (const kind of [ObjectKind.Ride, ObjectKind.RollbackReserve, ObjectKind.Metadata]) {
                 await expect(client.put({ kind, displayName: "no" }, payload(8))).rejects.toMatchObject({
                     code: "invalid-request",
                 });
             }
+        });
+    });
+
+    it("lists and reads device metadata but refuses its removal", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            const bytes = payload(112);
+            const seeded = device.seed({ kind: ObjectKind.Metadata, bytes });
+            const catalog = await client.list();
+            expect(catalog.entries[0].kind).toBe(ObjectKind.Metadata);
+            expect((await client.get({ objectId: seeded.objectId, revision: 0n })).bytes).toEqual(bytes);
+            await expect(client.remove({ objectId: seeded.objectId, revision: seeded.revision })).rejects.toMatchObject({ code: "invalid-request" });
         });
     });
 

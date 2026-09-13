@@ -428,7 +428,7 @@ fn the_device_owned_kinds_and_the_flagged_entries_are_refused() {
     let bytes = body();
     let (ride, _) = device.seed_recording(4 * 1_024 * 1_024);
 
-    for kind in [RIDE, 8] {
+    for kind in [RIDE, 8, 9] {
         let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, kind, false, "no")).answer());
         expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     }
@@ -442,6 +442,23 @@ fn the_device_owned_kinds_and_the_flagged_entries_are_refused() {
     // A ride is still listed — a client syncs it once RECORDING has cleared.
     let answer = Answer::of(device.control(&client::list(5, Some(RIDE))).answer());
     assert_eq!(answer.body.len(), 24 + 88);
+}
+
+#[test]
+fn metadata_is_readable_but_only_the_device_can_mutate_it() {
+    let disk = formatted_card(141);
+    let mut device = boot(&disk);
+    let bytes = include_bytes!("../../../specs/vectors/retention-metadata/route-and-ride.bin");
+    let (id, revision) = device.seed(ObjectKind::Metadata, bytes, "");
+    let answer = Answer::of(device.control(&client::list(1, None)).answer());
+    assert_eq!(answer.body.len(), 24 + 88);
+    assert_eq!(u16::from_le_bytes(answer.body[52..54].try_into().unwrap()), 9);
+    assert_eq!(device.control(&client::get(2, id, revision)).payload(), bytes);
+    for command in [client::remove(3, id, revision), client::put(4, id, revision, bytes, 9, false, "")] {
+        let answer = Answer::of(device.control(&command).answer());
+        expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
+    }
+    assert_eq!(device.entry(id).unwrap().revision.0, revision);
 }
 
 #[test]
