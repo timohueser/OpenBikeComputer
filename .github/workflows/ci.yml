@@ -1247,7 +1247,7 @@ jobs:
         run: |
           sudo apt-get update
           webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
-          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb
+          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick
           pip install -r apps/obc-desktop/e2e/requirements.txt
           cargo install tauri-driver --version 2.0.6 --locked
           chmod +x apps/obc-desktop/target/release/obc-desktop

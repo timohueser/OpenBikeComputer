@@ -70,7 +70,7 @@ def main():
     binary = Path(os.environ.get("OBC_DESKTOP_BINARY", ROOT / "apps/obc-desktop/target/release/obc-desktop")).resolve()
     evidence = Path(os.environ.get("OBC_DESKTOP_EVIDENCE", ROOT / "target/desktop-launch")).resolve()
     evidence.mkdir(parents=True, exist_ok=True)
-    for name in ("result.json", "failure.png", "ready.png", "page.html", "driver.log", "application.log", "catalog.jsonl"):
+    for name in ("result.json", "failure.png", "ready.png", "page.html", "driver.log", "application.log", "catalog.jsonl", "processes.txt"):
         (evidence / name).unlink(missing_ok=True)
     result = {"passed": False, "binary": str(binary)}
     browser = process = server = None
@@ -102,10 +102,14 @@ def main():
             wrapper = Path(scratch) / "application.sh"
             pidfile = Path(scratch) / "application.pid"
             wrapper.write_text("#!/bin/sh\n" + f"echo $$ > {shlex.quote(str(pidfile))}\n" +
-                               f"exec {shlex.quote(str(binary))} > {shlex.quote(str(evidence / 'application.log'))} 2>&1\n")
+                               f"exec > {shlex.quote(str(evidence / 'application.log'))} 2>&1\n" +
+                               'printf "automation=%s inspector=%s display=%s\\n" "$TAURI_WEBVIEW_AUTOMATION" "$WEBKIT_INSPECTOR_SERVER" "$DISPLAY"\n' +
+                               f'exec {shlex.quote(str(binary))} "$@"\n')
             wrapper.chmod(0o755)
             environment = {**os.environ, "OBC_CATALOG_URL": catalog_url, "RUST_BACKTRACE": "1",
-                           "XDG_DATA_HOME": scratch, "XDG_CONFIG_HOME": scratch, "XDG_CACHE_HOME": scratch}
+                           "XDG_DATA_HOME": scratch, "XDG_CONFIG_HOME": scratch, "XDG_CACHE_HOME": scratch,
+                           # Xvfb has no hardware compositor. Keep this override in the harness.
+                           "WEBKIT_DISABLE_COMPOSITING_MODE": "1"}
             process = subprocess.Popen(["tauri-driver"], env=environment, stdout=driver_log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
 
@@ -153,6 +157,12 @@ def main():
             result["passed"] = True
         except Exception:
             result["error"] = traceback.format_exc()
+            with suppress(Exception):
+                # A session can fail before WebDriver can capture the still-open app window.
+                subprocess.run(["import", "-window", "root", str(evidence / "failure.png")],
+                               check=True, timeout=5)
+                (evidence / "processes.txt").write_text(subprocess.check_output(
+                    ["ps", "-eo", "pid,ppid,stat,comm"], text=True, timeout=5))
             if browser:
                 with suppress(Exception):
                     browser.save_screenshot(str(evidence / "failure.png"))

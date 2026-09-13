@@ -90,7 +90,7 @@ On a Linux test host with no OBC device attached, first build the release app as
 from the repository root:
 
 ```sh
-sudo apt-get install webkit2gtk-driver xvfb
+sudo apt-get install webkit2gtk-driver xvfb imagemagick
 cargo install tauri-driver --version 2.0.6 --locked
 python3 -m venv .venv
 . .venv/bin/activate
@@ -106,7 +106,11 @@ file. The setup follows the [Tauri WebDriver CI guide](https://v2.tauri.app/deve
 `target/desktop-launch`, or `OBC_DESKTOP_EVIDENCE`: `result.json`, native catalog request logs,
 application and driver logs, rendered HTML, and a screenshot. A failed journey also captures
 `failure.png` when a webview session is available. CI uploads `desktop-launch-linux-ATTEMPT`
-after an executed success or failure. The suite uses bounded state waits with no retries and
+after an executed success or failure. ImageMagick captures the X11 display if the session fails
+before WebDriver can take a screenshot. The harness disables WebKit compositing for Xvfb;
+this is a test-host setting, not a production app setting. See the
+[Tauri Linux graphics guide](https://v2.tauri.app/develop/debug/linux-graphics/).
+The suite uses bounded state waits with no retries and
 requires the app process to exit when its WebDriver session closes.
 
 This suite covers Linux software launch and catalog integration. It does not establish USB
