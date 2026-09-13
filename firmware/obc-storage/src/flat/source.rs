@@ -88,7 +88,35 @@ use obc_formats::io::{ByteSource, Error};
 use super::device::BlockDevice;
 use super::error::StoreError;
 use super::seam::{ObjectId, Revision, Store};
-use super::store::{FlatStore, Handle};
+use super::store::{FlatStore, Handle, SealedAllocation};
+
+/// A borrowed view of an owned sealed reservation. It cannot outlive its cleanup capability.
+pub struct SealedSource<'a, D: BlockDevice> {
+    store: &'a FlatStore<D>,
+    sealed: &'a SealedAllocation<'a>,
+}
+
+impl<D: BlockDevice> ByteSource for SealedSource<'_, D> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        if offset.checked_add(buf.len() as u64).is_none_or(|end| end > self.len()) {
+            return Err(Error::BadOffset);
+        }
+        match self.store.read_sealed(self.sealed, offset, buf) {
+            Ok(n) if n == buf.len() => Ok(()),
+            _ => Err(Error::Io),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        self.sealed.len()
+    }
+}
+
+impl<D: BlockDevice> FlatStore<D> {
+    pub fn sealed_source<'a>(&'a self, sealed: &'a SealedAllocation<'a>) -> SealedSource<'a, D> {
+        SealedSource { store: self, sealed }
+    }
+}
 
 /// An open object, as a reader sees it.
 ///
