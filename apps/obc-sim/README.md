@@ -45,16 +45,16 @@ card. Input files stay unchanged. The final reader releases the temporary card.
 On Unix, create a persistent card explicitly, then reopen it without importing the files again:
 
 ```sh
-target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/
+target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/ --weather forecast.obcw
 target/release/obc-sim --card ride.obc
 target/release/obc-sim --import next-stage.gpx --card ride.obc
 ```
 
 Creation refuses an existing path and exits after importing. If an import fails, it reports failure
 and leaves the partial card for inspection. Reopening never initializes or resets the file. It
-requires exactly one readable map and complete route and trip catalogs. The last reader keeps the
-card's exclusive file lock, even after the session closes. Persistent cards are not supported on
-Windows; ordinary temporary sessions remain available.
+requires exactly one readable map, complete route and trip catalogs, and valid installed weather
+when present. The last reader keeps the card's exclusive file lock, even after the session closes.
+Persistent cards are not supported on Windows; ordinary temporary sessions remain available.
 
 A reopened map is labelled **Card map**. Planner elevation uses `NullElevation` in this mode;
 it does not infer a path to an external terrain sidecar. Embedded map terrain remains available
@@ -167,7 +167,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 These are independent product controls, not part of the simulator-fixture consolidation:
 
-- `--weather FILE.obcw|demo[:SCENARIO]|live` loads one weather bundle, deterministic demo, or live service.
+- `--weather FILE.obcw|demo[:SCENARIO]|live` imports weather from a file, deterministic demo, or live service
+  into the session card. `--card` without this flag reopens the installed bundle. No folder data is
+  migrated. A failed import leaves the prior committed data available; an uncertain commit requires
+  closing the session and reopening the card. Reader-slot pressure after a successful commit retries
+  reader acquisition without importing again.
   Demo scenarios are `scattered` (the default), `drizzle`, `frontal`, `storm`, `dry`, `incoming`,
   `stormahead`, `rainahead`, `gusty`, and `hourly`.
 - `--weather-now UNIX` overrides the freshness instant.

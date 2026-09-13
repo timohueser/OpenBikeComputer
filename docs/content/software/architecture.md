@@ -234,8 +234,22 @@ Settled frames neither reopen the source nor scan the catalog.
 
 The browser card remains volatile. It allocates memory in 16 KiB pages; released pages remain
 available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
-route uses one page instead of a retained byte vector. Native weather and ride recording keep
-their existing host repositories and files.
+route uses one page instead of a retained byte vector. Native ride recording keeps its existing
+host repository and files.
+
+Native weather uses the same card owner as the map, routes and trips. Files, generated demos and
+HTTP responses are import inputs. The [weather adapter](src:host/obc-host-core/src/flat_weather.rs)
+validates each input before atomic replacement and retains an exact revision reader. Reopening a
+card loads its installed weather without importing again. An absent bundle means no weather;
+unreadable, malformed or multiple current bundles cause an error.
+
+A weather upload completes after the matching committed revision has a validated reader.
+If a write succeeds while reader slots are full, the host retains its committed identity and
+retries reader acquisition. It does not repeat the write. Existing readers remain available for
+display, but only validated current card data can authorize duplicate or stale upload acceptance.
+An uncertain commit stops further weather work until the session closes and the card reopens.
+Reopened observations age against the current clock; explicit fixture imports can use a fixed
+clock for deterministic rendering.
 
 Catalog deletion retains the selected object kind, so equal numeric IDs in separate repositories
 cannot redirect a removal. The domain removes a trip's member routes before the trip object.
