@@ -232,6 +232,7 @@ impl Executor {
         orig.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
         leg.read_into(&store.sealed_source(self.leg.as_ref().ok_or(())?)).map_err(|_| ())
     }
+    #[allow(clippy::too_many_arguments)] // Borrow the ride loop's existing views for one pass.
     pub(crate) fn poll(
         &mut self,
         app: &mut App,
@@ -598,7 +599,7 @@ impl Executor {
                 match writer.try_call_owned(Request::Close { handle: original.release() }, reply) {
                     Ok(t) => self.phase = Phase::Await(t, After::Close),
                     Err(Request::Close { handle }) => {
-                        self.original = Some(StoreSource::over(store, handle).ok().expect("original mount"))
+                        self.original = Some(StoreSource::over(store, handle).expect("original mount"))
                     }
                     _ => unreachable!(),
                 }
