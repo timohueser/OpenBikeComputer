@@ -196,7 +196,7 @@ impl MountedStore {
     /// Call under the owner lock after checking the expected head; failure fences all writers.
     pub(crate) fn confirm_durable(&mut self) -> Result<(), StoreError> {
         self.ready()?;
-        if self.card.device().sync().is_err() {
+        if self.card.sync_media().is_err() {
             self.remount_required = true;
             return Err(StoreError::Media);
         }
