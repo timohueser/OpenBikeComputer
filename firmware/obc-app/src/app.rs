@@ -2286,7 +2286,10 @@ impl App {
         if self.state.peak_view_profile.is_none() {
             return false;
         }
-        screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::PeakView(screen::PeakViewScreen::new())));
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::PeakView(screen::PeakViewScreen::new(self.state.user_fix))),
+        );
         self.ui.map_dirty = true;
         true
     }
@@ -4392,7 +4395,7 @@ mod tests {
     fn peak_view_adopts_the_stopped_compass_even_when_the_map_is_north_up() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.state.heading_up = false;
-        assert!(app.ui.stack.push(Screen::PeakView(crate::screen::PeakViewScreen::new())).is_ok());
+        assert!(app.ui.stack.push(Screen::PeakView(crate::screen::PeakViewScreen::new(app.state.user_fix))).is_ok());
         app.ui.map_dirty = false;
         tick_with(&mut app, Fix::at(0, 0), 215.0);
         assert_eq!(app.state.compass_deg, Some(215.0));

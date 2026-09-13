@@ -35,8 +35,8 @@ pub struct PeakViewScreen {
 }
 
 impl PeakViewScreen {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(fix: Option<obc_ports::Fix>) -> Self {
+        Self { status: if fix.is_some() { Status::Building(0) } else { Status::Waiting }, ..Self::default() }
     }
 
     pub fn set_status(&mut self, status: Status) -> bool {
@@ -173,10 +173,10 @@ impl PeakViewScreen {
             }
         }
         let chart_bottom = rx.h - LEDGER_H;
-        if let Some(terrain) = rx.peak_view {
-            terrain::draw(cv, terrain, profile, heading_q4, rx.w, chart_bottom);
+        terrain::draw(cv, rx.peak_view, profile, heading_q4, rx.w, chart_bottom);
+        if rx.peak_view.is_some() {
+            draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
         }
-        draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
         draw_ledger(cv, rx, profile, selected, heading_q4);
     }
 }
@@ -481,6 +481,18 @@ mod tests {
     };
 
     #[test]
+    fn opening_uses_an_available_fix_before_the_runtime_starts() {
+        for has_fix in [false, true] {
+            let mut app = crate::App::new(AppState::new(0, 0, 1.0));
+            app.state.peak_view_profile = Some(PROFILE);
+            app.state.user_fix = has_fix.then_some(obc_ports::Fix { lat: 0, lon: 0, course: None, speed_mps: None });
+            assert!(app.show_peak_view());
+            let super::super::Screen::PeakView(screen) = app.top_screen() else { panic!("Peak View") };
+            assert_eq!(screen.status, if has_fix { Status::Building(0) } else { Status::Waiting });
+        }
+    }
+
+    #[test]
     fn visible_order_crosses_north_and_includes_stacked_crests() {
         assert_eq!(bearing_delta_q4(40, 1400), 80);
         assert_eq!(&visible_indices(&PROFILE, 0)[..], &[2, 0]);
@@ -518,7 +530,7 @@ mod tests {
         state.compass_deg = Some(0.0);
         let mut activity = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
-        let mut screen = PeakViewScreen::new();
+        let mut screen = PeakViewScreen::new(None);
         screen.set_status(Status::Building(0));
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
         assert_eq!(screen.selected, None);
@@ -563,7 +575,7 @@ mod tests {
         let mut settings = Settings::default();
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
         for (direction, expected) in [(1, [0, 1, 2, 3, 4, 5, 6, 7, 0]), (-1, [1, 0, 7, 6, 5, 4, 3, 2, 1])] {
-            let mut screen = PeakViewScreen::new();
+            let mut screen = PeakViewScreen::new(None);
             screen.set_status(Status::Ready);
             let mut visited = std::vec::Vec::new();
             for _ in 0..40 {
@@ -583,7 +595,7 @@ mod tests {
             assert_eq!(visited, expected);
         }
 
-        let mut screen = PeakViewScreen::new();
+        let mut screen = PeakViewScreen::new(None);
         screen.set_status(Status::Ready);
         screen.handle(Gesture::Step(2), &mut cx);
         assert_eq!(screen.selected, Some((1, 0)));
@@ -614,7 +626,7 @@ mod tests {
 
     #[test]
     fn only_waiting_and_unavailable_animate() {
-        let mut screen = PeakViewScreen::new();
+        let mut screen = PeakViewScreen::new(None);
         screen.tick_timers(0, 240, 320);
         assert!(screen.tick_timers(166, 240, 320).changed);
         assert!(screen.set_status(Status::Building(0)));
