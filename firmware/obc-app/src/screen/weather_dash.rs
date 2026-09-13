@@ -1,6 +1,6 @@
 //! Weather dashboard: a bounded rain outlook, the precipitation strip, and stored hourly data.
-//! The coverage limit and countdown derive from the snapshot and current time. Update activity
-//! changes only the title cue; cached forecasts remain visible.
+//! The rain countdown derives from the snapshot and current time. Update activity changes only
+//! the title cue; cached forecasts remain visible.
 
 use core::fmt::Write as _;
 
@@ -39,14 +39,13 @@ const STRIP_BAR_MAX: i32 = 38;
 /// The baseline the bars stand on; slot labels hang below it.
 const STRIP_BASE: i32 = STRIP_TOP + STRIP_BAR_MAX + 2;
 
-/// Top of the two action rows — 8 px clear of the freshness line above (owner tuning round:
-/// "Updated" sat too close to HOURLY), and the last row still 2 px inside the frame outline.
+/// Top of the two action rows; the last row stays inside the frame outline.
 const ACTIONS_TOP: i32 = 232;
 const ACTION_ROW_H: i32 = 38;
 const ACTION_GAP: i32 = 6;
 
 /// The Weather dashboard screen. State is the highlighted action row plus the minute ticker that
-/// keeps the countdown / freshness copy honest as time passes.
+/// keeps the rain countdown current.
 #[derive(Debug, Default)]
 pub struct WeatherScreen {
     selected: usize,
@@ -149,15 +148,6 @@ impl WeatherScreen {
         }
 
         draw_strip(cv, w, snap, now, rx.t(Msg::WeatherNow));
-
-        // Show the hourly coverage limit, not the assembly time of a possibly cached forecast.
-        if snap.hourly_at(now).is_some() {
-            let until = snap.valid_until.min(snap.valid_from + 24 * 3_600);
-            let (hh, mm) = local_hour_minute(until, rx.settings.utc_offset_min);
-            let mut coverage: heapless::String<32> = heapless::String::new();
-            let _ = write!(coverage, "{} {:02}:{:02}", rx.t(Msg::WeatherHourlyUntil), hh, mm);
-            cv.text(&coverage, Point::new(w / 2, STRIP_BASE + 28), Font::Label, TextAlign::Center, SUBTEXT);
-        }
 
         self.draw_actions(cv, w, rx);
     }
