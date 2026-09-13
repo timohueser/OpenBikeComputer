@@ -216,6 +216,11 @@ available for reuse, so memory use follows the session's high-water mark. The bu
 route uses one page instead of a retained byte vector. Simulator route and trip folders, weather,
 and ride recording keep their existing host repositories and files.
 
+The shared host dispatcher retries a recording open until the repository confirms that the object exists.
+While an open is still owed, append and checkpoint operations report a write failure and keep their samples pending.
+If Save still has no object after that pass's open attempt, the repository returns `Nothing` and the session ends without a saved ride.
+The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
+
 ### Semantic ports
 
 [`obc-ports`](src:firmware/obc-ports/src/lib.rs) defines interfaces for sensors, input, settings, and tracks.
