@@ -881,11 +881,12 @@ mod tests {
             .as_chunks::<{ obc_formats::track::RECORD_LEN }>()
             .0
             .iter()
-            .map(|bytes| obc_formats::track::decode_record(bytes))
+            .map(obc_formats::track::decode_record)
             .collect();
         assert!(points.windows(2).all(|pair| pair[0].t_ms < pair[1].t_ms));
         assert!(points.iter().any(|point| point.lat != points[0].lat));
-        assert!(d.rides.fill_track(saved.id, &mut obc_route::Profile::EMPTY).unwrap().len() > 1);
+        let mut profile = obc_route::Profile::EMPTY;
+        assert!(d.rides.fill_track(saved.id, &mut profile).unwrap().len() > 1);
         d.cmd("exit");
         d.cmd("pause");
         now += 16.0;
