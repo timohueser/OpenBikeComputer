@@ -284,6 +284,9 @@ sensors = "Sensors"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
+removing = "Removing..."
+remove_failed = "Could not remove"
+restart = "Restart to finish"
 title = "BLUETOOTH"
 radio = "Bluetooth"
 radio_sub = "radio"

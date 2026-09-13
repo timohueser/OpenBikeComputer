@@ -290,8 +290,20 @@ This process creates one authenticated bond.
 
 The device stores one phone bond.
 While this bond exists, it rejects pairing from a different phone.
-The device action **Forget phone** clears the bond.
+The device action **Forget phone** removes the stored phone keys.
+It first writes and verifies the empty persistent slot, then removes the host keys.
+A failed persistent write or verification leaves the host keys untouched.
+A failed host-key removal can leave a partial result: the persistent slot is empty, but host keys can remain.
+The screen shows the failure and permits another guarded attempt.
+Disconnect and an unpaired link status do not confirm removal.
+
+The BLE host queues controller address-resolution cleanup without a completion receipt.
+After durable and host keys are removed, the screen shows **Restart to finish**.
+Restart resets the controller; the empty persistent slot supplies no phone keys at startup.
+The device does not restart automatically.
+
 The bonded phone can also send `forgetBond`.
+Its response accepts the request before removal and disconnect; it does not confirm durable completion.
 The Bluetooth power setting does not remove the bond.
 
 Device Information, Battery, and `protocolVersion` are open before pairing.

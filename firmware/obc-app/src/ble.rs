@@ -42,8 +42,7 @@ pub struct BleStatus {
     /// clears. The board publishes it from the pairing exchange; the sim injects it from the
     /// control panel.
     pub passkey: Option<u32>,
-    /// A bond is stored — the Bluetooth screen's "Paired: yes/no" row (deliberately no phone name).
-    /// The board reads its RRAM bond slot; the sim injects it from the control panel.
+    /// The platform's paired state. It is not a durable deletion receipt.
     pub paired: bool,
 }
 
@@ -130,37 +129,218 @@ impl BondEffect {
     }
 }
 
-/// Why removing the bond failed.
+/// The controller resolving list is separate from durable and host encryption keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BondError {
-    /// The bond store could not be written.
-    StoreWriteFailed,
+pub enum ControllerClearance {
+    Confirmed,
+    /// Host removal queued a controller update without an acknowledgment.
+    Unconfirmed,
 }
 
-/// The result of one [`BondEffect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondError {
+    /// No durable clear was acknowledged; host keys were not touched.
+    StoreWriteFailed,
+    /// The written slot could not be read back as empty; host keys were not touched.
+    StoreVerifyFailed,
+    /// Durable keys were cleared, but host key removal failed.
+    HostKeysRemoveFailed,
+    /// No physical work was admitted.
+    QueueFull,
+    Unsupported,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondOutcome {
-    /// No bond remains. The disconnect that follows arrives separately, as a link external fact.
-    Forgotten { token: OperationToken<BondTag> },
-    /// The removal failed; the bond is still there.
-    Failed { token: OperationToken<BondTag>, error: BondError },
-    /// The executor abandoned the removal without completing it.
-    Cancelled { token: OperationToken<BondTag> },
+    KeysRemoved {
+        token: OperationToken<BondTag>,
+        controller: ControllerClearance,
+    },
+    Failed {
+        token: OperationToken<BondTag>,
+        error: BondError,
+    },
+    /// The executor stopped before physical work started.
+    Cancelled {
+        token: OperationToken<BondTag>,
+    },
 }
 
 impl BondOutcome {
-    /// The operation this outcome answers.
+    pub fn from_result(token: OperationToken<BondTag>, result: Result<ControllerClearance, BondError>) -> Self {
+        match result {
+            Ok(controller) => Self::KeysRemoved { token, controller },
+            Err(error) => Self::Failed { token, error },
+        }
+    }
+
     pub fn token(&self) -> OperationToken<BondTag> {
         match self {
-            BondOutcome::Forgotten { token } | BondOutcome::Failed { token, .. } | BondOutcome::Cancelled { token } => {
-                *token
-            }
+            Self::KeysRemoved { token, .. } | Self::Failed { token, .. } | Self::Cancelled { token } => *token,
         }
     }
 }
 
-// Layout tripwires: a token, and at most a one-byte reason.
-const _: () = assert!(core::mem::size_of::<BondIntent>() == 0, "one fieldless request");
-const _: () = assert!(core::mem::size_of::<BondEffect>() <= 4, "a bare token");
-const _: () = assert!(core::mem::size_of::<BondOutcome>() <= 8, "a token and a reason");
-const _: () = assert!(core::mem::size_of::<BondError>() <= 1, "a verdict, not a report");
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondStatus {
+    Idle,
+    Pending,
+    Failed(BondError),
+    RestartRequired,
+    Removed,
+}
+
+impl BondStatus {
+    pub fn can_forget(self, paired: bool) -> bool {
+        (paired || matches!(self, Self::Failed(_))) && !matches!(self, Self::Pending | Self::RestartRequired)
+    }
+}
+
+/// One admitted removal. Link facts never resolve this operation.
+pub(crate) struct BondMachine {
+    tokens: crate::device_core::TokenSource<BondTag>,
+    pending: Option<BondEffect>,
+    status: BondStatus,
+}
+
+impl BondMachine {
+    pub const fn new() -> Self {
+        Self { tokens: crate::device_core::TokenSource::new(), pending: None, status: BondStatus::Idle }
+    }
+
+    pub fn request(&mut self, supported: bool, paired: bool) -> bool {
+        if !supported || !self.status.can_forget(paired) {
+            return false;
+        }
+        self.pending = Some(BondEffect::Forget { token: self.tokens.issue() });
+        self.status = BondStatus::Pending;
+        true
+    }
+
+    pub fn next_effect(&mut self) -> Option<BondEffect> {
+        self.pending.take()
+    }
+    pub fn status(&self) -> BondStatus {
+        self.status
+    }
+
+    pub fn apply_outcome(&mut self, outcome: BondOutcome) -> bool {
+        if self.status != BondStatus::Pending || !self.tokens.is_current(outcome.token()) {
+            return false;
+        }
+        self.tokens.invalidate();
+        self.pending = None;
+        self.status = match outcome {
+            BondOutcome::KeysRemoved { controller: ControllerClearance::Confirmed, .. } => BondStatus::Removed,
+            BondOutcome::KeysRemoved { controller: ControllerClearance::Unconfirmed, .. } => {
+                BondStatus::RestartRequired
+            }
+            BondOutcome::Failed { error, .. } => BondStatus::Failed(error),
+            BondOutcome::Cancelled { .. } => BondStatus::Failed(BondError::Cancelled),
+        };
+        true
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<BondEffect>() <= 4);
+const _: () = assert!(core::mem::size_of::<BondOutcome>() <= 8);
+
+/// A single platform request retained through radio phase changes and until its result is read.
+/// Wake signals do not own the request or its result.
+pub struct BondDelivery {
+    queued: Option<BondEffect>,
+    running: Option<OperationToken<BondTag>>,
+    outcome: Option<BondOutcome>,
+}
+
+impl Default for BondDelivery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BondDelivery {
+    pub const fn new() -> Self {
+        Self { queued: None, running: None, outcome: None }
+    }
+
+    pub fn submit(&mut self, effect: BondEffect) -> Result<(), BondError> {
+        if self.queued.is_some() || self.running.is_some() || self.outcome.is_some() {
+            return Err(BondError::QueueFull);
+        }
+        self.queued = Some(effect);
+        Ok(())
+    }
+
+    pub fn begin(&mut self) -> Option<BondEffect> {
+        let effect = self.queued.take()?;
+        self.running = Some(effect.token());
+        Some(effect)
+    }
+
+    pub fn finish(&mut self, outcome: BondOutcome) -> bool {
+        if self.running != Some(outcome.token()) {
+            return false;
+        }
+        self.running = None;
+        self.outcome = Some(outcome);
+        true
+    }
+
+    pub fn take_outcome(&mut self) -> Option<BondOutcome> {
+        self.outcome.take()
+    }
+}
+
+#[cfg(test)]
+mod bond_tests {
+    use super::*;
+
+    #[test]
+    fn admission_and_each_terminal_failure_are_one_shot() {
+        let mut bond = BondMachine::new();
+        assert!(!bond.request(false, true));
+        assert!(!bond.request(true, false));
+        for error in [
+            BondError::StoreWriteFailed,
+            BondError::StoreVerifyFailed,
+            BondError::HostKeysRemoveFailed,
+            BondError::QueueFull,
+            BondError::Unsupported,
+        ] {
+            assert!(bond.request(true, true));
+            let effect = bond.next_effect().unwrap();
+            assert!(!bond.request(true, true));
+            assert!(bond.next_effect().is_none());
+            let failed = BondOutcome::Failed { token: effect.token(), error };
+            assert!(bond.apply_outcome(failed));
+            assert!(!bond.apply_outcome(failed));
+            assert_eq!(bond.status(), BondStatus::Failed(error));
+            assert!(bond.next_effect().is_none());
+        }
+        assert!(bond.request(true, false), "a failure permits retry even when the link says unpaired");
+    }
+
+    #[test]
+    fn delivery_retains_the_exact_result_until_consumed_and_refuses_overwrite() {
+        let mut tokens = crate::device_core::TokenSource::new();
+        let first = BondEffect::Forget { token: tokens.issue() };
+        let second = BondEffect::Forget { token: tokens.issue() };
+        let mut delivery = BondDelivery::new();
+        delivery.submit(first).unwrap();
+        assert_eq!(delivery.submit(second), Err(BondError::QueueFull));
+        assert_eq!(delivery.begin(), Some(first));
+        assert_eq!(delivery.submit(second), Err(BondError::QueueFull));
+        assert!(delivery.begin().is_none());
+        assert!(!delivery.finish(BondOutcome::Cancelled { token: second.token() }));
+        let done = BondOutcome::KeysRemoved { token: first.token(), controller: ControllerClearance::Unconfirmed };
+        assert!(delivery.finish(done));
+        assert!(!delivery.finish(done));
+        assert_eq!(delivery.submit(second), Err(BondError::QueueFull));
+        assert_eq!(delivery.take_outcome(), Some(done));
+        assert!(delivery.take_outcome().is_none());
+        delivery.submit(second).unwrap();
+        assert_eq!(delivery.begin(), Some(second));
+    }
+}

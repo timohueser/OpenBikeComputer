@@ -254,6 +254,9 @@ sensors = "Capteurs"
 
 # --- Bluetooth settings screen ---
 [bluetooth]
+removing = "Suppression..."
+remove_failed = "Échec de suppression"
+restart = "Redémarrage requis"
 title = "BLUETOOTH"
 radio = "Bluetooth"
 radio_sub = "radio"
