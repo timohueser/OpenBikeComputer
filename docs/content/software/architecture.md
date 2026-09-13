@@ -221,9 +221,12 @@ The owner holds an exclusive file lock until the last object reader closes.
 A failed commit can have reached the file. In that case, the owner stops further changes and
 requires a fresh mount to select the durable catalog. Existing readers keep their pinned bytes.
 Reopening does not import the input files again and does not reset the card.
-Persistent Windows cards remain unsupported. Reopened simulator cards use `NullElevation` for
-planning. Embedded map terrain remains available to Peak View; planner sidecar ownership is still
-separate. Ordinary OBCM sessions keep their external terrain sidecar lookup.
+Persistent Windows cards remain unsupported. Simulator planning and map-referenced altitude use
+the terrain inside the same retained map object in both import and reopen sessions. A small tile
+cache stays with that exact card, object and revision. A replacement gets a new cache; readers
+of the previous revision keep their original bytes until they close. Missing or unreadable
+terrain leaves elevation unavailable and keeps the map usable. External terrain sidecars are
+not runtime inputs. Peak View retains its separate worker and cache over the selected map.
 
 The browser imports its routes into the same session card as the map. Its
 [route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata

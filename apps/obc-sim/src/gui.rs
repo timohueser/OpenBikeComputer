@@ -340,9 +340,8 @@ struct SimGui {
     /// egui draw); the pass is what applies them, so they wait one frame here — exactly the frame
     /// they already waited for before, when `handle_input` applied them behind the render.
     pending_gestures: Vec<Gesture>,
-    /// The map's terrain (EL7): the `.obcd` sidecar beside the `.obcm`, mounted once for the
-    /// session like the map, or the null source when there is none. The planner samples it as it
-    /// emits, so a route created in the GUI arrives with a real elevation profile and climbs.
+    /// Embedded terrain from the retained map, or the null source when unavailable.
+    /// Planner emission and map-referenced altitude share this bounded cache.
     elevation: Box<dyn obc_route::ElevationSource>,
     /// The device body color drawn by the housing chrome. Switchable in the control panel.
     colorway: Colorway,

@@ -1817,7 +1817,7 @@ fn main() {
                     &mut platform,
                 );
                 // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
-                // mounted `.obcd` the router emits from, drained right behind the pass exactly as
+                // retained map terrain the router emits from, drained right behind the pass exactly as
                 // the board's ride loop does.
                 app.sample_terrain(&mut *elev);
                 t += step;

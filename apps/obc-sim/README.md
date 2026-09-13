@@ -63,9 +63,10 @@ requires exactly one readable map, complete route and trip catalogs, and valid i
 when present. The last reader keeps the card's exclusive file lock, even after the session closes.
 Persistent cards are not supported on Windows; ordinary temporary sessions remain available.
 
-A reopened map is labelled **Card map**. Planner elevation uses `NullElevation` in this mode;
-it does not infer a path to an external terrain sidecar. Embedded map terrain remains available
-to Peak View. Ordinary OBCM sessions keep the existing `.obcd` sidecar lookup for planning.
+A reopened map is labelled **Card map**. Planning and map-referenced altitude sample the terrain
+inside that retained map object in both import and reopen sessions. They do not read an external
+`.obcd` sidecar. Missing terrain leaves elevations unavailable; invalid or unreadable terrain
+reports a diagnostic and keeps the map usable. Peak View keeps its separate bounded terrain cache.
 
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
