@@ -210,6 +210,17 @@ The simulator and its background terrain worker share that source; the last read
 See the [shared host store](src:host/obc-host-core/src/flat_store.rs) and
 [map reader](src:host/obc-host-core/src/flat_map.rs).
 
+The host library also provides an explicit persistent card owner on Unix systems.
+Maps and routes can share this owner. A new card gets a new store identity.
+Opening an existing card preserves its store, object, and revision identities.
+Creation never overwrites an existing path. Opening never formats an invalid card.
+The shared store applies its normal recording recovery during mount.
+The owner holds an exclusive file lock until the last object reader closes.
+A failed commit can have reached the file. In that case, the owner stops further changes and
+requires a fresh mount to select the durable catalog. Existing readers keep their pinned bytes.
+The simulator still uses its temporary map card and folder route repository.
+Persistent Windows cards and simulator integration remain separate work.
+
 The browser imports its routes into the same session card as the map. Its
 [route repository](src:host/obc-host-core/src/flat_routes.rs) reads committed catalog metadata
 and binds active readers to an exact object revision. A computed route replaces the prior
@@ -318,7 +329,7 @@ The device also wakes for input, sensor data, and the watchdog guard.
   <path class="d-flow" d="M540 190 C 500 224, 420 224, 360 200" marker-end="url(#lpF)" stroke-dasharray="4 4" />
   <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:9.5px">arm the next wake, sleep again</text>
   <rect x="250" y="252" width="420" height="26" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
-  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (nothing animating · GPS asleep): just the ~10 s watchdog-feed guard tick</text>
+  <text x="460" y="269" text-anchor="middle" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">idle (no animation · GNSS stopped): ~10 s watchdog-feed guard</text>
 </svg>
 <figcaption>The device sleeps between events. A hardware timer generates the display COM signal without CPU work.</figcaption>
 </figure>
@@ -335,9 +346,11 @@ Bulk data stays in caller-owned buffers.
 [`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) performs the effects for every frame-stepped host.
 The board performs the same effects with its own asynchronous execution.
 
-Two requests still use the older mailbox: close the ride log and forget the paired phone.
-No domain can yet validate their completion.
-[`device_core/residual.rs`](src:firmware/obc-app/src/device_core/residual.rs) lists the two and the issue that removes each one.
+All platform requests use typed effects and results.
+The ride recorder validates its close result.
+The [phone-key removal state](src:firmware/obc-app/src/ble.rs) validates one result for each admitted request.
+A link disconnect does not prove that stored keys were removed.
+The board reports durable-key and host-key removal separately from unconfirmed controller cleanup.
 
 ## On-device routing: the router seam
 

@@ -1,6 +1,6 @@
 # Device captures
 
-These six WebP files are real device frames. The repository README uses them to show what the
+These WebP files are real device frames. The repository README uses them to show what the
 firmware looks like. Each one is a headless `obc-sim` render of the production `obc-app` and
 `obc-render` code at 3× the 240 × 320 panel, in the panel's own 64-colour gamut.
 
@@ -36,6 +36,10 @@ CLIMBOFF="B u p p d d d p b b b"
 # The main menu, with its needle settled on the Routes station. "w" settles the animation.
 "$SIM" "$GRIMSEL" --boot --scale 3 --battery 45 --script "B w" \
     --expect-screen Menu --png "$OUT/menu.png"
+
+# Peak View from Kleine Scheidegg, facing the Eiger and Mönch.
+"$SIM" "$GRIMSEL" --boot --scale 3 --peak-view scheidegg --heading 115 \
+    --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
 
 # The weather frame uses a deterministic demo bundle. "p d d d d w p" walks
 # Home -> Menu -> Weather.

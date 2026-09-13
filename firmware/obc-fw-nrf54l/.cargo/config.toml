@@ -3,9 +3,7 @@
 [build]
 target = "thumbv8m.main-none-eabihf"
 
-# cfg form (not the dotted triple `[target.thumbv8m.main-none-eabihf]`, which TOML would
-# mis-parse as nested tables). `probe-rs chip list` names this die `nRF54L15` — that is the
-# M33 application core; the FLPR coprocessor is a separate probe-rs target we don't use yet.
+# The nRF54LM20A M33 application core; the FLPR is managed by the firmware.
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # `+strict-align` — forbid the backend from emitting ANY alignment-assuming memory access for
 # under-aligned data. **Hardening, NOT the fix for the #501 on-glass HardFault** (the fault
@@ -24,27 +22,13 @@ target = "thumbv8m.main-none-eabihf"
 # "unknown and unstable feature … still passed through" for this spelling on thumbv8m —
 # expected; the flag verifiably reaches LLVM.
 rustflags = ["-C", "target-feature=+strict-align"]
-# `--verify`: read the RRAM back after programming and confirm it matches the ELF. The nRF54L15 is
-# an RRAM part and probe-rs 0.31's program path corrupts the *first* write after a code change often
-# enough to matter — a mangled byte → a deterministic boot HardFault at a random PC (re-flashing the
-# identical bytes fixes it). `--verify` turns that silent corruption into a loud, immediate failure:
-# if it fails, just `cargo run` again. (The old "G2 intermittent first-boot panic" was this all along.)
-runner = "probe-rs run --chip nRF54LM20A --verify"
+# Shared runner: verified, single-buffered programming and one host session at a time.
+runner = "python3 ../../tools/board.py run"
 
-# `cargo rtt` — **attach** to an already-flashed, running board and stream defmt/RTT. `probe-rs
-# attach` re-downloads only when the built ELF *differs* from what's on the chip; when it matches
-# (the reconnect / re-watch case) it skips the flash and just attaches (no erase, no program, no
-# reset). It must override the **same `cfg(...)` runner key** the file sets above — an exact-triple
-# `--config` override is silently ignored when a `cfg()` runner is already present, which falls the
-# alias back to the flashing `probe-rs run`. Array form so the runner string's spaces survive.
-#
-# NB two things make it *re-flash*: (1) defmt levels are compile-time, so if you flashed with
-# `DEFMT_LOG=debug cargo run` but `cargo rtt` rebuilds at the `info` default below, the ELF differs
-# and attach re-downloads — keep the level the same (or set `DEFMT_LOG=debug` here during bring-up);
-# (2) any source edit since the flash. To attach to *whatever* is running with zero rebuild, skip
-# cargo and run `probe-rs attach --chip nRF54LM20A <the ELF>` directly.
+# Cargo may rebuild before attaching. For no rebuild, use `obc rtt [EXACT_ELF]`.
+# An attach never programs the chip; the ELF must match the running firmware.
 [alias]
-rtt = ["run", "--release", "--config", "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.runner = 'probe-rs attach --chip nRF54LM20A'"]
+rtt = ["run", "--release", "--config", "target.'cfg(all(target_arch = \"arm\", target_os = \"none\"))'.runner = 'python3 ../../tools/board.py attach'"]
 
 [env]
 DEFMT_LOG = "info"

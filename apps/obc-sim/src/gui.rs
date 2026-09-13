@@ -144,8 +144,9 @@ impl HostPlatform for SimPlatform<'_> {
         Ok(crate::SIM_CARD_FREE)
     }
 
-    fn forget_bond(&mut self) {
+    fn forget_bond(&mut self) -> Result<obc_app::ble::ControllerClearance, obc_app::ble::BondError> {
         self.panel.ble.paired = false;
+        Ok(obc_app::ble::ControllerClearance::Confirmed)
     }
 
     fn request_weather_refresh(&mut self) -> bool {

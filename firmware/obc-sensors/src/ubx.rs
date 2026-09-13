@@ -43,10 +43,8 @@ pub const ID_ACK_NAK: u8 = 0x00;
 pub const CLASS_CFG: u8 = 0x06;
 pub const ID_CFG_VALSET: u8 = 0x8A;
 
-/// `UBX-RXM` class + the `PMREQ` (power-management request) message id — the deep-sleep command the
-/// driver issues when tracking stops. See [`pmreq_backup`].
-pub const CLASS_RXM: u8 = 0x02;
-pub const ID_RXM_PMREQ: u8 = 0x41;
+/// Controlled GNSS start/stop command. See [`cfg_gnss_running`].
+pub const ID_CFG_RST: u8 = 0x04;
 
 // Little-endian field readers — UBX is little-endian throughout. Each returns 0 if the slice is
 // too short (callers gate on length first).
@@ -404,24 +402,12 @@ pub fn valset_u16(out: &mut [u8], key: u32, val: u16) -> Option<usize> {
     frame(out, CLASS_CFG, ID_CFG_VALSET, &payload)
 }
 
-/// `RXM-PMREQ` `flags`: request **backup** mode (deep sleep, RTC + RAM retained) and **force** it
-/// even with active comms. Woken by activity on the comms port (the driver pokes the DDC).
-const PMREQ_FLAG_BACKUP: u32 = 0x02;
-const PMREQ_FLAG_FORCE: u32 = 0x04;
-
-/// Build a `UBX-RXM-PMREQ` frame requesting **backup** (deep sleep) for an infinite duration —
-/// the M10 retains its RTC + ephemeris on ~microamps and wakes on the next DDC activity (a fast
-/// *warm* fix). 16-byte v0 payload: `version(1) | reserved(3) | duration(4 LE, 0 = until woken) |
-/// flags(4 LE, backup|force) | wakeupSources(4, 0 = comms activity)`. Returns the frame length
-/// written to `out` (24 B), or `None` if `out` is too small.
-pub fn pmreq_backup(out: &mut [u8]) -> Option<usize> {
-    let mut payload = [0u8; 16];
-    payload[0] = 0x00; // version 0
-                       // payload[1..4] reserved, payload[4..8] duration = 0 (infinite, until woken)
-    let flags = PMREQ_FLAG_BACKUP | PMREQ_FLAG_FORCE;
-    payload[8..12].copy_from_slice(&flags.to_le_bytes());
-    // payload[12..16] wakeupSources = 0 — any traffic on the (I²C) comms port wakes it.
-    frame(out, CLASS_RXM, ID_RXM_PMREQ, &payload)
+/// Start or stop GNSS tasks without clearing navigation data or receiver configuration.
+/// `CFG-RST` payload: zero `navBbrMask`, controlled start/stop mode, reserved zero.
+/// The receiver does not acknowledge this command. Returns 12 bytes, or `None` if too small.
+pub fn cfg_gnss_running(out: &mut [u8], running: bool) -> Option<usize> {
+    let mode = if running { 0x09 } else { 0x08 };
+    frame(out, CLASS_CFG, ID_CFG_RST, &[0, 0, mode, 0])
 }
 
 /// Common VALSET payload prefix (first 8 bytes): `version=0 | layers=RAM | reserved(2) | key(4 LE)`.
@@ -612,21 +598,15 @@ mod tests {
     }
 
     #[test]
-    fn pmreq_backup_frames_an_infinite_backup_request() {
-        let mut out = [0u8; 24];
-        let n = pmreq_backup(&mut out).unwrap();
-        match scan_ubx(&out[..n]) {
-            Scan::Frame { frame, consumed } => {
-                assert_eq!((frame.class, frame.id), (CLASS_RXM, ID_RXM_PMREQ));
-                assert_eq!(consumed, n);
-                assert_eq!(frame.payload.len(), 16, "v0 PMREQ payload");
-                assert_eq!(frame.payload[0], 0, "version 0");
-                assert_eq!(&frame.payload[4..8], &[0, 0, 0, 0], "duration 0 = until woken");
-                let flags =
-                    u32::from_le_bytes([frame.payload[8], frame.payload[9], frame.payload[10], frame.payload[11]]);
-                assert_eq!(flags, 0x06, "backup | force");
-            }
-            other => panic!("expected a frame, got {other:?}"),
+    fn gnss_control_preserves_navigation_data_and_uses_controlled_modes() {
+        for (running, expected) in [
+            (false, [0xb5, 0x62, 0x06, 0x04, 0x04, 0, 0, 0, 0x08, 0, 0x16, 0x74]),
+            (true, [0xb5, 0x62, 0x06, 0x04, 0x04, 0, 0, 0, 0x09, 0, 0x17, 0x76]),
+        ] {
+            let mut out = [0u8; 12];
+            assert_eq!(cfg_gnss_running(&mut out, running), Some(expected.len()));
+            assert_eq!(out, expected);
+            assert_eq!(cfg_gnss_running(&mut out[..11], running), None);
         }
     }
 

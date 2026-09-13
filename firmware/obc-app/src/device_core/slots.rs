@@ -355,7 +355,13 @@ mod tests {
         first.settings.try_put(SettingsOutcome::Persisted { token: settings_ops.issue(), revision: 3 }).unwrap();
         first.weather.try_put(WeatherOutcome::Raised { token: weather_ops.issue() }).unwrap();
         first.dfu.try_put(DfuOutcome::InstallBegan { token: dfu_ops.issue() }).unwrap();
-        first.bond.try_put(BondOutcome::Forgotten { token: bond_ops.issue() }).unwrap();
+        first
+            .bond
+            .try_put(BondOutcome::KeysRemoved {
+                token: bond_ops.issue(),
+                controller: crate::ble::ControllerClearance::Confirmed,
+            })
+            .unwrap();
         first
             .storage_info
             .try_put(StorageInfoOutcome::Measured { token: storage_ops.issue(), free_bytes: 42 })

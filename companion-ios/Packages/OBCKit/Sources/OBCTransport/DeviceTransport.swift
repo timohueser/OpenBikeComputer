@@ -195,6 +195,7 @@ public protocol DeviceObjects: Sendable {
     /// compact-binary payload as it lands; `handle` carries batch progress /
     /// cancel / restart (whole rides are the resume granularity).
     func downloadRides(_ ids: [RideID]) -> RideDownload
+    func downloadRides(from rides: [RideSummary]) -> RideDownload
 }
 
 /// Firmware delivery and install requests, without link lifecycle, device
@@ -345,4 +346,11 @@ extension DeviceObjects {
     /// Default: nothing to delete (no trip store) — a best-effort no-op, like
     /// `forgetBond`.
     public func deleteTrip(_ id: DeviceObjectID) async throws {}
+}
+
+// Stand-in transports do not carry device source identities.
+extension DeviceObjects {
+    public func downloadRides(from rides: [RideSummary]) -> RideDownload {
+        downloadRides(rides.map(\.id))
+    }
 }
