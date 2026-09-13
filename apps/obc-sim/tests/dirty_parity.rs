@@ -1527,6 +1527,72 @@ fn drawer_swap_replay() -> Vec<Step> {
     steps
 }
 
+/// **One drawer replacing the other**: the quick drawer (104 px, hung from the top) is up, and the
+/// context chord swaps the map's sheet (244 px, rising from the bottom) in for it. The two sheets
+/// share no row, so the swap uncovers the quick drawer's whole band — and on the board that band kept
+/// the quick drawer's parchment while the context sheet slid up under it, because the swap frame was
+/// drawn sheet-only over a frozen base that was never redrawn.
+fn drawer_replaces_drawer_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on the Map", 0).expect("Map"),
+        step("the first fix", 200).fix(0).expect("Map"),
+        step("quiet", 960).expect("Map"),
+        step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
+        step("release the squeeze", 1_100).keys(&[release(Button::Select), release(Button::Up)]),
+    ];
+    for i in 1..=14 {
+        steps.push(step("the quick sheet arrives", 1_100 + i * 32).expect("QuickDrawer"));
+    }
+    steps.push(step("quiet on the settled quick sheet", 1_700).expect("QuickDrawer"));
+    steps.push(step("squeeze the context sheet in its place", 1_800).keys(&squeeze(Button::Down, Button::Back)));
+    steps.push(step("release the squeeze", 1_900).keys(&[release(Button::Back), release(Button::Down)]));
+    for i in 1..=10 {
+        steps.push(step("the context sheet arrives", 1_900 + i * 48).expect("ContextDrawer"));
+    }
+    steps.push(step("quiet on the settled context sheet", 2_500).expect("ContextDrawer"));
+    steps.push(step("close it", 2_600).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", 2_700).expect("Map"));
+    steps
+}
+
+/// **The drawer that replaces the other draws the base once, on the frame the chord produced.** The
+/// full-frame reference is the oracle: `drive_replay` compares the two panels after every pass, so
+/// the quick drawer's parchment left standing at the top fails before any assertion here runs.
+///
+/// The mutant is `App::toggle_drawer` not arming `owe_base_draw` on the incoming sheet: every frame
+/// of the context sheet's open is then sheet-only, and the reference names the first pixel of the
+/// quick drawer's band that never went away.
+#[test]
+fn the_drawer_that_replaces_the_other_puts_back_the_departed_sheet() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = drawer_replaces_drawer_replay();
+    let (candidate, _) = drive_replay("drawer replaces drawer", || riding_device(camera), &steps, None, &reader);
+
+    // The quick drawer hangs from the top: its 104 rows are the ones only it covered.
+    const QUICK_ROWS: u32 = 104;
+
+    let swap: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_800..2_600).contains(&r.at_ms)).collect();
+    let paid: Vec<&&Repaint> = swap.iter().filter(|r| r.features_tried > 0).collect();
+    assert_eq!(paid.len(), 1, "the swap draws the screen below exactly once: {swap:?}");
+    assert_eq!(paid[0].at_ms, 1_800, "…on the frame the chord produced, not one frame later");
+    let (lo, hi, count) = paid[0].pixels.expect("a swap that moved no pixel did not take the quick drawer off");
+    assert!(
+        lo < QUICK_ROWS,
+        "the swap frame moved rows {lo}..={hi} ({count} px) — it must reach the band above row {QUICK_ROWS} \
+         that only the quick drawer covered"
+    );
+    assert!(
+        !candidate.damage.iter().any(|r| (2_400..2_600).contains(&r.at_ms)),
+        "the landed context sheet over a frozen base repaints nothing"
+    );
+}
+
 /// **The swap puts back the band the taller sheet held, once** (#1515 D4c's review note, closed by
 /// D5). The sheet-to-sheet swap had no parity coverage at all: the two drawer replays above are both
 /// the quick drawer's, and both reach the base only through a page *slide*.

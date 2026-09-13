@@ -53,7 +53,7 @@ use crate::navigator::RouteState;
 use crate::settings::{UpAheadSource, WeatherRefresh};
 use crate::{AppState, Msg, Settings};
 
-use super::vocab::sheet;
+use super::vocab::{rows, sheet};
 use super::{
     palette, Ctx, DetourScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition, UpAheadScreen,
 };
@@ -908,9 +908,9 @@ impl ContextDrawerScreen {
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         let facts = rx.context_facts();
         for (i, row) in self.menu.rows.iter().enumerate() {
-            let area = rect(x + 14, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 28, ROW_H - 4);
+            let area = rect(x + rows::ROW_X, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 2 * rows::ROW_X, ROW_H - 4);
             let live = row.action.available(&facts);
-            super::vocab::rows::row_cursor(cv, area, i as u8 == self.selected, false);
+            rows::row_cursor(cv, area, i as u8 == self.selected, false);
             let ink = if live { palette::INK } else { palette::CONTOUR };
             cv.text_vcentered(
                 rx.t(row.label),
@@ -1471,7 +1471,7 @@ mod tests {
     /// editor's own line.
     ///
     /// **There are two row budgets, not one** (#1515 D4c). A door or a value row clears the 18 px
-    /// chevron and has 164 px; a **switch** row clears the 50 px slider and its margin and has 128.
+    /// chevron and has 172 px; a **switch** row clears the 50 px slider and its margin and has 136.
     /// That is where the map sheet's copy is decided — the settings rows these three switches came
     /// from had a second line to split `Courbes de niveau` / `Curvas de nivel` across, and a sheet
     /// row does not. If a column overruns, the copy shortens; the slider and the row do not.
@@ -1494,11 +1494,11 @@ mod tests {
         use obc_formats::obcm::NAV_PROFILE_NAME_LEN;
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
-        // The draw's own geometry: the row area is inset 14 px from both screen edges (10 px
-        // inside the 4 px sheet margin on each side, so the cursor sits centred in the sheet) and
-        // is `w - 28` wide; the label starts 14 px inside it, the chevron takes the last 18 and the
-        // slider the last 54 (50 px wide, 4 px margin).
-        let area_w = W - 28;
+        // The draw's own geometry: the row area is the shared settings row (`rows::row_rect`),
+        // inset `ROW_X` from both screen edges so the cursor sits centred in the sheet; the label
+        // starts 14 px inside it, the chevron takes the last 18 and the slider the last 54 (50 px
+        // wide, 4 px margin).
+        let area_w = W - 2 * rows::ROW_X;
         let door_room = area_w - 14 - 18 - MIN_CLEAR;
         let switch_room = area_w - 14 - 54 - MIN_CLEAR;
         assert_eq!((door_room, switch_room), (172, 136), "the two row budgets, pinned");

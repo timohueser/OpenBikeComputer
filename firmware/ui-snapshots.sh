@@ -854,10 +854,10 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
         --script "p p p p"      --expect-screen Map --png "$OUT/map-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-$lang.png"
-    # The route-plan sheet's one row label per language (#1515 D4d). `fr`/`es` are re-authored for
-    # the sheet's 164 px row budget ("Type vélo" / "Tipo bici"), so these are the frames that show
-    # the shortened readings on-glass. No per-language *editor* frame: its choices are the map's own
-    # §8.6 names, byte-identical in every column.
+    # The route-plan sheet's one row label per language (#1515 D4d). "Type de vélo" / "Tipo de
+    # bici" are 168 px, the widest labels the centred row's 172 px budget holds, so these are the
+    # frames that show that fit on-glass. No per-language *editor* frame: its choices are the map's
+    # own §8.6 names, byte-identical in every column.
     "$SIM" "$MONACO" --boot --lang "$lang" --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 \
         --clock "2025-01-06T12:00" --script "$NAVCONFIRM C" \
         --expect-screen ContextDrawer --png "$OUT/route-plan-context-$lang.png"
