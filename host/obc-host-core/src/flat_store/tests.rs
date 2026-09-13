@@ -58,7 +58,9 @@ fn native_map_and_routes_share_persistent_identity_and_revision_leases() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        assert!(std::fs::metadata(path).unwrap().blocks() * 512 < 16 * 1024 * 1024);
+        let payload_bytes = (2 * MAP.len() + 3 * ROUTE.len()) as u64;
+        let allocated = std::fs::metadata(path).unwrap().blocks() * 512;
+        assert!(allocated < payload_bytes + 16 * 1024 * 1024, "sparse card allocated {allocated} bytes");
     }
 }
 
