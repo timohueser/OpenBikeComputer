@@ -2856,6 +2856,7 @@ dependencies = [
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "obc-link",
  "obc-map-scene",
  "obc-pack",
  "obc-ports",

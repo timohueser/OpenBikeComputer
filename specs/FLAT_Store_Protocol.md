@@ -749,8 +749,9 @@ RequestId. A committed proof remains idempotent after remount. If the first atte
 a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
 mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
 
-The current board continues to load rides as unsynced. Client delivery and live retention loading,
-clock stamping and scoped ride expiry are separate integration boundaries.
+The board loads validated durable proof into ride retention. Only an existing exact proof can
+receive its first trusted-clock stamp, and scoped expiry requires a durable nonzero stamp.
+Client receipt delivery remains a separate integration boundary.
 
 ## 4. Firmware update
 

@@ -282,7 +282,8 @@ mod tests {
     fn an_effect_and_its_outcome_carry_the_same_token() {
         let mut source: TokenSource<CatalogTag> = TokenSource::new();
         let token = source.issue();
-        let effect = CatalogEffect::RemoveObject { token, object: 7 };
+        let effect =
+            CatalogEffect::RemoveObject { token, object: 7, kind: crate::catalog_state::CatalogObjectKind::Route };
         let outcome = CatalogOutcome::ObjectRemoved { token: effect.token(), object: 7, existed: true };
         assert_eq!(effect.token(), outcome.token());
         assert!(source.is_current(outcome.token()));
@@ -316,7 +317,14 @@ mod tests {
 
         // A *different* effect per domain, so a slot that silently overwrote would be visible.
         let mut second = EffectSlots::new();
-        second.catalog.try_put(CatalogEffect::RemoveObject { token: catalog_ops.issue(), object: 9 }).unwrap();
+        second
+            .catalog
+            .try_put(CatalogEffect::RemoveObject {
+                token: catalog_ops.issue(),
+                object: 9,
+                kind: crate::catalog_state::CatalogObjectKind::Route,
+            })
+            .unwrap();
         second
             .retention
             .try_put(RetentionEffect::WriteRideMetadata {
@@ -453,7 +461,11 @@ mod tests {
         slots.catalog.try_put(refresh).unwrap();
 
         // Pass 1, later: a delete is decided while the refresh is still unconsumed.
-        let delete = CatalogEffect::RemoveObject { token: tokens.issue(), object: 12 };
+        let delete = CatalogEffect::RemoveObject {
+            token: tokens.issue(),
+            object: 12,
+            kind: crate::catalog_state::CatalogObjectKind::Route,
+        };
         let mut pending = match slots.catalog.try_put(delete) {
             Err(full) => Some(full.rejected),
             Ok(()) => panic!("the slot was occupied"),

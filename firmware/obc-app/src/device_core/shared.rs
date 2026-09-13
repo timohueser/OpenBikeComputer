@@ -187,13 +187,8 @@ pub struct PlatformSupport {
     /// A durable place to keep per-object retention metadata exists — the route-use stamp and the
     /// ride-sync stamp.
     ///
-    /// False on the board: FS7/FS8 removed the FAT sidecars deliberately and #1398 supplies the
-    /// ObjectId-keyed replacement, so a stamp there is mirrored in the resident view and is never
-    /// durable. Stating that here is what stops
-    /// [`stage_retention`](crate::device_core::pass) emitting a
-    /// [`RetentionEffect`](crate::retention::RetentionEffect) nobody can answer: an unanswered write
-    /// parks `inflight_write` forever, and answering `…Written` would claim durability that does not
-    /// exist. Absence is the third option, and the honest one.
+    /// True only for a checked durable executor. Unsupported repository families refuse their
+    /// writes explicitly; a success must come from storage and trigger a fresh catalog read.
     pub retention_metadata: bool,
 }
 
