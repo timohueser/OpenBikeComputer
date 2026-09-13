@@ -117,11 +117,9 @@ impl obc_host_core::RideRepository for RideStore {
 /// cannot name unambiguously. There is deliberately no compatibility parser for historical device
 /// filenames.
 ///
-/// The filename number is carried into [`RIDE_ID_BASE`](obc_host_core::RIDE_ID_BASE)'s band, so a
-/// ride and a route can never share an object identity: the typed store executor removes an object
-/// by identity alone (`CatalogEffect::RemoveObject` is namespace-free, like the flat store it was
-/// written for), and this folder store numbers each family from zero. Only the id moves — the file
-/// on disk keeps its plain name.
+/// The filename number is carried into [`RIDE_ID_BASE`](obc_host_core::RIDE_ID_BASE)'s fixture band.
+/// Physical deletion retains the Ride kind, independently of other repositories' numeric IDs.
+/// The file on disk keeps its plain name.
 ///
 /// A filename number the band cannot hold is therefore **not listed at all**, rather than listed
 /// under an id that collides with a route or a trip: the allocator below never mints one, so the

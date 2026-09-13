@@ -1450,10 +1450,13 @@ pub(crate) async fn run_app(
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
-                    CatalogEffect::RemoveObject { token, object } => {
+                    CatalogEffect::RemoveObject { token, object, kind } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
-                                crate::flat_store::Request::RemoveObject { id: obc_storage::flat::ObjectId(object) },
+                                crate::flat_store::Request::RemoveObject {
+                                    id: obc_storage::flat::ObjectId(object),
+                                    kind,
+                                },
                                 &CATALOG_STORE_REPLY,
                             )
                         }) {

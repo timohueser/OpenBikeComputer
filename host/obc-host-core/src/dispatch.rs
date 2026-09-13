@@ -68,25 +68,21 @@ fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSi
 
 /// Remove one object from the store, and **nothing else** (#1541).
 ///
-/// The removal is namespace-free by design — routes, rides and trips are all objects to the store —
-/// so the identity is probed against the three repositories in a fixed order. An object none of
-/// them has vanished before the commit: a success for the goal state, and the one shape that must
-/// not read as a failure (#1433 §13).
-///
-/// Free-standing, and **without an `&mut App`**: the re-read a removal implies is `CatalogMachine`'s
-/// to order, and a function that cannot reach the app cannot compose one. That is the guard, and it
-/// is structural rather than a grep.
+/// Execute only the family selected by CatalogMachine. Absence never probes another repository.
 fn remove_object(
     token: OperationToken<CatalogTag>,
     object: u64,
+    kind: obc_app::catalog_state::CatalogObjectKind,
     routes: &mut dyn RouteRepository,
     rides: &mut dyn RideRepository,
     trips: &mut dyn TripCatalog,
 ) -> CatalogOutcome {
-    let result = routes
-        .delete_by_id(object)
-        .and_then(|existed| if existed { Ok(true) } else { rides.delete_by_id(object) })
-        .and_then(|existed| if existed { Ok(true) } else { trips.delete_by_id(object) });
+    use obc_app::catalog_state::CatalogObjectKind;
+    let result = match kind {
+        CatalogObjectKind::Route => routes.delete_by_id(object),
+        CatalogObjectKind::Ride => rides.delete_by_id(object),
+        CatalogObjectKind::Trip => trips.delete_by_id(object),
+    };
     match result {
         Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
         Err(error) => CatalogOutcome::Failed { token, error },
@@ -482,12 +478,6 @@ impl HostLoop {
 
     /// The two store operations: read the catalogs, remove one object.
     ///
-    /// The removal is **namespace-free** by design — routes, rides and trips are all objects to the
-    /// store — so the executor resolves the identity against the repositories in a fixed order.
-    /// That is only unambiguous while the three families number their objects out of one space; the
-    /// flat store does (FS7 #1389), and the simulator's folder stores do through
-    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) and [`TRIP_ID_BASE`](crate::TRIP_ID_BASE).
-    ///
     /// A trip's *cascade* is not composed here. `CatalogMachine` owns that order and sends it as one
     /// removal per member and one for the folder (#1491), so this executor performs no ordering of
     /// its own — the rule the module header states.
@@ -549,7 +539,9 @@ impl HostLoop {
                     Err(error) => CatalogOutcome::Failed { token, error },
                 }
             }
-            CatalogEffect::RemoveObject { token, object } => remove_object(token, object, routes, rides, trips),
+            CatalogEffect::RemoveObject { token, object, kind } => {
+                remove_object(token, object, kind, routes, rides, trips)
+            }
         }
     }
 
@@ -960,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_removal_preserves_the_token_and_stops_repository_fallback() {
+    fn removal_preserves_token_and_never_probes_another_family() {
         use obc_app::catalog_state::CatalogError;
 
         struct FailedRide;
@@ -978,20 +970,37 @@ mod tests {
         struct UnreachedTrip;
         impl TripCatalog for UnreachedTrip {
             fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
-                panic!("failure must stop the namespace probe");
+                panic!("another family must not be reached");
             }
         }
 
         let token = obc_app::device_core::TokenSource::<CatalogTag>::new().issue();
-        let mut routes = crate::FlatRouteStore::from_bytes(&[]).unwrap();
+        const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+        let mut routes = crate::FlatRouteStore::from_bytes(&[ROUTE]).unwrap();
+        let object = routes.ids()[0];
         assert_eq!(
-            remove_object(token, 7, &mut routes, &mut FailedRide, &mut UnreachedTrip),
+            remove_object(
+                token,
+                object,
+                obc_app::catalog_state::CatalogObjectKind::Ride,
+                &mut routes,
+                &mut FailedRide,
+                &mut UnreachedTrip
+            ),
             CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
         );
         assert_eq!(
-            remove_object(token, 7, &mut routes, &mut crate::MemRideStore::new(vec![]), &mut ()),
-            CatalogOutcome::ObjectRemoved { token, object: 7, existed: false },
+            remove_object(
+                token,
+                object,
+                obc_app::catalog_state::CatalogObjectKind::Ride,
+                &mut routes,
+                &mut crate::MemRideStore::new(vec![]),
+                &mut ()
+            ),
+            CatalogOutcome::ObjectRemoved { token, object, existed: false },
         );
+        assert_eq!(routes.ids(), &[object], "same-numbered route is untouched by a ride request");
     }
 
     /// A host that can do everything — none of it reached by the recording path under test.
