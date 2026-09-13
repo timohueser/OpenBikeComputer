@@ -61,7 +61,7 @@ describe("assembly worker storage admission", () => {
         expect(sink.close).toHaveBeenCalledTimes(lost === "scratch" ? 1 : 0);
     });
 
-    it.each(["sink", "scratch"])("closes partial acquisition when %s opening throws", async (lost) => {
+    it.each(["sink", "scratch"] as const)("closes partial acquisition when %s opening throws", async (lost) => {
         seams[lost].mockRejectedValue(new Error("storage open failed"));
         await send(request());
         expect(messages.at(-1)).toMatchObject({ type: "error", message: "storage open failed" });
