@@ -108,6 +108,14 @@ pub struct RideContinuation {
     pub cadence_ms: u32,
 }
 
+/// Whether a completed checkpoint service established recovery on its medium.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointStatus {
+    Durable,
+    /// The adapter has no recovery journal. Service is complete, but no durable claim is made.
+    Unsupported,
+}
+
 /// What a store did when an executor asked it to close the open ride.
 ///
 /// Three states, because they mean three different things to Recorder and only one of them is a
@@ -280,8 +288,10 @@ impl RideRecoveryState {
 pub enum RecorderOutcome {
     /// `samples` staged points reached the medium.
     Appended { token: OperationToken<RecorderTag>, samples: u16 },
-    /// The ride is recoverable up to the checkpoint.
-    Checkpointed { token: OperationToken<RecorderTag> },
+    /// Checkpoint service finished; only `Durable` establishes recovery.
+    Checkpointed { token: OperationToken<RecorderTag>, status: CheckpointStatus },
+    /// No samples were accepted; checkpoint the previous boundary before retrying the batch.
+    NeedsCheckpoint { token: OperationToken<RecorderTag> },
     /// The ride is closed and committed under `ride`.
     Finalized { token: OperationToken<RecorderTag>, ride: CatalogObjectId },
     /// The open ride is gone.
@@ -297,7 +307,8 @@ impl RecorderOutcome {
     pub fn token(&self) -> OperationToken<RecorderTag> {
         match self {
             RecorderOutcome::Appended { token, .. }
-            | RecorderOutcome::Checkpointed { token }
+            | RecorderOutcome::Checkpointed { token, .. }
+            | RecorderOutcome::NeedsCheckpoint { token }
             | RecorderOutcome::Finalized { token, .. }
             | RecorderOutcome::Discarded { token }
             | RecorderOutcome::Failed { token, .. }
@@ -737,6 +748,18 @@ impl RecorderMachine {
         &self.samples
     }
 
+    /// The context for a full issued batch, while the executor holds the App fixed.
+    /// A later staged suffix must be reissued before it can share the current totals.
+    pub fn append_context(&self, samples: u16) -> Option<RideContinuation> {
+        (usize::from(samples) == self.samples.len()).then(|| self.continuation())
+    }
+
+    /// Only an empty staging queue permits a fresh context without accepting more samples.
+    /// Otherwise the executor checkpoints its previous accepted boundary.
+    pub fn checkpoint_context(&self) -> Option<RideContinuation> {
+        self.samples.is_empty().then(|| self.continuation())
+    }
+
     /// Consume the answer to a [`RecorderEffect`] and say what it means to the app.
     ///
     /// A stale token — a superseded operation, or a repeat of one already accounted for — changes
@@ -812,6 +835,10 @@ impl RecorderMachine {
                 }
                 self.samples.as_mut_slice().copy_within(taken.., 0);
                 self.samples.truncate(keep);
+                RecorderVerdict::Nothing
+            }
+            RecorderOutcome::NeedsCheckpoint { .. } => {
+                self.checkpoint_owed = true;
                 RecorderVerdict::Nothing
             }
             RecorderOutcome::Checkpointed { .. } => RecorderVerdict::Nothing,
@@ -1493,7 +1520,10 @@ mod tests {
 
         rec.request(RecorderIntent::Save);
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).is_none(), "one operation at a time");
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: checkpoint.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed {
+            token: checkpoint.token(),
+            status: CheckpointStatus::Durable,
+        });
         assert!(
             matches!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 2)), Some(RecorderEffect::Finalize { .. })),
             "the rider's Save survived the busy pass"
@@ -1541,7 +1571,7 @@ mod tests {
         let mut rec = recording();
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS - 1)).is_none(), "not yet due");
         let first = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS)).expect("due");
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: first.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: first.token(), status: CheckpointStatus::Durable });
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).is_none(), "the deadline moved with it");
 
         let second = rec.next_effect(CAN_RECORD, at(2 * CHECKPOINT_MS)).expect("due again");
@@ -1797,7 +1827,10 @@ mod tests {
         assert!(rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1_000)).is_none(), "one operation at a time");
         assert_eq!(rec.staged().len(), 2, "and the busy pass destroyed neither of them");
 
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: checkpoint.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed {
+            token: checkpoint.token(),
+            status: CheckpointStatus::Durable,
+        });
         assert_eq!(append(&mut rec, CHECKPOINT_MS + 1_001, 2), 2, "both leave with the next append");
         assert!(rec.staged().is_empty());
     }
@@ -1814,7 +1847,7 @@ mod tests {
 
         let repair = rec.next_effect(CAN_RECORD, at(3_001)).unwrap();
         assert!(matches!(repair, RecorderEffect::Checkpoint { .. }));
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token(), status: CheckpointStatus::Durable });
         assert_eq!(append(&mut rec, 3_002, 2), 2, "the retry offers exactly what is left");
         assert!(rec.staged().is_empty());
         // The order survived the partial: the last sample written is the last fix recorded.
@@ -1839,7 +1872,7 @@ mod tests {
         assert_eq!(rec.ride_stats(), stats, "so the footer facts are exactly what the fixes made them");
         let repair = rec.next_effect(CAN_RECORD, at(3_001)).unwrap();
         assert!(matches!(repair, RecorderEffect::Checkpoint { .. }));
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: repair.token(), status: CheckpointStatus::Durable });
         assert_eq!(append(&mut rec, 3_002, 3), 3, "the retry is the same batch");
     }
 
@@ -1855,7 +1888,7 @@ mod tests {
 
         let retry = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 1)).expect("the blocked journal owes its repair");
         assert!(matches!(retry, RecorderEffect::Checkpoint { .. }), "the repair still outranks the samples: {retry:?}");
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token(), status: CheckpointStatus::Durable });
         assert_eq!(append(&mut rec, CHECKPOINT_MS + 2, 2), 2, "and the samples follow it");
     }
 
@@ -1935,7 +1968,7 @@ mod tests {
         // A stale append cannot consume the outstanding tail or the repair token.
         rec.apply_outcome(RecorderOutcome::Appended { token: first.token(), samples: 3 });
         assert_eq!(rec.staged(), &original[1..]);
-        rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token() });
+        rec.apply_outcome(RecorderOutcome::Checkpointed { token: retry.token(), status: CheckpointStatus::Durable });
         let tail = rec.next_effect(CAN_RECORD, at(4_002)).unwrap();
         assert!(matches!(tail, RecorderEffect::Append { samples: 2, .. }));
         rec.apply_outcome(RecorderOutcome::Appended { token: tail.token(), samples: 2 });
@@ -1946,6 +1979,37 @@ mod tests {
         assert!(matches!(retry, RecorderEffect::Finalize { .. }));
         rec.apply_outcome(RecorderOutcome::Finalized { token: retry.token(), ride: 3 });
         assert!(!rec.recording());
+    }
+
+    #[test]
+    fn batch_context_and_checkpoint_service_preserve_the_issued_boundary() {
+        let mut rec = ridden(3);
+        let effect = rec.next_effect(CAN_RECORD, at(4_000)).unwrap();
+        let RecorderEffect::Append { samples, .. } = effect else { panic!("append owed") };
+        assert_eq!(rec.append_context(samples), Some(rec.continuation()));
+        assert_eq!(rec.checkpoint_context(), None);
+        rec.record_fix(Fix::at(BASE_LAT + 4 * STEP_UD, LON), 4_000, true);
+        assert_eq!(rec.append_context(samples), None, "later suffix must be reissued");
+        let staged = rec.staged().to_vec();
+        rec.apply_outcome(RecorderOutcome::Cancelled { token: effect.token() });
+        let retry = rec.next_effect(CAN_RECORD, at(4_001)).unwrap();
+        let RecorderEffect::Append { samples, .. } = retry else { panic!("retry append") };
+        assert_eq!(usize::from(samples), staged.len());
+        assert_eq!(rec.append_context(samples), Some(rec.continuation()));
+        rec.apply_outcome(RecorderOutcome::NeedsCheckpoint { token: retry.token() });
+        assert_eq!(rec.staged(), staged);
+        let checkpoint = rec.next_effect(CAN_RECORD, at(4_002)).unwrap();
+        assert!(matches!(checkpoint, RecorderEffect::Checkpoint { .. }));
+        rec.apply_outcome(RecorderOutcome::Checkpointed {
+            token: checkpoint.token(),
+            status: CheckpointStatus::Unsupported,
+        });
+        let append = rec.next_effect(CAN_RECORD, at(4_003)).unwrap();
+        assert!(matches!(append, RecorderEffect::Append { .. }));
+        rec.apply_outcome(RecorderOutcome::Appended { token: append.token(), samples });
+        assert_eq!(rec.checkpoint_context(), Some(rec.continuation()));
+        rec.apply_outcome(RecorderOutcome::NeedsCheckpoint { token: retry.token() });
+        assert!(rec.next_effect(CAN_RECORD, at(4_004)).is_none(), "stale refusal owes nothing");
     }
 
     #[test]
@@ -1971,7 +2035,10 @@ mod tests {
                 assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Nothing);
             } else {
                 assert!(matches!(next, RecorderEffect::Checkpoint { .. }));
-                rec.apply_outcome(RecorderOutcome::Checkpointed { token: next.token() });
+                rec.apply_outcome(RecorderOutcome::Checkpointed {
+                    token: next.token(),
+                    status: CheckpointStatus::Durable,
+                });
                 let append = rec.next_effect(CAN_RECORD, at(CHECKPOINT_MS + 2)).unwrap();
                 assert!(matches!(append, RecorderEffect::Append { samples: 3, .. }));
                 rec.apply_outcome(RecorderOutcome::Appended { token: append.token(), samples: 3 });

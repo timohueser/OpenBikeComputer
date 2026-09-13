@@ -113,7 +113,6 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
     let expected = rides.store_scope().unwrap();
     assert_eq!(rides.expire_ride(replaced.id.0, expected), Err(CatalogError::Stale));
     assert!(!rides.open(1, None));
-    assert!(!rides.checkpoint());
     assert!(!rides.discard());
     let stats = RideStats {
         distance_m: 0,
@@ -129,6 +128,7 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
         avg_power: None,
         max_power: None,
     };
+    assert_eq!(rides.checkpoint(stats, None), Ok(obc_app::recorder::CheckpointStatus::Unsupported));
     assert!(matches!(rides.finalize(stats), RideClose::Failed));
     assert_eq!(rides.delete_by_id(replaced.id.0), Ok(true));
     assert_eq!(rides.delete_by_id(replaced.id.0), Ok(false), "confirmed absence before a catalog reload");

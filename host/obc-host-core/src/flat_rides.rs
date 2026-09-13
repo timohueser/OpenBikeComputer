@@ -148,8 +148,12 @@ impl TrackRepository for FlatRideStore {
     fn discard(&mut self) -> bool {
         false
     }
-    fn checkpoint(&mut self) -> bool {
-        false
+    fn checkpoint(
+        &mut self,
+        _stats: RideStats,
+        _continuation: Option<obc_app::RideContinuation>,
+    ) -> Result<obc_app::recorder::CheckpointStatus, obc_app::recorder::RecorderError> {
+        Ok(obc_app::recorder::CheckpointStatus::Unsupported)
     }
     fn append(&mut self, _point: obc_ports::TrackPoint) -> bool {
         false

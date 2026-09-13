@@ -843,10 +843,12 @@ fn serve_recorder(
         return RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
     }
     match effect {
-        RecorderEffect::Checkpoint { token } => match tracks.checkpoint() {
-            true => RecorderOutcome::Checkpointed { token },
-            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
-        },
+        RecorderEffect::Checkpoint { token } => {
+            match tracks.checkpoint(app.recorder.ride_stats(), app.recorder.checkpoint_context()) {
+                Ok(status) => RecorderOutcome::Checkpointed { token, status },
+                Err(error) => RecorderOutcome::Failed { token, error },
+            }
+        }
         // Recorder drains acknowledged samples before it admits this footer-only close.
         RecorderEffect::Finalize { token } => {
             match tracks.finalize(app.recorder.ride_stats()) {
@@ -1059,6 +1061,7 @@ mod tests {
         delta_limit: Option<usize>,
         delta_points: usize,
         failed_checkpoints: usize,
+        unsupported_checkpoints: bool,
         failed_finalizes: usize,
     }
 
@@ -1087,14 +1090,22 @@ mod tests {
             true
         }
 
-        fn checkpoint(&mut self) -> bool {
+        fn checkpoint(
+            &mut self,
+            _stats: RideStats,
+            _continuation: Option<obc_app::RideContinuation>,
+        ) -> Result<obc_app::recorder::CheckpointStatus, RecorderError> {
             assert!(self.open, "no checkpoint against an absent recorder");
             if self.failed_checkpoints > 0 {
                 self.failed_checkpoints -= 1;
-                return false;
+                return Err(RecorderError::Write);
             }
             self.delta_points = 0;
-            true
+            Ok(if self.unsupported_checkpoints {
+                obc_app::recorder::CheckpointStatus::Unsupported
+            } else {
+                obc_app::recorder::CheckpointStatus::Durable
+            })
         }
 
         fn append(&mut self, point: TrackPoint) -> bool {
@@ -1222,51 +1233,68 @@ mod tests {
 
     #[test]
     fn save_drains_a_short_append_and_retries_checkpoint_and_footer_without_duplicates() {
-        let (mut app, mut host) = ride_with_a_staged_tail(4);
-        let expected = app.recorder.staged().to_vec();
-        let mut store = RecordingTrackStore {
-            delta_limit: Some(2),
-            failed_checkpoints: 1,
-            failed_finalizes: 1,
-            ..Default::default()
-        };
-        store.open(1, Some("ride"));
-        app.recorder.request(RecorderIntent::Save);
-        let mut operations = Vec::new();
-        for step in 0..8 {
-            let now = 9_000 + step;
-            let mut loc = OneFix(None);
-            let mut plan = host.pass(
-                &mut app,
-                PassClock { ride: RideClock(now), ui: InputClock(now) },
-                &[],
-                Sensors::new(&mut loc),
-                None,
-                None,
-                SUPPORT,
-            );
-            let Some(effect) = plan.effects.recorder.take() else { continue };
-            operations.push(match effect {
-                RecorderEffect::Append { .. } => "append",
-                RecorderEffect::Checkpoint { .. } => "checkpoint",
-                RecorderEffect::Finalize { .. } => {
-                    assert!(app.recorder.staged().is_empty());
-                    assert_eq!(store.points, expected);
-                    "finalize"
+        for unsupported in [false, true] {
+            let (mut app, mut host) = ride_with_a_staged_tail(4);
+            let expected = app.recorder.staged().to_vec();
+            let mut store = RecordingTrackStore {
+                delta_limit: Some(2),
+                failed_checkpoints: usize::from(!unsupported),
+                unsupported_checkpoints: unsupported,
+                failed_finalizes: 1,
+                ..Default::default()
+            };
+            store.open(1, Some("ride"));
+            app.recorder.request(RecorderIntent::Save);
+            let mut operations = Vec::new();
+            for step in 0..8 {
+                let now = 9_000 + step;
+                let mut loc = OneFix(None);
+                let mut plan = host.pass(
+                    &mut app,
+                    PassClock { ride: RideClock(now), ui: InputClock(now) },
+                    &[],
+                    Sensors::new(&mut loc),
+                    None,
+                    None,
+                    SUPPORT,
+                );
+                let Some(effect) = plan.effects.recorder.take() else { continue };
+                operations.push(match effect {
+                    RecorderEffect::Append { .. } => "append",
+                    RecorderEffect::Checkpoint { .. } => "checkpoint",
+                    RecorderEffect::Finalize { .. } => {
+                        assert!(app.recorder.staged().is_empty());
+                        assert_eq!(store.points, expected);
+                        "finalize"
+                    }
+                    RecorderEffect::Discard { .. } => panic!("Save cannot discard"),
+                });
+                let outcome = serve_recorder(&app, effect, &mut store, true);
+                if unsupported && matches!(effect, RecorderEffect::Checkpoint { .. }) {
+                    assert_eq!(
+                        outcome,
+                        RecorderOutcome::Checkpointed {
+                            token: effect.token(),
+                            status: obc_app::recorder::CheckpointStatus::Unsupported,
+                        }
+                    );
                 }
-                RecorderEffect::Discard { .. } => panic!("Save cannot discard"),
-            });
-            let outcome = serve_recorder(&app, effect, &mut store, true);
-            host.inbox.outcomes.recorder.try_put(outcome).unwrap();
+                host.inbox.outcomes.recorder.try_put(outcome).unwrap();
+            }
+            let expected_operations = if unsupported {
+                vec!["append", "checkpoint", "append", "finalize", "finalize"]
+            } else {
+                vec!["append", "checkpoint", "checkpoint", "append", "finalize", "finalize"]
+            };
+            assert_eq!(operations, expected_operations);
+            assert_eq!(store.points, expected, "each accepted sample occurs once");
+            assert!(!app.recorder.recording());
+            let footer = store.footer.expect("one successful close writes the footer");
+            let last = store.points.last().unwrap();
+            assert_eq!(last.t_ms, 6_000);
+            assert!(footer.distance_m > 0);
+            assert_eq!(footer.moving_time_s, (last.t_ms - store.points[0].t_ms) / 1_000);
         }
-        assert_eq!(operations, ["append", "checkpoint", "checkpoint", "append", "finalize", "finalize"]);
-        assert_eq!(store.points, expected, "each accepted sample occurs once");
-        assert!(!app.recorder.recording());
-        let footer = store.footer.expect("one successful close writes the footer");
-        let last = store.points.last().unwrap();
-        assert_eq!(last.t_ms, 6_000);
-        assert!(footer.distance_m > 0);
-        assert_eq!(footer.moving_time_s, (last.t_ms - store.points[0].t_ms) / 1_000);
     }
 }
 
