@@ -115,7 +115,7 @@ fn recovered_points(store: &FlatStore<FlatCard>) -> Vec<TrackPoint> {
     let recovery = store.recovered_ride().unwrap();
     let mut bytes = vec![0; recovery.payload_len() as usize];
     assert_eq!(store.read_recovered(0, &mut bytes).unwrap(), bytes.len());
-    bytes.chunks_exact(SAMPLE_LEN).map(|record| obc_formats::track::decode_record(record.try_into().unwrap())).collect()
+    bytes.as_chunks::<SAMPLE_LEN>().0.iter().map(obc_formats::track::decode_record).collect()
 }
 
 #[test]
