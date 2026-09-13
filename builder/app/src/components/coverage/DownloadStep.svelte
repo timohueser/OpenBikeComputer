@@ -864,8 +864,8 @@
             // One or the other, never a mix: `cells` carries buffers when there
             // was nowhere to put them, `sourceCells` names files in OPFS when
             // there was. The worker decides how it reads the latter — through
-            // sync access handles if it has them (#1116 B2), by reading them
-            // back into memory if not.
+            // sync access handles, or by reading them into memory only when
+            // the admitted mode permits buffering. Required disk mode refuses.
             sourceCells: cellStore ? sourceCells : undefined,
             cellStore: cellStore?.revision,
             knownEmpty: plan.knownEmpty,
