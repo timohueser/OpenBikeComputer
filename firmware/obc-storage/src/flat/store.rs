@@ -87,8 +87,8 @@ use super::superblock::Superblock;
 /// head and retain or remove the displaced one — and four leaves margin without making the plan
 /// arrays interesting.
 pub const MAX_BATCH: usize = 4;
-/// Reservations live at once: one transfer (`FLAT_Store_Protocol.md` §1) plus the ride reserve a
-/// start allocates while one is in flight.
+/// Two reservations serve either a transfer plus a recording start, or a sealed detour leg plus
+/// its trim/splice output. A competing start or transfer is refused while both rows are occupied.
 pub const MAX_RESERVATIONS: usize = 2;
 
 /// Who holds an open object, and how many. The table is the whole argument for
@@ -115,7 +115,8 @@ pub mod open_objects {
     /// open for the session. There are no shards, so there is no ceiling to inherit and nothing here
     /// derives from a board constant any more.
     pub const MAP: usize = 1;
-    /// The active route's geometry, held from load until the ride ends.
+    /// The active route's geometry, held from load until the ride ends. A detour retains another
+    /// reference to this exact revision, sharing the row. Its sealed temporary leg takes no hold.
     pub const ROUTE: usize = 1;
     /// The weather bundle, held for the session once mounted.
     pub const WEATHER: usize = 1;
@@ -134,6 +135,9 @@ pub mod open_objects {
     /// glitch, a revision that moved — the rider is mid-ride with **no** route, and the object that
     /// was working a microsecond ago has already been let go. Acquire-before-release cannot lose
     /// what it has, and it needs one row that the census does not.
+    ///
+    /// A detour can keep the old original revision alive after the active route changes; that
+    /// overlap also consumes this row. Further concurrent opens retain the same bounded refusal.
     ///
     /// **One row, not two.** A route swap and a weather swap overlapping is not budgeted: they are
     /// both rider- or link-driven and neither is on a timer, so the second one to start finds the

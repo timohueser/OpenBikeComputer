@@ -374,8 +374,8 @@ They do not start another step or publish a completed plan on their own.
 
 | Operation | Executor work | Result Navigator waits for |
 | --- | --- | --- |
-| Acquire | Claim the workspace and retain the admitted map source. A host detour also retains its original route source. | Sources and workspace are held. |
-| Step | Run one bounded [NavPlanner](src:firmware/obc-route/src/nav.rs) step against those sources. | Search or output progress, a detour preview, or failure. |
+| Acquire | Claim the workspace and retain the admitted map source. A detour also retains its original route source. | Sources and workspace are held. |
+| Step | Run one bounded search, trim, or preview step against those sources. | Search or output progress, a detour preview, or failure. |
 | Commit | Publish the completed route, or the detour the rider accepted. | The new durable route identifier, or failure. |
 | Release | Finish pending storage work, cancel unused allocations or remove a cancelled publication, then return the workspace. | Cleanup is complete and the arena is available. |
 
@@ -384,8 +384,8 @@ Release after successful planning keeps the accepted route or detour preview. Re
 memory is not a cancellation result. Workspace refusal, planner failure and storage failure remain distinct.
 
 Planning stays bound to its admitted sources. The board checks its boot-long map lease against
-the exact card, map object and revision. The host retains the admitted map lease and, for a detour,
-the exact original route through preview and commit. A changed current source invalidates the
+the exact card, map object and revision. Both executors retain the exact original route through detour preview and commit.
+The host also retains its admitted map lease. A changed current source invalidates the
 result; the executor cannot substitute the latest map or route halfway through the operation.
 
 Publication creates a fresh OBCR object. It does not overwrite the original
@@ -393,8 +393,20 @@ route. The standard catalog and route-load path handles the completed object. Fl
 publication requires capacity for both the publication commit and a cleanup commit if cancellation
 arrives after publication. Cleanup removes only the result of that cancelled operation.
 
-Host detour planning uses this same lifecycle. Board detours still return a workspace refusal:
-temporary detour storage and streamed splicing are not available on the board yet.
+The [board detour executor](src:firmware/obc-fw-nrf54l/src/detour.rs) writes a temporary leg into
+one of the card store's two reservation slots. It seals the leg before reading it. A sealed leg has
+one owner and cannot be changed by an old write token. It is not a catalog object.
+
+Trim and splice run in bounded phases. If trim finds sustained contact with the route tail, it
+writes the shorter leg into the other slot, seals it, and releases the first leg. An optional trim
+failure keeps the original leg and its preview figures. Preview retains only the sealed leg, the
+original route lease, and small frozen figures. It releases the arena so rendering can resume.
+
+When the rider accepts the preview, commit takes the same arena again. It reads the original and
+sealed leg while it writes the spliced route into the other reservation. A failed commit keeps the
+preview for retry. Cancellation drains any pending writer request before it releases the arena.
+The same 128 KiB arena serves planning, transforms, rendering, and cable transfer; the detour path
+adds no permanent route index or output buffer.
 
 The router projects each endpoint onto stored road geometry.
 It accepts roads within 100 m.
