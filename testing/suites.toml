@@ -293,7 +293,7 @@ command = "cargo test -p obc-host-core --locked"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["firmware/obc-fw-nrf54l/src/detour.rs"]
 coverage_component = "host-tools"
 ownership = [{ kind = "rust-package", name = "obc-host-core" }]
 cadence_conflict = { reason = "Board-parity fixture coverage and fast host helpers share one package command.", issue = "#1449" }

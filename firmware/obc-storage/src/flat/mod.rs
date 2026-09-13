@@ -70,6 +70,8 @@ mod map_read;
 #[cfg(test)]
 mod read_cost;
 #[cfg(test)]
+mod sealed;
+#[cfg(test)]
 mod vectors;
 
 pub use device::BlockDevice;
@@ -78,8 +80,8 @@ pub use seam::{
     Allocation, DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision,
     RideCheckpoint, Store, StoreId, RIDE_RESUME_LEN,
 };
-pub use source::StoreSource;
-pub use store::{FlatStore, Handle, Mode, RideRecovery};
+pub use source::{SealedSource, StoreSource};
+pub use store::{FlatStore, Handle, Mode, RideRecovery, SealedAllocation};
 
 /// The format version this store implements. A card whose layout differs is a different version,
 /// which the version field of every record already names.
