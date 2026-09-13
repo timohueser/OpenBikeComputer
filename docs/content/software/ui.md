@@ -1205,3 +1205,26 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Retention policy: [`retention.rs`](src:firmware/obc-app/src/retention.rs)
 
 See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.
+
+## Weather between phone connections
+
+The device shows stored forecasts without waiting for the phone. A refresh does not hide usable
+data. The rain card reports the continuous coverage ahead, up to two hours. For example, 95
+minutes of covered dry weather shows **DRY FOR 95 MIN**. Time passing reduces this duration.
+A gap, unknown cell, route-coverage limit, or expired frame ends the dry claim. Missing data does
+not mean dry weather.
+
+When detailed rain data cannot answer, the dashboard keeps the hourly forecast available for its
+remaining valid times. **Hourly until** shows the end of that forecast. It does not report when
+the phone last copied the data. The hourly forecast covers 24 hours from its first record and
+describes the location used for the request. It is not a forecast for every point on a long route.
+The rain map shows only valid rain frames; hourly data does not create a replacement rain map.
+
+**UPDATING** means the phone has started a weather attempt. Waiting for a phone or a retry does
+not show this cue. Success, a reported failure, or a bounded timeout clears it. A failed refresh
+leaves valid stored forecasts available. The device asks for an update when no forecast can answer
+for the current time.
+
+Sources: [src:firmware/obc-app/src/weather.rs],
+[src:firmware/obc-app/src/screen/weather_dash.rs],
+[src:firmware/obc-ble/src/weather_request.rs].
