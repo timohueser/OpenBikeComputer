@@ -292,7 +292,7 @@ mod tests {
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
         companion.request_now();
-        companion.run(&parked(), 0, None, (0, 0), &mut live, 1);
+        companion.run(&parked(), 0, None, &mut live, 1);
         let request = companion.scheduler.pending_request_id().unwrap();
         companion.accept(&mut store, &first[..511], request, 1);
         assert_eq!(companion.scheduler.pending_request_id(), Some(request));
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(companion.state.commits, 1);
         for now in [2, 3] {
             companion.request_now();
-            companion.run(&parked(), 0, held_of(&store), (0, 0), &mut live, now);
+            companion.run(&parked(), 0, held_of(&store), &mut live, now);
             let request = companion.scheduler.pending_request_id().unwrap();
             if now == 3 {
                 demo.sync_clock(1_800_001_000, true);
@@ -342,7 +342,7 @@ mod tests {
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
         companion.request_now();
-        companion.run(&parked(), 0, held_of(&store), (0, 0), &mut live, 1);
+        companion.run(&parked(), 0, held_of(&store), &mut live, 1);
         let request = companion.scheduler.pending_request_id().unwrap();
         companion.accept(&mut store, &newer.bytes(), request, 1);
         let (_, identity) = companion.awaiting.unwrap();
