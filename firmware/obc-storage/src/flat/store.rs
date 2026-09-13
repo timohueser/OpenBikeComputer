@@ -846,6 +846,14 @@ impl<D: BlockDevice> FlatStore<D> {
         served.mode.writable() && served.high_water.checked_add(count).is_some()
     }
 
+    /// Resolve the current readable head without acquiring another reader hold.
+    pub fn current_revision(&self, id: ObjectId) -> Result<Option<Revision>, StoreError> {
+        if !self.mode().readable() {
+            return Err(StoreError::ReadOnly);
+        }
+        Ok(self.find(id)?.1.filter(|entry| entry.meta.flags == EntryFlags::NONE).map(|entry| entry.meta.revision))
+    }
+
     /// Entries the catalog holds.
     pub fn entry_count(&self) -> u16 {
         self.served.get().entry_count

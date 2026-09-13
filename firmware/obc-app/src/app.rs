@@ -1796,7 +1796,9 @@ impl App {
                 // the legacy protocol has always done with them.
                 let error = match error {
                     NavigatorError::Plan(error) => error,
-                    NavigatorError::Workspace | NavigatorError::Store => obc_route::nav::NavError::NoPath,
+                    NavigatorError::Workspace | NavigatorError::Store | NavigatorError::SourceChanged => {
+                        obc_route::nav::NavError::NoPath
+                    }
                 };
                 match self.navigator.live_family() {
                     Some(PlanFamily::Detour) if self.navigator.detour_committing() => {
@@ -1806,16 +1808,19 @@ impl App {
                     _ => self.land_route_plan(Err(error)),
                 }
             }
-            // The workspace came back, or the operation was abandoned: the run is over and the
-            // freeze must not outlive it, but there is nothing new to put in front of the rider.
-            NavigatorOutcome::Released { .. } | NavigatorOutcome::Cancelled { .. } => {
+            NavigatorOutcome::Released { .. } => {
+                if self.navigator.released(&mut self.mode) {
+                    self.ui.map_dirty = true;
+                }
+            }
+            NavigatorOutcome::Cancelled { .. } => {
                 let family = self.navigator.live_family().unwrap_or(PlanFamily::Route);
                 self.end_plan(family, PlanPhase::Idle);
             }
-            // Pacing is #1400's — one request here acquires, steps and
-            // commits inside the executor, so no protocol in this slice produces these. They are
-            // accepted and change nothing until #1397 S6 gives Navigator the stepping loop.
-            NavigatorOutcome::Acquired { .. } | NavigatorOutcome::Stepped { .. } => {}
+            NavigatorOutcome::Acquired { .. } => {
+                self.navigator.progressed(crate::navigator::PlannerProgress::Searching)
+            }
+            NavigatorOutcome::Stepped { progress, .. } => self.navigator.progressed(progress),
         }
     }
 
@@ -6522,12 +6527,12 @@ mod tests {
     fn a_cancel_annihilates_an_undrained_plan_request() {
         use crate::activity::NavRequest;
 
-        // Confirm + Back in one batch → the search never leaves, and the release still goes out.
+        // Confirm + Back in one batch cancels before any physical work.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
         app.admit_navigator_intent(NavigatorIntent::CancelPlan);
         assert_eq!(drain_nav(&mut app), None, "annihilated before any host saw it");
-        assert!(drain_cancel(&mut app), "the cancel still latches (a stale cancel is a host no-op)");
+        assert!(!drain_cancel(&mut app), "nothing was acquired, so no release is owed");
 
         // Three gestures in one batch: Back on in-flight A's spinner, confirm B, Back on B's.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));

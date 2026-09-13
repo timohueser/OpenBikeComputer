@@ -299,6 +299,10 @@ enum NavIo {
     NeedAllocate,
     Allocating(crate::flat_store::Ticket),
     Ready,
+    StepRequested,
+    ReadyCommit(obc_route::RouteStats),
+    Complete,
+    Published(obc_storage::flat::ObjectId),
     Staged(NavStep),
     Flushing(crate::flat_store::Ticket, obc_route::Step),
     NeedFinish(obc_route::Step),
@@ -505,7 +509,12 @@ fn nav_step(
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn nav_finish(nav: &mut NavBuffers<'_>, run: NavRun, result: Result<(u64, u32), obc_route::NavError>, now: u32) {
+fn nav_finish(
+    nav: &mut NavBuffers<'_>,
+    run: &NavRun,
+    result: Result<(u64, u32), obc_app::navigator::NavigatorError>,
+    now: u32,
+) {
     use obc_route::NavError;
     let write_us = run.write_us;
     let rescan_us = 0;
@@ -523,8 +532,11 @@ fn nav_finish(nav: &mut NavBuffers<'_>, run: NavRun, result: Result<(u64, u32), 
     // `no-path` the generic tier.
     let outcome_str = match &result {
         Ok(_) => "ok",
-        Err(NavError::NoPath) => "no-path",
-        Err(NavError::Exhausted) => "exhausted",
+        Err(obc_app::navigator::NavigatorError::Plan(NavError::NoPath)) => "no-path",
+        Err(obc_app::navigator::NavigatorError::Plan(NavError::Exhausted)) => "exhausted",
+        Err(obc_app::navigator::NavigatorError::Store) => "store",
+        Err(obc_app::navigator::NavigatorError::SourceChanged) => "source-changed",
+        Err(obc_app::navigator::NavigatorError::Workspace) => "workspace",
     };
     let len = result.map(|(_, len)| len).unwrap_or(0);
     defmt::info!(
@@ -1613,23 +1625,8 @@ pub(crate) async fn run_app(
             // ── The Ride detail's track profile and the route overview's shape (#678 T2 / #680) ──
             // Answered below, immediately before the pass that consumes them — see the derived fill.
 
-            // ── The resumable route planner (#499), one bounded step per pass ──
-            // A drained create-route request allocates unpublished flat-store space, (re)writes the `.bss` planner
-            // slot, and arms a `NavRun`; each subsequent pass runs **one** `nav_step` at this shallow
-            // depth and then continues the normal pass (render, input, the pass-top watchdog feed) —
-            // the UI stays live while the route computes. A drained cancel (Back on the planning
-            // screen) aborts: cancel the reservation, answer nothing. On a terminal step,
-            // `nav_finish` hashes/publishes (or cancels) it, rescans the catalog (sequential,
-            // never nested — the #496 de-nesting), emits the per-phase RTT line, and answers the app;
-            // the positional state is then forced to re-derive, exactly like the store-changed rescan
-            // above (the plan publishes a new object and may change the active geometry source).
-            //
-            // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
-            // the request is still drained and answered with the generic failure tier ("Couldn't find
-            // a route."), so the POI confirm never hangs. The LM20 deletes that arm.
-            // `NavigatorEffect` — the board paces its own search (#1400,
-            // Gate 4/#1400): one `Acquire` arms the run, the block below runs **one** bounded step
-            // per pass, and the answer is terminal. `Step` and `CommitRoute` are never produced.
+            // Navigator requests each step and commit. Physical I/O may span several passes;
+            // release is acknowledged only after the pending ticket and its cleanup settle.
             #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
             if let Some(effect) = exec.effects.navigator.take() {
@@ -1637,52 +1634,60 @@ pub(crate) async fn run_app(
                 match effect {
                     #[cfg(has_nav)]
                     NavigatorEffect::Acquire { token, work: PlannerWork::Route(request) } => {
-                        // Since #1146 P2 the planner slot lives in the scratch arena, so the search
-                        // must *take* the arena first — and a cable transfer streaming into the same
-                        // store outranks a reroute, which `nav_take_arena` enforces by asking the
-                        // arena who holds it. A refusal names the holder and answers the operation,
-                        // so no spinner hangs behind a half-claim and the freeze comes off.
-                        let refusal = match nav_take_arena(app, &mut nav_guard) {
-                            Err(why) => Some(why),
-                            // Impossible through the UI (the planning screen blocks a second
-                            // confirm), and fail-closed rather than lending one reply slot to two
-                            // live tickets: refuse the *new* operation so the rider gets the failure
-                            // card instead of a spinner nothing will ever resolve.
-                            Ok(()) if nav_run.is_some() => {
-                                debug_assert!(false, "a second route plan arrived while one was active");
-                                if let Some(run) = nav_run.as_mut() {
-                                    run.cancel_requested = true;
-                                }
-                                Some("a plan is already running")
-                            }
-                            Ok(()) => {
-                                let mut bufs = NavBuffers {
-                                    guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
-                                    elev: &mut *nav.elev,
-                                };
-                                nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
-                                exec.nav_token = Some(token);
-                                nav_run = Some(NavRun {
-                                    allocation: None,
-                                    io: NavIo::NeedAllocate,
-                                    cancel_requested: false,
-                                    io_started: Instant::now(),
-                                    t0: Instant::now(),
-                                    phase_us: [0; 3],
-                                    write_us: 0,
-                                    #[cfg(feature = "sd-bench")]
-                                    read_perf: [crate::card_io::ReadPerf::ZERO; 3],
-                                });
-                                None
-                            }
-                        };
-                        if let Some(why) = refusal {
-                            defmt::warn!("nav: cannot start a plan ({=str}) — refusing the operation", why);
+                        if !crate::flat_store::planner_map_current() {
                             RideExec::deliver(
                                 &mut exec.outcomes.navigator,
-                                NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
                                 "navigator",
                             );
+                        } else {
+                            // Since #1146 P2 the planner slot lives in the scratch arena, so the search
+                            // must *take* the arena first — and a cable transfer streaming into the same
+                            // store outranks a reroute, which `nav_take_arena` enforces by asking the
+                            // arena who holds it. A refusal names the holder and answers the operation,
+                            // so no spinner hangs behind a half-claim and the freeze comes off.
+                            let refusal = match nav_take_arena(app, &mut nav_guard) {
+                                Err(why) => Some(why),
+                                // Impossible through the UI (the planning screen blocks a second
+                                // confirm), and fail-closed rather than lending one reply slot to two
+                                // live tickets: refuse the *new* operation so the rider gets the failure
+                                // card instead of a spinner nothing will ever resolve.
+                                Ok(()) if nav_run.is_some() => {
+                                    debug_assert!(false, "a second route plan arrived while one was active");
+                                    if let Some(run) = nav_run.as_mut() {
+                                        run.cancel_requested = true;
+                                    }
+                                    Some("a plan is already running")
+                                }
+                                Ok(()) => {
+                                    let mut bufs = NavBuffers {
+                                        guard: nav_guard.as_mut().expect("nav_take_arena left the guard held"),
+                                        elev: &mut *nav.elev,
+                                    };
+                                    nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
+                                    exec.nav_token = Some(token);
+                                    nav_run = Some(NavRun {
+                                        allocation: None,
+                                        io: NavIo::NeedAllocate,
+                                        cancel_requested: false,
+                                        io_started: Instant::now(),
+                                        t0: Instant::now(),
+                                        phase_us: [0; 3],
+                                        write_us: 0,
+                                        #[cfg(feature = "sd-bench")]
+                                        read_perf: [crate::card_io::ReadPerf::ZERO; 3],
+                                    });
+                                    None
+                                }
+                            };
+                            if let Some(why) = refusal {
+                                defmt::warn!("nav: cannot start a plan ({=str}) — refusing the operation", why);
+                                RideExec::deliver(
+                                    &mut exec.outcomes.navigator,
+                                    NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                                    "navigator",
+                                );
+                            }
                         }
                     }
                     // The `ble` image ships without the router (the 256 KB DK's statics), so the
@@ -1719,20 +1724,64 @@ pub(crate) async fn run_app(
                             "navigator",
                         );
                     }
-                    // The rider walked away. The run itself needs a pass or two to hand its
-                    // reservation back; the *operation* is over now, and Navigator released its
-                    // search level when it minted this effect.
-                    NavigatorEffect::Release { token } => {
+                    NavigatorEffect::Release { token, retain_result, .. } => {
                         nav_cancel = true;
+                        #[cfg(has_nav)]
+                        {
+                            exec.nav_token = Some(token);
+                            if let Some(run) = nav_run.as_mut() {
+                                if let NavIo::Published(id) = run.io {
+                                    run.io = if retain_result {
+                                        NavIo::Complete
+                                    } else {
+                                        NavIo::NeedPublishCompensation(id)
+                                    };
+                                }
+                            }
+                        }
+                        #[cfg(not(has_nav))]
+                        let _ = retain_result;
+                        #[cfg(not(has_nav))]
                         RideExec::deliver(
                             &mut exec.outcomes.navigator,
                             NavigatorOutcome::Released { token },
                             "navigator",
                         );
                     }
-                    NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
-                        defmt::error!("nav: the executor paces the search — stepped pacing is #1400's");
-                        debug_assert!(false, "Step/CommitRoute have no producer yet");
+                    #[cfg(has_nav)]
+                    NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
+                        let next = nav_run.as_ref().and_then(|run| match (&effect, &run.io) {
+                            (NavigatorEffect::Step { .. }, NavIo::Ready) => Some(NavIo::StepRequested),
+                            (NavigatorEffect::CommitRoute { .. }, NavIo::ReadyCommit(stats)) => {
+                                Some(NavIo::NeedFinish(obc_route::Step::Done(*stats)))
+                            }
+                            _ => None,
+                        });
+                        let error = if !crate::flat_store::planner_map_current() {
+                            Some(NavigatorError::SourceChanged)
+                        } else if next.is_none() {
+                            Some(NavigatorError::Workspace)
+                        } else {
+                            None
+                        };
+                        if let Some(error) = error {
+                            RideExec::deliver(
+                                &mut exec.outcomes.navigator,
+                                NavigatorOutcome::Failed { token, error },
+                                "navigator",
+                            );
+                        } else if let Some(run) = nav_run.as_mut() {
+                            exec.nav_token = Some(token);
+                            run.io = next.unwrap();
+                        }
+                    }
+                    #[cfg(not(has_nav))]
+                    NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token } => {
+                        RideExec::deliver(
+                            &mut exec.outcomes.navigator,
+                            NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
+                            "navigator",
+                        );
                     }
                 }
             }
@@ -1757,7 +1806,10 @@ pub(crate) async fn run_app(
                 if let (Some(mut run), Some(writer), Some(guard)) =
                     (nav_run.take(), crate::flat_store::writer(), nav_guard.as_mut())
                 {
+                    use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerProgress};
                     let mut finished = None;
+                    let mut progressed = None;
+                    let mut acquired = false;
                     let mut cancelled = false;
                     match run.io {
                         NavIo::NeedAllocate => {
@@ -1777,17 +1829,28 @@ pub(crate) async fn run_app(
                                 match answer {
                                     Ok(crate::flat_store::Outcome::Allocated(allocation)) => {
                                         run.allocation = Some(allocation);
+                                        acquired = !run.cancel_requested;
                                         run.io = if run.cancel_requested {
                                             NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath))
                                         } else {
                                             NavIo::Ready
                                         };
                                     }
-                                    _ => finished = Some(Err(obc_route::NavError::NoPath)),
+                                    _ if run.cancel_requested => cancelled = true,
+                                    _ => finished = Some(Err(NavigatorError::Store)),
                                 }
                             }
                         }
-                        NavIo::Ready => {
+                        NavIo::Ready | NavIo::ReadyCommit(_) | NavIo::Complete | NavIo::Published(_) => {
+                            if run.cancel_requested {
+                                if run.allocation.is_some() {
+                                    run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                } else {
+                                    cancelled = true;
+                                }
+                            }
+                        }
+                        NavIo::StepRequested => {
                             if run.cancel_requested {
                                 run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
                             } else {
@@ -1814,10 +1877,19 @@ pub(crate) async fn run_app(
                                 run.read_perf[phase_idx]
                                     .add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
                                 run.io = if step.appended == 0 && step.patch_len == 0 {
-                                    if matches!(step.outcome, obc_route::Step::Running) {
-                                        NavIo::Ready
-                                    } else {
-                                        NavIo::NeedFinish(step.outcome)
+                                    match step.outcome {
+                                        obc_route::Step::Running => {
+                                            progressed = Some(PlannerProgress::Searching);
+                                            NavIo::Ready
+                                        }
+                                        obc_route::Step::Done(stats) => {
+                                            progressed = Some(PlannerProgress::Reached);
+                                            NavIo::ReadyCommit(stats)
+                                        }
+                                        obc_route::Step::Failed(error) => {
+                                            finished = Some(Err(NavigatorError::Plan(error)));
+                                            NavIo::Complete
+                                        }
                                     }
                                 } else {
                                     NavIo::Staged(step)
@@ -1843,16 +1915,32 @@ pub(crate) async fn run_app(
                                 match answer {
                                     Ok(crate::flat_store::Outcome::Wrote(allocation)) => {
                                         run.allocation = Some(allocation);
-                                        run.io = if run.cancel_requested || !matches!(outcome, obc_route::Step::Running)
-                                        {
-                                            NavIo::NeedFinish(outcome)
+                                        run.io = if run.cancel_requested {
+                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath))
                                         } else {
-                                            NavIo::Ready
+                                            match outcome {
+                                                obc_route::Step::Running => {
+                                                    progressed = Some(PlannerProgress::Searching);
+                                                    NavIo::Ready
+                                                }
+                                                obc_route::Step::Done(stats) => {
+                                                    progressed = Some(PlannerProgress::Reached);
+                                                    NavIo::ReadyCommit(stats)
+                                                }
+                                                obc_route::Step::Failed(error) => {
+                                                    finished = Some(Err(NavigatorError::Plan(error)));
+                                                    NavIo::Complete
+                                                }
+                                            }
                                         };
                                     }
                                     _ => {
-                                        run.io =
-                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                        if run.cancel_requested {
+                                            run.io =
+                                                NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                        } else {
+                                            finished = Some(Err(NavigatorError::Store));
+                                        }
                                     }
                                 }
                             }
@@ -1884,8 +1972,10 @@ pub(crate) async fn run_app(
                                     run.io_started = Instant::now();
                                     run.io = NavIo::Finishing { ticket, outcome: final_outcome, publishing };
                                 }
+                            } else if run.cancel_requested {
+                                cancelled = true;
                             } else {
-                                finished = Some(Err(obc_route::NavError::NoPath));
+                                finished = Some(Err(NavigatorError::Store));
                             }
                         }
                         NavIo::Finishing { ticket, outcome, publishing } => {
@@ -1911,19 +2001,27 @@ pub(crate) async fn run_app(
                                                 }
                                             }
                                         }
-                                        _ => {
-                                            run.cancel_requested = false;
-                                            run.io =
-                                                NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                        result => {
+                                            if run.cancel_requested {
+                                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(
+                                                    obc_route::NavError::NoPath,
+                                                ));
+                                            } else {
+                                                finished = Some(Err(
+                                                    if matches!(result, Err(obc_storage::flat::StoreError::NotFound)) {
+                                                        NavigatorError::SourceChanged
+                                                    } else {
+                                                        NavigatorError::Store
+                                                    },
+                                                ));
+                                            }
                                         }
                                     }
                                 } else if run.cancel_requested {
                                     cancelled = true;
                                 } else {
-                                    finished = Some(Err(match outcome {
-                                        obc_route::Step::Failed(error) => error,
-                                        _ => obc_route::NavError::NoPath,
-                                    }));
+                                    run.allocation = None;
+                                    finished = Some(Err(NavigatorError::Store));
                                 }
                             }
                         }
@@ -1979,50 +2077,49 @@ pub(crate) async fn run_app(
                             }
                         }
                     }
-                    use obc_app::navigator::{NavigatorError, NavigatorOutcome};
                     if cancelled {
-                        defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
-                        // The operation was already answered `Released` when the cancellation
-                        // reached this executor; the run winding down owes nothing further.
-                        exec.nav_token = None;
+                        defmt::info!("nav route: released after {=u64} ms", run.t0.elapsed().as_millis());
                         search_ended = true;
-                    } else if let Some(result) = finished {
-                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
-                        nav_finish(&mut bufs, run, result, now);
-                        // The terminal answer, under the operation the rider actually started. A run
-                        // with no token is a cancelled one whose `Released` already landed — the
-                        // domain would refuse a second answer anyway, so say nothing.
-                        if let Some(token) = exec.nav_token.take() {
-                            let outcome = match result {
-                                Ok((route, _)) => NavigatorOutcome::PlanFinished { token, route },
-                                Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
-                            };
-                            RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
-                        }
-                        search_ended = true;
-                        prev_active = None;
-                        index_route = None;
                     } else {
+                        if let Some(result) = finished {
+                            let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                            nav_finish(&mut bufs, &run, result, now);
+                            run.io = match result {
+                                Ok((id, _)) => NavIo::Published(obc_storage::flat::ObjectId(id)),
+                                Err(_) => NavIo::Complete,
+                            };
+                            if let Some(token) = exec.nav_token.take() {
+                                let outcome = match result {
+                                    Ok((route, _)) => NavigatorOutcome::PlanFinished { token, route },
+                                    Err(error) => NavigatorOutcome::Failed { token, error },
+                                };
+                                RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                            }
+                            prev_active = None;
+                            index_route = None;
+                        } else if acquired || progressed.is_some() {
+                            if let Some(token) = exec.nav_token.take() {
+                                let outcome = match progressed {
+                                    Some(progress) => NavigatorOutcome::Stepped { token, progress },
+                                    None => NavigatorOutcome::Acquired { token },
+                                };
+                                RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                            }
+                        }
                         nav_run = Some(run);
                     }
-                } else if nav_run.is_some() {
-                    // The one writer went away under a live run (a card that stopped answering).
-                    use obc_app::navigator::{NavigatorError, NavigatorOutcome};
+                }
+                if search_ended {
+                    // Acknowledge only after dropping the arena guard. Navigator can then unfreeze
+                    // rendering or admit a replacement operation.
+                    nav_guard = None;
                     if let Some(token) = exec.nav_token.take() {
                         RideExec::deliver(
                             &mut exec.outcomes.navigator,
-                            NavigatorOutcome::Failed { token, error: NavigatorError::Store },
+                            obc_app::navigator::NavigatorOutcome::Released { token },
                             "navigator",
                         );
                     }
-                    nav_run = None;
-                    search_ended = true;
-                }
-                if search_ended {
-                    // Drop the guard, releasing the arena so the next frame can render the map
-                    // again — and so a transfer waiting on it finds the block free. The app's own
-                    // search level was released by the answer that set `search_ended`.
-                    nav_guard = None;
                 }
             }
             #[cfg(not(has_nav))]

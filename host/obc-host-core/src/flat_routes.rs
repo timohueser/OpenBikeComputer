@@ -198,6 +198,32 @@ impl RouteRepository for FlatRouteStore {
         Ok(existed)
     }
 
+    fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<crate::RoutePublication> {
+        let summary = RouteSummary::read(&SliceSource(bytes)).ok()?;
+        let meta = self.owner.import_computed_route(bytes).ok()?;
+        self.publish(meta, summary);
+        Some(crate::RoutePublication {
+            id: meta.id.0,
+            revision: meta.revision.0,
+            store: self.store_scope().map(|scope| scope.store),
+        })
+    }
+
+    fn retract_nav_route(&mut self, publication: crate::RoutePublication) -> Result<(), CatalogError> {
+        if self.store_scope().map(|scope| scope.store) != publication.store {
+            return Err(CatalogError::Stale);
+        }
+        match self.owner.remove(ObjectKind::Route, ObjectId(publication.id), Revision(publication.revision)) {
+            Ok(()) => {
+                self.refresh_metadata().map_err(|_| CatalogError::Unreadable)?;
+                Ok(())
+            }
+            Err(StoreError::NotFound | StoreError::RevisionConflict { .. }) => Ok(()),
+            Err(StoreError::ReadOnly) => Err(CatalogError::RemountRequired),
+            Err(_) => Err(CatalogError::RemoveFailed),
+        }
+    }
+
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         let previous = self
             .nav_id
@@ -222,6 +248,10 @@ impl RouteRepository for FlatRouteStore {
         let changed = self.active.is_some() || next.is_some();
         self.active = next;
         changed
+    }
+
+    fn pin_active(&self) -> Option<crate::RouteLease> {
+        self.active.clone().map(crate::RouteLease::Flat)
     }
 
     fn active_source(&self) -> Option<&dyn ByteSource> {

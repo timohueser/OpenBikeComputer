@@ -22,8 +22,8 @@ use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanRepo
 use obc_app::navigator::NavigatorOutcome;
 use obc_app::screen::Screen;
 use obc_app::{
-    App, AppState, DetourPreview, Gesture, Mode, RecorderIntent, RideRetentionRecord, RideSummary, RouteSummary,
-    TripInput, WarningFlags,
+    App, AppState, Gesture, Mode, RecorderIntent, RideRetentionRecord, RideSummary, RouteSummary, TripInput,
+    WarningFlags,
 };
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
@@ -385,6 +385,8 @@ pub struct CorpusState {
     /// and the splice's answer at the *action* that produces them rather than at the request, so
     /// they are built against whatever is actually running.
     pub nav_token: Option<OperationToken<NavigatorTag>>,
+    pub abandoned_nav_token: Option<OperationToken<NavigatorTag>>,
+    pub late_nav: Option<NavigatorOutcome>,
     /// The settings write the executor is holding, for the same reason: a scripted answer may be a
     /// *stale* ack for a revision a newer edit already superseded.
     pub settings_token: Option<OperationToken<SettingsTag>>,
@@ -433,6 +435,8 @@ impl CorpusState {
             derived: DerivedInputs::NONE,
             store_revision: 0,
             nav_token: None,
+            abandoned_nav_token: None,
+            late_nav: None,
             settings_token: None,
         }
     }
@@ -450,14 +454,6 @@ impl CorpusState {
             store: StoreIdentity::new(1),
             revision: Revision::new(self.store_revision),
         });
-    }
-
-    /// Answer the navigation operation the executor is holding. Nothing to answer means the search
-    /// this action scripts a result for was never handed out.
-    pub fn answer_nav(&mut self, build: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorOutcome) {
-        if let Some(token) = self.nav_token.take() {
-            let _ = self.outcomes.navigator.try_put(build(token));
-        }
     }
 
     pub fn feed_routes(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
@@ -643,7 +639,9 @@ impl CorpusState {
                 self.feed_routes("nav.old-publication", trace);
                 // The operation the rider walked away from, answered late: Navigator refuses a
                 // token it no longer holds, which is the whole point of the scenario.
-                self.answer_nav(|token| NavigatorOutcome::PlanFinished { token, route: 10 });
+                if let Some(token) = self.abandoned_nav_token.take() {
+                    self.late_nav = Some(NavigatorOutcome::PlanFinished { token, route: 10 });
+                }
             }
             Action::ReplaceRoutePlan => {
                 assert!(self.app.debug_start_nav((0, 0), (2_000, 2_000), "Replacement"));
@@ -653,16 +651,6 @@ impl CorpusState {
             Action::CommitDetour => {
                 self.app.set_detour_preview(&[(0, 0), (100, 100)]);
                 trace.record_feeder(FeederCall::new(FeederKind::DetourPreview, "detour.preview", 2));
-                self.answer_nav(|token| NavigatorOutcome::DetourFinished {
-                    token,
-                    preview: DetourPreview {
-                        cost_delta_m: 100,
-                        total_distance_m: 900,
-                        rejoin_m: 1_000,
-                        ascent_m: Some(30),
-                    },
-                });
-                self.app.apply_gesture(Gesture::Press);
                 self.commit_success_pending = true;
             }
             Action::RouteNoPath => {
@@ -1365,7 +1353,14 @@ pub const SCENARIOS: &[Scenario] = &[
             Action::FillRideTrack,
             Action::NeedNavPreview,
             Action::ReplaceNavPreviewNeed,
+            Action::Settle,
+            Action::Settle,
+            Action::Settle,
             Action::NeedNavPreview,
+            Action::Settle,
+            Action::Settle,
+            Action::Settle,
+            Action::Settle,
             Action::FillNavPreview,
         ],
     },

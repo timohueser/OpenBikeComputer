@@ -21,7 +21,12 @@ use obc_host_core::VecSink;
 /// FatFs twin is `/routes/_NAV.OBR` (embedded-sdmmc can't write the 4-char LFN extension).
 const NAV_ROUTE_FILE: &str = "_nav.obcr";
 
-struct RouteBytes(Vec<u8>);
+fn next_generation() -> u64 {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+struct RouteBytes(std::sync::Arc<[u8]>);
 impl obc_formats::io::ByteSource for RouteBytes {
     fn len(&self) -> u64 {
         self.0.len() as u64
@@ -47,6 +52,7 @@ pub struct RouteStore {
     /// side-load-registry behaviour in miniature.
     assigned: Vec<(PathBuf, CatalogObjectId)>,
     next_id: CatalogObjectId,
+    generation: u64,
     active: Option<usize>,
     active_bytes: Option<RouteBytes>,
     /// The in-memory route-retention sidecar (epic #638, S3): route id → (retention, last_used).
@@ -67,6 +73,7 @@ impl RouteStore {
             ids: Vec::new(),
             assigned: Vec::new(),
             next_id: 0,
+            generation: 0,
             active: None,
             active_bytes: None,
             retention: RouteRetentionStore::new(),
@@ -117,6 +124,8 @@ impl RouteStore {
     /// Re-read the folder's `.obcr` files into the catalog (sorted by filename), each keeping its
     /// session-stable id from the registry (fresh files get the next one).
     pub fn rescan(&mut self) {
+        self.invalidate_active();
+        self.generation = next_generation();
         self.catalog.clear();
         self.paths.clear();
         self.ids.clear();
@@ -214,7 +223,9 @@ impl RouteStore {
         let path = self.paths.get(i)?.clone();
         let bytes = std::fs::read(&path).ok()?;
         std::fs::write(&path, bytes).ok()?;
-        self.ids.get(i).copied()
+        let id = self.ids.get(i).copied();
+        self.rescan();
+        id
     }
 
     /// Write the router's emitted OBCR to the reserved nav-route file (epic #116, R4) —
@@ -248,7 +259,10 @@ impl RouteStore {
             return false;
         }
         self.active = want;
-        self.active_bytes = want.and_then(|i| self.paths.get(i)).and_then(|p| std::fs::read(p).ok()).map(RouteBytes);
+        self.active_bytes = want
+            .and_then(|i| self.paths.get(i))
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|bytes| RouteBytes(bytes.into()));
         true
     }
 
@@ -281,12 +295,45 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         self.delete_by_id(id)
     }
+    fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<obc_host_core::RoutePublication> {
+        use std::io::Write;
+        std::fs::create_dir_all(&self.dir).ok()?;
+        for _ in 0..64 {
+            let out = self.dir.join(format!("_nav-{}.obcr", next_generation()));
+            let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&out) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return None,
+            };
+            if file.write_all(bytes).is_err() {
+                let _ = std::fs::remove_file(&out);
+                return None;
+            }
+            self.rescan();
+            let i = self.paths.iter().position(|path| path == &out)?;
+            return Some(obc_host_core::RoutePublication { id: self.ids[i], revision: self.generation, store: None });
+        }
+        None
+    }
+    fn retract_nav_route(&mut self, publication: obc_host_core::RoutePublication) -> Result<(), CatalogError> {
+        if publication.store.is_some() || publication.revision != self.generation {
+            return Ok(());
+        }
+        self.delete_by_id(publication.id).map(|_| ())
+    }
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         self.write_nav_route(bytes)
     }
     fn sync_active(&mut self, want: Option<usize>) -> bool {
         self.sync_active(want)
     }
+    fn pin_active(&self) -> Option<obc_host_core::RouteLease> {
+        Some(obc_host_core::RouteLease::Memory {
+            id: *self.ids.get(self.active?)?,
+            bytes: self.active_bytes.as_ref()?.0.clone(),
+        })
+    }
+
     fn active_source(&self) -> Option<&dyn obc_formats::io::ByteSource> {
         self.active_bytes.as_ref().map(|bytes| bytes as &dyn obc_formats::io::ByteSource)
     }
@@ -363,6 +410,21 @@ mod tests {
         let mut store = RouteStore::open(&dir);
         obc_host_core::conformance::route_identity_remap(&mut store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fresh_publication_cleanup_preserves_the_original_file() {
+        use obc_host_core::RouteRepository;
+        let dir = temp_route_dir("publication");
+        let mut store = RouteStore::open(&dir);
+        let original = store.write_nav_route(ROUTE).unwrap();
+        let publication = store.publish_nav_route(ROUTE).unwrap();
+        assert_ne!(publication.id, original);
+        store.retract_nav_route(publication).unwrap();
+        assert!(store.ids.contains(&original));
+        assert!(!store.ids.contains(&publication.id));
+        assert_eq!(std::fs::read(dir.join(NAV_ROUTE_FILE)).unwrap(), ROUTE);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -76,6 +76,10 @@ impl LoadedMap {
         obc_host_core::terrain::resolve(&self.path)
     }
 
+    pub fn planner_map(&self) -> &obc_host_core::flat_map::FlatMap {
+        &self.map
+    }
+
     pub fn reader(&self) -> Reader<'_> {
         self.map.reader()
     }

@@ -96,7 +96,8 @@ The runtime uses these layers:
 
 `App` is the composition root for the shared application.
 The [Navigator](src:firmware/obc-app/src/navigator.rs) owns the active route, route matching,
-guidance state, and route caches. `App` keeps only tick cadence and one-shot sensor sampling state.
+guidance state, route caches, and planner pacing. `App` keeps only tick cadence and one-shot
+sensor sampling state.
 The [UI runtime](src:firmware/obc-app/src/ui_runtime.rs) owns screens, timers, and dirty regions.
 The [catalog state](src:firmware/obc-app/src/catalog_state.rs) owns durable object identifiers.
 The [host protocol](src:firmware/obc-app/src/host.rs) defines bounded commands and events.
@@ -354,69 +355,38 @@ The board reports durable-key and host-key removal separately from unconfirmed c
 
 ## On-device routing: the router seam
 
-The application hands the host one bounded planning operation.
-The host runs [`NavPlanner`](src:firmware/obc-route/src/nav.rs) in bounded steps.
-It answers with the operation's own token.
-The planner reads the navigation graph from the selected map.
-It writes a normal OBCR object to the reserved navigation slot.
+Navigator owns the planning lifecycle. It issues one physical operation and waits for its result.
+Each operation has a fresh token. Navigator accepts a reply only when both its token and its phase
+match the expected operation. A duplicate step result cannot advance the next step.
+The [host executor](src:host/obc-host-core/src/dispatch.rs) and
+[board executor](src:firmware/obc-fw-nrf54l/src/ride.rs) perform only the work requested by Navigator.
+They do not start another step or publish a completed plan on their own.
 
-<figure class="fig">
-<svg viewBox="0 0 720 320" role="img" aria-label="The application requests a route. The host runs the route planner and stores an OBCR object. The host then reports the new durable object identifier.">
-  <defs>
-    <marker id="aR1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="aR2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="24">The core asks, the host routes, the answer re-enters the load path</text>
+| Operation | Executor work | Result Navigator waits for |
+| --- | --- | --- |
+| Acquire | Claim the workspace and retain the admitted map source. A host detour also retains its original route source. | Sources and workspace are held. |
+| Step | Run one bounded [NavPlanner](src:firmware/obc-route/src/nav.rs) step against those sources. | Search or output progress, a detour preview, or failure. |
+| Commit | Publish the completed route, or the detour the rider accepted. | The new durable route identifier, or failure. |
+| Release | Finish pending storage work, cancel unused allocations or remove a cancelled publication, then return the workspace. | Cleanup is complete and the arena is available. |
 
-  <!-- core column header -->
-  <text class="d-title" x="150" y="52" text-anchor="middle" style="font-size:12px">shared core (obc-app)</text>
-  <text class="d-title" x="560" y="52" text-anchor="middle" style="font-size:12px">host</text>
-  <line x1="360" y1="60" x2="360" y2="292" stroke="#9aa884" stroke-width="1.3" stroke-dasharray="3 4" />
+A replacement plan cannot acquire the workspace before the previous release is acknowledged.
+Release after successful planning keeps the accepted route or detour preview. Releasing working
+memory is not a cancellation result. Workspace refusal, planner failure and storage failure remain distinct.
 
-  <!-- core side -->
-  <rect class="d-panel-2" x="24" y="70" width="252" height="40" rx="9" />
-  <text class="d-label" x="40" y="88" style="font-size:10.5px">POI detail → press</text>
-  <text class="d-sub" x="40" y="102" style="font-size:9px">"Create a route?" confirm</text>
+Planning stays bound to its admitted sources. The board checks its boot-long map lease against
+the exact card, map object and revision. The host retains the admitted map lease and, for a detour,
+the exact original route through preview and commit. A changed current source invalidates the
+result; the executor cannot substitute the latest map or route halfway through the operation.
+Native folder source checks and cleanup use retained snapshots and the observed generation;
+external file edits become visible to these checks only after a rescan.
 
-  <rect class="d-hot" x="24" y="124" width="252" height="44" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one operation)</text>
-  <text class="d-sub" x="40" y="158" style="font-size:9px">from = rider fix · to = POI coord · name</text>
+Publication creates a fresh OBCR object or host route file. It does not overwrite the original
+route. The standard catalog and route-load path handles the completed object. Flat-store
+publication requires capacity for both the publication commit and a cleanup commit if cancellation
+arrives after publication. Cleanup removes only the result of that cancelled operation.
 
-  <!-- request arrow to host -->
-  <line class="d-flow" x1="276" y1="146" x2="404" y2="146" marker-end="url(#aR1)" />
-  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">Acquire (carries the token)</text>
-
-  <!-- host side -->
-  <rect class="d-panel" x="404" y="70" width="292" height="120" rx="10" />
-  <text class="d-tag" x="420" y="90">plan against the resident map</text>
-  <text class="d-sub" x="420" y="110" style="font-size:9.5px">obc-route::NavPlanner — exact road projection,</text>
-  <text class="d-sub" x="420" y="126" style="font-size:9.5px">profile-weighted A* (ε-ladder) over §8 graph</text>
-  <text class="d-sub" x="420" y="146" style="font-size:9.5px">→ stream OBCR into <tspan font-family="var(--mono)">the reserved route object</tspan></text>
-  <text class="d-sub" x="420" y="162" style="font-size:9.5px">→ rescan catalog, resolve durable id</text>
-  <text class="d-sub" x="420" y="180" style="font-size:8.5px;fill:#a9501c">stepped once per pass — the loop's watchdog covers it</text>
-
-  <!-- answer arrow back -->
-  <line class="d-flow" x1="404" y1="210" x2="276" y2="210" marker-end="url(#aR2)" stroke="#cf6a2a" stroke-width="2" />
-  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">PlanFinished / Failed (same token)</text>
-
-  <!-- ok / err -->
-  <rect class="d-panel-2" x="24" y="224" width="252" height="40" rx="9" />
-  <text class="d-sub" x="40" y="242" style="font-size:9.5px;fill:#2c5230"><tspan style="font-weight:700">Ok(id)</tspan> → NEW ROUTE overview + preview,</text>
-  <text class="d-sub" x="40" y="256" style="font-size:9px;fill:#2c5230">route activates → normal load/nav path</text>
-
-  <rect class="d-panel-2" x="24" y="272" width="252" height="40" rx="9" />
-  <text class="d-sub" x="40" y="290" style="font-size:9.5px;fill:#c0492e"><tspan style="font-weight:700">Err</tspan> → two-tier card:</text>
-  <text class="d-sub" x="40" y="304" style="font-size:9px;fill:#c0492e">Exhausted → "Too far…" · else "Couldn't find…"</text>
-
-  <!-- resident map note -->
-  <rect class="d-panel" x="404" y="224" width="292" height="88" rx="10" />
-  <text class="d-tag" x="420" y="244">re-enters the load path</text>
-  <text class="d-sub" x="420" y="264" style="font-size:9.5px">the reserved object is just another route</text>
-  <text class="d-sub" x="420" y="280" style="font-size:9.5px">in the catalog — same RouteReader,</text>
-  <text class="d-sub" x="420" y="296" style="font-size:9.5px">matcher, profile as a loaded GPX</text>
-</svg>
-<figcaption>The planner returns a normal OBCR object. The standard route load path handles this object.</figcaption>
-</figure>
+Host detour planning uses this same lifecycle. Board detours still return a workspace refusal:
+temporary detour storage and streamed splicing are not available on the board yet.
 
 The router projects each endpoint onto stored road geometry.
 It accepts roads within 100 m.

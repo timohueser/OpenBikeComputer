@@ -16,6 +16,52 @@ use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
 use obc_route::{Profile, RideStats, RouteSummary};
 
+/// Exact publication returned before the executor reports a committed route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutePublication {
+    pub id: CatalogObjectId,
+    pub revision: u64,
+    pub store: Option<obc_app::device_core::StoreIdentity>,
+}
+
+/// An immutable active-route snapshot retained through detour preview and commit.
+#[derive(Clone)]
+pub enum RouteLease {
+    Flat(crate::flat_store::ObjectSource),
+    Memory { id: CatalogObjectId, bytes: std::sync::Arc<[u8]> },
+}
+impl RouteLease {
+    pub fn id(&self) -> CatalogObjectId {
+        match self {
+            Self::Flat(source) => source.id().0,
+            Self::Memory { id, .. } => *id,
+        }
+    }
+    pub fn matches(&self, current: &Self) -> bool {
+        match (self, current) {
+            (Self::Flat(a), Self::Flat(b)) => a.same_revision(b) && a.is_current(),
+            (Self::Memory { id: a, bytes: ab }, Self::Memory { id: b, bytes: bb }) => {
+                a == b && std::sync::Arc::ptr_eq(ab, bb)
+            }
+            _ => false,
+        }
+    }
+}
+impl ByteSource for RouteLease {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Flat(source) => source.len(),
+            Self::Memory { bytes, .. } => bytes.len() as u64,
+        }
+    }
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        match self {
+            Self::Flat(source) => source.read_at(offset, out),
+            Self::Memory { bytes, .. } => obc_formats::io::SliceSource(bytes).read_at(offset, out),
+        }
+    }
+}
+
 /// The route catalog + the one active route's bytes, plus the reserved nav-route commit slot the
 /// router writes into. Supersedes the old `NavRouteStore` (which was only the nav-commit slice):
 /// the dispatcher needs the whole delete/rescan/active surface, so it lives in one trait.
@@ -30,12 +76,24 @@ pub trait RouteRepository {
     /// Persist the router's emitted OBCR as the reserved nav route (overwriting any previous plan),
     /// returning its session-stable id — or `None` on an I/O failure.
     fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId>;
+    /// Publish with a compensation key. A store without exact observed revisions refuses it.
+    fn publish_nav_route(&mut self, _bytes: &[u8]) -> Option<RoutePublication> {
+        None
+    }
+    /// Remove only this publication. A replacement is already outside this operation's authority.
+    fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.
     fn sync_active(&mut self, want: Option<usize>) -> bool;
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the active route's bytes.
     fn active_source(&self) -> Option<&dyn ByteSource>;
+    /// Retain the exact active snapshot. Repositories without leases cannot plan detours.
+    fn pin_active(&self) -> Option<RouteLease> {
+        None
+    }
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.
     fn invalidate_active(&mut self);
