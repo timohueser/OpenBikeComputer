@@ -197,7 +197,7 @@ FRAME_POINTER_RE = re.compile(
 )
 INSTRUCTION_RE = re.compile(r"^[0-9a-fA-F]+:\s+(?:(?:[0-9a-fA-F]{2}){1,4}\s+)+(.+)$")
 ENTRY_STACK_MUTATION_RE = re.compile(
-    r"^(?:sub\S*\s+sp\b|(?:v?push|stmdb|vstmdb)\b|(?:mov|bic|and)\S*\s+sp\b)"
+    r"^(?:sub\S*\s+sp\b|v?push\b|v?stmdb\S*\s+sp!|(?:mov|bic|and)\S*\s+sp\b)"
 )
 CALL_RE = re.compile(r"\bbl\s+0x[0-9a-fA-F]+ <([^>]+)>")
 # The embassy **out-of-line task body**. `#[embassy_executor::task]` expands to
