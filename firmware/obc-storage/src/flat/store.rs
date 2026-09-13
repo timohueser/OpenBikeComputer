@@ -1676,15 +1676,10 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             return Err(StoreError::CatalogFull);
         }
 
-        // Everything the batch would write, checked against §5.3 before the card is touched — which
-        // means a second pass over the live prefix, and is worth it for a reason stronger than §2.1's
-        // "a commit that returns Err changed nothing". §2.1 is about *observable* state, and the
-        // inactive copy is not observable. What the alternative would actually spend is the
-        // **redundancy**: validating while writing means a refused batch has already invalidated the
-        // other copy's gate and scribbled its body, so until the next commit succeeds the card is one
-        // torn serving copy away from having no catalog at all. Today a refused batch touches the card
-        // not at all, which `a_refused_batch_leaves_the_catalog_untouched` pins by asserting the other
-        // copy's gate block is still zeros.
+        // Validate the complete batch against §5.3 before any write. A structural refusal must
+        // preserve both catalog copies: validating while writing would invalidate the inactive
+        // gate and spend that redundancy. Publication errors later in the commit can instead
+        // require remount, because a failed final gate write or sync can already be durable.
         //
         // The pass is not free and not the largest thing here either: at 1,024 entries it is 32 of the
         // commit's 72 read commands, and the M33's per-entry work is the bigger term (`flat::cost`).
