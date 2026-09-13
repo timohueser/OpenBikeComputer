@@ -181,7 +181,7 @@ fn malformed_duplicate_and_failed_catalog_reads_never_become_empty_defaults() {
 }
 
 #[test]
-fn prepublication_commit_error_keeps_old_metadata_and_allows_retry() {
+fn prepublication_commit_error_keeps_old_metadata_readable() {
     let disk = SparseDisk::blank(BLOCKS, 4);
     let device = FaultOnce::new(&disk);
     let store = FlatStore::initialize(&device, CARD).unwrap();
@@ -349,7 +349,10 @@ fn committed_readback_failure_fences_every_writer_until_remount() {
             device.fault_after(MediaOp::Read, skip);
         }
         let result = write_route(&store, CARD, sequence, target.id, 1, 1234);
-        let reads = disk.ledger()[before..].iter().filter(|(_, op, _)| *op == MediaOp::Read).count() as u32;
+        let ledger = disk.ledger();
+        let writes = &ledger[before..];
+        let published = writes.iter().rposition(|(_, op, _)| *op == MediaOp::Sync).unwrap();
+        let reads = writes[..=published].iter().filter(|(_, op, _)| *op == MediaOp::Read).count() as u32;
         if fail_read.is_some() {
             assert!(device.fired());
             assert_eq!(result, Err(Error::RemountRequired));
@@ -362,5 +365,34 @@ fn committed_readback_failure_fences_every_writer_until_remount() {
         reads
     }
     let reads = run(None);
-    run(Some(reads - 1));
+    run(Some(reads));
+}
+
+#[test]
+fn uncertain_expiry_reports_remount_before_policy_can_retry() {
+    fn run(fail_sync: Option<u32>) -> u32 {
+        let disk = SparseDisk::blank(BLOCKS, 11);
+        let device = FaultOnce::new(&disk);
+        let store = FlatStore::initialize(&device, CARD).unwrap();
+        let target = publish(&store, ObjectKind::Route, b"route");
+        let sequence = store.sequence();
+        let before = disk.ledger().len();
+        if let Some(skip) = fail_sync {
+            device.fault_after(MediaOp::Sync, skip);
+        }
+        let result = remove_route(&store, CARD, sequence, target.id);
+        let syncs = disk.ledger()[before..].iter().filter(|(_, op, _)| *op == MediaOp::Sync).count() as u32;
+        if fail_sync.is_some() {
+            assert!(device.fired());
+            assert_eq!(result, Err(Error::RemountRequired));
+            assert_eq!(store.mode(), super::super::Mode::RemountRequired);
+            let mut bytes = [0; MAX_LEN];
+            assert!(matches!(Metadata::new(&store).load(&store, &mut bytes), Err(Error::RemountRequired)));
+        } else {
+            result.unwrap();
+        }
+        syncs
+    }
+    let syncs = run(None);
+    run(Some(syncs - 1));
 }

@@ -777,7 +777,7 @@ impl RetentionMachine {
         self.retry_at = Some(now_ms.wrapping_add(30_000));
     }
     pub(crate) fn reset_store(&mut self) {
-        let mut ops = core::mem::replace(&mut self.ops, crate::device_core::TokenSource::new());
+        let mut ops = core::mem::take(&mut self.ops);
         ops.invalidate();
         *self = Self::new();
         self.ops = ops;

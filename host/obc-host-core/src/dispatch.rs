@@ -180,9 +180,8 @@ pub trait HostPlatform {
 /// A host with no platform work of its own.
 impl HostPlatform for () {}
 
-/// The one store a frame-stepped host mounts. These hosts have exactly one set of repositories for
-/// their whole life, so the identity half of a [`StoreRevision`] is a constant and only the
-/// revision moves.
+/// Legacy folder repositories use a session-local fallback. FlatRouteStore supplies the complete
+/// physical card scope and is the only repository that admits durable retention work.
 const REPOSITORY_STORE: StoreIdentity = StoreIdentity::new(1);
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,

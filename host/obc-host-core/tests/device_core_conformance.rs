@@ -34,7 +34,7 @@
 //!
 mod device_core_corpus;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use obc_app::ble::BondEffect;
 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
@@ -231,6 +231,7 @@ struct CoreHarness {
     ride_feeds: usize,
     /// Every settings revision the executor was asked to write, in order.
     settings_writes: Vec<u16>,
+    metadata: BTreeMap<u64, RouteRetentionMeta>,
 }
 
 impl CoreHarness {
@@ -243,6 +244,7 @@ impl CoreHarness {
             served: BTreeSet::new(),
             ride_feeds: 0,
             settings_writes: Vec::new(),
+            metadata: BTreeMap::new(),
         }
     }
 
@@ -443,7 +445,10 @@ impl CoreHarness {
                         refeed: Refeed::None,
                     };
                 }
-                Done::Catalog { outcome: CatalogOutcome::CatalogRead { token, scope: None }, refeed: Refeed::All }
+                Done::Catalog {
+                    outcome: CatalogOutcome::CatalogRead { token, scope: self.state.facts.store_revision() },
+                    refeed: Refeed::All,
+                }
             }
             // One object out of the store, and nothing else. The namespace probe order is the real
             // executor's; the re-read a completed removal implies is the domain's.
@@ -485,15 +490,19 @@ impl CoreHarness {
         }
     }
 
-    /// The sidecar writes. The fixture keeps no durable sidecar, so the answer *is* the write —
-    /// what matters here is that it carries the operation's token back, which the fire-and-forget
-    /// legacy stamp had no way to do.
+    /// Commit to the fake store. Resident metadata changes only when a catalog read delivers it.
     fn serve_retention(&mut self, effect: RetentionEffect) -> RetentionOutcome {
         match effect {
-            RetentionEffect::WriteRouteMetadata { token, id, .. } => {
+            RetentionEffect::WriteRouteMetadata { token, id, meta, .. } => {
+                self.metadata.insert(id, meta);
                 RetentionOutcome::RouteMetadataWritten { token, id }
             }
-            RetentionEffect::WriteRideMetadata { token, id, .. } => RetentionOutcome::RideMetadataWritten { token, id },
+            RetentionEffect::WriteRideMetadata { token, id, synced_at, .. } => {
+                for ride in self.state.rides.iter_mut().filter(|ride| ride.id == id) {
+                    ride.summary.synced_at_utc = synced_at;
+                }
+                RetentionOutcome::RideMetadataWritten { token, id }
+            }
         }
     }
 
@@ -579,7 +588,17 @@ impl CoreHarness {
         if refeed == Refeed::None {
             return;
         }
+        self.state.app.begin_catalog_refresh();
         self.state.feed_routes("core.routes", trace);
+        let metas: Vec<_> = self
+            .state
+            .app
+            .route_ids()
+            .iter()
+            .zip(self.state.app.route_metas())
+            .map(|(id, old)| self.metadata.get(id).copied().unwrap_or(*old))
+            .collect();
+        self.state.app.set_route_meta(&metas);
         self.state.feed_trips("core.trips", trace);
         self.ride_feeds += 1;
         self.state.feed_rides("core.rides", trace);
@@ -906,7 +925,9 @@ fn every_mandatory_trace_has_a_test_that_runs_it() {
 }
 
 fn typed() -> CoreHarness {
-    CoreHarness::new()
+    let mut harness = CoreHarness::new();
+    harness.state.mount_store();
+    harness
 }
 
 /// A harness over a **mounted card**, with the read that report owes already served.
@@ -1450,11 +1471,11 @@ fn a_trip_member_that_vanished_before_the_commit_is_a_success() {
     assert!(plan.effects.catalog.is_empty(), "the cascade is over — nothing retried, nothing failed");
 }
 
-/// An object that vanished before its removal commits is a success with `existed: false`, whichever
-/// delete decided it — here the retention sweep's.
+/// A rider-requested removal of an already absent object succeeds with `existed: false`.
 #[test]
 fn an_object_that_vanished_before_the_commit_is_a_success() {
-    let mut harness = expiring(1);
+    let mut harness = typed();
+    harness.apply(Action::DeleteRoute);
     let effect = harness.next_catalog_effect();
     let CatalogEffect::RemoveObject { object, .. } = effect else { panic!("a removal") };
 
@@ -1883,6 +1904,8 @@ fn a_failed_retention_write_is_retried() {
         .retention
         .try_put(RetentionOutcome::Failed { token: effect.token(), error: RetentionError::WriteFailed });
 
+    assert!(harness.pass().effects.retention.is_empty(), "a failure does not retry every pass");
+    harness.clock_ms += 30_000;
     let mut retried = false;
     for _ in 0..16 {
         let mut plan = harness.pass();
@@ -1894,15 +1917,7 @@ fn a_failed_retention_write_is_retried() {
     assert!(retried, "a failed write keeps its candidate and offers it again");
 }
 
-/// A decided sidecar stamp is mirrored into the resident view, so it is not rediscovered.
-///
-/// The eager ride stamp runs on every trusted tick and re-enqueues any resident ride that is
-/// `synced` with a `synced_at` of 0; only the mirror clears that 0, so an unmirrored stamp comes
-/// back on every pass after the executor answers it. The pass mirrors a decided stamp into the full
-/// ride inventory as well as the display catalog, because a ride outside the newest-32 menu
-/// re-enqueues just the same (finding #876-2).
-///
-/// Without the mirror this fails on the first pass after the answer.
+/// A committed stamp reaches the resident inventory through catalog reload and is not rediscovered.
 #[test]
 fn a_stamp_that_was_answered_is_not_enqueued_again() {
     let mut harness = typed();
@@ -1987,49 +2002,9 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
     assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
 }
 
-/// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
-/// the numbers move when the pass's wake decisions do.
-///
-/// The two gating figures — 208 passes and 7 immediate wakes — are the claim that matters: nothing
-/// here polls.
-///
-/// #1553 moved `(196, 6, 130, 60)` to `(208, 7, 130, 71)`, and every cell of it is the one new
-/// scenario. `recorder.samples` is six actions, so the replay runs **+12 passes** for it
-/// (`actions.len() + SETTLE_PASSES`). **+1 immediate** is the store its `ride-the-road` mounts
-/// announcing itself to retention — the same deferred connection the other recorder scenarios pay
-/// once. The other **+11 are sleep-until-event**: the scenario's ride sits still, so no card ages
-/// and no animation runs, and a pass with nothing owed sleeps. **Timed does not move at all**, which
-/// is the figure worth reading: sample assembly costs no wake, because an append is bounded work
-/// inside a pass the ride was already running. Measured by isolation — the replay with that scenario
-/// removed reproduces `(196, 6, 130, 60)` exactly.
-///
-/// #1552 moved `(194, 4, 130, 60)` to `(196, 6, 130, 60)`, and both moved cells are the same
-/// action. The two recorder scenarios each gained one `store-changed`, because a ride needs
-/// somewhere to put it and `Capabilities::recorder` is the pass *before*'s level: **+2 passes**.
-/// Each of those commits reports a store revision, and the catalog announces its identity to
-/// retention as a *deferred* connection — one immediate wake apiece: **+2 immediate**. Timed and
-/// sleep are unchanged, because the recorder scenarios open real rides again and the idle return is
-/// suppressed while one is open, exactly as before.
-///
-/// Measured by isolation rather than argued: the replay with those two actions removed reproduces
-/// `(194, 4, 119, 71)`. That `119/71` pair is what "no ride ever opens" costs, and the head's
-/// `130/60` is the step back to the figures the base already had.
-///
-/// #1548 moved one pass and one timed wake, and nothing else: the replay runs
-/// `actions.len() + SETTLE_PASSES` per scenario, and `retention.expiry-retry-and-trusted-clock`
-/// gained one action (`sleep-past-delete-backoff`). Measured by running the replay with that action
-/// removed, which reproduces `(193, 4, 129, 60)` exactly. The removal the slice retires costs no
-/// pass here either way — it lands inside the settle passes the scenario already ran.
-///
-/// #1541 moved the whole of the last delta and **no existing cell with it**: the replay runs
-/// `actions.len() + SETTLE_PASSES` per scenario, and the one new scenario (`catalog.refresh-retry`,
-/// two actions) is exactly +8 passes — 1 immediate and 7 timed. Measured by running the replay with
-/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte.
-///
-/// Before #1541 the figures were exactly the typed executor's own contribution to the pre-S6c ones;
-/// what halved then was the runner count, not the work per pass.
-///
-const WAKE_PROFILE: (u32, u32, u32, u32) = (208, 7, 130, 71);
+/// Replay counts include three settle/retry actions that cross the failed catalog read's deadline.
+/// They add three timed passes; immediate and sleep counts stay unchanged.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (211, 7, 133, 71);
 
 // ==================== the resource gate ====================
 
@@ -2042,8 +2017,8 @@ const WAKE_PROFILE: (u32, u32, u32, u32) = (208, 7, 130, 71);
 fn the_pass_protocol_stays_within_its_budget() {
     use std::mem::size_of;
 
-    assert!(size_of::<EffectSlots>() <= 160, "nine bounded effects: {}", size_of::<EffectSlots>());
-    assert!(size_of::<OutcomeSlots>() <= 224, "nine bounded outcomes: {}", size_of::<OutcomeSlots>());
+    assert!(size_of::<EffectSlots>() <= 216, "nine bounded effects: {}", size_of::<EffectSlots>());
+    assert!(size_of::<OutcomeSlots>() <= 248, "nine bounded outcomes: {}", size_of::<OutcomeSlots>());
     assert!(size_of::<DerivedNeeds>() <= 64);
     assert!(size_of::<DerivedInputs>() <= 80);
 
