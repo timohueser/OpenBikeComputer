@@ -291,12 +291,17 @@ Protocol v4 has no ride-possession mutation, so device rides remain unsynced and
 automatic expiry. The [archive contract](src:specs/Ride_Archive_Contract.md) defines the local
 boundary and the required next device persistence boundary.
 
-The shared card store has a dormant metadata format for route-use and ride-archive stamps.
-It binds each row to the card and the exact source revision, length, and CRC. It replaces
-the metadata object atomically and checks the committed bytes before it reports success.
-Clients can list and read this object but cannot upload or remove it. The device does not
-yet write these stamps or use them for expiry. The shared store stops card writers after an uncertain
-catalog commit and requires a fresh mount. See the
+The board and flat-store host persist route-use stamps in a card metadata object.
+Each row binds to the card and the exact source revision, length, and CRC. The store replaces
+metadata atomically and checks the committed bytes before it reports success. Clients can list
+and read this object but cannot upload or remove it. A card without metadata gives routes no
+automatic expiry period; this path does not add a remote retention setting.
+
+Retention uses a complete loaded catalog scope. A successful stamp orders a reload before further
+policy decisions. Automatic route deletion checks that scope and the current active-route and
+recording protections before the card operation. Unsupported ride work does not block route work.
+Write and read failures wait before retry. An uncertain catalog commit or failed metadata readback
+stops card writes and policy reads until restart and a fresh mount. See the
 [metadata contract](src:specs/Retention_Metadata.md).
 
 ## Pairing and BLE controls
