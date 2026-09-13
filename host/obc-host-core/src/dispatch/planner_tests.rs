@@ -2,7 +2,7 @@ use super::*;
 use crate::flat_map::FlatMap;
 use crate::flat_store::HostStore;
 use obc_app::device_core::TokenSource;
-use obc_storage::flat::{DisplayName, ObjectKind, Store};
+use obc_storage::flat::{DisplayName, ObjectId, ObjectKind, Revision, Store};
 
 fn map_bytes() -> Vec<u8> {
     use obc_pack::nav::{Edge, NavGraph, Node};
@@ -228,7 +228,15 @@ fn retained_original_route_cannot_authorize_a_detour_after_replacement() {
     let held = p.routes.pin_active().unwrap();
     let mut bytes = vec![0; obc_formats::io::ByteSource::len(&held) as usize];
     obc_formats::io::ByteSource::read_at(&held, 0, &mut bytes).unwrap();
-    p.routes.write_nav_route(&bytes).unwrap();
+    p.card
+        .import(
+            ObjectKind::Route,
+            Some((ObjectId(held.id()), Revision(1))),
+            &mut &bytes[..],
+            bytes.len() as u64,
+            DisplayName::default(),
+        )
+        .unwrap();
     assert!(matches!(
         p.call(|token| NavigatorEffect::CommitDetour { token }),
         NavigatorOutcome::Failed { error: NavigatorError::SourceChanged, .. }
@@ -249,10 +257,39 @@ fn cancellation_after_publication_removes_only_the_unadopted_revision() {
         };
         if replace {
             let Some(InflightPlan::Ready(plan, _)) = p.host.plan.as_ref() else { panic!("output held") };
-            assert_eq!(p.routes.write_nav_route(plan.bytes()), Some(route));
+            let bytes = plan.bytes();
+            p.card
+                .import(
+                    ObjectKind::Route,
+                    Some((ObjectId(route), Revision(1))),
+                    &mut &bytes[..],
+                    bytes.len() as u64,
+                    DisplayName::default(),
+                )
+                .unwrap();
         }
         p.release(PlanFamily::Route, false);
         assert_eq!(p.routes.ids().contains(&route), replace, "a newer revision is outside the abandoned operation");
         assert!(p.host.publication.is_none() && p.host.plan.is_none());
     }
+}
+
+#[test]
+fn cancelled_self_detour_preserves_the_original_computed_route() {
+    let mut p = Planner::new();
+    let original = p.initial_route();
+    let held = p.routes.pin_active().unwrap();
+    p.acquire_detour();
+    assert!(matches!(p.finish_steps(), NavigatorOutcome::DetourFinished { .. }));
+    p.release(PlanFamily::Detour, true);
+    let NavigatorOutcome::DetourCommitted { route, .. } = p.call(|token| NavigatorEffect::CommitDetour { token })
+    else {
+        panic!("detour commit failed")
+    };
+    assert_ne!(route, original, "publication must not replace the route being spliced");
+    p.release(PlanFamily::Detour, false);
+    assert_eq!(p.routes.ids(), &[original]);
+    p.routes.sync_active(Some(0));
+    assert!(held.matches(&p.routes.pin_active().unwrap()));
+    assert!(obc_route::RouteIndex::read(&held).is_ok());
 }

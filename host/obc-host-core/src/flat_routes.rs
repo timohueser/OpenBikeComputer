@@ -199,11 +199,12 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<crate::RoutePublication> {
-        let id = self.write_nav_route(bytes)?;
-        let i = self.ids.iter().position(|&candidate| candidate == id)?;
+        let summary = RouteSummary::read(&SliceSource(bytes)).ok()?;
+        let meta = self.owner.import_computed_route(bytes).ok()?;
+        self.publish(meta, summary);
         Some(crate::RoutePublication {
-            id,
-            revision: self.revisions[i].0,
+            id: meta.id.0,
+            revision: meta.revision.0,
             store: self.store_scope().map(|scope| scope.store),
         })
     }
