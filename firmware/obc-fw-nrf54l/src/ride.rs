@@ -1539,10 +1539,10 @@ pub(crate) async fn run_app(
                 let outcome = match effect {
                     RecorderEffect::Checkpoint { token } => {
                         let stats = app.recorder.ride_stats();
-                        let continuation = app.recorder.continuation();
+                        let continuation = app.recorder.checkpoint_context();
                         match ride_recorder.checkpoint(now, &stats, continuation).await {
-                            true => RecorderOutcome::Checkpointed { token },
-                            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                            Ok(status) => RecorderOutcome::Checkpointed { token, status },
+                            Err(error) => RecorderOutcome::Failed { token, error },
                         }
                     }
                     RecorderEffect::Finalize { token } => {
@@ -1568,23 +1568,20 @@ pub(crate) async fn run_app(
                         Err(StoreError::ReadOnly) => RecorderOutcome::Failed { token, error: RecorderError::ReadOnly },
                         Err(_) => RecorderOutcome::Failed { token, error: RecorderError::Write },
                     },
-                    // The staged samples into the bounded tail, in order, for as long as the
-                    // recorder keeps taking them. A short write is answered honestly: Recorder keeps
-                    // the tail staged and offers it again, so a refusal costs a delay rather than a
-                    // hole in the ride log. Nothing written at all is a failure, which is what
-                    // raises the recording warning.
-                    RecorderEffect::Append { token, samples } => {
-                        let staged = app.recorder.staged();
-                        let want = (samples as usize).min(staged.len());
-                        let mut written = 0u16;
-                        while (written as usize) < want && ride_recorder.append(staged[written as usize]) {
-                            written += 1;
-                        }
-                        match written {
-                            0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                            _ => RecorderOutcome::Appended { token, samples: written },
-                        }
-                    }
+                    // The immutable App borrow binds the full issued batch to its observation
+                    // context. A changed cohort is reissued before any board storage work.
+                    RecorderEffect::Append { token, samples } => match app.recorder.append_context(samples) {
+                        None => RecorderOutcome::Cancelled { token },
+                        Some(context) => match ride_recorder.append(app.recorder.staged(), context) {
+                            crate::flat_ride::AppendResult::Accepted => RecorderOutcome::Appended { token, samples },
+                            crate::flat_ride::AppendResult::NeedsCheckpoint => {
+                                RecorderOutcome::NeedsCheckpoint { token }
+                            }
+                            crate::flat_ride::AppendResult::Failed => {
+                                RecorderOutcome::Failed { token, error: RecorderError::Write }
+                            }
+                        },
+                    },
                 };
                 if ride_recorder.take_warning() {
                     exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);

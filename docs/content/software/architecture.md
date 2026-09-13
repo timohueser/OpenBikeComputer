@@ -268,6 +268,16 @@ the board and host executors do not append samples during that close. A failed c
 the close. Discard bypasses the drain and clears staging after confirmed removal.
 If opening keeps failing while Save has staged samples, the samples and Save request stay pending.
 An empty ride with no object can still end without a saved ride.
+
+The board accepts a complete staged batch together with its precise App totals. If the remaining
+buffer cannot hold the batch, it accepts none of it and checkpoints the previous accepted boundary.
+A periodic checkpoint also uses that boundary while samples remain staged. With no staged samples,
+a checkpoint can capture newer barometric totals without adding a GPS point. A failed checkpoint
+replays its original bytes, totals and start time before it can accept any newer context.
+
+Host adapters can still report a partial append. An adapter without a recovery journal reports an
+unsupported checkpoint. Recorder then continues the pending work without claiming that the ride is
+recoverable. Native card recording and recovery remain a separate integration step.
 The browser's sample ride list and recorder remain presentation fixtures; their synthetic saved IDs do not name stored ride objects.
 
 ### Semantic ports
