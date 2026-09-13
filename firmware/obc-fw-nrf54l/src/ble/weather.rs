@@ -68,23 +68,27 @@ static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// A typed refresh request raises urgent work, including outside a ride and with refresh `Off`.
 static URGENT: AtomicBool = AtomicBool::new(false);
-/// UI-facing level from dashboard entry/scheduler raise through commit or request lapse.
+/// UI-facing level for a bounded phone attempt.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// The live request id, mirrored out of the task so the synchronous command handler can reject a
 /// crossed `weatherUnchanged` acknowledgement before answering `ok`.
 static PENDING_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
+static READABLE_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
+static ATTEMPT: BlockingMutex<CriticalSectionRawMutex, Cell<Option<(u32, bool)>>> = BlockingMutex::new(Cell::new(None));
 static UNCHANGED: BlockingMutex<CriticalSectionRawMutex, Cell<Option<(u32, u16)>>> =
     BlockingMutex::new(Cell::new(None));
 
 /// Push the app-side weather request inputs across the plane boundary (ride loop, once per pass
 /// — one small `Cell` store). Wakes the scheduler only on the edges it keys on (ride state, the
-/// active route), never at the 1 Hz fix cadence.
+/// active route and position availability), never at the 1 Hz fix cadence.
 pub fn set_weather_inputs(s: WeatherRequestInputs) {
     let material_change = INPUTS.lock(|c| {
         let prev = c.get();
         c.set(s);
-        prev.ride_active != s.ride_active || prev.route_id != s.route_id
+        prev.ride_active != s.ride_active
+            || prev.route_id != s.route_id
+            || prev.position.is_some() != s.position.is_some()
     });
     if material_change {
         WAKE.signal(());
@@ -94,13 +98,12 @@ pub fn set_weather_inputs(s: WeatherRequestInputs) {
 /// Raise an urgent request for the Weather effect (spec §11.4 reason bit 1).
 pub fn request_weather_now() {
     URGENT.store(true, Ordering::Relaxed);
-    IN_FLIGHT.store(true, Ordering::Relaxed);
     WAKE.signal(());
 }
 
 /// Whether a fetch is running — the level the ride loop reports as
-/// `ExternalFacts::note_weather_refreshing` once per pass, so both this plane's edges (a raise
-/// here, a commit or lapse in the loop below) reach `WeatherDomain`, which owns the cue.
+/// `ExternalFacts::note_weather_refreshing` once per pass. The scheduler bounds phone activity
+/// separately from the request and its retry ladder.
 pub fn refreshing() -> bool {
     IN_FLIGHT.load(Ordering::Relaxed)
 }
@@ -112,6 +115,20 @@ pub(crate) fn note_unchanged(request_id: u32, retry_after_s: u16) -> bool {
         return false;
     }
     UNCHANGED.lock(|slot| slot.set(Some((request_id, retry_after_s))));
+    WAKE.signal(());
+    true
+}
+
+/// Capture alongside the GATT read, before sending its response.
+pub(crate) fn readable_request_id() -> u32 {
+    READABLE_REQUEST_ID.load(Ordering::Relaxed)
+}
+
+pub(crate) fn note_attempt(request_id: u32, started: bool) -> bool {
+    if request_id == 0 || PENDING_REQUEST_ID.load(Ordering::Relaxed) != request_id {
+        return false;
+    }
+    ATTEMPT.lock(|slot| slot.set(Some((request_id, started))));
     WAKE.signal(());
     true
 }
@@ -136,6 +153,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
     let mut bundle = flat.and_then(|store| crate::flat_store::active_weather(store).ok().flatten());
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;
+    let mut had_position = false;
     // The refresh byte the attribute currently serves — `None` until this task's first write, so
     // the first pass re-asserts the resting value even though `run` seeded one at boot (#1221 F2:
     // a Config write between seed and first pass must never leave a stale byte served).
@@ -161,15 +179,25 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         }
         if let Some((request_id, retry_after_s)) = UNCHANGED.lock(|slot| slot.take()) {
             if sched.unchanged_succeeded(request_id, now_s, retry_after_s) {
-                IN_FLIGHT.store(false, Ordering::Relaxed);
                 PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
                 info!("ble: [weather] sources unchanged — request satisfied without bundle upload");
+            }
+        }
+        if let Some((request_id, started)) = ATTEMPT.lock(|slot| slot.take()) {
+            if started {
+                sched.attempt_started(request_id, now_s);
+            } else {
+                sched.attempt_failed(request_id);
             }
         }
         if URGENT.swap(false, Ordering::Relaxed) {
             sched.open_weather();
         }
         let inputs = INPUTS.lock(|c| c.get());
+        if inputs.position.is_some() && !had_position {
+            sched.position_available(now_s);
+        }
+        had_position = inputs.position.is_some();
         // The persisted setting is obc-app's typed enum whose discriminant IS the §11.8 wire
         // byte (pinned), so the fallback is unreachable.
         let refresh_raw = store.borrow().settings().weather_refresh as u8;
@@ -217,7 +245,6 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         };
 
         if let Some(raise) = sched.poll(now_s, refresh, inputs.ride_active, store_ready, facts) {
-            IN_FLIGHT.store(true, Ordering::Relaxed);
             PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
             let context_facts = RequestContextFacts {
                 fix: inputs.position.map(|fix| RequestContextFix {
@@ -236,6 +263,8 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
             };
             let ctx = WeatherRequestContext::raised(refresh_raw, raise, context_facts);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
+            READABLE_REQUEST_ID
+                .store(if ctx.validity & VALID_POSITION != 0 { raise.request_id } else { 0 }, Ordering::Relaxed);
             context_live = true;
             served_refresh = Some(refresh_raw);
             state::arm_weather_request(Duration::from_secs(obc_ble::WEATHER_REQUEST_WINDOW_S));
@@ -255,8 +284,8 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         // F2): §11.8's refresh byte reports the rider's own setting, and a resting value frozen at
         // an older one would misreport it — `note_settings_changed`'s wake lands here.
         if sched.pending_request_id().is_none() {
-            IN_FLIGHT.store(false, Ordering::Relaxed);
             PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
+            READABLE_REQUEST_ID.store(0, Ordering::Relaxed);
             // A request can lapse because its retry ladder ended or because its prerequisites
             // disappeared (ride stopped, refresh Off, card removed). The scheduler owns that
             // decision; mirror it to the radio immediately so a stale Weather Request UUID cannot
@@ -270,6 +299,11 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
                 context_live = false;
                 served_refresh = Some(refresh_raw);
             }
+        }
+
+        let refreshing = sched.refreshing();
+        if IN_FLIGHT.swap(refreshing, Ordering::Relaxed) != refreshing {
+            state::wake_status();
         }
 
         match sched.next_wake_s(refresh, inputs.ride_active, store_ready) {

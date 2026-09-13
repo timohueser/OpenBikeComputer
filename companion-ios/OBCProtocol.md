@@ -72,6 +72,12 @@ Unknown reason/validity bits and an unknown refresh byte are tolerated on reads.
 correlates work but is not authorization; the device may accept a valid newer bundle raised by an
 older request.
 
+A served context with a valid position starts the device's bounded UPDATING cue. A resumed job
+uses `weatherAttempt` (command 8, request id plus `started=1`) when it has not read a new context.
+A failed job sends the same command with `started=0`. This ends activity without satisfying the
+request. If the report cannot arrive, the device clears activity after 120 seconds. Successful
+uploads and `weatherUnchanged` clear activity and finish their matching request.
+
 One CoreBluetooth manager arbitrates foreground and weather intents. Foreground work wins. A
 weather operation may reuse but must not tear down a foreground connection. The standing watch is
 rider-controlled and persisted; the bounded read and upload legs use absolute deadlines.

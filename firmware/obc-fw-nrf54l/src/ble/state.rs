@@ -90,6 +90,11 @@ pub(crate) fn publish(f: impl FnOnce(&mut Status)) {
         f(&mut s);
         c.set(s);
     });
+    wake_status();
+}
+
+/// Wake the app when BLE-owned facts change, including weather activity.
+pub(crate) fn wake_status() {
     STATUS_EDGE.signal(());
 }
 

@@ -105,6 +105,14 @@ public struct WeatherBLEDeviceLink: WeatherDeviceLink {
         }
     }
 
+    public func reportAttempt(requestID: UInt32, started: Bool) async throws {
+        do {
+            _ = try await transport.reportWeatherAttempt(requestID: requestID, started: started)
+        } catch let error as WeatherUploadError {
+            throw WeatherDeviceLinkError(uploadError: error)
+        }
+    }
+
     public func acknowledgeUnchanged(
         requestID: UInt32, retryAfterSeconds: UInt16
     ) async throws -> WeatherBundleUploadReceipt {
