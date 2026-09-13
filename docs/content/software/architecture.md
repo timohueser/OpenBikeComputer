@@ -195,6 +195,11 @@ pub trait ByteSource {
 }
 ```
 
+Map cells carry the canonical style table, including each style's drawing order.
+The assembler keeps each style on its original side of the reserved rain gap: at most 16 or at least 24.
+It checks all cells and the selected skin before writing output, including local CLI assemblies.
+A skin can reorder styles within either band. This uses the existing cell bytes and needs no catalog update.
+
 The reader requests only the required tables and chunks.
 The device reads these bytes from a flat-store object.
 The simulator and browser demo also read their maps through the shared flat store.
