@@ -2,7 +2,7 @@
 
 This contract defines the iOS archive boundary and the device archive-proof boundary.
 [ARCHIVE_RIDE](FLAT_Store_Protocol.md#312-archive_ride) carries proof into
-[card retention metadata](Retention_Metadata.md). The board consumes validated proof in its live retention policy; client delivery remains pending.
+[card retention metadata](Retention_Metadata.md). iOS delivers and retries these receipts; the board consumes validated proof in its live retention policy.
 
 ## Source identity
 
@@ -82,8 +82,24 @@ exclude a ride from a download, but they cannot supply an archive source or rece
 
 The downloaded flag is part of the archive manifest. Sync does not write a second success marker.
 An in-memory preview can record a completed local sync, but it returns no durable receipt.
-A local receipt is not sent to the device by the current client implementation. Without an
-ARCHIVE_RIDE receipt, device rides remain unsynced and protected from automatic expiry.
+The iOS coordinator sends each new durable receipt through ARCHIVE_RIDE. Before deciding that no
+new download is needed, it also revalidates matching existing archives and sends their receipts.
+Reconnect runs this receipt reconciliation without downloading missing rides. Explicit sync can
+download missing or replaced sources. Both paths use the same coordinator task and identity gate.
+
+The transfer client serializes receipts with other object operations. It checks cancellation after
+queue admission and the exact StoreId before sending. Only a matching opcode and RequestId can
+confirm proof; timestamp zero is a successful confirmation. A real link loss permits one restore
+and exact-source retry with a new RequestId and renewed StoreId check. STATUS is not proof.
+A receipt response has a ten-second deadline. Expiry cancels its parked receive and leaves
+confirmation pending; it does not assume that the write failed or immediately retry the request.
+
+A failed receipt keeps the phone archive and earlier batch successes. The existing sync banner
+and Resume action expose pending confirmation, unsupported devices and device refusals. Resume
+or a later reconnect revalidates the archives and retries without downloading them again. A
+changed or absent source is terminal for that receipt; a fresh catalog decides any later download.
+There is no persistent receipt queue or local device-acknowledgment mirror. Sync counts describe
+local saves, never device proof. Device retention uses only validated durable proof.
 
 ## Device archive proof
 
@@ -124,8 +140,7 @@ can run until recording ends. Scoped removal requires durable nonzero proof for 
 The FlatRideStore catalog/retention adapter refuses recorder mutations; it does not replace the
 native simulator recorder.
 
-## Pending client and device acceptance
+## Pending physical acceptance
 
-The iOS coordinator must send new durable receipts and retry revalidated existing archives even
-when no download is needed. A historical download marker, trash entry or deletion marker is never
-proof. Physical USB/BLE lost-response, remount and power-loss acceptance remain pending.
+A historical download marker, trash entry or deletion marker is never proof. Physical USB/BLE
+lost-response, remount and power-loss acceptance remain pending.

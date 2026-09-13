@@ -57,8 +57,18 @@ The catalog and download path preserve StoreId, ObjectId, served Revision, verif
 The archive publishes canonical summary, samples, source and local sync state in one transaction.
 File and directory persistence barriers must succeed before a local archive receipt is returned.
 A changed revision or missing archive remains eligible for download. Phone deletion records are
-separate from archive proof. The client sends no device persistence receipt; device expiry remains
-blocked for unsynced rides. See the [archive contract](../specs/Ride_Archive_Contract.md).
+separate from archive proof. The coordinator sends ARCHIVE_RIDE after a durable commit and for
+revalidated matching archives, including when no download is needed. Reconnect reconciles receipts
+only; manual sync can download missing rides. An in-memory save cannot produce a receipt.
+
+The existing transfer FIFO and request correlation own this exchange. A real link loss permits one
+restore and exact-source retry. A ten-second receipt-response deadline cancels its parked receive.
+A timeout or failed receipt leaves the local archive intact and device confirmation pending in the
+existing sync banner. Resume or reconnect revalidates and retries without downloading saved rides.
+Unsupported and refused receipts remain visible; a changed source is terminal for that receipt.
+Only the matching ARCHIVE_RIDE response confirms proof. STATUS and local save counts cannot do so.
+Timestamp zero is valid and does not start a countdown. Live device retention consumes this proof
+separately. See the [archive contract](../specs/Ride_Archive_Contract.md).
 
 ## Weather Request
 
