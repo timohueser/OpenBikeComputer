@@ -50,6 +50,7 @@ public enum ObjectKind: UInt16, CaseIterable, Hashable, Sendable {
     case retiredMapSet = 6
     case update = 7
     case rollbackReserve = 8
+    case metadata = 9
 }
 
 public enum Opcode: UInt8, CaseIterable, Hashable, Sendable {
@@ -305,7 +306,7 @@ public struct ControlFrame: Hashable, Sendable {
             _ = try c.u64(); _ = try c.u32()
             let kindRaw = try c.u16()
             guard let kind = ObjectKind(rawValue: kindRaw) else { throw WireError.invalidEnum }
-            guard kind != .ride, kind != .rollbackReserve else { throw WireError.invalidCombination }
+            guard kind != .ride, kind != .rollbackReserve, kind != .metadata else { throw WireError.invalidCombination }
             let requestFlags = try c.u16()
             guard requestFlags & ~UInt16(1) == 0 else { throw WireError.invalidFlags }
             guard requestFlags == 0 || kind == .weather else { throw WireError.invalidCombination }
@@ -429,7 +430,7 @@ public struct PutRequest: Hashable, Sendable {
         guard (objectID == nil && expectedRevision == nil)
             || (objectID?.rawValue ?? 0) != 0 && (expectedRevision?.rawValue ?? 0) != 0
         else { throw WireError.invalidCombination }
-        guard kind != .ride, kind != .rollbackReserve else { throw WireError.invalidCombination }
+        guard kind != .ride, kind != .rollbackReserve, kind != .metadata else { throw WireError.invalidCombination }
         guard !retainPrevious || kind == .weather else { throw WireError.invalidCombination }
 
         var out = Data()

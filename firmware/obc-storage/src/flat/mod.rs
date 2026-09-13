@@ -42,6 +42,7 @@ pub mod device;
 pub mod error;
 pub(crate) mod journal;
 pub(crate) mod layout;
+pub mod metadata;
 pub(crate) mod raw;
 pub mod seam;
 pub mod source;

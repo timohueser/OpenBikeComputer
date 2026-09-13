@@ -33,6 +33,7 @@ fn kind_out(kind: ObjectKind) -> v4::ObjectKind {
         ObjectKind::MapSetManifest => v4::ObjectKind::MapSetManifest,
         ObjectKind::UpdatePackage => v4::ObjectKind::UpdatePackage,
         ObjectKind::RollbackReserve => v4::ObjectKind::RollbackReserve,
+        ObjectKind::Metadata => v4::ObjectKind::Metadata,
     }
 }
 
@@ -46,6 +47,7 @@ fn kind_in(kind: v4::ObjectKind) -> ObjectKind {
         v4::ObjectKind::MapSetManifest => ObjectKind::MapSetManifest,
         v4::ObjectKind::UpdatePackage => ObjectKind::UpdatePackage,
         v4::ObjectKind::RollbackReserve => ObjectKind::RollbackReserve,
+        v4::ObjectKind::Metadata => ObjectKind::Metadata,
     }
 }
 
