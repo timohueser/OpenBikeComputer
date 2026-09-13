@@ -958,19 +958,20 @@ The selected map is the lowest-ID Map object; replace that object when testing a
 Open Peak View from the menu after a GPS fix. Before the first fix, the screen shows
 "Waiting for GPS...". The observer height comes from the terrain plus two metres. The normal view starts at about
 60° horizontal width and expands upward when nearby summit elevations require more headroom.
-Shallow relief receives up to 3× vertical exaggeration; steep views keep 1.25×. The scale is
+Shallow relief receives up to a 2.4× boost over the base 1.25× vertical scale; steep views keep the base scale. The scale is
 fixed for the observer and does not change when turning. Each bearing sector reserves one
 summit candidate slot for its tallest landmark.
 The device generates the current viewing direction first in the existing 128 KiB scratch arena.
-The compass animation stops when that view is ready. Three static dots show that the remaining
-panorama is still being built. Background work extends both edges in about 17-degree batches.
-Turning gives the new direction priority. After the first view appears, completed terrain stays
+The compass and partial terrain appear when generation starts. Progress redraws occur at most
+twice per second. Three static dots show that the panorama is still being built. Background work extends both edges in about 17-degree batches.
+Turning gives the new direction priority. Completed terrain stays
 visible and follows the heading; a light hatch marks pending parts until they fill in.
 Work yields between 50 ms slices. Back cancels and
 releases the arena before navigation, map rendering, or USB can use it.
 
-Ready directions use the RAM image without more terrain reads. Up/Down selects visible summits; Select switches
-between Browse and Live. A displacement above 20 m starts another job after the current job
+Ready directions use the RAM image without more terrain reads. Live has no selected summit.
+Select enters Browse on the most prominent visible summit. Up/Down steps through visible summits
+and turns the view by 15° past an edge. Select returns to Live. A displacement above 20 m starts another job after the current job
 finishes. Missing distant data produces dashed marks over affected bearings. Missing observer terrain or a read error produces "Terrain unavailable".
 
 For an indoor test, build from this crate directory and inject GPS/compass data through VCOM:

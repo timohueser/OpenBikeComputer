@@ -106,16 +106,28 @@ The data contains no stored viewpoints or images.
 
 Peak View uses the loaded map and the current GPS position. It reads nearby named summits from
 that map, projects their geographic coordinates, and checks their visibility against the terrain.
-Each bearing sector keeps its tallest summit and one strong height-and-distance candidate. This
-prevents nearby lower hills from using both slots before a distant landmark can be checked.
-Before a GPS fix it waits. The renderer prepares the current field of view first, then fills the
-rest of the circle in the background, extending a buffer on both sides of the view. Static dots
-show that background work remains. Turning toward an unfinished view gives that view priority.
-After the first view appears, completed terrain continues to follow the heading. A light hatch
-marks pending parts until they are ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
-another panorama after the current job finishes. Back cancels generation and releases the arena.
+The renderer tests up to 64 candidates at a time. It ranks them by elevation angle above the
+observer and reserves one place per 22.5° sector for the tallest summit. When the picture is
+complete, it removes hidden candidates and fills their places with untested names. It can make
+two more visibility passes. These passes do not change the picture.
+
+Before a GPS fix, Peak View waits. When generation starts, the compass and partial terrain appear
+at once. A light hatch marks pending columns. Progress redraws occur at most twice per second.
+The renderer prepares the current field of view first, then fills the rest of the circle in the
+background. Static dots show that work remains. Turning toward an unfinished view gives that
+view priority. Completed views reuse the panorama in RAM. Movement above 20 m starts another
+panorama after the current job finishes. Leaving Peak View cancels generation and releases the arena.
+
+Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
+peak with the highest elevation angle. Up or Down enters Browse at the corresponding edge and
+steps through visible peaks from left to right. A step past the view edge turns the view by 15°
+and selects the first visible peak that enters. Further steps continue to turn through empty
+areas. Select returns to Live. Browse keeps its selected peak when new names become available.
+A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
+appears in the ledger.
+
 The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
-relief receives up to 3× vertical exaggeration; steep views keep 1.25×. Missing height metadata
+relief receives a vertical boost up to 2.4× over the base 1.25× scale; steep views keep the base scale. Missing height metadata
 keeps the ordinary scale. Terrain and labels share the projection, while bearings, elevations,
 distances and visibility stay geographic. Turning changes neither the scale nor the horizon
 position. Lighting has a fixed northwest world direction, so turning does not change the shading.
@@ -135,8 +147,10 @@ published terrain and geometry cells before publication. Catalog generation reje
 and indexed terrain blocks. Standalone DEM baking produces native terrain; its surface conversion
 command adds the index without changing native heights.
 
-Distance bands follow the source posting, so a finer source uses its fine cells over a shorter
-range. Smooth open terrain can merge into large patches. Rough mountain faces require more
+The builder uses 57 m postings to 10 km, 114 m postings from 10 to 20 km, 228 m postings from
+20 to 40 km, and 456 m postings from 40 to 100 km. Coarse levels use exact vertices from the
+native grid. A narrow summit can therefore lose apex height; its label anchor follows the same
+sampled surface. Smooth open terrain can merge into large patches. Rough mountain faces require more
 individual cells. Performance must therefore be checked at varied observer positions on the device.
 See [OBCT section 8](src:specs/OBCT_Spec.md) for the byte layout and complete-map size rule.
 
