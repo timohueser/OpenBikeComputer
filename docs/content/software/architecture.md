@@ -377,6 +377,8 @@ Planning stays bound to its admitted sources. The board checks its boot-long map
 the exact card, map object and revision. The host retains the admitted map lease and, for a detour,
 the exact original route through preview and commit. A changed current source invalidates the
 result; the executor cannot substitute the latest map or route halfway through the operation.
+Native folder source checks and cleanup use retained snapshots and the observed generation;
+external file edits become visible to these checks only after a rescan.
 
 Publication creates a fresh OBCR object or host route file. It does not overwrite the original
 route. The standard catalog and route-load path handles the completed object. Flat-store
