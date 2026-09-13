@@ -1071,7 +1071,13 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 deviceObjectID: DeviceObjectID(entry.objectID.rawValue), scope: scope)
             // FS8's footer is not frozen yet. Keep the fielded ride decoder behind the new GET
             // path; replacing this decode is deliberately outside FS10's iOS half.
-            rides.append(try RideObjectCodec.decode(try await download(entry), id: id).summary)
+            let source = RideSource(storeID: catalog.storeID.description,
+                                    objectID: entry.objectID.rawValue, revision: entry.revision.rawValue,
+                                    payloadLength: entry.payloadLength, payloadCRC32: entry.payloadCRC32)
+            let downloaded = try await downloadRide(id: id, source: source)
+            var summary = try RideObjectCodec.decode(downloaded.payload, id: id).summary
+            summary.source = downloaded.source
+            rides.append(summary)
         }
         return RideCatalog(rides: rides, hiddenRideCount: 0)
     }
@@ -1154,10 +1160,24 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
-    private func download(_ entry: CatalogEntry) async throws -> Data {
+    fileprivate func downloadRide(id: RideID, source: RideSource) async throws -> DownloadedRide {
         do {
-            return try await transferClient.get(
-                objectID: entry.objectID, revision: entry.revision).payload
+            guard source.matches(id) else { throw DeviceError.readFailed }
+            let storeID = try await transferClient.storeID()
+            guard storeID.description == source.storeID else { throw DeviceError.readFailed }
+            let downloaded = try await transferClient.get(
+                objectID: ObjectID(rawValue: source.objectID),
+                revision: Revision(rawValue: source.revision), expectedStoreID: storeID)
+            guard downloaded.result.payloadLength == source.payloadLength,
+                  downloaded.result.payloadCRC32 == source.payloadCRC32 else {
+                throw DeviceError.readFailed
+            }
+            let verified = RideSource(
+                storeID: storeID.description, objectID: source.objectID,
+                revision: downloaded.result.revision.rawValue,
+                payloadLength: downloaded.result.payloadLength,
+                payloadCRC32: downloaded.result.payloadCRC32)
+            return DownloadedRide(id: id, payload: downloaded.payload, source: verified)
         } catch { throw deviceError(for: error) }
     }
 
@@ -1320,23 +1340,21 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
-        // Real path (A7): one ride-object download per id, persisted ride-by-ride,
-        // so a drop keeps what landed and "resume" re-requests only the missing
-        // rides (whole rides are the batch's elementary unit — spec §1 principle 4).
-        guard !ids.isEmpty else { return .finished() }                      // H9
+        // Device downloads require the exact source from the catalog.
+        ids.isEmpty ? .finished() : .finished(.failed(.transferRejected))
+    }
+
+    public func downloadRides(from summaries: [RideSummary]) -> RideDownload {
+        guard !summaries.isEmpty else { return .finished() }
         if stateMulticast.value == .disconnected {
-            return .finished(.failed(.notConnected))                        // H4
+            return .finished(.failed(.notConnected))
         }
-        // Resolve every id's device object id up front: ids on this plane come
-        // from `listRides()`, which mints them via `RideID(deviceObjectID:)`, so
-        // a non-device id is a caller bug — fail the batch loudly rather than
-        // skip it silently (#359).
-        var requests: [(id: RideID, objectID: DeviceObjectID)] = []
-        for id in ids {
-            guard let objectID = id.deviceObjectID else {
+        var requests: [(id: RideID, source: RideSource)] = []
+        for summary in summaries {
+            guard let source = summary.source, source.matches(summary.id) else {
                 return .finished(.failed(.transferRejected))
             }
-            requests.append((id, objectID))
+            requests.append((summary.id, source))
         }
         let (rideStream, rideContinuation) = AsyncThrowingStream<DownloadedRide, Error>.makeStream()
         let (progressStream, progressContinuation) = AsyncStream<TransferProgress>.makeStream()
@@ -1946,9 +1964,8 @@ private actor V4UploadRunner {
 /// the restored link; the batch keeps no resume cursor or reconciliation cache.
 private actor RideDownloadRunner {
     private let transport: BLETransport
-    /// Each requested ride with its device object id, resolved (and validated)
-    /// by `downloadRides` before the runner exists.
-    private let requests: [(id: RideID, objectID: DeviceObjectID)]
+    /// The exact catalog source for each requested ride.
+    private let requests: [(id: RideID, source: RideSource)]
     private let rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation
     private let progress: AsyncStream<TransferProgress>.Continuation
     private let outcome: AsyncPromise<TransferOutcome>
@@ -1957,7 +1974,7 @@ private actor RideDownloadRunner {
     private var finished = false
 
     init(
-        transport: BLETransport, requests: [(id: RideID, objectID: DeviceObjectID)],
+        transport: BLETransport, requests: [(id: RideID, source: RideSource)],
         rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation,
         progress: AsyncStream<TransferProgress>.Continuation,
         outcome: AsyncPromise<TransferOutcome>
@@ -1988,8 +2005,8 @@ private actor RideDownloadRunner {
         do {
             for (index, request) in requests.enumerated() {
                 try Task.checkCancellation()
-                let payload = try await transport.download(request.objectID)
-                rides.yield(DownloadedRide(id: request.id, payload: payload))
+                let downloaded = try await transport.downloadRide(id: request.id, source: request.source)
+                rides.yield(downloaded)
                 progress.yield(TransferProgress(bytesDone: index + 1, total: requests.count))
             }
             finish(.completed)

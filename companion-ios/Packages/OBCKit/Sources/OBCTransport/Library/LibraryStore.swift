@@ -59,16 +59,21 @@ public protocol LibraryStore: Sendable {
     /// preview's coordinates.
     func ridePoints(_ id: RideID) -> [RidePoint]?
     /// Save one ride's summary and points. Report a write failure before sync records success.
-    /// This does not promise a transaction across files or power-loss durability.
     func saveRide(_ ride: Ride) throws
+    /// Commit the downloaded ride and local sync state together. Only a persistent store
+    /// can return a receipt; an in-memory preview returns nil.
+    func archiveRide(_ ride: Ride) throws -> RideArchiveReceipt?
+    /// Source of a complete current archive, distinct from download/deletion history.
+    func archivedRideSource(_ id: RideID) -> RideSource?
     /// Update a ride's summary without touching its stored points — the rename
     /// (H12) write path; re-encoding a full tracklog to change a name would be
     /// the exact whole-ride coupling #360 removed.
     func saveRideSummary(_ summary: RideSummary)
     func deleteRide(_ id: RideID)
 
-    /// Every ride id this phone has ever downloaded. **Survives `deleteRide`**,
-    /// so a deleted ride is never re-counted as "new" (idempotent re-sync, H9).
+    /// Current downloaded archives plus explicit local history markers. This is
+    /// display/stand-in sync state, never proof for a device source. Explicit history
+    /// markers survive `deleteRide`; phone deletion also has its own tombstone.
     func syncedRideIDs() -> Set<RideID>
     func markRideSynced(_ id: RideID)
 
@@ -86,6 +91,26 @@ public protocol LibraryStore: Sendable {
     func trashedRideIDs() -> [RideID: Date]
     func markRideTrashed(_ id: RideID, at date: Date)
     func unmarkRideTrashed(_ id: RideID)
+}
+
+/// Confirmation that the local archive's persistence barriers completed.
+/// No device receipt is sent by this operation.
+public struct RideArchiveReceipt: Equatable, Sendable {
+    public let source: RideSource
+    init(source: RideSource) { self.source = source }
+}
+
+public enum RideArchiveError: Error, Equatable {
+    case unsupportedStore
+    case invalidSource
+    case unreadableArchive
+}
+
+extension LibraryStore {
+    public func archiveRide(_ ride: Ride) throws -> RideArchiveReceipt? {
+        throw RideArchiveError.unsupportedStore
+    }
+    public func archivedRideSource(_ id: RideID) -> RideSource? { nil }
 }
 
 /// The no-filesystem conformer: unit tests, previews, and Debug mock runs
@@ -178,6 +203,22 @@ public final class InMemoryLibraryStore: LibraryStore, @unchecked Sendable {
             summaries[ride.id] = ride.summary
             points[ride.id] = ride.points
         }
+    }
+
+    public func archiveRide(_ ride: Ride) throws -> RideArchiveReceipt? {
+        if let source = ride.summary.source, !source.matches(ride.id) {
+            throw RideArchiveError.invalidSource
+        }
+        lock.withLock {
+            summaries[ride.id] = ride.summary
+            points[ride.id] = ride.points
+            synced.insert(ride.id)
+        }
+        return nil
+    }
+
+    public func archivedRideSource(_ id: RideID) -> RideSource? {
+        lock.withLock { points[id] == nil ? nil : summaries[id]?.source }
     }
 
     public func saveRideSummary(_ summary: RideSummary) {

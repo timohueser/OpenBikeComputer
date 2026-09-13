@@ -249,7 +249,14 @@ public final class RideSyncCoordinator {
             hiddenRideCount = catalog.hiddenRideCount
 
             let onDevice = catalog.rides
-            let fresh = onDevice.filter { !syncedRideIDs.contains($0.id) }
+            let deleted = library.deletedRideIDs().union(library.trashedRideIDs().keys)
+            let fresh = onDevice.filter { summary in
+                guard !deleted.contains(summary.id) else { return false }
+                if let source = summary.source {
+                    return library.archivedRideSource(summary.id) != source
+                }
+                return !syncedRideIDs.contains(summary.id)
+            }
             guard !fresh.isEmpty else {
                 // H9 — a quiet toast, straight back to idle (no empty "done").
                 syncState = .idle
@@ -258,7 +265,7 @@ public final class RideSyncCoordinator {
             }
 
             syncProgress = SyncProgress(done: 0, total: fresh.count)
-            let download = transport.downloadRides(fresh.map(\.id))
+            let download = transport.downloadRides(from: fresh)
             activeDownload = download
             // A drop stalls the download streams open (that's what makes the
             // batch restartable, whole rides at a time). Watch the link and
@@ -287,20 +294,28 @@ public final class RideSyncCoordinator {
                     guard let summary = fresh.first(where: { $0.id == downloaded.id }) else {
                         throw DeviceError.readFailed
                     }
-                    let decoded = try RideObjectCodec.decode(downloaded.payload, id: downloaded.id)
-                    // Keep the catalog's display fields and the payload's track and sensor summary.
-                    var ride = Ride(summary: summary, points: decoded.points)
-                    if ride.summary.trackPreview == nil {
-                        ride.summary.trackPreview = decoded.summary.trackPreview
+                    guard downloaded.source == summary.source else { throw DeviceError.readFailed }
+                    var ride = try RideObjectCodec.decode(downloaded.payload, id: downloaded.id)
+                    if let source = downloaded.source {
+                        guard source.matches(downloaded.id),
+                              source.payloadLength == UInt64(downloaded.payload.count),
+                              source.payloadCRC32 == CRC32.checksum(downloaded.payload) else {
+                            throw DeviceError.crcMismatch
+                        }
+                        ride.summary.source = source
+                    } else {
+                        // Stand-ins supply display metadata separately from their fixture payload.
+                        let decoded = ride.summary
+                        ride.summary = summary
+                        if ride.summary.trackPreview == nil { ride.summary.trackPreview = decoded.trackPreview }
+                        ride.summary.avgHeartRate = decoded.avgHeartRate
+                        ride.summary.maxHeartRate = decoded.maxHeartRate
+                        ride.summary.avgCadence = decoded.avgCadence
+                        ride.summary.avgPower = decoded.avgPower
+                        ride.summary.maxPower = decoded.maxPower
                     }
-                    ride.summary.avgHeartRate = decoded.summary.avgHeartRate
-                    ride.summary.maxHeartRate = decoded.summary.maxHeartRate
-                    ride.summary.avgCadence = decoded.summary.avgCadence
-                    ride.summary.avgPower = decoded.summary.avgPower
-                    ride.summary.maxPower = decoded.summary.maxPower
-                    try library.saveRide(ride)
+                    _ = try library.archiveRide(ride)
                     syncedRideIDs.insert(downloaded.id)
-                    library.markRideSynced(downloaded.id)
                     onRideLanded(ride)
                     landed += 1
                     syncProgress = SyncProgress(done: landed, total: fresh.count)
