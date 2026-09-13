@@ -81,7 +81,7 @@ const SUITE = join(repoRoot(), "specs/vectors/flat-store-v4");
  * The manifest's own digest. Re-pin this **deliberately**, in the same commit that changes a
  * fixture and for the same stated reason — never because a test went red.
  */
-const MANIFEST_SHA256 = "800d0c4329a40c58550b373dd7c48cc13f40385fcc1a5281cb84b2a30fb00b90";
+const MANIFEST_SHA256 = "941d71de098f55e94aa5805ba9eb42edbddd01c4d74c7365e81e4b0b7c8ce112";
 const read = (relative: string): string => readFileSync(join(SUITE, relative), "utf8");
 
 interface ManifestRow {

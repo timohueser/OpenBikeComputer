@@ -39,6 +39,7 @@ pub enum ObjectKind {
     MapSetManifest = 6,
     UpdatePackage = 7,
     RollbackReserve = 8,
+    Metadata = 9,
 }
 
 impl ObjectKind {
@@ -55,6 +56,7 @@ impl ObjectKind {
             6 => ObjectKind::MapSetManifest,
             7 => ObjectKind::UpdatePackage,
             8 => ObjectKind::RollbackReserve,
+            9 => ObjectKind::Metadata,
             _ => return Err(super::error::DecodeError::new(Record::Entry, Reason::UnknownEnum)),
         })
     }
@@ -320,11 +322,12 @@ mod tests {
             (6, ObjectKind::MapSetManifest),
             (7, ObjectKind::UpdatePackage),
             (8, ObjectKind::RollbackReserve),
+            (9, ObjectKind::Metadata),
         ] {
             assert_eq!(ObjectKind::decode(value).unwrap(), kind);
             assert_eq!(kind as u16, value);
         }
-        for value in [0u16, 9, 255, 0xFFFF] {
+        for value in [0u16, 10, 255, 0xFFFF] {
             assert_eq!(ObjectKind::decode(value).unwrap_err().reason, Reason::UnknownEnum);
         }
     }

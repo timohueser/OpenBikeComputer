@@ -58,6 +58,7 @@ pub enum ObjectKind {
     MapSetManifest = 6,
     UpdatePackage = 7,
     RollbackReserve = 8,
+    Metadata = 9,
 }
 
 impl ObjectKind {
@@ -72,6 +73,7 @@ impl ObjectKind {
             6 => ObjectKind::MapSetManifest,
             7 => ObjectKind::UpdatePackage,
             8 => ObjectKind::RollbackReserve,
+            9 => ObjectKind::Metadata,
             _ => return None,
         })
     }
@@ -81,10 +83,10 @@ impl ObjectKind {
         self as u16
     }
 
-    /// True for the two kinds the device produces and a client may never `PUT`
+    /// True for the kinds the device produces and a client may never `PUT`
     /// (`FLAT_Store_Protocol.md` §3.6).
     pub fn is_device_owned(self) -> bool {
-        matches!(self, ObjectKind::Ride | ObjectKind::RollbackReserve)
+        matches!(self, ObjectKind::Ride | ObjectKind::RollbackReserve | ObjectKind::Metadata)
     }
 }
 
@@ -222,11 +224,12 @@ mod tests {
             (6, ObjectKind::MapSetManifest),
             (7, ObjectKind::UpdatePackage),
             (8, ObjectKind::RollbackReserve),
+            (9, ObjectKind::Metadata),
         ] {
             assert_eq!(ObjectKind::decode(value), Some(kind));
             assert_eq!(kind.value(), value);
         }
-        for value in [0u16, 9, 255, 0xFFFF] {
+        for value in [0u16, 10, 255, 0xFFFF] {
             assert_eq!(ObjectKind::decode(value), None);
         }
         assert!(ObjectKind::Ride.is_device_owned());

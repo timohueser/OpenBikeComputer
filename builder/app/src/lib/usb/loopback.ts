@@ -594,7 +594,7 @@ export class MockDevice {
             await this.refuse(Opcode.Remove, requestId, refusal(ErrorCode.NotFound, Detail.notFound.object));
             return;
         }
-        if (head.meta.flags & (EntryFlags.Recording | EntryFlags.Reserved)) {
+        if (head.meta.kind === ObjectKind.Metadata || head.meta.flags & (EntryFlags.Recording | EntryFlags.Reserved)) {
             // §3.7: stopping a ride and settling an armed update are device-local acts, and freeing
             // either object's extents under the store or the bootloader is what those flags prevent.
             await this.refuse(
@@ -838,7 +838,7 @@ export class MockDevice {
         // §3.6: kinds 3 and 8 are produced by the device, and a client that could overwrite a ride
         // mid-recording or a rollback reserve mid-update would be writing where the store and the
         // bootloader already are.
-        if (request.kind === ObjectKind.Ride || request.kind === ObjectKind.RollbackReserve) {
+        if (request.kind === ObjectKind.Ride || request.kind === ObjectKind.RollbackReserve || request.kind === ObjectKind.Metadata) {
             return refusal(ErrorCode.InvalidRequest, Detail.invalidRequest.badCombination);
         }
         let displaced = 0;
@@ -847,7 +847,7 @@ export class MockDevice {
             if (!head) {
                 return refusal(ErrorCode.RevisionConflict, Detail.revisionConflict.headAbsent);
             }
-            if (head.meta.flags & (EntryFlags.Recording | EntryFlags.Reserved)) {
+            if (head.meta.kind === ObjectKind.Metadata || head.meta.flags & (EntryFlags.Recording | EntryFlags.Reserved)) {
                 return refusal(ErrorCode.InvalidRequest, Detail.invalidRequest.badCombination);
             }
             if (head.meta.revision !== request.expectedRevision) {

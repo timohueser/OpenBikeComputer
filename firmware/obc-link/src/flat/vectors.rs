@@ -475,6 +475,19 @@ pub fn fixtures() -> Vec<Fixture> {
         Json::new().str("storeId", &hex(&STORE)).big("commitSequence", SEQUENCE).num("entries", 2).bool("more", false),
     ));
 
+    let mut metadata_page = list_response_two_entries();
+    metadata_page.truncate(HEADER_LEN + 24 + 88);
+    u16_at(&mut metadata_page, 8, 24 + 88);
+    u16_at(&mut metadata_page, HEADER_LEN + 24 + 28, 9);
+    all.push(control(
+        "list-response-metadata",
+        "Device-owned metadata uses kind 9 in ordinary all-kind LIST responses.",
+        "response",
+        ("LIST", 0x01),
+        metadata_page,
+        Json::new().str("storeId", &hex(&STORE)).big("commitSequence", SEQUENCE).num("entries", 1).bool("more", false),
+    ));
+
     let mut empty_page = header(0x01, 0b1, 24, LIST_REQUEST);
     bytes_at(&mut empty_page, HEADER_LEN, &STORE);
     u64_at(&mut empty_page, HEADER_LEN + 16, 1);
@@ -1011,7 +1024,7 @@ pub fn fixtures() -> Vec<Fixture> {
     ));
 
     let mut unknown_kind = put_create_request();
-    u16_at(&mut unknown_kind, HEADER_LEN + 28, 9);
+    u16_at(&mut unknown_kind, HEADER_LEN + 28, 10);
     all.push(negative(
         "put-unknown-kind",
         "Section 3.1 of the format contract is the sole authority for kind values.",
@@ -1038,7 +1051,7 @@ pub fn fixtures() -> Vec<Fixture> {
     ));
 
     let mut list_kind = header(0x01, 0, 32, LIST_REQUEST);
-    u16_at(&mut list_kind, HEADER_LEN, 9);
+    u16_at(&mut list_kind, HEADER_LEN, 10);
     all.push(negative(
         "list-unknown-kind-filter",
         "A filter naming a kind this major does not register.",

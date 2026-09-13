@@ -1014,7 +1014,7 @@ mod tests {
         assert_eq!(refusal_of(&no_revision), bad_combination(), "a create with an expected revision");
 
         let mut unknown_kind = PUT_VECTOR;
-        unknown_kind[44] = 0x09;
+        unknown_kind[44] = 0x0A;
         assert_eq!(refusal_of(&unknown_kind), Refusal::new(ErrorCode::Unsupported, detail::unsupported::KIND));
 
         let mut flagged = PUT_VECTOR;
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(refusal_of(&record[..HEADER_LEN + LIST_BODY_LEN]), reserved_bits());
 
         let mut filtered = [0u8; LIST_BODY_LEN];
-        filtered[0] = 9;
+        filtered[0] = 10;
         let record = request_frame(Opcode::List, &filtered);
         assert_eq!(
             refusal_of(&record[..HEADER_LEN + LIST_BODY_LEN]),

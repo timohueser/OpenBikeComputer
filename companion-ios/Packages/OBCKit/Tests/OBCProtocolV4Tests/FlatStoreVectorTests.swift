@@ -22,6 +22,20 @@ struct FlatStoreVectorTests {
         }
     }
 
+    @Test("Metadata remains readable in an all-kind listing and cannot be uploaded")
+    func metadataOwnership() throws {
+        let bytes = try Vectors.frame(named: "list-response-metadata")
+        guard case .list(let page) = try ControlResponse(decoding: bytes) else {
+            Issue.record("Expected a catalog page")
+            return
+        }
+        #expect(page.entries.map(\.kind) == [.metadata])
+        let request = PutRequest(payloadLength: 112, payloadCRC32: 0, kind: .metadata, displayName: "")
+        #expect(throws: WireError.self) {
+            try ControlRequest.put(request).frame(requestID: RequestID(rawValue: 1)!)
+        }
+    }
+
     @Test("Every stream vector decodes and re-encodes byte-for-byte")
     func streams() throws {
         for entry in try Vectors.entries(in: "streams") {
