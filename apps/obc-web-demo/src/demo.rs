@@ -382,7 +382,6 @@ impl Demo {
         // token-carrying outcomes for the next pass. The demo has no trips (`&mut ()`) and no
         // platform work of its own (`&mut ()` — no card scan, bond, settings store or DFU on the
         // page), so the whole loop is repository sequencing that lives once in `obc-host-core`.
-        let reader = self.map.reader();
         self.host.execute(
             &mut self.app,
             &mut plan,
@@ -391,7 +390,7 @@ impl Demo {
             &mut self.rides,
             &mut self.tracks,
             &mut (),
-            &reader,
+            &self.map,
             // The demo page ships one embedded `.obcm` and no terrain beside it (EL7): the null
             // source keeps a planned route exactly as flat as it has always been here.
             &mut obc_route::NullElevation,

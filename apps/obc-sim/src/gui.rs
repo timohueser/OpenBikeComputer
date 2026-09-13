@@ -815,7 +815,7 @@ impl SimGui {
                 &mut self.ride_store,
                 &mut self.tracks,
                 &mut self.trip_store,
-                &reader,
+                self.map.planner_map(),
                 &mut *self.elevation,
                 &mut platform,
             );

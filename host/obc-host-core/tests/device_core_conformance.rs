@@ -372,19 +372,27 @@ impl CoreHarness {
     fn serve_navigator(&mut self, effect: NavigatorEffect) -> Option<NavigatorOutcome> {
         let token = effect.token();
         match effect {
-            NavigatorEffect::Acquire { work: PlannerWork::Route(_), .. } => {
-                self.state.pending_nav_plan.take().map(|result| match result {
-                    Ok(route) => NavigatorOutcome::PlanFinished { token, route },
-                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+            NavigatorEffect::Acquire { .. } => Some(NavigatorOutcome::Acquired { token }),
+            NavigatorEffect::Step { .. } => {
+                self.state.nav_token = Some(token);
+                self.state.pending_nav_plan.as_ref().map(|result| match result {
+                    Ok(_) => {
+                        NavigatorOutcome::Stepped { token, progress: obc_app::navigator::PlannerProgress::Reached }
+                    }
+                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(*error) },
                 })
             }
-            NavigatorEffect::Acquire { work: PlannerWork::Detour(_), .. } => None,
-            // The splice's answer is scripted at the action, like the detour search's — see
-            // `serve_scripted`.
-            NavigatorEffect::CommitDetour { .. } => None,
-            NavigatorEffect::Release { .. } => Some(NavigatorOutcome::Released { token }),
-            NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
-                panic!("one request runs the whole search here; stepped pacing is #1400's — {effect:?}")
+            NavigatorEffect::CommitRoute { .. } => self.state.pending_nav_plan.take().map(|result| match result {
+                Ok(route) => NavigatorOutcome::PlanFinished { token, route },
+                Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+            }),
+            NavigatorEffect::CommitDetour { .. } => {
+                self.state.nav_token = Some(token);
+                None
+            }
+            NavigatorEffect::Release { .. } => {
+                self.state.nav_token = None;
+                Some(NavigatorOutcome::Released { token })
             }
         }
     }

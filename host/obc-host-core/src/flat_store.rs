@@ -222,6 +222,24 @@ impl ObjectSource {
         Ok(Self(Arc::new(Lease { owner, handle: Some(handle), len, store_id })))
     }
 
+    /// Exact source identity, independent of unrelated catalog commits.
+    pub fn same_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.owner, &other.0.owner)
+            && self.store_id() == other.store_id()
+            && self.id() == other.id()
+            && self.revision() == other.revision()
+    }
+
+    /// A retained old revision stays readable, but cannot authorize new planner work.
+    pub fn is_current(&self) -> bool {
+        let Ok(owner) = self.0.owner.lock() else { return false };
+        let Ok(card) = owner.ready() else { return false };
+        if card.store_id() != self.store_id() {
+            return false;
+        }
+        card.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
+    }
+
     pub fn store_id(&self) -> StoreId {
         self.0.store_id
     }

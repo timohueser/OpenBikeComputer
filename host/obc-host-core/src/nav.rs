@@ -225,25 +225,21 @@ pub fn plan_detour_preview(
 pub fn commit_detour(
     app: &mut obc_app::App,
     store: &mut dyn crate::RouteRepository,
-    orig_index: Option<&obc_route::RouteIndex>,
-    ready: Option<DetourReady>,
+    orig: &obc_route::RouteReader,
+    ready: &DetourReady,
     trace: &mut dyn TraceSink,
-) -> Result<obc_app::CatalogObjectId, obc_route::NavError> {
-    use obc_route::NavError;
+) -> Result<crate::RoutePublication, obc_app::navigator::NavigatorError> {
+    use obc_app::navigator::NavigatorError;
     let result = (|| {
-        let ready = ready.ok_or(NavError::NoPath)?;
-        let orig_index = orig_index.ok_or(NavError::NoPath)?;
         let mut sink = VecSink::default();
         {
             // Both sources stay readable through the splice, which completes before any store write —
             // self-splice (the active route already being the reserved slot) is safe.
-            let orig_src = store.active_source().ok_or(NavError::NoPath)?;
-            let orig = obc_route::RouteReader::new(orig_index, orig_src);
             let det_src = obc_formats::io::SliceSource(&ready.bytes);
-            let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavError::NoPath)?;
+            let det_idx = obc_route::RouteIndex::read(&det_src).map_err(|_| NavigatorError::Store)?;
             let det = obc_route::RouteReader::new(&det_idx, &det_src);
             obc_route::splice_detour(
-                &orig,
+                orig,
                 &det,
                 ready.progress_m,
                 ready.rejoin_m,
@@ -251,9 +247,9 @@ pub fn commit_detour(
                 ready.has_elevation,
                 &mut sink,
             )
-            .map_err(|_| NavError::NoPath)?;
+            .map_err(|_| NavigatorError::Store)?;
         }
-        let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
+        let publication = store.publish_nav_route(sink.bytes()).ok_or(NavigatorError::Store)?;
         let metas = store.retention_metas();
         app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
         trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
@@ -261,8 +257,8 @@ pub fn commit_detour(
         // The spliced bytes sit under the reserved slot's (possibly unchanged) id — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
-        eprintln!("detour commit: ok — spliced route id {id}");
-        Ok(id)
+        eprintln!("detour commit: ok — spliced route id {}", publication.id);
+        Ok(publication)
     })();
     if let Err(e) = &result {
         eprintln!("detour commit: failed ({e:?})");
@@ -286,10 +282,10 @@ pub fn commit_nav_plan(
     sink_bytes: &[u8],
     tile_stats: obc_reader::NavCacheStats,
     trace: &mut dyn TraceSink,
-) -> Result<obc_app::CatalogObjectId, obc_route::NavError> {
-    use obc_route::NavError;
-    let result = outcome.and_then(|stats| {
-        let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
+) -> Result<crate::RoutePublication, obc_app::navigator::NavigatorError> {
+    use obc_app::navigator::NavigatorError;
+    let result = outcome.map_err(NavigatorError::Plan).and_then(|stats| {
+        let publication = store.publish_nav_route(sink_bytes).ok_or(NavigatorError::Store)?;
         let metas = store.retention_metas();
         app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
         trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
@@ -307,7 +303,7 @@ pub fn commit_nav_plan(
             tile_stats.index_misses,
             tile_stats.source_reads()
         );
-        Ok(id)
+        Ok(publication)
     });
     if let Err(e) = &result {
         eprintln!("nav route: failed ({e:?})");
@@ -336,7 +332,12 @@ mod tests {
         };
         let mut app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(routes.catalog(), routes.ids());
-        assert_eq!(commit_detour(&mut app, &mut routes, Some(&index), Some(ready), &mut crate::trace::NoTrace), Ok(id));
+        let source = routes.pin_active().unwrap();
+        let original = obc_route::RouteReader::new(&index, &source);
+        assert_eq!(
+            commit_detour(&mut app, &mut routes, &original, &ready, &mut crate::trace::NoTrace).map(|p| p.id),
+            Ok(id)
+        );
         assert!(routes.sync_active(Some(0)));
         assert!(obc_route::RouteIndex::read(routes.active_source().unwrap()).is_ok());
         assert_eq!(routes.ids(), &[id]);

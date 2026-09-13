@@ -32,6 +32,7 @@ obc-replay = { path = "../obc-replay" }
 embedded-graphics = "0.8"
 
 [dev-dependencies]
+obc-pack = { path = "../obc-pack" }
 obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
 obc-render = { path = "../../firmware/obc-render" }
 obcm-testkit = { path = "../obcm-testkit" }

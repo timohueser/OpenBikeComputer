@@ -11,7 +11,7 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
-use obc_reader::{rgb565_to_device64, Reader};
+use obc_reader::rgb565_to_device64;
 
 mod calib;
 mod device_input;
@@ -811,7 +811,7 @@ fn settle(
     session: &mut ActiveRouteSession,
     app: &mut App,
     stores: &mut Stores<'_>,
-    reader: &Reader,
+    map: &obc_host_core::flat_map::FlatMap,
     elev: &mut dyn obc_route::ElevationSource,
     platform: &mut HeadlessPlatform,
     weather: Option<&obc_app::WeatherSnapshot>,
@@ -848,7 +848,7 @@ fn settle(
             stores.rides,
             stores.tracks,
             stores.trips,
-            reader,
+            map,
             elev,
             platform,
         );
@@ -1500,7 +1500,7 @@ fn main() {
                     &mut session,
                     app,
                     &mut stores,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                     wx_script.as_ref(),
@@ -1547,7 +1547,17 @@ fn main() {
             Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
         let mut settle_now =
             |app: &mut App, stores: &mut Stores<'_>, host: &mut HostLoop, platform: &mut HeadlessPlatform| {
-                settle(host, &mut session, app, stores, &reader, &mut *elev, platform, wx_script.as_ref(), script_now);
+                settle(
+                    host,
+                    &mut session,
+                    app,
+                    stores,
+                    map.planner_map(),
+                    &mut *elev,
+                    platform,
+                    wx_script.as_ref(),
+                    script_now,
+                );
             };
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
@@ -1572,7 +1582,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1594,7 +1604,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1614,7 +1624,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1635,7 +1645,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1656,7 +1666,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1685,7 +1695,7 @@ fn main() {
                     &mut session,
                     &mut app,
                     &mut stores,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                     wx_script.as_ref(),
@@ -1713,7 +1723,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1773,7 +1783,7 @@ fn main() {
                     stores.rides,
                     stores.tracks,
                     stores.trips,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                 );
@@ -1843,7 +1853,7 @@ fn main() {
                     stores.rides,
                     stores.tracks,
                     stores.trips,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                 );
@@ -1908,7 +1918,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_snapshot.as_ref(),

@@ -108,7 +108,7 @@ impl CoreMode {
     /// legitimately land for one run: a cancel is delivered and the late answer arrives behind it),
     /// and it never touches the other family — see the module docs for the regression that is.
     ///
-    /// Written only from `NavigatorMachine`'s `note_answer` / `note_cancel_delivered`.
+    /// Written only from `NavigatorMachine`'s `released` and its explicit debug fixture.
     pub(crate) fn search_ended(&mut self, family: PlanFamily) -> bool {
         let was = self.searching();
         *self.slot(family) = false;
