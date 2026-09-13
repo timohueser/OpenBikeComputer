@@ -733,7 +733,7 @@ impl HostLoop {
     /// the name, so a later route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
         let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
-        if tracks.open(id, active_route_name(app).as_deref()) {
+        if tracks.open(id, active_route_name(app).as_deref(), app.recorder.now_ms()) {
             self.opened_session = Some(id);
         }
     }
@@ -861,8 +861,8 @@ fn serve_recorder(
             }
         }
         RecorderEffect::Discard { token } => match tracks.discard() {
-            true => RecorderOutcome::Discarded { token },
-            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+            Ok(()) => RecorderOutcome::Discarded { token },
+            Err(error) => RecorderOutcome::Failed { token, error },
         },
         // The staged samples, in order, for as long as the medium keeps taking them. A short write
         // is answered honestly: Recorder keeps the tail staged and offers it again next pass, so a
@@ -871,10 +871,11 @@ fn serve_recorder(
         RecorderEffect::Append { token, samples } => {
             let staged = app.recorder.staged();
             let want = (samples as usize).min(staged.len());
-            let written = staged[..want].iter().take_while(|point| tracks.append(**point)).count() as u16;
-            match written {
-                0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                _ => RecorderOutcome::Appended { token, samples: written },
+            match tracks.append_batch(&staged[..want], app.recorder.append_context(samples)) {
+                Ok(crate::repo::AppendStatus::Accepted(samples)) => RecorderOutcome::Appended { token, samples },
+                Ok(crate::repo::AppendStatus::Cancelled) => RecorderOutcome::Cancelled { token },
+                Ok(crate::repo::AppendStatus::NeedsCheckpoint) => RecorderOutcome::NeedsCheckpoint { token },
+                Err(error) => RecorderOutcome::Failed { token, error },
             }
         }
     }
@@ -1066,7 +1067,7 @@ mod tests {
     }
 
     impl TrackRepository for RecordingTrackStore {
-        fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+        fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
             self.open_attempts += 1;
             self.open = self.open_attempts > self.failed_opens;
             self.open
@@ -1085,9 +1086,9 @@ mod tests {
             RideClose::Committed(7)
         }
 
-        fn discard(&mut self) -> bool {
+        fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
             self.open = false;
-            true
+            Ok(())
         }
 
         fn checkpoint(
@@ -1243,7 +1244,7 @@ mod tests {
                 failed_finalizes: 1,
                 ..Default::default()
             };
-            store.open(1, Some("ride"));
+            store.open(1, Some("ride"), 0);
             app.recorder.request(RecorderIntent::Save);
             let mut operations = Vec::new();
             for step in 0..8 {

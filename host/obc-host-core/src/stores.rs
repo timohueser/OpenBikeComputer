@@ -81,7 +81,7 @@ impl MemTrackStore {
 impl TrackRepository for MemTrackStore {
     /// Mirror the folder-backed store's recording flag without touching a filesystem. `name` is
     /// irrelevant with no on-disk log.
-    fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+    fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
         self.recording = true;
         true
     }
@@ -96,9 +96,9 @@ impl TrackRepository for MemTrackStore {
         RideClose::Committed(id)
     }
 
-    fn discard(&mut self) -> bool {
+    fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
         self.recording = false;
-        true
+        Ok(())
     }
 }
 

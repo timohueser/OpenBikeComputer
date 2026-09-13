@@ -33,11 +33,11 @@ const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
-use crate::rides::RideStore;
 use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
+use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 
 use crate::Args;
@@ -83,9 +83,6 @@ struct PanelState {
     retention_route_sel: usize,
     /// The retention level the panel's "Set" button assigns to the selected route.
     retention_level: obc_app::Retention,
-    /// The "Mark ride synced" combo's selected Rides row — the `ackRides` stand-in that stamps a
-    /// ride's `synced_at` so the sweep can later auto-delete it.
-    synced_ride_sel: usize,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -185,6 +182,8 @@ pub fn run(
     map: LoadedMap,
     store: RouteStore,
     trip_store: TripStore,
+    ride_store: RideStore,
+    tracks: TrackStore,
     args: Args,
 ) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
@@ -198,7 +197,9 @@ pub fn run(
     eframe::run_native(
         "OBC Simulator",
         options,
-        Box::new(move |_cc| Ok(Box::new(SimGui::new(owner, map, store, trip_store, args)) as Box<dyn eframe::App>)),
+        Box::new(move |_cc| {
+            Ok(Box::new(SimGui::new(owner, map, store, trip_store, ride_store, tracks, args)) as Box<dyn eframe::App>)
+        }),
     )
 }
 
@@ -367,6 +368,8 @@ impl SimGui {
         map: LoadedMap,
         store: RouteStore,
         trip_store: TripStore,
+        ride_store: RideStore,
+        tracks: TrackStore,
         args: Args,
     ) -> Self {
         // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
@@ -413,7 +416,6 @@ impl SimGui {
                 clock_offset_secs: 0,
                 retention_route_sel: 0,
                 retention_level: obc_app::Retention::Day1,
-                synced_ride_sel: 0,
             },
             None => PanelState {
                 lat_deg: 0.0,
@@ -427,15 +429,13 @@ impl SimGui {
                 clock_offset_secs: 0,
                 retention_route_sel: 0,
                 retention_level: obc_app::Retention::Day1,
-                synced_ride_sel: 0,
             },
         };
 
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
         let mut app = App::new_idle(state);
-        let ride_store = RideStore::open(args.tracks_dir());
-        let tracks = TrackStore::open(args.tracks_dir());
+        tracks.offer_recovery(&mut app);
         // Seed the live settings from the persisted store, falling back to defaults on a first
         // run / unreadable file — the device's boot path.
         let mut settings_store = FileSettingsStore::open(args.settings_path());
@@ -1245,7 +1245,6 @@ mod sim_platform_tests {
             clock_offset_secs: 0,
             retention_route_sel: 0,
             retention_level: obc_app::Retention::default(),
-            synced_ride_sel: 0,
         }
     }
 
