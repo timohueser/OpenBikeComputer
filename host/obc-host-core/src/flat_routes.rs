@@ -37,6 +37,9 @@ impl FlatRouteStore {
         };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
+                if repo.ids.len() == obc_app::MAX_ROUTES {
+                    return Err(StoreError::Invalid.into());
+                }
                 let source = repo.owner.open(meta.id, meta.revision)?;
                 let summary = RouteSummary::read(&source).map_err(|_| StoreError::Invalid)?;
                 repo.publish(meta, summary);
@@ -46,6 +49,22 @@ impl FlatRouteStore {
             repo.write(bytes, None)?;
         }
         Ok(repo)
+    }
+
+    pub fn source(&self, id: CatalogObjectId) -> Result<ObjectSource, StoreError> {
+        let i = self.ids.iter().position(|&current| current == id).ok_or(StoreError::NotFound)?;
+        self.owner.open(ObjectId(id), self.revisions[i])
+    }
+
+    /// Import a fresh route; input files remain an adapter concern.
+    pub fn import(&mut self, bytes: &[u8]) -> Result<CatalogObjectId, ImportError> {
+        self.write(bytes, None).map(|id| id.0)
+    }
+
+    /// Replace exactly the catalog revision currently held by this repository.
+    pub fn replace(&mut self, id: CatalogObjectId, bytes: &[u8]) -> Result<(), ImportError> {
+        let i = self.ids.iter().position(|&current| current == id).ok_or(StoreError::NotFound)?;
+        self.write(bytes, Some((ObjectId(id), self.revisions[i]))).map(|_| ())
     }
 
     fn write(&mut self, bytes: &[u8], previous: Option<(ObjectId, Revision)>) -> Result<ObjectId, ImportError> {
@@ -106,6 +125,9 @@ impl RouteRepository for FlatRouteStore {
             .entries()
             .filter(|entry| entry.kind == ObjectKind::Route && entry.flags == obc_storage::flat::EntryFlags::NONE)
         {
+            if ids.len() == obc_app::MAX_ROUTES {
+                return Err(obc_app::retention::RetentionError::WriteFailed);
+            }
             let summary = store
                 .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read(source))
                 .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?
@@ -179,12 +201,16 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
-        // Only this complete route projection grants ownership; a map or ride ID is not ours.
-        let Some(i) = self.ids.iter().position(|&candidate| candidate == id) else { return Ok(false) };
+        let entries = self.owner.entries().map_err(|error| catalog_error(&self.owner, error))?;
+        let Some(meta) = entries.into_iter().find(|meta| meta.id.0 == id) else { return Ok(false) };
+        if meta.kind != ObjectKind::Route {
+            return Err(CatalogError::Unsupported);
+        }
+        let i = self.ids.iter().position(|&candidate| candidate == id).ok_or(CatalogError::Stale)?;
         let existed = match self.owner.remove(ObjectKind::Route, ObjectId(id), self.revisions[i]) {
             Ok(()) => true,
             Err(StoreError::NotFound) => false,
-            Err(_) => return Err(CatalogError::RemoveFailed),
+            Err(error) => return Err(catalog_error(&self.owner, error)),
         };
         self.revisions.remove(i);
         self.ids.remove(i);
@@ -282,5 +308,16 @@ pub(crate) fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_a
         Error::RemountRequired => E::RemountRequired,
         Error::Store(StoreError::Busy) => E::Busy,
         _ => E::WriteFailed,
+    }
+}
+
+pub(crate) fn catalog_error(owner: &HostStore, error: StoreError) -> CatalogError {
+    if matches!(owner.mode(), Ok(obc_storage::flat::Mode::RemountRequired) | Err(_)) {
+        return CatalogError::RemountRequired;
+    }
+    match error {
+        StoreError::ReadOnly => CatalogError::Unsupported,
+        StoreError::RevisionConflict { .. } => CatalogError::Stale,
+        _ => CatalogError::Unreadable,
     }
 }

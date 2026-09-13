@@ -81,6 +81,16 @@ impl FlatMap {
         )
     }
 
+    /// Reopen the only live map on a card. Ambiguity is an error, never an arbitrary selection.
+    pub fn open_only_in(store: &HostStore) -> Result<Self, MapError> {
+        let mut maps = store.entries()?.into_iter().filter(|entry| entry.kind == ObjectKind::MapShard);
+        let map = maps.next().ok_or(StoreError::NotFound)?;
+        if maps.next().is_some() {
+            return Err(StoreError::Invalid.into());
+        }
+        Self::open_in(store, store.store_id()?, map.id, map.revision)
+    }
+
     /// Reopen one persisted map identity; another card with the same numeric id is refused.
     pub fn open_in(store: &HostStore, store_id: StoreId, id: ObjectId, revision: Revision) -> Result<Self, MapError> {
         if store.store_id()? != store_id {
