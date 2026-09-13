@@ -465,6 +465,16 @@ impl CoreHarness {
     }
 
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
+        use obc_app::catalog_state::CatalogObjectKind;
+        let kind = match effect {
+            CatalogEffect::RemoveObject { kind, .. } => Some(kind),
+            CatalogEffect::ExpireObject { object, .. } => Some(if self.state.route_ids.contains(&object) {
+                CatalogObjectKind::Route
+            } else {
+                CatalogObjectKind::Ride
+            }),
+            CatalogEffect::ReadCatalog { .. } => None,
+        };
         match effect {
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
@@ -481,13 +491,14 @@ impl CoreHarness {
                     refeed: Refeed::All,
                 }
             }
-            // One object out of the store, and nothing else. The namespace probe order is the real
-            // executor's; the re-read a completed removal implies is the domain's.
-            CatalogEffect::RemoveObject { token, object } | CatalogEffect::ExpireObject { token, object, .. } => {
+            // The domain's family is preserved through removal; it also orders the later reload.
+            CatalogEffect::RemoveObject { token, object, .. } | CatalogEffect::ExpireObject { token, object, .. } => {
                 // Counted before the probe, so a removal for an object that already left the store
                 // counts too — that is exactly the event #1548 removes.
                 self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
-                if let Some(index) = self.state.route_ids.iter().position(|&id| id == object) {
+                if let Some(index) =
+                    self.state.route_ids.iter().position(|&id| id == object && kind == Some(CatalogObjectKind::Route))
+                {
                     if std::mem::take(&mut self.state.route_delete_fail_once) {
                         // The store refused the removal. Not `existed: false` — the object is still
                         // there, which is what makes retention re-queue its candidate, and what
@@ -499,9 +510,14 @@ impl CoreHarness {
                     }
                     self.state.routes.remove(index);
                     self.state.route_ids.remove(index);
-                } else if let Some(index) = self.state.rides.iter().position(|entry| entry.id == object) {
+                } else if let Some(index) = self
+                    .state
+                    .rides
+                    .iter()
+                    .position(|entry| entry.id == object && kind == Some(CatalogObjectKind::Ride))
+                {
                     self.state.rides.remove(index);
-                } else if self.state.trip_present && object == TRIP {
+                } else if kind == Some(CatalogObjectKind::Trip) && self.state.trip_present && object == TRIP {
                     // The folder's own object — the cascade's last step, decided by the domain and
                     // not composed here.
                     self.state.trip_present = false;

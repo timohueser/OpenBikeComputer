@@ -17,8 +17,7 @@ pub struct MemRideStore {
 impl MemRideStore {
     /// Seed the catalog (newest first, as [`App::set_rides`](obc_app::App::set_rides) expects).
     /// Positional ids — the catalog is fixed, so they're session-stable — carved out of
-    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) so a ride and a route can never share an identity the
-    /// namespace-free `CatalogEffect::RemoveObject` would confuse.
+    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE)'s fixture band. Deletion also retains the Ride kind.
     pub fn new(catalog: Vec<RideSummary>) -> Self {
         let catalog = catalog
             .into_iter()

@@ -451,15 +451,10 @@ pub(crate) enum Request {
         id: ObjectId,
         revision: Revision,
     },
-    /// `CatalogEffect::RemoveObject` — the device UI's own removal, on the **answering** path.
-    ///
-    /// Namespace-free by design: FS7 numbers every object out of one id space, so the head at `id`
-    /// *is* the subject whatever kind it is, and the catalog domain is what knows which cascade step
-    /// this is. Replies with whether the entry was there
-    /// ([`Outcome::Removed`]) — a subject that vanished before the commit is a **success** for the
-    /// goal state (#1433 §13), not a failure, and only the store can tell the two apart.
+    /// Remove the current head only if it belongs to the requested catalog family.
     RemoveObject {
         id: ObjectId,
+        kind: obc_app::catalog_state::CatalogObjectKind,
     },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit {
@@ -1092,21 +1087,30 @@ pub(crate) async fn storage_task(
 /// `Ok(false)` = there was nothing at `id` — the goal state already holds, which
 /// [`Request::RemoveObject`] answers as a success. `Err` = the store refused or failed the commit.
 ///
-/// Namespace-free, like the effect it serves: FS7 gives every object one id space, so the head at an
-/// id is unambiguous. A trip cascade reaches this one member at a time, so there is no step here
-/// that would need to say which family it is removing.
-///
 /// A listing that stopped early is a **failure**, never an absent object. `existed: false` is read
 /// as "the goal state holds", and a cascade advances past the member on it — so a media error that
 /// truncated the walk before it reached `id` would orphan a route that is still stored.
-fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<bool, StoreError> {
-    let found = store.entries().find(|entry| entry.id == id);
+fn remove_head(
+    store: &FlatStore<FlatCard>,
+    id: ObjectId,
+    kind: obc_app::catalog_state::CatalogObjectKind,
+) -> Result<bool, StoreError> {
+    use obc_app::catalog_state::CatalogObjectKind;
+    let expected = match kind {
+        CatalogObjectKind::Route => ObjectKind::Route,
+        CatalogObjectKind::Ride => ObjectKind::Ride,
+        CatalogObjectKind::Trip => ObjectKind::Trip,
+    };
+    let found = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
     if !store.entries_ok() {
         return Err(StoreError::Media);
     }
     let Some(meta) = found else {
         return Ok(false);
     };
+    if meta.kind != expected {
+        return Err(StoreError::Invalid);
+    }
     match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
         Ok(_) => Ok(true),
         Err(error) => {
@@ -1223,7 +1227,7 @@ fn serve(
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
-        Request::RemoveObject { id } => remove_head(store, id).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
