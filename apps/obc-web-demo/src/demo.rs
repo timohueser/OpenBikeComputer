@@ -359,12 +359,13 @@ impl Demo {
 
         // At the summit, start the next ambient lap through the same acknowledged cleanup.
         // A pause or a completed Save is not a new lap.
-        if !reset_failed
+        if self.reset_status == ResetStatus::Ready
             && !self.tour_active
             && was_playing
             && !self.player.is_playing()
             && self.player.time() >= self.player.duration()
             && self.app.recording()
+            && !self.app.recorder.closing()
         {
             self.cmd("ambient");
         }
@@ -633,6 +634,7 @@ mod tests {
         let route = d.routes.ids()[0];
         d.tick(0.0);
         d.tick(250.0);
+        d.tick(500.0); // cross the replay's one-second fix boundary
         assert!(!d.tracks.is_idle());
         assert!(!d.host.outcomes().recorder.is_empty(), "the old App still owes its reply");
         d.cmd("back");
@@ -641,7 +643,7 @@ mod tests {
         d.cmd("receive");
         assert_eq!(d.reset_status(), ResetStatus::Pending);
         assert_eq!(d.state(), "Map", "an old matching screen cannot acknowledge reset");
-        d.tick(500.0);
+        d.tick(750.0);
         assert_eq!(d.reset_status(), ResetStatus::Ready);
         assert_eq!(d.state(), "RouteReceived", "earlier gestures are superseded; later inputs follow the baseline");
         assert!(d.tracks.is_idle());
@@ -652,13 +654,39 @@ mod tests {
         // Repeated cleanup must return the reservation and leave no old recording at Start.
         for i in 0..4 {
             d.cmd("ambient");
-            d.tick(750.0 + i as f64 * 500.0);
             d.tick(1000.0 + i as f64 * 500.0);
+            d.tick(1250.0 + i as f64 * 500.0);
             assert_eq!(d.reset_status(), ResetStatus::Ready);
             assert!(d.app.recording());
             assert!(!d.tracks.is_idle());
         }
         assert_ne!(Demo::new().map.source().store_id(), map.store_id(), "a new page owns a new volatile card");
+    }
+
+    #[test]
+    fn playback_end_cannot_discard_a_save_waiting_for_its_append_reply() {
+        let mut d = Demo::new();
+        d.tick(0.0);
+        d.tick(250.0);
+        d.tick(500.0);
+        let reply = d.host.outcomes().recorder.take().expect("the real append awaits delivery");
+        assert!(matches!(reply, RecorderOutcome::Appended { .. }));
+        assert!(!d.app.recorder.staged().is_empty());
+        d.app.recorder.request(obc_app::RecorderIntent::Save);
+        d.player.seek(d.player.duration() - 0.5);
+        d.tick(750.0);
+        assert!(!d.player.is_playing());
+        assert!(d.app.recording() && d.app.recorder.closing());
+        assert_eq!(d.reset_status(), ResetStatus::Ready);
+        assert!(d.queue.is_empty(), "playback end cannot supersede Save with automatic Discard");
+        d.host.outcomes().recorder.try_put(reply).unwrap();
+        for i in 4..12 {
+            d.tick(i as f64 * 250.0);
+        }
+        assert!(!d.app.recording());
+        assert!(d.tracks.is_idle());
+        assert_eq!(d.rides.catalog().len(), 1, "the original sample becomes a saved object");
+        assert!(!d.rides.catalog()[0].summary.synced);
     }
 
     #[test]
@@ -687,9 +715,14 @@ mod tests {
         d.cmd("back");
         d.tick(250.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed, "an unrelated input cannot erase failure");
+        d.player.seek(d.player.duration() - 0.5);
+        d.tick(500.0);
+        assert!(!d.player.is_playing());
+        assert_eq!(d.reset_status(), ResetStatus::Failed, "a later playback end cannot retry reset");
+        assert!(d.queue.is_empty());
         d.cmd("enter");
         assert_eq!(d.reset_status(), ResetStatus::Pending, "an explicit retry remains possible");
-        d.tick(250.0);
+        d.tick(500.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert_eq!(d.ui_offset_ms, offset);
     }
@@ -936,6 +969,13 @@ mod tests {
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert_eq!(d.ui_offset_ms, offset);
         assert!(d.host.owns_navigation());
+        assert!(!d.app.recorder.closing());
+        d.player.seek(d.player.duration() - 0.5);
+        now += 250.0;
+        d.tick(now);
+        assert!(!d.player.is_playing());
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert!(d.queue.is_empty(), "an ambient end cannot clear a refused reset");
         for _ in 0..2_000 {
             if d.state() != "NavPlanning" {
                 break;
