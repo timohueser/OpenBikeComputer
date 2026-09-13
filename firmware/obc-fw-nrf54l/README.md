@@ -982,13 +982,16 @@ For an indoor test, build from this crate directory and inject GPS/compass data 
 cargo run --release --features debug-uart
 ```
 
-The optional `peak-view-demo` feature seeds a Kleine Scheidegg test fix and opens the screen at
+The optional `peak-view-demo` feature seeds a cached Kleine Scheidegg position and opens the screen at
 boot. It still reads only the selected map. To test an additional map object without replacing
 the normal lowest-ID map, set an explicit build-time object ID with that feature:
 
 ```sh
 OBC_TEST_MAP_OBJECT_ID=201 cargo run --release --features debug-uart,peak-view-demo
 ```
+
+The screen waits for a fresh receiver fix. With `debug-uart`, send an `F` fix through the debug
+link to start generation; the cached demo position does not satisfy GPS acquisition.
 
 Use the ID returned by the map upload. The override selects the whole map at boot through the
 normal pinned source; it is ignored without `peak-view-demo`. An invalid or absent requested
