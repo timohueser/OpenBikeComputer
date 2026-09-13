@@ -188,14 +188,17 @@ def is_arena_symbol(name: str) -> bool:
 
 
 SYMBOL_HEADER_RE = re.compile(r"^[0-9a-fA-F]+ <(.+)>:$")
-# `sub sp, #imm` / `sub.w sp, sp, #imm` / `subw sp, sp, #imm` — every spelling LLVM emits for a
-# frame allocation on thumbv8m. The `subw` arm is new and load-bearing: it is a distinct encoding
-# (wide 12-bit immediate), the previous `sub(?:\.w)?` could not match it, and #1108's own
-# `mount_terrain` prologue is `subw sp, sp, #0x8c4` — so the guard was blind to the very helper the
-# boot-stack fix introduced. Broadening it does not move any baselined figure (the largest poll
-# frame reads 9,728 B before and after).
-FRAME_DECREMENT_RE = re.compile(r"\bsubw?(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)")
-PUSH_RE = re.compile(r"\bpush(?:\.w)?\s+\{([^}]*)\}")
+# Fixed Thumb entry operations, before the first body/control-flow instruction.
+FRAME_DECREMENT_RE = re.compile(r"^subw?(?:\.w)?\s+sp,\s*(?:sp,\s*)?#(0x[0-9a-fA-F]+|\d+)$")
+PUSH_RE = re.compile(r"^(v?push)(?:\.w)?\s+\{([^}]*)\}$")
+FRAME_POINTER_RE = re.compile(
+    r"^(?:add(?:\.w)?\s+(?:r7|r11|fp),\s*sp,\s*#(?:0x[0-9a-fA-F]+|\d+)"
+    r"|mov(?:\.w)?\s+(?:r7|r11|fp),\s*sp)$"
+)
+INSTRUCTION_RE = re.compile(r"^[0-9a-fA-F]+:\s+(?:(?:[0-9a-fA-F]{2}){1,4}\s+)+(.+)$")
+ENTRY_STACK_MUTATION_RE = re.compile(
+    r"^(?:sub\S*\s+sp\b|(?:v?push|stmdb|vstmdb)\b|(?:mov|bic|and)\S*\s+sp\b)"
+)
 CALL_RE = re.compile(r"\bbl\s+0x[0-9a-fA-F]+ <([^>]+)>")
 # The embassy **out-of-line task body**. `#[embassy_executor::task]` expands to
 # `____embassy_<name>_task::____embassy_<name>_task_inner_function::{{closure}}` (demangled with
@@ -209,9 +212,9 @@ TASK_BODY_RE = re.compile(r"____embassy_\w*?_?task.*inner_function")
 class Disassembly:
     """One pass over `llvm-objdump -d`, reused by every frame/chain check.
 
-    `frames` is the largest single stack decrement per symbol; `pushes` the bytes the prologue
-    pushes before it (callee-saved registers + `lr`), which a stack chain pays just as surely as
-    the `sub sp`; `callees` the direct `bl` edges, for the boot-chain walk.
+    `frames` sums fixed entry SP decrements; `pushes` sums integer and VFP saves in that
+    same entry. Selected frames and chains pay both once. Body allocations and indirect calls
+    are outside this measurement; `callees` retains the direct `bl` graph.
     """
 
     frames: dict[str, int]
@@ -222,9 +225,34 @@ class Disassembly:
     # "the prologue spelling moved" (symbol present, frame unparsed) — a distinction that collapses
     # if membership is inferred from `frames`/`callees`.
     symbols: frozenset[str]
+    unsupported: dict[str, str]
 
     def entry_cost(self, function: str) -> int:
+        if function in self.unsupported:
+            raise GuardError(
+                f"unsupported fixed entry prologue for `{function}`: {self.unsupported[function]}"
+            )
         return self.frames.get(function, 0) + self.pushes.get(function, 0)
+
+
+def saved_register_bytes(registers: str, vector: bool) -> int:
+    """Count LLVM's expanded lists and inclusive register ranges without guessing names."""
+    total = 0
+    for item in registers.split(","):
+        item = item.strip()
+        if not vector and item in {"lr", "fp", "ip"}:
+            total += 4
+            continue
+        match = re.fullmatch(r"([rds])(\d+)(?:-([rds])(\d+))?", item)
+        if not match:
+            raise ValueError(f"unsupported saved register `{item}`")
+        kind, first, end_kind, last = match.groups()
+        first, last = int(first), int(last) if last is not None else int(first)
+        limit = 12 if kind == "r" else 31
+        if (kind == "r") == vector or end_kind not in {None, kind} or not 0 <= first <= last <= limit:
+            raise ValueError(f"unsupported saved register `{item}`")
+        total += (last - first + 1) * (8 if kind == "d" else 4)
+    return total
 
 
 def parse_disassembly(disassembly: str) -> Disassembly:
@@ -232,37 +260,53 @@ def parse_disassembly(disassembly: str) -> Disassembly:
     pushes: dict[str, int] = {}
     callees: dict[str, set[str]] = {}
     symbols: set[str] = set()
+    unsupported: dict[str, str] = {}
     function = ""
+    entry = False
     for raw_line in disassembly.splitlines():
         line = raw_line.strip()
         header = SYMBOL_HEADER_RE.match(line)
         if header:
             function = header.group(1)
             symbols.add(function)
+            entry = True
             continue
         if not function:
             continue
-        decrement = FRAME_DECREMENT_RE.search(line)
-        if decrement:
-            frames[function] = max(int(decrement.group(1), 0), frames.get(function, 0))
-        # Prologue pushes only: once the frame is allocated, a later push is transient inside an
-        # already-counted frame, not a permanent addition to the function's stack cost.
-        if function not in frames:
-            push = PUSH_RE.search(line)
-            if push:
-                count = len([reg for reg in push.group(1).split(",") if reg.strip()])
-                pushes[function] = pushes.get(function, 0) + 4 * count
+        # Keep the direct call graph independent of where entry parsing stops.
         call = CALL_RE.search(line)
         if call:
             callees.setdefault(function, set()).add(call.group(1))
-    # No global "did we see any frame at all" check on purpose: every consumer goes through
-    # `select_frames`, whose per-selector diagnostics say *which* convention went stale. A global
-    # raise here would pre-empt those with a strictly less useful message.
+        instruction = INSTRUCTION_RE.match(line)
+        if not entry or instruction is None:
+            continue
+        asm = instruction.group(1).split("@", 1)[0].strip()
+        decrement = FRAME_DECREMENT_RE.fullmatch(asm)
+        push = PUSH_RE.fullmatch(asm)
+        if decrement:
+            frames[function] = frames.get(function, 0) + int(decrement.group(1), 0)
+        elif push:
+            try:
+                saved = saved_register_bytes(push.group(2), push.group(1) == "vpush")
+            except ValueError as error:
+                unsupported[function] = str(error)
+                entry = False
+            else:
+                pushes[function] = pushes.get(function, 0) + saved
+        elif FRAME_POINTER_RE.fullmatch(asm):
+            continue
+        else:
+            # An unfamiliar entry stack mutation must not turn a partial parse into a pass.
+            # Restores are epilogues, not unsupported allocations.
+            if asm == "<unknown>" or ENTRY_STACK_MUTATION_RE.search(asm):
+                unsupported[function] = asm
+            entry = False
     return Disassembly(
         frames=frames,
         pushes=pushes,
         callees={name: frozenset(edges) for name, edges in callees.items()},
         symbols=frozenset(symbols),
+        unsupported=unsupported,
     )
 
 
@@ -307,11 +351,18 @@ def select_frames(
         raise GuardError(
             f"{description} guard is stale: no {symbol_hint} symbols found in disassembly"
         )
-    frames = {name: parsed.frames[name] for name in matched if name in parsed.frames}
+    for name in matched:
+        if name in parsed.unsupported:
+            parsed.entry_cost(name)
+    frames = {
+        name: parsed.entry_cost(name)
+        for name in matched
+        if name in parsed.frames or name in parsed.pushes
+    }
     if not frames:
         raise GuardError(
             f"{description} guard is stale: {symbol_hint} symbols exist but no `sub sp, #imm` "
-            "prologue was parsed"
+            "or register-save fixed entry prologue was parsed"
         )
     return frames
 
@@ -591,7 +642,7 @@ def measure_board(
     poll = None
     boot = None
     if include_poll or chain_roots is not None:
-        parsed = parse_disassembly(run_tool("llvm-objdump", "--demangle", "-d", elf))
+        parsed = parse_disassembly(run_tool("llvm-objdump", "--mcpu=cortex-m33", "--demangle", "-d", elf))
         if include_poll:
             poll = max(select_poll_frames(parsed).values())
         if chain_roots is not None:
@@ -1019,12 +1070,12 @@ def check_build_rustflags(args: argparse.Namespace) -> None:
 
 
 def check_frames(args: argparse.Namespace) -> None:
-    """Gate the largest single stack frame among the symbols of one module, in any ELF.
+    """Gate the largest recognized fixed stack entry in a selected module.
 
-    This measures synchronous frames, including constructors, in the selected module.
+    This includes fixed local allocation and integer/VFP saves, including constructors.
     It rejects an empty selection so a stale symbol needle cannot silently disable the gate.
     """
-    parsed = parse_disassembly(run_tool("llvm-objdump", "--demangle", "-d", args.elf))
+    parsed = parse_disassembly(run_tool("llvm-objdump", "--mcpu=cortex-m33", "--demangle", "-d", args.elf))
     needle = args.match
     frames = select_frames(
         parsed,
