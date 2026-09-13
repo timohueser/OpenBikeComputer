@@ -440,6 +440,18 @@ They do not exist in USB binding v5.
 The phone sets UTC and local offset after encryption.
 A GPS fix can also establish trusted UTC.
 
+## Weather position requests
+
+Before a weather request contacts the phone, the device checks its position. It can reuse a GPS
+fix from the last 30 seconds. Otherwise, it wakes GPS and waits for a new fix, even when no ride
+is recording. The same check occurs before it decides that a stored forecast still covers the
+current location. There is no fallback to an old fix or the phone's position.
+
+Weather and Peak View share receiver demand. After a fix arrives, GPS can sleep when neither
+feature nor a recording needs it. A weather acquisition attempt stops after 150 seconds without
+a fix. Opening Weather again can retry; automatic requests wait for their normal cadence. GPS
+acquisition does not start a phone fetch or show the UPDATING cue.
+
 ## Sensors: the device as BLE central
 
 For the phone, the device is a BLE peripheral.

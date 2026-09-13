@@ -1,15 +1,10 @@
 [
   {
     "key": "gornergrat",
-    "id": 1,
-    "name": "Gornergrat",
     "observer_lat": 45983400,
     "observer_lon": 7785400,
     "observer_elevation_m": 3095,
     "default_heading_q4": 940,
-    "angle_bottom_q4": -44,
-    "angle_top_q4": 113,
-    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Rimpfischhorn",
@@ -137,19 +132,17 @@
         "azimuth_q4": 1062,
         "score": 103800
       }
-    ]
+    ],
+    "fov_q4": 305,
+    "vertical_centre_q4": 34,
+    "vertical_span_q4": 225
   },
   {
     "key": "scheidegg",
-    "id": 2,
-    "name": "Kleine Scheidegg",
     "observer_lat": 46585000,
     "observer_lon": 7961000,
     "observer_elevation_m": 2056,
     "default_heading_q4": 565,
-    "angle_bottom_q4": -20,
-    "angle_top_q4": 172,
-    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Indri Sägissa",
@@ -242,19 +235,17 @@
         "azimuth_q4": 1331,
         "score": 9239
       }
-    ]
+    ],
+    "fov_q4": 373,
+    "vertical_centre_q4": 76,
+    "vertical_span_q4": 276
   },
   {
     "key": "glockner",
-    "id": 3,
-    "name": "Kaiser-Franz-Josefs-Höhe",
     "observer_lat": 47074500,
     "observer_lon": 12753000,
     "observer_elevation_m": 2402,
     "default_heading_q4": 1000,
-    "angle_bottom_q4": -24,
-    "angle_top_q4": 152,
-    "vertical_scale_q8": 320,
     "peaks": [
       {
         "name": "Freiwandkopf",
@@ -340,6 +331,9 @@
         "azimuth_q4": 1250,
         "score": 6735
       }
-    ]
+    ],
+    "fov_q4": 342,
+    "vertical_centre_q4": 64,
+    "vertical_span_q4": 253
   }
 ]

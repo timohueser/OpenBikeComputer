@@ -26,7 +26,6 @@ pub struct SurfaceLevel {
     pub columns: u32,
     pub posting_log2: u8,
     pub cell_log2: u8,
-    pub max_distance_m: f32,
 }
 
 pub trait SurfaceTerrain {
@@ -85,12 +84,15 @@ impl PreparedPatch {
 /// Owns a progressively filled panorama and a bounded working set. Completed bearings need no reads.
 pub struct Builder {
     pub panorama: Panorama,
-    pub peaks: heapless::Vec<PeakViewPeak, 32>,
+    pub peaks: super::Candidates,
     profile: PeakViewProfile<'static>,
     stack: heapless::Vec<Node, STACK_CAPACITY>,
     sector: usize,
     priority_heading_q4: u16,
     reuse_halo: bool,
+    labels_only: bool,
+    retained: u64,
+    finished: u64,
     ray_mask: u32,
     bearings: [u16; RAYS],
     level: usize,
@@ -109,18 +111,15 @@ pub struct Builder {
     depth: [[u16; ROWS]; DRAW_RAYS],
     tones: [[u8; ROWS]; DRAW_RAYS],
     thresholds: [f32; ROWS],
-    catalogue_masks: [u32; RAYS],
-    catalogue_bearings: [u16; 32],
-    peak_slopes: [f32; 32],
+    catalogue_masks: [u64; RAYS],
+    catalogue_bearings: [u16; 64],
+    peak_slopes: [f32; 64],
     lat_scale: f32,
     lon_scale: f32,
     light_north: f32,
     light_east: f32,
     radians_per_row: f32,
     gradient_error_limit: f32,
-    pub samples: u32,
-    pub missing: u32,
-    pub nodes: u32,
 }
 
 impl Builder {
@@ -166,8 +165,31 @@ impl Builder {
         result.begin_sector();
     }
 
-    pub fn relocate(&mut self, lat: i32, lon: i32, elevation_m: i16) {
-        assert_eq!(self.nodes, 0, "relocate before stepping the job");
+    /// Replace hidden candidates and trace only their sight lines over the finished picture.
+    pub fn refill(&mut self, candidates: &super::Candidates) {
+        assert!(self.complete());
+        self.peaks.clone_from(candidates);
+        self.labels_only = true;
+        self.retained = 0;
+        self.peak_slopes.fill(f32::NEG_INFINITY);
+        for (i, peak) in self.peaks.iter().enumerate() {
+            self.catalogue_bearings[i] = peak.azimuth_q4;
+            if peak.visible {
+                self.retained |= 1 << i;
+            }
+        }
+        if self.peaks.iter().all(|peak| peak.visible) {
+            return;
+        }
+        self.finished = 0;
+        self.reuse_halo = false;
+        self.sector = self.next_sector();
+        self.begin_sector();
+    }
+
+    #[cfg(test)]
+    fn relocate(&mut self, lat: i32, lon: i32, elevation_m: i16) {
+        assert_eq!(self.level, 0, "relocate before stepping the job");
         for (i, peak) in self.peaks.iter_mut().enumerate() {
             peak.project(lat, lon);
             self.catalogue_bearings[i] = peak.azimuth_q4;
@@ -192,7 +214,7 @@ impl Builder {
     }
 
     pub fn complete(&self) -> bool {
-        self.panorama.finished == u64::MAX
+        self.finished == u64::MAX
     }
     pub fn progress(&self) -> u8 {
         (self.panorama.finished.count_ones() * 100 / SECTORS as u32) as u8
@@ -217,7 +239,7 @@ impl Builder {
             .flat_map(|offset| (high + 1 + offset..high + 4 + offset).chain(low - offset - 3..low - offset));
         view_sectors(self.priority_heading_q4, fov)
             .chain(buffer.map(|sector| sector.rem_euclid(SECTORS as i32) as usize))
-            .find(|sector| self.panorama.finished & (1 << sector) == 0)
+            .find(|sector| self.finished & (1 << sector) == 0)
             .expect("an unfinished sector")
             * SECTOR
     }
@@ -231,11 +253,14 @@ impl Builder {
             if let Some(node) = self.stack.pop() {
                 self.visit(terrain, node);
             } else if !self.begin_level(terrain) {
-                self.finish_sector();
-                self.panorama.finished |= 1 << (self.sector / SECTOR);
+                if !self.labels_only {
+                    self.finish_sector();
+                    self.panorama.finished |= 1 << (self.sector / SECTOR);
+                }
+                self.finished |= 1 << (self.sector / SECTOR);
                 if !self.complete() {
                     let next = self.next_sector();
-                    self.reuse_halo = next == (self.sector + SECTOR) % COLUMNS;
+                    self.reuse_halo = !self.labels_only && next == (self.sector + SECTOR) % COLUMNS;
                     self.sector = next;
                     self.begin_sector();
                 }
@@ -259,9 +284,11 @@ impl Builder {
             self.tones[2..].fill([0; ROWS]);
         }
         self.cutoff.fill(ROWS);
-        self.ray_mask = (1 << DRAW_RAYS) - 1;
+        self.ray_mask = if self.labels_only { 0 } else { (1 << DRAW_RAYS) - 1 };
         for ray in 0..RAYS {
-            let (bearing_q8, catalogue) = if ray < DRAW_RAYS {
+            let (bearing_q8, catalogue) = if self.labels_only {
+                (((self.sector * 3 / 2 + ray + 1440 - 3) % 1440) as i32 * 2, true)
+            } else if ray < DRAW_RAYS && !self.labels_only {
                 let column = (self.sector + COLUMNS + ray - 1) % COLUMNS;
                 (column as i32 * 3, column.is_multiple_of(2))
             } else {
@@ -278,12 +305,12 @@ impl Builder {
             if catalogue {
                 for (i, target) in self.catalogue_bearings[..self.peaks.len()].iter().enumerate() {
                     let delta = (bearing - *target as i32 + 720).rem_euclid(1440) - 720;
-                    if delta.abs() <= 2 {
+                    if delta.abs() <= 2 && self.retained & (1 << i) == 0 {
                         self.catalogue_masks[ray] |= 1 << i;
                     }
                 }
             }
-            if ray >= DRAW_RAYS && self.catalogue_masks[ray] != 0 {
+            if (self.labels_only || ray >= DRAW_RAYS) && self.catalogue_masks[ray] != 0 {
                 self.ray_mask |= 1 << ray;
             }
             if self.reuse_halo && ray < 2 {
@@ -293,8 +320,16 @@ impl Builder {
     }
 
     fn begin_level(&mut self, terrain: &impl SurfaceTerrain) -> bool {
+        if self.next_distance >= 100_000.0 {
+            return false;
+        }
         let Some(g) = terrain.level(self.level) else {
             return false;
+        };
+        let max_distance = if terrain.level(self.level + 1).is_none() {
+            100_000.0
+        } else {
+            (25_000.0 * (1u32 << g.posting_log2) as f32 / 512.0).min(100_000.0)
         };
         self.geometry = g;
         let posting = (1u32 << g.posting_log2) as f32;
@@ -311,17 +346,20 @@ impl Builder {
         }
         let log2 = g.rows.max(g.columns).next_power_of_two().trailing_zeros() as u8;
         let mut node = Node { y: 0, x: 0, log2, mask: self.ray_mask };
-        self.intervals = Intervals { near: [self.next_distance; RAYS], far: [g.max_distance_m; RAYS] };
+        self.intervals = Intervals { near: [self.next_distance; RAYS], far: [max_distance; RAYS] };
         // Clip the initial rays to geographic coverage, including observers outside this file.
         for ray in 0..RAYS {
             if node.mask & (1 << ray) == 0 {
                 continue;
             }
             // Label-only rays need the foreground and target, but nothing behind the last target.
-            let mut limit = g.max_distance_m;
-            if ray >= DRAW_RAYS {
+            let mut limit = max_distance;
+            if self.labels_only || ray >= DRAW_RAYS {
                 let mut distance = 0u32;
-                for i in active_rays(self.catalogue_masks[ray]) {
+                let mut mask = self.catalogue_masks[ray];
+                while mask != 0 {
+                    let i = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
                     distance = distance.max(self.peaks[i].distance_m);
                 }
                 limit = limit.min(distance as f32);
@@ -331,19 +369,21 @@ impl Builder {
                 }
                 self.intervals.far[ray] = limit;
             }
-            clip_axis(
+            clip_inverse(
                 &mut self.intervals.near[ray],
                 &mut self.intervals.far[ray],
                 self.origin_y,
                 self.dy[ray],
+                self.inv_dy[ray],
                 0.0,
                 g.rows as f32,
             );
-            clip_axis(
+            clip_inverse(
                 &mut self.intervals.near[ray],
                 &mut self.intervals.far[ray],
                 self.origin_x,
                 self.dx[ray],
+                self.inv_dx[ray],
                 0.0,
                 g.columns as f32,
             );
@@ -354,7 +394,7 @@ impl Builder {
                 node.mask &= !(1 << ray);
             }
         }
-        self.next_distance = g.max_distance_m;
+        self.next_distance = max_distance;
         self.level += 1;
         assert!(self.stack.push(node).is_ok(), "bounded geographic hierarchy");
         true
@@ -365,7 +405,6 @@ impl Builder {
         if node.mask == 0 {
             return;
         }
-        self.nodes += 1;
         let g = self.geometry;
         if (node.y << node.log2) >= g.rows || (node.x << node.log2) >= g.columns {
             return;
@@ -517,7 +556,6 @@ impl Builder {
         prepared.surface.north /= size;
         prepared.surface.cross /= size * size;
         for ray in active_rays(mask) {
-            self.samples += 1;
             self.paint(ray, (y as i32, x as i32), size, prepared, intervals.near[ray], intervals.far[ray]);
         }
         node.mask &= !mask;
@@ -571,7 +609,6 @@ impl Builder {
                 };
                 let end = far.min(ty.min(tx));
                 if end > near && y >= 0 && x >= 0 && (y as u32) < g.rows && (x as u32) < g.columns {
-                    self.samples += 1;
                     let index = ((y - low_y) * size + x - low_x) as usize;
                     if loaded & (1 << index) == 0 {
                         patches[index] = terrain
@@ -627,7 +664,7 @@ impl Builder {
         while top > 0 && peak >= self.thresholds[top - 1] {
             top -= 1;
         }
-        if top < bottom && ray < DRAW_RAYS {
+        if top < bottom && ray < DRAW_RAYS && !self.labels_only {
             let surface_at = |threshold: f32| {
                 let offset = if start_slope >= threshold {
                     0.0
@@ -689,18 +726,27 @@ impl Builder {
             let horizon = if bottom < ROWS { self.thresholds[bottom] } else { f32::NEG_INFINITY };
             // Half a pixel keeps sampled summit coordinates stable at raster boundaries.
             let tolerance = 0.5 * self.radians_per_row * (1.0 + slope * slope);
-            self.peaks[i].visible = slope + tolerance >= horizon.max(front_slope);
+            // Native DEM vertices can undershoot a narrow summit. Test its recorded elevation
+            // against foreground terrain, while keeping the label anchored to the sampled surface.
+            let target_slope = self.peaks[i]
+                .elevation_m
+                .map(|height| (f32::from(height) - f32::from(self.profile.observer_elevation_m)) / d - CURVATURE * d)
+                .unwrap_or(slope)
+                .max(slope);
+            self.peaks[i].visible = target_slope + tolerance >= horizon.max(front_slope);
             self.peaks[i].angle_q4 = libm::roundf(libm::atanf(slope).to_degrees() * 4.0) as i16;
             self.peaks[i].azimuth_q4 = self.bearings[ray];
         }
     }
 
     fn record_missing(&mut self, ray: usize) {
-        self.missing += 1;
-        let column = if ray < DRAW_RAYS {
+        if self.labels_only {
+            return;
+        }
+        let column = if ray < DRAW_RAYS && !self.labels_only {
             (self.sector + COLUMNS + ray - 1) % COLUMNS
         } else {
-            (usize::from(self.bearings[ray]) * COLUMNS + 720) / 1440
+            super::panorama::column_of(self.bearings[ray])
         };
         self.panorama.mark_incomplete(column);
     }
@@ -772,19 +818,6 @@ fn intersection(a: f32, b: f32, c: f32, end: f32) -> f32 {
     result
 }
 
-fn clip_axis(near: &mut f32, far: &mut f32, origin: f32, direction: f32, low: f32, high: f32) {
-    if direction.abs() < 1e-12 {
-        if origin < low || origin >= high {
-            *far = *near;
-        }
-    } else {
-        let a = (low - origin) / direction;
-        let b = (high - origin) / direction;
-        *near = near.max(a.min(b));
-        *far = far.min(a.max(b));
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn clip_inverse(near: &mut f32, far: &mut f32, origin: f32, direction: f32, inverse: f32, low: f32, high: f32) {
     if direction.abs() < 1e-12 {
@@ -814,15 +847,13 @@ mod tests {
     use super::*;
 
     static PROFILE: PeakViewProfile<'static> = PeakViewProfile {
-        id: 0,
-        name: "test",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 0,
-        angle_bottom_q4: -20,
-        angle_top_q4: 120,
-        vertical_scale_q8: 320,
+        fov_q4: 272,
+        vertical_centre_q4: 50,
+        vertical_span_q4: 201,
         peaks: &[],
     };
 
@@ -840,7 +871,6 @@ mod tests {
                 columns: 128,
                 posting_log2: 9,
                 cell_log2: 16,
-                max_distance_m: 2000.0,
             })
         }
         fn patch(&mut self, _: usize, y: u32, x: u32) -> Option<Patch> {
@@ -874,9 +904,8 @@ mod tests {
         while !job.complete() {
             job.step(&mut terrain, 31);
         }
-        assert_eq!(job.missing, 0);
+        assert!(job.panorama.has_incomplete_coverage(), "the small synthetic terrain does not cover the full range");
         assert!(terrain.patches > 0);
-        assert!(terrain.patches < job.samples as usize, "adjacent rays reuse the same geographic patches");
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(job.panorama.tone(column, row), 1, "flat terrain at {column},{row}");
@@ -891,21 +920,49 @@ mod tests {
         while !outside.complete() {
             outside.step(&mut terrain, 31);
         }
-        assert!(outside.missing > 0, "clipped coverage cannot be reported as clear sky");
-        assert_eq!(outside.samples, 0);
+        assert!(outside.panorama.has_incomplete_coverage(), "clipped coverage cannot be reported as clear sky");
+        assert_eq!(terrain.patches, calls, "coverage outside this file does not read patches");
 
         terrain.missing = true;
         let mut missing = std::boxed::Box::new(Builder::new(&PROFILE));
         while !missing.complete() {
             missing.step(&mut terrain, 31);
         }
-        assert_eq!(missing.missing, missing.samples);
-        assert!(missing.missing > 0);
+        assert!(missing.panorama.has_incomplete_coverage());
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(missing.panorama.tone(column, row), 0);
             }
         }
+    }
+
+    #[test]
+    fn all_64_refill_candidates_are_traced_without_changing_the_picture() {
+        let mut terrain = Flat { height: 100, missing: false, patches: 0 };
+        let mut job = std::boxed::Box::new(Builder::new(&PeakViewProfile::at(0, 0, 102)));
+        while !job.complete() {
+            job.step(&mut terrain, 512);
+        }
+        let picture = job.panorama.clone();
+        let mut candidates = super::super::Candidates::new();
+        for i in 0..64 {
+            let mut peak = PeakViewPeak { lat: 4500, lon: i, ..PeakViewPeak::EMPTY };
+            peak.project(0, 0);
+            candidates.push(peak).unwrap();
+        }
+        job.refill(&candidates);
+        assert!(!job.complete());
+        while !job.complete() {
+            job.step(&mut terrain, 512);
+        }
+        assert!(job.peaks[63].visible, "the high half of the catalogue mask is traced");
+        for column in 0..COLUMNS {
+            for row in 0..ROWS {
+                assert_eq!(job.panorama.tone(column, row), picture.tone(column, row));
+            }
+        }
+        assert_eq!(job.panorama.finished, picture.finished);
+        assert_eq!(job.panorama.has_incomplete_coverage(), picture.has_incomplete_coverage());
     }
 
     #[test]
@@ -924,7 +981,6 @@ mod tests {
                     columns: 128,
                     posting_log2: 9,
                     cell_log2: 16,
-                    max_distance_m: 4000.0,
                 })
             }
             fn patch(&mut self, _: usize, _: u32, x: u32) -> Option<Patch> {
@@ -946,13 +1002,23 @@ mod tests {
         }
         for vertical_scale_q8 in [320, 768] {
             // Include a ridge inside 200 m and a summit hidden by only about 0.27°.
-            for (near_x, near_height, summit_height, visible) in
-                [(2, 40.0, 200, false), (20, 60.0, 160, false), (20, 60.0, 200, true)]
-            {
-                let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: Some(summit_height), ..PeakViewPeak::EMPTY };
+            for (near_x, near_height, summit_height, recorded_height, visible) in [
+                (2, 40.0, 200, Some(200), false),
+                (20, 60.0, 160, Some(160), false),
+                (20, 60.0, 200, Some(200), true),
+                (20, 60.0, 200, Some(160), true),
+                (20, 60.0, 160, Some(200), true),
+                (20, 80.0, 160, Some(200), false),
+                (20, 60.0, 160, None, false),
+            ] {
+                let mut peak = PeakViewPeak { lon: 60 * 512, elevation_m: recorded_height, ..PeakViewPeak::EMPTY };
                 peak.project(0, 0);
                 let peaks = [peak];
-                let profile = PeakViewProfile { vertical_scale_q8, peaks: &peaks, ..PeakViewProfile::at(0, 0, 2) };
+                let profile = PeakViewProfile {
+                    vertical_span_q4: (178 * 320 / vertical_scale_q8),
+                    peaks: &peaks,
+                    ..PeakViewProfile::at(0, 0, 2)
+                };
                 let mut job = std::boxed::Box::new(Builder::new(&profile));
                 let mut terrain = Ridge { near_x, near_height, summit_height };
                 while !job.complete() {
@@ -963,6 +1029,8 @@ mod tests {
                     "summit {summit_height} m, foreground at {near_x}, scale {vertical_scale_q8}"
                 );
                 assert!(job.peaks[0].angle_q4 > 0, "the distant summit was sampled");
+                let surface_angle = libm::atan2f(f32::from(summit_height), peak.distance_m as f32).to_degrees() * 4.0;
+                assert!((f32::from(job.peaks[0].angle_q4) - surface_angle).abs() <= 1.0, "anchor stays on the DEM");
             }
         }
     }
@@ -1010,7 +1078,10 @@ mod tests {
         while !moving.view_ready(720) {
             moving.step(&mut Hills, 1);
         }
-        assert!(moving.progress() < 55, "a quick turn gets priority over unrelated bearings");
+        assert!(
+            !moving.view_ready(360) && !moving.view_ready(1080),
+            "a quick turn gets priority over unrelated bearings"
+        );
         assert!(moving.view_ready(1430));
         while !moving.complete() {
             moving.step(&mut Hills, 127);
@@ -1052,13 +1123,14 @@ mod tests {
             while !job.complete() {
                 job.step(&mut terrain, 31);
             }
-            assert_eq!(job.missing, 0);
+            assert!(
+                job.panorama.has_incomplete_coverage(),
+                "the small synthetic terrain does not cover the full range"
+            );
             job
         };
         let above = render(1000);
         let below = render(-100);
-        assert_eq!(above.samples, below.samples);
-        assert_eq!(above.nodes, below.nodes);
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(above.panorama.tone(column, row), below.panorama.tone(column, row));

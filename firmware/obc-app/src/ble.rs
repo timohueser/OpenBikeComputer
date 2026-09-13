@@ -97,6 +97,45 @@ pub struct WeatherRequestInputs {
     pub now_utc: Option<u32>,
 }
 
+impl WeatherRequestInputs {
+    /// Recheck a cross-task snapshot after the app has slept. A scheduler timer must not reuse
+    /// a position merely because it was fresh when the app last published it.
+    pub fn after_elapsed(mut self, seconds: u64) -> Self {
+        self.now_utc = self.now_utc.map(|now| u64::from(now).saturating_add(seconds).min(u32::MAX as u64) as u32);
+        let fresh = self.position.zip(self.now_utc).is_some_and(|(fix, now)| {
+            (i64::from(now) - fix.fix_utc).unsigned_abs() <= u64::from(crate::app::POSITION_FIX_FRESH_MS / 1000)
+        });
+        if !fresh {
+            self.position = None;
+            self.bearing_deg = None;
+            self.speed_deci_ms = None;
+        }
+        self
+    }
+}
+
+#[cfg(test)]
+mod weather_position_tests {
+    use super::*;
+
+    #[test]
+    fn an_idle_snapshot_expires_before_a_later_weather_wakeup() {
+        let inputs = WeatherRequestInputs {
+            position: Some(WeatherFix { lat_udeg: 46_585_000, lon_udeg: 7_961_000, fix_utc: 100 }),
+            now_utc: Some(110),
+            bearing_deg: Some(45),
+            speed_deci_ms: Some(10),
+            ..Default::default()
+        };
+        assert!(inputs.after_elapsed(20).position.is_some());
+        let expired = inputs.after_elapsed(21);
+        assert_eq!(expired.position, None);
+        assert_eq!(expired.bearing_deg, None);
+        assert_eq!(expired.speed_deci_ms, None);
+        assert_eq!(expired.now_utc, Some(131));
+    }
+}
+
 // ==================== the Bond domain protocol (#1436) ====================
 //
 // Forgetting a phone is one bounded platform operation, but its user-visible lifecycle is

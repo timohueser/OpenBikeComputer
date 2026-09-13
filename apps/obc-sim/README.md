@@ -78,17 +78,18 @@ Peak View appears in the normal menu when the loaded map contains indexed terrai
 simulator's current GPS position and the selected map's summit records. The background job reads
 the same immutable map bytes as the map screen. Without a GPS fix it waits; it does not use the
 camera centre as an observer. Normal framing widens when a nearby summit requires more vertical
-headroom. Low-relief observers receive up to 3× vertical exaggeration, fixed while turning;
-steep views keep 1.25×. The summit candidates reserve a slot for each bearing sector's tallest
+headroom. The normal view is at least 90° wide. Low-relief observers receive up to a 2.4× boost over the base 1.25× vertical scale, fixed while turning;
+steep views keep the base scale. The summit candidates reserve a slot for each bearing sector's tallest
 landmark. Explicit fixture frames retain their configured bounds. In a headless test,
 `--center LON,LAT --heading DEG` supplies an explicit simulated fix. Use the menu and `f` to complete generation before saving the frame.
 
 - `--peak-view gornergrat|scheidegg|glockner` selects an explicit geographic test fixture and
   opens Peak View in the GUI. This overrides the selected map's terrain for that test. It generates a
-  panorama from geographic terrain, with the current direction first. The compass spinner stops
-  when that view is ready; three static dots indicate background work on the remaining directions.
+  panorama from geographic terrain, with the current direction first. The compass and partial terrain appear
+  at once; three static dots indicate background work on the remaining directions.
+  Progress redraws occur at most twice per second.
   Background work extends both edges in about 17-degree batches. Turning prioritizes the new
-  direction. After the first view appears, completed terrain stays visible and follows the
+  direction. Completed terrain stays visible and follows the
   heading; a light hatch marks pending parts until they fill in. Back cancels. Drag **Compass (heading when
   stopped)** in Controls to turn. Changing the GPS position by more than 20 m rebuilds the view;
   smaller changes keep the current panorama to limit GPS jitter. The fixture has a limited area
@@ -98,7 +99,8 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   bounds. The renderer skips hidden blocks and shades visible terrain slopes under fixed
   illustration lighting. It does not store viewpoints or show snow and current sunlight.
   Named summits are aligned and checked for visibility during generation.
-  Browse freezes the heading; Select returns to Live.
+  Live has no selection. Select enters Browse on the most prominent visible peak. Up/Down steps
+  through visible peaks and turns the view by 15° past an edge. Select returns to Live.
 
   Fetch the checksummed terrain package once:
 
@@ -119,7 +121,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
     --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
   ```
 
-  The log separates generation time and storage reads from the final cached frame's drawing time.
+  The log separates generation time from the final cached frame's drawing time.
   These are host measurements. See the [board README](../../firmware/obc-fw-nrf54l/README.md)
   for device setup and timing checks.
 

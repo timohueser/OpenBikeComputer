@@ -24,7 +24,7 @@
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use defmt::{info, warn};
+use defmt::info;
 use embassy_futures::select::select;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -59,8 +59,8 @@ const EMPTY_INPUTS: WeatherRequestInputs = WeatherRequestInputs {
     route_id: None,
     now_utc: None,
 };
-static INPUTS: BlockingMutex<CriticalSectionRawMutex, Cell<WeatherRequestInputs>> =
-    BlockingMutex::new(Cell::new(EMPTY_INPUTS));
+static INPUTS: BlockingMutex<CriticalSectionRawMutex, Cell<(u64, WeatherRequestInputs)>> =
+    BlockingMutex::new(Cell::new((0, EMPTY_INPUTS)));
 
 /// The scheduler task's wake edge — rung by every event below. Level + latest-state: a burst of
 /// edges wakes the task once and it re-reads the current levels, so nothing here queues.
@@ -70,6 +70,12 @@ static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static URGENT: AtomicBool = AtomicBool::new(false);
 /// UI-facing level for a bounded phone attempt.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static NEEDS_POSITION: AtomicBool = AtomicBool::new(false);
+
+/// The receiver must acquire a current fix before the due request is raised.
+pub fn needs_position() -> bool {
+    NEEDS_POSITION.load(Ordering::Relaxed)
+}
 
 /// The live request id, mirrored out of the task so the synchronous command handler can reject a
 /// crossed `weatherUnchanged` acknowledgement before answering `ok`.
@@ -84,13 +90,13 @@ static UNCHANGED: BlockingMutex<CriticalSectionRawMutex, Cell<Option<(u32, u16)>
 /// active route and position availability), never at the 1 Hz fix cadence.
 pub fn set_weather_inputs(s: WeatherRequestInputs) {
     let material_change = INPUTS.lock(|c| {
-        let prev = c.get();
-        c.set(s);
+        let (_, prev) = c.get();
+        c.set((Instant::now().as_secs(), s));
         prev.ride_active != s.ride_active
             || prev.route_id != s.route_id
             || prev.position.is_some() != s.position.is_some()
     });
-    if material_change {
+    if material_change || (needs_position() && s.position.is_some()) {
         WAKE.signal(());
     }
 }
@@ -153,7 +159,6 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
     let mut bundle = flat.and_then(|store| crate::flat_store::active_weather(store).ok().flatten());
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;
-    let mut had_position = false;
     // The refresh byte the attribute currently serves — `None` until this task's first write, so
     // the first pass re-asserts the resting value even though `run` seeded one at boot (#1221 F2:
     // a Config write between seed and first pass must never leave a stale byte served).
@@ -193,11 +198,8 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         if URGENT.swap(false, Ordering::Relaxed) {
             sched.open_weather();
         }
-        let inputs = INPUTS.lock(|c| c.get());
-        if inputs.position.is_some() && !had_position {
-            sched.position_available(now_s);
-        }
-        had_position = inputs.position.is_some();
+        let (sampled_s, inputs) = INPUTS.lock(|c| c.get());
+        let inputs = inputs.after_elapsed(now_s.saturating_sub(sampled_s));
         // The persisted setting is obc-app's typed enum whose discriminant IS the §11.8 wire
         // byte (pinned), so the fallback is unreachable.
         let refresh_raw = store.borrow().settings().weather_refresh as u8;
@@ -244,7 +246,12 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
             hourly_only: policy.is_some_and(|facts| facts.frame_count == 0),
         };
 
-        if let Some(raise) = sched.poll(now_s, refresh, inputs.ride_active, store_ready, facts) {
+        let raise = sched.poll(now_s, refresh, inputs.ride_active, store_ready, inputs.position.is_some(), facts);
+        let needs_position = sched.needs_position();
+        if NEEDS_POSITION.swap(needs_position, Ordering::Relaxed) != needs_position {
+            state::wake_status();
+        }
+        if let Some(raise) = raise {
             PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
             let context_facts = RequestContextFacts {
                 fix: inputs.position.map(|fix| RequestContextFix {
@@ -272,9 +279,6 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
                 "ble: [weather] request {=u32} raised (reason {=u16:#06x}, validity {=u16:#06x})",
                 raise.request_id, raise.reason, ctx.validity
             );
-            if ctx.validity & VALID_POSITION == 0 {
-                warn!("ble: [weather] request has no fresh GPS fix — companion cannot build a bundle");
-            }
             continue; // re-derive the next wake against the fresh pending state
         }
 

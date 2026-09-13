@@ -25,7 +25,7 @@ use obc_ports::{InputClock, RideClock, Sensors, SettingsStore};
 // The instance-owned sensor hub's control handle + GPS power enum (#808): the ride loop sets the
 // rate/power latches the `sensors::sensor_task` awaits. Real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-use obc_platform::sensor_hub::GpsPower;
+use obc_platform::sensor_hub::SensorDemand;
 // The hub consumer handle threaded from `main` (the ZST `*Source` drains + presence + the event
 // wake) — present on every build that uses the hub (real-sensor GPS, or debug-uart HR/power/cadence
 // injection); absent only on the pure `synth` build.
@@ -730,21 +730,17 @@ impl RideExec {
     }
 }
 
-/// The GPS power state the ride wants: stopped GNSS when not tracking, full-power fixes while riding, or
-/// the M10's low-power tracking when the `power_saver` toggle is on. Recomputed each frame in
+/// GPS serves recordings and one-fix position requests from Peak View or Weather. Recomputed each frame in
 /// [`run_app`] and pushed to the sensor task (via [`SensorControl::set_power`]) only on a change.
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-fn desired_gps_power(app: &App) -> GpsPower {
-    if app.recording() {
-        if app.settings().power_saver {
-            GpsPower::LowPower
-        } else {
-            GpsPower::Active
-        }
-    } else {
-        GpsPower::Sleep
-    }
+fn desired_sensor_power(app: &App) -> SensorDemand {
+    SensorDemand::for_demand(
+        app.recording(),
+        app.settings().power_saver,
+        app.peak_view_needs_position() || crate::ble::weather_needs_position(),
+        app.peak_view_is_base(),
+    )
 }
 
 /// Drive the panel at `level`, remembering it in `last` so the PWM is written only on a change.
@@ -1011,10 +1007,9 @@ pub(crate) async fn run_app(
     control.set_rate(prev_interval);
 
     // Drive the GPS power state: the sensor task acquires one boot fix regardless, then honours this —
-    // Sleep while idle, Active/LowPower once a ride starts. Pushed once at boot, then again whenever
-    // tracking or the `power_saver` toggle changes.
+    // Seed receiver and compass demand, then publish only changed levels after each pass.
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-    let mut prev_power = desired_gps_power(app);
+    let mut prev_power = desired_sensor_power(app);
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
     control.set_power(prev_power);
 
@@ -1214,6 +1209,7 @@ pub(crate) async fn run_app(
             }
 
             peak_view.reconcile(app);
+
             let wants_stage = crate::usb::stage_requested();
             if wants_stage && usb_stage_guard.is_none() {
                 if let Some(ready) = app.usb_stage_precondition() {
@@ -2220,18 +2216,6 @@ pub(crate) async fn run_app(
                 defmt::error!("exec: an effect this board cannot serve was decided");
             }
 
-            // Reconcile the GPS power state to the ride: Sleep when not tracking, Active (or LowPower with
-            // `power_saver`) while riding. Recomputed every frame off the tracking + settings state, pushed
-            // to the sensor task only on a change.
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-            {
-                let power = desired_gps_power(app);
-                if power != prev_power {
-                    prev_power = power;
-                    control.set_power(power);
-                }
-            }
-
             // A pending debug `Z` camera-scale command (render benchmark): pin the map to an exact
             // meters-per-pixel and force one redraw, so a host zoom sweep gets exactly one fresh,
             // stage-timed frame per setting instead of stepping the selection's 1.2× steps.
@@ -2548,12 +2532,19 @@ pub(crate) async fn run_app(
             // three fields the tail needs are copied out here and the plan is dropped inside the
             // store phase. Only the staged `EffectSlots` and the small executor state survive to the
             // present and sleep phases.
-            let obc_app::device_core::PassPlan { mut render, next_wake_ms, derived_needs, sources, effects, immediate } =
+            let obc_app::device_core::PassPlan { render, next_wake_ms, derived_needs, sources, effects, immediate } =
                 plan;
             peak_view.reconcile(app);
-            if peak_view.refresh_view(app) {
-                render.map = true;
-                render.region = None;
+
+            // Reconcile after input and fix delivery so opening, fulfillment, and leaving take
+            // effect before this pass sleeps.
+            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+            {
+                let power = desired_sensor_power(app);
+                if power != prev_power {
+                    prev_power = power;
+                    control.set_power(power);
+                }
             }
             exec.needs = derived_needs;
             debug_assert!(
