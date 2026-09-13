@@ -335,9 +335,11 @@ Bulk data stays in caller-owned buffers.
 [`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) performs the effects for every frame-stepped host.
 The board performs the same effects with its own asynchronous execution.
 
-Two requests still use the older mailbox: close the ride log and forget the paired phone.
-No domain can yet validate their completion.
-[`device_core/residual.rs`](src:firmware/obc-app/src/device_core/residual.rs) lists the two and the issue that removes each one.
+All platform requests use typed effects and results.
+The ride recorder validates its close result.
+The [phone-key removal state](src:firmware/obc-app/src/ble.rs) validates one result for each admitted request.
+A link disconnect does not prove that stored keys were removed.
+The board reports durable-key and host-key removal separately from unconfirmed controller cleanup.
 
 ## On-device routing: the router seam
 
