@@ -236,7 +236,11 @@ fn projected_decision_sees_the_storm_the_parked_one_misses() {
     // Parked at the start: every sample at the current position, honestly dry for two hours.
     let parked = WeatherSnapshot::sample(&reader, &mut cache, Some((start.lat, start.lon))).unwrap();
     assert!(!parked.projected);
-    assert_eq!(rain_outlook(&parked, T0), RainOutlook::Dry, "the storm never crosses the parking spot");
+    assert_eq!(
+        rain_outlook(&parked, T0),
+        RainOutlook::Dry { minutes: 120 },
+        "the storm never crosses the parking spot"
+    );
 
     // Riding: frame 3's sample lands under the storm cell — STORM IN 45.
     let proj = RideProjection { progress_m: 0, speed_cms: 500, now: T0 };
@@ -267,7 +271,7 @@ fn frames_projected_past_the_route_end_carry_no_dry_claim() {
 
     // Parked on the same all-dry sky: an honest DRY FOR 2 HOURS.
     let parked = WeatherSnapshot::sample(&reader, &mut cache, Some((start.lat, start.lon))).unwrap();
-    assert_eq!(rain_outlook(&parked, T0), RainOutlook::Dry);
+    assert_eq!(rain_outlook(&parked, T0), RainOutlook::Dry { minutes: 120 });
 
     let riding =
         WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
@@ -275,7 +279,7 @@ fn frames_projected_past_the_route_end_carry_no_dry_claim() {
     assert!(riding.frames[5].past_route_end, "…but it is by +75 min");
     assert_eq!(
         rain_outlook(&riding, T0),
-        RainOutlook::UpdateNeeded,
+        RainOutlook::Dry { minutes: 75 },
         "a projection standing on the finish line can't promise the next two hours"
     );
 
@@ -317,7 +321,11 @@ fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
     let mut cache = WeatherCache::new();
     let riding =
         WeatherSnapshot::sample_along(&reader, &mut cache, Some((start.lat, start.lon)), Some((&route, proj))).unwrap();
-    assert_eq!(rain_outlook(&riding, T0), RainOutlook::Dry, "the widened corridor still lets a clean sky be dry");
+    assert_eq!(
+        rain_outlook(&riding, T0),
+        RainOutlook::Dry { minutes: 120 },
+        "the widened corridor still lets a clean sky be dry"
+    );
 
     // A cell on frame 3's axis, 3 steps out: inside its claim corridor (half-width 4 at +45 min on
     // this geometric grid), and more than one step from *every* frame's projected cell, so no
@@ -340,7 +348,7 @@ fn the_claim_corridor_widens_with_the_horizon_while_warnings_do_not() {
     assert!(riding.frames[3].spread_uncertain, "…but the pace-spread corridor does");
     assert_eq!(
         rain_outlook(&riding, T0),
-        RainOutlook::UpdateNeeded,
+        RainOutlook::Dry { minutes: 45 },
         "one cell would have said DRY; the rider's plausible position spread refuses it"
     );
 }
@@ -377,7 +385,7 @@ fn physical_corridor_ignores_declared_resolution_and_fails_closed() {
             Some((&route, projection)),
         )
         .unwrap();
-        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry);
+        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry { minutes: 120 });
 
         // Six north/south steps exceed the physical corridor. Do not apply the longer
         // east/west count to both axes and refuse a claim on unrelated distant rain.
@@ -397,7 +405,7 @@ fn physical_corridor_ignores_declared_resolution_and_fails_closed() {
             Some((&route, projection)),
         )
         .unwrap();
-        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry);
+        assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry { minutes: 120 });
 
         for band in [RAIN_MIN_INTENSITY, obc_formats::obcw::INTENSITY_NODATA] {
             for col in [home.1 - 6, home.1 + 6] {
@@ -429,7 +437,7 @@ fn physical_corridor_ignores_declared_resolution_and_fails_closed() {
                         sample.frames[8].spread_uncertain,
                         "declared={declared}, band={band}, col={col}, failure={fail_at:?}"
                     );
-                    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::UpdateNeeded);
+                    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry { minutes: 119 });
                 }
             }
         }
@@ -450,7 +458,7 @@ fn physical_corridor_ignores_declared_resolution_and_fails_closed() {
     assert!(!sample.frames[0].spread_uncertain);
     assert_eq!(sample.frames[8].intensity, 0);
     assert!(sample.frames[8].spread_uncertain);
-    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::UpdateNeeded);
+    assert_eq!(rain_outlook(&sample, T0 + 1), RainOutlook::Dry { minutes: 59 });
 }
 
 /// The deliberately expensive case is a completely covered, dry nine-frame forecast: every
@@ -477,7 +485,7 @@ fn clean_projected_snapshot_io_budget_is_pinned() {
     )
     .unwrap();
 
-    assert_eq!(rain_outlook(&snapshot, T0), RainOutlook::Dry);
+    assert_eq!(rain_outlook(&snapshot, T0), RainOutlook::Dry { minutes: 120 });
     assert_eq!(source.calls.get(), 56, "the geometric claim corridors must keep the bounded tile-read budget");
 }
 
@@ -589,7 +597,7 @@ fn the_decision_path_is_identical_in_every_sampling_mode() {
     );
     assert_eq!(
         rain_outlook(&baseline, T0),
-        RainOutlook::Dry,
+        RainOutlook::Dry { minutes: 120 },
         "surrounded by band 12 on three sides, the selected cell is dry and the claim must say so"
     );
     let baseline_alerts = obc_app::weather_alerts::evaluate(&baseline, T0);
@@ -609,7 +617,11 @@ fn the_decision_path_is_identical_in_every_sampling_mode() {
         }
         let after = WeatherSnapshot::sample(&reader, &mut cache, Some((lat, lon))).unwrap();
         assert_eq!(after.frames, baseline.frames, "{mode:?}: rendering changed the sampled frames");
-        assert_eq!(rain_outlook(&after, T0), RainOutlook::Dry, "{mode:?}: rendering changed the outlook");
+        assert_eq!(
+            rain_outlook(&after, T0),
+            RainOutlook::Dry { minutes: 120 },
+            "{mode:?}: rendering changed the outlook"
+        );
         assert_eq!(
             obc_app::weather_alerts::evaluate(&after, T0),
             baseline_alerts,
@@ -691,7 +703,7 @@ fn draw_rain_frame(
 /// **Verified by mutation.** Replacing `corridor_is_dry`'s probe with a faithful two-cell
 /// interpolation — mean when both cells are real, falling back to the selected cell at a no-data
 /// or off-grid neighbour, i.e. the renderer's own rule applied to a query — flips every frame from
-/// `spread_uncertain` to clean and turns the headline into `RainOutlook::Dry`. It is also the
+/// `spread_uncertain` to clean and turns the headline into `RainOutlook::Dry { minutes: 120 }`. It is also the
 /// *only* thing in the `obc-app` suite that mutation trips: everything else passes under it.
 #[test]
 fn an_interpolated_corridor_probe_would_fabricate_a_dry_claim() {
@@ -747,7 +759,7 @@ fn an_interpolated_corridor_probe_would_fabricate_a_dry_claim() {
     // The headline: not dry, and not a warning either — an honest "I can't promise two dry hours".
     assert_eq!(
         rain_outlook(&riding, T0),
-        RainOutlook::UpdateNeeded,
+        RainOutlook::Dry { minutes: 15 },
         "an interpolated corridor probe would floor band 1 to dry and fabricate DRY FOR 2 HOURS here"
     );
 }

@@ -60,15 +60,15 @@ fn with_frames(spacing_intensity: &[(i64, u8)], cap: i64) -> WeatherSnapshot {
 }
 
 #[test]
-fn all_frames_expired_but_bundle_valid_is_update_needed() {
+fn expired_rain_keeps_valid_hourly_forecast() {
     let s = with_frames(&[(0, 0), (900, 0), (1800, 0)], 900);
     // now far past the last frame's cap but well inside valid_until
     let now = T0 + 10_000;
     assert!(now < s.valid_until);
-    assert_eq!(rain_outlook(&s, now), RainOutlook::UpdateNeeded);
+    assert_eq!(rain_outlook(&s, now), RainOutlook::HourlyOnly);
     // Even if a frame was wet, expired wet frames must not claim rain either.
     let s = with_frames(&[(0, 9), (900, 9), (1800, 9)], 900);
-    assert_eq!(rain_outlook(&s, now), RainOutlook::UpdateNeeded, "expired storm never alerts");
+    assert_eq!(rain_outlook(&s, now), RainOutlook::HourlyOnly, "expired storm never alerts");
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn sixty_second_correction_frame_shrinks_the_cap_and_kills_dry() {
     ];
     let s = with_frames(&intens, 60);
     // With cap 60 the windows are 60s wide: coverage is full of holes -> never Dry.
-    assert_eq!(rain_outlook(&s, T0), RainOutlook::UpdateNeeded);
+    assert_eq!(rain_outlook(&s, T0), RainOutlook::Dry { minutes: 2 });
 }
 
 #[test]
@@ -96,8 +96,8 @@ fn dry_claim_boundary_at_the_last_covered_second() {
     // Nine 900s frames: window_end(last) = T0+8100. Dry only while now+7200 <= 8100.
     let dry: Vec<(i64, u8)> = (0..9).map(|i| (i * 900, 0)).collect();
     let s = with_frames(&dry, 900);
-    assert_eq!(rain_outlook(&s, T0 + 900), RainOutlook::Dry, "exactly 2h coverage left");
-    assert_eq!(rain_outlook(&s, T0 + 901), RainOutlook::UpdateNeeded, "one second short of 2h");
+    assert_eq!(rain_outlook(&s, T0 + 900), RainOutlook::Dry { minutes: 120 }, "exactly 2h coverage left");
+    assert_eq!(rain_outlook(&s, T0 + 901), RainOutlook::Dry { minutes: 119 }, "round down the remaining coverage");
 }
 
 #[test]
@@ -121,7 +121,11 @@ fn gap_exactly_at_the_two_hour_boundary() {
         at += 500;
     }
     s.frame_cap_s = 500;
-    assert_eq!(rain_outlook(&s, T0), RainOutlook::UpdateNeeded, "100s hole at the window tail");
+    assert_eq!(
+        rain_outlook(&s, T0),
+        RainOutlook::Dry { minutes: 116 },
+        "the 7000-second chain ends before the horizon"
+    );
 }
 
 #[test]
@@ -132,7 +136,7 @@ fn wet_exactly_at_the_horizon_counts_and_past_it_does_not() {
     let s = with_frames(&frames, 900);
     assert_eq!(rain_outlook(&s, T0), RainOutlook::RainIn { minutes: 120 }, "horizon-inclusive");
     // Shift now back one second: the wet frame is past the horizon; coverage now ends at 8100 >= horizon.
-    assert!(matches!(rain_outlook(&s, T0 - 1), RainOutlook::UpdateNeeded | RainOutlook::Dry));
+    assert!(matches!(rain_outlook(&s, T0 - 1), RainOutlook::HourlyOnly));
 }
 
 #[test]
@@ -225,4 +229,23 @@ fn snapshot_currency_matches_reader_on_irregular_spacing() {
         let expect = reader.current_frame(now, &mut cache).unwrap().map(|(i, _)| i);
         assert_eq!(snap.current_frame_index(now), expect, "offset {offset}");
     }
+}
+
+#[test]
+fn downloaded_forecast_remains_useful_through_an_offline_day() {
+    let frames: Vec<_> = (0..9).map(|i| (i * 900, 0)).collect();
+    let mut s = with_frames(&frames, 900);
+    s.generated_at = T0 + 16 * 60;
+    for (age_minutes, remaining) in [(16, 119), (40, 95), (120, 15), (134, 1)] {
+        assert_eq!(rain_outlook(&s, T0 + age_minutes * 60), RainOutlook::Dry { minutes: remaining });
+    }
+    assert_eq!(rain_outlook(&s, T0 + 135 * 60), RainOutlook::HourlyOnly);
+    assert!(s.hourly_at(T0 + 12 * 3600).is_some());
+    assert_eq!(rain_outlook(&s, T0 + 12 * 3600), RainOutlook::HourlyOnly);
+    // Reassembling the same forecast does not extend either coverage horizon.
+    s.generated_at = T0 + 12 * 3600;
+    assert_eq!(rain_outlook(&s, T0 + 12 * 3600), RainOutlook::HourlyOnly);
+    assert_eq!(rain_outlook(&s, s.valid_from + 24 * 3600), RainOutlook::UpdateNeeded);
+    s.frames.clear();
+    assert_eq!(rain_outlook(&s, s.valid_until + 1), RainOutlook::UpdateNeeded);
 }

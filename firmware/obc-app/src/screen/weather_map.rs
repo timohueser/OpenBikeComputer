@@ -132,10 +132,12 @@ impl WeatherRainMapScreen {
                 Some(RainOutlook::HourlyOnly) => {
                     draw_banner(cv, w, h, rx.t(Msg::WeatherHourlyOnly), Some(rx.t(Msg::WeatherHourlyOnlySub)));
                 }
-                Some(RainOutlook::Dry) | Some(RainOutlook::RainIn { .. }) | Some(RainOutlook::StormIn { .. }) => {
+                Some(RainOutlook::Dry { .. })
+                | Some(RainOutlook::RainIn { .. })
+                | Some(RainOutlook::StormIn { .. }) => {
                     // The outlook still answers but the overlay has nothing current to draw
                     // (e.g. a coverage seam): still never silently dry.
-                    draw_banner(cv, w, h, rx.t(Msg::WeatherUpdateNeeded), None);
+                    draw_banner(cv, w, h, rx.t(Msg::WeatherHourlyOnly), None);
                 }
                 Some(RainOutlook::UpdateNeeded) => draw_banner(cv, w, h, rx.t(Msg::WeatherUpdateNeeded), None),
                 None => draw_banner(cv, w, h, rx.t(Msg::WeatherNoData), Some(rx.t(Msg::WeatherNoDataSub))),

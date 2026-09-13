@@ -123,6 +123,7 @@ pub(crate) async fn serve_connection(
                 let mut config_written = false;
                 let mut forget_after_ack = false;
                 let mut secured_context_read = false;
+                let mut weather_attempt_id = 0;
                 let reply = match event {
                     GattEvent::Write(e) => {
                         let handle = e.handle();
@@ -157,6 +158,9 @@ pub(crate) async fn serve_connection(
                         // response is handed to the controller below.
                         secured_context_read =
                             e.handle() == server.weather_request.context.handle && state::status().secured;
+                        if secured_context_read {
+                            weather_attempt_id = super::weather::readable_request_id();
+                        }
                         e.accept()
                     }
                     // Permission-violating request (e.g. a write to a read-only attribute): accepting
@@ -182,6 +186,7 @@ pub(crate) async fn serve_connection(
                 };
                 if obc_ble::authenticated_context_was_served(secured_context_read, reply_sent) {
                     state::clear_weather_request();
+                    super::weather::note_attempt(weather_attempt_id, true);
                     info!("ble: authenticated Weather Request context served — request hint cleared");
                 }
                 if let Some((buf, len)) = status_msg {

@@ -1,12 +1,6 @@
-//! The **Weather dashboard** (WX11, epic #1185) — locked concept C: a top decision card
-//! (DRY FOR 2 HOURS / RAIN IN 35 MIN / STORM IN 28 MIN / the honest fallback states), the
-//! two-hour precipitation strip below it, and the **HOURLY** / **RAIN MAP** actions.
-//!
-//! The card and the strip never duplicate each other: the card is the derived *claim*
-//! ([`rain_outlook`]), the strip is the sampled per-frame evidence. Both derive from the
-//! host-fed [`WeatherSnapshot`] plus this frame's `now`, so stale data degrades honestly the
-//! moment the clock passes a freshness boundary — no host round-trip required. Cached content
-//! stays fully visible during a refresh; the only refresh cue is the title bar's right slot.
+//! Weather dashboard: a bounded rain outlook, the precipitation strip, and stored hourly data.
+//! The rain countdown derives from the snapshot and current time. Update activity changes only
+//! the title cue; cached forecasts remain visible.
 
 use core::fmt::Write as _;
 
@@ -45,14 +39,13 @@ const STRIP_BAR_MAX: i32 = 38;
 /// The baseline the bars stand on; slot labels hang below it.
 const STRIP_BASE: i32 = STRIP_TOP + STRIP_BAR_MAX + 2;
 
-/// Top of the two action rows — 8 px clear of the freshness line above (owner tuning round:
-/// "Updated" sat too close to HOURLY), and the last row still 2 px inside the frame outline.
+/// Top of the two action rows; the last row stays inside the frame outline.
 const ACTIONS_TOP: i32 = 232;
 const ACTION_ROW_H: i32 = 38;
 const ACTION_GAP: i32 = 6;
 
 /// The Weather dashboard screen. State is the highlighted action row plus the minute ticker that
-/// keeps the countdown / freshness copy honest as time passes.
+/// keeps the rain countdown current.
 #[derive(Debug, Default)]
 pub struct WeatherScreen {
     selected: usize,
@@ -116,10 +109,12 @@ impl WeatherScreen {
 
         let outlook = rain_outlook(snap, now);
         match outlook {
-            RainOutlook::Dry => {
+            RainOutlook::Dry { minutes } => {
                 // The current condition's icon keeps the dry card informative (sun/cloud/fog…)
                 // without ever contradicting the claim — it comes from the same bundle.
-                draw_card_lines(cv, w, rx.t(Msg::WeatherDry1), rx.t(Msg::WeatherDry2), INK, Some(icon_now), temp);
+                let mut duration: heapless::String<12> = heapless::String::new();
+                let _ = write!(duration, "{minutes} {}", rx.t(Msg::WeatherMin));
+                draw_card_lines(cv, w, rx.t(Msg::WeatherDry1), &duration, INK, Some(icon_now), temp);
             }
             RainOutlook::RainIn { minutes } => {
                 let mut value: heapless::String<12> = heapless::String::new();
@@ -153,14 +148,6 @@ impl WeatherScreen {
         }
 
         draw_strip(cv, w, snap, now, rx.t(Msg::WeatherNow));
-
-        // The freshness line: the bundle's real production timestamp, local time. Absolute — a
-        // real timestamp stays honest even on an untrusted device clock, where a derived "n min
-        // ago" would fabricate an age (`clock_trusted` gates ages, not instants).
-        let (hh, mm) = local_hour_minute(snap.generated_at, rx.settings.utc_offset_min);
-        let mut fresh: heapless::String<24> = heapless::String::new();
-        let _ = write!(fresh, "{} {:02}:{:02}", rx.t(Msg::WeatherUpdated), hh, mm);
-        cv.text(&fresh, Point::new(w / 2, STRIP_BASE + 28), Font::Label, TextAlign::Center, SUBTEXT);
 
         self.draw_actions(cv, w, rx);
     }
