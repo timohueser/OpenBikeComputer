@@ -720,9 +720,11 @@ impl Drop for PeakGuard {
         release(ArenaOwner::PeakView);
     }
 }
+#[inline(never)]
 pub(crate) fn claim_peak(
     profile: &mut obc_app::PeakViewProfile<'_>,
     source: &'static dyn obc_formats::io::ByteSource,
+    reader: &obc_reader::Reader<'_>,
 ) -> Option<PeakGuard> {
     // SAFETY: the ride loop is the only owner-switcher.
     unsafe { gate() }.claim_peak_view().ok()?;
@@ -740,7 +742,23 @@ pub(crate) fn claim_peak(
         return None;
     };
     profile.set_ground(ground);
+    let mut peaks = obc_app::peak_view::Candidates::new();
+    if obc_app::peak_view::collect_summits(
+        reader,
+        (profile.observer_lat, profile.observer_lon),
+        profile.observer_elevation_m,
+        &[],
+        &mut peaks,
+    )
+    .is_err()
+    {
+        release(ArenaOwner::PeakView);
+        return None;
+    }
+    let mut framed = obc_app::PeakViewProfile { peaks: &peaks, ..*profile };
+    framed.set_ground(ground);
+    *profile = framed.detached();
     // SAFETY: the guard owns the whole arm; the final observer/framing is now known.
-    unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), profile) };
+    unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), &framed) };
     Some(PeakGuard { _not_send: PhantomData })
 }

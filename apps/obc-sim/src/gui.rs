@@ -435,6 +435,10 @@ impl SimGui {
         // Boot at the device's real power-on state (Home / Idle, no route); the headless
         // `--png` path opens straight on the map instead (see `--boot`).
         let mut app = App::new_idle(state);
+        if app.state.user_fix.is_some() {
+            let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
+        }
         tracks.offer_recovery(&mut app);
         // Seed the live settings from the persisted store, falling back to defaults on a first
         // run / unreadable file — the device's boot path.

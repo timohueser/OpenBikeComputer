@@ -36,8 +36,9 @@
 //! simply pauses. Every stage logs over RTT (defmt) so acquisition is watchable live.
 //!
 //! ## Power management
-//! After boot acquisition, the task follows the app's [`GpsPower`] request. When idle, it sends
-//! `CFG-RST` controlled GNSS stop and parks without DDC polling. Tracking resumes with controlled
+//! After boot acquisition, the task follows the app's [`SensorDemand`] request. With no recording
+//! or position request, it sends `CFG-RST` controlled GNSS stop and parks without DDC polling.
+//! An open Peak View keeps compass sampling active independently of GNSS. Tracking resumes with controlled
 //! GNSS start, which works over I²C and retains receiver configuration and navigation data. This
 //! is not backup sleep; idle current has not been measured. While riding, the task requests full
 //! power or the M10's on-chip low-power tracking when `power_saver` is on. The command encodings
@@ -48,7 +49,7 @@ use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::Twim;
 use embassy_time::{Duration, Instant, Timer};
-use obc_platform::sensor_hub::{GpsPower, SensorPresence, SensorTaskLink};
+use obc_platform::sensor_hub::{GpsPower, SensorDemand, SensorPresence, SensorTaskLink};
 use obc_sensors::{bmp581, compass, icm20948, ubx};
 
 /// SAM-M10Q I²C (DDC) slave address.
@@ -141,7 +142,7 @@ struct FixState {
 /// 1. **Boot acquisition** — hold awake until the first valid fix (which sets the clock + warms the
 ///    ephemeris) or [`BOOT_ACQUIRE_TIMEOUT_S`], **ignoring** the app's power request so an idle
 ///    boot gets an acquisition window before GNSS can stop.
-/// 2. **Steady state** — honour the app's [`GpsPower`] request: stop GNSS processing with no DDC
+/// 2. **Steady state** — honour the app's [`SensorDemand`] request: stop GNSS processing with no DDC
 ///    polling when idle; full- (or `power_saver` low-) power fixes while riding. Each waking
 ///    cycle waits for a TX-Ready edge / poll timeout / rate change / power change, then drains +
 ///    publishes through [`drain_and_publish`]. While **riding and stationary** it *also* ticks the
@@ -228,47 +229,55 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
         link.dispatch_presence(presence);
     }
 
-    // --- Phase 2: power-managed steady state. Honour the app's requested GpsPower — stop GNSS when
-    // idle, full / low-power fixes while riding — and keep streaming fixes. ---
-    let mut power = GpsPower::Active;
+    // Power-managed steady state: receiver demand and compass demand are independent.
+    let mut power = SensorDemand { gps: GpsPower::Active, compass: false };
     // Send STOP once per idle entry, even if its write fails.
     let mut parked = false;
     // Absolute deadline: compass ticks must not restart it and starve DDC fallback polling.
     let mut next_poll = Instant::now() + poll_deadline(interval_s);
     loop {
-        if power == GpsPower::Sleep {
+        if !power.gnss_running() {
             if !parked {
                 set_gnss_running(&mut twim, false).await;
                 parked = true;
             }
-            // No DDC polling while idle. Apply rate changes when tracking resumes.
-            match select(link.wait_power(), link.wait_rate()).await {
-                Either::First(p) => power = p,
-                Either::Second(s) => {
+            // Park GNSS polling while retaining heading updates for an open Peak View.
+            let compass_tick = async {
+                if power.compass && compass_ok {
+                    Timer::after(Duration::from_millis(COMPASS_INTERVAL_MS)).await;
+                } else {
+                    core::future::pending::<()>().await;
+                }
+            };
+            match select(select(link.wait_power(), link.wait_rate()), compass_tick).await {
+                Either::First(Either::First(p)) => power = p,
+                Either::First(Either::Second(s)) => {
                     interval_s = s.max(1);
-                    continue; // still idle — re-park; apply the new rate on resume
+                    continue;
+                }
+                Either::Second(()) => {
+                    read_and_publish_heading(&mut twim, &mut st, link).await;
+                    continue;
                 }
             }
-            if power == GpsPower::Sleep {
-                continue; // a redundant Sleep request — stay parked
+            if !power.gnss_running() {
+                continue; // GNSS remains parked
             }
             parked = false;
             set_gnss_running(&mut twim, true).await;
             // Configuration reads use a separate buffer; discard any partial pre-stop frame.
             acc_len = 0;
             configure_m10(&mut twim, interval_s).await;
-            set_power_mode(&mut twim, power).await;
+            set_power_mode(&mut twim, power.gps).await;
             st.had_fix = false; // acquiring again after GNSS start
             st.stationary = false; // motion state unknown until the first new fix → compass off
             next_poll = Instant::now() + poll_deadline(interval_s);
             continue;
         }
 
-        // Active / LowPower: wait for a data event (TX-Ready edge or the absolute poll deadline), a
-        // rate change, a power change — or, while stationary, a compass tick. The compass branch
-        // is `pending` (never fires) unless the receiver has a compass and the last fix was stopped,
-        // so a moving rider does zero magnetometer traffic (the GPS course is the heading then).
-        let tick_compass = compass_ok && st.stationary;
+        // Keep the compass live for Peak View or a stationary heading-up map. Its timer must
+        // not restart the absolute GPS poll deadline.
+        let tick_compass = compass_ok && (st.stationary || power.compass);
         let compass_tick = async {
             if tick_compass {
                 Timer::after(Duration::from_millis(COMPASS_INTERVAL_MS)).await;
@@ -294,11 +303,11 @@ pub async fn sensor_task(mut twim: Twim<'static>, mut txready: Input<'static>, l
             Either::First(Either4::Fourth(p)) => {
                 if p != power {
                     power = p;
-                    if power == GpsPower::Sleep {
-                        info!("sensors: tracking stopped → requesting GNSS stop");
+                    if !power.gnss_running() {
+                        info!("sensors: position demand ended → requesting GNSS stop");
                     } else {
-                        info!("sensors: GPS power → {=str}", power_name(power));
-                        set_power_mode(&mut twim, power).await;
+                        info!("sensors: GPS power → {=str}", power_name(power.gps));
+                        set_power_mode(&mut twim, power.gps).await;
                     }
                 }
                 continue; // Sleep is entered at the top of the loop

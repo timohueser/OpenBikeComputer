@@ -106,16 +106,41 @@ The data contains no stored viewpoints or images.
 
 Peak View uses the loaded map and the current GPS position. It reads nearby named summits from
 that map, projects their geographic coordinates, and checks their visibility against the terrain.
-Each bearing sector keeps its tallest summit and one strong height-and-distance candidate. This
-prevents nearby lower hills from using both slots before a distant landmark can be checked.
-Before a GPS fix it waits. The renderer prepares the current field of view first, then fills the
-rest of the circle in the background, extending a buffer on both sides of the view. Static dots
-show that background work remains. Turning toward an unfinished view gives that view priority.
-After the first view appears, completed terrain continues to follow the heading. A light hatch
-marks pending parts until they are ready. Completed views reuse the panorama in RAM. Movement above 20 m starts
-another panorama after the current job finishes. Back cancels generation and releases the arena.
+The check uses the greater of the recorded summit height and the sampled height, so a narrow summit is not rejected
+just because the terrain grid samples below its top. Without a recorded height, it uses the
+sampled surface. Labels stay anchored to the sampled terrain in both cases.
+The renderer tests up to 64 candidates at a time. It ranks them by elevation angle above the
+observer and reserves one place per 22.5° sector for the tallest summit. When the picture is
+complete, it removes hidden candidates and fills their places with untested names. It can make
+two more visibility passes. These passes do not change the picture.
+
+Opening Peak View uses a GPS fix from the last 30 seconds or requests a new fix, even when no
+ride is recording. It waits for that fix before it generates terrain. A cached position without
+an arrival time does not count as a current fix. With a recent fix, the compass and
+pending-column hatch appear in the first frame, without a waiting screen.
+After acquisition, GPS can sleep if no recording or weather request needs it. The compass stays
+active while Peak View is open. Leaving the screen cancels its pending position request.
+Completed terrain replaces the hatch as generation progresses. Progress redraws occur at most twice per second.
+The renderer prepares the current field of view first, then fills the rest of the circle in the
+background. Static dots show that work remains. Turning toward an unfinished view gives that
+view priority. Completed views reuse the panorama in RAM. Movement above 20 m starts another
+panorama after the current job finishes. Leaving Peak View cancels generation and releases the arena.
+
+The normal view spans 90°; steep relief can make it wider. Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
+peak with the highest elevation angle. A step to the right enters Browse on the leftmost visible
+peak; a step to the left starts on the rightmost. Each further step selects the next visible peak
+in that direction without moving the view. If there is no next peak, the view turns by 15° and
+selects the first peak that enters. If no peak enters, the selected peak stays selected until it
+leaves the view. Further steps continue through empty areas. Reversing direction steps back
+through the visible peaks. Select returns to Live. Browse keeps its selected peak when new names
+become available.
+All visible names are considered for chart labels. There is no fixed label-count limit. Higher
+elevation angles take priority where names would overlap; labels keep at least 15 pixels of
+horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
+appears in the ledger.
+
 The vertical scale is chosen once per observer from the catalogue elevation angles. Shallow
-relief receives up to 3× vertical exaggeration; steep views keep 1.25×. Missing height metadata
+relief receives a vertical boost up to 2.4× over the base 1.25× scale; steep views keep the base scale. Missing height metadata
 keeps the ordinary scale. Terrain and labels share the projection, while bearings, elevations,
 distances and visibility stay geographic. Turning changes neither the scale nor the horizon
 position. Lighting has a fixed northwest world direction, so turning does not change the shading.
@@ -135,8 +160,10 @@ published terrain and geometry cells before publication. Catalog generation reje
 and indexed terrain blocks. Standalone DEM baking produces native terrain; its surface conversion
 command adds the index without changing native heights.
 
-Distance bands follow the source posting, so a finer source uses its fine cells over a shorter
-range. Smooth open terrain can merge into large patches. Rough mountain faces require more
+The builder uses 57 m postings to 25 km, 114 m postings from 25 to 50 km, and 228 m postings
+from 50 to 100 km. Coarse levels use exact vertices from the
+native grid. A narrow summit can therefore lose apex height; its label anchor follows the same
+sampled surface. Smooth open terrain can merge into large patches. Rough mountain faces require more
 individual cells. Performance must therefore be checked at varied observer positions on the device.
 See [OBCT section 8](src:specs/OBCT_Spec.md) for the byte layout and complete-map size rule.
 

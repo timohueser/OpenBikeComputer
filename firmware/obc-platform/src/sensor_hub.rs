@@ -74,14 +74,42 @@ pub struct SensorPresence {
 /// full-power fixes while riding, or the M10's on-chip low-power tracking when `power_saver` is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpsPower {
-    /// Riding, full-power continuous fixes at the configured rate.
+    /// Full-power fixes for recording or an on-demand position request.
     Active,
     /// Riding with `power_saver` on — the M10's low-power tracking mode (lower power, same rate, at
     /// the cost of some fix latency).
     LowPower,
-    /// Not tracking — stop GNSS processing and park host polling. Resume on the next
+    /// No position demand — stop GNSS processing and park host polling. Resume on the next
     /// [`Active`](GpsPower::Active) / [`LowPower`](GpsPower::LowPower) request.
     Sleep,
+}
+
+/// Independent receiver and heading demand, delivered as one control update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensorDemand {
+    pub gps: GpsPower,
+    pub compass: bool,
+}
+
+impl SensorDemand {
+    pub fn for_demand(recording: bool, power_saver: bool, position: bool, compass: bool) -> Self {
+        let gps = if position {
+            GpsPower::Active
+        } else if recording {
+            if power_saver {
+                GpsPower::LowPower
+            } else {
+                GpsPower::Active
+            }
+        } else {
+            GpsPower::Sleep
+        };
+        Self { gps, compass }
+    }
+
+    pub fn gnss_running(self) -> bool {
+        self.gps != GpsPower::Sleep
+    }
 }
 
 /// The fix mailbox's stored form: [`Fix`] with its two `Option<f32>`s flattened to raw bits plus
@@ -159,7 +187,7 @@ pub struct SensorHub {
     /// Desired GPS fix interval (seconds) — a latch the ride loop sets and the sensor task awaits.
     rate: Sig<u16>,
     /// Desired GPS power state — a latch the ride loop sets and the sensor task awaits.
-    gps_power: Sig<GpsPower>,
+    sensor_demand: Sig<SensorDemand>,
     /// A single "a datapoint arrived" wake, pulsed by every publish. The event-driven ride loop
     /// selects on it so one await covers the whole set, then drains the typed mailboxes via `poll`.
     /// Payload-less — purely the "wake the render" edge — and separate from the value mailboxes, so
@@ -189,7 +217,7 @@ impl SensorHub {
             power: Signal::new(),
             cadence: Signal::new(),
             rate: Signal::new(),
-            gps_power: Signal::new(),
+            sensor_demand: Signal::new(),
             event: Signal::new(),
             presence: Signal::new(),
         }
@@ -275,8 +303,8 @@ impl SensorTaskLink<'_> {
 
     /// Await the next requested GPS power state — the task selects on this to sleep when a ride ends
     /// and wake (warm) when one starts.
-    pub async fn wait_power(&self) -> GpsPower {
-        self.0.gps_power.wait().await
+    pub async fn wait_power(&self) -> SensorDemand {
+        self.0.sensor_demand.wait().await
     }
 }
 
@@ -322,10 +350,9 @@ impl SensorControl<'_> {
         self.0.rate.signal(secs);
     }
 
-    /// Request a GPS power state; the sensor task transitions the M10 (sleep / wake / power mode) on
-    /// the next [`SensorTaskLink::wait_power`].
-    pub fn set_power(&self, p: GpsPower) {
-        self.0.gps_power.signal(p);
+    /// Update receiver power and independent compass demand on the next [`SensorTaskLink::wait_power`].
+    pub fn set_power(&self, p: SensorDemand) {
+        self.0.sensor_demand.signal(p);
     }
 }
 
@@ -550,5 +577,38 @@ mod tests {
         );
         // The value survived the wake — waiting on the event never steals a source's sample.
         assert_eq!(consumer.hr().poll(), Some(140), "the HR sample is still there for the source poll");
+    }
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::{GpsPower, SensorDemand};
+
+    #[test]
+    fn position_demand_wakes_gps_and_release_preserves_recording_and_compass() {
+        for recording in [false, true] {
+            for saver in [false, true] {
+                for compass in [false, true] {
+                    let acquiring = SensorDemand::for_demand(recording, saver, true, compass);
+                    assert_eq!(acquiring.gps, GpsPower::Active);
+                    assert_eq!(acquiring.compass, compass);
+                    let released = SensorDemand::for_demand(recording, saver, false, compass);
+                    assert_eq!(released.gnss_running(), recording);
+                    assert_eq!(released.compass, compass);
+                    assert_eq!(
+                        released.gps,
+                        if recording {
+                            if saver {
+                                GpsPower::LowPower
+                            } else {
+                                GpsPower::Active
+                            }
+                        } else {
+                            GpsPower::Sleep
+                        }
+                    );
+                }
+            }
+        }
     }
 }

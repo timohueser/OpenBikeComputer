@@ -1241,6 +1241,7 @@ fn main() {
         // `--heading` renders a rotated (heading-up) frame; the rotation derives from the
         // fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
+            state.compass_deg = Some(deg);
             state.heading_up = true;
             let (lat, lon) = state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((cy, cx));
             state.user_fix = Some(Fix { lat, lon, course: Some(deg), speed_mps: None });
@@ -1272,6 +1273,10 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        if app.state.user_fix.is_some() {
+            let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
+        }
         // `--weather` (WX10/WX11): built *before* the settings seed so the wall clock can anchor
         // on the store's effective instant (screens' `now_utc` then agrees with the rain lease)
         // and the script's rain-map time-steps clamp against the real frame count.
