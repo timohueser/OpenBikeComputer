@@ -426,7 +426,7 @@ use obc_storage::flat::seam::Store;
 pub mod client {
     use super::*;
 
-    fn frame(opcode: u8, request: u32, body: &[u8]) -> Vec<u8> {
+    pub fn frame(opcode: u8, request: u32, body: &[u8]) -> Vec<u8> {
         let mut record = vec![0u8; HEADER_LEN + body.len()];
         record[0..4].copy_from_slice(b"OBC4");
         record[4] = 4;

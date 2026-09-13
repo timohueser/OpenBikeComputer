@@ -5,6 +5,8 @@
 //! about the catalog here is a claim about the bytes on a card and not about a mock that agreed to
 //! be convenient.
 
+#[path = "flat_engine/archive.rs"]
+mod archive;
 mod flat_harness;
 
 use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
@@ -693,7 +695,7 @@ fn an_unknown_opcode_and_an_unknown_kind_are_unsupported() {
     let disk = formatted_card(24);
     let mut device = boot(&disk);
     let mut record = client::list(1, None);
-    record[5] = 0x09;
+    record[5] = 0x0A;
     expect_error(&Answer::of(device.control(&record).answer()), ErrorCode::Unsupported, detail::unsupported::OPCODE);
 
     let mut record = client::list(2, None);

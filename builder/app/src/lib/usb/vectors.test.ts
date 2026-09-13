@@ -37,6 +37,8 @@ import {
     WIRE_MAJOR,
     decodeRequest,
     decodeResponse,
+    encodeArchiveRideRequest,
+    encodeArchiveRideResponse,
     encodeArmRequest,
     encodeArmResponse,
     encodeCancelRequest,
@@ -81,7 +83,7 @@ const SUITE = join(repoRoot(), "specs/vectors/flat-store-v4");
  * The manifest's own digest. Re-pin this **deliberately**, in the same commit that changes a
  * fixture and for the same stated reason — never because a test went red.
  */
-const MANIFEST_SHA256 = "941d71de098f55e94aa5805ba9eb42edbddd01c4d74c7365e81e4b0b7c8ce112";
+const MANIFEST_SHA256 = "31e3c81b06b0b10e09bc1b24b79d8b6aef09965a7374771714589a5bc4b1cdc7";
 const read = (relative: string): string => readFileSync(join(SUITE, relative), "utf8");
 
 interface ManifestRow {
@@ -144,9 +146,9 @@ interface ErrorFixture {
 interface NegativeFixture {
     name: string;
     kind: "negative";
-    target: "controlRecord" | "streamRecord";
+    target: "controlRecord" | "streamRecord" | "controlResponse";
     expect: {
-        disposition: "errorResponse" | "closeRecordStream" | "terminateTransfer";
+        disposition: "errorResponse" | "closeRecordStream" | "terminateTransfer" | "rejectResponse";
         code?: string;
         codeValue?: number;
         detail?: string;
@@ -244,6 +246,8 @@ function reencodeRequest(decoded: DecodedRequest): Uint8Array {
             return encodeCancelRequest(requestId, request.body);
         case Opcode.Arm:
             return encodeArmRequest(requestId, request.body);
+        case Opcode.ArchiveRide:
+            return encodeArchiveRideRequest(requestId, request.body);
         case Opcode.Format:
             return encodeFormatRequest(requestId, request.body);
     }
@@ -266,6 +270,8 @@ function reencodeResponse(requestId: number, response: Response): Uint8Array {
             return encodeCancelResponse(requestId, response.body.cancelled);
         case Opcode.Arm:
             return encodeArmResponse(requestId, response.body);
+        case Opcode.ArchiveRide:
+            return encodeArchiveRideResponse(requestId, response.body);
         case Opcode.Format:
             return encodeFormatResponse(requestId, response.body.storeId);
     }
@@ -308,6 +314,9 @@ function semanticRequest(request: Request): Record<string, unknown> {
                 packageObjectId: String(request.body.packageObjectId),
                 expectedRevision: String(request.body.expectedRevision),
             };
+        case Opcode.ArchiveRide:
+            return { ...request.body, objectId: String(request.body.objectId), revision: String(request.body.revision),
+                payloadLength: String(request.body.payloadLength) };
         case Opcode.Format:
             return {
                 expectedStoreId: request.body.expectedStoreId,
@@ -355,6 +364,8 @@ function semanticResponse(response: Response): Record<string, unknown> {
                 rollbackObjectId: String(response.body.rollbackObjectId),
                 commitSequence: String(response.body.commitSequence),
             };
+        case Opcode.ArchiveRide:
+            return { commitSequence: String(response.body.commitSequence), timestamp: response.body.timestamp };
         case Opcode.Format:
             return { storeId: response.body.storeId };
     }
@@ -519,6 +530,11 @@ describe("negative vectors are refused with the contract's own code and detail",
             return;
         }
 
+        if (vector.target === "controlResponse") {
+            expect(vector.expect.disposition).toBe("rejectResponse");
+            expect(() => decodeResponse(bytes)).toThrow();
+            return;
+        }
         const outcome = dispositionOf(bytes);
         if (vector.expect.disposition === "closeRecordStream") {
             // §3.1: there is no `RequestId` to echo, so a receiver emits nothing at all.

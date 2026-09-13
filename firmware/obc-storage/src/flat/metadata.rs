@@ -1,5 +1,5 @@
 //! Card-local retention metadata. The caller supplies the payload workspace.
-//! This substrate does not admit archive receipts or run retention policy.
+//! Archive possession is separate from the retention policy that starts its countdown.
 
 use super::{
     BlockDevice, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, ObjectKind, PutSource, Revision, Store,
@@ -469,4 +469,56 @@ pub fn remove_route<D: BlockDevice>(
         }
     })?;
     Ok(())
+}
+
+/// Persist possession of the exact current finalized ride. Duplicate receipts preserve the stamp
+/// and make no commit. The serialized writer supplies exclusivity for the whole operation.
+#[inline(never)]
+pub fn archive_ride<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected: StoreId,
+    id: ObjectId,
+    revision: Revision,
+    payload_len: u64,
+    payload_crc: u32,
+) -> Result<u32, Error> {
+    if store.store_id() != expected || expected.0 == [0; 16] {
+        return Err(Error::WrongStore);
+    }
+    if store.mode() == super::Mode::RemountRequired {
+        return Err(Error::RemountRequired);
+    }
+    if id.0 == 0 || revision.0 == 0 || payload_len == 0 {
+        return Err(Error::Stale);
+    }
+    let target = store.entries().find(|entry| {
+        entry.id == id
+            && entry.revision == revision
+            && entry.kind == ObjectKind::Ride
+            && entry.flags == EntryFlags::NONE
+            && entry.payload_len == payload_len
+            && entry.payload_crc == payload_crc
+    });
+    if !store.entries_ok() {
+        return Err(Error::Store(StoreError::Media));
+    }
+    let target = target.ok_or(Error::Stale)?;
+    let mut bytes = [0u8; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    image.reconcile(store)?;
+    if let Some(row) = image.rows().find(|row| row.matches(target)) {
+        // A live-medium remount can read a gate whose previous final sync failed.
+        if store.sync_media().is_err() {
+            store.require_remount();
+            return Err(Error::RemountRequired);
+        }
+        return Ok(row.timestamp);
+    }
+    if !store.mode().writable() {
+        return Err(Error::Store(StoreError::ReadOnly));
+    }
+    image.set(Row { id, revision, payload_len, payload_crc, timestamp: 0, kind: ObjectKind::Ride, retention: 0 })?;
+    owner.replace(store, &mut image, Some(target))?;
+    Ok(0)
 }

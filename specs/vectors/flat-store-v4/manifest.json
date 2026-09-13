@@ -133,6 +133,21 @@
       "name": "format-response",
       "file": "controls/format-response.json",
       "sha256": "8fa0c96f1c33c21d36084253508d16c28efaa2237024601a545c0d59a07d8385"
+    },
+    {
+      "name": "archive-ride-request",
+      "file": "controls/archive-ride-request.json",
+      "sha256": "7714286587673b04db55a0bc15446db6890e71e616bbd4bde3e5dc886aec81e4"
+    },
+    {
+      "name": "archive-ride-response",
+      "file": "controls/archive-ride-response.json",
+      "sha256": "616a69e33e55cf5c82c3f32ee66bcc237cca70639cf3f1da20eb56f40b6c9f8d"
+    },
+    {
+      "name": "archive-ride-response-stamped",
+      "file": "controls/archive-ride-response-stamped.json",
+      "sha256": "cbde4ad636b6c935135200014524a98624b14a79aff3d544ef8086b8a28663c7"
     }
   ],
   "streams": [
@@ -231,6 +246,51 @@
   ],
   "negative": [
     {
+      "name": "archive-zero-store",
+      "file": "negative/archive-zero-store.json",
+      "sha256": "cbfa70080c8bace4f24cd352c5a7a1d2981d24219ec8977d7a7a63209d3fe6ba"
+    },
+    {
+      "name": "archive-zero-object",
+      "file": "negative/archive-zero-object.json",
+      "sha256": "66979cb0131cc6a0fd83fe4658ba2d3b24e6617c1cc03157bb99c121bf53f51a"
+    },
+    {
+      "name": "archive-zero-revision",
+      "file": "negative/archive-zero-revision.json",
+      "sha256": "06ac23b154b6cde7279aaaecced2a4801d6c4545672f39d881f7b359f0bfb336"
+    },
+    {
+      "name": "archive-zero-length",
+      "file": "negative/archive-zero-length.json",
+      "sha256": "cb31a318d8b18a0439503dabf00b68e59b0d57f9e3b6fa9490233073661b580f"
+    },
+    {
+      "name": "archive-request-short",
+      "file": "negative/archive-request-short.json",
+      "sha256": "f950d449e6015672580b2160b33bd2e9866b93b680b26e7d6dc844b4822750ed"
+    },
+    {
+      "name": "archive-request-trailing",
+      "file": "negative/archive-request-trailing.json",
+      "sha256": "d6f668f7ebcb1e706ee475306a9a51fc6aef1f251b9d22f429981bac1db8a7fa"
+    },
+    {
+      "name": "archive-response-reserved",
+      "file": "negative/archive-response-reserved.json",
+      "sha256": "f8a49e972f4b743d971fb7224e7bf4cf4208b563319d80d1aec90bb1c9eaf3e3"
+    },
+    {
+      "name": "archive-response-short",
+      "file": "negative/archive-response-short.json",
+      "sha256": "35f0b525c938934fff84edaf176ee6254a7173da00782e4a2cb24c59e975ca3c"
+    },
+    {
+      "name": "archive-response-trailing",
+      "file": "negative/archive-response-trailing.json",
+      "sha256": "09d436b568c264df9a498c3c6f2eb6c3eab9913bfdc1c76a41a6d8a3cbc59023"
+    },
+    {
       "name": "bad-magic",
       "file": "negative/bad-magic.json",
       "sha256": "43e2e27a044db07966196411046902a0fe2c4c295cf27f44c2f4d8a1462a0399"
@@ -258,7 +318,7 @@
     {
       "name": "unknown-opcode",
       "file": "negative/unknown-opcode.json",
-      "sha256": "2a7908b78189ffce405cc04097b812ccd7de096b95a3993b16a22458da02a38e"
+      "sha256": "380817a4f9bbf0d27e38772d6eb3cad29c94ab3ecf29818ce32f1152612b613c"
     },
     {
       "name": "request-carrying-a-response-flag",

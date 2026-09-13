@@ -62,6 +62,7 @@ public enum Opcode: UInt8, CaseIterable, Hashable, Sendable {
     case cancel = 6
     case arm = 7
     case format = 8
+    case archiveRide = 9
 }
 
 public struct CatalogFlags: OptionSet, Hashable, Sendable {
@@ -130,6 +131,11 @@ public enum CancelResult: UInt8, Hashable, Sendable {
 public struct ArmResult: Hashable, Sendable {
     public let rollbackObjectID: ObjectID
     public let commitSequence: UInt64
+}
+
+public struct ArchiveRideResult: Hashable, Sendable {
+    public let commitSequence: UInt64
+    public let timestamp: UInt32
 }
 
 public struct FormatResult: Hashable, Sendable {
@@ -260,6 +266,7 @@ public struct ControlFrame: Hashable, Sendable {
         switch (direction, opcode) {
         case (.request, .list), (.request, .format): expected = 32
         case (.request, .status), (.request, .get), (.request, .remove), (.request, .arm): expected = 16
+        case (.request, .archiveRide): expected = 44
         case (.request, .put): expected = 84
         case (.request, .cancel): expected = 4
         case (.response, .list):
@@ -270,7 +277,7 @@ public struct ControlFrame: Hashable, Sendable {
         case (.response, .put): expected = 32
         case (.response, .remove): expected = 8
         case (.response, .cancel): expected = 1
-        case (.response, .arm), (.response, .format): expected = 16
+        case (.response, .arm), (.response, .format), (.response, .archiveRide): expected = 16
         }
         guard payload.count == expected else { throw WireError.invalidLength }
 
@@ -323,6 +330,11 @@ public struct ControlFrame: Hashable, Sendable {
             guard try c.u64() != 0, try c.u64() != 0 else { throw WireError.invalidCombination }
         case .cancel:
             guard try c.u32() != 0 else { throw WireError.invalidCombination }
+        case .archiveRide:
+            guard try c.read(count: 16).contains(where: { $0 != 0 }),
+                  try c.u64() != 0, try c.u64() != 0, try c.u64() != 0 else {
+                throw WireError.invalidCombination
+            }
         case .format:
             let expected = try c.read(count: 16)
             let replacement = try c.read(count: 16)
@@ -341,6 +353,7 @@ public enum ControlRequest: Hashable, Sendable {
     case remove(objectID: ObjectID, expectedRevision: Revision)
     case cancel(transfer: RequestID)
     case arm(packageObjectID: ObjectID, expectedRevision: Revision)
+    case archiveRide(storeID: StoreID, objectID: ObjectID, revision: Revision, payloadLength: UInt64, payloadCRC32: UInt32)
     case format(expectedStoreID: StoreID, replacementStoreID: StoreID)
 
     public func frame(requestID: RequestID) throws -> ControlFrame {
@@ -377,6 +390,13 @@ public enum ControlRequest: Hashable, Sendable {
             guard objectID.rawValue != 0, expectedRevision.rawValue != 0 else { throw WireError.invalidCombination }
             opcode = .arm
             payload.appendLE(objectID.rawValue); payload.appendLE(expectedRevision.rawValue)
+        case .archiveRide(let storeID, let objectID, let revision, let payloadLength, let payloadCRC32):
+            guard storeID.bytes.contains(where: { $0 != 0 }), objectID.rawValue != 0,
+                  revision.rawValue != 0, payloadLength != 0 else { throw WireError.invalidCombination }
+            opcode = .archiveRide
+            payload.append(storeID.bytes)
+            payload.appendLE(objectID.rawValue); payload.appendLE(revision.rawValue)
+            payload.appendLE(payloadLength); payload.appendLE(payloadCRC32)
         case .format(let expectedStoreID, let replacementStoreID):
             guard replacementStoreID.bytes.contains(where: { $0 != 0 }), replacementStoreID != expectedStoreID else {
                 throw WireError.invalidCombination
@@ -457,6 +477,7 @@ public enum ControlResponse: Hashable, Sendable {
     case cancel(CancelResult)
     case arm(ArmResult)
     case format(FormatResult)
+    case archiveRide(ArchiveRideResult)
 
     public init(decoding record: Data, expectedOpcode: Opcode? = nil, expectedRequestID: RequestID? = nil) throws {
         let frame = try ControlFrame(decoding: record, direction: .response)
@@ -504,6 +525,10 @@ public enum ControlResponse: Hashable, Sendable {
                 rollbackObjectID: ObjectID(rawValue: try c.u64()), commitSequence: try c.u64())
             guard result.rollbackObjectID.rawValue != 0 else { throw WireError.invalidCombination }
             self = .arm(result)
+        case .archiveRide:
+            let result = ArchiveRideResult(commitSequence: try c.u64(), timestamp: try c.u32())
+            guard try c.u32() == 0 else { throw WireError.invalidReserved }
+            self = .archiveRide(result)
         case .format:
             let result = FormatResult(storeID: try StoreID(bytes: c.read(count: 16)))
             guard result.storeID.bytes.contains(where: { $0 != 0 }) else { throw WireError.invalidCombination }
