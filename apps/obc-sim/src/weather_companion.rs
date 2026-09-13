@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn committed_upload_waits_for_exact_reader_without_fetching_or_writing_again() {
         use crate::weather_store::DemoScenario;
-        use obc_host_core::{flat_store::HostStore, FlatRouteStore};
+        use obc_host_core::{flat_store::HostStore, FlatRouteStore, RouteRepository};
         const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
         let owner = HostStore::memory().unwrap();
         let routes = FlatRouteStore::new(owner.clone(), &[ROUTE; 5]).unwrap();
