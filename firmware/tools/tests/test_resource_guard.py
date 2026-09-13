@@ -314,10 +314,14 @@ class FixedEntryTests(unittest.TestCase):
     3006: b090          sub sp, #64
     3008: e001          b 0x300e <branches+0xe>
     300a: b0a0          sub sp, #128
+00004000 <body_store>:
+    4000: e920 0006     stmdb r0!, {r1, r2}
+    4004: b090          sub sp, #64
 """)
         self.assertEqual(parsed.entry_cost("ranges"), 88)
         self.assertEqual(parsed.entry_cost("epilogue"), 12)
         self.assertEqual(parsed.entry_cost("branches"), 4)
+        self.assertEqual(parsed.entry_cost("body_store"), 0)
 
     def test_unsupported_guarded_entry_never_passes_with_a_partial_cost(self):
         for instruction in ["sub.w sp, sp, r0", "vpush {d15-d8}", "push {future}", "<unknown>"]:
