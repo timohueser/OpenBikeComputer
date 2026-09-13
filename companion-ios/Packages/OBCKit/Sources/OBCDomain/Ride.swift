@@ -1,5 +1,29 @@
 import Foundation
 
+/// The exact finalized device object from which a canonical ride was decoded.
+/// This identifies content; it is not proof of a durable client or device write.
+public struct RideSource: Codable, Hashable, Sendable {
+    public let storeID: String
+    public let objectID: UInt64
+    public let revision: UInt64
+    public let payloadLength: UInt64
+    public let payloadCRC32: UInt32
+
+    public init(storeID: String, objectID: UInt64, revision: UInt64,
+                payloadLength: UInt64, payloadCRC32: UInt32) {
+        self.storeID = storeID
+        self.objectID = objectID
+        self.revision = revision
+        self.payloadLength = payloadLength
+        self.payloadCRC32 = payloadCRC32
+    }
+
+    public func matches(_ id: RideID) -> Bool {
+        revision != 0 && objectID != 0 && id.scope?.storeID == storeID
+            && id.deviceObjectID?.raw == objectID
+    }
+}
+
 /// A ride's raw library key. Device keys contain the full StoreId, object ID,
 /// and serial. Other strings remain valid archive keys without a device scope.
 public struct RideID: Hashable, Sendable {
@@ -132,6 +156,7 @@ public struct RideDetail: Equatable, Sendable {
 }
 
 public struct RideSummary: Identifiable, Equatable, Sendable {
+    public var source: RideSource?
     public let id: RideID
     public var name: String
     /// Ride start time.
@@ -169,7 +194,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         maxHeartRate: Int? = nil,
         avgCadence: Int? = nil,
         avgPower: Int? = nil,
-        maxPower: Int? = nil
+        maxPower: Int? = nil,
+        source: RideSource? = nil
     ) {
         self.id = id
         self.name = name
@@ -184,6 +210,7 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
         self.avgCadence = avgCadence
         self.avgPower = avgPower
         self.maxPower = maxPower
+        self.source = source
     }
 }
 
