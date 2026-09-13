@@ -1,43 +1,24 @@
 //! Peak View over the selected map's terrain and geographic summit records.
 use crate::arena::PeakGuard;
-use core::{cell::Cell, mem::MaybeUninit, ptr::addr_of_mut};
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
 use embassy_time::Instant;
 use obc_app::{
     peak_view::{self, Panorama},
     App, PeakViewProfile,
 };
-use obc_formats::io::{ByteSource, Error, WindowSource};
+use obc_formats::io::{ByteSource, WindowSource};
 use obc_reader::{MapTables, Reader};
 
-struct Source {
-    window: WindowSource<'static>,
-    reads: Cell<u32>,
-    bytes: Cell<u32>,
-    read_us: Cell<u64>,
-}
+type Source = WindowSource<'static>;
 static mut SOURCE: MaybeUninit<Source> = MaybeUninit::uninit();
-impl ByteSource for Source {
-    fn len(&self) -> u64 {
-        self.window.len()
-    }
-    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
-        let started = Instant::now();
-        let result = self.window.read_at(offset, out);
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + out.len() as u32);
-        self.read_us.set(self.read_us.get() + started.elapsed().as_micros());
-        result
-    }
-}
 
 #[inline(never)]
 fn open(map: &'static dyn ByteSource, tables: &MapTables) -> Option<&'static Source> {
     let region = tables.terrain()?;
     let window = WindowSource::new(map, region.offset, region.len)?;
     obc_elevation::surface::SurfaceReader::parse(&window).ok()?;
-    let source = Source { window, reads: Cell::new(0), bytes: Cell::new(0), read_us: Cell::new(0) };
-    // SAFETY: initialized once by the ride-loop constructor, then immutable except Cell counters.
-    Some(unsafe { (*addr_of_mut!(SOURCE)).write(source) })
+    // SAFETY: initialized once by the ride-loop constructor, then immutable.
+    Some(unsafe { (*addr_of_mut!(SOURCE)).write(window) })
 }
 
 use peak_view::runtime::{Failed, Lifecycle, Platform, Progress};
@@ -50,8 +31,6 @@ struct Job {
     source: Option<&'static Source>,
     arm: Option<PeakGuard>,
     started: Instant,
-    work_us: u64,
-    reported: u8,
     search: peak_view::SummitSearch,
     revision: u64,
 }
@@ -68,12 +47,7 @@ impl Platform for Hook<'_, '_> {
         profile.default_heading_q4 = app.peak_view_heading_q4();
         let Some(arm) = crate::arena::claim_peak(&mut profile, source, self.reader) else { return false };
         app.state.peak_view_profile = Some(profile);
-        source.reads.set(0);
-        source.bytes.set(0);
-        source.read_us.set(0);
         job.arm = Some(arm);
-        job.work_us = 0;
-        job.reported = 0;
         job.search = Default::default();
         job.revision = 0;
         true
@@ -92,34 +66,12 @@ impl Platform for Hook<'_, '_> {
         while !arm.builder.complete() && started.elapsed().as_millis() < 50 {
             arm.builder.step(&mut arm.terrain, 16);
         }
-        job.work_us += started.elapsed().as_micros();
-        let progress = arm.builder.progress() / 5;
-        if progress > job.reported {
-            job.reported = progress;
-            let source = job.source.unwrap();
-            defmt::info!(
-                "peak-perf: {=u8}% wall {=u64} ms; work {=u64} ms; IO {=u64} ms / {=u32} reads / {=u32} bytes",
-                progress * 5,
-                job.started.elapsed().as_millis(),
-                job.work_us / 1000,
-                source.read_us.get() / 1000,
-                source.reads.get(),
-                source.bytes.get()
-            );
-        }
         if arm.terrain.failed() {
             return Err(Failed);
         }
         if arm.builder.complete() {
             if job.revision == 0 {
-                defmt::info!(
-                    "peak-view: generated in {=u64} ms; {=u32} cells / {=u32} nodes, {=u32} missing; arena {=usize} B",
-                    job.started.elapsed().as_millis(),
-                    arm.builder.samples,
-                    arm.builder.nodes,
-                    arm.builder.missing,
-                    core::mem::size_of::<crate::arena::PeakArm>()
-                );
+                defmt::info!("peak-view: generated in {=u64} ms", job.started.elapsed().as_millis());
             }
             job.revision += 1;
             job.search.refill(&mut arm.builder, self.reader).map_err(|_| Failed)?;
@@ -148,15 +100,7 @@ impl Runtime {
         }
         Self {
             lifecycle: Lifecycle::default(),
-            job: Job {
-                source,
-                arm: None,
-                started: Instant::now(),
-                work_us: 0,
-                reported: 0,
-                search: Default::default(),
-                revision: 0,
-            },
+            job: Job { source, arm: None, started: Instant::now(), search: Default::default(), revision: 0 },
         }
     }
 

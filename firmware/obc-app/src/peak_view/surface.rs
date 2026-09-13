@@ -120,9 +120,6 @@ pub struct Builder {
     light_east: f32,
     radians_per_row: f32,
     gradient_error_limit: f32,
-    pub samples: u32,
-    pub missing: u32,
-    pub nodes: u32,
 }
 
 impl Builder {
@@ -190,8 +187,9 @@ impl Builder {
         self.begin_sector();
     }
 
-    pub fn relocate(&mut self, lat: i32, lon: i32, elevation_m: i16) {
-        assert_eq!(self.nodes, 0, "relocate before stepping the job");
+    #[cfg(test)]
+    fn relocate(&mut self, lat: i32, lon: i32, elevation_m: i16) {
+        assert_eq!(self.level, 0, "relocate before stepping the job");
         for (i, peak) in self.peaks.iter_mut().enumerate() {
             peak.project(lat, lon);
             self.catalogue_bearings[i] = peak.azimuth_q4;
@@ -412,7 +410,6 @@ impl Builder {
         if node.mask == 0 {
             return;
         }
-        self.nodes += 1;
         let g = self.geometry;
         if (node.y << node.log2) >= g.rows || (node.x << node.log2) >= g.columns {
             return;
@@ -564,7 +561,6 @@ impl Builder {
         prepared.surface.north /= size;
         prepared.surface.cross /= size * size;
         for ray in active_rays(mask) {
-            self.samples += 1;
             self.paint(ray, (y as i32, x as i32), size, prepared, intervals.near[ray], intervals.far[ray]);
         }
         node.mask &= !mask;
@@ -618,7 +614,6 @@ impl Builder {
                 };
                 let end = far.min(ty.min(tx));
                 if end > near && y >= 0 && x >= 0 && (y as u32) < g.rows && (x as u32) < g.columns {
-                    self.samples += 1;
                     let index = ((y - low_y) * size + x - low_x) as usize;
                     if loaded & (1 << index) == 0 {
                         patches[index] = terrain
@@ -743,7 +738,6 @@ impl Builder {
     }
 
     fn record_missing(&mut self, ray: usize) {
-        self.missing += 1;
         if self.labels_only {
             return;
         }
@@ -908,9 +902,8 @@ mod tests {
         while !job.complete() {
             job.step(&mut terrain, 31);
         }
-        assert!(job.missing > 0, "the small synthetic terrain does not cover the full range");
+        assert!(job.panorama.has_incomplete_coverage(), "the small synthetic terrain does not cover the full range");
         assert!(terrain.patches > 0);
-        assert!(terrain.patches < job.samples as usize, "adjacent rays reuse the same geographic patches");
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(job.panorama.tone(column, row), 1, "flat terrain at {column},{row}");
@@ -925,16 +918,15 @@ mod tests {
         while !outside.complete() {
             outside.step(&mut terrain, 31);
         }
-        assert!(outside.missing > 0, "clipped coverage cannot be reported as clear sky");
-        assert_eq!(outside.samples, 0);
+        assert!(outside.panorama.has_incomplete_coverage(), "clipped coverage cannot be reported as clear sky");
+        assert_eq!(terrain.patches, calls, "coverage outside this file does not read patches");
 
         terrain.missing = true;
         let mut missing = std::boxed::Box::new(Builder::new(&PROFILE));
         while !missing.complete() {
             missing.step(&mut terrain, 31);
         }
-        assert!(missing.missing >= missing.samples, "missing cells and range beyond coverage are both marked");
-        assert!(missing.missing > 0);
+        assert!(missing.panorama.has_incomplete_coverage());
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(missing.panorama.tone(column, row), 0);
@@ -1118,14 +1110,14 @@ mod tests {
             while !job.complete() {
                 job.step(&mut terrain, 31);
             }
-            assert!(job.missing > 0, "the small synthetic terrain does not cover the full range");
+            assert!(
+                job.panorama.has_incomplete_coverage(),
+                "the small synthetic terrain does not cover the full range"
+            );
             job
         };
         let above = render(1000);
         let below = render(-100);
-        assert_eq!(above.missing, below.missing);
-        assert_eq!(above.samples, below.samples);
-        assert_eq!(above.nodes, below.nodes);
         for column in 0..COLUMNS {
             for row in 0..ROWS {
                 assert_eq!(above.panorama.tone(column, row), below.panorama.tone(column, row));
