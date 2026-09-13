@@ -66,6 +66,40 @@ impl TerrainHeader {
     }
 }
 
+/// Validated terrain layout and cache identity, independent of a borrow of its bytes.
+/// Keep this descriptor with the immutable source used to parse it.
+pub struct TerrainTables {
+    header: TerrainHeader,
+    cell_bytes: u32,
+    cell_tiles_log2: u8,
+    generation: u32,
+}
+
+impl TerrainTables {
+    /// Validate once using the same parser as a directly borrowed reader.
+    pub fn parse(src: &dyn ByteSource) -> Result<Self, Error> {
+        let reader = TerrainReader::parse(src)?;
+        Ok(Self {
+            header: reader.header,
+            cell_bytes: reader.cell_bytes,
+            cell_tiles_log2: reader.cell_tiles_log2,
+            generation: reader.generation,
+        })
+    }
+
+    /// Borrow the same immutable source used for validation. This does not read or revalidate
+    /// bytes. All views share the parse generation, so a caller can retain one tile cache.
+    pub fn reader<'a>(&self, src: &'a dyn ByteSource) -> TerrainReader<'a> {
+        TerrainReader {
+            src,
+            header: self.header,
+            cell_bytes: self.cell_bytes,
+            cell_tiles_log2: self.cell_tiles_log2,
+            generation: self.generation,
+        }
+    }
+}
+
 /// A parsed OBCT container over a byte source, with the sampling rules of `OBCT_Spec.md` §5.
 ///
 /// Cheap to hold (a header, a source reference and a generation stamp) and cheap to build — but not

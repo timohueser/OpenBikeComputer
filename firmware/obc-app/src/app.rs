@@ -1032,8 +1032,8 @@ impl App {
     /// device that matters concretely — a terrain sample is a 512 B tile, usually already in the
     /// four-slot cache and otherwise an SD read, which has no business on the render path.
     ///
-    /// `elev` is the same [`ElevationSource`] the route emitter fills from: the mounted `.obcd`
-    /// terrain, or [`NullElevation`](obc_elevation::NullElevation) where there is none. With the
+    /// `elev` is the same [`ElevationSource`] the route emitter fills from: retained map terrain,
+    /// or [`NullElevation`](obc_elevation::NullElevation) where there is none. With the
     /// null source (or outside the raster's coverage) the sample is `None`, nothing is fed, the
     /// estimator never settles, and the Elevation tile keeps its pre-epic barometric reading.
     ///

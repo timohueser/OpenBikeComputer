@@ -582,30 +582,52 @@ WXRIDE="p p p p B d d d d w p"
 ELEVDIR="$(mktemp -d)"
 trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
-# --- Terrain-filled device-planned route (elevation epic #1068, EL7) -----------------------------
-# The unlock, end to end: the sim mounts `grimsel.obcd` (the terrain sidecar beside the map, EL2)
-# and the on-device router samples it as it emits, so a route the *device* planned now carries real
-# per-point elevation — and every already-shipped elevation consumer lights up with no change of
-# its own. Before EL7 all four frames below were flat: `▲0 m` in the list, an empty band, and a
-# Climb screen that could not open because no climb could be detected in a zero-elevation profile.
-#
+# --- Terrain-filled device-planned route -------------------------------------------------------
+# The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
+# planner reads terrain through the retained map object, as it does for an assembled device map.
+# Only these three frames use the staged map; registered fixture bytes remain unchanged.
+ELEVMAP="$ELEVDIR/terrain.obcm"
+python3 - "$MAP" "$ELEVMAP" <<'PYTERRAIN'
+from pathlib import Path
+import struct
+import sys
+
+source, output = map(Path, sys.argv[1:])
+map_bytes = bytearray(source.read_bytes())
+# OBCM §1.1/§1.3: v14 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0e" and map_bytes[40] == 4
+terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
+assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
+if not terrain_offset:
+    terrain = source.with_suffix(".obcd").read_bytes()
+    assert len(terrain) >= 64 and terrain[:5] == b"OBCT\x01", "expected the pinned OBCT v1 input"
+    map_bytes.extend(b"\xff" * (-len(map_bytes) % 16))
+    terrain_offset = len(map_bytes) // 16
+    map_bytes.extend(terrain)
+    map_bytes.extend(b"\xff" * (-len(map_bytes) % 16))
+    terrain_length = len(map_bytes) // 16 - terrain_offset
+    struct.pack_into("<II", map_bytes, 41, terrain_offset, terrain_length)
+assert (terrain_offset + terrain_length) * 16 <= len(map_bytes)
+output.write_bytes(map_bytes)
+PYTERRAIN
+
 # The plan: a fix at the Grimsel replay's first track point, routed to the "Handegg" Lodging POI up
 # the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
 # Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
 # the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
 ELEVPLAN="B d d w p d d p f d d d p p p f"
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
-# (a) The route list row for that saved plan: `6 km  ▲394 m` — the climb group is read straight off
+# (a) The route list row for that saved plan: `6 km  ▲396 m` — the climb group is read straight off
 # the emitted header, which the router filled from the raster.
 # Each session plans its own route, then returns from the POIs station to Routes. The import
 # directory is not a runtime store shared by separate simulator processes.
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN B u u w p" --expect-screen RouteMenu --png "$OUT/elev-routemenu.png"
 # (b) Its overview, held long enough for the content pager to flip to page B: the elevation profile
 # band with the summit label, over the CLIMB / DESCENT rows. Seven `w` settles ≈ 5.6 s, just past
 # the 5 s flip.
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN B u u w p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"

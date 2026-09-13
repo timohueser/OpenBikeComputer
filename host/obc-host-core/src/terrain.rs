@@ -1,95 +1,37 @@
-//! Where a host's terrain comes from (EL7, epic #1068) — **the** place a host answers "what is the
-//! elevation source for this map?".
-//!
-//! Terrain is an *enhancement*, never a requirement: a map with no terrain beside it plans, renders
-//! and rides exactly as before, with [`NullElevation`] in the seam. So every failure here — no such
-//! file, unreadable, not an OBCT container, a container whose arithmetic doesn't close — degrades
-//! to the null source with one line of explanation. None of them is a fault, deliberately outside
-//! the NO MAP / MAP UNREADABLE honesty rules (#1042): those are about a rider whose *map* is
-//! missing, and this file's absence takes nothing away.
-//!
-//! **One resolution path**: the sidecar, `<map>.obcd` beside the `.obcm` (`OBCT_Spec.md` §4.6).
-//! What the simulator's committed fixtures use, and what a side-loaded map on a card uses.
-//!
-//! There were two. The other was the **set manifest's `terrain` role**, taken first when the path
-//! was an `MS<id>.OBS`, because a manifest was the authority on what belonged to its set and a
-//! `.OBD` beside one that did not name it was an orphan of a previous assembly. That whole shape is
-//! retired with the volume set (OBCM v14, #1420): a map is one file with its terrain inside it, so
-//! there is no manifest to ask and no orphan to guard against. The sidecar is what is left, and it
-//! was always the same file by construction — `MS<id>.OBD` *was* the sidecar of `MS<id>.OBS`.
+//! Optional elevation from the same retained card map as rendering and planning.
 
-use std::path::{Path, PathBuf};
+use crate::{flat_map::FlatMap, flat_store::ObjectSource};
+use obc_elevation::{ElevationSource, TerrainTables, TileCache, DEFAULT_TILE_SLOTS};
+use obc_formats::io::{Error, WindowSource};
+use obc_reader::TerrainRegion;
 
-use obc_elevation::{TerrainElevation, DEFAULT_TILE_SLOTS};
-use obc_formats::io::SliceSource;
-use obc_route::{ElevationSource, NullElevation};
-
-/// The terrain artifact's extension (`OBCT_Spec.md` §4.6 — `.obcd`, *not* `.obct`, which is the
-/// recorded ride samples).
-pub(crate) const TERRAIN_EXT: &str = "obcd";
-
-/// The sidecar path for a map file: the same path with [`TERRAIN_EXT`].
-pub(crate) fn sidecar_path(map: &Path) -> PathBuf {
-    map.with_extension(TERRAIN_EXT)
+/// A bounded terrain cache bound to one exact map source. The shared read hold keeps that
+/// revision and its card alive even after the map frontend is dropped or replaced.
+pub struct FlatElevation {
+    source: ObjectSource,
+    region: TerrainRegion,
+    tables: TerrainTables,
+    cache: TileCache<DEFAULT_TILE_SLOTS>,
 }
 
-/// The elevation source for a mounted map, from its **bytes**: parse them as an OBCT container, or
-/// explain on stderr and hand back the null source. `what` names the file in that line.
-///
-/// The bytes are **leaked** on purpose. [`TerrainElevation`] samples straight out of the container
-/// (that is the point — 512 B tiles on demand, ~2.1 KB resident), so it borrows its source for as
-/// long as it lives, and a host mounts terrain once for a session exactly as it mounts the map.
-/// The device has the same shape with none of the awkwardness: there the bytes are the SD card and
-/// the source is a `'static` extent view.
-pub(crate) fn mount(bytes: Vec<u8>, what: &str) -> Box<dyn ElevationSource> {
-    let src: &'static SliceSource<'static> = Box::leak(Box::new(SliceSource(Box::leak(bytes.into_boxed_slice()))));
-    match TerrainElevation::<'static, DEFAULT_TILE_SLOTS>::parse(src) {
-        Ok(terrain) => {
-            let h = terrain.reader().header();
-            let (min_lat, min_lon, max_lat, max_lon) = h.bbox_udeg();
-            eprintln!(
-                "terrain: {what} | posting 2^{} µdeg | {}×{} cell(s) | bbox {min_lon},{min_lat} .. {max_lon},{max_lat}",
-                h.posting_log2, h.cell_rows, h.cell_cols
-            );
-            Box::new(terrain)
-        }
-        Err(e) => {
-            eprintln!("terrain: ignoring {what} — not a usable OBCT container ({e:?}); routes stay flat");
-            Box::new(NullElevation)
-        }
+impl FlatElevation {
+    /// Absence is optional; malformed, unsupported or unreadable terrain is an explicit error.
+    /// Descriptor, byte window and cache can only be created together from this map.
+    pub fn open(map: &FlatMap) -> Result<Option<Box<Self>>, Error> {
+        let Some(region) = map.tables().terrain() else { return Ok(None) };
+        let source = map.source();
+        let window = WindowSource::new(&source, region.offset, region.len).ok_or(Error::BadOffset)?;
+        let tables = TerrainTables::parse(&window)?;
+        Ok(Some(Box::new(Self { source, region, tables, cache: TileCache::new() })))
     }
 }
 
-/// Resolve **the** terrain source for the map at `map_path`: the `.obcd` sidecar, or the null
-/// source.
-pub fn resolve(map_path: &Path) -> Box<dyn ElevationSource> {
-    let path = sidecar_path(map_path);
-    match std::fs::read(&path) {
-        Ok(bytes) => mount(bytes, &path.display().to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Box::new(NullElevation),
-        Err(e) => {
-            eprintln!("terrain: cannot read {} ({e}); routes stay flat", path.display());
-            Box::new(NullElevation)
-        }
+impl ElevationSource for FlatElevation {
+    fn sample(&mut self, lat_udeg: i32, lon_udeg: i32) -> Option<i16> {
+        let window = WindowSource::new(&self.source, self.region.offset, self.region.len)?;
+        self.tables.reader(&window).sample(&mut self.cache, lat_udeg, lon_udeg)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_sidecar_is_the_map_path_with_the_obct_extension() {
-        assert_eq!(sidecar_path(Path::new("/maps/grimsel.obcm")), PathBuf::from("/maps/grimsel.obcd"));
-    }
-
-    /// The whole degrade-never-fault rule in one test: a missing file and a corrupt one both leave
-    /// the caller with a working source that simply has no heights.
-    #[test]
-    fn a_missing_or_corrupt_terrain_file_degrades_to_the_null_source() {
-        let mut missing = resolve(Path::new("/definitely/not/here.obcm"));
-        assert_eq!(missing.sample(47_000_000, 8_000_000), None);
-        let mut corrupt = mount(b"not an OBCT file at all, not even close".to_vec(), "corrupt.obcd");
-        assert_eq!(corrupt.sample(47_000_000, 8_000_000), None);
-    }
-}
+mod tests;
