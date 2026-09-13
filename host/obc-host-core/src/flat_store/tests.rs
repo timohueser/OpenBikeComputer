@@ -40,7 +40,7 @@ fn native_map_and_routes_share_persistent_identity_and_revision_leases() {
     assert_eq!(new_map.source().revision(), Revision(2));
     assert_eq!(bytes(&map.source()), MAP);
     assert!(matches!(map.replace_from_file(input(MAP)), Err(MapError::Storage(StoreError::NotFound))));
-    assert_eq!(routes.delete_by_id(map_id.0), Ok(false));
+    assert_eq!(routes.delete_by_id(map_id.0), Err(obc_app::catalog_state::CatalogError::Unsupported));
     let removed = routes.ids()[0];
     assert_eq!(routes.delete_by_id(removed), Ok(true));
     drop((owner, routes, old, map, new_map));
@@ -238,4 +238,86 @@ fn committed_map_identity_survives_reader_slot_exhaustion() {
     readers.pop();
     let map = FlatMap::open_in(&owner, store_id, id, revision).unwrap();
     assert_eq!(bytes(&map.source()), MAP);
+}
+
+#[test]
+fn weather_commit_failure_preserves_old_lease_and_reopen_reconciles_durable_head() {
+    use crate::flat_weather::{FlatWeatherStore, WeatherError};
+    const WEATHER: &[u8] = include_bytes!("../../../../specs/vectors/weather-minimal-dry.obcw");
+    for failure_sync in [1, 4] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("weather.obc");
+        let owner = HostStore::create_file(&path).unwrap();
+        let store_id = owner.store_id().unwrap();
+        let mut weather = FlatWeatherStore::open(owner.clone()).unwrap();
+        weather.install(WEATHER).unwrap();
+        let old = weather.source().unwrap();
+        {
+            let state = owner.0.lock().unwrap();
+            let HostMedia::File(card) = state.card.device() else { unreachable!() };
+            card.borrow().fail_sync_after.set(Some(failure_sync));
+        }
+        assert!(matches!(weather.install(WEATHER), Err(WeatherError::RemountRequired)));
+        assert_eq!(bytes(&old), WEATHER);
+        assert!(weather.current_header().is_none());
+        assert!(matches!(weather.refresh(), Err(WeatherError::RemountRequired)));
+        assert!(matches!(weather.install(WEATHER), Err(WeatherError::RemountRequired)));
+        drop((weather, owner, old));
+        let reopened = FlatWeatherStore::open(HostStore::open_file(&path).unwrap()).unwrap();
+        let identity = reopened.identity().unwrap();
+        assert_eq!(identity.store, store_id);
+        assert_eq!(identity.revision, Revision(if failure_sync == 4 { 2 } else { 1 }));
+        assert_eq!(bytes(&reopened.source().unwrap()), WEATHER);
+    }
+}
+
+#[test]
+fn cached_weather_reopen_requires_successful_confirmation_before_install_authority() {
+    use crate::flat_weather::{FlatWeatherStore, WeatherError};
+    const WEATHER: &[u8] = include_bytes!("../../../../specs/vectors/weather-minimal-dry.obcw");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("weather.obc");
+    let owner = HostStore::create_file(&path).unwrap();
+    let map = FlatMap::from_file_in(&owner, input(MAP)).unwrap();
+    let map_id = map.source().id();
+    let mut weather = FlatWeatherStore::open(owner.clone()).unwrap();
+    weather.install(WEATHER).unwrap();
+    let old = weather.source().unwrap();
+    {
+        let state = owner.0.lock().unwrap();
+        let HostMedia::File(card) = state.card.device() else { unreachable!() };
+        card.borrow().fail_sync_before.set(Some(4));
+    }
+    assert!(matches!(weather.install(WEATHER), Err(WeatherError::RemountRequired)));
+    assert!(weather.current_header().is_none());
+    assert_eq!(bytes(&old), WEATHER);
+    assert_eq!(bytes(&map.source()), MAP);
+    drop((weather, old, map, owner));
+
+    let owner = HostStore::open_file(&path).unwrap();
+    assert_eq!(
+        owner.entries().unwrap().iter().find(|e| e.kind == ObjectKind::WeatherBundle).unwrap().revision,
+        Revision(2)
+    );
+    let map = owner.open(map_id, Revision(1)).unwrap();
+    {
+        let state = owner.0.lock().unwrap();
+        let HostMedia::File(card) = state.card.device() else { unreachable!() };
+        card.borrow().fail_sync_before.set(Some(1));
+    }
+    assert!(matches!(FlatWeatherStore::open(owner.clone()), Err(WeatherError::RemountRequired)));
+    assert_eq!(bytes(&map), MAP, "held unrelated reader survives failed confirmation");
+    assert!(owner.entries().is_err());
+    assert!(matches!(
+        owner.import(ObjectKind::Route, None, &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default()),
+        Err(ImportError::RemountRequired)
+    ));
+    drop((map, owner));
+
+    let owner = HostStore::open_file(path).unwrap();
+    let weather = FlatWeatherStore::open(owner.clone()).unwrap();
+    assert_eq!(weather.identity().unwrap().revision, Revision(2));
+    assert!(weather.current_header().is_some());
+    assert_eq!(bytes(&weather.source().unwrap()), WEATHER);
+    assert_eq!(bytes(&owner.open(map_id, Revision(1)).unwrap()), MAP);
 }

@@ -652,10 +652,22 @@ pub(crate) fn decode_route_points_between(
     hi: u32,
     buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 ) -> Option<usize> {
-    let cm = route.chunks().get(k)?;
-    route.decode_chunk(k, buf).ok()?;
+    decode_route_points_between_checked(route, k, lo, hi, buf).ok().flatten()
+}
+
+/// The transform path must distinguish a missing span from unreadable geometry.
+#[inline(never)]
+pub(crate) fn decode_route_points_between_checked(
+    route: &RouteReader,
+    k: usize,
+    lo: u32,
+    hi: u32,
+    buf: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
+) -> Result<Option<usize>, Error> {
+    let Some(cm) = route.chunks().get(k) else { return Ok(None) };
+    route.decode_chunk(k, buf)?;
     if buf.len() < 2 {
-        return None;
+        return Ok(None);
     }
     let cl = obc_map_scene::cos_lat(buf[0].lat);
     let mut s = cm.cum_distance_m as f32;
@@ -677,8 +689,7 @@ pub(crate) fn decode_route_points_between(
             break;
         }
     }
-    let (a, pa) = first?;
-    let (b, pb) = last?;
+    let (Some((a, pa)), Some((b, pb))) = (first, last) else { return Ok(None) };
     let n = b - a + 1;
     // Shift the kept stretch to the front in place — no second point buffer on the stack.
     for i in 0..n {
@@ -687,7 +698,7 @@ pub(crate) fn decode_route_points_between(
     buf.truncate(n);
     buf[0] = pa;
     buf[n - 1] = pb;
-    Some(n)
+    Ok(Some(n))
 }
 
 /// Decode chunk `m` (its `n` points) from `src` into the already-cleared `out`: the anchor,
@@ -1080,30 +1091,46 @@ impl Waypoint {
 /// section. [`RouteReader::load_waypoints`] layers the resident-table policy (name filter, window,
 /// cap) on top of it. Returns the number visited; a route without waypoints yields none.
 pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) -> Result<u16, Error> {
-    // The header read is the version gate: a pre-v3 file is rejected there, so no record decoded
-    // here can be an old 40-byte one.
-    read_header(src)?;
-    let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
-    src.read_at(HEADER_LEN as u64, &mut ext)?;
-    let offset = rd_u32(&ext, 0);
-    let count = rd_u16(&ext, 4);
+    let mut cursor = WaypointCursor::new(src)?;
+    let count = cursor.count;
+    while let Some(waypoint) = cursor.next(src)? {
+        f(&waypoint);
+    }
+    Ok(count)
+}
 
-    let mut rec = [0u8; WAYPOINT_LEN];
-    for k in 0..count {
-        // Checked: the header's offset is untrusted input (browser-supplied bytes reach this walk
-        // through obc-web-convert), and a forged offset near `u32::MAX` must surface as the same
-        // truncated-file error an oversized one does — never wrap back into the buffer.
-        let at = (k as u32)
+/// A source-free cursor; each advance reads at most one stored record.
+pub(crate) struct WaypointCursor {
+    offset: u32,
+    count: u16,
+    next: u16,
+}
+
+impl WaypointCursor {
+    pub(crate) fn new(src: &dyn ByteSource) -> Result<Self, Error> {
+        read_header(src)?;
+        let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
+        src.read_at(HEADER_LEN as u64, &mut ext)?;
+        Ok(Self { offset: rd_u32(&ext, 0), count: rd_u16(&ext, 4), next: 0 })
+    }
+
+    pub(crate) fn next(&mut self, src: &dyn ByteSource) -> Result<Option<Waypoint>, Error> {
+        if self.next == self.count {
+            return Ok(None);
+        }
+        let at = u32::from(self.next)
             .checked_mul(WAYPOINT_LEN as u32)
-            .and_then(|rel| offset.checked_add(rel))
+            .and_then(|rel| self.offset.checked_add(rel))
             .ok_or(Error::BadOffset)?;
+        let mut rec = [0u8; WAYPOINT_LEN];
         src.read_at(at.into(), &mut rec)?;
+        self.next += 1;
         let name_len = (rec[15] as usize).min(WAYPOINT_NAME_CAP);
         let mut name = String::new();
         if let Ok(s) = core::str::from_utf8(&rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name_len]) {
             let _ = name.push_str(s);
         }
-        f(&Waypoint {
+        Ok(Some(Waypoint {
             dist_along_m: rd_u32(&rec, 0),
             lon: rd_i32(&rec, 4),
             lat: rd_i32(&rec, 8),
@@ -1111,9 +1138,8 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
             category_id: rec[14],
             lateral_offset_m: rd_i16(&rec, 16),
             name,
-        });
+        }))
     }
-    Ok(count)
 }
 
 /// One resident waypoint: the compact subset of a stored [`Waypoint`] the ride UI actually needs —

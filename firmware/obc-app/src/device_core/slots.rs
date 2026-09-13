@@ -363,7 +363,13 @@ mod tests {
             .retention
             .try_put(RetentionOutcome::RouteMetadataWritten { token: retention_ops.issue(), id: 1 })
             .unwrap();
-        first.recorder.try_put(RecorderOutcome::Checkpointed { token: recorder_ops.issue() }).unwrap();
+        first
+            .recorder
+            .try_put(RecorderOutcome::Checkpointed {
+                token: recorder_ops.issue(),
+                status: crate::recorder::CheckpointStatus::Durable,
+            })
+            .unwrap();
         first.navigator.try_put(NavigatorOutcome::Acquired { token: navigator_ops.issue() }).unwrap();
         first.settings.try_put(SettingsOutcome::Persisted { token: settings_ops.issue(), revision: 3 }).unwrap();
         first.weather.try_put(WeatherOutcome::Raised { token: weather_ops.issue() }).unwrap();

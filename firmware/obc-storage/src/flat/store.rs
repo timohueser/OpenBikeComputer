@@ -87,8 +87,8 @@ use super::superblock::Superblock;
 /// head and retain or remove the displaced one — and four leaves margin without making the plan
 /// arrays interesting.
 pub const MAX_BATCH: usize = 4;
-/// Reservations live at once: one transfer (`FLAT_Store_Protocol.md` §1) plus the ride reserve a
-/// start allocates while one is in flight.
+/// Two reservations serve either a transfer plus a recording start, or a sealed detour leg plus
+/// its trim/splice output. A competing start or transfer is refused while both rows are occupied.
 pub const MAX_RESERVATIONS: usize = 2;
 
 /// Who holds an open object, and how many. The table is the whole argument for
@@ -115,7 +115,8 @@ pub mod open_objects {
     /// open for the session. There are no shards, so there is no ceiling to inherit and nothing here
     /// derives from a board constant any more.
     pub const MAP: usize = 1;
-    /// The active route's geometry, held from load until the ride ends.
+    /// The active route's geometry, held from load until the ride ends. A detour retains another
+    /// reference to this exact revision, sharing the row. Its sealed temporary leg takes no hold.
     pub const ROUTE: usize = 1;
     /// The weather bundle, held for the session once mounted.
     pub const WEATHER: usize = 1;
@@ -134,6 +135,9 @@ pub mod open_objects {
     /// glitch, a revision that moved — the rider is mid-ride with **no** route, and the object that
     /// was working a microsecond ago has already been let go. Acquire-before-release cannot lose
     /// what it has, and it needs one row that the census does not.
+    ///
+    /// A detour can keep the old original revision alive after the active route changes; that
+    /// overlap also consumes this row. Further concurrent opens retain the same bounded refusal.
     ///
     /// **One row, not two.** A route swap and a weather swap overlapping is not budgeted: they are
     /// both rider- or link-driven and neither is on a timer, so the second one to start finds the
@@ -293,6 +297,26 @@ struct Reservation {
     written: u64,
     /// The partial block a write left behind, flushed by the commit that publishes it.
     staging: [u8; BLOCK],
+}
+
+/// An unpublished immutable payload. This owner occupies one reservation and no hold row.
+/// Release it through [`FlatStore::release_sealed`]; dropping it leaves the reservation taken.
+#[derive(Debug)]
+pub struct SealedAllocation<'a> {
+    allocation: Allocation,
+    ranges: Ranges,
+    mount: usize,
+    _mount: core::marker::PhantomData<&'a ()>,
+}
+
+impl SealedAllocation<'_> {
+    pub fn len(&self) -> u64 {
+        self.allocation.written
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -589,6 +613,33 @@ struct Resolved {
 }
 
 impl<D: BlockDevice> FlatStore<D> {
+    fn read_ranges(&self, ranges: &Ranges, payload_len: u64, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError> {
+        if offset >= payload_len {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(payload_len - offset) as usize;
+        let mut done = 0usize;
+        let mut block = [0u8; BLOCK];
+        while done < want {
+            let located = ranges.locate(self.geometry, offset + done as u64).ok_or(StoreError::Invalid)?;
+            // The same narrowing rule as [`Located::whole_blocks`], one unit up: the bound is taken in
+            // `u64` against a byte count that can exceed a device `usize`, and the result — never more
+            // than what the caller asked for — is what narrows.
+            let run = ((want - done) as u64).min(located.contiguous) as usize;
+            if located.offset == 0 && run >= BLOCK {
+                let blocks = run / BLOCK;
+                read_blocks(&self.dev, located.block, &mut buf[done..done + blocks * BLOCK])?;
+                done += blocks * BLOCK;
+            } else {
+                read_blocks(&self.dev, located.block, &mut block)?;
+                let take = (BLOCK - located.offset).min(run);
+                buf[done..done + take].copy_from_slice(&block[located.offset..located.offset + take]);
+                done += take;
+            }
+        }
+        Ok(done)
+    }
+
     /// Patch bytes already appended to a live, unpublished allocation.
     ///
     /// Protocol uploads never need this: their CRC and header are known before the first payload
@@ -629,6 +680,56 @@ impl<D: BlockDevice> FlatStore<D> {
             done += take;
         }
         Ok(())
+    }
+
+    /// Flush the final partial block and revoke every writable copy of this allocation.
+    /// On failure the supplied token remains valid for cancellation or a retry. Sealing publishes
+    /// no catalog entry and makes no persistence claim: this is temporary storage until remount.
+    pub fn seal(&self, allocation: Allocation) -> Result<SealedAllocation<'_>, StoreError> {
+        if !self.mode().writable() {
+            return Err(StoreError::ReadOnly);
+        }
+        let mut rows = self.reservations.borrow_mut();
+        row_of(&rows, &allocation).ok_or(StoreError::Invalid)?;
+        let row = rows[allocation.slot as usize].as_mut().expect("validated reservation");
+        let partial = (row.written % BLOCK as u64) as usize;
+        if partial != 0 {
+            let located = row.ranges.locate(self.geometry, row.written - partial as u64).ok_or(StoreError::Invalid)?;
+            row.staging[partial..].fill(0);
+            write_blocks(&self.dev, located.block, &row.staging)?;
+        }
+        let nonce = self.nonce.get().wrapping_add(1);
+        self.nonce.set(nonce);
+        row.nonce = nonce;
+        Ok(SealedAllocation {
+            allocation: Allocation { nonce, ..allocation },
+            ranges: row.ranges,
+            mount: self as *const Self as usize,
+            _mount: core::marker::PhantomData,
+        })
+    }
+
+    /// Consume the sole cleanup capability. A fenced mount retains the reservation until remount.
+    pub fn release_sealed<'a>(&self, sealed: SealedAllocation<'a>) -> Result<(), SealedAllocation<'a>> {
+        if sealed.mount != self as *const Self as usize {
+            return Err(sealed);
+        }
+        self.cancel(sealed.allocation);
+        Ok(())
+    }
+
+    pub(super) fn read_sealed(
+        &self,
+        sealed: &SealedAllocation<'_>,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, StoreError> {
+        if sealed.mount != self as *const Self as usize {
+            return Err(StoreError::Invalid);
+        }
+        // The immutable snapshot deliberately needs neither reservation nor hold table. A writer
+        // can keep the other reservation borrowed across its card command while this read runs.
+        self.read_ranges(&sealed.ranges, sealed.len(), offset, buf)
     }
 
     /// CRC-32/IEEE of the bytes appended to a live allocation, including its unflushed tail.
@@ -809,7 +910,8 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 
     /// Complete a durability barrier without exposing the card to callers above the store.
-    pub(crate) fn sync_media(&self) -> Result<(), StoreError> {
+    /// This does not validate the catalog or clear a remount requirement.
+    pub fn sync_media(&self) -> Result<(), StoreError> {
         sync(&self.dev)
     }
 
@@ -1887,30 +1989,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             .filter(|hold| (hold.id, hold.revision) == (handle.id, handle.revision))
             .ok_or(StoreError::Invalid)?;
         drop(holds);
-        if offset >= hold.payload_len {
-            return Ok(0);
-        }
-        let want = (buf.len() as u64).min(hold.payload_len - offset) as usize;
-        let mut done = 0usize;
-        let mut block = [0u8; BLOCK];
-        while done < want {
-            let located = hold.ranges.locate(self.geometry, offset + done as u64).ok_or(StoreError::Invalid)?;
-            // The same narrowing rule as [`Located::whole_blocks`], one unit up: the bound is taken in
-            // `u64` against a byte count that can exceed a device `usize`, and the result — never more
-            // than what the caller asked for — is what narrows.
-            let run = ((want - done) as u64).min(located.contiguous) as usize;
-            if located.offset == 0 && run >= BLOCK {
-                let blocks = run / BLOCK;
-                read_blocks(&self.dev, located.block, &mut buf[done..done + blocks * BLOCK])?;
-                done += blocks * BLOCK;
-            } else {
-                read_blocks(&self.dev, located.block, &mut block)?;
-                let take = (BLOCK - located.offset).min(run);
-                buf[done..done + take].copy_from_slice(&block[located.offset..located.offset + take]);
-                done += take;
-            }
-        }
-        Ok(done)
+        self.read_ranges(&hold.ranges, hold.payload_len, offset, buf)
     }
 
     /// The listing snapshots the copy and the count it was built against, and holds no cell borrow —

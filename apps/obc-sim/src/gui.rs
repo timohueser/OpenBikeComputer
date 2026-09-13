@@ -30,21 +30,16 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
-/// The one weather product the simulator mounts (#1549). The board reads an identity out of the flat
-/// store's catalog head; the sim has one bundle at a time, so the identity is a constant and the
-/// revision is what moves.
-const WEATHER_PRODUCT: u64 = 1;
-
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
 use crate::rides::RideStore;
-use crate::routes::RouteStore;
 use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
 use crate::track::TrackStore;
-use crate::trips::TripStore;
+use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
+
 use crate::Args;
 
 mod housing;
@@ -185,7 +180,13 @@ impl obc_ports::ClockSource for SimClock {
 
 /// Launch the simulator window. `map` is opened once before this — for the process lifetime, as
 /// the device parses its map once at boot — and the per-frame [`Reader`] is a cheap view over it.
-pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
+pub fn run(
+    owner: obc_host_core::flat_store::HostStore,
+    map: LoadedMap,
+    store: RouteStore,
+    trip_store: TripStore,
+    args: Args,
+) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
@@ -197,7 +198,7 @@ pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
     eframe::run_native(
         "OBC Simulator",
         options,
-        Box::new(move |_cc| Ok(Box::new(SimGui::new(map, args)) as Box<dyn eframe::App>)),
+        Box::new(move |_cc| Ok(Box::new(SimGui::new(owner, map, store, trip_store, args)) as Box<dyn eframe::App>)),
     )
 }
 
@@ -242,26 +243,13 @@ struct SimGui {
     /// The §11 request/upload lifecycle, driven by the real firmware `DueScheduler` (WX14).
     /// Present with `--weather live`; it is what decides *when* the companion fetches.
     companion: crate::weather_companion::SimCompanion,
-    /// `--weather-now`: the instant weather freshness is evaluated at, in *every* mode. Kept on
-    /// the window because a live refresh adopts a new bundle mid-session and must be judged at the
-    /// same instant the first one was.
-    weather_now: Option<i64>,
     /// The **resident sampled snapshot** — the board's shape: sampled behind one frame's pass,
     /// lent to the next one and to the render, and compared so a resample is reported once.
     wx_snapshot: Option<obc_app::WeatherSnapshot>,
     /// How many times [`wx_snapshot`](Self::wx_snapshot) has moved — the repaint edge the domain
     /// holds, reported as `ExternalFacts::note_weather_sample`.
     wx_sample: u64,
-    /// Which revision of the mounted bundle the domain has been told about — the simulator's stand-in
-    /// for the board's catalog head (`ride.rs`'s `read_catalogs`). The sim mounts one weather product,
-    /// so the identity is fixed and only the revision moves: `0` before anything is mounted, and one
-    /// step per bundle *adopted* (the `--weather` recipe at start-up, then each live commit).
-    ///
-    /// The revision has to move for a live commit, because that move is the only thing that records
-    /// [`RefreshResult::Installed`] — the fetch landed. A first sighting is not a refresh, which
-    /// `WeatherDomain::note_installed` already knows.
-    wx_installed: u64,
-    /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
+    /// The card route projection and its retained active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
     /// re-fed alongside the route catalog so a rescan re-resolves the trips' stage ids.
@@ -368,7 +356,19 @@ struct SimGui {
 }
 
 impl SimGui {
-    fn new(map: LoadedMap, args: Args) -> Self {
+    fn note_card_commit(&mut self) {
+        if let Some(scope) = self.store.store_scope() {
+            self.host.facts().note_store_revision(scope);
+        }
+    }
+
+    fn new(
+        owner: obc_host_core::flat_store::HostStore,
+        map: LoadedMap,
+        store: RouteStore,
+        trip_store: TripStore,
+        args: Args,
+    ) -> Self {
         // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
@@ -438,8 +438,6 @@ impl SimGui {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
-        let store = RouteStore::open(args.routes_dir());
-        let trip_store = TripStore::open(args.routes_dir());
         let ride_store = RideStore::open(args.tracks_dir());
         let tracks = TrackStore::open(args.tracks_dir());
         // Seed the live settings from the persisted store, falling back to defaults on a first
@@ -456,19 +454,20 @@ impl SimGui {
             let b = map.reader().bbox;
             (b.min_lon, b.min_lat, b.max_lon, b.max_lat)
         };
-        let wx_source = args
-            .weather
-            .as_ref()
-            .map(|arg| {
-                // The corridor's seed is the rider's own fix when there is one — `--gpx` and
-                // `--center` have already placed it — exactly as the headless path seeds it. The
-                // map's centre is the fallback for a run with no fix at all; seeding there under a
-                // `--gpx` would fetch weather for a place the rider is not.
-                let seed =
-                    app.state.user_fix.map(|fix| (fix.lat, fix.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                crate::weather_live::build(arg, args.weather_now, map_bbox_for_weather, &args.live, seed, !args.no_card)
-            })
-            .unwrap_or(crate::weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
+        let seed = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+        let wx_source = crate::weather_live::build(
+            owner,
+            args.weather.as_deref(),
+            args.weather_now,
+            map_bbox_for_weather,
+            &args.live,
+            seed,
+            !args.no_card,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("weather failed: {error}");
+            std::process::exit(1);
+        });
         if let Some(now) = wx_source.clock_anchor {
             boot_settings.clock = obc_ports::DateTime::from_unix(now.max(0) as u64 as u32);
             boot_settings.utc_offset_min = 0;
@@ -515,10 +514,8 @@ impl SimGui {
             scratch: Box::new(obc_render::RenderScratch::new()),
             weather,
             live_weather,
-            weather_now: args.weather_now,
             wx_snapshot: None,
             wx_sample: 0,
-            wx_installed: 0,
             // `--no-card`: §11.7's no-storage arm — the scheduler raises nothing at all.
             companion: crate::weather_companion::SimCompanion::new(!args.no_card),
             store,
@@ -565,6 +562,7 @@ impl SimGui {
             kbd_select: false,
             kbd_back: false,
         };
+        gui.note_card_commit();
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
@@ -611,29 +609,13 @@ impl SimGui {
     fn sample_weather(&mut self) {
         let now = self.app.wall_unix_now() as i64;
         self.session.sync(&self.app, &mut self.store);
-        if let Some(live) = self.live_weather.as_mut() {
-            if let Some(bytes) = self.companion.poll(&self.app, self.weather.as_ref(), live, now) {
-                // `--weather-now` is the freshness instant in *every* mode, refreshes included:
-                // dropping it here left the first bundle evaluated at the pinned instant and every
-                // later one at the wall clock.
-                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, self.weather_now) {
-                    self.weather = Some(store);
-                    self.wx_installed += 1;
-                }
-            }
+        if let (Some(live), Some(store)) = (self.live_weather.as_mut(), self.weather.as_mut()) {
+            self.companion.poll(&self.app, store, live, now);
         }
-        // The installed-data fact (#1549), the simulator's half of what `read_catalogs` reports on
-        // the board: a bundle is mounted, at this identity and revision. Reported once per adoption
-        // and not per frame — the level is a level, and it is a *move* of it that says a fetch
-        // landed. `--weather` mounts the first one before any pass runs, so the report catches up
-        // on the first sample rather than being missed.
-        if self.weather.is_some() && self.wx_installed == 0 {
-            self.wx_installed = 1;
-        }
-        if self.wx_installed > 0 {
+        if let Some(identity) = self.weather.as_ref().and_then(|w| w.installed()) {
             self.host.facts().note_weather_data(obc_app::device_core::WeatherData {
-                data: obc_app::device_core::DataIdentity::new(WEATHER_PRODUCT),
-                revision: obc_app::device_core::Revision::new(self.wx_installed),
+                data: obc_app::device_core::DataIdentity::new(identity.id.0),
+                revision: obc_app::device_core::Revision::new(identity.revision.0),
             });
         }
         let next = match self.weather.as_mut() {
@@ -645,7 +627,7 @@ impl SimGui {
                 // live bundle is left to age, per `sync_clock`'s own rule.
                 w.sync_clock(now, true);
                 let src = self.store.active_source();
-                let route = match (self.session.index(), src.as_ref()) {
+                let route = match (self.session.index(), src) {
                     (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                     _ => None,
                 };
@@ -698,12 +680,6 @@ impl SimGui {
         }
         self.app.set_sensor_status(&sensor_status);
 
-        // Mirror the sim's route-retention sidecar into the app each frame (auto-expiry epic #638,
-        // S3), pairwise with the fed catalog ids — cheap, and it keeps the sweep reading
-        // device-truth retention even on frames nothing re-fed the catalog.
-        let metas = self.store.retention_metas();
-        self.app.set_route_meta(&metas);
-
         // ── One DeviceCore pass ──────────────────────────────────────────────────────────────
         // The active route is opened once from the resident session (no per-frame `RouteIndex`
         // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
@@ -713,7 +689,7 @@ impl SimGui {
         let gestures = core::mem::take(&mut self.pending_gestures);
         let mut plan = {
             let route_src = self.store.active_source();
-            let route = match (self.session.index(), route_src.as_ref()) {
+            let route = match (self.session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
@@ -833,7 +809,7 @@ impl SimGui {
         // the bytes under it, and the frame must draw what is there now.
         self.session.sync(&self.app, &mut self.store);
         let route_src = self.store.active_source();
-        let route = match (self.session.index(), route_src.as_ref()) {
+        let route = match (self.session.index(), route_src) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -1202,9 +1178,10 @@ impl eframe::App for SimGui {
         for path in dropped {
             let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
             if is_gpx {
-                match self.store.import_gpx(&path) {
+                match crate::routes::import_gpx(&mut self.store, &path) {
                     Ok(s) => {
                         self.gpx_error = None;
+                        self.note_card_commit();
                         eprintln!(
                             "imported {} | {} km, +{} m",
                             path.display(),
@@ -1214,11 +1191,6 @@ impl eframe::App for SimGui {
                     }
                     Err(e) => self.gpx_error = Some(e),
                 }
-                // A GPX drop is the one thing that moves this store **behind** the executor, so it
-                // is reported as the store revision it is: the next pass arms the domain's owed
-                // refresh and the executor re-reads the whole catalog — routes,
-                // their retention metas, the trips that group them and the rides beside them.
-                self.host.note_store_commit();
             }
         }
 

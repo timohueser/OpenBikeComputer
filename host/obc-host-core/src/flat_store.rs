@@ -61,6 +61,8 @@ pub(crate) struct NativeCard {
     pub(crate) _temporary: Option<tempfile::TempPath>,
     #[cfg(test)]
     fail_sync_after: std::cell::Cell<Option<usize>>,
+    #[cfg(test)]
+    fail_sync_before: std::cell::Cell<Option<usize>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,9 +77,18 @@ impl NativeCard {
             _temporary: temporary,
             #[cfg(test)]
             fail_sync_after: std::cell::Cell::new(None),
+            #[cfg(test)]
+            fail_sync_before: std::cell::Cell::new(None),
         })
     }
     fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(left) = self.fail_sync_before.get() {
+            self.fail_sync_before.set(left.checked_sub(1).filter(|&left| left != 0));
+            if left == 1 {
+                return Err(io::Error::other("injected failure before file sync"));
+            }
+        }
         self.file.sync_all()?;
         #[cfg(test)]
         if let Some(left) = self.fail_sync_after.get() {
@@ -181,6 +192,17 @@ impl MountedStore {
         Self { card, remount_required: false }
     }
 
+    /// Confirm a catalog observed through the live OS cache before granting durable authority.
+    /// Call under the owner lock after checking the expected head; failure fences all writers.
+    pub(crate) fn confirm_durable(&mut self) -> Result<(), StoreError> {
+        self.ready()?;
+        if self.card.sync_media().is_err() {
+            self.remount_required = true;
+            return Err(StoreError::Media);
+        }
+        Ok(())
+    }
+
     pub(crate) fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
         if self.remount_required {
             Err(StoreError::Media)
@@ -281,6 +303,7 @@ impl ByteSource for ObjectSource {
 
 /// One host card owner. Object readers keep its media and exclusive native file lock
 /// alive after the front-end owner drops. An uncertain commit requires a fresh mount.
+#[derive(Clone)]
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
@@ -289,7 +312,7 @@ impl HostStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn temporary() -> Result<Self, ImportError> {
+    pub fn temporary() -> Result<Self, ImportError> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         let card = NativeCard::locked(file, Some(path))?;
         card.file.set_len(CARD_BYTES)?;
@@ -349,7 +372,7 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card.entries().collect();
+        let entries = card.entries().filter(|entry| entry.flags == EntryFlags::NONE).collect();
         if !card.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -359,7 +382,7 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().filter(|entry| entry.id == id).max_by_key(|entry| entry.revision.0);
+        let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
         if !store.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -417,6 +440,29 @@ impl HostStore {
         // A computed route needs one later commit to retract an abandoned publication.
         if !store.has_commit_capacity(commits) {
             return Err(StoreError::ReadOnly.into());
+        }
+        if kind == ObjectKind::Route && previous.is_none() {
+            let count = store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE).count();
+            if !store.entries_ok() {
+                return Err(StoreError::Media.into());
+            }
+            if count >= obc_app::MAX_ROUTES {
+                return Err(StoreError::Busy.into());
+            }
+        }
+        if kind == ObjectKind::WeatherBundle {
+            let mut current = None;
+            for entry in store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE) {
+                if current.replace((entry.id, entry.revision)).is_some() {
+                    return Err(StoreError::Invalid.into());
+                }
+            }
+            if !store.entries_ok() {
+                return Err(StoreError::Media.into());
+            }
+            if current != previous {
+                return Err(StoreError::NotFound.into());
+            }
         }
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {

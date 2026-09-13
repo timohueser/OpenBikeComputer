@@ -10,7 +10,7 @@
 //! shares are pinned by protocol tests instead.
 
 use obc_app::catalog_state::CatalogError;
-use obc_app::recorder::RideClose;
+use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
 use obc_app::{App, CatalogObjectId, RideEntry, RouteRetentionMeta};
 use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
@@ -62,9 +62,7 @@ impl ByteSource for RouteLease {
     }
 }
 
-/// The route catalog + the one active route's bytes, plus the reserved nav-route commit slot the
-/// router writes into. Supersedes the old `NavRouteStore` (which was only the nav-commit slice):
-/// the dispatcher needs the whole delete/rescan/active surface, so it lives in one trait.
+/// Route projections, retained readers and physical writes used by the shared host executor.
 pub trait RouteRepository {
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     fn catalog(&self) -> &[RouteSummary];
@@ -196,37 +194,44 @@ pub trait TrackRepository {
     /// not happen must not read as one that did.
     fn discard(&mut self) -> bool;
 
-    /// Make the ride recoverable across a power loss up to this point. `false` is a failed write —
-    /// Recorder owes the same checkpoint again. A store with no journal has nothing to do and says
-    /// so by succeeding.
-    fn checkpoint(&mut self) -> bool {
-        true
+    /// Checkpoint the accepted payload boundary. `continuation` is fresh only with no App-staged
+    /// samples; otherwise retain the context accepted with the payload. A failed attempt must
+    /// replay its frozen bytes and context before considering either argument again.
+    fn checkpoint(
+        &mut self,
+        _stats: RideStats,
+        _continuation: Option<RideContinuation>,
+    ) -> Result<CheckpointStatus, RecorderError> {
+        Ok(CheckpointStatus::Unsupported)
     }
 
     /// Append one staged sample to the open ride. `false` means the medium refused it: Recorder
     /// keeps that sample and every sample behind it staged, and offers them again.
     ///
-    /// A store with no log has nothing to write and says so by succeeding — the same shape
-    /// [`checkpoint`](Self::checkpoint) uses, and the reason a memory store needs no arm of its own.
+    /// A store with no log has nothing to write and says so by succeeding.
     fn append(&mut self, point: TrackPoint) -> bool {
         let _ = point;
         true
     }
 }
 
-/// The `.obt` trip folders that group routes (sim-only; the web demo has none, the board reads its
-/// own `ObjectStore`). Every method defaults to "no trips" so a host without them plugs in the unit
-/// type `()`.
+/// Trip projections and physical removal. A host without trips uses the unit implementation.
 pub trait TripCatalog {
-    /// Delete the trip with id `id` — its backing `.obt` and nothing else. The cascade over member
+    fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
+        None
+    }
+
+    /// Delete only the trip object with id `id`. The cascade over member
     /// routes is `CatalogMachine`'s ordering (#1491) and reaches this executor as its own removals,
     /// so there is no member lookup here. `Ok(true)` = removed, `Ok(false)` = absent, `Err` = failure.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         let _ = id;
         Ok(false)
     }
-    /// Re-scan the trip folder (a store-changed edge re-resolves the folders alongside the routes).
-    fn rescan(&mut self) {}
+    /// Load a complete trip projection, preserving the previous one on failure.
+    fn rescan(&mut self) -> Result<(), CatalogError> {
+        Ok(())
+    }
     /// Re-feed the app's trip list ([`App::set_trips`](obc_app::App::set_trips)) — call **after** the
     /// route catalog is re-fed so the stage ids resolve.
     fn refeed(&self, app: &mut App) {
