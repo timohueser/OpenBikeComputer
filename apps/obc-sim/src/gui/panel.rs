@@ -321,12 +321,6 @@ impl SimGui {
             );
         }
 
-        if ui.button("Refresh ride fixtures").clicked() {
-            self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog());
-        }
-        ui.weak("reloads the remaining ride fixture folder; card imports commit directly");
-
         // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
         // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the
         // pick's bytes rewritten in place). Each button runs the exact device sequence via
@@ -424,8 +418,6 @@ impl SimGui {
     ///   route or an aged synced ride disappears in seconds.
     /// - **Set route retention** stands in for the phone's `setRouteRetention` (until S4 gives it a
     ///   wire): pick a route + level and the sweep will delete it once it's been unused that long.
-    /// - **Mark ride synced** is the `ackRides` stand-in: it stamps a ride's `synced_at` so the
-    ///   sweep can auto-delete it per the device `ride_retention` setting.
     fn show_retention_controls(&mut self, ui: &mut egui::Ui) {
         use obc_app::Retention;
 
@@ -508,42 +500,6 @@ impl SimGui {
                 Ok(()) => self.note_card_commit(),
                 Err(error) => eprintln!("retention write: {error}"),
             }
-        }
-
-        ui.separator();
-
-        // Mark a ride synced (the ackRides stand-in) so the sweep can auto-delete it.
-        let mut mark: Option<obc_app::CatalogObjectId> = None;
-        {
-            let rides = self.app.rides();
-            if rides.is_empty() {
-                ui.weak("no rides — record one (Ride ▶ … ▶ Finish) to test ride expiry");
-            } else {
-                self.panel.synced_ride_sel = self.panel.synced_ride_sel.min(rides.len() - 1);
-                let sel_id = rides[self.panel.synced_ride_sel].id;
-                egui::ComboBox::from_id_salt("synced-ride")
-                    .selected_text(rides[self.panel.synced_ride_sel].summary.name.as_str())
-                    .show_ui(ui, |ui| {
-                        for (i, r) in rides.iter().enumerate() {
-                            let tag = if r.summary.synced { " (synced)" } else { "" };
-                            ui.selectable_value(
-                                &mut self.panel.synced_ride_sel,
-                                i,
-                                format!("{}{tag}", r.summary.name.as_str()),
-                            );
-                        }
-                    });
-                if ui.button("Mark ride synced (ackRides)").clicked() {
-                    mark = Some(sel_id);
-                }
-                ui.weak("stamps synced_at = now; the sweep deletes it per the device ride_retention");
-            }
-        }
-        if let Some(id) = mark {
-            let utc = self.app.wall_unix_now();
-            self.ride_store.mark_synced(id, utc);
-            self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog());
         }
     }
 
