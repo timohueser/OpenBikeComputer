@@ -16,6 +16,7 @@ fn bytes(source: &dyn ByteSource) -> Vec<u8> {
 }
 fn pages(owner: &HostStore) -> usize {
     let store = owner.0.lock().unwrap();
+    let store = &store.card;
     let HostMedia::Memory(pages) = store.device() else { unreachable!() };
     let count = pages.borrow().len();
     count
@@ -110,6 +111,7 @@ fn failed_route_write_and_delete_keep_committed_projection() {
     assert_eq!(bytes(&routes.owner.open(ObjectId(id), Revision(2)).unwrap()), ROUTE);
     {
         let store = routes.owner.0.lock().unwrap();
+        let store = &store.card;
         let HostMedia::Memory(pages) = store.device() else { unreachable!() };
         pages.borrow_mut().clear();
     }
