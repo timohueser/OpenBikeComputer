@@ -24,7 +24,7 @@
     --ink-soft: #4d5b3c;
     --forest: #3c6b39;
     --coral: #cf6a2a;
-    --device-body: #2f6350;
+    --device-body: #488781;
     --device-accent: #8be3bc;
     --serif: "P052", "Palatino Linotype", Palatino, Georgia, serif;
     --sans: "Noto Sans", ui-sans-serif, system-ui, sans-serif;
@@ -65,52 +65,54 @@
 
   /* ---- the device housing, lifted from docs/index.html ---- */
   .device-col { position: relative; z-index: 1; flex: none; margin-left: 30px; transform: rotate(-5deg); }
-  .device {
-    position: relative;
-    width: 360px;
-    padding: 5.2% 5.85% 0;
-    background: linear-gradient(163deg, #3d7a63 0%, var(--device-body) 48%, #1f4739 100%);
-    border-radius: 46px;
-    box-shadow:
-      inset 0 2px 2px rgba(206, 255, 232, 0.28),
-      inset 0 -4px 8px rgba(6, 32, 22, 0.36),
-      0 22px 30px rgba(44, 33, 20, 0.30);
-  }
-  .device::before {
-    content: ""; position: absolute; z-index: -1;
-    inset: -1.95%;
-    background: linear-gradient(163deg, var(--device-accent) 0%, #6fd3a7 100%);
-    border-radius: 50px;
-    box-shadow: 0 10px 18px rgba(31, 71, 57, 0.28);
-  }
-  .side {
-    position: absolute; width: 13px; height: 14%;
-    background: #2b2f36;
-    background-image:
-      repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
-      repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 4px);
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(6, 32, 22, 0.4);
-  }
-  .side-l { left: -13px; border-radius: 6px 0 0 6px; }
-  .side-r { right: -13px; border-radius: 0 6px 6px 0; }
-  .side-up, .side-select { top: 33.65%; }
-  .side-down, .side-back { top: 52.35%; }
-  .bezel {
-    position: relative; background: #101317; border-radius: 14px; padding: 5.9%;
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(206, 255, 232, 0.16);
-  }
-  .panel { position: relative; aspect-ratio: 3 / 4; }
-  .panel img {
-    display: block; width: 100%; height: 100%;
-    border-radius: 3px; image-rendering: pixelated;
-  }
-  .chin { display: flex; align-items: center; justify-content: center; padding: 12% 0 15.3%; }
-  .wordmark {
-    font-family: var(--mono); font-size: 20px; font-weight: 700;
-    letter-spacing: 0.34em; text-indent: 0.34em;
-    color: rgba(9, 42, 31, 0.7);
-    text-shadow: 0 1px 0 rgba(206, 255, 232, 0.3);
-  }
+    .device {
+      --device-size: 360px;
+      position: relative;
+      width: var(--device-size);
+      padding: calc(var(--device-size) * .05) calc(var(--device-size) * .055) 0;
+      border-radius: calc(var(--device-size) * .13);
+      background: linear-gradient(145deg, #55938d, var(--device-body) 38%, #346762);
+      box-shadow: inset 0 1px 2px #a7cec580, inset 0 -3px 4px #163f3b60,
+        0 18px 28px -9px #24331c50, 0 3px 5px #24331c20;
+    }
+    /* The lower shell shows at the heel, with a narrow seam along the sides. */
+    .device::before {
+      content: ""; position: absolute; z-index: -1;
+      inset: 5px -2px -7px;
+      border-radius: inherit;
+      background: linear-gradient(170deg, #619e8d 60%, var(--device-accent));
+      box-shadow: inset 0 -2px 2px #2c67524d, 0 8px 12px #24331c18;
+    }
+    .side {
+      position: absolute; z-index: -1; width: 9px; height: 12%;
+      background: repeating-linear-gradient(0deg, #234f49 0 2px, #2e5d55 2px 4px);
+      box-shadow: inset 0 0 0 1px #163b3580, 0 2px 2px #183d3530;
+      transition: transform .08s ease;
+    }
+    .side-l { left: -8px; border-radius: 5px 0 0 5px; }
+    .side-r { right: -8px; border-radius: 0 5px 5px 0; }
+    .side-up, .side-select { top: 32%; }
+    .side-down, .side-back { top: 49%; }
+    .side-l.pressed { transform: translateX(3px); }
+    .side-l.held { transform: translateX(4px); }
+    .side-r.pressed { transform: translateX(-3px); }
+    .side-r.held { transform: translateX(-4px); }
+    .bezel {
+      position: relative; padding: 10% 8% 9%;
+      border-radius: calc(var(--device-size) * .085);
+      background: linear-gradient(150deg, #242b29, #151c1a 65%);
+      box-shadow: inset 0 1px 1px #ffffff25, 0 0 0 1px #1b4d4780, 0 2px 1px #9ac8b550;
+    }
+    .panel { position: relative; aspect-ratio: 3 / 4; box-shadow: 0 0 0 2px #0b1412, 0 1px 2px 3px #00000025; }
+    .chin { display: flex; align-items: center; justify-content: center; padding: 10% 0 12%; }
+    .wordmark {
+      font-family: var(--mono); font-size: calc(var(--device-size) * .058); font-weight: 700;
+      letter-spacing: 0.16em; text-indent: 0.16em; /* re-centre the tracked glyphs */
+      color: #2d645d;
+      text-shadow: 0 1px 0 #a1c9bb70, 0 -1px 0 #1b4c4540;
+    }
+
+  .panel img { display: block; width: 100%; height: 100%; border-radius: 2px; image-rendering: pixelated; }
 </style>
 </head>
 <body>

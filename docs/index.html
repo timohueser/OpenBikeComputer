@@ -74,7 +74,7 @@
       --forest: #3c6b39;
       --coral: #cf6a2a;
       /* The device's own two-tone shell ("Forest / Celadon"), used only by the housing. */
-      --device-body: #2f6350;
+      --device-body: #488781;
       --device-accent: #8be3bc;
       --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
       --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -137,8 +137,8 @@
     .hero-grid {
       display: grid;
       grid-template-columns: 1.05fr 0.95fr;
-      grid-template-areas: "head head" "tour device" "cta device";
-      grid-template-rows: auto 1fr auto;
+      grid-template-areas: "head device" "tour device" "cta device";
+      grid-template-rows: auto auto 1fr;
       column-gap: 44px;
       row-gap: 20px;
       align-items: start;
@@ -146,7 +146,7 @@
     }
     .hero-head { grid-area: head; max-width: 48rem; }
     .hero-cta { grid-area: cta; }
-    .tour { grid-area: tour; align-self: stretch; }
+    .tour { grid-area: tour; align-self: start; }
     .device-col { grid-area: device; justify-self: center; }
 
     .eyebrow {
@@ -193,7 +193,7 @@
     }
 
     /* ---------- the ride-story card ----------
-       Four simulator scenarios plus two companion handoffs make one day rather than a feature
+       Five simulator scenarios plus two companion handoffs make one day rather than a feature
        carousel. The route motif stays inside this card, with no
        animated trail or page-wide decoration competing with the live device. */
     .tour { padding: 0 22px 14px; display: flex; flex-direction: column; overflow: hidden; }
@@ -240,16 +240,14 @@
     .tick.done { background: var(--wood); }
     .tick.at { background: var(--coral); }
 
-    /* The ride's six chapters live on a tiny strip map rather than in a carousel. Contours,
-       waypoints and the wandered line make the journey tangible, but the map stays inside the
-       story card and never animates continuously — the simulator remains the moving centrepiece. */
+    /* Chapter labels sit outside the route so the winding line stays clear. */
     .ride-chapters-label {
       border-top: 1px solid var(--parchment-3); padding-top: 11px;
       font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
       color: var(--ink-soft); text-transform: uppercase;
     }
     .dots {
-      position: relative; height: 156px; margin: 5px 0 -3px;
+      position: relative; height: 168px; margin: 5px 0 -3px;
       border-radius: 12px; overflow: hidden;
       background: rgba(236, 232, 207, 0.5);
     }
@@ -276,27 +274,26 @@
       user-select: none; -webkit-user-select: none;
       transition: color .12s ease;
     }
-    .dot:nth-of-type(1) { --ride-x: 13%; --ride-y: 69%; }
-    .dot:nth-of-type(2) { --ride-x: 28%; --ride-y: 35%; }
-    .dot:nth-of-type(3) { --ride-x: 43%; --ride-y: 67%; }
-    .dot:nth-of-type(4) { --ride-x: 57%; --ride-y: 34%; }
-    .dot:nth-of-type(5) { --ride-x: 72%; --ride-y: 68%; }
-    .dot:nth-of-type(6) { --ride-x: 87%; --ride-y: 28%; }
+    .dot:nth-of-type(1) { --ride-x: 9%; --ride-y: 70%; }
+    .dot:nth-of-type(2) { --ride-x: 22.6667%; --ride-y: 30%; }
+    .dot:nth-of-type(3) { --ride-x: 36.3333%; --ride-y: 70%; }
+    .dot:nth-of-type(4) { --ride-x: 50%; --ride-y: 30%; }
+    .dot:nth-of-type(5) { --ride-x: 63.6667%; --ride-y: 70%; }
+    .dot:nth-of-type(6) { --ride-x: 77.3333%; --ride-y: 30%; }
+    .dot:nth-of-type(7) { --ride-x: 91%; --ride-y: 70%; }
     .dot:hover .pip { transform: scale(1.08); background: var(--parchment-2); }
     .dot:focus-visible { outline: none; }
     .dot:focus-visible .pip { outline: 2px solid var(--amber); outline-offset: 3px; }
     .dot .ride-stop-copy {
-      position: absolute; left: 50%; width: 84px; transform: translateX(-50%);
+      position: absolute; left: 50%; width: 60px; transform: translateX(-50%);
       display: flex; flex-direction: column; align-items: center; gap: 2px;
       pointer-events: none;
     }
-    .dot:nth-of-type(odd) .ride-stop-copy { bottom: 38px; }
-    .dot:nth-of-type(even) .ride-stop-copy { top: 38px; }
-    .dot .ride-time {
-      font-family: var(--mono); font-size: 8.5px; font-weight: 700;
-      letter-spacing: 0.04em; color: var(--ink-soft);
-    }
-    .dot .dot-label { font-size: 11px; color: var(--ink); }
+    .dot:nth-of-type(odd) .ride-stop-copy { top: 40px; }
+    .dot:nth-of-type(even) .ride-stop-copy { bottom: 40px; }
+    .dot:first-of-type .ride-stop-copy { left: 0; transform: none; }
+    .dot:last-of-type .ride-stop-copy { left: auto; right: 0; transform: none; }
+    .dot .dot-label { font-size: 12px; line-height: 1.25; color: var(--ink); }
     .dot .pip {
       position: relative; z-index: 2;
       display: inline-flex; align-items: center; justify-content: center;
@@ -308,95 +305,58 @@
     }
     .dot .pip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; }
     .dot.past .pip { color: var(--parchment); background: var(--wood); }
-    .ride-here {
-      display: none; margin-top: 2px; padding: 2px 5px; border-radius: 999px;
-      font-family: var(--mono); font-size: 7.5px; font-weight: 700; letter-spacing: 0.05em;
-      color: var(--parchment); background: var(--coral); text-transform: uppercase; white-space: nowrap;
-    }
-    .dot:nth-of-type(odd) .ride-here { order: -1; margin: 0 0 2px; }
-    .dot[aria-selected="true"] { color: var(--ink); }
+    .dot[aria-selected="true"] .dot-label { color: var(--coral); font-weight: 700; }
     .dot[aria-selected="true"] .pip {
       background: var(--coral); border-color: var(--coral); color: var(--parchment);
       box-shadow: 0 0 0 4px rgba(207, 106, 42, 0.18), 0 0 0 7px rgba(236, 232, 207, 0.72);
     }
-    .dot[aria-selected="true"] .ride-here { display: inline-block; }
 
-    /* ---------- the device ----------
-       The housing is real DOM (the wasm draws only the 240×320 screen), tracing the current
-       industrial design: a two-tone shell (deep forest upper body seated on a celadon base
-       that shows as a lip round the bottom and sides), four rubber buttons — UP / DOWN on
-       the left flank, SELECT / BACK on the right — a deep black bezel, and the embossed OBC
-       wordmark. Responsive (percentage paddings + aspect-ratio keep the 3:4 screen registered
-       at any width) and crisp on any DPI. The canvas backing store stays 240×320; CSS scales
-       it with hard pixel edges. */
+    /* Forest / Celadon concept housing; only the panel is drawn by the firmware. */
     .device-col { display: flex; flex-direction: column; align-items: center; }
-    .device-stage { position: relative; outline: none; }
-    .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 4px; }
-    /* The celadon base the body is seated on: a slightly larger slab behind it, offset down,
-       so it reads as the lighter lower shell peeking out. */
-    /* Proportioned off the reference render: a ≈0.65 w:h body around the 3:4 panel, the bezel
-       reaching to within ~6% of each side, and a chin ≈22% of the height under it. */
+    .device-stage { position: relative; isolation: isolate; outline: none; }
+    .device-stage:focus-visible .device { outline: 3px solid var(--amber); outline-offset: 10px; }
     .device {
+      --device-size: min(310px, 76vw);
       position: relative;
-      /* 82vw leaves room for the pads + rim hanging off both flanks on a narrow phone. */
-      width: min(330px, 82vw);
-      padding: 5.2% 5.85% 0;
-      background: linear-gradient(163deg, #3d7a63 0%, var(--device-body) 48%, #1f4739 100%);
-      border-radius: clamp(28px, 13.6%, 46px);
-      box-shadow:
-        inset 0 2px 2px rgba(206, 255, 232, 0.28),
-        inset 0 -4px 8px rgba(6, 32, 22, 0.36),
-        0 22px 30px rgba(44, 33, 20, 0.30);
+      width: var(--device-size);
+      padding: calc(var(--device-size) * .05) calc(var(--device-size) * .055) 0;
+      border-radius: calc(var(--device-size) * .13);
+      background: linear-gradient(145deg, #55938d, var(--device-body) 38%, #346762);
+      box-shadow: inset 0 1px 2px #a7cec580, inset 0 -3px 4px #163f3b60,
+        0 18px 28px -9px #24331c50, 0 3px 5px #24331c20;
     }
-    /* The celadon base: an even rim on all four sides, concentric with the body. */
+    /* The lower shell shows at the heel, with a narrow seam along the sides. */
     .device::before {
       content: ""; position: absolute; z-index: -1;
-      inset: -1.95%;
-      background: linear-gradient(163deg, var(--device-accent) 0%, #6fd3a7 100%);
-      border-radius: clamp(30px, 15.5%, 50px);
-      box-shadow: 0 10px 18px rgba(31, 71, 57, 0.28);
+      inset: 5px -2px -7px;
+      border-radius: inherit;
+      background: linear-gradient(170deg, #619e8d 60%, var(--device-accent));
+      box-shadow: inset 0 -2px 2px #2c67524d, 0 8px 12px #24331c18;
     }
-    /* The four side buttons: dark textured rubber pads that protrude from each flank.
-       Decorative twins of the real controls underneath — they sink in when the matching
-       control does. UP/DOWN sit on the left, SELECT/BACK on the right, at matching heights. */
     .side {
-      position: absolute; width: 12px; height: 14%;
-      background: #2b2f36;
-      background-image:
-        repeating-linear-gradient(180deg, rgba(0,0,0,0.30) 0 1px, transparent 1px 4px),
-        repeating-linear-gradient(90deg, rgba(0,0,0,0.22) 0 1px, transparent 1px 4px);
-      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(6, 32, 22, 0.4);
-      transition: transform .08s ease, background-color .08s ease;
+      position: absolute; z-index: -1; width: 9px; height: 12%;
+      background: repeating-linear-gradient(0deg, #234f49 0 2px, #2e5d55 2px 4px);
+      box-shadow: inset 0 0 0 1px #163b3580, 0 2px 2px #183d3530;
+      transition: transform .08s ease;
     }
-    .side-l { left: -12px; border-radius: 6px 0 0 6px; }
-    .side-r { right: -12px; border-radius: 0 6px 6px 0; }
-    /* The pair straddles the body's vertical midpoint, as on the real device:
-       50% − (pad + gap/2) and 50% + gap/2, with pad 14% and gap 4.7%. */
-    .side-up, .side-select { top: 33.65%; }
-    .side-down, .side-back { top: 52.35%; }
-    /* A press sinks the pad into the body — so the direction flips with the flank. */
-    .side-l.pressed { transform: translateX(3px); background-color: #1f2229; }
-    .side-l.held { transform: translateX(4px); background-color: #171a20; }
-    .side-r.pressed { transform: translateX(-3px); background-color: #1f2229; }
-    .side-r.held { transform: translateX(-4px); background-color: #171a20; }
-    /* screen: a dark bezel recess holding the 3:4 panel */
+    .side-l { left: -8px; border-radius: 5px 0 0 5px; }
+    .side-r { right: -8px; border-radius: 0 5px 5px 0; }
+    .side-up, .side-select { top: 32%; }
+    .side-down, .side-back { top: 49%; }
+    .side-l.pressed { transform: translateX(3px); }
+    .side-l.held { transform: translateX(4px); }
+    .side-r.pressed { transform: translateX(-3px); }
+    .side-r.held { transform: translateX(-4px); }
     .bezel {
-      position: relative;
-      background: #101317;
-      border-radius: 14px;
-      padding: 5.9%;
-      box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.65), 0 1px 0 rgba(206, 255, 232, 0.16);
+      position: relative; padding: 10% 8% 9%;
+      border-radius: calc(var(--device-size) * .085);
+      background: linear-gradient(150deg, #242b29, #151c1a 65%);
+      box-shadow: inset 0 1px 1px #ffffff25, 0 0 0 1px #1b4d4780, 0 2px 1px #9ac8b550;
     }
-    .panel { position: relative; aspect-ratio: 3 / 4; }
+    .panel { position: relative; aspect-ratio: 3 / 4; box-shadow: 0 0 0 2px #0b1412, 0 1px 2px 3px #00000025; }
     canvas#device_canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-      background: var(--parchment);
-      border-radius: 3px;
-      outline: none;
-      touch-action: none;
-      image-rendering: pixelated; /* hard pixel edges, like the panel */
+      display: block; width: 100%; height: 100%; background: var(--parchment);
+      border-radius: 2px; outline: none; touch-action: none; image-rendering: pixelated;
     }
     /* Poster: a REAL device frame (native sim --png), shown inside the housing from first paint —
        so cold load, a wasm failure, and JS-off all show the device with a map, never an empty box.
@@ -426,12 +386,12 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     /* chin: the wordmark, softly embossed into the body */
-    .chin { display: flex; align-items: center; justify-content: center; padding: 12% 0 15.3%; }
+    .chin { display: flex; align-items: center; justify-content: center; padding: 10% 0 12%; }
     .wordmark {
-      font-family: var(--mono); font-size: clamp(14px, 6%, 19px); font-weight: 700;
-      letter-spacing: 0.34em; text-indent: 0.34em; /* re-centre the tracked glyphs */
-      color: rgba(9, 42, 31, 0.7);
-      text-shadow: 0 1px 0 rgba(206, 255, 232, 0.3);
+      font-family: var(--mono); font-size: calc(var(--device-size) * .058); font-weight: 700;
+      letter-spacing: 0.16em; text-indent: 0.16em; /* re-centre the tracked glyphs */
+      color: #2d645d;
+      text-shadow: 0 1px 0 #a1c9bb70, 0 -1px 0 #1b4c4540;
     }
 
     /* the one caption line — the only place the page makes the real-firmware claim */
@@ -488,6 +448,16 @@
     .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: modepulse 1.8s ease-out infinite; }
     @keyframes modepulse { 0% { box-shadow: 0 0 0 0 rgba(60,107,57,0.5); } 70%, 100% { box-shadow: 0 0 0 7px rgba(60,107,57,0); } }
 
+    .compass-control { width: min(310px, 100%); margin-top: 12px; }
+    .compass-control label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; }
+    .compass-control output { font-family: var(--mono); color: var(--forest); }
+    .compass-control input { width: 100%; height: 32px; margin: 0; accent-color: var(--forest); cursor: ew-resize; }
+    .compass-control small { display: block; text-align: center; font-size: 10px; color: var(--ink-soft); }
+    .drawer-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+    .drawer-ctl { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 8px 10px; min-height: 44px; }
+    .drawer-ctl small { color: var(--ink-soft); font-size: 10px; font-weight: 400; }
+    .drawer-ctl svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .drawer-ctl[data-chord="context"] svg { transform: rotate(180deg); }
     .ctl-hint { margin: 8px 0 0; font-size: 12px; color: var(--ink-soft); text-align: center; max-width: 24rem; }
     .ctl-hint kbd {
       font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
@@ -604,12 +574,8 @@
       .nav-links { gap: 16px; }
       .ride-log-head { align-items: flex-start; }
       .ride-log-head .route { max-width: 12rem; }
-      .dots { height: 156px; }
-      .dot .ride-stop-copy { display: none; width: 64px; gap: 1px; }
-      .dot[aria-selected="true"] .ride-stop-copy { display: flex; }
-      .dot .ride-time { font-size: 7.5px; }
-      .dot .dot-label { font-size: 9.5px; }
-      .dot[aria-selected="true"] .ride-here { display: none; }
+      .drawer-ctl small { display: none; }
+      .dot .ride-stop-copy { width: 46px; }
       .now .label { flex: 1; }
       .now .ticks { display: none; }
       footer .wrap { gap: 10px; }
@@ -689,8 +655,8 @@
           </a>
         </div>
 
-        <!-- One ride, told in six interactive moments: a small companion-app handoff at either
-             end around the four real-firmware chapters. Every chapter keeps its shareable
+        <!-- One ride, told in seven interactive moments: a small companion-app handoff at either
+             end around the five real-firmware chapters. Every chapter keeps its shareable
              #demo/<id> URL; both the strip map and phone preview stay secondary to the device. -->
         <div class="card tour" id="tour_card">
           <div class="ride-log-head">
@@ -712,7 +678,7 @@
             <span class="ticks hidden" id="demo_ticks" aria-hidden="true"></span>
           </div>
           <div class="ride-chapters-label">From route upload to ride log</div>
-          <div class="dots" id="scenarios" role="tablist" aria-label="The ride’s six demo chapters">
+          <div class="dots" id="scenarios" role="tablist" aria-label="The ride’s seven demo chapters">
             <svg class="ride-strip-map" viewBox="0 0 520 174" preserveAspectRatio="none" aria-hidden="true">
               <g class="ride-contour">
                 <path d="M-24 37 C70 3 132 57 225 29 S399 12 552 39" />
@@ -720,30 +686,34 @@
                 <path d="M-36 103 C62 69 131 120 229 94 S402 77 555 105" />
                 <path d="M-28 139 C68 105 139 156 236 130 S407 112 548 142" />
               </g>
-              <path class="ride-route-bed" d="M68 120 C99 118 116 64 146 61 C176 58 194 117 224 116 C254 115 266 61 296 59 C326 57 344 119 374 118 C404 117 422 51 452 49" />
-              <path class="ride-leg" data-ride-leg="0" d="M68 120 C99 118 116 64 146 61" />
-              <path class="ride-leg" data-ride-leg="1" d="M146 61 C176 58 194 117 224 116" />
-              <path class="ride-leg" data-ride-leg="2" d="M224 116 C254 115 266 61 296 59" />
-              <path class="ride-leg" data-ride-leg="3" d="M296 59 C326 57 344 119 374 118" />
-              <path class="ride-leg" data-ride-leg="4" d="M374 118 C404 117 422 51 452 49" />
+              <path class="ride-route-bed" d="M46.8 121.8 C74.8 121.8 89.87 52.2 117.87 52.2 C145.87 52.2 160.93 121.8 188.93 121.8 C216.93 121.8 232.0 52.2 260.0 52.2 C288.0 52.2 303.07 121.8 331.07 121.8 C359.07 121.8 374.13 52.2 402.13 52.2 C430.13 52.2 445.2 121.8 473.2 121.8" />
+              <path class="ride-leg" data-ride-leg="0" d="M46.8 121.8 C74.8 121.8 89.87 52.2 117.87 52.2" />
+              <path class="ride-leg" data-ride-leg="1" d="M117.87 52.2 C145.87 52.2 160.93 121.8 188.93 121.8" />
+              <path class="ride-leg" data-ride-leg="2" d="M188.93 121.8 C216.93 121.8 232.0 52.2 260.0 52.2" />
+              <path class="ride-leg" data-ride-leg="3" d="M260.0 52.2 C288.0 52.2 303.07 121.8 331.07 121.8" />
+              <path class="ride-leg" data-ride-leg="4" d="M331.07 121.8 C359.07 121.8 374.13 52.2 402.13 52.2" />
+              <path class="ride-leg" data-ride-leg="5" d="M402.13 52.2 C430.13 52.2 445.2 121.8 473.2 121.8" />
             </svg>
-            <button class="dot" type="button" role="tab" data-scn="0" aria-label="05:55 — Load route" disabled>
-              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="ride-time">05:55</span><span class="dot-label">Load route</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="0" aria-label="Load route" disabled>
+              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="dot-label">Load route</span></span>
             </button>
-            <button class="dot" type="button" role="tab" data-scn="1" aria-label="06:40 — Roll out" disabled>
-              <span class="pip">1</span><span class="ride-stop-copy"><span class="ride-time">06:40</span><span class="dot-label">Roll out</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="1" aria-label="Roll out" disabled>
+              <span class="pip">1</span><span class="ride-stop-copy"><span class="dot-label">Roll out</span></span>
             </button>
-            <button class="dot" type="button" role="tab" data-scn="2" aria-label="10:15 — The pass" disabled>
-              <span class="pip">2</span><span class="ride-stop-copy"><span class="ride-time">10:15</span><span class="dot-label">The pass</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="2" aria-label="The pass" disabled>
+              <span class="pip">2</span><span class="ride-stop-copy"><span class="dot-label">The pass</span></span>
             </button>
-            <button class="dot" type="button" role="tab" data-scn="3" aria-label="13:05 — Next stop" disabled>
-              <span class="pip">3</span><span class="ride-stop-copy"><span class="ride-time">13:05</span><span class="dot-label">Next stop</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="3" aria-label="Peak view" disabled>
+              <span class="pip">3</span><span class="ride-stop-copy"><span class="dot-label">Peak view</span></span>
             </button>
-            <button class="dot" type="button" role="tab" data-scn="4" aria-label="16:45 — Plan B" disabled>
-              <span class="pip">4</span><span class="ride-stop-copy"><span class="ride-time">16:45</span><span class="dot-label">Plan B</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="4" aria-label="Next stop" disabled>
+              <span class="pip">4</span><span class="ride-stop-copy"><span class="dot-label">Next stop</span></span>
             </button>
-            <button class="dot" type="button" role="tab" data-scn="5" aria-label="20:10 — Ride log" disabled>
-              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="ride-time">20:10</span><span class="dot-label">Ride log</span><span class="ride-here">You are here</span></span>
+            <button class="dot" type="button" role="tab" data-scn="5" aria-label="Plan B" disabled>
+              <span class="pip">5</span><span class="ride-stop-copy"><span class="dot-label">Plan B</span></span>
+            </button>
+            <button class="dot" type="button" role="tab" data-scn="6" aria-label="Ride log" disabled>
+              <span class="pip"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="1.5" width="9" height="13" rx="2"/><path d="M7 12h2"/></svg></span><span class="ride-stop-copy"><span class="dot-label">Ride log</span></span>
             </button>
           </div>
         </div>
@@ -753,7 +723,7 @@
              seam. -->
         <div class="device-col">
           <div class="device-stage" id="device_stage" tabindex="0" role="application"
-            aria-label="Live device demo — up and down arrow keys scroll, Enter selects, Backspace goes back">
+            aria-label="Live device demo — up and down arrow keys scroll, Enter selects, Backspace goes back; Q opens the quick drawer, C opens the context drawer">
             <div class="device" id="device_housing">
               <span class="side side-l side-up" id="side_up" aria-hidden="true"></span>
               <span class="side side-l side-down" id="side_down" aria-hidden="true"></span>
@@ -790,6 +760,15 @@
             <button class="ctl" data-btn="press" disabled>Select</button>
             <button class="ctl" data-btn="back" disabled>Back</button>
           </div>
+          <div class="compass-control" id="compass_control" hidden>
+            <label for="compass_heading">Look around <output id="compass_value">250°</output></label>
+            <input id="compass_heading" type="range" min="0" max="359" value="250" aria-label="Compass heading in degrees" />
+            <small>Turn the device · Select returns from peak selection</small>
+          </div>
+          <div class="drawer-controls" role="group" aria-label="Device drawers">
+            <button class="ctl drawer-ctl" data-chord="quick" title="Up + Select · keyboard Q" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Quick drawer <small>top</small></button>
+            <button class="ctl drawer-ctl" data-chord="context" title="Down + Back · keyboard C" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg> Context drawer <small>bottom</small></button>
+          </div>
           <!-- Play / take-control toggle + live-vs-guided mode line. Tapping the toggle (or any
                device control) while a demo plays "takes control": the scripted step engine cancels
                and the visitor drives from where the demo left off. Everything stays disabled until
@@ -802,7 +781,7 @@
               <span class="mode-live"><span class="mode-dot"></span>Live</span> — your device, your controls
             </p>
           </div>
-          <p class="ctl-hint">Or on a keyboard: <kbd>↑</kbd> <kbd>↓</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back — hold for a long-press.</p>
+          <p class="ctl-hint">Or on a keyboard: <kbd>↑</kbd> <kbd>↓</kbd> scroll · <kbd>Enter</kbd> select · <kbd>Backspace</kbd> back (hold for the menu). <kbd>Q</kbd> quick drawer · <kbd>C</kbd> context drawer.</p>
         </div>
       </div>
     </section>
@@ -862,7 +841,7 @@
     <div class="wrap">
       <div class="wip">
         <span class="wip-dot" aria-hidden="true"></span>
-        <p><b>Work in progress.</b> This site and the project behind it are still being built — wording and features will change, and proper documentation is on the way.</p>
+        <p><b>Work in progress.</b> This site and the project behind it are still being built — wording and features will change, and the documentation grows with the project.</p>
       </div>
     </div>
   </section>
@@ -883,6 +862,7 @@
            the credit and the licence pointer belong on this page. Same line in the docs and blog
            shells and in the builder's own footer. -->
       <div class="credit">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, under the <a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener">ODbL</a>.</div>
+      <div class="credit">Terrain produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.</div>
     </div>
   </footer>
 
@@ -929,6 +909,9 @@
 
       var poster = document.getElementById('device_poster');
       var loading = document.getElementById('loading_text');
+      var compassControl = document.getElementById('compass_control');
+      var compassHeading = document.getElementById('compass_heading');
+      var compassValue = document.getElementById('compass_value');
       var controls = document.querySelector('.controls');
       var toggle = document.getElementById('demo_toggle');
       var toggleLabel = toggle && toggle.querySelector('.dt-label');
@@ -1019,7 +1002,7 @@
       // rename fails `cargo test` instead of silently turning a tour into a timeout march. Keep each
       // `until:` array on ONE line with plain "String" literals (no comments, no expressions).
       //
-      // Scenario order is the whole loop: load route → ride → climb → next stop → plan B → ride log.
+      // Scenario order is the whole loop: load route → ride → climb → peaks → next stop → plan B → ride log.
       // Each scenario's `id` is its shareable #demo/<id> deep link.
       // ------------------------------------------------------------------------------------------
       var SCENARIOS = [
@@ -1044,7 +1027,7 @@
           blurb: '<b>The road starts climbing out of the valley.</b> Take the device from here and ride it exactly like the computer on your bars.',
           highlights: [
             'The map follows your position as you climb',
-            'Scroll to zoom · hold Back for the menu',
+            'Zoom with Up/Down · open either drawer below',
             'Everything runs on-device — no signal needed'
           ],
           staged: false, steps: []
@@ -1062,6 +1045,21 @@
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['back'], until: ["Statistics"], label: 'Back cycles to ride statistics' },
             { cmds: ['back'], until: ["Climb"], label: 'The climb ahead — stay here' }
+          ]
+        },
+        {
+          id: 'peaks', title: 'Put a name to the skyline',
+          blurb: '<b>Take a breath and look beyond the pass.</b> Peak View draws the terrain around you and names the summits in the distance.',
+          highlights: [
+            'A panorama built from the map’s terrain',
+            'Peak names, heights and distances',
+            'Turn the compass below · Up/Down select a peak'
+          ],
+          staged: true,
+          steps: [
+            { cmds: ['enter', 'seek:3000', 'pause'], until: ["Map"], label: 'Stop for a look around' },
+            { cmds: ['heading:250', 'backhold'], until: ["Menu"], label: 'Open the main menu' },
+            { cmds: ['step:4', 'press'], until: ["PeakView"], label: 'The skyline around the Grimsel', dwell: 6000 }
           ]
         },
         {
@@ -1310,8 +1308,8 @@
           var t0 = performance.now();
           (function poll() {
             if (token !== runToken) return resolve('cancelled');
-            if (targets.indexOf(screenName()) >= 0) return resolve('reached');
-            if (performance.now() - t0 > 12000) return resolve('timeout');
+            if (targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
+            if (performance.now() - t0 > (targets.indexOf('PeakView') >= 0 ? 45000 : 12000)) return resolve('timeout');
             setTimeout(poll, 90);
           })();
         });
@@ -1456,6 +1454,13 @@
           ctx.putImageData(new ImageData(api.obc_demo_frame(), 240, 320), 0, 0);
         }
         goLiveIfReady();
+        var looking = screenName() === 'PeakView';
+        if (looking && compassControl.hidden) {
+          compassHeading.value = api.obc_demo_heading();
+          compassValue.textContent = compassHeading.value + '°';
+        }
+        compassControl.hidden = !api.obc_demo_peak_active();
+        compassHeading.disabled = !looking;
       }
       function startLoop() { if (rafId === null) rafId = requestAnimationFrame(frame); }
       function stopLoop() {
@@ -1529,6 +1534,7 @@
       }
       addEventListener('TrunkApplicationStarted', function () {
         loaded = true;
+        failed = false; // A slow terrain download can complete after the poster fallback.
         clearTimeout(fallbackTimer);
         api = window.wasmBindings;
         renderScenarioChrome();
@@ -1600,7 +1606,7 @@
       document.querySelectorAll('.ctl[data-btn]').forEach(function (btn) {
         var g = btn.getAttribute('data-btn'); // 'press' | 'back'
         var h = holdable(g, g === 'press' ? 'hold' : 'backhold', [btn, g === 'press' ? sideSelect : sideBack]);
-        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!ready()) return; stage.focus(); grabIfDemo(); h.down(); });
+        btn.addEventListener('pointerdown', function (e) { e.preventDefault(); if (!ready()) return; stage.focus({ preventScroll: true }); grabIfDemo(); h.down(); });
         btn.addEventListener('pointerup', function (e) { e.preventDefault(); if (!ready()) return; h.up(false); });
         btn.addEventListener('pointerleave', function () { if (ready()) h.up(true); });
         btn.addEventListener('pointercancel', function () { if (ready()) h.up(true); });
@@ -1617,7 +1623,7 @@
         btn.addEventListener('pointerdown', function (e) {
           e.preventDefault();
           if (!ready()) return;
-          stage.focus();
+          stage.focus({ preventScroll: true });
           grabIfDemo();
           btn.classList.add('pressed');
           if (pad) pad.classList.add('pressed');
@@ -1629,6 +1635,22 @@
         btn.addEventListener('click', function (e) { e.preventDefault(); });
       });
 
+      compassHeading.addEventListener('input', function () {
+        if (!ready()) return;
+        grabIfDemo();
+        compassValue.textContent = compassHeading.value + '°';
+        cmd('heading:' + compassHeading.value);
+      });
+
+      document.querySelectorAll('.drawer-ctl').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (!ready()) return;
+          stage.focus({ preventScroll: true });
+          grabIfDemo();
+          cmd(btn.getAttribute('data-chord'));
+        });
+      });
+
       // ---- keyboard, scoped to the focused device stage ----------------------------------------
       var keys = {
         Enter: holdable('press', 'hold', [sideSelect]),
@@ -1636,7 +1658,10 @@
       };
       stage.addEventListener('keydown', function (e) {
         if (!ready()) return;
-        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (e.key.toLowerCase() === 'q' || e.key.toLowerCase() === 'c') {
+          e.preventDefault();
+          if (!e.repeat) { grabIfDemo(); cmd(e.key.toLowerCase() === 'q' ? 'quick' : 'context'); }
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
           e.preventDefault();
           grabIfDemo();
           var down = e.key === 'ArrowDown';

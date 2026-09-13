@@ -34,16 +34,15 @@ pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 // The embedded demo payload (epic #624 S4, #637). The wasm-only map stays app-owned; shared
 // authored route/replay sources live in the fixture registry so other components never reach
 // through this app's asset directory.
-const DEMO_MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
+pub(crate) const DEMO_MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
 const DEMO_ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 const DEMO_RIDE_GPX: &str = include_str!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx");
 
 /// Replay-speed multiplier: 3× a normal climbing pace keeps the map moving without a blur.
 const DEMO_SPEED: f32 = 3.0;
 
-/// Zoom multiplier over the fit-the-bbox camera: tightens the opening view to a riding scale so
-/// the switchbacks are visible.
-const DEMO_ZOOM: f32 = 12.0;
+/// Keep the opening map at riding scale even when a refreshed extract has distant boundary nodes.
+const DEMO_MPP: f32 = 6.4;
 
 /// The GPX playback time (seconds) a guided-demo baseline (`enter`) seeks to: mid the ride's
 /// first climb, so a climb is active for "see the climb ahead" and the map sits in the
@@ -80,6 +79,7 @@ pub enum Cmd {
     Play,
     Pause,
     Seek(f64),
+    Heading(f32),
     /// Rebuild the idle device that waits underneath the phone-to-device handoff.
     StageUpload,
     /// Deliver the same typed upload event the BLE host posts after committing the embedded route.
@@ -99,14 +99,14 @@ pub enum Cmd {
 }
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
-/// `hold`, `backhold`, `context` (the Down+Back squeeze that opens a screen's contextual drawer),
-/// `step:<n>` (signed Up/Down steps), `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`,
-/// `upload`, `receive`. `None` for unknown or malformed input — the page can't crash the demo with
-/// a typo.
+/// `hold`, `backhold`, `quick` (Up+Select), `context` (Down+Back), `step:<n>` (signed Up/Down),
+/// `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`, `upload`, `receive`,
+/// `heading:<degrees>` (stop and turn the simulated compass). Unknown or malformed input is ignored.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
     match cmd {
         "press" => Some(Cmd::Gesture(Gesture::Press)),
         "context" => Some(Cmd::Chord(obc_app::Chord::Context)),
+        "quick" => Some(Cmd::Chord(obc_app::Chord::Quick)),
         "back" => Some(Cmd::Gesture(Gesture::Back)),
         "hold" => Some(Cmd::Gesture(Gesture::Hold)),
         "backhold" => Some(Cmd::Gesture(Gesture::BackHold)),
@@ -122,6 +122,8 @@ pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
                 n.trim().parse::<i32>().ok().map(|n| Cmd::Gesture(Gesture::Step(n)))
             } else if let Some(t) = other.strip_prefix("seek:") {
                 t.trim().parse::<f64>().ok().map(Cmd::Seek)
+            } else if let Some(heading) = other.strip_prefix("heading:") {
+                heading.trim().parse::<f32>().ok().filter(|n| n.is_finite()).map(Cmd::Heading)
             } else {
                 None
             }
@@ -150,6 +152,21 @@ pub enum Baseline {
     Upload,
 }
 
+#[derive(Default)]
+struct Compass(Option<f32>);
+impl obc_ports::CompassSource for Compass {
+    fn poll(&mut self) -> Option<f32> {
+        self.0
+    }
+}
+
+struct StoppedFix(Option<obc_ports::Fix>);
+impl obc_ports::LocationSource for StoppedFix {
+    fn poll(&mut self) -> Option<obc_ports::Fix> {
+        self.0.take()
+    }
+}
+
 pub struct Demo {
     map: FlatMap,
     /// The shared app (~136 KB — heap-allocated: a by-value `App` temporary is exactly the kind
@@ -164,6 +181,7 @@ pub struct Demo {
     tracks: MemTrackStore,
     player: GpxPlayer,
     baro: BaroSensor,
+    compass: Compass,
     /// The shared typed executor: the next pass's outcomes and facts, and the in-flight route plan
     /// (stepped once per tick). Every sequencing decision lives in `obc-host-core`, not here.
     host: HostLoop,
@@ -171,6 +189,8 @@ pub struct Demo {
     /// render (so the map opens without a per-frame `RouteIndex` reparse).
     session: ActiveRouteSession,
     frame: RgbaFrame,
+    peaks: crate::peak_view::Runtime,
+    elevation: obc_elevation::TerrainElevation<'static, 4>,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
     /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
     /// one frame, e.g. `["step:2", "press"]`, and relies on the app draining them in that order
@@ -235,9 +255,13 @@ impl Demo {
             tracks: MemTrackStore::new(),
             player,
             baro: BaroSensor::new(),
+            compass: Compass::default(),
             host: HostLoop::new(),
             session: ActiveRouteSession::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
+            peaks: crate::peak_view::Runtime::new(),
+            elevation: obc_elevation::TerrainElevation::parse(&*crate::peak_view::TERRAIN)
+                .expect("demo elevation parses"),
             queue: Vec::new(),
             last_now_ms: None,
             ui_offset_ms: 0,
@@ -270,6 +294,22 @@ impl Demo {
         self.ready
     }
 
+    pub fn peak_active(&self) -> bool {
+        self.app.peak_view_is_base()
+    }
+
+    pub fn heading(&self) -> u16 {
+        self.app.peak_view_heading_q4() / 4
+    }
+
+    pub fn peak_ready(&self) -> bool {
+        self.peaks.panorama().is_some_and(|panorama| {
+            self.app.state.peak_view_profile.is_some_and(|profile| {
+                panorama.view_ready(self.app.peak_view_heading_q4(), profile.horizontal_fov_q4())
+            })
+        })
+    }
+
     /// The rendered RGBA frame ([`FRAME_W`]`×`[`FRAME_H`]`×4` bytes), for `putImageData`.
     pub fn frame(&self) -> &[u8] {
         self.frame.as_rgba()
@@ -296,6 +336,10 @@ impl Demo {
             self.apply(cmd, &mut gestures);
         }
 
+        if self.app.peak_view_is_base() {
+            self.player.pause();
+        }
+        self.peaks.update(&mut self.app, &self.map.reader());
         self.arm_baseline_ride();
         let plan = self.device_frame(self.ui_now(), dt, &gestures);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
@@ -306,7 +350,7 @@ impl Demo {
         // Ambient: restart the climb at the summit so the page stays alive. Point-to-point, so
         // bump the tracking session to clear the breadcrumb + totals (a fresh lap instead of
         // dragging a trail across the map). Suspended while a guided demo owns playback.
-        if !self.tour_active && !self.player.is_playing() {
+        if !self.tour_active && !self.player.is_playing() && !self.app.peak_view_is_base() {
             self.player.play();
             self.app.recorder.request(obc_app::RecorderIntent::Start);
         }
@@ -327,18 +371,27 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            self.app.render_frame(
+            self.app.render_scene_map_rain_timed(
                 Some(&mut self.scratch),
                 &mut self.frame,
-                &reader,
+                Some(&reader),
+                Some(&reader),
                 route.as_ref(),
+                None,
+                None,
+                self.peaks.panorama(),
                 FRAME_W as f32,
                 FRAME_H as f32,
                 |c| {
                     let (r, g, b) = rgb565_to_device64(c);
                     Rgb888::new(r, g, b)
                 },
+                &obc_render::NoopClock,
             );
+            self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
+                let (r, g, b) = rgb565_to_device64(c);
+                Rgb888::new(r, g, b)
+            });
             self.ready = true;
             return true;
         }
@@ -359,15 +412,28 @@ impl Demo {
         // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
         // reparse (the acceptance-criterion fix): the index is kept until the active bytes change.
         self.session.sync(&self.app, &mut self.routes);
+        // Pausing replay freezes its clock; publish one stopped GPS fix so the real compass
+        // path can take over from the last moving course.
+        let mut stopped = StoppedFix(
+            self.app
+                .state
+                .user_fix
+                .filter(|fix| self.compass.0.is_some() && !self.player.is_playing() && fix.course.is_some())
+                .map(|fix| obc_ports::Fix { course: None, speed_mps: Some(0.0), ..fix }),
+        );
+        let stopped_fix = stopped.0.is_some();
         let mut plan = {
             let route_src = self.routes.active_source();
             let route = match (self.session.index(), route_src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            // Advance the ride and hand the pass the playback clock (no compass on the web — the
-            // replay's GPS course orients the heading-up map).
-            let (ride, sensors) = replay_advance(&mut self.player, &mut self.baro, None, dt, ReplaySensors::default());
+            // GPS course orients the moving map; the compass control lets a stopped rider look around.
+            let (ride, mut sensors) =
+                replay_advance(&mut self.player, &mut self.baro, Some(&mut self.compass), dt, ReplaySensors::default());
+            if stopped_fix {
+                sensors.loc = &mut stopped;
+            }
             self.host.pass(
                 &mut self.app,
                 PassClock { ride, ui: InputClock(ui_ms) },
@@ -392,9 +458,7 @@ impl Demo {
             &mut self.tracks,
             &mut (),
             &reader,
-            // The demo page ships one embedded `.obcm` and no terrain beside it (EL7): the null
-            // source keeps a planned route exactly as flat as it has always been here.
-            &mut obc_route::NullElevation,
+            &mut self.elevation,
             &mut (),
         );
         plan
@@ -415,9 +479,17 @@ impl Demo {
             Cmd::Chord(c) => {
                 self.app.apply_chord(c);
             }
-            Cmd::Play => self.player.play(),
+            Cmd::Play => {
+                if !self.app.peak_view_is_base() {
+                    self.player.play();
+                }
+            }
             Cmd::Pause => self.player.pause(),
             Cmd::Seek(t) => self.player.seek(t),
+            Cmd::Heading(degrees) => {
+                self.compass.0 = Some(degrees.rem_euclid(360.0));
+                self.player.pause();
+            }
             Cmd::StageUpload => self.reset(Baseline::Upload),
             Cmd::ReceiveRoute => {
                 if let Some(&id) = self.routes.ids().first() {
@@ -428,7 +500,9 @@ impl Demo {
             Cmd::Exit => {
                 // "Take control": leave the device where the demo parked it, controls live.
                 self.tour_active = false;
-                self.player.play();
+                if !self.app.peak_view_is_base() {
+                    self.player.play();
+                }
             }
             Cmd::Ambient => self.reset(Baseline::Ambient),
         }
@@ -451,13 +525,16 @@ impl Demo {
         // being caught by the ambient "replay ended → start a fresh session" loop.
         self.tour_active = baseline != Baseline::Ambient;
 
-        let (cx, cy, zoom) = {
+        let (cx, cy, _) = {
             let reader = self.map.reader();
             initial_camera(&reader, FRAME_W)
         };
-        let mut state = AppState::new(cx, cy, zoom * DEMO_ZOOM);
+        let mut state = AppState::new(cx, cy, obc_render::zoom_for_mpp(DEMO_MPP));
         state.mode = CameraMode::Follow;
         state.heading_up = true;
+        state.peak_view_profile = Some(obc_app::PeakViewProfile::at(0, 0, 0));
+        self.peaks.reset();
+        self.compass.0 = None;
         let mut app = if baseline == Baseline::Upload { App::new_idle(state) } else { App::new(state) };
         // The page keeps one RGBA frame and repaints it on demand, so every render is a render over
         // the last one — which is what lets a drawer's sheet grow over a base the frame no longer
@@ -585,6 +662,65 @@ mod tests {
         let src = SliceSource(DEMO_MAP);
         let tables = MapTables::parse(&src).expect("the shipped demo payload parses at this build's OBCM version");
         assert!(tables.bbox.max_lat > tables.bbox.min_lat, "and it carries a real bbox, not a stub");
+    }
+
+    #[test]
+    fn drawers_and_live_peaks_use_the_shipped_map() {
+        let mut d = Demo::new();
+        let mut now = 0.0;
+        d.tick(now);
+        drive(&mut d, &mut now, "quick", "QuickDrawer");
+        drive(&mut d, &mut now, "quick", "Map");
+        drive(&mut d, &mut now, "context", "ContextDrawer");
+        drive(&mut d, &mut now, "back", "Map");
+        drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "seek:3000", "Map");
+        drive(&mut d, &mut now, "heading:250", "Map");
+        drive(&mut d, &mut now, "backhold", "Menu");
+        drive(&mut d, &mut now, "step:4", "Menu");
+        drive(&mut d, &mut now, "press", "PeakView");
+        assert!(!d.peak_ready(), "opening yields before terrain work");
+        for _ in 0..1200 {
+            now += 16.0;
+            d.tick(now);
+            if d.peak_ready() {
+                break;
+            }
+        }
+        assert!(d.peak_ready(), "the real DEM builds a visible panorama in bounded frames");
+        assert!(d.app.state.peak_view_peak_count > 0, "named summits come from the map");
+        for _ in 0..1200 {
+            now += 16.0;
+            d.tick(now);
+        }
+        let visible: Vec<_> = d.app.state.peak_view_peaks[..d.app.state.peak_view_peak_count as usize]
+            .iter()
+            .filter(|p| p.visible)
+            .map(|p| (p.name.as_str(), p.azimuth_q4))
+            .collect();
+        assert!(!visible.is_empty(), "the skyline has named visible summits");
+        let observer = d.app.state.peak_view_profile.unwrap();
+        assert!(observer.observer_elevation_m > 1000, "ground height comes from the DEM");
+        drive(&mut d, &mut now, "exit", "PeakView");
+        assert!(!d.player.is_playing(), "looking around keeps the rider stopped");
+        drive(&mut d, &mut now, "quick", "QuickDrawer");
+        drive(&mut d, &mut now, "quick", "PeakView");
+        assert!(d.peak_ready(), "a drawer retains the built view");
+        drive(&mut d, &mut now, "play", "PeakView");
+        assert!(!d.player.is_playing(), "resuming the page keeps the lookout stopped");
+        drive(&mut d, &mut now, "heading:90", "PeakView");
+        for _ in 0..1200 {
+            now += 16.0;
+            d.tick(now);
+            if d.peak_ready() {
+                break;
+            }
+        }
+        assert!(d.peak_ready());
+        assert_eq!(d.app.peak_view_heading_q4(), 360, "the compass turns the actual view");
+        drive(&mut d, &mut now, "back", "Menu");
+        drive(&mut d, &mut now, "ambient", "Map");
+        assert!(d.peaks.panorama().is_none());
     }
 
     /// The page-opening contract: the first tick renders (ready), the demo opens on the live Map,
