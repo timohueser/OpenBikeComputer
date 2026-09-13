@@ -45,7 +45,10 @@ impl Platform for Hook<'_, '_> {
         let Some(source) = job.source else { return false };
         let mut profile = PeakViewProfile::at(position.0, position.1, 0);
         profile.default_heading_q4 = app.peak_view_heading_q4();
-        let Some(arm) = crate::arena::claim_peak(&mut profile, source, self.reader) else { return false };
+        let Some(arm) = crate::arena::claim_peak(&mut profile, source, self.reader) else {
+            defmt::warn!("peak-view: could not start at {=i32},{=i32}", position.0, position.1);
+            return false;
+        };
         app.state.peak_view_profile = Some(profile);
         job.arm = Some(arm);
         job.search = Default::default();
@@ -67,6 +70,11 @@ impl Platform for Hook<'_, '_> {
             arm.builder.step(&mut arm.terrain, 16);
         }
         if arm.terrain.failed() {
+            defmt::warn!(
+                "peak-view: terrain failed after {=u64} ms, progress {=u8}",
+                job.started.elapsed().as_millis(),
+                arm.builder.progress()
+            );
             return Err(Failed);
         }
         if arm.builder.complete() {
@@ -74,7 +82,13 @@ impl Platform for Hook<'_, '_> {
                 defmt::info!("peak-view: generated in {=u64} ms", job.started.elapsed().as_millis());
             }
             job.revision += 1;
-            job.search.refill(&mut arm.builder, self.reader).map_err(|_| Failed)?;
+            job.search.refill(&mut arm.builder, self.reader).map_err(|error| {
+                defmt::warn!("peak-view: summit refill failed: {}", defmt::Debug2Format(&error));
+                Failed
+            })?;
+            if arm.builder.complete() {
+                defmt::info!("peak-view: ready in {=u64} ms", job.started.elapsed().as_millis());
+            }
         }
         for (out, peak) in app.state.peak_view_peaks.iter_mut().zip(arm.builder.display_peaks()) {
             *out = peak;

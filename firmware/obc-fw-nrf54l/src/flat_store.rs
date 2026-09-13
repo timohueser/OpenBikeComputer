@@ -152,9 +152,13 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?;
+        })
+        .and_then(core::convert::identity);
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
+        if let Err(error) = result {
+            defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+        }
         result
     }
 
