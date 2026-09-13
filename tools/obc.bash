@@ -28,7 +28,7 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "fixtures sim weather flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
+  echo "fixtures sim weather board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -109,6 +109,8 @@ _obc() {
       _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
     docs)
       (( idx == 0 )) && _obc_reply < <(compgen -W "status check" -- "$cur") ;;
+    board)
+      (( idx == 0 )) && _obc_reply < <(compgen -W "doctor run download attach reset" -- "$cur") ;;
     flash-boot)
       _obc_reply < <(compgen -W "rtt build" -- "$cur") ;;
     check)
