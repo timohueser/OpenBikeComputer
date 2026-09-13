@@ -957,7 +957,7 @@ The selected map is the lowest-ID Map object; replace that object when testing a
 
 Open Peak View from the menu after a GPS fix. Before the first fix, the screen shows
 "Waiting for GPS...". The observer height comes from the terrain plus two metres. The normal view starts at about
-60° horizontal width and expands upward when nearby summit elevations require more headroom.
+90° horizontal width and expands upward when nearby summit elevations require more headroom.
 Shallow relief receives up to a 2.4× boost over the base 1.25× vertical scale; steep views keep the base scale. The scale is
 fixed for the observer and does not change when turning. Each bearing sector reserves one
 summit candidate slot for its tallest landmark.
