@@ -130,6 +130,8 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
         max_power: None,
     };
     assert!(matches!(rides.finalize(stats), RideClose::Failed));
+    assert_eq!(rides.delete_by_id(replaced.id.0), Ok(true));
+    assert_eq!(rides.delete_by_id(replaced.id.0), Ok(false), "confirmed absence before a catalog reload");
     // Unreadable card metadata must fail refresh, not publish unsynced defaults.
     {
         let owner = owner.0.lock().unwrap();

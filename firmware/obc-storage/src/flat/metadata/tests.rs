@@ -463,7 +463,6 @@ fn policy_read_barrier_reconciles_live_remount_without_exposing_uncertain_stamps
         assert_eq!(result, Err(Error::RemountRequired));
         assert!(device.fired());
         // Do not reboot: the live device still exposes the gate whose sync was refused.
-        drop(store);
         let mounted = FlatStore::mount(&device);
         let mut bytes = [0; MAX_LEN];
         let mut metadata = Metadata::new(&mounted);
@@ -473,7 +472,6 @@ fn policy_read_barrier_reconciles_live_remount_without_exposing_uncertain_stamps
         assert_eq!(read_rows(&mounted, |_| seen += 1), Err(Error::RemountRequired));
         assert_eq!(seen, 0);
         assert!(matches!(mounted.allocate(1), Err(StoreError::ReadOnly)));
-        drop(mounted);
         let mounted = FlatStore::mount(&device);
         read_rows(&mounted, |row| {
             seen += 1;
@@ -481,7 +479,6 @@ fn policy_read_barrier_reconciles_live_remount_without_exposing_uncertain_stamps
         })
         .unwrap();
         assert_eq!(seen, 1);
-        drop(mounted);
         disk.reboot();
         let mounted = FlatStore::mount(&device);
         // Verify before another policy-read barrier can conceal loss.
