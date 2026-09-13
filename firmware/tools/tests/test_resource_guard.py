@@ -250,6 +250,108 @@ MAIN_TASK = (
 )
 
 
+class FixedEntryTests(unittest.TestCase):
+    # Captured fixed entries from the saved shipping image, including the first body instruction.
+    CAPTURED = """
+00091500 <embassy_executor::raw::TaskStorage$LT$F$GT$::poll::hb9e01918510eab0b>:
+   91500: b5f0          push {r4, r5, r6, r7, lr}
+   91502: af03          add r7, sp, #0xc
+   91504: e92d 0f00     push.w {r8, r9, r10, r11}
+   91508: b081          sub sp, #0x4
+   9150a: ed2d 8b0a     vpush {d8, d9, d10, d11, d12}
+   9150e: f5ad 5d1a     sub.w sp, sp, #0x2680
+   91512: b082          sub sp, #0x8
+   91514: a940          add r1, sp, #0x100
+00071c80 <obc_fw_nrf54l::arena::NavGuard::transform>:
+   71c80: b5f0          push {r4, r5, r6, r7, lr}
+   71c82: af03          add r7, sp, #0xc
+   71c84: e92d 0f00     push.w {r8, r9, r10, r11}
+   71c88: b081          sub sp, #0x4
+   71c8a: ed2d 8b10     vpush {d8, d9, d10, d11, d12, d13, d14, d15}
+   71c8e: f5ad 5dc4     sub.w sp, sp, #0x1880
+   71c92: b2c9          uxtb r1, r1
+0012e088 <obc_route::splice::Splicer::finish_splice>:
+  12e088: b5f0          push {r4, r5, r6, r7, lr}
+  12e08a: af03          add r7, sp, #0xc
+  12e08c: e92d 0f00     push.w {r8, r9, r10, r11}
+  12e090: b081          sub sp, #0x4
+  12e092: ed2d 8b04     vpush {d8, d9}
+  12e096: b090          sub sp, #0x40
+  12e098: f24b 3448     movw r4, #0xb348
+00041364 <obc_fw_nrf54l::storage::Writer::try_call_owned>:
+   41364: b5f0          push {r4, r5, r6, r7, lr}
+   41366: af03          add r7, sp, #0xc
+   41368: f84d 8d04     str r8, [sp, #-4]!
+   4136c: f5ad 7d7e     sub.w sp, sp, #0x3f8
+   41370: 4604          mov r4, r0
+0001affe <obc_storage::flat::store::FlatStore::current_revision>:
+   1affe: b5f0          push {r4, r5, r6, r7, lr}
+   1b000: af03          add r7, sp, #0xc
+   1b002: f84d bd04     str r11, [sp, #-4]!
+   1b006: b0c0          sub sp, #0x100
+   1b008: 4604          mov r4, r0
+"""
+
+    def test_captured_entries_include_alignment_and_vfp_saves(self):
+        parsed = resource_guard.parse_disassembly(self.CAPTURED)
+        self.assertEqual(max(resource_guard.select_poll_frames(parsed).values()), 9_944)
+        for needle, expected in [("transform", 6_376), ("finish_splice", 120),
+                                 ("try_call_owned", 1_040), ("current_revision", 280)]:
+            frames = resource_guard.select_frames(parsed, lambda name: needle in name, needle, needle)
+            self.assertEqual(list(frames.values()), [expected])
+            self.assertEqual(parsed.entry_cost(next(iter(frames))), expected)
+
+    def test_ranges_split_decrements_and_body_boundary(self):
+        parsed = resource_guard.parse_disassembly("""
+00001000 <ranges>:
+    1000: b5f0          push {r4-r7, lr}
+    1002: 466f          mov r7, sp
+    1004: b081          sub sp, #4
+    1006: ed2d 8a04     vpush {s16-s19}
+    100a: f50d 7b00     add.w r11, sp, #0
+    100e: f1ad 0d20     sub.w sp, sp, #32
+    1012: f2ad 0d10     subw sp, sp, #16
+    1016: 4608          mov r0, r1
+    1018: b510          push {r4, lr}
+    101a: f5ad 4d80     sub.w sp, sp, #0x4000
+00002000 <epilogue>:
+    2000: b500          push {lr}
+    2002: b082          sub sp, #8
+    2004: b002          add sp, #8
+    2006: bd00          pop {pc}
+    2008: b5f0          push {r4-r7, lr}
+00003000 <branches>:
+    3000: b500          push {lr}
+    3002: 2800          cmp r0, #0
+    3004: d001          beq 0x300a <branches+0xa>
+    3006: b090          sub sp, #64
+    3008: e001          b 0x300e <branches+0xe>
+    300a: b0a0          sub sp, #128
+00004000 <body_store>:
+    4000: e920 0006     stmdb r0!, {r1, r2}
+    4004: b090          sub sp, #64
+""")
+        self.assertEqual(parsed.entry_cost("ranges"), 88)
+        self.assertEqual(parsed.entry_cost("epilogue"), 12)
+        self.assertEqual(parsed.entry_cost("branches"), 4)
+        self.assertEqual(parsed.entry_cost("body_store"), 0)
+
+    def test_unsupported_guarded_entry_never_passes_with_a_partial_cost(self):
+        for instruction in ["sub.w sp, sp, r0", "vpush {d15-d8}", "push {future}", "<unknown>",
+                            "str r8, [sp, #-8]!", "str r8, [sp], #-4", "strd r8, r9, [sp, #-8]!",
+                            "str future, [sp, #-4]!", "stmdb sp!, {r8}"]:
+            with self.subTest(instruction=instruction):
+                parsed = resource_guard.parse_disassembly(
+                    "00001000 <guarded::known>:\n    1000: b084 sub sp, #16\n"
+                    "00002000 <guarded::unknown>:\n    2000: b500 push {lr}\n"
+                    f"    2002: dead beef {instruction}\n"
+                )
+                with self.assertRaisesRegex(resource_guard.GuardError, "unsupported fixed entry.*unknown"):
+                    resource_guard.select_frames(parsed, lambda name: "guarded" in name, "guarded", "guarded")
+                with self.assertRaisesRegex(resource_guard.GuardError, "unsupported fixed entry"):
+                    resource_guard.chain_cost(parsed, "guarded::unknown")
+
+
 class BootChainTests(unittest.TestCase):
     def test_task_body_parser_sees_the_symbol_the_poll_parser_misses(self):
         disassembly = f"""
@@ -271,6 +373,10 @@ class BootChainTests(unittest.TestCase):
         poll = "embassy_executor::raw::TaskStorage$LT$F$GT$::poll::h01"
         parsed = resource_guard.parse_disassembly(
             f"00001000 <{poll}>:\n"
+            "     ff8: b5f0          push {r4-r7, lr}\n"
+            "     ffa: af03          add r7, sp, #12\n"
+            "     ffc: ed2d 8b04     vpush {d8-d9}\n"
+            "     ffe: b081          sub sp, #4\n"
             "    1000: f5ad 6d80     sub.w sp, sp, #0x1000\n"
             f"    1004: f000 f800     bl 0x2000 <{root}>\n"
             f"00002000 <{root}>:\n"
@@ -280,9 +386,9 @@ class BootChainTests(unittest.TestCase):
             resource_guard, "parse_stack_bounds", return_value=(0x2007D000, 0x20071228)
         ):
             boot = resource_guard.measure_boot_chain(parsed, Path("fake"), ["link::init_store"])
-        self.assertEqual(boot.task_frame, 4_096)
+        self.assertEqual(boot.task_frame, 4_136)
         self.assertEqual(boot.task_frame_symbol, poll)
-        self.assertEqual(boot.chain_ceiling, 4_112)
+        self.assertEqual(boot.chain_ceiling, 4_152)
 
     def test_frame_parser_accepts_the_wide_subw_spelling(self):
         # `subw sp, sp, #imm` is a distinct encoding from `sub.w`; `mount_terrain` uses it.
@@ -544,8 +650,9 @@ class ModuleFrameGateTests(unittest.TestCase):
         args = SimpleNamespace(elf=Path("image.elf"), match=match, limit=limit)
         with mock.patch.object(
             resource_guard, "run_tool", return_value=disassembly or self.DISASSEMBLY
-        ):
+        ) as tool:
             resource_guard.check_frames(args)
+        tool.assert_called_once_with("llvm-objdump", "--mcpu=cortex-m33", "--demangle", "-d", args.elf)
 
     def test_the_measured_ceiling_passes(self):
         self._run(8_192)
@@ -599,5 +706,5 @@ class ModuleFrameGateTests(unittest.TestCase):
             self._run(8_192, match="obc_storage::frame_fixture", disassembly=disassembly)
         # The frame that tripped it is the trait method's, and the diagnostic names that symbol
         # rather than the inherent one it shares a module with.
-        self.assertIn("9000 B", str(caught.exception))
+        self.assertIn("9020 B", str(caught.exception))
         self.assertIn("$u20$as$u20$", str(caught.exception))
