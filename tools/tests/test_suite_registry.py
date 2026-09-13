@@ -744,6 +744,10 @@ class ShippedRoutingTests(unittest.TestCase):
             "swift.obckit-host": ["ios-unit"],
             "ci.docs": ["docs"],
             "web.builder-vitest": ["web"],
+            "python.repository-tools": ["fixture-registry", "selection"],
+            "python.firmware-tools": ["test"],
+            "python.weather-probe": ["test"],
+            "python.builder": ["test"],
         }
         for suite_id, jobs in expected.items():
             with self.subTest(suite=suite_id):
