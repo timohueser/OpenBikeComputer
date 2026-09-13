@@ -281,6 +281,7 @@ impl ByteSource for ObjectSource {
 
 /// One host card owner. Object readers keep its media and exclusive native file lock
 /// alive after the front-end owner drops. An uncertain commit requires a fresh mount.
+#[derive(Clone)]
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
@@ -289,7 +290,7 @@ impl HostStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn temporary() -> Result<Self, ImportError> {
+    pub fn temporary() -> Result<Self, ImportError> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         let card = NativeCard::locked(file, Some(path))?;
         card.file.set_len(CARD_BYTES)?;
@@ -349,7 +350,7 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card.entries().collect();
+        let entries = card.entries().filter(|entry| entry.flags == EntryFlags::NONE).collect();
         if !card.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -359,7 +360,7 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().filter(|entry| entry.id == id).max_by_key(|entry| entry.revision.0);
+        let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
         if !store.entries_ok() {
             return Err(StoreError::Media);
         }

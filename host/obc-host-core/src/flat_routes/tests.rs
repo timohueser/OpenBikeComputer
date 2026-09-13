@@ -36,7 +36,7 @@ fn shared_map_and_routes_pin_revisions_and_reuse_sparse_pages() {
     let old = routes.active.as_ref().unwrap().clone();
     assert_eq!(old.store_id(), map.source().store_id());
     assert_ne!(old.id(), map.source().id());
-    assert_eq!(routes.delete_by_id(map.source().id().0), Ok(false));
+    assert_eq!(routes.delete_by_id(map.source().id().0), Err(CatalogError::Unsupported));
     assert_eq!(&bytes(&map.source())[..4], b"OBCM");
 
     let mut session = ActiveRouteSession::new();
@@ -105,7 +105,7 @@ fn failed_route_write_and_delete_keep_committed_projection() {
         .owner
         .import(ObjectKind::Route, Some(old), &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default())
         .unwrap();
-    assert_eq!(routes.delete_by_id(id), Err(CatalogError::RemoveFailed));
+    assert_eq!(routes.delete_by_id(id), Err(CatalogError::Stale));
     assert_eq!(routes.ids(), &[id]);
     // A different current revision is a failed removal, not confirmed absence.
     assert_eq!(bytes(&routes.owner.open(ObjectId(id), Revision(2)).unwrap()), ROUTE);
@@ -115,7 +115,7 @@ fn failed_route_write_and_delete_keep_committed_projection() {
         let HostMedia::Memory(pages) = store.device() else { unreachable!() };
         pages.borrow_mut().clear();
     }
-    assert_eq!(routes.delete_by_id(id), Err(CatalogError::RemoveFailed));
+    assert_eq!(routes.delete_by_id(id), Err(CatalogError::Unreadable));
     assert_eq!(routes.ids(), &[id], "media errors cannot remove a catalog row");
 }
 
