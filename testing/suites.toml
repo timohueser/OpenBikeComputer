@@ -943,3 +943,15 @@ extra_triggers = [
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]
+
+[[suite]]
+id = "e2e.desktop-linux-launch"
+surface = "desktop"
+level = "end-to-end"
+command = "xvfb-run -a python3 apps/obc-desktop/e2e/launch.py"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+platforms = ["linux"]
+extra_triggers = ["apps/obc-desktop/**", "builder/app/**", "host/obc-pack/schema/*.example.json"]
+ownership = [{ kind = "workflow", pattern = "xvfb-run -a python3 apps/obc-desktop/e2e/launch.py" }]

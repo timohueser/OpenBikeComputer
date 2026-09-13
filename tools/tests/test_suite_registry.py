@@ -736,6 +736,7 @@ class ShippedRoutingTests(unittest.TestCase):
 
     def test_every_suite_routes_to_the_job_that_executes_it(self) -> None:
         expected = {
+            "e2e.desktop-linux-launch": ["desktop-launch"],
             "rust.obc-crc": ["clippy", "fmt", "test"],
             "rust.obc-fw-nrf54l": ["embedded", "fmt"],
             "rust.obc-boot": ["boot", "fmt"],
@@ -797,21 +798,26 @@ class ShippedRoutingTests(unittest.TestCase):
                 ["firmware/obc-weather/src/lib.rs"],
                 ["clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
             ),
+            (
+                "desktop launch harness",
+                ["apps/obc-desktop/e2e/launch.py"],
+                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges"],
+            ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app"]),
             (
                 "web only",
                 ["builder/app/src/lib/panel.ts"],
-                ["desktop", "desktop-frontend", "fmt", "wasm-bridges", "web"],
+                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
