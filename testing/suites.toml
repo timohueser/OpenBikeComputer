@@ -541,15 +541,15 @@ ownership = [
 id = "python.repository-tools"
 surface = "dev-tools"
 level = "contract"
-command = "python3 -m unittest discover -s tools/tests -v"
+command = "rm -rf .artifacts/python/repository-tools && python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
-extra_triggers = ["tools/*.py", "tools/**/*.py", "testing/*.toml", "docs/testing.md", ".github/workflows/**"]
+extra_triggers = ["tools/requirements-test.txt", "tools/*.py", "tools/**/*.py", "testing/*.toml", "docs/testing.md", ".github/workflows/**"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "tools/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s tools/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools" },
   { kind = "workflow", pattern = "python3 tools/suite_registry.py *" },
   { kind = "workflow", pattern = "python3 tools/ci_aggregate.py" },
 ]
@@ -558,7 +558,7 @@ ownership = [
 id = "python.firmware-tools"
 surface = "dev-tools"
 level = "contract"
-command = "python3 -m unittest discover -s firmware/tools/tests -v"
+command = "rm -rf .artifacts/python/firmware-tools && python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
@@ -567,6 +567,7 @@ scheduled = "none"
 # `--expect-screen` stripped off an existing command — the frames are unchanged, so `ci.ui-snapshots`
 # still passes.
 extra_triggers = [
+  "tools/requirements-test.txt",
   "firmware/tools/*.py",
   "firmware/tools/**/*.py",
   "firmware/ui-snapshots.sh",
@@ -575,29 +576,29 @@ extra_triggers = [
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s firmware/tools/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools" },
 ]
 
 [[suite]]
 id = "python.weather-probe"
 surface = "weather"
 level = "unit"
-command = "python3 -m unittest discover -s ops/weather/tests -v"
+command = "rm -rf .artifacts/python/weather-probe && python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["ops/weather/*.py", "ops/weather/**/*.py"]
+extra_triggers = ["tools/requirements-test.txt", "ops/weather/*.py", "ops/weather/**/*.py"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "ops/weather/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s ops/weather/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe" },
 ]
 
 [[suite]]
 id = "python.builder"
 surface = "map-tools"
 level = "fixture"
-command = "PYTHONPATH=. python3 -m pytest builder/tests/ -v"
+command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
 fixtures = ["builder-corpus"]
 pull_request = "affected"
 scheduled = "none"
@@ -605,7 +606,7 @@ extra_triggers = ["builder/presets/**", "builder/server/*.py", "builder/server/*
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "builder/tests/test_*.py" },
-  { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v" },
+  { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml" },
 ]
 
 [[suite]]
