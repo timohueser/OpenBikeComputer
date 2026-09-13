@@ -114,7 +114,7 @@ pub struct RideContinuation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointStatus {
     Durable,
-    /// The adapter has no recovery journal. Service is complete, but no durable claim is made.
+    /// The medium has no durable recovery guarantee. Service is complete, but no durable claim is made.
     Unsupported,
 }
 

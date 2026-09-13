@@ -185,11 +185,12 @@ impl BlockDevice for HostMedia {
 pub(crate) struct MountedStore {
     pub(crate) card: FlatStore<HostMedia>,
     remount_required: bool,
+    pub(crate) persistent: bool,
 }
 
 impl MountedStore {
-    pub(crate) fn new(card: FlatStore<HostMedia>) -> Self {
-        Self { card, remount_required: false }
+    pub(crate) fn new(card: FlatStore<HostMedia>, persistent: bool) -> Self {
+        Self { card, remount_required: false, persistent }
     }
 
     /// Confirm a catalog observed through the live OS cache before granting durable authority.
@@ -329,9 +330,10 @@ impl HostStore {
     }
 
     fn new(media: HostMedia) -> Result<Self, ImportError> {
+        let persistent = !matches!(media, HostMedia::Memory(_));
         let mut identity = [0; 16];
         getrandom::getrandom(&mut identity).map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?)))))
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?, persistent)))))
     }
 
     /// Create a new sparse Unix card under an existing directory. Never overwrite a path.
@@ -363,7 +365,7 @@ impl HostStore {
         if !store.mode().readable() {
             return Err(ImportError::Mount(store.mode()));
         }
-        Ok(Self(Arc::new(Mutex::new(MountedStore::new(store)))))
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(store, true)))))
     }
 
     pub fn store_id(&self) -> Result<StoreId, StoreError> {

@@ -15,6 +15,7 @@
 //! | `obc_demo_cmd(cmd)` | queue a command (drained per tick) — see [`demo::parse_cmd`] |
 //! | `obc_demo_state() -> String` | the current screen's `Screen::name()` |
 //! | `obc_demo_ready() -> bool` | first frame rendered |
+//! | `obc_demo_reset_status() -> String` | `Ready`, `Pending`, or latched `Failed` |
 //! | `obc_demo_screens() -> Vec<String>` | every `Screen::name()` — the tour drift-guard (S3) |
 //!
 //! The demo core ([`demo`]) is target-independent and unit-tested natively; only this
@@ -103,6 +104,12 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_demo_ready() -> bool {
         with_demo(|d| d.ready())
+    }
+
+    /// A queued reset is Pending until cleanup and baseline installation finish.
+    #[wasm_bindgen]
+    pub fn obc_demo_reset_status() -> String {
+        with_demo(|d| format!("{:?}", d.reset_status()))
     }
 
     /// Every screen's `Screen::name()`, straight from the one `screens!` table — the drift-guard
