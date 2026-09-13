@@ -286,6 +286,8 @@ impl StatisticsScreen {
         let mut readout: heapless::String<16> = heapless::String::new();
         if rx.no_fix {
             let _ = readout.push_str(rx.t(Msg::StatsNoGps));
+        } else if off && rx.navigation.dist_to_route_m == u32::MAX {
+            let _ = readout.push_str(rx.t(Msg::StatsOff).trim_end());
         } else if off {
             write_distance_coarse(&mut readout, rx.t(Msg::StatsOff), rx.navigation.dist_to_route_m, units);
         } else {
