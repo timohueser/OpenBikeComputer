@@ -122,8 +122,11 @@ impl RideRepository for FlatRideStore {
         let Some(&(id, revision)) = self.heads.iter().find(|(candidate, _)| candidate.0 == id) else {
             return Ok(false);
         };
-        self.owner.remove(ObjectKind::Ride, id, revision).map_err(|_| CatalogError::RemoveFailed)?;
-        Ok(true)
+        match self.owner.remove(ObjectKind::Ride, id, revision) {
+            Ok(()) => Ok(true),
+            Err(obc_storage::flat::StoreError::NotFound) => Ok(false),
+            Err(_) => Err(CatalogError::RemoveFailed),
+        }
     }
 
     fn fill_track(&self, id: CatalogObjectId, profile: &mut Profile) -> Option<Vec<(i32, i32)>> {
