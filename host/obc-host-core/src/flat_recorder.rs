@@ -28,6 +28,9 @@ struct Key {
 impl Key {
     fn check(self, owner: &MountedStore) -> Result<EntryMeta, StoreError> {
         let card = owner.ready().map_err(|_| StoreError::ReadOnly)?;
+        if !card.mode().writable() {
+            return Err(StoreError::ReadOnly);
+        }
         if card.store_id() != self.store {
             return Err(StoreError::Invalid);
         }
@@ -237,6 +240,12 @@ impl FlatRideRecorder {
 
 impl TrackRepository for FlatRideRecorder {
     fn open(&mut self, session: u32, name: Option<&str>, now_ms: u32) -> bool {
+        if let State::Live(live) = &self.state {
+            let Ok(owner) = self.owner.0.lock() else { return false };
+            if live.key.check(&owner).is_err() {
+                return false;
+            }
+        }
         match &mut self.state {
             State::Idle => self.start(session, name.unwrap_or("")).is_ok(),
             State::Live(live) => {
