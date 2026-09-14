@@ -116,7 +116,7 @@ impl SimGui {
                                     }
                                 }
                             } else {
-                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find shops or resume a dismissed stop.");
+                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find shops.");
                             }
                             separator_above(ui);
                         }
