@@ -41,9 +41,11 @@ pub struct Content {
     pub schema: u32,
     pub input_sha256: String,
     pub policy_sha256: String,
+    pub category_policy_sha256: String,
     pub language: String,
     pub source_coverage: Value,
     pub counts: Counts,
+    pub candidate_qids: Vec<String>,
     pub records: Vec<Record>,
     pub omissions: Vec<Omission>,
 }
@@ -211,9 +213,11 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
         schema: 1,
         input_sha256: hash(&input),
         policy_sha256: hash(&policy_input),
+        category_policy_sha256: hash(policy::BYTES),
         language: language.into(),
         source_coverage: snapshot.coverage,
         counts: Counts { captured: snapshot.places.len(), ..Counts::default() },
+        candidate_qids: Vec::new(),
         records: Vec::new(),
         omissions: Vec::new(),
     };
@@ -237,6 +241,10 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
         };
         let raw_entity = json_pinned(root, &snapshot.sources, &format!("entities/{qid}.json"))?;
         let entity = &raw_entity["entities"][&qid];
+        if entity["id"] != qid {
+            omit("site", "entity_identity_mismatch".into());
+            continue;
+        }
         let Some((lat, lon)) = coordinate(entity) else {
             omit("site", "coordinate_missing_or_ambiguous".into());
             continue;
@@ -257,6 +265,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
             }
         };
         content.counts.candidates += 1;
+        content.candidate_qids.push(qid.clone());
         let mut languages = vec![language];
         for fallback in FALLBACK {
             if !languages.contains(&fallback) {

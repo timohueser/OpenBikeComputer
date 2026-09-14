@@ -32,7 +32,9 @@ gives the actual language.
 
 - Input and policy SHA-256 digests. Input identity includes the source manifest and boundary bytes.
   Policy identity includes the category file, extraction code, dependency lock, image recipe and
-  requested language.
+  requested language. A separate category-policy digest lets acquisition check its discovery roots.
+- Candidate QIDs before article selection. A source manifest with empty article/image lists can use
+  the same compiler to select which assets to acquire.
 - Counts for captured sites, candidates, usable text, photos and raw photo bytes. A null approach
   count means that the OSM approach join has not run.
 - Records sorted by QID, with category 1–6, display coordinate, actual language and at most four
