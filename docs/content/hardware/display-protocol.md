@@ -17,6 +17,7 @@ The FLPR writes pixels through a six-bit parallel bus. The M33 generates the con
 ## Signal paths
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 300" role="img" aria-label="Two independent paths. On the left, the intermittent image-write path — gate scan and source shift — pushes one bit into a subpixel latch on the glass. On the right, the continuous polarity path — VCOM, VB in phase, VA inverse, free-running at about 60 Hz — drives the liquid crystal. The stored bit only selects which rail (VA for white, VB for black) the subpixel follows.">
   <defs>
     <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
@@ -52,9 +53,11 @@ The FLPR writes pixels through a six-bit parallel bus. The M33 generates the con
   <path d="M540 118 H566 V134 H600 V118 H634 V134 H668 V118 H694" fill="none" stroke="#3c6b39" stroke-width="1.8" />
   <text class="d-sub" x="500" y="168" text-anchor="start">VA</text>
   <path d="M540 172 H566 V156 H600 V172 H634 V156 H668 V172 H694" fill="none" stroke="#cf6a2a" stroke-width="1.8" />
-  <text class="d-sub" x="500" y="200" style="font-size:10px">VB in phase with VCOM · VA inverse</text>
-  <text class="d-sub" x="500" y="216" style="font-size:10px">→ drives the LC (never DC)</text>
+  <text class="d-sub" x="500" y="200" style="font-size:12px">VB in phase with VCOM · VA inverse</text>
+  <text class="d-sub" x="500" y="216" style="font-size:12px">→ drives the LC (never DC)</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Path A writes the pixel latches. Path B continuously drives the liquid crystal at approximately 60 Hz. A stored bit selects the <code>VA</code> or <code>VB</code> rail.</figcaption>
 </figure>
 
@@ -67,6 +70,7 @@ The hardware timer generates this waveform independently of the scan operation.
 The panel makes four levels with area gradation. Each subpixel contains a large block and a small block.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 280" role="img" aria-label="One pixel cell drawn as a three by three grid: R, G, B columns by three stacked bands — top MSB, middle LSB, bottom MSB. The top and bottom MSB bands are wired together and form two thirds of the area; the middle LSB band is one third.">
   <text class="d-tag" x="20" y="22">One pixel cell — three stacked bands</text>
 
@@ -103,6 +107,8 @@ The panel makes four levels with area gradation. Each subpixel contains a large 
   <text class="d-label" x="506" y="174" style="fill:#a9501c">LSB plane</text>
   <text class="d-sub" x="506" y="190">1/3 area · middle</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The connected MSB bands cover two-thirds of the subpixel. The LSB band covers one-third. The two bits give four visible levels.</figcaption>
 </figure>
 
@@ -140,6 +146,7 @@ The display has one gate line for each of its 320 rows. Write both area planes t
 One `GCK` period writes one row. The rising edge advances the gate. The falling edge keeps the same gate selected.
 
 <figure class="fig">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 270" role="img" aria-label="A timeline for one pixel row as one GCK period. GCK rises to advance to the row and open the MSB phase; while high, the MSB bit-plane is shifted in and a GEN pulse latches the two-thirds block. GCK then falls for the LSB phase on the same row; while low, the LSB bit-plane is shifted in and a second GEN pulse latches the one-third block. The next rising edge advances to the next row.">
   <text class="d-tag" x="20" y="22">One pixel row = one GCK period</text>
 
@@ -163,8 +170,10 @@ One `GCK` period writes one row. The rising edge advances the gate. The falling 
   <text class="d-sub" x="150" y="38" text-anchor="middle">advance + MSB</text>
   <line class="d-stroke" x1="570" y1="70" x2="570" y2="44" style="stroke:#9aa884" />
   <text class="d-sub" x="570" y="38" text-anchor="middle">next row</text>
-  <text class="d-sub" x="360" y="250" text-anchor="middle" style="font-size:11px">one gate advance per pixel row · two GEN pulses per row</text>
+  <text class="d-sub" x="360" y="250" text-anchor="middle" style="font-size:12px">one gate advance per pixel row · two GEN pulses per row</text>
 </svg>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>Send the MSB plane while <code>GCK</code> is high. Send the LSB plane while <code>GCK</code> is low. Pulse <code>GEN</code> after each plane.</figcaption>
 </figure>
 

@@ -112,7 +112,40 @@ do_grimsel_demo() {
         src="$WORK/switzerland.osm.pbf"
         fetch "$GRIMSEL_SOURCE_URL" "$src"
     fi
-    repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX"
+    local dem="${OBC_DEMO_DEM_DIR:-$BUILD_DIR/demo-dem}"
+    local native="$BUILD_DIR/grimsel-demo-native.obcd"
+    local surface="$BUILD_DIR/grimsel-demo-surface.obcd"
+    # Wider than the ride corridor: Peak View needs the surrounding skyline.
+    local terrain_bbox="46.3,7.9,46.95,8.75"
+    (cd "$REPO_ROOT" && cargo build --release --bin obc-dem)
+    local obc_dem="$REPO_ROOT/target/release/obc-dem"
+    "$obc_dem" fetch --bbox "$terrain_bbox" --out "$dem"
+    "$obc_dem" bake --sources "$dem" --bbox "$terrain_bbox" --posting-log2 9 \
+        --cell-log2 16 --shard "$native" --quiet
+    "$obc_dem" surface "$native" "$surface"
+    repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX" "$surface"
+    # obc-pack samples terrain for contours/ascent but leaves the v14 region empty.
+    python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" <<'PY_EMBED'
+from pathlib import Path
+import struct
+import sys
+
+path = Path(sys.argv[1])
+map_bytes = bytearray(path.read_bytes())
+terrain = Path(sys.argv[2]).read_bytes()
+assert map_bytes[:5] == b"OBCM\x0e", "expected OBCM v14"
+assert map_bytes[41:49] == bytes(8), "terrain region must be empty"
+assert terrain[:5] == b"OBCT\x03" and terrain[7] & 2, "expected surface terrain"
+unit = 1 << map_bytes[40]
+align = max(512, unit)
+offset = (len(map_bytes) + align - 1) // align * align
+length = (len(terrain) + unit - 1) // unit * unit
+struct.pack_into("<II", map_bytes, 41, offset // unit, length // unit)
+map_bytes.extend(bytes(offset - len(map_bytes)))
+map_bytes.extend(terrain)
+map_bytes.extend(bytes(offset + length - len(map_bytes)))
+path.write_bytes(map_bytes)
+PY_EMBED
 }
 
 do_monaco() {

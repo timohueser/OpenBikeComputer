@@ -14,8 +14,7 @@ the normative contracts under `specs/`.
 - Reuse the landing-page visual tokens: parchment surfaces, ink/forest structure, coral for the
   hot path, and amber for rider or route emphasis.
 
-The rendering-pipeline page is the reference for depth and visual style. Run the link checker
-before publishing:
+Run the link checker before publishing:
 
 ```sh
 python3 docs/build_docs.py --check-links
@@ -23,6 +22,45 @@ python3 docs/build_docs.py --check-links
 
 Blog folders, front matter, comparison images and 3D models are documented in
 [`BLOG.md`](BLOG.md).
+
+## Diagram style
+
+Use inline SVG for diagrams. Keep screen captures and hardware concepts as separate image assets.
+Do not redraw a screen capture to make it match the documentation palette.
+
+- Preserve the visual explanation: byte rulers show field widths and offsets, spatial diagrams
+  show geometry, and process diagrams show the relevant steps. Do not replace these with
+  summary boxes. Remove clutter without removing the information needed to reason about the system.
+- Use a 720-unit viewBox where possible. Flow left to right or top to bottom.
+- Use `d-title` for box headings, `d-label` for labels, `d-sub` for short notes, and `d-tag` for
+  the figure title. Use the shared CSS font sizes. Do not reduce labels to make them fit.
+- Use `d-panel` for nodes and `d-flow` for arrows. Use `d-focus` on a panel to emphasize a key
+  step. Put arrowheads only at a connection's destination, not at bends or branch joins.
+  Keep arrowheads outside boxes and route connectors clear of text.
+- Use forest for structure, coral for the selected path, and amber for rider or route emphasis.
+  Label states and paths so that color is never the only distinction.
+- Label examples and schematics. State when a byte or memory layout is not to scale.
+  Byte ranges, visible labels, captions, and accessible descriptions must agree.
+- Give every SVG a useful `aria-label`, unique marker IDs within the page, and a caption that
+  explains the result. Keep long explanations out of the drawing.
+- Wrap each SVG in a focusable `diagram-scroll` region. Set `--diagram-width` to its viewBox
+  width in pixels. This preserves label size on small screens. Keep the caption outside the
+  scrolling region. Use the existing `diagram-hint` below it.
+
+The [map header](content/software/formats.md) and [rider paths](content/software/ui.md) show
+these conventions. Diagrams stay in Markdown; no diagram generator or image service is required.
+
+After a diagram change, inspect its rendered page at desktop and phone widths. Check labels,
+box boundaries, arrow directions, captions, keyboard scrolling, and page overflow. A link check
+alone does not check the image layout.
+
+For a local preview, build the pages, then run this from the repository root:
+
+```sh
+python3 docs/serve.py "$PWD/docs" 8090
+```
+
+Open `http://127.0.0.1:8090/docs/`. This preview does not build the WebAssembly landing-page demo.
 
 ## Copy ownership
 
