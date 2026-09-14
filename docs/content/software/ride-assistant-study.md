@@ -1,6 +1,6 @@
 ---
 title: Ride Assistant design study
-description: Route brief and timeline interaction study.
+description: Route brief, nearby places, and landmark interaction studies.
 copy: ai
 ---
 
@@ -41,6 +41,29 @@ time. A closes-soon or unknown-hours note can appear in details where there is s
 
 The prototype uses supplied opening states. Production must resolve map schedules against current
 local time. Missing schedules or unavailable time must not become a closed result.
+
+## Nearby landmarks
+
+Landmarks answers “What is this place?” or “What is near me?” Use a map with a selected card,
+a name, a kind, and straight-line distance. Keep the map stable while the rider changes the
+selection. Show short text that explains what the landmark is and why it is interesting.
+Give longer text its own pages. Do not shrink it to fit beside the map.
+
+The simulator uses three examples with text adapted from Wikipedia: Aare Gorge, Reichenbach
+Falls, and the Gelmerbahn. Each has two short text pages and a source page. The locations and
+access routes are fictional. The [study captures and attribution](../../assets/ride-assistant/landmarks-study/README.md)
+identify the article revisions and licence.
+
+**Visit** opens the shared visit preview. Straight-line distance helps identify a nearby place;
+the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
+together. Browsing another place must not change this accepted visit or interrupt recording.
+
+Start with text. A possible later image feature can convert small pictures to a device palette
+during map creation. That approach would not need a JPEG decoder on the device. Image selection,
+source attribution, storage cost, and readability need a separate study.
+
+Next town is removed from the questions. It overlaps with What's next and Find a place, and
+its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
 
 ## Remaining implementation work
 

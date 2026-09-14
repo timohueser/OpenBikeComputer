@@ -154,7 +154,28 @@ then select **Find a place → Shop**. Up/Down (Left/Right arrow) moves through 
 All result markers stay on the map; the card below shows the selected shop, distance to reach
 it, climbing, and extra distance. Select previews the full visit. **Add stop** accepts the shop
 and its return to the original route. A–D identify results during comparison. After selection,
-the shop uses the existing basket icon. What's next is also active. The other questions and place categories are grey placeholders.
+the shop uses the existing basket icon. What's next and Landmarks are also active. Next town is removed. The other questions and place
+categories are grey placeholders.
+
+### Landmarks study
+
+Select **Landmarks** in Ride Assistant, or start with `--assistant-stage landmarks`.
+Up/Down selects one of three nearby landmarks. All markers remain on the map. The selected
+card shows the name, kind, and straight-line distance from the rider. Select opens the text.
+Up/Down changes the text page; Back restores the selected marker. **Visit** opens the same
+preview as Find a place, with route distance, climbing, and the extra cost including return.
+**Add stop** accepts that visit. Reading another place does not change the accepted route.
+
+Aare Gorge, Reichenbach Falls, and the Gelmerbahn have short text adapted from Wikipedia.
+The third page identifies the source, licence, and supplied opening status. See the
+[captures and article attribution](../../docs/assets/ride-assistant/landmarks-study/README.md).
+The article facts are real, but landmark positions and access paths are synthetic. They fit
+inside the loaded map and do not describe actual access to those landmarks. All three have
+unknown opening hours. Known-closed landmarks are excluded; unknown hours remain visible.
+
+This study has three results. It does not define the production result limit, search radius,
+or ranking policy. Text is curated to fit two readable pages. There is no Wikipedia fetch,
+landmark map format, photograph decoder, or live route calculation in the device prototype.
 
 ### What's next study
 
@@ -196,7 +217,7 @@ fixtures have unknown hours; they do not read live map schedules. Surface, dupli
 search coverage, and a maximum detour budget are not yet part of the selection. Distance and climbing remain separate; there is no combined effort score.
 
 Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
-and Up/Down still zoom. The same ride remains open. Use **Arrive at shop** in the simulator's
+and Up/Down still zoom. The same ride remains open. Use **Arrive at place** in the simulator's
 Controls panel to simulate arrival. This activates the prepared return leg and shows an
 informational arrival card. Guidance is active before you dismiss the card. Use **Rejoin original
 route** to simulate rejoining; the original route resumes automatically. These Controls buttons
@@ -222,7 +243,7 @@ The same presets work in the GUI and headless mode:
 | Flag | Values |
 | --- | --- |
 | `--assistant-scenario` | `four` (default), `two-along`, `useful-detour`, `worse-detour`, `four-along`, `detours-only`, `one`, `empty` |
-| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
+| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `landmarks`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
 | `--assistant-option` | Result number `1`–`4`, default `1`. Must exist in the selected set. |
 
 Scenario names describe the supplied candidate sets. The selection rules still apply: a small map
