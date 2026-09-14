@@ -20,7 +20,8 @@ fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_phot
     for qid in ["Q1", "Q2"] {
         let entity = json!({"entities":{qid:{"id":qid,"labels":{"de":{"value":"Burg"}},
         "sitelinks":{"dewiki":{"title":"Burg"}},"claims":{
-            "P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],
+            "P31":[{"rank":"preferred","mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}},
+                {"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q35666"}}}}],
             "P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]
         }}}});
         pin(&format!("entities/{qid}.json"), "https://www.wikidata.org/", serde_json::to_vec(&entity).unwrap());
