@@ -204,6 +204,7 @@ struct DeviceHit {
 }
 
 struct SimGui {
+    assistant_scenario: crate::assistant_demo::Scenario,
     peak_view: crate::peak_view::Runtime,
     /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
     /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
@@ -439,6 +440,7 @@ impl SimGui {
         let physical = args.physical && points_per_mm.is_some();
         let colorway = Colorway::Forest;
         let mut gui = SimGui {
+            assistant_scenario: args.assistant.scenario,
             peak_view,
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
@@ -491,19 +493,28 @@ impl SimGui {
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
         if args.assistant_demo {
-            crate::assistant_demo::install(&mut gui.app, &mut gui.store).expect("assistant demo fixtures");
+            crate::assistant_demo::install(&mut gui.app, &mut gui.store, gui.map.tables(), &args).unwrap_or_else(
+                |error| {
+                    eprintln!("assistant demo: {error}");
+                    std::process::exit(1)
+                },
+            );
             gui.note_card_commit();
-            if let Some(fix) = gui.app.state.user_fix {
-                gui.loc.set_position(fix.lat, fix.lon);
-                gui.panel.lat_deg = fix.lat as f64 / 1e6;
-                gui.panel.lon_deg = fix.lon as f64 / 1e6;
-            }
+            gui.sync_assistant_position();
         }
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
         }
         gui
+    }
+
+    fn sync_assistant_position(&mut self) {
+        if let Some(fix) = self.app.state.user_fix {
+            self.loc.set_position(fix.lat, fix.lon);
+            self.panel.lat_deg = fix.lat as f64 / 1e6;
+            self.panel.lon_deg = fix.lon as f64 / 1e6;
+        }
     }
 
     /// Parse a GPX file and load it as the active replay (paused at the start), or record the

@@ -2,6 +2,44 @@
 
 use crate::{screen, App, CameraMode, Mode, RecorderIntent};
 
+mod candidates;
+pub use candidates::{Candidates, MAX_RESULTS, ON_WAY_EXTRA_M};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Map,
+    Questions,
+    Categories,
+    Choices,
+    Preview,
+    ToStop,
+    Visit,
+    Arrived,
+    Returning,
+    Rejoined,
+    Skip,
+}
+
+impl Stage {
+    pub const ALL: [(Self, &'static str); 11] = [
+        (Self::Map, "map"),
+        (Self::Questions, "questions"),
+        (Self::Categories, "categories"),
+        (Self::Choices, "choices"),
+        (Self::Preview, "preview"),
+        (Self::ToStop, "to-stop"),
+        (Self::Visit, "visit"),
+        (Self::Arrived, "arrival"),
+        (Self::Returning, "returning"),
+        (Self::Rejoined, "rejoined"),
+        (Self::Skip, "remove-stop"),
+    ];
+
+    pub fn needs_stop(self) -> bool {
+        !matches!(self, Self::Map | Self::Questions | Self::Categories | Self::Choices)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Stop {
     pub name: &'static str,
@@ -17,6 +55,9 @@ pub struct Stop {
 }
 
 impl Stop {
+    pub fn on_way(&self) -> bool {
+        self.extra_m <= ON_WAY_EXTRA_M
+    }
     pub fn position(&self) -> (i32, i32) {
         *self.approach.last().expect("demo stop has an approach")
     }
@@ -25,9 +66,8 @@ impl Stop {
 #[derive(Debug, PartialEq)]
 pub struct Fixture {
     pub original: usize,
-    pub destination: &'static str,
     pub start: (i32, i32),
-    pub stops: [Stop; 2],
+    pub stops: &'static [Stop],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,24 +82,80 @@ pub struct Demo {
     pub fixture: &'static Fixture,
     pub selected: u8,
     pub phase: Phase,
+    pub candidates: Candidates,
     awaiting_start: bool,
 }
 
 impl Demo {
     pub fn stop(self) -> &'static Stop {
-        &self.fixture.stops[self.selected as usize]
+        &self.fixture.stops[self.candidates.indices[self.selected as usize] as usize]
+    }
+
+    pub fn stops(self) -> impl Iterator<Item = &'static Stop> {
+        self.candidates
+            .indices
+            .into_iter()
+            .take(self.candidates.len as usize)
+            .map(move |i| &self.fixture.stops[i as usize])
     }
 }
 
 impl App {
     /// Opt into synthetic search results and preloaded route legs; ordinary startup leaves it off.
     pub fn enable_assistant_demo(&mut self, fixture: &'static Fixture) {
-        self.state.assistant_demo = Some(Demo { fixture, selected: 0, phase: Phase::Riding, awaiting_start: true });
+        self.state.assistant_demo = Some(Demo {
+            fixture,
+            selected: 0,
+            phase: Phase::Riding,
+            awaiting_start: true,
+            candidates: candidates::select(fixture.stops, 0..fixture.stops.len()),
+        });
         self.activate_route(fixture.original);
         self.activity.mode = Mode::Riding;
         self.assistant_demo_position(fixture.start);
         screen::apply(&mut self.ui.stack, screen::Transition::Root(screen::Screen::Map(screen::MapScreen::new())));
         self.ui.map_dirty = true;
+    }
+
+    /// Supply a candidate set, then return to its comparison without starting a new recording.
+    pub fn set_assistant_candidates(&mut self, available: &[usize]) {
+        let Some(mut demo) = self.state.assistant_demo else { return };
+        demo.candidates = candidates::select(demo.fixture.stops, available.iter().copied());
+        self.state.assistant_demo = Some(demo);
+        self.show_assistant_demo(Stage::Choices, 0);
+    }
+
+    /// Jump to a study stage. Empty results admit only the menu and comparison stages.
+    pub fn show_assistant_demo(&mut self, stage: Stage, selected: usize) -> bool {
+        let Some(mut demo) = self.state.assistant_demo else { return false };
+        if selected >= (demo.candidates.len as usize).max(1) || (stage.needs_stop() && demo.candidates.len == 0) {
+            return false;
+        }
+        demo.selected = selected as u8;
+        demo.phase = match stage {
+            Stage::ToStop | Stage::Visit | Stage::Skip => Phase::ToStop,
+            Stage::Arrived | Stage::Returning => Phase::Returning,
+            _ => Phase::Riding,
+        };
+        let route = match demo.phase {
+            Phase::Riding => demo.fixture.original,
+            Phase::ToStop => demo.stop().outbound,
+            Phase::Returning => demo.stop().continuation,
+        };
+        let position = match stage {
+            Stage::Arrived | Stage::Returning => demo.stop().position(),
+            Stage::Rejoined => demo.stop().approach[0],
+            _ => demo.fixture.start,
+        };
+        self.state.assistant_demo = Some(demo);
+        self.activate_route(route);
+        self.assistant_demo_position(position);
+        screen::apply(&mut self.ui.stack, screen::Transition::Root(screen::Screen::Map(screen::MapScreen::new())));
+        if let Some(page) = screen::AssistantScreen::for_stage(stage, selected) {
+            screen::apply(&mut self.ui.stack, screen::Transition::Push(screen::Screen::Assistant(page)));
+        }
+        self.ui.map_dirty = true;
+        true
     }
 
     /// The host calls this after startup can admit a recording, before its next device pass.
@@ -128,7 +224,7 @@ mod tests {
         outbound: 1,
         continuation: 2,
     };
-    static FIXTURE: Fixture = Fixture { original: 0, destination: "Pass", start: (0, 0), stops: [STOP, STOP] };
+    static FIXTURE: Fixture = Fixture { original: 0, start: (0, 0), stops: &[STOP, STOP] };
 
     fn app() -> App {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -199,6 +295,41 @@ mod tests {
             assert!(app.recorder.recording());
             assert_eq!(app.activity.mode, Mode::Riding);
         }
+    }
+
+    #[test]
+    fn stage_jumps_preserve_the_recording_and_empty_results_cannot_start_a_visit() {
+        static FOUR: Fixture = Fixture { original: 0, start: (0, 0), stops: &[STOP, STOP, STOP, STOP] };
+        let mut app = app();
+        app.enable_assistant_demo(&FOUR);
+        let session = app.recorder.session();
+        for (stage, _) in Stage::ALL {
+            assert!(app.show_assistant_demo(stage, 3));
+            let demo = app.state.assistant_demo.unwrap();
+            let expected = match demo.phase {
+                Phase::Riding => 0,
+                Phase::ToStop => 1,
+                Phase::Returning => 2,
+            };
+            assert_eq!(app.active_route_index(), Some(expected));
+            assert_eq!(demo.selected, 3);
+            assert_eq!(app.recorder.session(), session);
+            assert!(app.recorder.recording());
+        }
+        assert!(!app.show_assistant_demo(Stage::Preview, 4));
+        app.set_assistant_candidates(&[]);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(app.state.assistant_demo.unwrap().candidates.len, 0);
+        assert!(!app.show_assistant_demo(Stage::ToStop, 0));
+        app.set_assistant_candidates(&[3, 2, 1, 0]);
+        assert!(app.show_assistant_demo(Stage::Choices, 3));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.state.assistant_demo.unwrap().selected, 3);
+        assert_eq!(app.active_route_index(), Some(1));
+        assert_eq!(app.recorder.session(), session);
     }
 
     #[test]
