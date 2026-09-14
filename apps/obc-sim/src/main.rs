@@ -1031,14 +1031,15 @@ Device state:
   --sensors MODE          demo|screen
 
 Scripted snapshots:
-  --assistant-demo        Shop-visit UI study centred on any loaded map
+  --assistant-demo        Ride Assistant UI study centred on any loaded map
   --assistant-route GPX   Use this route instead of a synthetic local route
   --assistant-landmarks S glaciers or passes; random content samples
   --assistant-scenario S  four (default), two-along, useful-detour, worse-detour,
                           four-along, detours-only, one, empty
-  --assistant-stage S     map (default), questions, landmarks, categories, choices, preview,
-                          to-stop, visit, arrival, returning, rejoined, remove-stop
-  --assistant-option N    Select result 1..4 (default 1); Assistant flags enable the study
+  --assistant-stage S     map (default), questions, whats-next, explore-ahead, landmarks,
+                          easier, easier-review, categories, choices, preview, to-stop,
+                          visit, arrival, returning, rejoined, remove-stop
+  --assistant-option N    Select result 1..4 (1..3 for easier); Assistant flags enable the study
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,

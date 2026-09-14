@@ -3,6 +3,7 @@
 use crate::{screen, App, CameraMode, Mode, RecorderIntent};
 
 mod candidates;
+pub mod easier;
 pub mod photos;
 pub use candidates::{Candidates, MAX_RESULTS, ON_WAY_EXTRA_M};
 
@@ -12,6 +13,8 @@ pub enum Stage {
     Questions,
     WhatsNext,
     ExploreAhead,
+    Easier,
+    EasierReview,
     Landmarks,
     Categories,
     Choices,
@@ -25,11 +28,13 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [(Self, &'static str); 14] = [
+    pub const ALL: [(Self, &'static str); 16] = [
         (Self::Map, "map"),
         (Self::Questions, "questions"),
         (Self::WhatsNext, "whats-next"),
         (Self::ExploreAhead, "explore-ahead"),
+        (Self::Easier, "easier"),
+        (Self::EasierReview, "easier-review"),
         (Self::Landmarks, "landmarks"),
         (Self::Categories, "categories"),
         (Self::Choices, "choices"),
@@ -49,6 +54,8 @@ impl Stage {
                 | Self::Questions
                 | Self::WhatsNext
                 | Self::ExploreAhead
+                | Self::Easier
+                | Self::EasierReview
                 | Self::Landmarks
                 | Self::Categories
                 | Self::Choices
@@ -113,10 +120,16 @@ pub struct Demo {
     pub visiting: Option<u8>,
     pub phase: Phase,
     pub candidates: Candidates,
+    pub easier: Option<&'static easier::Routes>,
+    pub easier_accepted: Option<u8>,
     awaiting_start: bool,
 }
 
 impl Demo {
+    pub fn riding_route(self) -> usize {
+        self.easier.map_or(self.fixture.original, |routes| routes.current(self.easier_accepted).route)
+    }
+
     pub fn stop(self) -> &'static Stop {
         &self.fixture.stops[self.candidates.indices[self.selected as usize] as usize]
     }
@@ -141,6 +154,8 @@ impl App {
             fixture,
             selected: 0,
             visiting: None,
+            easier: None,
+            easier_accepted: None,
             phase: Phase::Riding,
             awaiting_start: true,
             candidates: candidates::select(fixture.stops, 0..fixture.stops.len()),
@@ -163,10 +178,13 @@ impl App {
     /// Jump to a study stage. Empty results admit only the menu and comparison stages.
     pub fn show_assistant_demo(&mut self, stage: Stage, selected: usize) -> bool {
         let Some(mut demo) = self.state.assistant_demo else { return false };
-        if selected >= (demo.candidates.len as usize).max(1) || (stage.needs_stop() && demo.candidates.len == 0) {
+        let easier = matches!(stage, Stage::Easier | Stage::EasierReview);
+        let count = if easier { 3 } else { (demo.candidates.len as usize).max(1) };
+        if selected >= count || (easier && demo.easier.is_none()) || (stage.needs_stop() && demo.candidates.len == 0) {
             return false;
         }
-        demo.selected = selected as u8;
+        demo.selected = if easier { 0 } else { selected as u8 };
+        demo.easier_accepted = None;
         demo.phase = match stage {
             Stage::ToStop | Stage::Visit | Stage::Skip => Phase::ToStop,
             Stage::Arrived | Stage::Returning => Phase::Returning,
@@ -224,7 +242,7 @@ impl App {
             Phase::Returning => {
                 demo.phase = Phase::Riding;
                 self.assistant_demo_position(demo.visit_stop().approach[0]);
-                self.activate_route(demo.fixture.original);
+                self.activate_route(demo.riding_route());
                 demo.visiting = None;
             }
             Phase::Riding => return,
@@ -293,6 +311,38 @@ mod tests {
         open(app);
         for _ in 0..3 {
             app.apply_gesture(Gesture::Press);
+        }
+    }
+
+    #[test]
+    fn easier_route_requires_acceptance_and_keeps_the_recording() {
+        const CURRENT: easier::Route =
+            easier::Route { route: 0, path: &[(0, 0), (100, 100)], distance_m: 42_000, climb_m: 860, rough_m: 6_000 };
+        static ROUTES: easier::Routes = easier::Routes {
+            current: CURRENT,
+            alternatives: [
+                easier::Route { route: 1, climb_m: 440, ..CURRENT },
+                easier::Route { route: 2, rough_m: 2_000, ..CURRENT },
+                easier::Route { route: 1, distance_m: 36_000, ..CURRENT },
+            ],
+        };
+        for (selected, expected) in [1, 2, 1].into_iter().enumerate() {
+            let mut app = app();
+            app.state.assistant_demo.as_mut().unwrap().easier = Some(&ROUTES);
+            app.set_assistant_candidates(&[]);
+            assert!(app.show_assistant_demo(Stage::Easier, selected));
+            let session = app.recorder.session();
+            app.apply_gesture(Gesture::Press);
+            app.apply_gesture(Gesture::Back);
+            assert_eq!(app.active_route_index(), Some(0));
+            assert_eq!(app.state.assistant_demo.unwrap().easier_accepted, None);
+            app.apply_gesture(Gesture::Press);
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.active_route_index(), Some(expected));
+            assert_eq!(app.state.assistant_demo.unwrap().easier_accepted, Some(selected as u8));
+            assert_eq!(app.recorder.session(), session);
+            assert!(app.recorder.recording());
+            assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
         }
     }
 
@@ -451,6 +501,10 @@ mod tests {
         app.enable_assistant_demo(&FOUR);
         let session = app.recorder.session();
         for (stage, _) in Stage::ALL {
+            if matches!(stage, Stage::Easier | Stage::EasierReview) {
+                assert!(!app.show_assistant_demo(stage, 0), "this fixture has no alternatives");
+                continue;
+            }
             assert!(app.show_assistant_demo(stage, 3));
             let demo = app.state.assistant_demo.unwrap();
             let expected = match demo.phase {
