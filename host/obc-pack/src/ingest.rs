@@ -108,6 +108,7 @@ pub struct Ingested {
     pub features: Vec<IngestFeature>,
     pub coastlines: Vec<Vec<(f64, f64)>>,
     pub pois: Vec<Poi>,
+    pub landmark_links: Vec<poi::LandmarkLink>,
     pub nav_graph: NavGraph,
 }
 
@@ -698,6 +699,7 @@ fn select_crop(
 
 /// One source's pass-1 harvest.
 struct NodeScan {
+    links: Keyed<poi::LandmarkLink>,
     nodes: HashMap<i64, (i32, i32)>,
     pois: Keyed<Poi>,
     rels: Keyed<PendingRelation>,
@@ -794,7 +796,7 @@ fn ingest_inner(
     // starts, not both up front.
     progress.stage(Phase::Ingest, "Pass 1: reading nodes...");
     let scans = par_sources(paths, |_, path| read_nodes(path, config, crop.as_ref(), merging, progress))?;
-    let NodeScan { nodes, pois: node_pois, rels } = fold_node_scans(scans, merging);
+    let NodeScan { nodes, pois: node_pois, rels, links } = fold_node_scans(scans, merging);
     let pending = rels.into_items();
     let needed_ways: HashSet<i64> = pending.iter().flat_map(|r| r.member_ways.iter().copied()).collect();
 
@@ -839,7 +841,12 @@ fn ingest_inner(
     }
 
     // --- POIs: collapse OSM double-mapping, then log per-category counts. ---
-    let (pois, poi_dropped) = poi::dedupe(poi_cands);
+    let (mut pois, poi_dropped) = poi::dedupe(poi_cands);
+    poi::resolve_approaches(&mut pois, &routable_ways, &config.routing.profiles);
+    let mut landmark_links: Vec<_> =
+        pois.iter().filter(|p| p.wikidata.is_some() || p.wikipedia.is_some()).map(poi::LandmarkLink::from).collect();
+    landmark_links.extend(links.into_items());
+    pois.retain(|p| p.subtype != 0);
     progress.log(poi::format_counts(&pois, poi_dropped));
 
     // --- Nav graph: junctions + deduped edges from the routable ways, then
@@ -858,7 +865,7 @@ fn ingest_inner(
         }
     };
 
-    Ok((Ingested { features, coastlines, pois, nav_graph }, kept_ways))
+    Ok((Ingested { features, coastlines, pois, landmark_links, nav_graph }, kept_ways))
 }
 
 /// **Pass 1**, one source: node-location store + node POIs + area relations.
@@ -882,6 +889,7 @@ fn read_nodes(
     let mut nodes: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut pois = Keyed::new(tagged);
     let mut rels = Keyed::new(tagged);
+    let mut links = Keyed::new(tagged);
     let keeps_node = |id: i64| crop.is_none_or(|c| c.keeps_node(id));
     let keeps_relation = |id: i64| crop.is_none_or(|c| c.keeps_relation(id));
     scan_blobs(path, None, progress, |el| {
@@ -894,13 +902,33 @@ fn read_nodes(
                 nodes.insert(n.id(), (n.decimicro_lon(), n.decimicro_lat()));
                 push_node_poi(n.id(), n.tags(), n.decimicro_lon(), n.decimicro_lat(), &mut pois);
             }
-            Element::Relation(r) if keeps_relation(r.id()) => collect_relation(&r, config, &mut rels),
+            Element::Relation(r) => {
+                if keeps_relation(r.id()) {
+                    collect_relation(&r, config, &mut rels);
+                }
+                let tags: HashMap<_, _> = r.tags().collect();
+                if tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
+                    links.push(
+                        r.id(),
+                        poi::LandmarkLink {
+                            metadata: obc_formats::obcm::PoiMetadata {
+                                source: obc_formats::obcm::SourceId::osm(3, r.id() as u64),
+                                approach: None,
+                            },
+                            position: None,
+                            wikidata: tags.get("wikidata").map(|value| (*value).into()),
+                            wikipedia: tags.get("wikipedia").map(|value| (*value).into()),
+                            hours: tags.get("opening_hours").and_then(|value| hours::parse(value)),
+                        },
+                    );
+                }
+            }
             _ => {}
         }
         Scan::Continue
     })
     .map_err(|e| format!("pass 1: {e}"))?;
-    Ok(NodeScan { nodes, pois, rels })
+    Ok(NodeScan { nodes, pois, rels, links })
 }
 
 /// Combine the sources' pass-1 harvests, in command-line order.
@@ -908,12 +936,15 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     let mut it = scans.into_iter();
     let mut acc = it.next().expect("at least one source");
     let mut seen_rels: HashSet<i64> = acc.rels.keys.iter().copied().collect();
+    let mut seen_links: HashSet<i64> = acc.links.keys.iter().copied().collect();
     for mut next in it {
         // Ownership is tested BEFORE this source's nodes land in `acc`, so the
         // question is "did an earlier source already have this node?" — and the
         // whole object loses, tags and all, not just its coordinate.
         next.pois.retain_keys(|id| !acc.nodes.contains_key(&id));
         next.rels.retain_keys(|id| seen_rels.insert(id));
+        next.links.retain_keys(|id| seen_links.insert(id));
+        acc.links.append(next.links);
         acc.pois.append(next.pois);
         acc.rels.append(next.rels);
         for (id, coord) in next.nodes {
@@ -923,6 +954,7 @@ fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     if merging {
         acc.pois.sort();
         acc.rels.sort();
+        acc.links.sort();
     }
     acc
 }
@@ -1040,10 +1072,20 @@ fn push_node_poi<'a, I>(id: i64, tags: I, decimicro_lon: i32, decimicro_lat: i32
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
 {
-    if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) = poi::classify(tags) {
+    let tags: Vec<_> = tags.into_iter().collect();
+    if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) =
+        poi::classify_linked(tags.iter().copied())
+    {
         out.push(
             id,
             Poi {
+                metadata: obc_formats::obcm::PoiMetadata {
+                    source: obc_formats::obcm::SourceId::osm(1, id as u64),
+                    approach: None,
+                },
+                access_nodes: vec![id],
+                wikidata: tags.iter().find(|(k, _)| *k == "wikidata").map(|(_, v)| (*v).into()),
+                wikipedia: tags.iter().find(|(k, _)| *k == "wikipedia").map(|(_, v)| (*v).into()),
                 subtype,
                 lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
                 lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
@@ -1121,15 +1163,23 @@ fn process_way(
     // independent of styling (a bare `shop=supermarket` outline has no style at
     // all). The building-tagged supermarket way and the area campsite are the
     // motivating cases; relations are out of scope (#115).
-    if is_closed {
+    if is_closed || tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
         if let Some(poi::Classification { subtype, name, raw_hours, elevation_m }) =
-            poi::classify(tags.iter().map(|(&k, &v)| (k, v)))
+            poi::classify_linked(tags.iter().map(|(&k, &v)| (k, v)))
                 .filter(|p| p.subtype != obc_formats::obcm::SUMMIT_SUBTYPE_ID)
         {
-            let (cx, cy) = poi::ring_centroid(coords);
+            let (cx, cy) = if is_closed { poi::ring_centroid(coords) } else { coords[0] };
+            let subtype = if is_closed { subtype } else { 0 };
             pois.push(
                 w.id(),
                 Poi {
+                    metadata: obc_formats::obcm::PoiMetadata {
+                        source: obc_formats::obcm::SourceId::osm(2, w.id() as u64),
+                        approach: None,
+                    },
+                    access_nodes: refs.to_vec(),
+                    wikidata: tags.get("wikidata").map(|v| (*v).into()),
+                    wikipedia: tags.get("wikipedia").map(|v| (*v).into()),
                     subtype,
                     lon_udeg: poi::to_udeg(cx),
                     lat_udeg: poi::to_udeg(cy),
@@ -1284,7 +1334,7 @@ mod tests {
         let ing = ingest_osm(&sources(&[POI_PBF]), &cfg, None, &quiet()).expect("ingest");
 
         // 7 candidates (5 nodes + 2 way-centroids), 2 dedup-dropped ⇒ 5 kept.
-        assert_eq!(ing.pois.len(), 5, "expected 5 POIs, got: {:?}", ing.pois);
+        assert_eq!(ing.pois.len(), 7, "distinct OSM identities survive");
 
         let find = |name: Option<&str>, subtype: u8| {
             ing.pois
@@ -1296,21 +1346,20 @@ mod tests {
         // N1: named water node, exact µdeg grid.
         let n1 = find(Some("Marktbrunnen"), 1);
         assert_eq!((n1.lat_udeg, n1.lon_udeg, n1.from_node), (47_995_000, 7_850_000, true));
-        // N2 beat W1's centroid: node position (the building corner), way's
-        // name folded ü→ue at pack time.
+        // The node and building retain separate source identities.
         let n2 = find(Some("Edeka Mueller"), 13);
         assert_eq!((n2.lat_udeg, n2.lon_udeg, n2.from_node), (47_989_900, 7_859_900, true));
         // N3: CJK name folded to empty ⇒ unnamed.
         let n3 = find(None, 1);
         assert_eq!((n3.lat_udeg, n3.lon_udeg), (47_980_000, 7_840_000));
-        // N5 beat the unnamed spring N6 40 m away (named > unnamed, same category).
+        // Nearby service identities stay distinct.
         find(Some("Brunnen A"), 1);
-        assert!(!ing.pois.iter().any(|p| p.subtype == 2), "spring N6 must be dedup-dropped");
+        assert!(ing.pois.iter().any(|p| p.subtype == 2), "the separate spring remains available");
         // W2: unnamed campsite way ⇒ POI at the ring centroid.
         let w2 = find(None, 5);
         assert_eq!((w2.lat_udeg, w2.lon_udeg, w2.from_node), (48_000_200, 7_870_200, false));
         // N4 (amenity=parking) never classified.
-        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 3").count(), 1);
+        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 4").count(), 1);
     }
 
     /// The `--bbox` contract is user-facing, so the parser is as strict as

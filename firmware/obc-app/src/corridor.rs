@@ -1,36 +1,8 @@
-//! The **route-corridor POI snapshot** the "Up ahead" timeline reads (epic #946, U2).
-//!
-//! [`CorridorScratch`] is the sibling of [`PoiScratch`](crate::screen::PoiScratch): one
-//! [`App`](crate::App)-owned buffer holding a frozen snapshot of the map POIs sitting near the route
-//! ahead, filled from [`Reader::corridor_pois`](obc_reader::Reader::corridor_pois) in the pre-draw
-//! `prepare` pass and read-only everywhere else. No screen lives here — U3 draws it.
-//!
-//! # The frozen-snapshot contract (#115)
-//!
-//! Membership, order and distances are frozen on take. The snapshot is keyed by a
-//! [`CorridorKey`] — the category filter **and** the progress anchor it was taken at — so live
-//! progress advancing under the rider never re-runs the query and rows can never shift under the
-//! cursor. It is re-taken on entry, on a filter change, or when active route geometry is replaced.
-//!
-//! # Storage decision (#425)
-//!
-//! A `heapless::Vec<CorridorPoi, 16>` is ~880 B. The [`Screen`](crate::screen::Screen) enum is a
-//! union sized to its largest variant, held in a stack `Vec` in `.bss` — an inline snapshot would
-//! multiply that across **every** slot. Held once in the App it costs the buffer once, and the
-//! static-snapshot contract already forbids two live snapshots, so the single buffer loses nothing.
-//! Exactly the reasoning `PoiScratch` records; the two never hold a snapshot at the same time in
-//! practice, but they stay separate buffers because their record types differ.
-//!
-//! # The reader seam
-//!
-//! The query needs the streamed-map `Reader` (and the streamed route), which the board host builds
-//! only when a frame needs it. [`pending`](CorridorScratch::pending) is what
-//! [`App::base_needs_reader`](crate::App::base_needs_reader) adds to its answer, so the host builds
-//! the `Reader` exactly until the snapshot lands and then stops — the same energy pattern as the
-//! nearest-POI snapshot and the POI-detail hours read. A **failed** query counts as landed (an
-//! empty list): retrying it every frame would re-run the query's worst case forever against a
-//! corrupt POI section or a failing card. See [`CorridorScratch::prepare`].
+//! An App-owned, bounded page of route-corridor places from the shared query engine.
+//! Entry, filter and route changes define a new generation. Progress and clock ticks do not
+//! rerank that generation; only current opening status changes. Errors settle as failures.
 
+use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
 use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath, MAX_CORRIDOR_RESULTS};
 use obc_route::RouteReader;
 
@@ -68,6 +40,12 @@ pub struct UpAheadScope {
 /// showing the Up-ahead list — never owned by a [`Screen`](crate::screen::Screen) variant (see the
 /// module docs).
 pub struct CorridorScratch {
+    query: Option<PlaceQuery>,
+    generation: u32,
+    status: QueryProgress,
+    clock_key: Option<(bool, i16)>,
+    local: Option<(u8, u16)>,
+    recheck: bool,
     /// The key a snapshot is *wanted* for — `None` when nothing is asking (the normal state: no
     /// Up-ahead screen is up, so the query never runs and the host never builds a `Reader` for it).
     want: Option<CorridorKey>,
@@ -83,25 +61,57 @@ pub struct CorridorScratch {
 impl CorridorScratch {
     /// An empty, disarmed scratch — nothing wanted, nothing taken.
     pub const fn new() -> Self {
-        CorridorScratch { want: None, taken_for: None, pois: heapless::Vec::new() }
+        CorridorScratch {
+            want: None,
+            taken_for: None,
+            pois: heapless::Vec::new(),
+            query: None,
+            generation: 0,
+            status: QueryProgress::Unavailable,
+            clock_key: None,
+            local: None,
+            recheck: false,
+        }
     }
 
     /// Ask for a snapshot of `key`. Idempotent: re-arming the key already held changes nothing (so a
     /// screen may call this every frame without re-querying), while a **different** key drops the
     /// stale rows immediately so no screen can draw a list that no longer matches its filter.
     pub fn arm(&mut self, key: CorridorKey) {
-        self.want = Some(key);
-        if self.taken_for != Some(key) {
-            self.taken_for = None;
-            self.pois.clear();
+        if self.want != Some(key) {
+            self.invalidate();
         }
+        self.want = Some(key);
     }
 
     /// Drop the held snapshot so the next `prepare` re-runs the query for the armed key — the
     /// "re-enter to refresh" half of the contract. Also used when active route geometry changes.
     pub fn invalidate(&mut self) {
         self.taken_for = None;
+        self.recheck = false;
         self.pois.clear();
+        self.query = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.status = QueryProgress::Unavailable;
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if let Some(query) = &mut self.query {
+            query.cancel();
+        }
+        self.status = QueryProgress::Unavailable;
+        self.taken_for = self.want;
+        self.pois.clear();
+        self.recheck = false;
+    }
+
+    pub fn next_page(&mut self, key: obc_reader::reader::places::PlaceKey) {
+        if let Some(query) = &mut self.query {
+            query.next_page(key);
+            self.pois.clear();
+            self.taken_for = None;
+            self.status = QueryProgress::Pending;
+        }
     }
 
     /// Stop wanting a snapshot at all (the screen closed): drops the rows *and* the request, so the
@@ -127,7 +137,7 @@ impl CorridorScratch {
     #[inline]
     pub fn pending(&self) -> bool {
         match self.want {
-            Some(key) => !self.holds(key),
+            Some(key) => !self.holds(key) || self.recheck,
             None => false,
         }
     }
@@ -151,32 +161,60 @@ impl CorridorScratch {
         self.pois.is_empty()
     }
 
-    /// Take the snapshot if one is armed, pending, and the frame carries both the map `Reader` and
-    /// the streamed route. Called once per frame from the pre-draw `prepare` boundary.
-    ///
-    /// Two failures, deliberately handled differently:
-    ///
-    /// - **A missing input** (the host didn't build the `Reader` this frame, or no route is open
-    ///   yet) is *not* an attempt — the scratch stays pending and retries next frame, which is what
-    ///   keeps the seam asking until the inputs arrive.
-    /// - **A query error** (a corrupt POI section, a failing card) **settles** the scratch on an
-    ///   empty list, exactly as [`PoiScratch`](crate::screen::PoiScratch) does. Staying pending here
-    ///   would re-run the *most expensive* form of the query on every rendered frame with the
-    ///   `Reader` kept built — precisely the per-frame SD work the #115/#425 discipline exists to
-    ///   forbid, in the one situation where it hurts most. One attempt per armed key; re-entry
-    ///   ([`invalidate`](Self::invalidate)) or a filter change retries as usual.
-    pub(crate) fn prepare(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
+    /// The explicit result state; failure is never an empty successful query.
+    pub fn status(&self) -> QueryProgress {
+        self.status
+    }
+
+    pub(crate) fn clock_changed(&mut self, local: Option<(u8, u16)>, offset: i16) -> bool {
+        let authority = (local.is_some(), offset);
+        let changed = self.local != local || self.clock_key.is_some_and(|key| key != authority);
+        if self.query.is_some() && self.clock_key.is_some_and(|key| key != authority) {
+            self.cancel();
+        } else if self.query.is_some() {
+            self.recheck |= changed;
+        }
+        self.clock_key = Some(authority);
+        self.local = local;
+        changed
+    }
+
+    pub(crate) fn prepare(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>, local: Option<(u8, u16)>) {
         let Some(key) = self.want else { return };
-        if self.holds(key) {
-            return; // already snapshotted for this key
+        if self.holds(key) && !self.recheck {
+            return;
         }
         let (Some(reader), Some(route)) = (reader, route) else { return };
-        let path: &dyn RoutePath = route;
-        if reader.corridor_pois(key.filter, path, key.anchor_m, &mut self.pois).is_err() {
-            // Never freeze a half-filled list: an errored query settles as "queried, nothing".
-            self.pois.clear();
+        if self.recheck {
+            if let Err(error) = reader.refresh_place_hours(&mut self.pois, local) {
+                self.status = QueryProgress::Failed(error);
+                self.pois.clear();
+            }
+            self.recheck = false;
+            if self.holds(key) {
+                return;
+            }
         }
-        self.taken_for = Some(key);
+        let path: &dyn RoutePath = route;
+        let query = self.query.get_or_insert_with(|| {
+            PlaceQuery::new(
+                self.generation,
+                key.filter,
+                PlaceWindow::Corridor { from_m: key.anchor_m, to_m: u32::MAX, half_width_m: 300 },
+                local,
+            )
+        });
+        for _ in 0..64 {
+            self.status = query.step(reader, Some(path), self.generation, &mut self.pois);
+            if self.status != QueryProgress::Pending {
+                if let Err(error) = reader.refresh_place_hours(&mut self.pois, local) {
+                    self.status = QueryProgress::Failed(error);
+                    self.pois.clear();
+                }
+                self.taken_for = Some(key);
+                break;
+            }
+        }
     }
 }
 

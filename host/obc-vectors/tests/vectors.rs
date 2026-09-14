@@ -37,6 +37,31 @@ impl ByteSink for VecSink {
     }
 }
 
+#[test]
+fn place_vector_uses_the_production_metadata_decoder() {
+    use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+    let bytes = fixture("place-train-v15.bin");
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(bytes[8], 20);
+    let expected = PoiMetadata {
+        source: SourceId::osm(1, 123),
+        approach: Some(PoiApproach { source: SourceId::osm(1, 456), lat: 46_561_320, lon: 8_361_490, profile_mask: 5 }),
+    };
+    assert_eq!(PoiMetadata::decode(&bytes[36..]), Some(expected));
+    assert_eq!(expected.encode().as_slice(), &bytes[36..]);
+    let mut invalid = bytes[36..].to_vec();
+    invalid[27] = 1;
+    assert_eq!(PoiMetadata::decode(&invalid), None);
+    for (range, value) in [(0..8, 0), (8..16, 0), (24..25, 0)] {
+        let mut invalid = bytes[36..].to_vec();
+        invalid[range].fill(value);
+        assert_eq!(PoiMetadata::decode(&invalid), None);
+    }
+    let mut invalid = bytes[36..].to_vec();
+    invalid[16..20].copy_from_slice(&90_000_001i32.to_le_bytes());
+    assert_eq!(PoiMetadata::decode(&invalid), None);
+}
+
 /// Spec §6's pinned check value — validates the vector crate's own CRC reference.
 #[test]
 fn crc32_check_value() {

@@ -296,8 +296,8 @@ impl Default for NextAhead {
 /// round-robin order.
 #[inline]
 fn slot_of(cat: PoiCategory) -> usize {
-    // `id()` is 1-based and dense over ALL (OBCM §7.4), so this never wraps or goes out of range.
-    (cat.id() as usize - 1).min(CATEGORIES - 1)
+    // Directory id 7 belongs to summits and is not a service slot.
+    PoiCategory::ALL.iter().position(|candidate| *candidate == cat).expect("service category")
 }
 
 #[cfg(test)]
@@ -310,7 +310,16 @@ mod tests {
         let mut n = heapless::String::new();
         n.push_str(name).unwrap();
         CorridorPoi {
-            poi: Poi { lat: 0, lon: 0, subtype, name: n, hours_ref: 0xFFFF, distance_m: dist_along_m },
+            poi: Poi {
+                opening: Default::default(),
+                metadata: Default::default(),
+                lat: 0,
+                lon: 0,
+                subtype,
+                name: n,
+                hours_ref: 0xFFFF,
+                distance_m: dist_along_m,
+            },
             dist_along_m,
             offset_m: 0,
         }

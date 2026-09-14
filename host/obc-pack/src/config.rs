@@ -1832,8 +1832,8 @@ mod tests {
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
         assert_eq!(
             env["format_version"].as_u64(),
-            Some(14),
-            "scaled offsets, an embedded terrain region and (chunk, ordinal) edge ids bump OBCM to v14"
+            Some(15),
+            "stable place identities and explicit approaches require OBCM v15"
         );
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }

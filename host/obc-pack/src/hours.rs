@@ -203,7 +203,14 @@ fn apply_rule(rule: &str, sched: &mut Schedule) -> RuleOutcome {
             continue;
         }
         match parse_interval(part) {
-            Some(iv) => intervals.push(iv),
+            Some(iv) => {
+                if part.split('-').any(|time| {
+                    time.trim().split_once(':').and_then(|(_, m)| m.parse::<u32>().ok()).is_some_and(|m| m % 15 != 0)
+                }) {
+                    dropped_any = true;
+                }
+                intervals.push(iv);
+            }
             None => dropped_any = true,
         }
     }
@@ -670,6 +677,13 @@ mod tests {
         // Non-tie fractions round normally.
         assert_eq!(round_half_even(2.4), 2);
         assert_eq!(round_half_even(2.6), 3);
+    }
+
+    #[test]
+    fn rounded_boundaries_are_uncertain() {
+        assert_ne!(parse("Mo 08:07-18:00").unwrap().flags & FLAG_TRUNCATED, 0);
+        assert_ne!(parse("Mo 08:00-18:08").unwrap().flags & FLAG_TRUNCATED, 0);
+        assert_eq!(parse("Mo 08:15-18:00").unwrap().flags, 0);
     }
 
     #[test]

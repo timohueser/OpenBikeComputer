@@ -967,3 +967,15 @@ scheduled = "manual"
 extra_triggers = ["fixtures/sources/ride-assistant/**"]
 coverage_component = "host-tools"
 ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-inputs.py" }]
+
+[[suite]]
+id = "fixtures.assistant-places"
+surface = "map-tools"
+level = "fixture"
+command = "python3 fixtures/verify-assistant-places.py"
+fixtures = ["assistant-osm"]
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["host/obc-pack/tests/assistant_places.rs", "firmware/obc-reader/src/reader/places.rs"]
+coverage_component = "host-tools"
+ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-places.py" }]

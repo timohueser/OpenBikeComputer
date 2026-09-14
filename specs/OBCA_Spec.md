@@ -634,16 +634,18 @@ A cell whose LOD `L` region is empty contributes an empty leaf, exactly like an 
 
 ### 4.5 Merging POIs
 
-1. Collect every POI record from every `network`-band cell. Records are 36 bytes with **absolute**
+1. Collect every POI record from every `network`-band cell. Records are 64 bytes with **absolute**
    coordinates, so they need no relocation.
-2. Deduplicate by `(lat, lon, subtype)`. Duplicates are possible only through operator error
+2. Deduplicate by source identity (`OBCM_Spec.md` §7.3). Duplicates are possible only through operator error
    (§3.6 gives each POI exactly one cell), so a duplicate is dropped and SHOULD be reported.
 3. Rebuild the hours pool: collect each source blob, deduplicate the 29-byte blobs, and remap every
    service record's `HoursRef` to the new index. `0xFFFF` stays `0xFFFF`. Summit records
    (subtype 19) keep their signed elevation trailer; they do not reference the hours pool.
 4. Re-bin each category into a fresh quadtree over the **assembly** bbox and re-chunk at the
    directory's shared `Chunk Size`, per `OBCM_Spec.md` §7.1–§7.3.
-5. Order records within a chunk by `(lat, lon, subtype)` so the output is deterministic.
+5. Order records within a chunk by source identity so the output is deterministic.
+   Preserve the explicit approach metadata. If a spatial leaf exceeds capacity, fail the assembly
+   instead of omitting service identities.
 
 The pool count MUST not exceed `0xFFFE` distinct blobs, because `HoursRef` is a `uint16` with
 `0xFFFF` reserved. Measured, a whole country needs a few thousand; an assembler MUST nevertheless
