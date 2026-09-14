@@ -424,6 +424,21 @@ class SuiteSelectionTests(unittest.TestCase):
         self.assertIn("missing.route", {item.suite["id"] for item in plan.selected})
         self.assertTrue(any("no executable CI route" in error for error in plan.errors))
 
+    def test_manual_fixture_stays_owned_but_is_not_selected_for_ci(self) -> None:
+        suite = self._suite(
+            "fixture.manual", "path", "fixture-validation",
+            pattern="fixtures/verify-inputs.py", fixtures=["captured-inputs"],
+            triggers=["fixtures/sources/**"], level="fixture",
+        )
+        suite["pull_request"] = "never"
+        suite["scheduled"] = "manual"
+        self.suites.append(suite)
+        for path in ("fixtures/verify-inputs.py", "fixtures/sources/input.json"):
+            with self.subTest(path=path):
+                plan = self.plan(path)
+                self.assertFalse(plan.errors)
+                self.assertNotIn("fixture.manual", {item.suite["id"] for item in plan.selected})
+
     def test_json_reports_platforms_jobs_and_non_selected_reasons(self) -> None:
         jobs = {"desktop": registry.WorkflowJob("desktop", "ubuntu-latest", ("bundle",), True)}
         data = registry.selection_plan_data(self.plan("apps/desktop/src/main.rs"), jobs)
