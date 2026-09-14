@@ -1,0 +1,107 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "meiringen",
+        "purpose": "authored extract boundary; not a national boundary"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              8.05,
+              46.48
+            ],
+            [
+              8.46,
+              46.48
+            ],
+            [
+              8.46,
+              46.78
+            ],
+            [
+              8.05,
+              46.78
+            ],
+            [
+              8.05,
+              46.48
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "monaco",
+        "purpose": "authored extract boundary; not a national boundary"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              7.39,
+              43.71
+            ],
+            [
+              7.47,
+              43.71
+            ],
+            [
+              7.47,
+              43.77
+            ],
+            [
+              7.39,
+              43.77
+            ],
+            [
+              7.39,
+              43.71
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "west-cork",
+        "purpose": "authored extract boundary; not a national boundary"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9.9,
+              51.43
+            ],
+            [
+              -9.5,
+              51.43
+            ],
+            [
+              -9.5,
+              51.65
+            ],
+            [
+              -9.9,
+              51.65
+            ],
+            [
+              -9.9,
+              51.43
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

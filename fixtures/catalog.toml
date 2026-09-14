@@ -90,3 +90,43 @@ packages = ["weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weathe
 summary = "All external fixture packages exercised by the full repository test suite"
 scenarios = ["grimsel", "monaco-upahead"]
 packages = ["sim-peak-view", "weather-dwd-icon", "weather-noaa", "weather-event-derecho", "weather-event-airmass"]
+
+[packages.assistant-osm]
+summary = "Pinned OSM sources for Ride Assistant: Switzerland, Monaco and regional West Cork"
+archive = "packages/c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224.tar.gz"
+sha256 = "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224"
+bytes = 549306236
+provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, hashes and limits are in manifest.json and fixtures/sources/ride-assistant/README.md."
+license = "ODbL-1.0"
+tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-osm.json", "regions.geojson" = "sources/ride-assistant/regions.geojson", "examples.json" = "sources/ride-assistant/examples.json" }
+
+[packages.assistant-terrain]
+summary = "Pinned Copernicus GLO-30 source tiles for Swiss and West Cork rides"
+archive = "packages/1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c.tar.gz"
+sha256 = "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c"
+bytes = 56250682
+provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, hashes and limits are in manifest.json and fixtures/sources/ride-assistant/README.md."
+license = "Copernicus DEM Licence"
+tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-terrain.json", "regions.geojson" = "sources/ride-assistant/regions.geojson" }
+
+[packages.assistant-wiki]
+summary = "Pinned Wiki entities, article revisions, Commons originals and credits for four review sites"
+archive = "packages/d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1.tar.gz"
+sha256 = "d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1"
+bytes = 62334071
+provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, hashes and limits are in manifest.json and fixtures/sources/ride-assistant/README.md."
+license = "CC0-1.0 (Wikidata); article and image licenses in captured source notices"
+tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-wiki.json", "regions.geojson" = "sources/ride-assistant/regions.geojson" }
+
+[packages.assistant-replays]
+summary = "Authored GPS motion and clock recipes for five Ride Assistant cases"
+archive = "packages/3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574.tar.gz"
+sha256 = "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574"
+bytes = 8875
+provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, hashes and limits are in manifest.json and fixtures/sources/ride-assistant/README.md."
+license = "GPL-3.0-only"
+tracked_sources = { "manifest.json" = "sources/ride-assistant/replays.json", "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx", "replays/dunlough-access.gpx" = "sources/ride-assistant/replays/dunlough-access.gpx", "replays/monaco-dense.gpx" = "sources/ride-assistant/replays/monaco-dense.gpx" }
+
+[profiles.assistant-inputs]
+summary = "Pinned raw data and authored motion for Ride Assistant development"
+packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-replays"]

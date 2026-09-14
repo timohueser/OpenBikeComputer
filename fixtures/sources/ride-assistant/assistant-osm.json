@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "regions_path": "regions.geojson",
+  "sources": [
+    {
+      "path": "monaco.osm.pbf",
+      "sha256": "5522a7e2ac8084d935302d78e2ec9bbec8ec5eba8740ea29050e1e02bcdaa9c6",
+      "bytes": 691365,
+      "retrieved_at": "2026-09-14T21:39:41.708318+00:00",
+      "url": "https://download.geofabrik.de/europe/monaco-260913.osm.pbf",
+      "source_timestamp": "2026-09-13T20:21:20Z",
+      "revision": "4909",
+      "license": "ODbL-1.0",
+      "license_url": "https://www.openstreetmap.org/copyright",
+      "source_sha256": "5522a7e2ac8084d935302d78e2ec9bbec8ec5eba8740ea29050e1e02bcdaa9c6",
+      "transform": "none"
+    },
+    {
+      "path": "switzerland.osm.pbf",
+      "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
+      "bytes": 545916978,
+      "retrieved_at": "2026-09-14T21:39:43.143687+00:00",
+      "url": "https://download.geofabrik.de/europe/switzerland-260913.osm.pbf",
+      "source_timestamp": "2026-09-13T20:21:20Z",
+      "revision": "4909",
+      "license": "ODbL-1.0",
+      "license_url": "https://www.openstreetmap.org/copyright",
+      "source_sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
+      "transform": "none"
+    },
+    {
+      "path": "west-cork.osm.pbf",
+      "sha256": "1c4a40f4887b23854e618ad3c5e38777e034941014b042046dafe494896876d5",
+      "bytes": 2995373,
+      "retrieved_at": "2026-09-14T21:39:44.489865+00:00",
+      "url": "https://download.geofabrik.de/europe/ireland-and-northern-ireland-260913.osm.pbf",
+      "source_timestamp": "2026-09-13T20:21:20Z",
+      "revision": "4905",
+      "license": "ODbL-1.0",
+      "license_url": "https://www.openstreetmap.org/copyright",
+      "source_sha256": "0f64ef655e010d233da16c4da11c69e380aef42b0efb5bbf057a7c7290df2aeb",
+      "transform": "osmium extract -b -9.90,51.43,-9.50,51.65 -s smart (osmium 1.19.1)"
+    },
+    {
+      "path": "switzerland.poly",
+      "url": "https://download.geofabrik.de/europe/switzerland.poly",
+      "retrieved_at": "2026-09-14T21:44:30.248798+00:00",
+      "source_timestamp": "not supplied; exact captured bytes pinned by SHA-256",
+      "revision": "4f254d87aaa51f0903df76052c114685672ccf2de043a334c246d7a3fb8db179",
+      "sha256": "4f254d87aaa51f0903df76052c114685672ccf2de043a334c246d7a3fb8db179",
+      "bytes": 26551,
+      "license": "ODbL-1.0",
+      "license_url": "https://www.openstreetmap.org/copyright",
+      "transform": "none"
+    }
+  ],
+  "country_boundary_path": "switzerland-boundary.geojson"
+}
