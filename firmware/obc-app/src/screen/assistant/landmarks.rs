@@ -5,7 +5,7 @@ use crate::assistant_demo::{photos::paragraph, Fixture, Stop};
 
 #[derive(Debug, Default)]
 pub(super) struct View {
-    nearby: heapless::Vec<(u8, u32), 3>,
+    nearby: heapless::Vec<u8, 4>,
     selected: usize,
     page: Option<usize>,
     origin: (i32, i32),
@@ -25,13 +25,13 @@ impl View {
                 continue;
             }
             let Ok(i) = u8::try_from(i) else { continue };
-            let distance = obc_map_scene::ground_dist_m(origin, stop.position()) as u32;
-            let at = view.nearby.partition_point(|&(_, d)| d <= distance);
+            let distance = direct_distance(origin, stop);
+            let at = view.nearby.partition_point(|&i| direct_distance(origin, &fixture.stops[i as usize]) <= distance);
             if at < view.nearby.capacity() {
                 if view.nearby.is_full() {
                     view.nearby.pop();
                 }
-                let _ = view.nearby.insert(at, (i, distance));
+                let _ = view.nearby.insert(at, i);
             }
         }
         view
@@ -43,12 +43,12 @@ impl View {
             Gesture::Back => return Action::Back,
             Gesture::Step(n) => {
                 if let Some(page) = self.page {
-                    let stop = &fixture.stops[self.nearby[self.selected].0 as usize];
+                    let stop = &fixture.stops[self.nearby[self.selected] as usize];
                     let landmark = stop.landmark.unwrap();
                     self.page = Some(list::step_selection(
                         page,
                         n,
-                        landmark.pages.len() + usize::from(landmark.photo.is_some()),
+                        landmark.pages.len() + 2 * usize::from(landmark.photo.is_some()),
                     ));
                 } else {
                     self.selected = list::step_selection(self.selected, n, self.nearby.len().max(1));
@@ -56,7 +56,7 @@ impl View {
             }
             Gesture::Press if !self.nearby.is_empty() => {
                 if self.page.is_some() {
-                    return Action::Preview(self.nearby[self.selected].0);
+                    return Action::Preview(self.nearby[self.selected]);
                 }
                 self.page = Some(0);
             }
@@ -72,29 +72,42 @@ impl View {
         S: obc_map_scene::MapScene,
     {
         if let Some(page) = self.page {
-            let (index, distance) = self.nearby[self.selected];
+            let index = self.nearby[self.selected];
             let stop = &demo.fixture.stops[index as usize];
             let landmark = stop.landmark.unwrap();
             cv.fill(rect(0, 0, rx.w, rx.h), PARCHMENT);
             cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
             cv.text(stop.name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
-            subtitle(cv, stop, distance, 48);
+            if page == landmark.pages.len() + 1 {
+                if let Some(photo) = landmark.photo {
+                    crate::assistant_demo::photos::draw(cv, photo, Point::new(12, 40), true);
+                    let mut label = heapless::String::<24>::new();
+                    let _ = write!(label, "Visit  {0}/{0}", landmark.pages.len() + 2);
+                    button(cv, &label, 280, true);
+                    return;
+                }
+            }
+            subtitle(cv, stop, direct_distance(self.origin, stop), 48);
             if let Some(text) = landmark.pages.get(page) {
                 paragraph(cv, text, 82);
             } else if let Some(photo) = landmark.photo {
-                crate::assistant_demo::photos::draw(cv, photo, Point::new(40, 86));
-                cv.text("Ordered dither", Point::new(120, 218), Font::Label, TextAlign::Center, SUBTEXT);
+                crate::assistant_demo::photos::draw(cv, photo, Point::new(40, 86), false);
+                cv.text("160 x 120", Point::new(120, 218), Font::Label, TextAlign::Center, SUBTEXT);
             }
             let mut pages = heapless::String::<24>::new();
-            let _ =
-                write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len() + usize::from(landmark.photo.is_some()));
+            let _ = write!(
+                pages,
+                "Up/down  {}/{}",
+                page + 1,
+                landmark.pages.len() + 2 * usize::from(landmark.photo.is_some())
+            );
             cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
             button(cv, "Visit", 280, true);
             return;
         }
         let mut min = self.origin;
         let mut max = min;
-        for &(i, _) in &self.nearby {
+        for &i in &self.nearby {
             let (lon, lat) = demo.fixture.stops[i as usize].position();
             min = (min.0.min(lon), min.1.min(lat));
             max = (max.0.max(lon), max.1.max(lat));
@@ -105,7 +118,7 @@ impl View {
         cv.disc(Point::new(x, y), 7, INK);
         cv.disc(Point::new(x, y), 5, PARCHMENT);
         cv.disc(Point::new(x, y), 2, INK);
-        for (row, &(i, _)) in self.nearby.iter().enumerate() {
+        for (row, &i) in self.nearby.iter().enumerate() {
             let pos = demo.fixture.stops[i as usize].position();
             let (x, y) = vp.to_screen(pos.0, pos.1);
             marker(cv, x, y, row, row == self.selected);
@@ -114,7 +127,7 @@ impl View {
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
         cv.text("Landmarks", Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
         cv.fill(rect(0, 208, rx.w, rx.h - 208), PARCHMENT);
-        if let Some(&(i, distance)) = self.nearby.get(self.selected) {
+        if let Some(&i) = self.nearby.get(self.selected) {
             let stop = &demo.fixture.stops[i as usize];
             cv.round(rect(6, 210, rx.w - 12, 104), 6, AMBER);
             let mut count = heapless::String::<16>::new();
@@ -123,7 +136,12 @@ impl View {
             cv.text(stop.landmark.unwrap().kind, Point::new(rx.w - 12, 212), Font::Label, TextAlign::Right, SUBTEXT);
             cv.text(stop.name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             let mut label = heapless::String::<24>::new();
-            super::super::vocab::fmt::write_distance_coarse(&mut label, "", distance, crate::Units::Metric);
+            super::super::vocab::fmt::write_distance_coarse(
+                &mut label,
+                "",
+                direct_distance(self.origin, stop),
+                crate::Units::Metric,
+            );
             let _ = label.push_str(" straight line");
             cv.text(&label, Point::new(12, 262), Font::Label, TextAlign::Left, INK);
             cv.text("Select to read", Point::new(120, 288), Font::Label, TextAlign::Center, SUBTEXT);
@@ -131,6 +149,10 @@ impl View {
             cv.text("None found nearby", Point::new(12, 220), Font::Label, TextAlign::Left, INK);
         }
     }
+}
+
+fn direct_distance(origin: (i32, i32), stop: &Stop) -> u32 {
+    obc_map_scene::ground_dist_m(origin, stop.position()) as u32
 }
 
 fn subtitle(cv: &mut impl Surface, stop: &Stop, distance: u32, y: i32) {
@@ -222,7 +244,7 @@ mod tests {
             ],
         };
         let mut view = View::new(&FIXTURE, FIXTURE.start);
-        assert_eq!(view.nearby.iter().map(|&(i, _)| i).collect::<std::vec::Vec<_>>(), [3, 4, 0]);
+        assert_eq!(view.nearby.as_slice(), [3, 4, 0, 5]);
         view.handle(Gesture::Step(1), &FIXTURE);
         view.handle(Gesture::Press, &FIXTURE);
         view.handle(Gesture::Step(1), &FIXTURE);
@@ -231,6 +253,6 @@ mod tests {
         assert_eq!(view.selected, 1);
         assert_eq!(view.page, None);
         let elsewhere = View::new(&FIXTURE, (1_000, 1_000));
-        assert_eq!(elsewhere.nearby[0].0, 5, "distance is measured from the rider");
+        assert_eq!(elsewhere.nearby[0], 5, "distance is measured from the rider");
     }
 }

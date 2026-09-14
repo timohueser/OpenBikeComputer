@@ -18,13 +18,19 @@ use obc_render::{
 pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input<'static>; 4]) -> ! {
     let mut selected = 0;
     let mut page = 0;
+    let mut large = true;
     let mut previous = [false; 4];
     let mut dirty = true;
-    defmt::info!("Landmark photos: Up/Down changes photo; Select cycles credits; Back returns to photo. SD untouched.");
+    defmt::info!(
+        "Landmark photos: Up/Down changes photo; Select changes size; Back opens/closes sources. SD untouched."
+    );
     loop {
         if dirty {
-            let (name, photo) =
-                if selected == 0 { ("Aare Gorge", &photos::AARE) } else { ("Reichenbach Falls", &photos::FALLS) };
+            let (name, photo) = [
+                ("Aare Gorge", &photos::AARE),
+                ("Reichenbach Falls", &photos::FALLS),
+                ("Dunlough Castle", &photos::DUNLOUGH),
+            ][selected];
             {
                 let mut fb = FbDevice64::new(frame.bytes_mut(), FB_W as u32, FB_H as u32);
                 let color = |c| Rgb565::from(RawU16::new(c));
@@ -33,8 +39,10 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
                 cv.round(rect(4, 4, 232, 34), 6, WOOD);
                 cv.text(name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
                 if page == 0 {
-                    photos::draw(&mut cv, photo, Point::new(40, 86));
-                    cv.text("Ordered dither", Point::new(120, 218), Font::Label, TextAlign::Center, INK);
+                    photos::draw(&mut cv, photo, if large { Point::new(12, 40) } else { Point::new(40, 86) }, large);
+                    if !large {
+                        cv.text("160 x 120", Point::new(120, 218), Font::Label, TextAlign::Center, INK);
+                    }
                 } else {
                     photos::paragraph(
                         &mut cv,
@@ -46,10 +54,20 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
                         66,
                     );
                 }
-                cv.text("Up/down: photo", Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
+                if page != 0 || !large {
+                    cv.text("Up/down: photo", Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
+                }
                 cv.round(rect(12, 280, 216, 32), 6, AMBER);
                 cv.text(
-                    if page == 0 { "Sources" } else { "Next source" },
+                    if page == 0 {
+                        if large {
+                            "Smaller"
+                        } else {
+                            "Bigger"
+                        }
+                    } else {
+                        "Next source"
+                    },
                     Point::new(120, 282),
                     Font::Body,
                     TextAlign::Center,
@@ -59,7 +77,7 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
             if !panel.push_frame(frame).await {
                 defmt::warn!("Photo present stalled");
             }
-            defmt::info!("Landmark photo: {=str}, page {=usize}", name, page);
+            defmt::info!("Landmark photo: {=str}, page {=usize}, large {=bool}", name, page, large);
             dirty = false;
         }
         Timer::after_millis(30).await;
@@ -68,10 +86,11 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
             if pressed[i] && !previous[i] {
                 match i {
                     0 | 1 => {
-                        selected = 1 - selected;
+                        selected = (selected + if i == 0 { 2 } else { 1 }) % 3;
                         page = 0;
                     }
-                    2 => page = 0,
+                    2 => page = if page == 0 { 1 } else { 0 },
+                    _ if page == 0 => large = !large,
                     _ => page = (page + 1) % 4,
                 }
                 dirty = true;
