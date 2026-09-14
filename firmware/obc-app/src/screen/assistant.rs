@@ -173,7 +173,17 @@ impl AssistantScreen {
                 let (x, y) = vp.to_screen(stop.position().0, stop.position().1);
                 cv.round(rect(x - 13, y - 14, 27, 28), 4, INK);
                 cv.round(rect(x - 11, y - 12, 23, 24), 3, if i == demo.selected as usize { AMBER } else { PARCHMENT });
-                cv.text(if i == 0 { "A" } else { "B" }, Point::new(x, y - 12), Font::Label, TextAlign::Center, INK);
+                if choices {
+                    cv.text(if i == 0 { "A" } else { "B" }, Point::new(x, y - 12), Font::Label, TextAlign::Center, INK);
+                } else {
+                    super::poi_menu::draw_category_icon(
+                        cv,
+                        obc_reader::PoiCategory::Resupply,
+                        Point::new(x, y),
+                        INK,
+                        AMBER,
+                    );
+                }
             }
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
