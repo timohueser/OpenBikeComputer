@@ -34,7 +34,6 @@ pub struct Fixture {
 pub enum Phase {
     Riding,
     ToStop,
-    Arrived,
     Returning,
 }
 
@@ -76,11 +75,15 @@ impl App {
     /// Simulate reaching the selected stop, or rejoining after the accepted return leg.
     pub fn advance_assistant_demo(&mut self) {
         let Some(mut demo) = self.state.assistant_demo else { return };
+        if demo.phase == Phase::Riding {
+            return;
+        }
+        self.ui.stack.retain(|screen| !matches!(screen, screen::Screen::Assistant(_)));
         match demo.phase {
             Phase::ToStop => {
-                demo.phase = Phase::Arrived;
+                demo.phase = Phase::Returning;
                 self.assistant_demo_position(demo.stop().position());
-                screen::close_drawers(&mut self.ui.stack);
+                self.activate_route(demo.stop().continuation);
                 screen::apply(
                     &mut self.ui.stack,
                     screen::Transition::Push(screen::Screen::Assistant(screen::AssistantScreen::arrival())),
@@ -91,7 +94,7 @@ impl App {
                 self.assistant_demo_position(demo.stop().approach[0]);
                 self.activate_route(demo.fixture.original);
             }
-            Phase::Riding | Phase::Arrived => return,
+            Phase::Riding => return,
         }
         self.state.assistant_demo = Some(demo);
         self.ui.map_dirty = true;
@@ -160,32 +163,42 @@ mod tests {
 
     #[test]
     fn visit_keeps_the_recording_and_restores_the_route_after_rejoining() {
-        let mut app = app();
-        let session = app.recorder.session();
-        preview(&mut app);
-        assert_eq!(app.active_route_index(), Some(0), "preview does not replace navigation");
-        app.apply_gesture(Gesture::Press);
-        assert_eq!(app.active_route_index(), Some(1));
-        assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
+        for dismiss in [Some(Gesture::Press), Some(Gesture::Back), None] {
+            let mut app = app();
+            let session = app.recorder.session();
+            preview(&mut app);
+            assert_eq!(app.active_route_index(), Some(0), "preview does not replace navigation");
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.active_route_index(), Some(1));
+            assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
 
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), screen::Screen::RideControl(_)), "Map Select still pauses");
-        app.apply_gesture(Gesture::Back);
-        app.advance_assistant_demo();
-        assert!(matches!(app.top_screen(), screen::Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
-        assert_eq!(app.state.assistant_demo.unwrap().phase, Phase::Arrived);
-        open(&mut app);
-        app.apply_gesture(Gesture::Press);
-        assert_eq!(app.active_route_index(), Some(2));
-        assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
-        app.advance_assistant_demo();
-        assert_eq!(app.active_route_index(), Some(0));
-        assert_eq!(app.state.assistant_demo.unwrap().phase, Phase::Riding);
-        assert_eq!(app.recorder.session(), session);
-        assert!(app.recorder.recording());
-        assert_eq!(app.activity.mode, Mode::Riding);
+            app.apply_gesture(Gesture::Press);
+            assert!(matches!(app.top_screen(), screen::Screen::RideControl(_)), "Map Select still pauses");
+            app.apply_gesture(Gesture::Back);
+            if dismiss.is_none() {
+                open(&mut app);
+            }
+            app.advance_assistant_demo();
+            assert!(matches!(app.top_screen(), screen::Screen::Assistant(_)));
+            assert_eq!(app.active_route_index(), Some(2), "return guidance is active before any arrival input");
+            assert_eq!(app.state.assistant_demo.unwrap().phase, Phase::Returning);
+            if let Some(gesture) = dismiss {
+                app.apply_gesture(gesture);
+                assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
+                assert_eq!(app.active_route_index(), Some(2), "dismissal does not change navigation");
+                open(&mut app);
+                app.apply_gesture(Gesture::Press);
+                assert!(matches!(app.top_screen(), screen::Screen::Map(_)));
+                assert_eq!(app.active_route_index(), Some(2));
+            }
+            app.advance_assistant_demo();
+            assert_eq!(app.active_route_index(), Some(0));
+            assert!(matches!(app.top_screen(), screen::Screen::Map(_)), "an ignored arrival card clears on rejoin");
+            assert_eq!(app.state.assistant_demo.unwrap().phase, Phase::Riding);
+            assert_eq!(app.recorder.session(), session);
+            assert!(app.recorder.recording());
+            assert_eq!(app.activity.mode, Mode::Riding);
+        }
     }
 
     #[test]

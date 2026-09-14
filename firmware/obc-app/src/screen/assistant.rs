@@ -43,8 +43,7 @@ impl AssistantScreen {
     pub fn new(demo: Demo) -> Self {
         let page = match demo.phase {
             Phase::Riding => Page::Questions,
-            Phase::Arrived => Page::Arrived,
-            _ => Page::Visit,
+            Phase::ToStop | Phase::Returning => Page::Visit,
         };
         Self { page, selected: 0 }
     }
@@ -96,12 +95,7 @@ impl AssistantScreen {
                 }
                 Page::Visit if self.selected == 0 => Transition::Pop,
                 Page::Visit if demo.phase == Phase::ToStop => self.go(Page::Skip, 0),
-                Page::Arrived => {
-                    demo.phase = Phase::Returning;
-                    cx.navigator.set_active_route(Some(demo.stop().continuation));
-                    cx.state.assistant_demo = Some(demo);
-                    Transition::Root(Screen::Map(MapScreen::new()))
-                }
+                Page::Arrived => Transition::Pop,
                 Page::Skip => {
                     demo.phase = Phase::Riding;
                     cx.navigator.set_active_route(Some(demo.fixture.original));
@@ -153,7 +147,11 @@ impl AssistantScreen {
             demo.selected = self.selected as u8;
         }
         let choices = self.page == Page::Choices;
-        let map_bottom = if matches!(self.page, Page::Choices | Page::Preview) { 143 } else { 176 };
+        let map_bottom = match self.page {
+            Page::Choices | Page::Preview => 143,
+            Page::Arrived => 154,
+            _ => 176,
+        };
         let vp = viewport(demo, rx.w, rx.h, map_bottom, choices);
         let _ = super::map::draw_map_scene(cv, rx, &vp, None);
         if matches!(self.page, Page::Choices | Page::Preview) {
@@ -193,6 +191,7 @@ impl AssistantScreen {
             Page::Preview => "Shop visit",
             Page::Arrived => "Arrived",
             Page::Skip => "Skip shop?",
+            Page::Visit if demo.phase == Phase::Returning => "Back to route",
             _ => "Shop stop",
         };
         cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
@@ -226,10 +225,11 @@ impl AssistantScreen {
             then_destination(cv, demo, 250);
             button(cv, "Add stop", 280, true);
         } else if self.page == Page::Arrived {
-            cv.text(stop.name, Point::new(14, 180), Font::Body, TextAlign::Left, INK);
-            cv.text("Back to your route", Point::new(14, 211), Font::Label, TextAlign::Left, SUBTEXT);
-            figures(cv, stop.return_m, stop.return_climb_m, 239, false);
-            button(cv, "Continue ride", 280, true);
+            cv.text(stop.name, Point::new(14, 158), Font::Body, TextAlign::Left, INK);
+            cv.text("Guidance continues", Point::new(14, 190), Font::Label, TextAlign::Left, INK);
+            cv.text("Back to your route", Point::new(14, 214), Font::Label, TextAlign::Left, SUBTEXT);
+            figures(cv, stop.return_m, stop.return_climb_m, 240, false);
+            button(cv, "Dismiss", 280, true);
         } else if self.page == Page::Skip {
             cv.text(stop.name, Point::new(14, 180), Font::Body, TextAlign::Left, INK);
             cv.text("Use original route", Point::new(14, 215), Font::Label, TextAlign::Left, INK);

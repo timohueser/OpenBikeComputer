@@ -145,46 +145,52 @@ calculate access routes, or detect arrival from GPS.
 
 Open the top drawer with Up + Select (Left arrow + Enter). Step once to **Ride Assistant**,
 then select **Find a place → Shop**. Compare **On the way** with **Nearest**, preview a visit,
-and select **Add stop**. The preview shows the extra distance and climbing for the full visit,
-including the return. The other questions and categories are grey placeholders.
+and select **Add stop**. This accepts the full visit, including the return to the original route.
+The preview shows the extra distance and climbing for that full visit. The other questions and
+categories are grey placeholders.
 A/B identify the results during comparison. After selection, the shop uses the existing basket icon.
 The study sets Climb mode to Manual so a climb does not interrupt the map comparison.
 
 Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
 and Up/Down still zoom. The same ride remains open. Use **Arrive at shop** in the simulator's
-Controls panel to raise the arrival screen. **Continue ride** starts the prepared return leg.
-Use **Rejoin original route** in Controls to restore the original route. These two Controls buttons
-simulate location events; they are not new device buttons.
+Controls panel to simulate arrival. This activates the prepared return leg and shows an informational
+arrival card. Guidance is already active before you dismiss the card. Use **Rejoin original route**
+in Controls to simulate rejoining; the original route resumes automatically. These two Controls
+buttons supply location events; they are not new device buttons or route confirmations.
 
 During a visit, the drawer opens the current visit rather than the question list:
 
 | Ride stage | Navigation | Ride Assistant |
 | --- | --- | --- |
 | Going to the shop | Follow the selected path to the shop. | Show the visit, or remove the stop. |
-| At the shop | The current path ends at the shop. | Show the arrival screen with **Continue ride**. |
-| Returning to the route | Follow the prepared return leg. | Show the current visit. |
+| At the shop | The accepted return leg is active. Stop as long as needed, then ride on. | The arrival card says **Guidance continues**. |
+| Returning to the route | Follow the prepared return leg. | Show **Back to route**, with no confirmation required. |
 | Back on the original route | Resume the original route. | Show the question list again. |
 
-Back on the arrival screen dismisses that screen and shows the map. It does not cancel the visit,
-pause recording, or start return guidance. Open the drawer and select **Ride Assistant** to show
-the same arrival screen again. Select **Continue ride** to start the return leg. Back on the normal
-navigation map still opens Statistics.
+Select **Dismiss** or press Back to close the arrival card. Both leave navigation and recording
+unchanged. The card can also be ignored: rejoining clears it automatically. Open Ride Assistant
+during the return to see the current visit; there is no arrival action to recover from the drawer.
+Back on the normal navigation map still opens Statistics. These transitions follow the route legs
+accepted by **Add stop**; they do not calculate a new route.
 
 Before arrival, the Assistant also has **Skip stop**. Confirming removal restores the original
 route at the current position; it does not calculate a path back. The original destination remains
-Grimselpass. This explicit arrival confirmation is the current prototype behavior.
+Grimselpass.
 
 The flag replaces the drawer's Bluetooth shortcut for this study. Bluetooth settings remain in
 Settings. Without the flag, the Assistant is absent. The flag requires a temporary card and cannot
 be combined with `--card`, `--create-card`, or `--gpx`. Do not change route catalogs during a study.
 
-For headless captures, `A` simulates arrival, or rejoining after Continue ride. For example:
+For headless captures, the first `A` simulates arrival and the second simulates rejoining. No device
+button press is needed between them. For example:
 
 ```sh
 target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
   --script "Q w d p p p d p" --expect-screen Assistant --png shop-preview.png
 target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
   --script "Q w d p p p d p p f A" --expect-screen Assistant --png shop-arrival.png
+target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
+  --script "Q w d p p p d p p f A A" --expect-screen Map --png shop-rejoined.png
 ```
 
 Physical-device execution, real POI data, automatic arrival detection, and the remaining Assistant
