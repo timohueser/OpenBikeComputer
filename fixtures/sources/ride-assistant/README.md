@@ -70,11 +70,18 @@ also provide service cases without manufactured hours or accessibility facts.
 
 ## Replay contract
 
-`replays.json` describes five authored motion cases. The GPX files contain coordinates and
-UTC timestamps only. The three Meiringen traces follow vertices from the pinned local road
-network; the Dunlough trace follows the actual OSM walking approach. Monaco reuses the existing
-authored dense-list trace byte for byte. No replay contains route cost, selected route, arrival,
-opening status, or application events. Distance-derived sampling times control motion only.
+`replays.json` describes five authored motion cases. The three Meiringen traces contain
+coordinates and UTC timestamps from vertices of the pinned local road network. The Dunlough
+trace has the same fields and follows the actual OSM walking approach. No replay contains
+route cost, selected route, arrival, opening status, or application events.
+
+Monaco reuses the existing authored dense-list GPX byte for byte. It also contains eight named
+category waypoints and eleven authored elevation values. For `--gpx` motion, the simulator
+ignores the waypoints but uses those elevation values for the simulated barometer. Route import
+can consume the waypoints. These elevations and waypoint annotations are authored test inputs,
+not captured terrain or field measurements. The GPX timestamps start at 2025-06-29 09:00 UTC;
+replay uses their relative times. The planned 2026-09-14 clock anchor below is separate from
+those timestamps. The other traces use distance-derived sampling times to control motion.
 
 | Trace | Case | UTC anchor | Configured offset |
 | --- | --- | --- | --- |
