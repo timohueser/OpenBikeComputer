@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "replays": [
+    {
+      "id": "meiringen-out-and-back",
+      "region": "meiringen",
+      "gpx": "replays/meiringen-out-and-back.gpx",
+      "utc_clock": "2026-09-14T10:00",
+      "utc_offset_min": 120,
+      "cases": [
+        "out-and-back visit"
+      ],
+      "motion": "Authored motion follows pinned OSM way vertices; no navigation result or arrival event is injected.",
+      "osm_ways": [
+        "8117144",
+        "24853910",
+        "24853917",
+        "24853918",
+        "36277585",
+        "44771786",
+        "60099741",
+        "231634488",
+        "279561288",
+        "294234030",
+        "294234031",
+        "319580118",
+        "319580119",
+        "427174919"
+      ],
+      "start_node": "8867754553",
+      "end_node": "8867754553",
+      "seconds": 688,
+      "missing_facts": [
+        "No elevation samples; use captured terrain.",
+        "Replay clock/offset must be applied through simulator ports (RA13)."
+      ]
+    },
+    {
+      "id": "meiringen-forward-rejoin",
+      "region": "meiringen",
+      "gpx": "replays/meiringen-forward-rejoin.gpx",
+      "utc_clock": "2026-09-14T10:00",
+      "utc_offset_min": 120,
+      "cases": [
+        "forward rejoin",
+        "mixed local network"
+      ],
+      "motion": "Authored motion follows pinned OSM way vertices; no navigation result or arrival event is injected.",
+      "osm_ways": [
+        "8117144",
+        "24853910",
+        "24853917",
+        "24853918",
+        "36277585",
+        "36286583",
+        "36935319",
+        "36935391",
+        "44771780",
+        "44771786",
+        "60099741",
+        "231634488",
+        "279561288",
+        "294234030",
+        "294234031",
+        "319580118",
+        "319580119",
+        "427174919",
+        "978839693",
+        "978839694",
+        "1323642508"
+      ],
+      "start_node": "2837845835",
+      "end_node": "423272098",
+      "seconds": 590,
+      "missing_facts": [
+        "No elevation samples; use captured terrain.",
+        "Replay clock/offset must be applied through simulator ports (RA13)."
+      ]
+    },
+    {
+      "id": "meiringen-loop-crossing",
+      "region": "meiringen",
+      "gpx": "replays/meiringen-loop-crossing.gpx",
+      "utc_clock": "2026-09-14T10:00",
+      "utc_offset_min": 120,
+      "cases": [
+        "loop/crossing",
+        "stable selection"
+      ],
+      "motion": "Authored motion follows pinned OSM way vertices; no navigation result or arrival event is injected.",
+      "osm_ways": [
+        "8117144",
+        "23918703",
+        "23918705",
+        "23918706",
+        "24853910",
+        "24853917",
+        "24853918",
+        "36277585",
+        "36286583",
+        "36377631",
+        "36378783",
+        "36378792",
+        "36378793",
+        "36935319",
+        "36935391",
+        "44771780",
+        "44771781",
+        "44771786",
+        "60099741",
+        "183068749",
+        "231634488",
+        "279561288",
+        "294234030",
+        "294234031",
+        "297318036",
+        "319580118",
+        "319580119",
+        "363722065",
+        "427174919",
+        "978839693",
+        "978839694",
+        "1323642508"
+      ],
+      "start_node": "8867754553",
+      "end_node": "8867754553",
+      "seconds": 1648,
+      "missing_facts": [
+        "No elevation samples; use captured terrain.",
+        "Replay clock/offset must be applied through simulator ports (RA13)."
+      ]
+    },
+    {
+      "id": "dunlough-access",
+      "region": "west-cork",
+      "gpx": "replays/dunlough-access.gpx",
+      "utc_clock": "2026-09-14T10:00",
+      "utc_offset_min": 60,
+      "cases": [
+        "landmark approach",
+        "walking path versus bicycle suitability"
+      ],
+      "motion": "Authored motion follows pinned OSM way vertices; no navigation result or arrival event is injected.",
+      "osm_ways": [
+        "294965063",
+        "584198754",
+        "672555442",
+        "672555446"
+      ],
+      "start_node": "3622420695",
+      "end_node": "3622420695",
+      "seconds": 1894,
+      "missing_facts": [
+        "No elevation samples; use captured terrain.",
+        "Replay clock/offset must be applied through simulator ports (RA13)."
+      ]
+    },
+    {
+      "id": "monaco-dense",
+      "region": "monaco",
+      "gpx": "replays/monaco-dense.gpx",
+      "utc_clock": "2026-09-14T10:00",
+      "utc_offset_min": 120,
+      "cases": [
+        "dense list",
+        "paging",
+        "stable selection"
+      ],
+      "motion": "Byte-identical existing authored monaco-upahead.gpx",
+      "original_source": "fixtures/sources/sim-monaco/tracks/monaco-upahead.gpx"
+    }
+  ]
+}

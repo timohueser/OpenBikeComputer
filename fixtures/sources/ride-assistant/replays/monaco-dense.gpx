@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  "Monaco Loop" — the Up-ahead fixture route (epic #946, U3).
+
+  A ~2.7 km line across central Monaco, authored to sit inside `monaco.obcm` (the POI-dense urban
+  fixture): the 300 m route corridor there catches real Resupply / Pharmacy / Lodging POIs, which is
+  the whole point — it is the one committed route that makes the merged "Up ahead" timeline (custom
+  waypoints + map POIs on one axis) eyeballable in the simulator.
+
+  Its waypoints deliberately cover every case the screen draws:
+    * five of the six categories via <sym> (U1's symbol table) plus two Generic ones (the diamond),
+    * offsets on both sides of the line — two inside the 50 m hint threshold, three well past it,
+    * a name long enough to exercise the row's ellipsis.
+  Track points carry <time> (one per minute from 09:00Z), so `--gpx ... --at SEC` replays along it
+  and passed waypoints mute.
+-->
+<gpx version="1.1" creator="obc-sim fixtures">
+  <wpt lat="43.7290" lon="7.4145"><name>Start gate</name></wpt>
+  <wpt lat="43.7316" lon="7.4215"><name>Fontaine du port</name><sym>Drinking Water</sym></wpt>
+  <wpt lat="43.7366" lon="7.4258"><name>Camping des collines</name><sym>Camping</sym></wpt>
+  <wpt lat="43.7385" lon="7.4306"><name>Hotel Riviera</name><sym>Hotel</sym></wpt>
+  <wpt lat="43.7408" lon="7.4318"><name>Boulangerie Est</name><sym>Bakery</sym></wpt>
+  <wpt lat="43.7425" lon="7.4285"><name>Turn left here</name></wpt>
+  <wpt lat="43.7448" lon="7.4256"><name>Pharmacie centrale</name><sym>Pharmacy</sym></wpt>
+  <wpt lat="43.7465" lon="7.4300"><name>Velo Sud</name><sym>Bike Shop</sym></wpt>
+  <trk><name>Monaco Loop</name><trkseg>
+    <trkpt lat="43.7290" lon="7.4145"><ele>8</ele><time>2025-06-29T09:00:00Z</time></trkpt>
+    <trkpt lat="43.7305" lon="7.4185"><ele>14</ele><time>2025-06-29T09:01:00Z</time></trkpt>
+    <trkpt lat="43.7315" lon="7.4215"><ele>22</ele><time>2025-06-29T09:02:00Z</time></trkpt>
+    <trkpt lat="43.7325" lon="7.4245"><ele>31</ele><time>2025-06-29T09:03:00Z</time></trkpt>
+    <trkpt lat="43.7345" lon="7.4275"><ele>44</ele><time>2025-06-29T09:04:00Z</time></trkpt>
+    <trkpt lat="43.7365" lon="7.4295"><ele>52</ele><time>2025-06-29T09:05:00Z</time></trkpt>
+    <trkpt lat="43.7385" lon="7.4305"><ele>61</ele><time>2025-06-29T09:06:00Z</time></trkpt>
+    <trkpt lat="43.7405" lon="7.4295"><ele>73</ele><time>2025-06-29T09:07:00Z</time></trkpt>
+    <trkpt lat="43.7425" lon="7.4285"><ele>85</ele><time>2025-06-29T09:08:00Z</time></trkpt>
+    <trkpt lat="43.7445" lon="7.4290"><ele>96</ele><time>2025-06-29T09:09:00Z</time></trkpt>
+    <trkpt lat="43.7465" lon="7.4300"><ele>104</ele><time>2025-06-29T09:10:00Z</time></trkpt>
+  </trkseg></trk>
+</gpx>
