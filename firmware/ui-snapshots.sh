@@ -260,15 +260,9 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 #                5 System)
 #   p            press into the group
 #   d × R  [p]   step to row R inside it, and press if that row opens a page / cycles a value
-# The old flat list (Date & Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth,
-# Sensors, Language, System, Reset, all straight off the top level) is gone — a leading `d` count is
-# now a *group* index, so the pre-group scripts landed several screens off their frame's name.
 "$SIM" "$MAP" --boot --script "B u p w"      --expect-screen Settings --png "$OUT/settings.png"
 
-# Ride (group 0) — everything you tune for a ride, in one scrolling five-row group: Data fields,
-# Pages, Climb, Waypoints, Auto-delete. It absorbed the old standalone Stats and Auto-delete
-# screens, so those two names are gone from the sweep. Only four rows fit the panel; the cursor
-# drives the window, so the frames below past row 3 show it scrolled.
+# Ride settings: Data fields, Pages, Climb, and Waypoints.
 "$SIM" "$MAP" --boot --script "B u p p w"    --expect-screen Ride --png "$OUT/ride-settings.png"
 # The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
 # confirm card's own context sheet now — see `route-plan-context.png` below, which is its only home.
@@ -291,14 +285,6 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
 "$SIM" "$MAP" --boot --script "B u p p d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
-# The "Up ahead shows" source row is **gone** from this group (#1515 D4a): it is a row of the
-# timeline's own context sheet now — see `up-ahead-context.png` below, which is its only home. Its
-# three frames left with it, and the group's remaining rows shift up one slot.
-# The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
-# synced-ride retention ring on the last row, defaulting to 1 week. Four steps park the cursor on it;
-# one press cycles to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p p d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
 # Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
 # #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
@@ -397,32 +383,9 @@ DFU_PRE="B u p d d d d p d d d p p"
 # Entry shows the content-paired pager's page A (owner review round 3): the route's track-shape
 # preview (host-decimated, start disc + destination diamond) over its DISTANCE row.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --expect-screen RouteOverview --png "$OUT/routeoverview.png"
-# The Auto-delete expiry row (epic #638 S5). It is a "this route is about to be deleted" heads-up,
-# shown ONLY when a *started* deadline is ≤ 5 days out; `routeoverview.png` above is the absent
-# state (every route defaults to retention Never — byte-unchanged). `--route-retention LEVEL:AGE`
-# stamps every route's meta off the (--clock-pinned) wall clock. The three ≤5-day states — the row
-# tucks under the title in the smallest (Label) font, muted label + ink value, and the media band
-# starts lower to make room: level 2 = 1 week used 2 days ago → "in 5 d"; level 1 = 1 day used 19 h
-# ago → "in 5 h"; level 1 used 25 h ago (past due, before the sweep) → "soon".
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:19h \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-hours.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:25h \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-soon.png"
-# The gate's two "absent" cases must render exactly like `routeoverview.png` (no row, full band):
-# a started deadline MORE than 5 days out (level 4 = 1 month used 20 days ago → 10 days left), and a
-# route whose clock never started (`unknown` → no deadline).
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 4:20d \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-far-absent.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:unknown \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-unstarted-absent.png"
 # Page B after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the elevation band
 # over CLIMB + DESCENT — the same band slot, so nothing jumps.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p w w w w w w w" --expect-screen RouteOverview --png "$OUT/routeoverview-elevation.png"
-# The expiry row on the elevation page: the band's lowered top applies on both pager pages.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-    --script "p p p w w w w w w w" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-elevation.png"
 # The cursor on the Delete row (idle): `d` moves the selection onto it, nothing charging.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p d"   --expect-screen RouteOverview --png "$OUT/routeoverview-delete-selected.png"
 # The Delete row charging: `p p p d H` selects it, then partial-holds Select, so the
@@ -762,12 +725,6 @@ for lang in de fr es; do
     # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
-    # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
-    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Four** steps: the
-    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a) and its Bike type row to
-    # the create-route sheet (#1515 D4d), and one step too many here wraps the cursor back to row 0 and
-    # quietly re-shoots `ride-settings-$lang.png` under this name.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
@@ -792,10 +749,6 @@ for lang in de fr es; do
     "$SIM" "$MONACO" --boot --lang "$lang" --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 \
         --clock "2025-01-06T12:00" --script "$NAVCONFIRM C" \
         --expect-screen ContextDrawer --png "$OUT/route-plan-context-$lang.png"
-    # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — a ≤5-day heads-up;
-    # eyeball the label ("Auto-Lösch" / "Suppr. auto" / "Autoborrado") beside the ink "in 5 d".
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-        --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-$lang.png"
     # The trip cascade-delete confirm (epic #526, TR3), per-language — the wrapped warning line + the
     # shortened "Delete all" button are the copy to eyeball for clipping in the longer translations.
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$TRIPDIR" --script "p p h" --expect-screen TripDelete --png "$OUT/trip-delete-confirm-$lang.png"
@@ -850,6 +803,11 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold-$lang.png"
 
+done
+
+"$SIM" "$MAP" --boot --route-cleanup --clock "2025-07-10T09:41" --expect-screen RouteCleanup --png "$OUT/route-cleanup.png"
+for lang in de fr es; do
+    "$SIM" "$MAP" --boot --lang "$lang" --route-cleanup --clock "2025-07-10T09:41" --expect-screen RouteCleanup --png "$OUT/route-cleanup-$lang.png"
 done
 
 # Counted from the directory rather than hand-maintained — the literal that used to live here had

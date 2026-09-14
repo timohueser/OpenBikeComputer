@@ -16,7 +16,7 @@ final class UploadSheetModelTests: XCTestCase {
         _ scenario: Scenario,
         payloadBytes: Int = 100_000,
         waypoints: [Waypoint] = [],
-        onCompleted: @escaping (DeviceObjectID?, UInt32, Retention) -> Void = { _, _, _ in }
+        onCompleted: @escaping (DeviceObjectID?, UInt32) -> Void = { _, _ in }
     ) -> (UploadSheetModel, MockControl) {
         let control = MockControl(scenario: scenario)
         control.latency = .zero
@@ -35,10 +35,6 @@ final class UploadSheetModelTests: XCTestCase {
             transport: MockTransport(control: control),
             blob: blob,
             deviceName: "Trailhead",
-            // These exercise the transfer machinery — no retention capability, so
-            // `start()` begins the transfer straight away (the `.ready` confirm is
-            // covered by `UploadSheetRetentionTests`).
-            supportsRetention: false,
             timing: Self.fastTiming,
             onCompleted: onCompleted
         )
@@ -194,9 +190,8 @@ final class UploadSheetModelTests: XCTestCase {
             transport: transport,
             blob: blob,
             deviceName: "Trailhead",
-            supportsRetention: false,
             timing: Self.fastTiming,
-            onCompleted: { _, _, _ in completedCalls += 1 }
+            onCompleted: { _, _ in completedCalls += 1 }
         )
         transport.assignedID.fulfill(DeviceObjectID(7))
         model.start()
@@ -245,7 +240,6 @@ final class UploadSheetModelTests: XCTestCase {
         )
         let model = UploadSheetModel(
             transport: transport, blob: blob, deviceName: "Trailhead",
-            supportsRetention: false, timing: Self.fastTiming
         )
         model.start()
         try? await Task.sleep(for: .milliseconds(20))  // let the outcome watcher suspend

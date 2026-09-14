@@ -48,6 +48,7 @@ fn route() -> Entry {
     ranges.push(12, 1).unwrap();
     Entry {
         meta: EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(1),
             revision: Revision(3),
             kind: ObjectKind::Route,
@@ -66,6 +67,7 @@ fn ride() -> Entry {
     ranges.push(13, 32).unwrap();
     Entry {
         meta: EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(2),
             revision: Revision(1),
             kind: ObjectKind::Ride,

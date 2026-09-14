@@ -8,7 +8,6 @@
 //! back to [`Settings::default`] rather than loading garbage.
 
 use crate::i18n::{t, Msg};
-use crate::retention::RideRetention;
 use crate::screen::BRIGHTNESS_MAX;
 use crate::settings_enum::setting_enum;
 use crate::settings_table::settings_table;
@@ -297,24 +296,6 @@ setting_enum! {
 }
 
 setting_enum! {
-    /// Which sources feed the **"Up ahead" timeline** (epic #946, U4) — the ride compass's north
-    /// station. A device-only setting, cycled in place by the Ride settings screen's press-to-cycle row
-    /// and persisted in the codec next to [`ride_retention`](Settings::ride_retention).
-    ///
-    /// Scope is deliberately narrow: this is *who feeds the list*, nothing else. It never hides the
-    /// map's POI markers or waypoint diamonds, never touches the nearby-POI browser (Menu → POIs, which
-    /// answers the other question — "what's near me *now*?"), and never touches the stats waypoint panel
-    /// or the "Next: \<category\>" stat fields. It composes with the category filter beside it on the
-    /// timeline's context sheet: the filter applies *within* the configured sources.
-    ///
-    /// The labels are short by necessity: the value shares the Ride row's sub-caption line with its
-    /// `◄` cue at 240 px, so the row reads as the sentence *"Up ahead shows ◄ Waypoints"* rather than
-    /// repeating "only".
-    ///
-    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-    /// byte always decodes to the same value (an unknown byte sanitises to the default, [`Both`]).
-    ///
-    /// [`Both`]: UpAheadSource::Both
     pub enum UpAheadSource {
         /// Custom waypoints **and** route-corridor map POIs — the merged timeline the epic designed.
         /// **The default**: the merge is the feature.
@@ -556,13 +537,6 @@ settings_table! {
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
         /// Default: all three slots empty.
         saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19);
-        /// How long after a ride is verifiably synced to the phone the device auto-deletes it (epic
-        /// #638): Never / 1 day / 1 week / 1 month. **Device-only**, like
-        /// [`climb_mode`](Settings::climb_mode) — the auto-expiry setting is device-local (the app never
-        /// surfaces it), so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
-        /// Default **1 week**. Only synced rides are ever deleted; unsynced rides are never touched. S5
-        /// adds the Auto-delete settings screen that edits this.
-        ride_retention: RideRetention = RideRetention::Week1, since(19);
         /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
         /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's own device
@@ -638,7 +612,7 @@ impl Settings {
 }
 
 /// Current settings layout version.
-pub const VERSION: u8 = 19;
+pub const VERSION: u8 = 20;
 
 /// Settings use the current layout. Other versions reset to defaults.
 pub const MIN_SUPPORTED: u8 = 19;
@@ -680,11 +654,10 @@ const _: () = {
     assert!(off::waypoint_mode == 84, "waypoint_mode moved");
     assert!(off::language == 85, "language moved");
     assert!(off::saved_sensors == 86, "saved_sensors moved");
-    assert!(off::ride_retention == 110, "ride_retention moved");
-    assert!(off::up_ahead_source == 111, "up_ahead_source moved");
-    assert!(off::map_contours == 112, "map_contours moved");
-    assert!(off::brightness == 113, "brightness moved");
-    assert!(PAYLOAD_LEN == 114, "the CRC moved");
+    assert!(off::up_ahead_source == 110, "up_ahead_source moved");
+    assert!(off::map_contours == 111, "map_contours moved");
+    assert!(off::brightness == 112, "brightness moved");
+    assert!(PAYLOAD_LEN == 113, "the CRC moved");
     assert!(ENCODED_LEN == 128, "the blob is no longer 11 RRAM lines");
 };
 
@@ -710,7 +683,6 @@ mod tests {
         assert_eq!(d.waypoint_mode, WaypointMode::default());
         assert_eq!(d.language, Language::default());
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
-        assert_eq!(d.ride_retention, RideRetention::default());
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
 
         // And the whole const is its type's `Default` — the property the field list guards.
@@ -747,7 +719,6 @@ mod tests {
                 SavedSensor::EMPTY,
                 SavedSensor::saved(0, [6, 5, 4, 3, 2, 1]),
             ],
-            ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
 
             brightness: 1,
@@ -793,11 +764,6 @@ mod tests {
 
     #[test]
     fn decode_sanitises_an_unknown_enum_byte_through_the_blob() {
-        let mut b = encode(&Settings { ride_retention: RideRetention::Never, ..Settings::default() });
-        b[off::ride_retention] = 200;
-        re_stamp_crc(&mut b);
-        assert_eq!(decode(&b).unwrap().ride_retention, RideRetention::Week1, "unknown → the 1-week default");
-
         // And once for the v18 `brightness` row, whose `range` marker is the only thing standing
         // between a corrupt byte and a panel driven at a level the port never offered. It clamps
         // **up**, not down: the safe direction for a light is bright.

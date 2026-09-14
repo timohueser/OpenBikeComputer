@@ -8,7 +8,7 @@
 //! duplicated:
 //!
 //! - [`command::run_command`] — the §4.4 imperatives (`deleteObject`, `ackRides`, `installFw`,
-//!   `forgetBond`, `setClock`, `setRouteRetention`). Takes the store, returns a typed outcome; it
+//!   `forgetBond`, `setClock`). Takes the store, returns a typed outcome; it
 //!   has never had a radio in it.
 //! - [`identity`] — the FICR-derived serial/name, the DIS strings, and the Config /
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its

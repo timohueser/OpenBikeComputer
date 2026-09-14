@@ -200,15 +200,7 @@ local_time = "Heure locale"
 offset = "Décalage"
 utc = "UTC "
 
-# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
-[autodelete]
-never = "Jamais"
-day1 = "1 jour"
-week1 = "1 sem."
-month1 = "1 mois"
-
-# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
-# --- onto the route-plan sheet in #1515 D4d) ---
+# --- Ride settings ---
 [ride]
 title = "SORTIE"
 fields = "Champs"
@@ -219,8 +211,6 @@ climb = "Montée"
 climb_sub = "panneau"
 waypoints = "Points"
 waypoints_sub = "puce"
-autodelete = "Suppr. auto"
-autodelete_sub = "sorties"
 
 # --- Display settings screen ---
 [display]
@@ -387,7 +377,6 @@ start_ride = "DÉMARRER"
 loading_profile = "Chargement"
 delete = "Supprimer"
 new_route = "NOUV. PARCOURS"
-auto_delete = "Suppr. auto"
 
 # --- Route-received / route-updated popups ---
 [route_received]
@@ -578,3 +567,19 @@ power = "ETEINDRE"
 power_confirm = "ETEINDRE ?"
 power_hold = "MAINTENIR SELECT."
 powering_off = "EXTINCTION..."
+
+[route_cleanup]
+title = "STOCKAGE PLEIN"
+body = "Supprimer les parcours sur cet appareil depuis plus de :"
+unknown_clock = "Date inconnue. Supprimez des parcours dans le menu Parcours, puis réessayez."
+delete = "Supprimer"
+age_1 = "1 semaine"
+age_2 = "2 semaines"
+age_4 = "4 semaines"
+age_8 = "8 semaines"
+age_12 = "12 semaines"
+age_26 = "26 semaines"
+working = "Suppression en cours..."
+failed = "Suppression arrêtée. Des parcours ont pu être supprimés. Vérifiez le stockage et réessayez."
+no_matches = "Aucun parcours trouvé. Choisissez un âge plus court ou utilisez le menu Parcours."
+done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."

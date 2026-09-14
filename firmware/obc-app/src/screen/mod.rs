@@ -49,6 +49,7 @@ mod ride_detail;
 mod ride_recovery;
 mod ride_start;
 mod rides;
+mod route_cleanup;
 mod route_menu;
 mod route_overview;
 mod route_received;
@@ -89,6 +90,7 @@ pub use ride_detail::RideDetailScreen;
 pub use ride_recovery::{RecoveryMode, RideRecoveryScreen};
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
+pub use route_cleanup::RouteCleanupScreen;
 pub use route_menu::RouteMenuScreen;
 pub use route_overview::RouteOverviewScreen;
 pub use route_received::{RouteReceivedScreen, RouteUpdatedScreen, TripReceivedScreen};
@@ -351,11 +353,6 @@ pub struct Render<'a> {
     /// [`units`](Settings::units) to caption + scale their readouts.
     pub settings: &'a Settings,
     pub routes: &'a [RouteSummary],
-    /// Each route's device-local retention meta (epic #638 S3), pairwise with [`routes`](Render::routes)
-    /// — the Route overview's expiry row reads the previewed route's to show its "Auto-delete"
-    /// countdown. Empty (every route reads the [`Never`](crate::Retention::Never) default) on a host
-    /// that doesn't feed retention; the overview then simply omits the row.
-    pub route_metas: &'a [crate::retention::RouteRetentionMeta],
     /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
     /// hold-to-delete footer from it (epic #447, P7).
     pub rides: &'a [RideEntry],
@@ -444,11 +441,6 @@ pub struct Render<'a> {
     pub w: i32,
     pub h: i32,
     pub now_ms: u32,
-    /// The current **UTC** unix seconds ([`App::wall_unix_now`](crate::App::wall_unix_now)) — the
-    /// instant the Route overview's expiry row subtracts from a route's `expires_at` to show the
-    /// time left. Display-only here: unlike the auto-expiry sweep it is *not* gated on a trusted
-    /// clock (a stale boot set-point just yields a stale countdown, never a deletion).
-    pub now_utc: u32,
     /// The live wall-clock time this frame (set-point advanced by elapsed millis — see
     /// [`WallClock`](crate::WallClock)). The Home screensaver draws it as `HH:MM`; for boot-relative
     /// millis a screen uses [`now_ms`](Render::now_ms) instead.
@@ -1051,6 +1043,7 @@ screens! {
     /// folder row in the Route menu's top level. A warning-red hold-guarded Delete row + a Cancel
     /// row; a completed hold records the trip's durable id for the host to cascade-delete (trip +
     /// member routes).
+    RouteCleanup(RouteCleanupScreen) => Caps::nav().hold_fill(),
     TripDelete(TripDeleteScreen) => Caps::nav().hold_fill(),
     /// The Rides screen (Menu → Rides): the stored-rides list — name + sync glyph over an olive
     /// `D MON · distance` line; press opens the Ride detail. Epic #447 P7 (#454), rows
@@ -1085,8 +1078,6 @@ screens! {
     /// **Host-pushed** by the pass's fact stage, coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
-    /// The Ride settings screen: the riding stats grid (fields, page cycle, climb, waypoints) + the
-    /// synced-ride retention ring. The one settings screen that scrolls (5 rows).
     Ride(RideScreen) => Caps::settings(),
     DateTime(DateTimeScreen) => Caps::settings(),
     Units(UnitsScreen) => Caps::settings(),
@@ -1295,6 +1286,7 @@ impl Screen {
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(recording, rides.len()),
+            Screen::RouteCleanup(s) => s.selection_is_guarded(),
             Screen::TripDelete(s) => s.selection_is_guarded(),
             _ => false,
         }
