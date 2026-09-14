@@ -130,7 +130,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ### Ride Assistant interaction study
 
-Run the shop-visit prototype on any loaded map:
+Run the Ride Assistant prototype on any loaded map:
 
 ```sh
 cargo build -p obc-sim --release
@@ -154,7 +154,31 @@ then select **Find a place → Shop**. Up/Down (Left/Right arrow) moves through 
 All result markers stay on the map; the card below shows the selected shop, distance to reach
 it, climbing, and extra distance. Select previews the full visit. **Add stop** accepts the shop
 and its return to the original route. A–D identify results during comparison. After selection,
-the shop uses the existing basket icon. The other questions and categories are grey placeholders.
+the shop uses the existing basket icon. What's next is also active. The other questions and place categories are grey placeholders.
+
+### What's next study
+
+Select **What's next** beside Find a place, or start with `--assistant-stage whats-next`.
+Up selects the next 5 km; Down selects the next 10 km. Select **Explore ahead** to browse the
+entries for that range. Up/Down selects a row, Select opens its facts, and Back restores the row.
+Down + Back opens the existing category/source drawer. Return to the brief to change the range.
+Filters apply only to the list. A fresh entry resets the category and keeps the source preference.
+
+This screen uses a fixed fictional 10 km route, independent of the loaded map, GPX, and accepted
+visit. It is an information-design fixture, not a summary of current navigation. It has a 3 km
+climb, water, shops, two custom waypoints, and a campsite. The title, ascent, descent, colored
+profile, and list share the selected interval. The next waypoint can be beyond that interval;
+its name is supplied by the fixture and does not imply a stop type. Profile colors use the
+Climb screen's grade bands. There are no profile endpoint labels or waypoint explanation lines.
+
+The list includes more than four entries and excludes a known-closed shop. Open places and places
+with unknown hours remain available. Place details show the supplied opening status and lateral
+offset. They do not offer an unmeasured visit. The separate Find a place study retains its existing
+visit preview. Climb-only filtering, live route facts, missing-data scenarios, categorized waypoint
+fixtures, menu consolidation, and the shared visit flow remain production work.
+
+Start directly on the list with `--assistant-stage explore-ahead`. During an accepted visit, the
+visit page has an **Assistant** action that returns to the questions without changing navigation.
 
 The provisional selection rules are:
 
@@ -167,9 +191,9 @@ The provisional selection rules are:
   on the way, show the nearest available detours. Repeated candidate identities appear once.
 - Do not fill empty slots. With no candidates, show **No shops found**.
 
-These are study thresholds. They are not a production POI ranking policy. The study does not yet
-account for opening hours, surface, duplicate map records, search coverage, or a maximum detour
-budget. Distance and climbing remain separate; there is no combined effort score.
+These are study thresholds. They are not a production POI ranking policy. The study excludes candidates explicitly marked closed now and keeps unknown hours. The visit
+fixtures have unknown hours; they do not read live map schedules. Surface, duplicate map records,
+search coverage, and a maximum detour budget are not yet part of the selection. Distance and climbing remain separate; there is no combined effort score.
 
 Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
 and Up/Down still zoom. The same ride remains open. Use **Arrive at shop** in the simulator's
@@ -198,7 +222,7 @@ The same presets work in the GUI and headless mode:
 | Flag | Values |
 | --- | --- |
 | `--assistant-scenario` | `four` (default), `two-along`, `useful-detour`, `worse-detour`, `four-along`, `detours-only`, `one`, `empty` |
-| `--assistant-stage` | `map` (default), `questions`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
+| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
 | `--assistant-option` | Result number `1`–`4`, default `1`. Must exist in the selected set. |
 
 Scenario names describe the supplied candidate sets. The selection rules still apply: a small map

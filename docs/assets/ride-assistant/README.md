@@ -2,10 +2,13 @@
 
 This collection supports [issue #1734](https://github.com/timohueser/OpenBikeComputer/issues/1734).
 It contains the latest **What's next** wireframes and the earlier **Find a place** simulator study.
-The user has paused further firmware implementation to review the information design.
+The reviewed overview is now included in the opt-in simulator study. See the
+[simulator controls and limits](../../../apps/obc-sim/README.md#whats-next-study).
+The five wireframes below are the earlier handoff, before the endpoint labels and waypoint
+explanation line were removed.
 
 Start with the [proposal](../../content/software/ride-assistant-study.md), then compare the five
-frames below. The layouts, controls, distance presets, and summary rules are proposals for discussion.
+frames below. The overview layout is reviewed; production data rules and full range presets remain open.
 The broader purpose of What's next and the menu consolidation are agreed.
 
 ## Continue on another machine
@@ -32,7 +35,12 @@ Suggested first instruction for the next agent:
 > reviewing the What's next information design with me. Keep the full Up Ahead functionality
 > and the existing visit-and-return decisions. Review wireframes before changing firmware.
 
-## Latest wireframes: What's next
+## Native reviewed screen
+
+See the [current simulator captures](whats-next-study/README.md) for the reviewed overview,
+range changes, timeline, drawer, and details. The next section preserves the earlier wireframes.
+
+## Earlier wireframes: What's next
 
 These are layout studies at **240 × 320 pixels**, with the firmware's Terminus bitmap glyphs:
 12 × 24 for labels and 14 × 28 for body text. Places, route geometry, and values are fictional.
@@ -103,7 +111,7 @@ five frames do not yet illustrate every case.
 
 The [visit study collection](visit-study/README.md) has actual firmware-rendered captures and
 links to the portable launch instructions. It implements the current shop-visit flow and its
-stages. What's next and the other Assistant questions remain unimplemented.
+stages. What's next has a separate fixed-data screen and timeline. The other Assistant questions remain placeholders.
 
 Useful source entry points:
 
