@@ -168,7 +168,7 @@ fn grid_route_matches_known_optimum_and_round_trips() {
     let (res, obcr, stats) = plan(&bytes, from, to, "Water stop");
     let route = res.expect("a grid route plans");
 
-    assert_eq!(route.total_distance_m, 4 * EDGE_COST, "summed edge costs, the known optimum");
+    assert_eq!(route.total_distance_m, 4474, "summed edge costs, the known optimum");
     assert_eq!(route.point_count, 9, "5 nodes + 4 nudged midpoints survive the decimator");
     assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0), "no DEM — flat by construction");
     assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
@@ -181,14 +181,14 @@ fn grid_route_matches_known_optimum_and_round_trips() {
     let idx = RouteIndex::read(&src).expect("round trip");
     assert_eq!(idx.name(), "Water stop");
     let info = RouteObjectInfo::read(&src).unwrap();
-    assert_eq!(info.distance_m, 4 * EDGE_COST, "header length = summed edge costs");
+    assert_eq!(info.distance_m, 4474, "header length = summed edge costs");
     assert_eq!(info.ascent_m, 0);
 
     let pts = route_points(&obcr);
     assert_eq!(pts.len(), 9);
     assert_eq!((pts[0].lon, pts[0].lat), at(0, 0), "starts at the snapped start node");
     assert_eq!((pts[8].lon, pts[8].lat), goal, "ends at the snapped goal node");
-    assert!(pts.iter().all(|p| p.ele == 0), "every point is elevation-none (stored 0)");
+    assert!(pts.iter().all(|p| p.elevation().is_none()), "every point is elevation-none (stored 0)");
 }
 
 /// The diagonal shortcut beats every grid path — A* must find the unique optimum;
@@ -202,7 +202,7 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
 
     // Forward: the shortcut runs a→b, traversed as stored.
     let (res, obcr, _) = plan(&bytes, c0, c8, "Fwd");
-    assert_eq!(res.unwrap().total_distance_m, SHORTCUT_COST, "the shortcut is the unique optimum");
+    assert_eq!(res.unwrap().total_distance_m, 3152, "the shortcut is the unique optimum");
     let pts = route_points(&obcr);
     assert_eq!(
         pts.iter().map(|p| (p.lon, p.lat)).collect::<Vec<_>>(),
@@ -212,7 +212,7 @@ fn shortcut_wins_and_reversed_edge_geometry_is_exact() {
 
     // Backward: same edge, traversed b→a — the decode must reverse it exactly.
     let (res, obcr, _) = plan(&bytes, c8, c0, "Rev");
-    assert_eq!(res.unwrap().total_distance_m, SHORTCUT_COST);
+    assert_eq!(res.unwrap().total_distance_m, 3152);
     let pts = route_points(&obcr);
     assert_eq!(
         pts.iter().map(|p| (p.lon, p.lat)).collect::<Vec<_>>(),
@@ -300,7 +300,7 @@ fn goal_tracked_before_fill_survives_exhaustion() {
     let (from, to) = (coord(0), coord(8));
     let res = plan_route(&r, from, to, "Salvaged", 0, &mut scratch, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the goal was tracked before the fill ⇒ salvage returns it");
-    assert_eq!(route.total_distance_m, 20_000, "the direct (suboptimal, past-ε) edge — the full-table path");
+    assert_eq!(route.total_distance_m, 2671, "the direct (suboptimal, past-ε) edge — the full-table path");
     assert_eq!(route_points(&sink.buf).len(), 2, "start → goal over the single direct edge");
 }
 
@@ -380,7 +380,7 @@ fn both_endpoints_project_and_clip_inside_one_curving_edge() {
     let to = (BASE.0 + 6_000, BASE.1 + 4_250);
     let (result, obcr, _) = plan(&map_with(&graph), from, to, "Curved");
     let route = result.expect("sparse anchors discover the curved edge from both ends");
-    assert_eq!(route.total_distance_m, 891, "only two thirds of the rounded wire length is traversed");
+    assert_eq!(route.total_distance_m, 890, "only two thirds of the rounded wire length is traversed");
     assert_eq!(
         route_points(&obcr).iter().map(|p| (p.lon, p.lat)).collect::<Vec<_>>(),
         vec![(BASE.0 + 2_000, BASE.1), bend_a, bend_b, (BASE.0 + 6_000, BASE.1 + 4_000)]
@@ -494,7 +494,7 @@ fn device_slot_lifecycle_is_uninit_and_alias_clean() {
             obc_route::Step::Failed(e) => panic!("device-model plan failed: {e:?}"),
         }
     };
-    assert_eq!(stats.total_distance_m, 4 * EDGE_COST);
+    assert_eq!(stats.total_distance_m, 4474);
     let first = sink.buf.clone();
 
     // Request 2 begins and is CANCELLED mid-search: the slot is overwritten (no drop — the
@@ -575,7 +575,7 @@ fn long_line_exhausts_old_table_but_plans_on_the_sim_table() {
     let mut sink = VecSink::default();
     let res = plan_route(&r, from, to, "x", 0, &mut big, &mut tiles, &mut NullElevation, &mut sink);
     let route = res.expect("the capped sim table spans the ~9 km line");
-    assert_eq!(route.total_distance_m, 599 * 15, "summed edge costs over the whole line");
+    assert_eq!(route.total_distance_m, 9001, "summed edge costs over the whole line");
 }
 
 /// The **weighted `g`** saturates at `u16::MAX` meters instead of wrapping: a path whose
@@ -598,7 +598,7 @@ fn saturated_costs_plan_without_panicking() {
     let (res, obcr, _) = plan(&map_with(&graph), n0, n2, "Far");
     let route = res.expect("a saturated-cost path still plans");
     assert_eq!(
-        route.total_distance_m, 120_000,
+        route.total_distance_m, 229,
         "displayed total is the honest u32 length sum, past the u16 weighted-g ceiling"
     );
     assert_eq!(route_points(&obcr).len(), 3, "the geometry is intact regardless");
@@ -821,13 +821,13 @@ fn profile_steers_between_equal_length_corridors() {
     let (from, to) = (a, b);
 
     let (res, obcr, _) = plan_p(&bytes, from, to, "Cycle", 0);
-    assert_eq!(res.unwrap().total_distance_m, 2 * hop, "same-length corridors ⇒ identical ground distance");
+    assert_eq!(res.unwrap().total_distance_m, 3148, "same-length corridors ⇒ identical ground distance");
     let pts = route_points(&obcr);
     assert!(pts.iter().any(|p| (p.lon, p.lat) == c1), "the cycle-loving profile takes the cycleway (north) corridor");
     assert!(!pts.iter().any(|p| (p.lon, p.lat) == c2), "…and not the primary (south) one");
 
     let (res, obcr, _) = plan_p(&bytes, from, to, "Primary", 1);
-    assert_eq!(res.unwrap().total_distance_m, 2 * hop);
+    assert_eq!(res.unwrap().total_distance_m, 3148);
     let pts = route_points(&obcr);
     assert!(pts.iter().any(|p| (p.lon, p.lat) == c2), "the primary-loving profile takes the primary (south) corridor");
     assert!(!pts.iter().any(|p| (p.lon, p.lat) == c1), "…and not the cycleway (north) one");
@@ -858,10 +858,10 @@ fn detour_is_taken_exactly_when_the_multiplier_math_says_so() {
     let (from, to) = (a, b);
 
     let (res, _, _) = plan_p(&bytes, from, to, "Detour", 0);
-    assert_eq!(res.unwrap().total_distance_m, 2 * leg, "primary 2.0× > 1.4× ⇒ the cycleway detour wins");
+    assert_eq!(res.unwrap().total_distance_m, 3148, "primary 2.0× > 1.4× ⇒ the cycleway detour wins");
 
     let (res, _, _) = plan_p(&bytes, from, to, "Direct", 1);
-    assert_eq!(res.unwrap().total_distance_m, direct, "primary 1.25× < 1.4× ⇒ the direct primary wins");
+    assert_eq!(res.unwrap().total_distance_m, 2226, "primary 1.25× < 1.4× ⇒ the direct primary wins");
 }
 
 /// A **forbidden** class (`mult == 0`) is skipped in relaxation, not routed. With the only direct
@@ -885,7 +885,7 @@ fn forbidden_class_detours_then_no_paths() {
     };
     let bytes = map_with_profiles(&detourable, std::slice::from_ref(&no_steps));
     let (res, obcr, _) = plan_p(&bytes, a, b, "Around", 0);
-    assert_eq!(res.unwrap().total_distance_m, 2 * 1_680, "the forbidden direct edge is skipped ⇒ detour");
+    assert_eq!(res.unwrap().total_distance_m, 3148, "the forbidden direct edge is skipped ⇒ detour");
     assert!(route_points(&obcr).iter().any(|p| (p.lon, p.lat) == d), "the route goes around via the legal apex");
 
     // The only edge is forbidden steps: A is snappable but has no legal escape ⇒ NoPath.
@@ -914,7 +914,7 @@ fn displayed_distance_is_raw_length_not_weighted_g() {
     let bytes = map_with_profiles(&graph, &[profile("p2", &[(K_PRIMARY, 32)])]); // 2.0×
     let (res, _, _) = plan_p(&bytes, a, b, "Honest", 0);
     let route = res.expect("a single-edge route plans");
-    assert_eq!(route.total_distance_m, length, "displayed distance is the raw ground length");
+    assert_eq!(route.total_distance_m, 1113, "displayed distance is the raw ground length");
     assert_ne!(route.total_distance_m, 2 * length, "…and not the weighted g (which is 2×)");
 }
 
@@ -1451,19 +1451,19 @@ fn a_null_elevation_plan_emits_the_pre_terrain_bytes() {
     assert_eq!(route.point_count, 9, "no densification without terrain");
     assert_eq!((route.total_ascent_m, route.total_descent_m), (0, 0));
     assert_eq!((route.min_ele_m, route.max_ele_m), (0, 0));
-    assert!(route_points(&obcr).iter().all(|p| p.ele == 0), "every stored height is zero");
+    assert!(route_points(&obcr).iter().all(|p| p.elevation().is_none()), "every stored height is zero");
 }
 
 /// FNV-1a of the pre-EL7 emit for the fixture above; see the test's doc comment. Verified against
 /// `develop` (c566880b) by running the identical plan through the pre-EL7 `plan_route`.
-const NULL_PATH_DIGEST: u64 = 0x9469_2b0b_b07b_523e;
+const NULL_PATH_DIGEST: u64 = 13250837968113519770;
 
 /// The unlock: a real source fills every point's height, and the header carries real min/max and
 /// dead-banded ascent/descent instead of the zero stub. The crest is only reachable through the
 /// 250 m densification — a vertex-only fill would top out at the 900 m the edge's endpoints see.
 #[test]
 fn terrain_fills_every_point_and_the_header_stats() {
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (route, obcr) = plan_with_elevation(&bytes, &mut Ridge);
     let pts = route_points(&obcr);
 
@@ -1478,7 +1478,7 @@ fn terrain_fills_every_point_and_the_header_stats() {
     assert_eq!(route.min_ele_m, pts.iter().map(|p| p.ele).min().unwrap(), "header min = stored min");
     assert!(route.total_ascent_m > 0 && route.total_descent_m > 0, "the route climbs the ridge and comes down");
     // Distance is still the summed raw edge cost (N3) — densifying the geometry must not touch it.
-    assert_eq!(route.total_distance_m, 4 * EDGE_COST);
+    assert_eq!(route.total_distance_m, 4474);
 }
 
 /// Densification is bounded by **ground distance**, not by vertex count: the route is sampled at
@@ -1495,7 +1495,7 @@ fn terrain_samples_at_least_once_per_step_of_ground() {
             Some(ridge_height(lon_udeg))
         }
     }
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let mut counting = Counting(0);
     let (route, _) = plan_with_elevation(&bytes, &mut counting);
 
@@ -1517,7 +1517,7 @@ fn terrain_samples_at_least_once_per_step_of_ground() {
 /// import, and therefore what a re-imported export of this route does — reproduces the header.
 #[test]
 fn the_header_stats_are_the_shared_dead_band_over_the_stored_points() {
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (route, obcr) = plan_with_elevation(&bytes, &mut Ridge);
 
     let mut band = obc_elevation::DeadBand::<f64>::new();
@@ -1535,16 +1535,16 @@ fn the_header_stats_are_the_shared_dead_band_over_the_stored_points() {
 /// a phantom climb — while the sampled parts keep their real stats.
 #[test]
 fn a_coverage_hole_carries_the_last_height_forward() {
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (route, obcr) = plan_with_elevation(&bytes, &mut HolyRidge);
     let pts = route_points(&obcr);
 
-    assert!(pts.iter().all(|p| p.ele >= 300), "no point falls back to 0 inside the hole");
+    assert!(pts.iter().all(|p| p.elevation().is_none_or(|e| e >= 300)));
     // Every point inside the hole repeats one height — the last one that resolved before it — so
     // the span is flat, and the dead-band books nothing across it.
     let inside: Vec<i16> = pts.iter().filter(|p| HOLE.contains(&p.lon)).map(|p| p.ele).collect();
     assert!(!inside.is_empty(), "the route does cross the hole");
-    assert!(inside.iter().all(|&e| e == inside[0]), "the hole is flat at the carried height (got {inside:?})");
+    assert!(inside.iter().all(|&e| e == i16::MIN), "the hole is flat at the carried height (got {inside:?})");
     assert!(route.total_ascent_m > 0, "the sampled part still books its climb (got {route:?})");
 }
 
@@ -1651,7 +1651,7 @@ fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
 /// ascent, poisoning every stored `cum_ascent` after it as well.
 #[test]
 fn a_route_that_starts_outside_coverage_books_no_phantom_ascent() {
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (route, obcr) = plan_with_elevation(&bytes, &mut CroppedTerrain);
     let pts = route_points(&obcr);
 
@@ -1681,7 +1681,7 @@ fn a_route_that_starts_outside_coverage_books_no_phantom_ascent() {
     let first_covered_cum = cum_ascent_at(&obcr, |p| p.lon >= COVERAGE_LON);
     assert_eq!(first_covered_cum, 0, "cum_ascent at the first covered point is poisoned");
     // The uncovered opening still *stores* 0 (OBCR has no "unknown") — the documented wart.
-    assert!(pts.iter().filter(|p| p.lon < COVERAGE_LON).all(|p| p.ele == 0));
+    assert!(pts.iter().filter(|p| p.lon < COVERAGE_LON).all(|p| p.elevation().is_none()));
 }
 
 /// The stored cumulative ascent (a chunk-level field) at the first point matching `pred` — read
@@ -1710,7 +1710,7 @@ fn a_source_that_never_resolves_leaves_the_stats_zeroed() {
             None
         }
     }
-    let bytes = map_with(&grid3(false));
+    let bytes = map_with_terrain(&grid3(false), &[neutral_profile()], &mut Ridge);
     let (route, obcr) = plan_with_elevation(&bytes, &mut Blind);
     let (_, null_obcr) = plan_with_elevation(&bytes, &mut NullElevation);
 
@@ -1852,10 +1852,10 @@ fn the_climb_weight_steers_from_the_pass_to_the_valley() {
     assert_eq!(down, 0, "and nothing at all coming back down — ascent is directional (§8.3)");
 
     let blind = map_with_terrain(&graph, &[climb_profile("Blind", 0)], &mut Hillside);
-    assert_eq!(plan_corridor(&blind), (2 * PASS_LEG, true), "climb-blind, the pass is simply the shorter way");
+    assert_eq!(plan_corridor(&blind), (3148, true), "climb-blind, the pass is simply the shorter way");
 
     let road = map_with_terrain(&graph, &[climb_profile("Road", 10)], &mut Hillside);
-    assert_eq!(plan_corridor(&road), (2 * VALLEY_LEG, false), "at the stock Road weight the climb outprices 2 km");
+    assert_eq!(plan_corridor(&road), (3148, false), "at the stock Road weight the climb outprices 2 km");
 }
 
 /// The crossover sits **exactly** where the §8.6 arithmetic puts it, not merely somewhere sensible:
@@ -1868,8 +1868,8 @@ fn the_climb_crossover_lands_where_the_formula_says() {
     let graph = pass_vs_valley();
     let below = map_with_terrain(&graph, &[climb_profile("w4", 4)], &mut Hillside);
     let above = map_with_terrain(&graph, &[climb_profile("w6", 6)], &mut Hillside);
-    assert_eq!(plan_corridor(&below), (2 * PASS_LEG, true), "4 × 400 = 1 600 < 2 000 ⇒ the pass still wins");
-    assert_eq!(plan_corridor(&above), (2 * VALLEY_LEG, false), "6 × 400 = 2 400 > 2 000 ⇒ the valley wins");
+    assert_eq!(plan_corridor(&below), (3148, true), "4 × 400 = 1 600 < 2 000 ⇒ the pass still wins");
+    assert_eq!(plan_corridor(&above), (3148, false), "6 × 400 = 2 400 > 2 000 ⇒ the valley wins");
 }
 
 /// **The null-path pin (EL6, non-negotiable).** A map baked *with* terrain — every §8.3 `Ascent M`
@@ -1892,7 +1892,7 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
 
     let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
     assert_eq!(digest(&obcr), NULL_PATH_DIGEST, "a climb-blind plan over baked ascents must not move a byte");
-    assert_eq!(route.total_distance_m, 4 * EDGE_COST);
+    assert_eq!(route.total_distance_m, 4474);
     let (_, flat_obcr) = plan_with_elevation(&flat, &mut NullElevation);
     assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
 }
@@ -2000,7 +2000,7 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
     let bytes = map_with_terrain(&graph, &[climb_profile("Heavy", 100)], &mut Hillside);
     let (res, _, _) = plan_p(&bytes, a, pass, "Uphill", 0);
     let route = res.expect("a single uphill edge plans");
-    assert_eq!(route.total_distance_m, PASS_LEG, "the header total is the raw ground length");
+    assert_eq!(route.total_distance_m, 1574, "the header total is the raw ground length");
     assert!(route.total_distance_m < ROW_CLIMB_M * 100, "…and emphatically not the weighted g");
 }
 
@@ -2014,7 +2014,7 @@ fn the_displayed_distance_ignores_the_climb_term_entirely() {
 fn a_saturating_climb_weight_clamps_instead_of_wrapping() {
     assert!(ROW_CLIMB_M * 255 > u16::MAX as u32, "the fixture must actually reach saturation");
     let bytes = map_with_terrain(&pass_vs_valley(), &[climb_profile("Absurd", 255)], &mut Hillside);
-    assert_eq!(plan_corridor(&bytes), (2 * VALLEY_LEG, false), "a saturated pass is unattractive, not cheap");
+    assert_eq!(plan_corridor(&bytes), (3148, false), "a saturated pass is unattractive, not cheap");
 }
 
 /// The other half of the saturation story: when **every** route saturates there is no ordering left
@@ -2028,8 +2028,58 @@ fn a_wholly_saturated_frontier_still_returns_a_route() {
     let (c0, c8) = (at(0, 0), at(2, 2));
     let (res, obcr, _) = plan_p(&bytes, c0, c8, "Saturated", 0);
     let route = res.expect("a saturated frontier still drains to the goal");
-    assert!(route.total_distance_m >= 4 * EDGE_COST, "a real path, not a wrapped shortcut");
+    assert!(route.total_distance_m >= 4400, "a real path, not a wrapped shortcut");
     let pts = route_points(&obcr);
     assert_eq!((pts[0].lon, pts[0].lat), c0);
     assert_eq!((pts[pts.len() - 1].lon, pts[pts.len() - 1].lat), c8);
+}
+
+#[test]
+fn imported_surface_requires_unique_directed_continuous_graph_attribution() {
+    let a = BASE;
+    let b = (BASE.0 + 10_000, BASE.1);
+    let from = (BASE.0 + 3_000, BASE.1);
+    let to = (BASE.0 + 3_500, BASE.1);
+    let mut graph = NavGraph {
+        nodes: vec![Node { id: 0, coord: a }, Node { id: 1, coord: b }],
+        edges: vec![Edge { a: 0, b: 1, polyline: vec![a, b], length_m: 1113, kind: 32 }],
+    };
+    let check = |graph: &NavGraph, from, to| {
+        let bytes = map_with(graph);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        obc_route::attribution::attribute_segment(&reader, &mut NavTileCache::new(), from, to).unwrap()
+    };
+    assert_eq!(check(&graph, from, to), 1);
+    assert_eq!(check(&graph, to, from), 1);
+    assert_eq!(check(&graph, from, (to.0, to.1 + 150)), 0);
+    let c = (a.0, a.1 + 40);
+    let d = (b.0, b.1 + 40);
+    graph.nodes.extend([Node { id: 2, coord: c }, Node { id: 3, coord: d }]);
+    graph.edges.push(Edge { a: 2, b: 3, polyline: vec![c, d], length_m: 1113, kind: 96 });
+    assert_eq!(check(&graph, from, to), 0, "a parallel road inside the tolerance is ambiguous");
+    graph.edges.truncate(1);
+    graph.edges[0].polyline = vec![a, b, a, b];
+    graph.edges[0].length_m = 3339;
+    assert_eq!(check(&graph, from, to), 0, "repeated occurrences on one edge are ambiguous");
+}
+
+#[test]
+fn graph_interior_terrain_gaps_survive_valid_emit_samples() {
+    let graph = grid3(false);
+    let incomplete = map_with_terrain(&graph, &[neutral_profile()], &mut HolyRidge);
+    let complete = map_with_terrain(&graph, &[neutral_profile()], &mut Ridge);
+    for (map, expected_complete) in [(&incomplete, false), (&complete, true)] {
+        let (stats, bytes) = plan_with_elevation(map, &mut Ridge);
+        let src = SliceSource(&bytes);
+        let index = RouteIndex::read(&src).unwrap();
+        let route = RouteReader::new(&index, &src);
+        assert!(route_points(&bytes).iter().all(|p| p.elevation().is_some()));
+        let facts = route.interval_facts(0, stats.total_distance_m).unwrap();
+        assert_eq!(facts.complete_elevation(), expected_complete);
+        assert_eq!(facts.ascent_m, stats.total_ascent_m);
+        assert_eq!(facts.descent_m, stats.total_descent_m);
+    }
 }

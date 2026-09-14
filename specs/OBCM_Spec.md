@@ -1222,6 +1222,7 @@ step(p):
     if p + 19 > 512:            refuse   # no record fits: 19 B is the format's smallest
     n = u16_at(p + 4)                    # Pt Count
     if n == 0xFFFF:             refuse   # end-of-chunk sentinel: no record here
+    n = n & 0x7FFF                       # low 15 bits are the point count
     if n < 2:                   refuse   # impossible count; also what stops 4*(n-1) underflowing
     len = 15 + 4 * (n - 1)
     if p + len > 512:           refuse   # record claims bytes past its chunk
@@ -1314,10 +1315,17 @@ chunk index, whatever a future record's size.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
+In v15, bit 15 of the count word records complete elevation integration. The
+packer sets it only when every sample in both directions resolved. The assembler
+preserves the bit. Readers check the sentinel before masking the count and reject
+impossible counts. A missing bit means incomplete or absent terrain, even when
+both endpoint heights are valid. Route output carries this as incoming-segment
+incompleteness; no extra graph or route-length resident array is required.
+
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
-| 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2); `0xFFFF` is the **end-of-chunk sentinel** (v14), never a real count |
+| 4 | Count / elevation validity | 2 | `uint16` | low 15 bits: vertex count (2..125); bit 15: all DEM integration samples present; `0xFFFF` remains the end-of-chunk sentinel |
 | 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
 | 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |

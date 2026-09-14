@@ -71,9 +71,8 @@ pub fn map(offset: i16) -> Vec<u8> {
     let a = pack_nav_record(512, 512, 0, &[(1, 8192, 8192, 0, 1200, 0, 75)]);
     let b = pack_nav_record(8192, 8192, 1, &[(0, 512, 512, 0, 1200, 0, 0)]);
     bytes.extend_from_slice(&pack_nav_chunk(&[a, b], NAV_CHUNK_SIZE));
-    bytes.extend_from_slice(&pad(
-        pack_nav_edge_record(1200, 0, &[(512, 512), (4096, 4096), (8192, 8192)]),
-        NAV_CHUNK_SIZE,
-    ));
+    let mut edge = pack_nav_edge_record(1200, 0, &[(512, 512), (4096, 4096), (8192, 8192)]);
+    edge[5] |= 0x80; // Every integration point lies inside the complete plane below.
+    bytes.extend_from_slice(&pad(edge, NAV_CHUNK_SIZE));
     splice_terrain(&bytes, &plane(offset))
 }

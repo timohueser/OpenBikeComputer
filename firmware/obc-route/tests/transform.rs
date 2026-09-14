@@ -95,9 +95,13 @@ fn budget(orig: &Source, detour: &Source, sink: &mut Sink, trim: bool) {
     if trim || reads.len() != 2 {
         assert!(reads.len() <= 1, "one chunk or waypoint per step: {reads:?}");
     } else {
-        assert_eq!(reads, [(0, 112), (112, 16)], "only the fixed waypoint header needs two reads");
+        assert_eq!(
+            reads,
+            [(0, obc_formats::obcr::HEADER_FULL_LEN), (112, obc_formats::obcr::HEADER_FULL_LEN - 112)],
+            "only the fixed waypoint header needs two reads"
+        );
     }
-    assert!(reads.iter().map(|(_, len)| len).sum::<usize>() <= 1530);
+    assert!(reads.iter().map(|(_, len)| len).sum::<usize>() <= 255 * obc_formats::obcr::POINT_RECORD_LEN);
     assert!(sink.bytes <= 16 * 1024, "one board output stage, including final index: {}", sink.bytes);
     sink.bytes = 0;
 }
@@ -134,7 +138,7 @@ fn trim_chunk_seams_match_kept_geometry_bytes_and_elevation_metrics() {
             else {
                 panic!("sustained contact")
             };
-            let expected = gpx(&points[..=254], elevation);
+            let expected = gpx(&points[..=254], true);
             assert_eq!(sink.inner.buf, expected, "contact before/on/after a source chunk seam");
             let idx = RouteIndex::read(&SliceSource(&expected)).unwrap();
             assert_eq!(
