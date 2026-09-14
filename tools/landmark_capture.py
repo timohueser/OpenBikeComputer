@@ -118,6 +118,41 @@ class Capture:
     def outcomes(self) -> list[dict]:
         return sorted((json.loads(p.read_text()) for p in (self.root / "outcomes").glob("*.json")), key=lambda v: v["path"])
 
+    def retry_failed(self) -> None:
+        for record in (self.root / "outcomes").glob("*.json"):
+            outcome = json.loads(record.read_text())
+            if outcome["status"] == "ok":
+                continue
+            history = self.root / "attempts" / (record.stem + "-" + digest(record.read_bytes()) + ".json")
+            if "sha256" in outcome:
+                data = (self.root / outcome["path"]).read_bytes()
+                if digest(data) != outcome["sha256"]:
+                    raise ValueError(f"failed response bytes changed: {outcome['path']}")
+                response = history.with_suffix(".response")
+                response.parent.mkdir(exist_ok=True)
+                response.write_bytes(data)
+                outcome["archived_response_path"] = str(response.relative_to(self.root))
+            write_json(history, outcome)
+            record.unlink()
+
+
+def semantic_sources(outcomes: list[dict]) -> list[dict]:
+    return [{k: o[k] for k in ("path", "url", "retrieved_at", "sha256", "bytes")}
+            for o in outcomes if o["status"] == "ok"]
+
+
+def select_candidates(executable: Path, snapshot: Path, boundary: Path, policy_sha256: str) -> dict:
+    executable = executable.resolve()
+    binary_hash = digest(executable.read_bytes())
+    with tempfile.TemporaryDirectory(prefix="obc-landmark-selection-") as temporary:
+        subprocess.run([str(executable), "landmarks", "--snapshot", str(snapshot), "--boundary", str(boundary), "--language", "en", "--out", temporary], check=True)
+        if digest(executable.read_bytes()) != binary_hash:
+            raise ValueError("compiler changed during selection; retry with a stable executable")
+        content = json.loads((Path(temporary) / "content.json").read_text())
+        if content["category_policy_sha256"] != policy_sha256:
+            raise ValueError("discovery policy differs from compiler policy")
+        return dict(compiler_sha256=binary_hash, policy_sha256=content["policy_sha256"], candidate_qids=content["candidate_qids"])
+
 
 def polygons(boundary: dict) -> list:
     if boundary["type"] == "FeatureCollection":
@@ -281,12 +316,7 @@ def run(args) -> int:
         raise ValueError("capture recipe changed; use a new output directory")
     write_json(recipe_path, recipe)
     if args.retry_failed:
-        for record in (args.out / "outcomes").glob("*.json"):
-            outcome = json.loads(record.read_text())
-            if outcome["status"] != "ok":
-                history = args.out / "attempts" / (record.stem + "-" + digest(record.read_bytes()) + ".json")
-                history.parent.mkdir(exist_ok=True)
-                record.replace(history)
+        capture.retry_failed()
     (args.out / "boundary.geojson").write_bytes(boundary_bytes)
     (args.out / "policy.json").write_bytes(policy_bytes)
     roots = sorted({root for group in policy["groups"].values() if group["include"] for root in group["roots"]}, key=lambda q: int(q[1:]))
@@ -347,19 +377,15 @@ def run(args) -> int:
                     queries=queries, candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places), entity_coverage_complete=entities_complete,
                     asset_phase_complete=asset_phase_complete, request_failures=len(failures), unresolved_source_failures=len(unresolved), missing_classes=missing,
                     selection="Best-rank P31/P279 policy-root union in geographic bounding box; compiler applies exact polygon, best-rank claims and exclusions. No P17 constraint.")
-        write_json(args.out / "manifest.json", dict(schema=1, sources=[{k: o[k] for k in ("path", "url", "retrieved_at", "sha256", "bytes")} for o in outcomes if "sha256" in o], places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
+        write_json(args.out / "manifest.json", dict(schema=1, sources=semantic_sources(outcomes), places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
         return coverage
     write_json(args.out / "classes.json", classes)
     manifest(False)
     # The production compiler owns geometry and category selection. Acquisition
     # does not maintain a second implementation of that policy.
-    with tempfile.TemporaryDirectory(prefix="obc-landmark-selection-") as temporary:
-        subprocess.run([str(args.select_with.resolve()), "landmarks", "--snapshot", str(args.out / "manifest.json"), "--boundary", str(args.boundary), "--language", "en", "--out", temporary], check=True)
-        content = json.loads((Path(temporary) / "content.json").read_text())
-        if content["category_policy_sha256"] != digest(policy_bytes):
-            raise ValueError("discovery policy differs from compiler policy")
-        selected = content["candidate_qids"]
-    write_json(args.out / "selection.json", dict(compiler_sha256=digest(args.select_with.read_bytes()), candidate_qids=selected))
+    selection = select_candidates(args.select_with, args.out / "manifest.json", args.boundary, digest(policy_bytes))
+    selected = selection["candidate_qids"]
+    write_json(args.out / "selection.json", selection)
     selected_set = set(selected)
     with ThreadPoolExecutor(max_workers=2) as pool:
         def work(qid):
