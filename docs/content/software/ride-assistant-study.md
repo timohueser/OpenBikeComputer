@@ -50,7 +50,8 @@ selection. Show short text that explains what the landmark is and why it is inte
 Give longer text its own pages. Do not shrink it to fit beside the map.
 
 The simulator uses three examples with text adapted from Wikipedia: Aare Gorge, Reichenbach
-Falls, and the Gelmerbahn. Each has two short text pages and a source page. The locations and
+Falls, and the Gelmerbahn. Each has two short text pages. **Down + Back → Sources** opens attribution, the licence URL,
+and the article URLs. Back restores the reading page. The locations and
 access routes are fictional. The [study captures and attribution](../../assets/ride-assistant/landmarks-study/README.md)
 identify the article revisions and licence.
 
@@ -58,8 +59,9 @@ identify the article revisions and licence.
 the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
 together. Browsing another place must not change this accepted visit or interrupt recording.
 
-Start with text. A possible later image feature can convert small pictures to a device palette
-during map creation. That approach would not need a JPEG decoder on the device. Image selection,
+The device prototype remains text-only. A [photo study](../../assets/ride-assistant/landmark-photos/README.md)
+compares plain quantization and two dither methods in the device palette. A later image feature
+can convert small pictures during map creation. That approach would not need a JPEG decoder on the device. Image selection,
 source attribution, storage cost, and readability need a separate study.
 
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
