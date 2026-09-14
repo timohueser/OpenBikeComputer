@@ -291,7 +291,6 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
 /// not: `App::sample_terrain` reads it at **every fresh fix** during a ride (EL8), i.e. exactly
 /// while the map plane is rendering and no search is running. Folding it into the nav arm would have
 /// handed the render arm's `memset` the altimeter's tile cache. It is state, not scratch.
-
 #[cfg(has_nav)]
 const TERRAIN_RESIDENT: usize = core::mem::size_of::<
     obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,

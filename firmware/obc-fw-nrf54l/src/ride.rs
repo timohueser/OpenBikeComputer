@@ -87,7 +87,6 @@ const SYNTH_TICK_MS: u64 = 250;
 ///   time / heading) — exactly one wake per published sample, zero I²C at the frame rate;
 /// - `debug-uart`: the host-streamed datapoint edge from the VCOM debug link;
 /// - `synth`: no event source, so a coarse timer steps the synthetic walk.
-
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
     consumer.wait_event().await
@@ -205,7 +204,6 @@ impl obc_render::Clock for InstantClock {
 /// (`App::sample_terrain`, EL8) — while the map plane is rendering and no search is running — so it
 /// is state, not scratch, and folding it into an arm would have handed the render arm's `memset` the
 /// altimeter's tile cache.
-
 #[cfg(has_nav)]
 pub(crate) struct NavResident {
     /// The map's terrain, or the null source: the emit phase samples it per point, and the ride
