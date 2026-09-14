@@ -75,17 +75,24 @@ the codec and SD loading cost remain to be measured.
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
 
-## Easier route: wireframe proposal
+## Easier route
 
-Easier route compares alternatives from the current position to the same destination. The
-[three wireframe concepts](../../assets/ride-assistant/easier-route/README.md) compare a goal list,
-a cost table, and a map-first layout. The goal list is the initial recommendation, not an
-accepted design. All costs are fictional. This screen is not implemented in the simulator.
+The reviewed design is the map-first concept C. The simulator shows the real map with the
+current route in magenta and the selected alternative in blue. Keep the camera stable while
+browsing. Use start and finish symbols without map labels or a legend. The amber card shows
+the goal and a large saving with a small pictogram.
 
-Show the benefit and the cost of an alternative before acceptance. Less climbing, smoother
-surface, and shorter distance are separate goals. A shorter route is not necessarily faster.
-Time estimates need a suitable model before they can support a finish-sooner choice. The
-proposal uses a separate review and an explicit **Use this route** action.
+Less climbing, smoother surface, and shorter distance are separate goals. Select opens a
+current/new cost table. Lead with the positive saving, not the added distance or ascent.
+Show the tradeoffs in the table. Omit the redundant same-destination sentence. Back preserves
+the selection. **Use this route** is the explicit acceptance action and keeps recording active.
+
+The [study captures](../../assets/ride-assistant/easier-route/README.md) show all three choices.
+The host supplies synthetic alternatives with the same endpoints and illustrative costs.
+This does not implement routing, surface analysis, required-stop handling, or an ETA model.
+A shorter route is not necessarily faster. Time estimates need a suitable model before they
+can support a finish-sooner choice. The simulator blocks alternatives during a place visit;
+production must define how rerouting and an accepted visit interact.
 
 ## Remaining implementation work
 
