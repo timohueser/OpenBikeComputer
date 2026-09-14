@@ -549,7 +549,7 @@ pub(crate) fn report_coverage(progress: &Progress, c: CoverageStats) {
 /// coords are the exact osmium f64s, so the bbox is stable across runs. Truncation
 /// pulls the max edges (and, for negative coordinates, the min edges) inward by
 /// under 1 µdeg (~0.11 m); vertices past the shrunken edge are clipped at the root.
-pub(crate) fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
+pub fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut widen = |x: f64, y: f64| {
         minx = minx.min(x);

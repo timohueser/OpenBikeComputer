@@ -508,10 +508,9 @@ settings_table! {
     /// the `settings_table!` declaration below carries the four markers a row may take.
     pub struct Settings {
         /// Metric or imperial readouts.
-        units: Units = Units::Metric, since(16), ble_writable, reserved(1);
-        // The reserved byte 2 was the `gps_time` flag (removed #641). Its offset is frozen so v11
-        // blobs keep their layout — written as a constant `0` and ignored on decode. (Repurpose
-        // it, don't reorder, if a future field wants a byte here.)
+        units: Units = Units::Metric, since(16), ble_writable;
+        /// A rider or phone has set the local UTC offset. GPS time alone does not establish it.
+        local_offset_known: bool = false, since(16);
         /// The last time source's **UTC** set-point — the anchor a GPS fix (or, after epic #638 S2, a
         /// BLE `setClock`) stamps. Manual editing was removed in #641: the only writers are those two
         /// trusted sources, so this is always UTC and [`local_clock`](Settings::local_clock) always
@@ -770,11 +769,11 @@ const PAYLOAD_LEN: usize = off::END;
 // hand — **not** derived from the table — so this is a real gate rather than a tautology: an
 // assert generated from the same token that produced the value cannot fail. Reorder two rows,
 // mistype a `SettingCodec::LEN`, or resize a composite and the build stops here instead of
-// silently rewriting every rider's stored settings. Byte 0 is the version and byte 2 is the
-// retired `gps_time` tombstone, both pinned by the gap between `units` and `clock`.
+// silently rewriting every rider's stored settings. Byte 2 stores local-offset authority.
 const _: () = {
     assert!(off::units == 1, "units moved");
-    assert!(off::clock == 3, "clock moved (or the retired gps_time byte lost its reservation)");
+    assert!(off::local_offset_known == 2, "offset authority moved");
+    assert!(off::clock == 3, "clock moved");
     assert!(off::utc_offset_min == 9, "utc_offset_min moved");
     assert!(off::fix_interval_s == 11, "fix_interval_s moved");
     assert!(off::power_saver == 13, "power_saver moved");
@@ -949,6 +948,7 @@ mod tests {
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock)); // …and pin the wide clock
         Settings {
             units: Units::Imperial,
+            local_offset_known: false,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
             fix_interval_s: 5,
@@ -1078,7 +1078,7 @@ mod tests {
     #[test]
     fn every_declared_field_round_trips_and_keeps_its_ble_split() {
         let base = Settings::DEFAULT;
-        let other = every_field_set();
+        let other = Settings { local_offset_known: true, ..every_field_set() };
         assert_eq!(decode(&encode(&other)), Some(other), "every field round-trips through the codec");
 
         let mut adopted = base;
@@ -1244,21 +1244,13 @@ mod tests {
         assert!(!UpAheadSource::MapPoisOnly.shows_waypoints() && UpAheadSource::MapPoisOnly.shows_pois());
     }
 
-    /// A v11 blob written by a pre-#641 firmware carried the `gps_time` flag in byte 2. That byte's
-    /// offset is now frozen and ignored, so an old blob with the flag **set** still decodes cleanly
-    /// to the same `Settings` — no field shifts, no version bump, nothing surprises a decode.
     #[test]
-    fn old_gps_time_byte_is_ignored_on_decode() {
-        let s = Settings {
-            clock: DateTime { year: 2026, month: 7, day: 14, hour: 9, minute: 5 },
-            utc_offset_min: 60,
-            ..Settings::default()
-        };
-        // Encode (byte 2 == 0 today), then forge the retired flag on and re-CRC to mimic an old blob.
-        let mut old = encode(&s);
-        old[2] = 1;
-        re_stamp_crc(&mut old);
-        assert_eq!(decode(&old), Some(s), "the retired gps_time byte doesn't affect the decoded value");
+    fn local_offset_authority_round_trips_in_reserved_byte_two() {
+        let configured = Settings { local_offset_known: true, ..Settings::default() };
+        let bytes = encode(&configured);
+        assert_eq!(bytes[2], 1);
+        assert_eq!(decode(&bytes), Some(configured));
+        assert!(!decode(&encode(&Settings::default())).unwrap().local_offset_known);
     }
 
     /// The picker's timeout mapping + the left/right walk order (wrapping at both ends).

@@ -1,32 +1,12 @@
-//! The POI **detail** screen — reached by pressing a POI in the [list](super::PoiListScreen),
-//! carrying the selected [`Poi`](obc_reader::Poi). Shows the **full stored name** un-ellipsized
-//! (the list row ellipsizes to fit), the subtype label as a muted subtitle, the same live
-//! [bearing arrow](super::poi_list) the list draws, **today's opening hours**, and an
-//! **OPEN / CLOSED-now** badge (epic #439 P4 #444).
-//!
-//! # Hours read at draw (the reader-in-draw seam)
-//!
-//! [`Reader::poi_hours`](obc_reader::Reader::poi_hours) resolves the POI's pooled weekly schedule
-//! (spec §7.5), and the [`Reader`](obc_reader::Reader) lives **only** in the draw context
-//! ([`Render::reader`]). So — exactly like the list's lazy snapshot (#425) — the schedule is read
-//! **once**, on the first draw that has a `Reader`, into a [`Cell`]-held cache on the screen (a
-//! `WeeklySchedule` is a ~29-byte `Copy` value). The tri-state cache distinguishes *not resolved
-//! yet* (`None`) from *resolved to no hours* (`Some(None)`) from *resolved to a schedule*
-//! (`Some(Some(_))`), so a POI with no `hours_ref` is read at most once too, never per frame.
-//! [`base_needs_reader`](crate::App::base_needs_reader) keeps `rx.reader` `Some` until that first
-//! read lands, then the board host stops rebuilding the reader per frame — the same energy
-//! discipline as the list snapshot. The draw stays `&self`; the cache mutates through the `Cell`.
-//!
-//! The **open-now** badge reads the live local wall-clock ([`Render::now`]) each frame: today's
-//! weekday + minute-of-day feed [`WeeklySchedule::is_open`]. By the time a POI detail is on screen
-//! the device already has a fix (the list required one), so the local date is plausible — no
-//! separate "clock unset" state in v1 (see the epic's locked decision).
+//! Place detail with a cached schedule and live, trusted local-time status.
+//! Prepare resolves the schedule into the App-owned scratch. Activation checks the current
+//! status again and refuses a known-closed place or invalidated source.
 
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{weekday_from_ymd, Interval, Poi, WeeklySchedule};
+use obc_reader::{weekday_from_ymd, Interval, Poi};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -41,10 +21,7 @@ use super::vocab::chrome::{title_frame, LIST_TOP};
 use super::vocab::fmt::write_distance_coarse;
 use super::{palette, Ctx, Render, Screen, Transition};
 
-/// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
-/// lazily-resolved schedule cache. The `Poi` widens the [`Screen`](super::Screen) enum by its size;
-/// the cache is a small `Copy` value behind a `Cell` (see the module docs on the reader-in-draw
-/// seam).
+/// The selected place; its schedule lives in App scratch to keep the screen union small.
 #[derive(Debug)]
 pub struct PoiDetailScreen {
     poi: Poi,
@@ -54,19 +31,15 @@ pub struct PoiDetailScreen {
     /// distance row with the side spelled out in words (epic #946, U3): the list row's side arrow is
     /// a glance cue, this is the answer to "how far off my route is it, and which side".
     off_route_m: Option<i16>,
-    /// The resolved schedule, cached on the first [`prepare`](Self::prepare) pass with a `Reader`.
-    /// Tri-state: `None` = not resolved yet (keep asking for the reader), `Some(None)` = resolved to
-    /// *no hours* (`hours_ref` 0xFFFF or an out-of-range ref), `Some(Some(_))` = the pooled schedule.
-    /// A plain field (#803): the acquisition moved out of the draw path into `prepare`, so the read
-    /// mutates `&mut self` there and [`draw`](Self::draw) consumes it immutably.
-    schedule: Option<Option<WeeklySchedule>>,
+    /// The first schedule read has completed, including missing data or an error.
+    schedule_ready: bool,
 }
 
 impl PoiDetailScreen {
     /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
     /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
     pub fn new(poi: Poi) -> Self {
-        PoiDetailScreen { poi, off_route_m: None, schedule: None }
+        PoiDetailScreen { poi, off_route_m: None, schedule_ready: false }
     }
 
     /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
@@ -88,14 +61,23 @@ impl PoiDetailScreen {
     /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
     /// reader until the one hours read lands in `prepare`, then stops.
     pub(crate) fn hours_pending(&self) -> bool {
-        self.schedule.is_none()
+        !self.schedule_ready
     }
 
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // Create a route to this POI (epic #116, R4): press opens the "Create a route?"
             // confirm. The route's name is the POI's stored name, or its subtype fallback label —
             // the same fallback the list row shows, so the catalog entry reads like the row did.
+            Gesture::Press if !cx.poi_scratch.detail_valid => Transition::None,
+            Gesture::Press
+                if cx
+                    .poi_scratch
+                    .detail_schedule
+                    .is_some_and(|s| s.status(cx.place_local) == obc_reader::hours::OpeningStatus::Closed) =>
+            {
+                Transition::None
+            }
             Gesture::Press => {
                 let name = if self.poi.name.is_empty() {
                     poi_label_of(self.poi.subtype).unwrap_or("POI")
@@ -118,14 +100,17 @@ impl PoiDetailScreen {
     /// the pre-draw prepare pass (#803) — the one place the side-effectful hours read lives — so
     /// [`base_needs_reader`](crate::App::base_needs_reader) keeps the `Reader` built and passed here
     /// until this lands, then [`draw`](Self::draw) consumes the cache immutably.
-    pub(crate) fn prepare(&mut self, px: &super::Prepare) {
-        if self.schedule.is_some() {
+    pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
+        if self.schedule_ready {
             return; // already resolved (possibly to `None` — no hours)
         }
         let Some(reader) = px.reader else {
             return; // no map this frame — retry next prepare
         };
-        self.schedule = Some(reader.poi_hours(self.poi.hours_ref));
+        let schedule = reader.try_poi_hours(self.poi.hours_ref);
+        px.poi_scratch.detail_valid = schedule.is_ok();
+        px.poi_scratch.detail_schedule = schedule.ok().flatten();
+        self.schedule_ready = true;
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -213,7 +198,7 @@ impl PoiDetailScreen {
         // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
         // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
         let head_y = dist_bot + 16;
-        let schedule = self.schedule.flatten();
+        let schedule = rx.poi_scratch.detail_schedule.filter(|s| s.flags() == 0);
         let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
         let intervals: &[Interval] = match &schedule {
             Some(sched) => sched.today_intervals(weekday),
@@ -253,9 +238,9 @@ impl PoiDetailScreen {
         // overhang toward the roomier side. With no interval rows ("Closed today") the badge keeps
         // its old spot under the caption: there's no vertical pressure without ranges, and the
         // longer closed-today captions would collide with a right-aligned pill.
-        if let Some(sched) = schedule {
-            let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
-            let open = sched.is_open(weekday, minute);
+        if let Some(sched) = schedule.filter(|s| s.status(rx.place_local) != obc_reader::hours::OpeningStatus::Unknown)
+        {
+            let open = sched.status(rx.place_local) == obc_reader::hours::OpeningStatus::Open;
             let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
             let font = Font::Body;
             let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
@@ -355,6 +340,7 @@ mod tests {
     use super::*;
     use crate::settings::DateTime;
     use obc_formats::obcm::POI_HOURS_BLOB_LEN;
+    use obc_reader::WeeklySchedule;
 
     /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
     /// same shape the reader/packer hours tests build.
