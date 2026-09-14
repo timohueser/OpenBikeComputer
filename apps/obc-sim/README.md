@@ -130,35 +130,53 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ### Ride Assistant interaction study
 
-Run the shop-visit prototype on the supplied map:
+Run the shop-visit prototype on any loaded map:
 
 ```sh
 cargo build -p obc-sim --release
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo
+target/release/obc-sim path/to/area.obcm --assistant-demo
 ```
 
-This opt-in study runs in `obc-app`, with the device's 240×320 layout, fonts, map renderer,
-button handling, and recording system. It starts a ride to Grimselpass on a temporary card.
-The two shops and their access paths are fictional. Preloaded route legs supply the distance
-and climbing figures. This is an English, metric UI study; it does not search for real shops,
-calculate access routes, or detect arrival from GPS.
+This opt-in study uses the device's 240×320 layout, fonts, map renderer, buttons, and recording
+system. It starts a ride on a temporary card. By default, it creates a synthetic local route
+inside the loaded map. `--center LON,LAT` places that study in another part of the map, using
+microdegrees. A coastal map can have its centre at sea; choose an inland centre or a GPX.
+`--assistant-route PATH.gpx` uses a supplied GPX instead. All GPX points must be
+inside the loaded map. Missing elevations use zero in the study.
+
+The shops and their access paths are fictional. Prepared route legs supply distance and climbing.
+This is an English, metric UI study. It does not search real POIs, calculate access routes, or
+detect arrival from GPS. Synthetic paths can cross terrain that is not rideable. The study sets
+Climb mode to Manual so a climb does not interrupt the comparison.
 
 Open the top drawer with Up + Select (Left arrow + Enter). Step once to **Ride Assistant**,
-then select **Find a place → Shop**. Compare **On the way** with **Nearest**, preview a visit,
-and select **Add stop**. This accepts the full visit, including the return to the original route.
-The preview shows the extra distance and climbing for that full visit. The other questions and
-categories are grey placeholders.
-A/B identify the results during comparison. After selection, the shop uses the existing basket icon.
-The study sets Climb mode to Manual so a climb does not interrupt the map comparison.
+then select **Find a place → Shop**. Up/Down (Left/Right arrow) moves through up to four results.
+All result markers stay on the map; the card below shows the selected shop, distance to reach
+it, climbing, and extra distance. Select previews the full visit. **Add stop** accepts the shop
+and its return to the original route. A–D identify results during comparison. After selection,
+the shop uses the existing basket icon. The other questions and categories are grey placeholders.
+
+The provisional selection rules are:
+
+- Keep distinct shops with at most 400 m extra distance for the complete visit, ordered by distance
+  to reach them, then climbing.
+- Include a detour when it reaches a shop at least 500 m sooner than the first shop on the way,
+  or saves at least 50 m of climbing at no greater distance. Reject it if a shop on the way is both
+  no farther and no harder to reach.
+- Show up to four results, with room for at least one useful detour when one exists. If no shop is
+  on the way, show the nearest available detours. Repeated candidate identities appear once.
+- Do not fill empty slots. With no candidates, show **No shops found**.
+
+These are study thresholds. They are not a production POI ranking policy. The study does not yet
+account for opening hours, surface, duplicate map records, search coverage, or a maximum detour
+budget. Distance and climbing remain separate; there is no combined effort score.
 
 Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
 and Up/Down still zoom. The same ride remains open. Use **Arrive at shop** in the simulator's
-Controls panel to simulate arrival. This activates the prepared return leg and shows an informational
-arrival card. Guidance is already active before you dismiss the card. Use **Rejoin original route**
-in Controls to simulate rejoining; the original route resumes automatically. These two Controls
-buttons supply location events; they are not new device buttons or route confirmations.
-
-During a visit, the drawer opens the current visit rather than the question list:
+Controls panel to simulate arrival. This activates the prepared return leg and shows an
+informational arrival card. Guidance is active before you dismiss the card. Use **Rejoin original
+route** to simulate rejoining; the original route resumes automatically. These Controls buttons
+supply location events, not new device buttons or route confirmations.
 
 | Ride stage | Navigation | Ride Assistant |
 | --- | --- | --- |
@@ -168,29 +186,47 @@ During a visit, the drawer opens the current visit rather than the question list
 | Back on the original route | Resume the original route. | Show the question list again. |
 
 Select **Dismiss** or press Back to close the arrival card. Both leave navigation and recording
-unchanged. The card can also be ignored: rejoining clears it automatically. Open Ride Assistant
-during the return to see the current visit; there is no arrival action to recover from the drawer.
-Back on the normal navigation map still opens Statistics. These transitions follow the route legs
-accepted by **Add stop**; they do not calculate a new route.
+unchanged. Rejoining also clears an ignored card. Before arrival, **Skip stop → Remove stop**
+restores the original route at the current position. It does not calculate a path back.
 
-Before arrival, the Assistant also has **Skip stop**. Confirming removal restores the original
-route at the current position; it does not calculate a path back. The original destination remains
-Grimselpass.
+The Controls panel has a candidate-set selector, a result selector, and **Jump to stage**.
+Changing a candidate set returns to comparison. Changing the result also opens comparison.
+Stage jumps keep the same recording. Route fixtures are loaded once per simulator launch.
 
-The flag replaces the drawer's Bluetooth shortcut for this study. Bluetooth settings remain in
-Settings. Without the flag, the Assistant is absent. The flag requires a temporary card and cannot
-be combined with `--card`, `--create-card`, or `--gpx`. Do not change route catalogs during a study.
+The same presets work in the GUI and headless mode:
 
-For headless captures, the first `A` simulates arrival and the second simulates rejoining. No device
-button press is needed between them. For example:
+| Flag | Values |
+| --- | --- |
+| `--assistant-scenario` | `four` (default), `two-along`, `useful-detour`, `worse-detour`, `four-along`, `detours-only`, `one`, `empty` |
+| `--assistant-stage` | `map` (default), `questions`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
+| `--assistant-option` | Result number `1`–`4`, default `1`. Must exist in the selected set. |
+
+Scenario names describe the supplied candidate sets. The selection rules still apply: a small map
+or a different GPX can change which detours qualify. Each launch prints the available and suggested
+counts and each result's costs. With no results, stages that need a shop are unavailable.
+
+All `--assistant-*` flags enable the study. It replaces the drawer's Bluetooth shortcut; Bluetooth
+settings remain in Settings. Without these flags, the Assistant is absent. The study cannot be
+combined with `--card`, `--create-card`, `--no-card`, or `--gpx`. Do not change route catalogs during a study.
+
+For example, compare four options on the supplied Grimsel route:
 
 ```sh
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
-  --script "Q w d p p p d p" --expect-screen Assistant --png shop-preview.png
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
-  --script "Q w d p p p d p p f A" --expect-screen Assistant --png shop-arrival.png
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
-  --script "Q w d p p p d p p f A A" --expect-screen Map --png shop-rejoined.png
+target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm \
+  --assistant-route fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx \
+  --assistant-stage choices --assistant-scenario four
+```
+
+Use any other map for a local study. In a headless script, `A` simulates arrival, then rejoining.
+No device button press is needed between those events:
+
+```sh
+target/release/obc-sim path/to/area.obcm --assistant-stage choices \
+  --assistant-scenario worse-detour --expect-screen Assistant --png shops.png
+target/release/obc-sim path/to/area.obcm --assistant-stage preview \
+  --script "p f A" --expect-screen Assistant --png shop-arrival.png
+target/release/obc-sim path/to/area.obcm --assistant-stage to-stop \
+  --script "A A" --expect-screen Map --png shop-rejoined.png
 ```
 
 Physical-device execution, real POI data, automatic arrival detection, and the remaining Assistant

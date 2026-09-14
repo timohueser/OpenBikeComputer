@@ -1,7 +1,7 @@
-//! Synthetic shop visits over the shipped Grimsel map, using real route objects and app screens.
+//! Portable, synthetic shop visits using real route objects and app screens.
 
 use obc_app::{
-    assistant_demo::{Fixture, Stop},
+    assistant_demo::{Fixture, Stage, Stop},
     App,
 };
 use obc_formats::io::SliceSource;
@@ -10,7 +10,111 @@ use obc_replay::{Track, TrackPoint};
 use obc_route::{gpx_to_obcr, RouteStats};
 use std::fmt::Write;
 
-const TRACK: &str = include_str!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx");
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scenario {
+    #[default]
+    Four,
+    TwoAlong,
+    UsefulDetour,
+    WorseDetour,
+    FourAlong,
+    DetoursOnly,
+    One,
+    Empty,
+}
+
+impl Scenario {
+    pub const ALL: [(Self, &'static str); 8] = [
+        (Self::Four, "four"),
+        (Self::TwoAlong, "two-along"),
+        (Self::UsefulDetour, "useful-detour"),
+        (Self::WorseDetour, "worse-detour"),
+        (Self::FourAlong, "four-along"),
+        (Self::DetoursOnly, "detours-only"),
+        (Self::One, "one"),
+        (Self::Empty, "empty"),
+    ];
+
+    pub fn candidates(self) -> &'static [usize] {
+        match self {
+            Self::Four => &[0, 1, 2, 3],
+            Self::TwoAlong => &[0, 2],
+            Self::UsefulDetour => &[0, 1, 2],
+            Self::WorseDetour => &[0, 2, 4],
+            Self::FourAlong => &[0, 2, 3, 5],
+            Self::DetoursOnly => &[1, 4],
+            Self::One => &[0],
+            Self::Empty => &[],
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        Self::ALL.iter().find(|(s, _)| *s == self).unwrap().1
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Seed {
+    pub route: Option<String>,
+    pub stage: Stage,
+    pub scenario: Scenario,
+    pub option: usize,
+}
+
+impl Default for Seed {
+    fn default() -> Self {
+        Self { route: None, stage: Stage::Map, scenario: Scenario::default(), option: 0 }
+    }
+}
+
+fn local_track(min: (i32, i32), max: (i32, i32), center: (i32, i32)) -> Vec<TrackPoint> {
+    // Leave room for shop access paths. Small maps scale down the whole study.
+    let half_y = 27_000.min((center.1 - min.1).min(max.1 - center.1) * 3 / 4);
+    let half_x = 4_000.min((center.0 - min.0).min(max.0 - center.0) / 4);
+    (0..129)
+        .map(|i| {
+            let t = i as f64 / 128.0;
+            TrackPoint {
+                lon: center.0 + (half_x as f64 * (t * 6.0).sin()) as i32,
+                lat: center.1 - half_y + (2.0 * half_y as f64 * t) as i32,
+                ele: Some((400.0 + t * 180.0) as f32),
+                t,
+            }
+        })
+        .collect()
+}
+
+fn lengths(points: &[TrackPoint]) -> Vec<f64> {
+    let mut result = vec![0.0];
+    for pair in points.windows(2) {
+        let aspect = ((pair[0].lat as f64 + pair[1].lat as f64) / 2e6).to_radians().cos();
+        let dx = (pair[1].lon as f64 - pair[0].lon as f64) * aspect;
+        let dy = pair[1].lat as f64 - pair[0].lat as f64;
+        result.push(result.last().unwrap() + dx.hypot(dy) * 0.111_195);
+    }
+    result
+}
+
+fn access(anchor: TrackPoint, min: (i32, i32), max: (i32, i32), metres: f64, climb: f32) -> [TrackPoint; 3] {
+    let aspect = (anchor.lat as f64 / 1e6).to_radians().cos().max(0.01);
+    let east = (max.0 as f64 - anchor.lon as f64) * aspect;
+    let west = (anchor.lon as f64 - min.0 as f64) * aspect;
+    let north = max.1 as f64 - anchor.lat as f64;
+    let south = anchor.lat as f64 - min.1 as f64;
+    let (dx, dy, room) = if east.max(west) >= north.max(south) * 0.2 {
+        (if east >= west { 1.0 / aspect } else { -1.0 / aspect }, 0.0, east.max(west))
+    } else {
+        (0.0, if north >= south { 1.0 } else { -1.0 }, north.max(south))
+    };
+    let offset = (metres / 0.111_195).min(room * 0.8);
+    let point = |fraction: f64| TrackPoint {
+        lon: anchor.lon + (dx * offset * fraction) as i32,
+        lat: anchor.lat + (dy * offset * fraction) as i32,
+        ele: Some(anchor.ele.unwrap_or(0.0) + climb * fraction as f32),
+        t: 0.0,
+    };
+    [anchor, point(0.5), point(1.0)]
+}
 
 fn route(
     store: &mut FlatRouteStore,
@@ -45,36 +149,65 @@ fn route(
     Ok((index, stats))
 }
 
-pub fn install(app: &mut App, store: &mut FlatRouteStore) -> Result<(), String> {
-    let track = Track::parse(TRACK)?;
-    let (original, _) = route(store, "Grimselpass", &track.points, None)?;
+pub fn install(
+    app: &mut App,
+    store: &mut FlatRouteStore,
+    tables: &obc_reader::MapTables,
+    args: &crate::Args,
+) -> Result<(), String> {
+    let seed = &args.assistant;
+    let bbox = tables.bbox;
+    let min = (bbox.min_lon, bbox.min_lat);
+    let max = (bbox.max_lon, bbox.max_lat);
+    let center = args.center.unwrap_or((min.0 + (max.0 - min.0) / 2, min.1 + (max.1 - min.1) / 2));
+    let contains = |(x, y)| x >= min.0 && x <= max.0 && y >= min.1 && y <= max.1;
+    if !contains(center) {
+        return Err("--center must be inside the loaded map".into());
+    }
+    let points = if let Some(path) = &seed.route {
+        Track::load(std::path::Path::new(path))?.points
+    } else {
+        local_track(min, max, center)
+    };
+    if points.len() < 2 || !points.iter().all(|p| contains((p.lon, p.lat))) {
+        return Err("the study GPX must have at least two points, all inside the loaded map".into());
+    }
+    let cumulative = lengths(&points);
+    let length = *cumulative.last().unwrap();
+    if length < 100.0 {
+        return Err("the study needs at least 100 m of route; choose a larger area or move --center inward".into());
+    }
+    if store.ids().len() + 13 > obc_app::MAX_ROUTES {
+        return Err("not enough route slots for the study".into());
+    }
+    let (original, _) = route(store, "Study route", &points, None)?;
     let mut stops = Vec::new();
-    for (name, join, dx, dy, climb) in [("Village shop", 300, 1_200, 600, 3.0), ("Farm shop", 39, -4_272, 3_278, 150.0)]
-    {
-        let anchor = track.points[join];
-        let mid = TrackPoint {
-            lon: anchor.lon + dx / 2,
-            lat: anchor.lat + dy / 2,
-            ele: anchor.ele.map(|e| e + climb * 0.7),
-            t: 0.0,
-        };
-        let stop =
-            TrackPoint { lon: anchor.lon + dx, lat: anchor.lat + dy, ele: anchor.ele.map(|e| e + climb), t: 0.0 };
-        let mut outbound = track.points[..=join].to_vec();
+    for (name, fraction, target_m, spur_m, climb) in [
+        ("Village shop", 0.30, 2_000.0, 110.0, 3.0),
+        ("Farm shop", 0.03, 300.0, 490.0, 150.0),
+        ("Supermarket", 0.50, 3_500.0, 50.0, 2.0),
+        ("General store", 0.68, 4_500.0, 130.0, 2.0),
+        ("Ridge shop", 0.80, 5_500.0, 700.0, 100.0),
+        ("Bakery", 0.16, 1_000.0, 40.0, 2.0),
+    ] {
+        let distance = (length * fraction).min(target_m);
+        let join = cumulative.partition_point(|&d| d < distance).min(points.len() - 2).max(1);
+        let approach = access(points[join], min, max, spur_m, climb);
+        let [anchor, mid, stop] = approach;
+        let mut outbound = points[..=join].to_vec();
         outbound.extend([mid, stop]);
         let (outbound_id, cost) = route(store, name, &outbound, Some((name, stop)))?;
         let mut returning = vec![stop, mid];
-        returning.extend_from_slice(&track.points[join..]);
-        let (continuation, _) = route(store, "Grimselpass", &returning, Some(("Rejoin route", anchor)))?;
-        // Measure the authored spur with the same GPX conversion used for the actual route objects.
+        returning.extend_from_slice(&points[join..]);
+        let (continuation, _) = route(store, "Study route", &returning, Some(("Rejoin route", anchor)))?;
+        // The displayed access costs use the same converter as the prepared route legs.
         let mut spur_sink = VecSink::default();
         let spur_xml = format!("<gpx><trk><trkseg><trkpt lon=\"{}\" lat=\"{}\"><ele>0</ele></trkpt><trkpt lon=\"{}\" lat=\"{}\"><ele>{climb}</ele></trkpt></trkseg></trk></gpx>", anchor.lon as f64 / 1e6, anchor.lat as f64 / 1e6, stop.lon as f64 / 1e6, stop.lat as f64 / 1e6);
         let spur = gpx_to_obcr(&SliceSource(spur_xml.as_bytes()), "Access", &mut spur_sink)
             .map_err(|e| format!("demo access: {e:?}"))?;
-        let approach = Box::leak(Box::new([(anchor.lon, anchor.lat), (mid.lon, mid.lat), (stop.lon, stop.lat)]));
         stops.push(Stop {
             name,
-            approach,
+            approach: Box::leak(Box::new(approach.map(|p| (p.lon, p.lat)))),
             distance_m: cost.total_distance_m,
             climb_m: cost.total_ascent_m,
             extra_m: spur.total_distance_m * 2,
@@ -87,14 +220,57 @@ pub fn install(app: &mut App, store: &mut FlatRouteStore) -> Result<(), String> 
     }
     let fixture = Box::leak(Box::new(Fixture {
         original,
-        destination: "Grimselpass",
-        start: (track.points[0].lon, track.points[0].lat),
-        stops: stops.try_into().map_err(|_| "expected two demo stops")?,
+        start: (points[0].lon, points[0].lat),
+        stops: Box::leak(stops.into_boxed_slice()),
     }));
     app.set_routes_with_ids(store.catalog(), store.ids());
     let mut settings = *app.settings();
     settings.climb_mode = obc_app::ClimbMode::Manual;
     app.set_settings(settings);
     app.enable_assistant_demo(fixture);
+    app.set_assistant_candidates(seed.scenario.candidates());
+    if !app.show_assistant_demo(seed.stage, seed.option) {
+        return Err("that stage or option is unavailable in this candidate set".into());
+    }
+    if let Some(demo) = app.state.assistant_demo {
+        eprintln!(
+            "assistant candidates: {} available, {} suggested",
+            seed.scenario.candidates().len(),
+            demo.candidates.len
+        );
+        for (i, stop) in demo.stops().enumerate() {
+            eprintln!(
+                "  {} {}: {} m, {} m climb, {} m extra",
+                i + 1,
+                stop.name,
+                stop.distance_m,
+                stop.climb_m,
+                stop.extra_m
+            );
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_routes_and_access_stay_inside_different_map_areas() {
+        for (min, max) in [
+            ((7_000_000, 45_000_000), (7_200_000, 45_200_000)),
+            ((-73_001_000, -40_005_000), (-72_999_000, -39_995_000)),
+        ] {
+            let center = (min.0 + (max.0 - min.0) / 2, min.1 + (max.1 - min.1) / 2);
+            let points = local_track(min, max, center);
+            assert!(lengths(&points).last().unwrap() > &100.0);
+            for anchor in points {
+                for p in access(anchor, min, max, 700.0, 100.0) {
+                    assert!((min.0..=max.0).contains(&p.lon));
+                    assert!((min.1..=max.1).contains(&p.lat));
+                }
+            }
+        }
+    }
 }

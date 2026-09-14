@@ -186,6 +186,7 @@ struct Args {
     /// and the one gesture that puts a map base back under a live search also cancels the plan.
     freeze: bool,
     assistant_demo: bool,
+    assistant: assistant_demo::Seed,
     /// One mutually-exclusive DFU fixture state for headless snapshots.
     dfu: Option<DfuSeed>,
     /// Headless `--png` only: stamp every loaded route's retention meta (epic #638 S5), so the
@@ -237,6 +238,7 @@ impl Default for Args {
             inject: None,
             freeze: false,
             assistant_demo: false,
+            assistant: assistant_demo::Seed::default(),
             dfu: None,
             route_retention: None,
         }
@@ -567,6 +569,36 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
             "--assistant-demo" => a.assistant_demo = true,
+            "--assistant-route" => {
+                a.assistant_demo = true;
+                a.assistant.route = Some(it.next().ok_or("--assistant-route needs a GPX path")?);
+            }
+            "--assistant-stage" => {
+                a.assistant_demo = true;
+                let key = it.next().ok_or("--assistant-stage needs a stage")?;
+                a.assistant.stage = obc_app::assistant_demo::Stage::ALL
+                    .iter()
+                    .find(|(_, name)| *name == key)
+                    .ok_or("unknown --assistant-stage; see --help")?
+                    .0;
+            }
+            "--assistant-scenario" => {
+                a.assistant_demo = true;
+                let key = it.next().ok_or("--assistant-scenario needs a candidate set")?;
+                a.assistant.scenario = assistant_demo::Scenario::ALL
+                    .iter()
+                    .find(|(_, name)| *name == key)
+                    .ok_or("unknown --assistant-scenario; see --help")?
+                    .0;
+            }
+            "--assistant-option" => {
+                a.assistant_demo = true;
+                let value: usize = it.next().and_then(|s| s.parse().ok()).ok_or("--assistant-option needs 1..4")?;
+                if !(1..=obc_app::assistant_demo::MAX_RESULTS).contains(&value) {
+                    return Err("--assistant-option needs 1..4".into());
+                }
+                a.assistant.option = value - 1;
+            }
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
@@ -630,7 +662,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
         return Err("--card reopens without map or route-directory imports".into());
     }
-    if a.assistant_demo && (a.card.is_some() || a.create_card.is_some() || a.gpx.is_some()) {
+    if a.assistant_demo && (a.card.is_some() || a.create_card.is_some() || a.gpx.is_some() || a.no_card) {
         return Err("--assistant-demo uses a temporary card and its own position controls".into());
     }
     if a.card.is_some() && matches!(a.inject, Some(Injection::TripUpload { .. })) {
@@ -963,7 +995,7 @@ Map and output:
   --scale N               Integer PNG/window scale (default: 1)
   --png PATH              Render one device frame to PNG and exit
   --palette               Show or save the device 64-colour palette
-  --center LON,LAT        Headless camera centre in microdegrees
+  --center LON,LAT        Headless camera or local Assistant study centre in microdegrees
   --zoom MULT             Headless bbox-fit zoom multiplier
   --heading DEG           Start in heading-up mode at this course
   --peak-view PLACE       Peak panorama: gornergrat|scheidegg|glockner
@@ -990,7 +1022,13 @@ Device state:
   --sensors MODE          demo|screen
 
 Scripted snapshots:
-  --assistant-demo        Shop-visit UI study with synthetic stops on real map screens
+  --assistant-demo        Shop-visit UI study centred on any loaded map
+  --assistant-route GPX   Use this route instead of a synthetic local route
+  --assistant-scenario S  four (default), two-along, useful-detour, worse-detour,
+                          four-along, detours-only, one, empty
+  --assistant-stage S     map (default), questions, categories, choices, preview,
+                          to-stop, visit, arrival, returning, rejoined, remove-stop
+  --assistant-option N    Select result 1..4 (default 1); Assistant flags enable the study
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,
@@ -1234,7 +1272,7 @@ fn main() {
         let mut store = routes;
         app.set_routes_with_ids(store.catalog(), store.ids());
         if args.assistant_demo {
-            assistant_demo::install(&mut app, &mut store).unwrap_or_else(|e| {
+            assistant_demo::install(&mut app, &mut store, tables, &args).unwrap_or_else(|e| {
                 eprintln!("assistant demo: {e}");
                 std::process::exit(1)
             });
@@ -1822,6 +1860,26 @@ mod cli_tests {
     }
 
     #[test]
+    fn assistant_seeds_validate_the_shared_stage_and_scenario_vocabulary() {
+        for (_, key) in obc_app::assistant_demo::Stage::ALL {
+            assert!(parse(&["--assistant-stage", key]).unwrap().assistant_demo);
+        }
+        for (scenario, key) in assistant_demo::Scenario::ALL {
+            assert_eq!(parse(&["--assistant-scenario", key]).unwrap().assistant.scenario, scenario);
+        }
+        assert_eq!(parse(&["--assistant-option", "4"]).unwrap().assistant.option, 3);
+        for flags in [
+            ["--assistant-option", "0"],
+            ["--assistant-option", "5"],
+            ["--assistant-stage", "nope"],
+            ["--assistant-scenario", "nope"],
+        ] {
+            assert!(parse(&flags).is_err());
+        }
+        assert!(parse(&["--assistant-stage", "arrival", "--gpx", "ride.gpx"]).is_err());
+    }
+
+    #[test]
     fn removed_flags_are_rejected() {
         for flag in [
             "--true-color",
@@ -1846,6 +1904,11 @@ mod cli_tests {
             "--png",
             "--heading",
             "--peak-view",
+            "--assistant-demo",
+            "--assistant-route",
+            "--assistant-scenario",
+            "--assistant-stage",
+            "--assistant-option",
             "--gpx",
             "--at",
             "--center",
