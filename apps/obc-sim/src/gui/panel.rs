@@ -97,6 +97,30 @@ impl SimGui {
                         ui.separator();
                         ui.add_space(6.0);
 
+                        if let Some(demo) = self.app.state.assistant_demo {
+                            ui.heading("Ride Assistant study");
+                            ui.label("Synthetic shops and access paths. Real firmware screens and route objects.");
+                            use obc_app::assistant_demo::Phase;
+                            let event = match demo.phase {
+                                Phase::ToStop => Some("Arrive at shop"),
+                                Phase::Returning => Some("Rejoin original route"),
+                                _ => None,
+                            };
+                            if let Some(label) = event {
+                                if ui.button(label).clicked() {
+                                    self.app.advance_assistant_demo();
+                                    if let Some(fix) = self.app.state.user_fix {
+                                        self.loc.set_position(fix.lat, fix.lon);
+                                        self.panel.lat_deg = fix.lat as f64 / 1e6;
+                                        self.panel.lon_deg = fix.lon as f64 / 1e6;
+                                    }
+                                }
+                            } else {
+                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find shops or resume a dismissed stop.");
+                            }
+                            separator_above(ui);
+                        }
+
                         // Let sliders span the panel width, leaving room for the value box.
                         ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
 

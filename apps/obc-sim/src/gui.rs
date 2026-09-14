@@ -171,8 +171,9 @@ pub fn run(
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
+    let title = if args.assistant_demo { "OBC Simulator — Ride Assistant study" } else { "OBC Simulator" };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("OBC Simulator").with_inner_size(win),
+        viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size(win),
         ..Default::default()
     };
     eframe::run_native(
@@ -489,6 +490,15 @@ impl SimGui {
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
+        if args.assistant_demo {
+            crate::assistant_demo::install(&mut gui.app, &mut gui.store).expect("assistant demo fixtures");
+            gui.note_card_commit();
+            if let Some(fix) = gui.app.state.user_fix {
+                gui.loc.set_position(fix.lat, fix.lon);
+                gui.panel.lat_deg = fix.lat as f64 / 1e6;
+                gui.panel.lon_deg = fix.lon as f64 / 1e6;
+            }
+        }
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
@@ -553,6 +563,7 @@ impl SimGui {
         // The active route is opened once from the resident session (no per-frame `RouteIndex`
         // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
         // The render below re-opens it: the executor may commit new bytes under it.
+        self.app.start_assistant_demo_if_ready();
         self.session.sync(&self.app, &mut self.store);
         let ui_now = self.input.now_ms();
         let gestures = core::mem::take(&mut self.pending_gestures);

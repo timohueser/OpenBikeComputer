@@ -29,6 +29,7 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
 mod detour;
@@ -60,6 +61,7 @@ pub(crate) mod up_ahead;
 pub(crate) mod vocab;
 mod warning;
 
+pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
@@ -1002,6 +1004,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
+    Assistant(AssistantScreen) => Caps::map(),
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
@@ -1694,7 +1697,7 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview"],
+            ["Map", "Assistant", "Detour", "DetourPreview"],
             "the map-class screens, and only those — Statistics and the Climb view draw panels, \
              which are cheap enough to keep the recess"
         );

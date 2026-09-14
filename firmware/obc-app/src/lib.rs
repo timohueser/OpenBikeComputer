@@ -29,6 +29,7 @@ pub mod activity;
 pub mod altitude;
 pub mod app;
 pub mod arena_gate;
+pub mod assistant_demo;
 pub mod ble;
 pub mod breadcrumb;
 pub(crate) mod card_scheduler;
