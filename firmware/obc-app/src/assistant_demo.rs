@@ -298,8 +298,12 @@ mod tests {
 
     #[test]
     fn landmark_visit_keeps_its_return_leg_while_browsing_other_places() {
-        static INFO: Landmark =
-            Landmark { kind: "Gorge", article: "Aare_Gorge", photo: None, pages: &["A narrow gorge."] };
+        static INFO: Landmark = Landmark {
+            kind: "Gorge",
+            article: "https://en.wikipedia.org/wiki/Aare_Gorge",
+            photo: None,
+            pages: &["A narrow gorge."],
+        };
         static PLACES: Fixture = Fixture {
             original: 0,
             start: (0, 0),
@@ -354,8 +358,12 @@ mod tests {
 
     #[test]
     fn landmark_sources_use_the_context_drawer_and_back_restores_reading() {
-        static INFO: Landmark =
-            Landmark { kind: "Gorge", article: "Aare_Gorge", photo: None, pages: &["A gorge.", "A walkway."] };
+        static INFO: Landmark = Landmark {
+            kind: "Gorge",
+            article: "https://en.wikipedia.org/wiki/Aare_Gorge",
+            photo: None,
+            pages: &["A gorge.", "A walkway."],
+        };
         static PLACES: Fixture =
             Fixture { original: 0, start: (0, 0), stops: &[STOP, Stop { landmark: Some(&INFO), ..STOP }] };
         let mut app = app();

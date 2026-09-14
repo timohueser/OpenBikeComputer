@@ -591,6 +591,15 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
                     .ok_or("unknown --assistant-scenario; see --help")?
                     .0;
             }
+            "--assistant-landmarks" => {
+                a.assistant_demo = true;
+                let key = it.next().ok_or("--assistant-landmarks needs glaciers or passes")?;
+                if !matches!(key.as_str(), "glaciers" | "passes") {
+                    return Err("--assistant-landmarks needs glaciers or passes".into());
+                }
+                a.assistant.landmarks = Some(key);
+                a.assistant.stage = obc_app::assistant_demo::Stage::Landmarks;
+            }
             "--assistant-option" => {
                 a.assistant_demo = true;
                 let value: usize = it.next().and_then(|s| s.parse().ok()).ok_or("--assistant-option needs 1..4")?;
@@ -1024,6 +1033,7 @@ Device state:
 Scripted snapshots:
   --assistant-demo        Shop-visit UI study centred on any loaded map
   --assistant-route GPX   Use this route instead of a synthetic local route
+  --assistant-landmarks S glaciers or passes; random content samples
   --assistant-scenario S  four (default), two-along, useful-detour, worse-detour,
                           four-along, detours-only, one, empty
   --assistant-stage S     map (default), questions, landmarks, categories, choices, preview,
@@ -1867,12 +1877,18 @@ mod cli_tests {
         for (scenario, key) in assistant_demo::Scenario::ALL {
             assert_eq!(parse(&["--assistant-scenario", key]).unwrap().assistant.scenario, scenario);
         }
+        for key in ["glaciers", "passes"] {
+            let args = parse(&["--assistant-landmarks", key]).unwrap();
+            assert_eq!(args.assistant.landmarks.as_deref(), Some(key));
+            assert!(matches!(args.assistant.stage, obc_app::assistant_demo::Stage::Landmarks));
+        }
         assert_eq!(parse(&["--assistant-option", "4"]).unwrap().assistant.option, 3);
         for flags in [
             ["--assistant-option", "0"],
             ["--assistant-option", "5"],
             ["--assistant-stage", "nope"],
             ["--assistant-scenario", "nope"],
+            ["--assistant-landmarks", "nope"],
         ] {
             assert!(parse(&flags).is_err());
         }
@@ -1909,6 +1925,7 @@ mod cli_tests {
             "--assistant-scenario",
             "--assistant-stage",
             "--assistant-option",
+            "--assistant-landmarks",
             "--gpx",
             "--at",
             "--center",
