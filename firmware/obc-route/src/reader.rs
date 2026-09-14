@@ -643,13 +643,13 @@ fn decode_chunk_lonlat(route: &RouteReader, k: usize, out: &mut [(i32, i32); MAX
 
 fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
     RoutePoint {
-        lon: libm::roundf(a.lon as f32 + (b.lon - a.lon) as f32 * t) as i32,
-        lat: libm::roundf(a.lat as f32 + (b.lat - a.lat) as f32 * t) as i32,
+        lon: a.lon + libm::roundf((b.lon - a.lon) as f32 * t) as i32,
+        lat: a.lat + libm::roundf((b.lat - a.lat) as f32 * t) as i32,
         ele: if t <= 0.0 {
             a.ele
         } else if t >= 1.0 {
             b.ele
-        } else if a.elevation().is_none() || b.elevation().is_none() {
+        } else if a.elevation().is_none() || b.elevation().is_none() || b.elevation_incomplete {
             i16::MIN
         } else {
             libm::roundf(a.ele as f32 + (i32::from(b.ele) - i32::from(a.ele)) as f32 * t) as i16

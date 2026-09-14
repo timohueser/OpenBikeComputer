@@ -238,10 +238,10 @@ impl ObcrEmitter {
         self.map_source = source;
     }
 
-    /// Cumulative input distance so far, used to map transform waypoint positions.
+    /// Measured retained distance, including the most recently retained transform point.
     #[inline]
-    pub(crate) fn cum_dist(&self) -> f64 {
-        self.cum_dist
+    pub(crate) fn distance_m(&self) -> u32 {
+        self.enc.distance as u32
     }
 
     /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
@@ -289,6 +289,13 @@ impl ObcrEmitter {
             }
         }
         Ok(())
+    }
+
+    /// Stored route geometry is already simplified. Keep its vertices and measure its
+    /// output axis before a transform records a waypoint or seam anchor.
+    pub(crate) fn push_retained(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
+        self.push(sink, lon, lat, ele)?;
+        self.flush_pending(sink)
     }
 
     fn flush_pending(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
@@ -497,7 +504,7 @@ fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
     Cand {
         lon: f(a.lon, b.lon),
         lat: f(a.lat, b.lat),
-        ele: if a.ele == i16::MIN || b.ele == i16::MIN {
+        ele: if a.ele == i16::MIN || b.ele == i16::MIN || b.surface & 8 != 0 {
             i16::MIN
         } else {
             round_i16(a.ele as f64 + (b.ele as f64 - a.ele as f64) * t)

@@ -276,8 +276,12 @@ impl Splicer {
                         } else if w.dist_along_m < self.rejoin_m {
                             None
                         } else {
-                            let tail_base = self.tail_first_along.unwrap_or_else(|| (self.em.cum_dist() as f32) as u32);
-                            Some(tail_base.saturating_add(w.dist_along_m - self.rejoin_m))
+                            let tail_base = self.tail_first_along.unwrap_or_else(|| self.em.distance_m());
+                            Some(if w.dist_along_m >= orig.total_distance_m {
+                                self.em.distance_m()
+                            } else {
+                                tail_base.saturating_add(w.dist_along_m - self.rejoin_m).min(self.em.distance_m())
+                            })
                         };
                         if let Some(along) = along {
                             let _ = self.waypoints.push(WpPlace::from_stored(&w, along));
@@ -307,7 +311,7 @@ impl Splicer {
         if self.last_pushed == Some((lon, lat)) {
             return Ok(()); // chunk-seam / hop-seam duplicate
         }
-        self.em.push(sink, lon, lat, ele)?;
+        self.em.push_retained(sink, lon, lat, ele)?;
         self.last_pushed = Some((lon, lat));
         Ok(())
     }
@@ -338,7 +342,7 @@ impl Splicer {
             self.em.set_elevation_incomplete(p.elevation_incomplete);
             self.push_point(sink, p.lon, p.lat, p.ele)?;
             if tail && self.tail_first_along.is_none() {
-                self.tail_first_along = Some(self.em.cum_dist() as u32);
+                self.tail_first_along = Some(self.em.distance_m());
             }
         }
         Ok(())

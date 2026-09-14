@@ -238,3 +238,75 @@ fn splice_paces_all_waypoints_and_refuses_source_failure_after_seams() {
         assert_eq!(failed, SpliceStep::Failed(Error::Io), "read failure cannot remove route geometry");
     }
 }
+
+#[test]
+fn splice_waypoints_follow_retained_geometry_and_end_at_measured_total() {
+    let points: Vec<Point> = (0..401).map(|i| (8_123_457 + i * 10, 47_123_457 + (i % 2) * 5, 0)).collect();
+    let distance = |end: usize| -> u32 {
+        points[..=end]
+            .windows(2)
+            .map(|p| obc_map_scene::ground_dist_m((p[0].0, p[0].1), (p[1].0, p[1].1)) as f64)
+            .sum::<f64>() as u32
+    };
+    let waypoints: Vec<_> =
+        [40, 300, 400].into_iter().map(|i| (distance(i), points[i].0, points[i].1, 0, 1, 1, 0, &b"W"[..])).collect();
+    let original = encoded(&points, 200, &waypoints);
+    let detour_points: Vec<_> = (0..101).map(|i| (8_124_357 + i * 10, 47_123_657 + (i % 2) * 5, 0)).collect();
+    let detour = encoded(&detour_points, 50, &[]);
+    let (os, ds) = (SliceSource(&original), SliceSource(&detour));
+    let (oi, di) = (RouteIndex::read(&os).unwrap(), RouteIndex::read(&ds).unwrap());
+    let (o, d) = (RouteReader::new(&oi, &os), RouteReader::new(&di, &ds));
+    let mut sink = VecSink::default();
+    let result = obc_route::splice_detour(&o, &d, 100, 200, di.total_distance_m, true, &mut sink).unwrap();
+    let output = common::route_points(&sink.buf);
+    let mut measured = 0.0;
+    let mut distances = Vec::new();
+    for (i, p) in output.iter().enumerate() {
+        if i > 0 {
+            let prev = output[i - 1];
+            measured += obc_map_scene::ground_dist_m((prev.lon, prev.lat), (p.lon, p.lat)) as f64;
+        }
+        distances.push(measured as u32);
+    }
+    assert_eq!(result.total_distance_m, measured as u32);
+    let mut actual = Vec::new();
+    obc_route::reader::for_each_waypoint(&SliceSource(&sink.buf), |w| actual.push(w.clone())).unwrap();
+    assert_eq!(actual.len(), 3);
+    for waypoint in &actual[..2] {
+        let at = output
+            .iter()
+            .position(|p| (p.lon, p.lat) == (waypoint.lon, waypoint.lat))
+            .expect("original vertex retained");
+        assert!(waypoint.dist_along_m.abs_diff(distances[at]) <= 1, "waypoint must use the stored metre axis");
+    }
+    assert_eq!(actual[2].dist_along_m, result.total_distance_m);
+}
+
+#[test]
+fn incomplete_segment_seeks_and_splice_boundaries_keep_elevation_unknown() {
+    let mut original = encoded(&[(0, 0, 10), (10_000, 0, 110), (20_000, 0, 210)], 1, &[]);
+    let index = RouteIndex::read(&SliceSource(&original)).unwrap();
+    original[index.chunks()[0].byte_offset as usize + 6] = 8;
+    let os = SliceSource(&original);
+    let oi = RouteIndex::read(&os).unwrap();
+    let o = RouteReader::new(&oi, &os);
+    assert_eq!(o.elevation_at(0), Some(10));
+    assert_eq!(o.elevation_at(556), None, "valid endpoint samples do not fill an incomplete interior");
+    assert_eq!(o.elevation_at(oi.chunks()[1].cum_distance_m), Some(110));
+    let detour = gpx(&[(5_000, 0, 40), (7_500, 1_000, 50), (10_000, 0, 60)], true);
+    let ds = SliceSource(&detour);
+    let di = RouteIndex::read(&ds).unwrap();
+    let d = RouteReader::new(&di, &ds);
+    let mut sink = VecSink::default();
+    obc_route::splice_detour(&o, &d, 556, oi.chunks()[1].cum_distance_m, di.total_distance_m, true, &mut sink).unwrap();
+    let output = common::route_points(&sink.buf);
+    assert_eq!(output[0].elevation(), Some(10));
+    assert_eq!(output[1].elevation(), None, "the clipped splice seam has no measured height");
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let reader = RouteReader::new(&index, &source);
+    assert_eq!(reader.elevation_at(250), None);
+    let facts = reader.interval_facts(0, 500).unwrap();
+    assert!(!facts.complete_elevation());
+    assert_eq!(facts.ascent_m, 0);
+}

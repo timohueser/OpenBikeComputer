@@ -274,7 +274,7 @@ impl Trimmer {
                     let ele = p.ele;
                     self.emitter.set_surface(p.surface);
                     self.emitter.set_elevation_incomplete(p.elevation_incomplete);
-                    self.emitter.push(sink, p.lon, p.lat, ele)?;
+                    self.emitter.push_retained(sink, p.lon, p.lat, ele)?;
                     if self.distinct == self.trim_index {
                         self.phase = Phase::Finish;
                         break;
