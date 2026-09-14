@@ -18,80 +18,75 @@ Thus, all consumers use the same elevation values.
 ## Data flow
 
 <figure class="fig">
-<svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain region, spliced into the map file's own tail. Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that in a map with no terrain every one of those three answers no height here, and nothing else changes.">
-  <defs>
-    <marker id="aT1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
-    <marker id="aT2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
-  </defs>
-  <text class="d-tag" x="20" y="22">one surface, baked once — then read by everything</text>
-
-  <!-- band 1: bake -->
-  <text class="d-sub" x="24" y="42" style="font-size:9px;fill:#6b7758">① bake — on a host, once per dataset release</text>
-  <rect class="d-panel-2" x="24" y="50" width="136" height="56" rx="9" />
-  <text class="d-label" x="38" y="70" style="font-size:10.5px">Copernicus GLO-30</text>
-  <text class="d-sub" x="38" y="86" style="font-size:8.5px">float32 GeoTIFF, 1&#8243;</text>
-  <text class="d-sub" x="38" y="98" style="font-size:8.5px">tiled · DEFLATE</text>
-
-  <line class="d-flow" x1="162" y1="78" x2="190" y2="78" marker-end="url(#aT1)" />
-  <rect x="194" y="50" width="132" height="56" rx="9" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:2" />
-  <text class="d-label" x="208" y="70" style="fill:#a9501c;font-size:10.5px">obc-dem</text>
-  <text class="d-sub" x="208" y="86" style="font-size:8.5px">resample · flip rows</text>
-  <text class="d-sub" x="208" y="98" style="font-size:8.5px">round half away from 0</text>
-
-  <line class="d-flow" x1="328" y1="78" x2="356" y2="78" marker-end="url(#aT1)" />
-  <rect class="d-water" x="360" y="50" width="150" height="56" rx="9" stroke="#3c6b39" stroke-width="1.2" />
-  <text class="d-label" x="435" y="70" text-anchor="middle" style="fill:#fff;font-size:10.5px">terrain cells</text>
-  <text class="d-sub" x="435" y="86" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">2&#185;&#8313; &#181;deg · 1024&#178; samples</text>
-  <text class="d-sub" x="435" y="98" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">one .obcd per square</text>
-
-  <line class="d-flow" x1="512" y1="78" x2="540" y2="78" marker-end="url(#aT1)" />
-  <rect class="d-panel" x="544" y="50" width="152" height="56" rx="9" />
-  <text class="d-label" x="620" y="70" text-anchor="middle" style="font-size:10.5px">terrain region</text>
-  <text class="d-sub" x="620" y="86" text-anchor="middle" style="font-size:8.5px">spliced into the map</text>
-  <text class="d-sub" x="620" y="98" text-anchor="middle" style="font-size:8.5px">OBCM §1.3, at its tail</text>
-
-  <text class="d-sub" x="24" y="133" style="font-size:8.5px;fill:#a9501c">own revision track — an OBCM bump republishes none of it</text>
-
-  <!-- band 2: the sampler -->
-  <line class="d-flow" x1="435" y1="108" x2="435" y2="152" marker-end="url(#aT1)" />
-  <line class="d-flow" x1="620" y1="108" x2="620" y2="152" marker-end="url(#aT1)" />
-  <rect x="24" y="156" width="672" height="58" rx="11" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:2.4" />
-  <text class="d-tag" x="40" y="176" style="fill:#a9501c">② sample — obc-elevation, the only implementation of OBCT §5</text>
-  <text class="d-sub" x="40" y="196" style="font-size:9.5px">integer bilinear · half-open cell ownership, cross-cell fetch at a seam, clamp at the coverage edge</text>
-  <text class="d-sub" x="40" y="208" style="font-size:9.5px">4 × 512 B tile cache &#183; a <tspan style="font-weight:700">NODATA</tspan> corner voids the whole query — never a guessed height</text>
-
-  <!-- band 3: consumers -->
-  <line class="d-flow" x1="130" y1="216" x2="130" y2="256" marker-end="url(#aT2)" stroke="#cf6a2a" />
-  <line class="d-flow" x1="360" y1="216" x2="360" y2="256" marker-end="url(#aT2)" stroke="#cf6a2a" />
-  <line class="d-flow" x1="590" y1="216" x2="590" y2="256" marker-end="url(#aT2)" stroke="#cf6a2a" />
-  <text class="d-sub" x="24" y="248" style="font-size:9px;fill:#6b7758">③ three consumers</text>
-
-  <rect class="d-panel" x="24" y="260" width="212" height="96" rx="10" />
-  <text class="d-label" x="40" y="280" style="font-size:10.5px">pack time — obc-pack</text>
-  <text class="d-sub" x="40" y="298" style="font-size:9px">walks each edge's polyline,</text>
-  <text class="d-sub" x="40" y="311" style="font-size:9px">samples at most 50 m apart,</text>
-  <text class="d-sub" x="40" y="324" style="font-size:9px">integrates through the dead-band</text>
-  <text class="d-sub" x="40" y="343" style="font-size:8.5px;fill:#a9501c">→ 2 B per direction, OBCM §8.3</text>
-
-  <rect class="d-panel" x="254" y="260" width="212" height="96" rx="10" />
-  <text class="d-label" x="270" y="280" style="font-size:10.5px">route emit — on device</text>
-  <text class="d-sub" x="270" y="298" style="font-size:9px">fills every OBCR point's height,</text>
-  <text class="d-sub" x="270" y="311" style="font-size:9px">densifying to 250 m so a crest</text>
-  <text class="d-sub" x="270" y="324" style="font-size:9px">between two vertices can't hide</text>
-  <text class="d-sub" x="270" y="343" style="font-size:8.5px;fill:#a9501c">→ profile · climbs · stats · GPX</text>
-
-  <rect class="d-panel" x="484" y="260" width="212" height="96" rx="10" />
-  <text class="d-label" x="500" y="280" style="font-size:10.5px">live — altimeter fusion</text>
-  <text class="d-sub" x="500" y="298" style="font-size:9px">map − barometer at each fix,</text>
-  <text class="d-sub" x="500" y="311" style="font-size:9px">low-passed over ~5 minutes:</text>
-  <text class="d-sub" x="500" y="324" style="font-size:9px">that difference is the offset</text>
-  <text class="d-sub" x="500" y="343" style="font-size:8.5px;fill:#a9501c">→ absolute Current Elevation</text>
-
-  <!-- footer -->
-  <rect class="d-panel-2" x="24" y="374" width="672" height="32" rx="8" />
-  <text class="d-sub" x="360" y="394" text-anchor="middle" style="font-size:9.5px">a map with no terrain → all three answer <tspan style="font-weight:700">&#8220;no height here&#8221;</tspan>, and nothing else in the system changes</text>
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
+<svg viewBox="0 0 720 483" role="img" aria-label="Terrain cells contain a route sample. A query at the center of heights 100, 120, 120 and 140 metres returns 120 metres by bilinear interpolation. Sampling along the route gives an elevation profile. Contours, integrated uphill ascent, visibility and altitude correction use the same terrain.">
+<defs><marker id="r68arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start">Terrain · one lattice, shared sampling, several geometric uses</text>
+<text class="d-title" x="20" y="60" text-anchor="start">Baked terrain cells</text>
+<text class="d-title" x="260" y="60" text-anchor="start">Sample between four heights</text>
+<text class="d-title" x="560" y="60" text-anchor="start">Route profile</text>
+<rect x="25" y="82" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="59" y="82" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="93" y="82" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="127" y="82" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="25" y="116" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="59" y="116" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="93" y="116" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="127" y="116" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="25" y="150" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="59" y="150" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="93" y="150" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="127" y="150" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="25" y="184" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="59" y="184" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="93" y="184" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="127" y="184" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M30 191 Q76 139 157 121" fill="none" stroke="#cf6a2a" stroke-width="3"/>
+<circle cx="103" cy="140" r="4" fill="#cf6a2a"/>
+<path d="M174 150 H231" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r68arrow)"/>
+<rect x="269" y="86" width="178" height="132" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M269 152 L447 152" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M358 86 L358 218" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="269" cy="86" r="4" fill="#cf6a2a"/>
+<circle cx="447" cy="86" r="4" fill="#cf6a2a"/>
+<circle cx="269" cy="218" r="4" fill="#cf6a2a"/>
+<circle cx="447" cy="218" r="4" fill="#cf6a2a"/>
+<text class="d-sub" x="269" y="80" text-anchor="start">120 m</text>
+<text class="d-sub" x="447" y="80" text-anchor="end">140 m</text>
+<text class="d-sub" x="269" y="240" text-anchor="start">100 m</text>
+<text class="d-sub" x="447" y="240" text-anchor="end">120 m</text>
+<circle cx="358" cy="152" r="5" fill="#24331c"/>
+<text class="d-sub" x="358" y="177" text-anchor="middle">120 m</text>
+<path d="M458 152 H516" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r68arrow)"/>
+<path d="M540 218 L698 218" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M540 218 L540 88" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M544 200 L567 161 L592 171 L626 116 L655 149 L694 125" fill="none" stroke="#cf6a2a" stroke-width="3"/>
+<text class="d-sub" x="540" y="240" text-anchor="start">distance</text>
+<text class="d-sub" x="20" y="265" text-anchor="start">obc-dem → cells → map</text>
+<text class="d-sub" x="260" y="265" text-anchor="start">Integer bilinear interpolation</text>
+<text class="d-sub" x="545" y="265" text-anchor="start">Heights along the route</text>
+<path d="M20 290 L700 290" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="20" y="319" text-anchor="start">One surface supports several geometric queries</text>
+<ellipse cx="95" cy="365" rx="57" ry="28" fill="none" stroke="#9aa884" stroke-width="1.5"/>
+<ellipse cx="95" cy="365" rx="39" ry="19" fill="none" stroke="#9aa884" stroke-width="1.5"/>
+<ellipse cx="95" cy="365" rx="19" ry="10" fill="none" stroke="#9aa884" stroke-width="1.5"/>
+<text class="d-sub" x="95" y="417" text-anchor="middle">Contour lines</text>
+<path d="M207 396 L232 352 L265 379 L297 330 L331 387" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<path d="M207 396 L232 352" fill="none" stroke="#cf6a2a" stroke-width="3"/>
+<path d="M265 379 L297 330" fill="none" stroke="#cf6a2a" stroke-width="3"/>
+<text class="d-sub" x="269" y="417" text-anchor="middle">Integrated ascent</text>
+<path d="M397 394 L425 354 L445 373 L477 337 L512 394" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<path d="M397 394 L477 337" fill="none" stroke="#cf6a2a" stroke-width="1.3" />
+<circle cx="397" cy="394" r="4" fill="#cf6a2a"/>
+<text class="d-sub" x="455" y="417" text-anchor="middle">Peak View / visibility</text>
+<text class="d-sub" x="560" y="352" text-anchor="start">Barometer + map</text>
+<text class="d-sub" x="560" y="375" text-anchor="start">altitude correction</text>
+<text class="d-sub" x="560" y="417" text-anchor="start">Live elevation</text>
+<text class="d-sub" x="20" y="459" text-anchor="start">Missing terrain stays explicit. Each consumer applies the fallback described below.</text>
 </svg>
-<figcaption>The bakery publishes OBCT cells. The assembler puts the selected cells in the map. One sampler supplies all elevation consumers.</figcaption>
+</div>
+<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
+<figcaption>The center-sample example uses equal weights. The packer and device share elevation rules; Peak View additionally uses the baked surface index.</figcaption>
 </figure>
 
 

@@ -15,6 +15,9 @@
 //! | `obc_demo_cmd(cmd)` | queue a command (drained per tick) — see [`demo::parse_cmd`] |
 //! | `obc_demo_state() -> String` | the current screen's `Screen::name()` |
 //! | `obc_demo_ready() -> bool` | first frame rendered |
+//! | `obc_demo_peak_ready() -> bool` | terrain and labels for the current view are ready |
+//! | `obc_demo_peak_active() -> bool` | Peak View is open, including under a drawer |
+//! | `obc_demo_heading() -> u16` | current heading in degrees |
 //! | `obc_demo_reset_status() -> String` | `Ready`, `Pending`, or latched `Failed` |
 //! | `obc_demo_screens() -> Vec<String>` | every `Screen::name()` — the tour drift-guard (S3) |
 //!
@@ -26,6 +29,7 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 mod demo;
+mod peak_view;
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -85,8 +89,8 @@ mod web {
     }
 
     /// Queue one command (drained on the next tick). Vocabulary: `press`, `back`, `hold`,
-    /// `backhold`, `step:<n>`, `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`,
-    /// `upload` (stage an idle device), `receive` (post the real route-upload completion event).
+    /// `backhold`, `quick`, `context`, `step:<n>`, `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`,
+    /// `upload` (stage an idle device), `receive` (route-upload completion), `heading:<degrees>` (stop and turn).
     /// Unknown or malformed input is ignored — the page can't crash the demo with a typo.
     #[wasm_bindgen]
     pub fn obc_demo_cmd(cmd: &str) {
@@ -104,6 +108,24 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_demo_ready() -> bool {
         with_demo(|d| d.ready())
+    }
+
+    /// Peak View remains the base while a drawer is open.
+    #[wasm_bindgen]
+    pub fn obc_demo_peak_active() -> bool {
+        with_demo(|d| d.peak_active())
+    }
+
+    /// Current heading for the browser's simulated compass control.
+    #[wasm_bindgen]
+    pub fn obc_demo_heading() -> u16 {
+        with_demo(|d| d.heading())
+    }
+
+    /// True once the current Peak View heading has terrain and summit visibility.
+    #[wasm_bindgen]
+    pub fn obc_demo_peak_ready() -> bool {
+        with_demo(|d| d.peak_ready())
     }
 
     /// A queued reset is Pending until cleanup and baseline installation finish.

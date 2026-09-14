@@ -17,7 +17,7 @@ Run the directly affected tests while iterating and the affected package before 
 
 ```sh
 obc test -p obc-weather
-obc test -p obc-app weather_alert
+obc test -p obc-app
 cargo clippy -p obc-weather --all-targets -- -D warnings
 ```
 
@@ -48,7 +48,7 @@ Tests backed by maps, routes, rides, or captured weather products are opt-in:
 
 ```sh
 obc test fixtures -p obc-wx-bake
-obc test fixtures -p obc-route nav_uses_grimsel
+obc test fixtures -p obc-route
 ```
 
 This syncs the `test` fixture profile, enables the `external-fixtures` feature, and still requires

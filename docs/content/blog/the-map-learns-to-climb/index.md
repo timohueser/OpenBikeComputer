@@ -5,6 +5,9 @@ description: The first elevation design — a terrain raster beside the map, rou
 copy: ai
 ---
 
+> This post describes the first elevation implementation. Current maps embed terrain in OBCM.
+> For the current layout, Peak View index, and resource limits, see [Terrain and elevation](../../docs/software/terrain/).
+
 For most of this project's life the device could tell you exactly where a road went
 and had no idea whether it went *up*. That is a strange thing to be missing on a
 bikepacking computer. The router would happily buy four hundred metres of climbing to

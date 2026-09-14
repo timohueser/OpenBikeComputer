@@ -14,6 +14,7 @@ obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 # The host owns the boxed RenderScratch it lends App each frame (#1146 P2).
 obc-render = { path = "../../firmware/obc-render" }
+obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-app = { path = "../../firmware/obc-app" }
 # The pass's clock newtypes and sensor ports — the vocabulary `App::run_pass` takes its frame in.
 obc-ports = { path = "../../firmware/obc-ports" }
