@@ -14,7 +14,8 @@ pub struct Candidates {
 }
 
 pub(super) fn select(stops: &[Stop], available: impl Iterator<Item = usize> + Clone) -> Candidates {
-    let available = available.filter(|&i| stops.get(i).is_some_and(|s| s.open_now != Some(false)));
+    let available =
+        available.filter(|&i| stops.get(i).is_some_and(|s| s.landmark.is_none() && s.open_now != Some(false)));
     let mut on_way = heapless::Vec::<u8, MAX_RESULTS>::new();
     let mut detours = heapless::Vec::<u8, MAX_RESULTS>::new();
     for id in available.clone() {
@@ -70,6 +71,7 @@ mod tests {
     fn stop(distance_m: u32, climb_m: u32, extra_m: u32) -> Stop {
         Stop {
             name: "Shop",
+            landmark: None,
             open_now: None,
             approach: &[(0, 0)],
             distance_m,
