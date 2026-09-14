@@ -34,10 +34,10 @@
       "raw_photo_bytes": 725760
     },
     "Glaciers": {
-      "items": 148,
-      "with_p18_image": 128,
-      "with_english_article": 76,
-      "raw_photo_bytes": 6635520
+      "items": 0,
+      "with_p18_image": 0,
+      "with_english_article": 0,
+      "raw_photo_bytes": 0
     },
     "Passes": {
       "items": 286,
@@ -47,15 +47,9 @@
     }
   },
   "core_distinct": {
-    "items": 1417,
-    "with_p18_image": 1246,
-    "with_english_article": 565,
-    "raw_photo_bytes": 64592640
-  },
-  "core_plus_glaciers_and_passes_distinct": {
-    "items": 1851,
-    "with_p18_image": 1610,
-    "with_english_article": 805,
-    "raw_photo_bytes": 83462400
+    "items": 1703,
+    "with_p18_image": 1482,
+    "with_english_article": 729,
+    "raw_photo_bytes": 76826880
   }
 }

@@ -32,17 +32,12 @@ def main():
         groups[name] = stats(matches)
         if group["include"]:
             included.update(matches)
-    pending_roots = {
-        root for name in selection["pending_groups"] for root in selection["groups"][name]["roots"]
-    }
-    pending = {qid for qid, value in roots.items() if value.intersection(pending_roots)} - excluded
     print(json.dumps({
         "date": selection["date"],
         "source_items": len(items),
         "groups_overlap": True,
         "groups": groups,
         "core_distinct": stats(included),
-        "core_plus_glaciers_and_passes_distinct": stats(included | pending),
     }, indent=2))
 
 

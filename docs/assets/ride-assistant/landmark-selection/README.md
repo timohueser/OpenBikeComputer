@@ -21,10 +21,10 @@ over a conflicting category assignment.
 | Archaeology | Permit the archaeological-site, dolmen, tumulus, menhir, megalithic-tomb, and megalithic-site roots. This captures stone circles through the megalithic hierarchy. Events and movable finds do not qualify merely through their own types. |
 | Monasteries and abbeys | Permit the monastery and abbey roots; exclude destroyed-monastery records. A religious organization or collection alone does not qualify. |
 | Architecture | Cathedrals and subclasses qualify. Ordinary churches and bridges do not. Additional architecture needs another explicit rule before inclusion; there are no individually selected exceptions. |
-| Glaciers | Separate candidate group, pending the [random sample review](../glacier-pass-study/README.md). |
-| Passes | Separate candidate group, pending the same sample review. |
+| Glaciers | Exclude the glacier root Q35666 and subclasses. They are landscape features to look at, rather than visit destinations. |
+| Passes | Include the mountain-pass root Q133056 and subclasses. The [sample review](../glacier-pass-study/README.md) supports keeping their descriptions, including entries without photos. |
 
-**Lakes and mountains are excluded**, even if another permitted type is also present. Lake
+**Lakes, mountains, and glaciers are excluded**, even if another permitted type is also present. Lake
 names belong on the map; mountains belong in Peak Viewer. Settlements, administrative areas,
 industry, transport facilities, ordinary buildings, and commercial venues remain outside the
 intended scope. Existing industrial-building and industrial-archaeology exclusions take
@@ -52,8 +52,7 @@ with exact accepted designation IDs configured per country. No generic “has he
 rule and no per-building human or AI ranking are proposed.
 
 A coordinate is an identity/location point, not a route destination. Map creation must find
-an accessible mapped entrance or approach point before offering a visit. A glacier centre or
-hanging glacier is not a valid visit destination. If no approach is known, information can
+an accessible mapped entrance or approach point before offering a visit. A pass coordinate does not prove that the pass is accessible by bicycle. If no approach is known, information can
 still be shown, but route creation must not silently snap onto the feature itself.
 
 Known-closed places are filtered at runtime; unknown hours remain visible. The country count
@@ -74,7 +73,9 @@ samples include a ski vehicle and a hotel. Keep absent images absent. Do not add
 ranking or hand-pick substitutes to hide these limitations.
 
 Large 216 × 240 ordered-dither images are the accepted direction. The current demo embeds
-pixels in firmware, not on SD. See the [lossless storage experiment](../glacier-pass-study/README.md#image-storage).
+pixels in firmware, not on SD. Use basic lossless compression in production; the exact codec
+and device decode cost still need measurement. The observed 5–10 kB range is a useful target,
+not a guaranteed per-image limit. See the [lossless storage experiment](../glacier-pass-study/README.md#image-storage).
 
 ## Swiss count after the category changes
 
@@ -90,21 +91,19 @@ finished map pack.
 | Archaeology and megaliths | 385 | 317 |
 | Monasteries and abbeys | 171 | 138 |
 | Cathedrals | 14 | 14 |
-| **Distinct accepted-category candidates** | **1,417** | **1,246** |
-| Glaciers, pending | 148 | 128 |
-| Passes, pending | 286 | 236 |
-| **Distinct total if both pending groups are kept** | **1,851** | **1,610** |
+| Passes | 286 | 236 |
+| **Distinct accepted-category candidates** | **1,703** | **1,482** |
 
-Group rows overlap. Totals deduplicate IDs. Only 565 core candidates have an English article;
-with both pending groups, 805 do. Non-English articles remain candidates, not ready English
+Group rows overlap. Totals deduplicate IDs. Glaciers are explicitly excluded. Only 729 accepted
+candidates have an English article. Non-English articles remain candidates, not ready English
 summaries. P18 presence does not guarantee a suitable photo, and lead images can exist without
 P18. The random sample used the full glacier/pass type pools before these exclusions, with no
 English-language or image requirement: 149 glaciers and 293 passes. It was not redrawn.
 
-At one large image for each P18-bearing candidate, pixel storage is **64.59 MB raw / 48.44 MB
-six-bit packed** for the core, or **83.46 MB raw / 62.60 MB packed** with both pending groups.
-These decimal MB figures exclude text, credits, indexes, and headers. Compression is measured
-on seven photos only; no country-wide compression ratio is claimed.
+At one large image for each P18-bearing candidate, pixel storage is **76.83 MB raw / 57.62 MB
+six-bit packed**. At an illustrative 5–10 kB per photo, images would occupy **7.41–14.82 MB**.
+These decimal figures exclude text, credits, indexes, and headers. Compression is measured on
+seven photos only; no country-wide compression ratio is claimed.
 
 ## Reproduce and refine
 

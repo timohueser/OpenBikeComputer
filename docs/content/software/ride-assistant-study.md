@@ -66,12 +66,26 @@ compares rendering methods and storage cost. The simulator and a display-only bo
 use the same 216 × 240 RGB222 assets. The large format is the accepted choice. The device does not need a JPEG decoder.
 The current assets are fixed examples. Map creation, image selection, and storage remain
 future work. The [category proposal](../../assets/ride-assistant/landmark-selection/README.md)
-uses fixed type rules, with no AI selection or per-place manual ranking. Lakes and mountains
-are excluded. [Random glacier and pass samples](../../assets/ride-assistant/glacier-pass-study/README.md)
-show content quality and missing-image cases before these groups are accepted.
+uses fixed type rules, with no AI selection or per-place manual ranking. Lakes, mountains,
+and glaciers are excluded. Passes are included, including entries without images.
+[Random glacier and pass samples](../../assets/ride-assistant/glacier-pass-study/README.md)
+show the content used for this decision. Production images should use basic lossless compression;
+the codec and SD loading cost remain to be measured.
 
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
+
+## Easier route: wireframe proposal
+
+Easier route compares alternatives from the current position to the same destination. The
+[three wireframe concepts](../../assets/ride-assistant/easier-route/README.md) compare a goal list,
+a cost table, and a map-first layout. The goal list is the initial recommendation, not an
+accepted design. All costs are fictional. This screen is not implemented in the simulator.
+
+Show the benefit and the cost of an alternative before acceptance. Less climbing, smoother
+surface, and shorter distance are separate goals. A shorter route is not necessarily faster.
+Time estimates need a suitable model before they can support a finish-sooner choice. The
+proposal uses a separate review and an explicit **Use this route** action.
 
 ## Remaining implementation work
 
