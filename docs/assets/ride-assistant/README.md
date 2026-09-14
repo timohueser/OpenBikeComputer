@@ -1,4 +1,8 @@
-# Ride Assistant: wireframes and handoff
+# Ride Assistant: earlier wireframes and handoff
+
+The [reviewed implementation plan](implementation/README.md) is the current handoff. The material
+below records the earlier layout study; its scope and branch instructions are historical. Use
+issue #1734 and the implementation plan for the four accepted features and current dependencies.
 
 This collection supports [issue #1734](https://github.com/timohueser/OpenBikeComputer/issues/1734).
 It contains the latest **What's next** wireframes and the earlier **Find a place** simulator study.

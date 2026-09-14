@@ -31,7 +31,7 @@ Do not add time to a presumed stop, whole-route climb counts, or service gaps to
 Select **Explore ahead** to open the full available timeline for the selected window. Four visible
 rows do not limit the number of entries. Back from details restores the selected row. Down + Back
 opens the canonical filter drawer. Category and source filters affect the list, not the overview.
-The prototype offers 5 km and 10 km; the production range presets remain open.
+The prototype offers 5 km and 10 km; the implementation plan retains these presets.
 
 ## Opening status across Ride Assistant
 
@@ -111,3 +111,11 @@ search of the stated interval and access allowance. A bounded list cannot establ
 They remain outside this overview. A broader climb list belongs in the climb view.
 
 The earlier [wireframes](../../assets/ride-assistant/README.md) remain as the design handoff.
+
+## Implementation plan
+
+The [reviewed epic and child specifications](../../assets/ride-assistant/implementation/README.md)
+define the production work for Find a place, What's next, Landmarks and Easier route. The plan
+keeps the other questions as placeholders and removes Next town. It requires real offline inputs,
+shared route acceptance and visits, deterministic landmark content, and focused simulator evidence.
+The current screens remain prototypes until those implementation gates pass.
