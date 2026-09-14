@@ -11,3 +11,6 @@ with their owners.
 The weather-event `event.json` manifests are tracked here too. Their package
 copies describe and hash every external upstream, service, and truth member;
 `tracked_sources` makes a manifest edit require a package rebuild.
+
+[Ride Assistant](ride-assistant/README.md) adds source manifests, exact review identities,
+regional boundaries, and GPS motion with declarative clock and UTC-offset stamps.
