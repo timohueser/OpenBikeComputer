@@ -4,64 +4,58 @@
   "groups_overlap": true,
   "groups": {
     "Natural curiosities": {
-      "items": 143,
-      "with_p18_image": 112,
-      "with_english_article": 28,
-      "raw_photo_bytes": 2150400
-    },
-    "Lakes and glaciers": {
-      "items": 447,
-      "with_p18_image": 377,
-      "with_english_article": 286,
-      "raw_photo_bytes": 7238400
+      "items": 141,
+      "with_p18_image": 110,
+      "with_english_article": 27,
+      "raw_photo_bytes": 5702400
     },
     "Castles and fortifications": {
-      "items": 955,
-      "with_p18_image": 896,
-      "with_english_article": 427,
-      "raw_photo_bytes": 17203200
+      "items": 914,
+      "with_p18_image": 863,
+      "with_english_article": 423,
+      "raw_photo_bytes": 44737920
     },
     "Archaeology and megaliths": {
-      "items": 433,
-      "with_p18_image": 357,
-      "with_english_article": 129,
-      "raw_photo_bytes": 6854400
+      "items": 385,
+      "with_p18_image": 317,
+      "with_english_article": 121,
+      "raw_photo_bytes": 16433280
     },
     "Monasteries and abbeys": {
       "items": 171,
       "with_p18_image": 138,
       "with_english_article": 69,
-      "raw_photo_bytes": 2649600
+      "raw_photo_bytes": 7153920
     },
     "Cathedrals": {
       "items": 14,
       "with_p18_image": 14,
       "with_english_article": 12,
-      "raw_photo_bytes": 268800
+      "raw_photo_bytes": 725760
     },
-    "Mountains and passes": {
-      "items": 2353,
-      "with_p18_image": 1747,
-      "with_english_article": 1675,
-      "raw_photo_bytes": 33542400
+    "Glaciers": {
+      "items": 148,
+      "with_p18_image": 128,
+      "with_english_article": 76,
+      "raw_photo_bytes": 6635520
     },
-    "Other churches and bridges, review only": {
-      "items": 2074,
-      "with_p18_image": 1942,
-      "with_english_article": 153,
-      "raw_photo_bytes": 37286400
+    "Passes": {
+      "items": 286,
+      "with_p18_image": 236,
+      "with_english_article": 164,
+      "raw_photo_bytes": 12234240
     }
   },
   "core_distinct": {
-    "items": 1911,
-    "with_p18_image": 1662,
-    "with_english_article": 857,
-    "raw_photo_bytes": 31910400
+    "items": 1417,
+    "with_p18_image": 1246,
+    "with_english_article": 565,
+    "raw_photo_bytes": 64592640
   },
-  "core_plus_mountains_and_passes_distinct": {
-    "items": 4255,
-    "with_p18_image": 3400,
-    "with_english_article": 2527,
-    "raw_photo_bytes": 65280000
+  "core_plus_glaciers_and_passes_distinct": {
+    "items": 1851,
+    "with_p18_image": 1610,
+    "with_english_article": 805,
+    "raw_photo_bytes": 83462400
   }
 }
