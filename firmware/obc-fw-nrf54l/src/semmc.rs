@@ -1163,31 +1163,32 @@ impl Semmc {
     /// Blocking, and it holds the core while the transfer runs — the same profile the SPI transport
     /// had, and what `embedded_sdmmc`'s synchronous `BlockDevice` needs. See
     /// [`wait_completion`](Self::wait_completion) for why the wait is a bounded poll with an
-    /// interrupt fast path rather than a sleep. A controller abort gets two whole-command retries
-    /// after transfer recovery; all other errors return immediately.
+    /// interrupt fast path rather than a sleep. Read and cleanup commands each get two retries
+    /// after a controller abort. A new read starts only after cleanup succeeds.
     pub fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), SemmcError> {
         let n = self.check_request(buf.as_ptr() as usize, buf.len(), lba)?;
         self.clk_hz = self.read_clk_hz;
         let data = Some((buf.as_mut_ptr() as u32, BLOCK_BYTES as u32, n));
         let mut retries_remaining = READ_ABORT_RETRIES;
         loop {
-            let transfer = if n == 1 {
-                match self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
-                    Ok(_) => Ok(()),
-                    Err(error) => match self.stop_transmission() {
-                        Ok(()) => Err(error),
-                        Err(cleanup_error) => return Err(cleanup_error),
-                    },
+            let command = if n == 1 { 17 } else { 18 };
+            let transfer = self.cmd(command, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
+            if n != 1 || transfer.is_err() {
+                // The card can still be streaming after a read abort. An aborted stop must be
+                // retried before another read; resetting the host does not stop the card.
+                for attempt in 0..=READ_ABORT_RETRIES {
+                    match self.stop_transmission() {
+                        Err(SemmcError::Aborted(_)) if attempt < READ_ABORT_RETRIES => {
+                            defmt::debug!("sEMMC: read cleanup retry {=usize}", attempt + 1);
+                        }
+                        result => {
+                            result?;
+                            break;
+                        }
+                    }
                 }
-            } else {
-                // A failed CMD18 leaves the **card** streaming — the timeout path recovers the host
-                // (warm reboot), not the card — so STOP_TRANSMISSION goes out either way, or every
-                // later command talks to a card stuck in `data`.
-                let transfer = self.cmd(18, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
-                self.stop_transmission()?;
-                transfer.map(|_| ())
             }
-            .and_then(|()| self.check_after_transfer());
+            let transfer = transfer.map(|_| ()).and_then(|()| self.check_after_transfer());
 
             match transfer {
                 Err(SemmcError::Aborted(_)) if retries_remaining != 0 => {

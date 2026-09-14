@@ -163,8 +163,23 @@ jobs:
           persist-credentials: false
       - name: Test-suite registry drift
         run: python3 tools/suite_registry.py check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python test reporter
+        run: pip install -r tools/requirements-test.txt
       - name: Registry unit tests
-        run: python3 -m unittest discover -s tools/tests -v
+        id: python-repository-tools
+        run: |
+          rm -rf .artifacts/python/repository-tools
+          python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+      - name: Upload repository Python test results
+        if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-repository-tools-${{ github.run_attempt }}
+          path: .artifacts/python/repository-tools/*.xml
+          if-no-files-found: error
       - name: Plan-derived job routing matches the workflow
         run: python3 tools/suite_registry.py validate-filters
       - name: Large fixture policy
@@ -294,13 +309,24 @@ jobs:
       # being asserted by dead code (#1241).
       - name: cargo test (obc-formats, default features = the device's shape)
         run: cargo test -p obc-formats --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python test reporter
+        run: pip install -r tools/requirements-test.txt
       - name: firmware resource/dependency tool unit tests
-        run: python3 -m unittest discover -s firmware/tools/tests -v
+        id: python-firmware-tools
+        run: |
+          rm -rf .artifacts/python/firmware-tools
+          python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
       # The weather service's freshness/cost probe. It runs unattended from a schedule against a
       # live bucket, so its alarms are only as good as the cases below — and it reads the same
       # `specs/vectors/wx-manifest-v2.json` the baker and both clients are pinned against.
       - name: weather freshness probe unit tests
-        run: python3 -m unittest discover -s ops/weather/tests -v
+        id: python-weather-probe
+        run: |
+          rm -rf .artifacts/python/weather-probe
+          python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
       # Render + read-path golden gate (issues #327, #1467): re-run the 7 fixed bench scenes and
@@ -323,20 +349,42 @@ jobs:
           cargo build -p obc-sim --locked
           SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
           python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       # Routing-profile round-trips through the builder's pack path. These shell out to the
       # real obc-pack binary over the tiny corpus and byte-compare the §8.6 profile table
       # against independently quantized expectations — so they pin the packer's writer
       # against the spec rather than against itself — plus the pure /api/schema and
       # /api/presets endpoints via FastAPI's TestClient. The suite existed and passed but no
       # workflow ran it; requirements-dev.txt is what makes it installable.
-      - name: web-builder packer tests (pytest)
+      - name: Prepare web-builder packer tests
         run: |
           pip install -r builder/requirements-dev.txt
           cargo build -p obc-pack --release --locked
-          PYTHONPATH=. python3 -m pytest builder/tests/ -v
+      - name: web-builder packer tests (pytest)
+        id: python-builder
+        run: |
+          rm -f .artifacts/python/builder.xml
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
+      - name: Upload firmware-tools Python test results
+        if: ${{ !cancelled() && (steps.python-firmware-tools.outcome == 'success' || steps.python-firmware-tools.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-firmware-tools-${{ github.run_attempt }}
+          path: .artifacts/python/firmware-tools/*.xml
+          if-no-files-found: error
+      - name: Upload weather-probe Python test results
+        if: ${{ !cancelled() && (steps.python-weather-probe.outcome == 'success' || steps.python-weather-probe.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-weather-probe-${{ github.run_attempt }}
+          path: .artifacts/python/weather-probe/*.xml
+          if-no-files-found: error
+      - name: Upload builder Python test results
+        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-builder-${{ github.run_attempt }}
+          path: .artifacts/python/builder.xml
+          if-no-files-found: error
       - name: Upload Rust test results
         if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -757,6 +805,29 @@ jobs:
           tool: trunk@0.21.14
       - name: trunk build (obc-web-demo → wasm)
         run: trunk build --config docs/Trunk.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install web demo browser runner
+        working-directory: apps/obc-web-demo/tests/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+      - name: Shipping web demo browser journey
+        id: browser-journey
+        run: npm test --prefix apps/obc-web-demo/tests/browser
+      - name: Require browser journey execution
+        if: ${{ !cancelled() }}
+        env:
+          JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
+        run: test "$JOURNEY_OUTCOME" = success
+      - name: Upload web demo browser evidence
+        if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-demo-browser-${{ github.run_attempt }}
+          path: .artifacts/web-demo/
+          if-no-files-found: error
       # The assembly engine (#1024) has to stay browser-shippable: P4 runs *this* code in a tab, so
       # the library must carry no filesystem and no native dependency. Building it for wasm32 with
       # the `cli` feature off is the guard — the CLI is the native driver and owns every std::fs call
@@ -1152,13 +1223,56 @@ jobs:
           cargo build --release --locked --target x86_64-apple-darwin
           file target/x86_64-apple-darwin/release/obc-desktop
 
+  # Launch the existing Linux release artifact with its embedded frontend.
+  desktop-launch:
+    needs: [selection, desktop]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-launch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-desktop-linux-x86_64
+          path: apps/obc-desktop/target/release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - name: Install Linux launch dependencies
+        run: |
+          sudo apt-get update
+          webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
+          sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
+          pip install -r apps/obc-desktop/e2e/requirements.txt
+          cargo install tauri-driver --version 2.0.6 --locked
+          chmod +x apps/obc-desktop/target/release/obc-desktop
+          dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
+      - name: Launch the release frontend and select a catalog region
+        id: launch
+        env:
+          OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
+        run: xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
+      - name: Upload Linux launch evidence
+        if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-launch-linux-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-launch
+          if-no-files-found: error
+          retention-days: 7
+
   # Single aggregate gate: make THIS the required status check on main/develop. It reports every
   # planned suite against the jobs the plan routed it to, so a job the plan never selected is
   # "not selected" and a selected job that was skipped is a failure. A failed `selection` job
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, catalog-ownership-guard, retention-ownership-guard, one-home-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, test-weather, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, catalog-ownership-guard, retention-ownership-guard, one-home-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, test-weather, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop, desktop-launch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

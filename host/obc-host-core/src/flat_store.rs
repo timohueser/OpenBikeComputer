@@ -61,6 +61,8 @@ pub(crate) struct NativeCard {
     pub(crate) _temporary: Option<tempfile::TempPath>,
     #[cfg(test)]
     fail_sync_after: std::cell::Cell<Option<usize>>,
+    #[cfg(test)]
+    pub(crate) fail_sync_before: std::cell::Cell<Option<usize>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,9 +77,18 @@ impl NativeCard {
             _temporary: temporary,
             #[cfg(test)]
             fail_sync_after: std::cell::Cell::new(None),
+            #[cfg(test)]
+            fail_sync_before: std::cell::Cell::new(None),
         })
     }
     fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(left) = self.fail_sync_before.get() {
+            self.fail_sync_before.set(left.checked_sub(1).filter(|&left| left != 0));
+            if left == 1 {
+                return Err(io::Error::other("injected failure before file sync"));
+            }
+        }
         self.file.sync_all()?;
         #[cfg(test)]
         if let Some(left) = self.fail_sync_after.get() {
@@ -174,11 +185,32 @@ impl BlockDevice for HostMedia {
 pub(crate) struct MountedStore {
     pub(crate) card: FlatStore<HostMedia>,
     remount_required: bool,
+    pub(crate) persistent: bool,
 }
 
 impl MountedStore {
-    pub(crate) fn new(card: FlatStore<HostMedia>) -> Self {
-        Self { card, remount_required: false }
+    pub(crate) fn new(card: FlatStore<HostMedia>, persistent: bool) -> Self {
+        Self { card, remount_required: false, persistent }
+    }
+
+    /// Confirm a catalog observed through the live OS cache before granting durable authority.
+    /// Call under the owner lock after checking the expected head; failure fences all writers.
+    pub(crate) fn confirm_durable(&mut self) -> Result<(), StoreError> {
+        self.ready()?;
+        if self.card.sync_media().is_err() {
+            self.remount_required = true;
+            return Err(StoreError::Media);
+        }
+        Ok(())
+    }
+
+    /// Catalog publication can become durable before its final sync reports an error.
+    pub(crate) fn commit(&mut self, mutations: &[Mutation]) -> Result<u64, StoreError> {
+        let result = self.ready()?.commit(mutations);
+        if result == Err(StoreError::Media) {
+            self.remount_required = true;
+        }
+        result
     }
 
     pub(crate) fn ready(&self) -> Result<&FlatStore<HostMedia>, StoreError> {
@@ -222,6 +254,24 @@ impl ObjectSource {
         Ok(Self(Arc::new(Lease { owner, handle: Some(handle), len, store_id })))
     }
 
+    /// Exact source identity, independent of unrelated catalog commits.
+    pub fn same_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.owner, &other.0.owner)
+            && self.store_id() == other.store_id()
+            && self.id() == other.id()
+            && self.revision() == other.revision()
+    }
+
+    /// A retained old revision stays readable, but cannot authorize new planner work.
+    pub fn is_current(&self) -> bool {
+        let Ok(owner) = self.0.owner.lock() else { return false };
+        let Ok(card) = owner.ready() else { return false };
+        if card.store_id() != self.store_id() {
+            return false;
+        }
+        card.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
+    }
+
     pub fn store_id(&self) -> StoreId {
         self.0.store_id
     }
@@ -263,6 +313,7 @@ impl ByteSource for ObjectSource {
 
 /// One host card owner. Object readers keep its media and exclusive native file lock
 /// alive after the front-end owner drops. An uncertain commit requires a fresh mount.
+#[derive(Clone)]
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
@@ -271,7 +322,7 @@ impl HostStore {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn temporary() -> Result<Self, ImportError> {
+    pub fn temporary() -> Result<Self, ImportError> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         let card = NativeCard::locked(file, Some(path))?;
         card.file.set_len(CARD_BYTES)?;
@@ -279,9 +330,10 @@ impl HostStore {
     }
 
     fn new(media: HostMedia) -> Result<Self, ImportError> {
+        let persistent = !matches!(media, HostMedia::Memory(_));
         let mut identity = [0; 16];
         getrandom::getrandom(&mut identity).map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?)))))
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::initialize(media, StoreId(identity))?, persistent)))))
     }
 
     /// Create a new sparse Unix card under an existing directory. Never overwrite a path.
@@ -313,7 +365,7 @@ impl HostStore {
         if !store.mode().readable() {
             return Err(ImportError::Mount(store.mode()));
         }
-        Ok(Self(Arc::new(Mutex::new(MountedStore::new(store)))))
+        Ok(Self(Arc::new(Mutex::new(MountedStore::new(store, true)))))
     }
 
     pub fn store_id(&self) -> Result<StoreId, StoreError> {
@@ -331,7 +383,7 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card.entries().collect();
+        let entries = card.entries().filter(|entry| entry.flags == EntryFlags::NONE).collect();
         if !card.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -341,7 +393,7 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().filter(|entry| entry.id == id).max_by_key(|entry| entry.revision.0);
+        let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
         if !store.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -368,11 +420,67 @@ impl HostStore {
         len: u64,
         name: DisplayName,
     ) -> Result<EntryMeta, ImportError> {
+        self.import_with_capacity(kind, previous, input, len, name, 1)
+    }
+
+    pub(crate) fn import_computed_route(&self, bytes: &[u8]) -> Result<EntryMeta, ImportError> {
+        self.import_with_capacity(
+            ObjectKind::Route,
+            None,
+            &mut &bytes[..],
+            bytes.len() as u64,
+            DisplayName::default(),
+            2,
+        )
+    }
+
+    fn import_with_capacity(
+        &self,
+        kind: ObjectKind,
+        previous: Option<(ObjectId, Revision)>,
+        input: &mut impl Read,
+        len: u64,
+        name: DisplayName,
+        commits: u64,
+    ) -> Result<EntryMeta, ImportError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         if owner.remount_required {
             return Err(ImportError::RemountRequired);
         }
         let store = &owner.card;
+        // A computed route needs one later commit to retract an abandoned publication.
+        if !store.has_commit_capacity(commits) {
+            return Err(StoreError::ReadOnly.into());
+        }
+        if matches!(kind, ObjectKind::Route | ObjectKind::Ride) && previous.is_none() {
+            let count = store
+                .entries()
+                .filter(|entry| {
+                    entry.kind == kind && (entry.flags == EntryFlags::NONE || entry.flags == EntryFlags::RECORDING)
+                })
+                .count();
+            if !store.entries_ok() {
+                return Err(StoreError::Media.into());
+            }
+            let capacity = if kind == ObjectKind::Route { obc_app::MAX_ROUTES } else { obc_app::MAX_RIDES };
+            if count >= capacity {
+                return Err(StoreError::Busy.into());
+            }
+        }
+        if kind == ObjectKind::WeatherBundle {
+            let mut current = None;
+            for entry in store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE) {
+                if current.replace((entry.id, entry.revision)).is_some() {
+                    return Err(StoreError::Invalid.into());
+                }
+            }
+            if !store.entries_ok() {
+                return Err(StoreError::Media.into());
+            }
+            if current != previous {
+                return Err(StoreError::NotFound.into());
+            }
+        }
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {
             revision.0.checked_add(1).map(Revision).ok_or(StoreError::ReadOnly)

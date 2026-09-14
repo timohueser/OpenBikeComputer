@@ -156,8 +156,47 @@ fixture setup failure remains a failure and may produce no report; the upload st
 missing file as an error. CI does not create an empty report or run the tests again for reporting.
 
 These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
-Python, and serial XCTest results still use their existing logs. Swift Testing results are
+and serial XCTest results still use their existing logs. Python and Swift Testing results are
 separate, as described below. This is not a coverage baseline or a complete cross-language result set.
+
+## Python CI result artifacts
+
+The four Python suites write XML from their existing test invocations. Install the test
+requirements in your Python environment before local execution:
+
+```sh
+python3 -m pip install -r tools/requirements-test.txt
+python3 -m pip install -r builder/requirements-dev.txt
+```
+
+The repository, firmware, and weather tool suites use pinned `unittest-xml-reporting` 4.0.0
+with standard unittest discovery. Their registry commands write to
+`.artifacts/python/repository-tools/`, `.artifacts/python/firmware-tools/`, and
+`.artifacts/python/weather-probe/`. Builder uses pytest's native `--junitxml` option and writes
+`.artifacts/python/builder.xml`. Builder still needs its existing `obc-pack` executable; use
+`OBC_PACK_BIN` to select a built binary. CI builds it before the test step.
+
+Each testcase retains its class/function identity, outcome and elapsed duration. Expected
+unittest failures appear as skips with type `XFAIL`; unexpected successes appear as errors with
+type `UnexpectedSuccess` and fail the command. Failed, errored and skipped subtests retain their
+parameter identities. Successful subtests are grouped under their parent test, not counted as
+separate successes. Skipped subtests can be in a separate XML file. Subtest times are not separate
+measurements and can be zero; XML entry totals can differ from unittest's method count. The small
+reporter contract in `tools/tests/test_python_reports.py` checks these native semantics.
+
+CI publishes `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`,
+`python-weather-probe-ATTEMPT`, and `python-builder-ATTEMPT`. Download them with:
+
+```sh
+gh run download RUN_ID --pattern 'python-*-ATTEMPT' --dir test-results
+```
+
+CI and local registry commands remove stale reports before execution. CI uploads after an
+executed test step succeeds or fails. Setup failures, skipped steps and cancelled runs publish no
+report for that step. Missing expected output fails the upload. Collection or test failures keep
+their nonzero exit status and can leave partial results. No tests run again to produce reports.
+These are result artifacts, not coverage measurements; the test exit status and CI log remain
+authoritative.
 
 ## Web CI result artifacts
 
@@ -177,6 +216,18 @@ collection failures remain failures and can produce an incomplete report or no r
 file makes the upload step fail. A cancelled run does not upload these reports. CI does not create
 an empty report or run tests again to obtain results. These reports cover the two Vitest suites,
 which use Node and simulated DOM environments; they are not real-browser evidence.
+
+## Web demo browser journey
+
+`web.demo-browser` is an affected end-to-end suite for the shipping landing page. It runs in
+Chromium after the existing Trunk build in the `wasm` CI job. The journey uses the real page
+controls and existing WASM observations to save and view a ride, reset for route upload, save
+again and reload. It checks rendering and rejects page errors, failed resets and stalled states.
+It does not measure exact saved-object counts or content; native tests own those assertions.
+
+The job requires the browser test step to succeed and publishes `web-demo-browser-ATTEMPT`,
+with native JUnit and diagnostics, plus a screenshot and trace on failure. See the
+[web demo README](../apps/obc-web-demo/README.md) for setup, reproduction and evidence limits.
 
 ## Swift Testing CI result artifact
 

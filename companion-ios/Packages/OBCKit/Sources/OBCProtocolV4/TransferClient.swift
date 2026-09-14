@@ -28,6 +28,7 @@ public enum TransferClientError: Error, Equatable, Sendable {
     case lengthMismatch
     case checksumMismatch
     case requestIDExhausted
+    case responseTimedOut
     case catalogChanged
     case storeChanged(previous: StoreID, current: StoreID)
     case outcomeNotCommitted
@@ -40,14 +41,19 @@ public actor TransferClient {
     private let link: any TransferLink
     private var nextRequestValue: UInt32
     private var currentStoreID: StoreID?
+    private let archiveResponseTimeout: Duration
 
     // Actor reentrancy must not turn two callers into two live transfers. This small FIFO is the
     // client's operation gate; BLETransport has no transfer slot or operation queue anymore.
     private var busy = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
-    public init(link: any TransferLink, firstRequestID: UInt32 = 1) {
+    public init(
+        link: any TransferLink, firstRequestID: UInt32 = 1,
+        archiveResponseTimeout: Duration = .seconds(10)
+    ) {
         self.link = link
+        self.archiveResponseTimeout = archiveResponseTimeout
         self.nextRequestValue = firstRequestID == 0 ? 1 : firstRequestID
     }
 
@@ -234,6 +240,50 @@ public actor TransferClient {
         let response = try await request(
             .format(expectedStoreID: expectedStoreID, replacementStoreID: replacementStoreID), opcode: .format)
         guard case .format(let result) = response else { throw TransferClientError.unexpectedResponse }
+        return result
+    }
+
+    /// Persist possession of an exact durable archive. A lost answer is retried through the
+    /// idempotent receipt operation itself; object STATUS cannot establish archive proof.
+    public func archiveRide(
+        storeID: StoreID, objectID: ObjectID, revision: Revision,
+        payloadLength: UInt64, payloadCRC32: UInt32
+    ) async throws -> ArchiveRideResult {
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        let receipt = ControlRequest.archiveRide(
+            storeID: storeID, objectID: objectID, revision: revision,
+            payloadLength: payloadLength, payloadCRC32: payloadCRC32)
+        do {
+            try await checkStore(storeID)
+            return try await archiveOnLiveLink(receipt)
+        } catch is TransferLinkLost {
+            try Task.checkCancellation()
+            try await restoreAndRefreshStore()
+            try Task.checkCancellation()
+            try await checkStore(storeID)
+            return try await archiveOnLiveLink(receipt)
+        }
+    }
+
+    private func archiveOnLiveLink(_ receipt: ControlRequest) async throws -> ArchiveRideResult {
+        try Task.checkCancellation()
+        let response = try await withThrowingTaskGroup(of: ControlResponse.self) { group in
+            group.addTask {
+                try Task.checkCancellation()
+                return try await self.request(receipt, opcode: .archiveRide)
+            }
+            group.addTask { [archiveResponseTimeout] in
+                try await Task.sleep(for: archiveResponseTimeout)
+                throw TransferClientError.responseTimedOut
+            }
+            defer { group.cancelAll() }
+            guard let response = try await group.next() else { throw TransferClientError.unexpectedResponse }
+            return response
+        }
+        try Task.checkCancellation()
+        guard case .archiveRide(let result) = response else { throw TransferClientError.unexpectedResponse }
         return result
     }
 

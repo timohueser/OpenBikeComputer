@@ -152,9 +152,13 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?;
+        })
+        .and_then(core::convert::identity);
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
+        if let Err(error) = result {
+            defmt::warn!("SD: read at block {=u64}, {=usize} bytes failed: {}", lba, buf.len(), error);
+        }
         result
     }
 
@@ -417,10 +421,14 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
     ReconcileMetadata,
-    WriteRouteMetadata {
+    WriteMetadata {
         effect: obc_app::retention::RetentionEffect,
     },
     ExpireRoute {
+        id: ObjectId,
+        scope: obc_app::device_core::StoreRevision,
+    },
+    ExpireRide {
         id: ObjectId,
         scope: obc_app::device_core::StoreRevision,
     },
@@ -436,10 +444,18 @@ pub(crate) enum Request {
         bytes: &'static [u8],
         header: &'static [u8],
     },
+    Seal {
+        allocation: Allocation,
+        out: &'static mut Option<obc_storage::flat::SealedAllocation<'static>>,
+    },
+    ReleaseSealed {
+        sealed: obc_storage::flat::SealedAllocation<'static>,
+    },
     /// Publish a freshly generated route under the store's next id.
     PublishComputedRoute {
         allocation: Allocation,
         name: DisplayName,
+        original: Option<(ObjectId, Revision)>,
     },
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
     /// so this can never remove a later replacement that happens to share the object id.
@@ -447,15 +463,10 @@ pub(crate) enum Request {
         id: ObjectId,
         revision: Revision,
     },
-    /// `CatalogEffect::RemoveObject` — the device UI's own removal, on the **answering** path.
-    ///
-    /// Namespace-free by design: FS7 numbers every object out of one id space, so the head at `id`
-    /// *is* the subject whatever kind it is, and the catalog domain is what knows which cascade step
-    /// this is. Replies with whether the entry was there
-    /// ([`Outcome::Removed`]) — a subject that vanished before the commit is a **success** for the
-    /// goal state (#1433 §13), not a failure, and only the store can tell the two apart.
+    /// Remove the current head only if it belongs to the requested catalog family.
     RemoveObject {
         id: ObjectId,
+        kind: obc_app::catalog_state::CatalogObjectKind,
     },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit {
@@ -637,6 +648,15 @@ impl Writer {
     pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, ()> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|_| ())
+    }
+
+    // A full bounded queue must return the cleanup owner without a heap allocation.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn try_call_owned(&self, request: Request, reply: &'static Reply) -> Result<Ticket, Request> {
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|error| match error {
+            embassy_sync::channel::TrySendError::Full(job) => job.request,
+        })
     }
 
     /// Take this ticket's answer without parking. Older orphaned answers are discarded exactly as
@@ -1088,21 +1108,30 @@ pub(crate) async fn storage_task(
 /// `Ok(false)` = there was nothing at `id` — the goal state already holds, which
 /// [`Request::RemoveObject`] answers as a success. `Err` = the store refused or failed the commit.
 ///
-/// Namespace-free, like the effect it serves: FS7 gives every object one id space, so the head at an
-/// id is unambiguous. A trip cascade reaches this one member at a time, so there is no step here
-/// that would need to say which family it is removing.
-///
 /// A listing that stopped early is a **failure**, never an absent object. `existed: false` is read
 /// as "the goal state holds", and a cascade advances past the member on it — so a media error that
 /// truncated the walk before it reached `id` would orphan a route that is still stored.
-fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<bool, StoreError> {
-    let found = store.entries().find(|entry| entry.id == id);
+fn remove_head(
+    store: &FlatStore<FlatCard>,
+    id: ObjectId,
+    kind: obc_app::catalog_state::CatalogObjectKind,
+) -> Result<bool, StoreError> {
+    use obc_app::catalog_state::CatalogObjectKind;
+    let expected = match kind {
+        CatalogObjectKind::Route => ObjectKind::Route,
+        CatalogObjectKind::Ride => ObjectKind::Ride,
+        CatalogObjectKind::Trip => ObjectKind::Trip,
+    };
+    let found = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
     if !store.entries_ok() {
         return Err(StoreError::Media);
     }
     let Some(meta) = found else {
         return Ok(false);
     };
+    if meta.kind != expected {
+        return Err(StoreError::Invalid);
+    }
     match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
         Ok(_) => Ok(true),
         Err(error) => {
@@ -1137,7 +1166,7 @@ fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<bool, StoreE
 /// waits on), and this paragraph is the note that says so at the site rather than in an issue.
 #[inline(never)]
 fn serve(
-    store: &FlatStore<FlatCard>,
+    store: &'static FlatStore<FlatCard>,
     engine: &mut BoardEngine,
     policy: &mut BoardPolicy,
     request: Request,
@@ -1146,7 +1175,7 @@ fn serve(
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(retention_error)))
         }
-        Request::WriteRouteMetadata { effect } => {
+        Request::WriteMetadata { effect } => {
             use obc_app::retention::{RetentionEffect, RetentionError};
             let result = match effect {
                 RetentionEffect::WriteRouteMetadata { scope: Some(scope), id, meta, .. } => {
@@ -1160,12 +1189,26 @@ fn serve(
                     )
                     .map_err(retention_error)
                 }
+                RetentionEffect::WriteRideMetadata { scope: Some(scope), id, synced_at, .. } => {
+                    obc_storage::flat::metadata::write_ride(
+                        store,
+                        StoreId(scope.store.bytes()),
+                        scope.revision.raw(),
+                        ObjectId(id),
+                        synced_at,
+                    )
+                    .map_err(retention_error)
+                }
                 _ => Err(RetentionError::Unsupported),
             };
             Ok(Outcome::Metadata(result))
         }
         Request::ExpireRoute { id, scope } => Ok(Outcome::Metadata(
             obc_storage::flat::metadata::remove_route(store, StoreId(scope.store.bytes()), scope.revision.raw(), id)
+                .map_err(retention_error),
+        )),
+        Request::ExpireRide { id, scope } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::remove_ride(store, StoreId(scope.store.bytes()), scope.revision.raw(), id)
                 .map_err(retention_error),
         )),
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
@@ -1176,7 +1219,24 @@ fn serve(
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
         }
-        Request::PublishComputedRoute { allocation, name } => {
+        Request::Seal { allocation, out } => {
+            *out = Some(store.seal(allocation)?);
+            Ok(Outcome::Done)
+        }
+        Request::ReleaseSealed { sealed } => {
+            store.release_sealed(sealed).map_err(|_| StoreError::Invalid)?;
+            Ok(Outcome::Done)
+        }
+        Request::PublishComputedRoute { allocation, name, original } => {
+            if let Some((id, revision)) = original {
+                if store.current_revision(id)? != Some(revision) {
+                    return Err(StoreError::NotFound);
+                }
+            }
+            #[cfg(has_nav)]
+            if !planner_map_current() {
+                return Err(StoreError::NotFound);
+            }
             // Publishing can race a queued cancellation. Reserve one further catalog sequence for
             // the exact-revision compensating remove before making the route visible; otherwise a
             // publish at u64::MAX would succeed and leave a ghost that no later commit can retract.
@@ -1201,7 +1261,7 @@ fn serve(
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
-        Request::RemoveObject { id } => remove_head(store, id).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1667,6 +1727,13 @@ pub(crate) fn reconcile_weather(
 /// no state in which the map stops being needed.
 static mut MAP_SOURCE: MaybeUninit<obc_storage::flat::StoreSource<'static, FlatCard>> = MaybeUninit::uninit();
 
+/// Called only by the ride task after a map was opened successfully at boot.
+#[cfg(has_nav)]
+pub(crate) fn planner_map_current() -> bool {
+    // SAFETY: run_app starts only with the initialized, session-long map source.
+    unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref().is_current() }
+}
+
 /// The open map's §9 display name, truncated to what the System-settings row shows.
 ///
 /// Captured in [`open_map`] because the alternative is a **second catalog walk** — at 1,027 entries
@@ -1749,6 +1816,18 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
 /// The active route's held revision. One route is streamed by the matcher/renderer at a time; this
 /// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
 static mut ROUTE_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
+
+/// Take another reader of the exact active route, never a replacement found through a stale menu.
+#[cfg(has_nav)]
+pub(crate) fn planner_original(
+    store: &'static FlatStore<FlatCard>,
+    id: ObjectId,
+) -> Result<obc_storage::flat::StoreSource<'static, FlatCard>, StoreError> {
+    let source = unsafe { &*core::ptr::addr_of!(ROUTE_SOURCE) };
+    let source =
+        source.as_ref().filter(|source| source.id() == id && source.is_current()).ok_or(StoreError::NotFound)?;
+    store.source(id, Some(source.revision()))
+}
 
 /// Reconcile the held route revision to the app's selected flat `ObjectId` and return its source.
 /// A replace at the same id reopens because the catalog revision is part of the key.
@@ -1900,50 +1979,35 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     true
 }
 
-/// Rebuild the finished-ride menu from the same catalog the v4 engine serves. `RECORDING` is never
-/// listed or opened: the journal owns those bytes until the one finishing commit clears the flag.
+/// Rebuild the newest summaries and complete retention inventory from finalized current heads.
 #[inline(never)]
 pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    let mut rides = obc_app::RideCatalog::new();
     let mut inventory: heapless::Vec<obc_app::RideRetentionRecord, { obc_app::MAX_RIDES }> = heapless::Vec::new();
-    for entry in store
-        .entries()
-        .filter(|entry| entry.kind == ObjectKind::Ride && entry.flags.bits() & EntryFlags::RECORDING.bits() == 0)
-    {
-        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
-        // Synced/retention metadata moves to an ObjectId-keyed flat-store kind in #1398. Until that
-        // boundary lands, finished flat rides are conservatively unsynced and therefore ineligible
-        // for automatic deletion.
-        let _ = inventory.push(obc_app::RideRetentionRecord { id: entry.id.0, synced: false, synced_at_utc: 0 });
+    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
+        let Ok(Ok(info)) =
+            store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source))
+        else {
+            defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
+            return false;
+        };
+        if inventory.push(obc_app::RideRetentionRecord { id: entry.id.0, synced: false, synced_at_utc: 0 }).is_err() {
+            defmt::warn!("flat: ride retention inventory exceeds capacity");
+            return false;
+        }
+        let position = rides.iter().position(|ride| ride.id < entry.id.0).unwrap_or(rides.len());
+        if position < obc_app::UI_RIDES_CAP {
+            if rides.is_full() {
+                rides.pop();
+            }
+            let _ = rides.insert(
+                position,
+                obc_app::RideEntry { id: entry.id.0, summary: obc_app::RideSummary::from_info(&info, false, 0) },
+            );
+        }
     }
     if !store.entries_ok() {
-        defmt::warn!("flat: ride catalog listing failed — keeping the prior menu snapshot");
         return false;
-    }
-
-    let mut rides = obc_app::RideCatalog::new();
-    for entry in heads {
-        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source)) {
-            Ok(Ok(info)) => {
-                let _ = rides.push(obc_app::RideEntry {
-                    id: entry.id.0,
-                    summary: obc_app::RideSummary::from_info(&info, false, 0),
-                });
-            }
-            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
-                defmt::warn!(
-                    "flat: ride object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
-                    entry.id.0,
-                    entry.revision.0
-                );
-                return false;
-            }
-            Ok(Err(_)) => defmt::warn!(
-                "flat: ride object {=u64} revision {=u64} is malformed — omitted from menu",
-                entry.id.0,
-                entry.revision.0
-            ),
-        }
     }
     app.set_rides(&rides);
     app.set_ride_retention_inventory(&inventory);
@@ -2004,14 +2068,18 @@ pub(crate) fn load_retention(
     app: &mut obc_app::App,
 ) -> Result<(), obc_app::retention::RetentionError> {
     let mut metas = [obc_app::RouteRetentionMeta::default(); obc_app::MAX_ROUTES];
-    let ids = app.route_ids();
-    obc_storage::flat::metadata::read_routes(store, |row| {
-        if let Some(index) = ids.iter().position(|&id| id == row.id.0) {
-            metas[index] = obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp);
+    obc_storage::flat::metadata::read_rows(store, |row| match row.kind {
+        ObjectKind::Route => {
+            if let Some(index) = app.route_ids().iter().position(|&id| id == row.id.0) {
+                metas[index] =
+                    obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp);
+            }
         }
+        ObjectKind::Ride => app.set_ride_archive_proof(row.id.0, row.timestamp),
+        _ => {}
     })
     .map_err(retention_error)?;
-    let len = ids.len();
+    let len = app.route_ids().len();
     app.set_route_meta(&metas[..len]);
     Ok(())
 }

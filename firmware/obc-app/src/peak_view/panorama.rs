@@ -22,7 +22,7 @@ impl Default for Panorama {
 
 impl Panorama {
     pub fn ready_at_bearing_q4(&self, bearing: u16) -> bool {
-        let column = ((usize::from(bearing) * COLUMNS + 720) / 1440) % COLUMNS;
+        let column = column_of(bearing);
         self.finished & (1 << (column / SECTOR_COLUMNS)) != 0
     }
 
@@ -40,7 +40,7 @@ impl Panorama {
     }
 
     pub fn incomplete_at_bearing_q4(&self, bearing: u16) -> bool {
-        let column = ((usize::from(bearing) * COLUMNS + 720) / 1440) % COLUMNS;
+        let column = column_of(bearing);
         self.incomplete[column / 8] & (1 << (column % 8)) != 0
     }
 
@@ -51,7 +51,7 @@ impl Panorama {
 
     /// Nearest panorama sample for a compass bearing expressed in quarter degrees.
     pub fn tone_at_bearing_q4(&self, bearing: u16, row: usize) -> u8 {
-        self.tone((usize::from(bearing) * COLUMNS + 720) / 1440, row)
+        self.tone(column_of(bearing), row)
     }
 
     pub fn tone(&self, column: usize, row: usize) -> u8 {
@@ -64,6 +64,10 @@ impl Panorama {
         let shift = i % 4 * 2;
         self.pixels[i / 4] = (self.pixels[i / 4] & !(3 << shift)) | (tone << shift);
     }
+}
+
+pub(super) fn column_of(bearing: u16) -> usize {
+    ((usize::from(bearing) * COLUMNS + 720) / 1440) % COLUMNS
 }
 
 pub(super) fn view_sectors(heading: u16, fov: i32) -> impl Iterator<Item = usize> {

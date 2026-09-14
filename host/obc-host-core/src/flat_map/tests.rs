@@ -107,7 +107,7 @@ fn clones_pin_the_full_identity_and_revision_until_the_last_drop() {
     let store = FlatStore::initialize(HostMedia::Memory(RefCell::default()), identity).unwrap();
     let id = ObjectId((1 << 48) + 7);
     publish(&store, id, Revision(1), b"old map");
-    let owner = Arc::new(Mutex::new(MountedStore::new(store)));
+    let owner = Arc::new(Mutex::new(MountedStore::new(store, false)));
     let first = ObjectSource::open(owner.clone(), id, None).unwrap();
     let worker = first.clone();
     assert_eq!(owner.lock().unwrap().card.store_id(), identity);

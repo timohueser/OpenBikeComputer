@@ -1,7 +1,7 @@
 //! Cooperatively build the real terrain panorama between browser frames.
 
 use obc_app::{
-    peak_view::{surface::Builder, terrain::Terrain, Panorama},
+    peak_view::{runtime::Status, surface::Builder, terrain::Terrain, Panorama, SummitSearch},
     App, PeakViewProfile, Screen,
 };
 use obc_reader::{MapTables, Reader, SliceSource};
@@ -16,9 +16,9 @@ pub static TERRAIN: LazyLock<SliceSource<'static>> = LazyLock::new(|| {
 pub struct Runtime {
     terrain: Box<Terrain<'static>>,
     builder: Option<Box<Builder>>,
+    search: SummitSearch,
     position: Option<(i32, i32)>,
     failed: bool,
-    presented: bool,
 }
 
 impl Runtime {
@@ -26,17 +26,17 @@ impl Runtime {
         Self {
             terrain: Box::new(Terrain::parse(&*TERRAIN).expect("demo surface terrain parses")),
             builder: None,
+            search: SummitSearch::default(),
             position: None,
             failed: false,
-            presented: false,
         }
     }
 
     pub fn reset(&mut self) {
         self.builder = None;
+        self.search = SummitSearch::default();
         self.position = None;
         self.failed = false;
-        self.presented = false;
     }
 
     pub fn panorama(&self) -> Option<&Panorama> {
@@ -51,7 +51,7 @@ impl Runtime {
             return;
         }
         let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
-            app.set_peak_view_waiting();
+            app.set_peak_view_status(Status::Waiting);
             return;
         };
         // Complete an in-flight view before relocating. Turning only selects other sectors.
@@ -61,10 +61,13 @@ impl Runtime {
             self.reset();
             self.position = Some(position);
             app.state.peak_view_peak_count = 0;
-            let mut peaks = heapless::Vec::new();
             if let Some(ground) = self.terrain.ground_height(position.0, position.1) {
-                if obc_app::peak_view::collect_summits(reader, position, &mut peaks).is_ok() {
-                    let mut profile = PeakViewProfile::at(position.0, position.1, 0);
+                let mut profile = PeakViewProfile::at(position.0, position.1, 0);
+                profile.set_ground(ground);
+                let mut peaks = obc_app::peak_view::Candidates::new();
+                if obc_app::peak_view::collect_summits(reader, position, profile.observer_elevation_m, &[], &mut peaks)
+                    .is_ok()
+                {
                     profile.peaks = &peaks;
                     profile.default_heading_q4 = app.peak_view_heading_q4();
                     profile.set_ground(ground);
@@ -80,18 +83,28 @@ impl Runtime {
             // Each step has a bounded hierarchy-node budget; yield to input and paint each frame.
             builder.step(&mut *self.terrain, 1024);
             self.failed = self.terrain.failed();
-            self.presented |= builder.view_ready(heading) && !self.failed;
+            if builder.complete() && !self.failed && self.search.refill(builder, reader).is_err() {
+                self.failed = true;
+            }
             app.state.peak_view_profile = Some(builder.profile());
             app.state.peak_view_peak_count = 0;
             for (i, peak) in builder.display_peaks().enumerate() {
                 app.state.peak_view_peaks[i] = peak;
                 app.state.peak_view_peak_count += 1;
             }
-            if builder.progress() != progress {
-                app.redraw_peak_view();
+            let status = if self.failed {
+                Status::Unavailable
+            } else if builder.complete() {
+                Status::Ready
+            } else {
+                Status::Building(u64::from(builder.progress()))
+            };
+            if builder.progress() != progress || self.failed || builder.complete() {
+                app.set_peak_view_status(status);
             }
-            app.set_peak_view_building(!builder.complete() && !self.failed);
         }
-        app.set_peak_view_loading(!self.presented && !self.failed, self.failed);
+        if self.failed {
+            app.set_peak_view_status(Status::Unavailable);
+        }
     }
 }

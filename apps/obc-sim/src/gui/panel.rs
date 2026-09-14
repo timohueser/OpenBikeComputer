@@ -4,6 +4,7 @@
 
 use eframe::egui;
 use obc_app::CameraMode;
+use obc_host_core::{RouteRepository, TripCatalog};
 
 use super::housing::Colorway;
 use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN};
@@ -320,28 +321,6 @@ impl SimGui {
             );
         }
 
-        // The store-changed edge (#450), exactly the device's sequence: the store notifies, the
-        // host rescans and re-feeds the id-carrying catalog, the app remaps held indices by id.
-        // Drop/remove an `.obcr` in the routes folder, then click — a mid-session upload/delete
-        // without a radio (P4 adds the full inject-upload popup flow on top of this edge).
-        if ui.button("Store changed (rescan routes + rides)").clicked() {
-            // The store-changed edge (#450) is the manual rescan + id-carrying re-feed below — the
-            // whole mechanism a `StoreChanged` event + drained `RescanStore` would drive on the
-            // board. (No app-side `StoreChanged` is raised here: the counted cue would otherwise sit
-            // pending for the GUI's next `HostLoop` frame to redundantly re-scan.)
-            self.store.rescan();
-            self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
-            // The same edge covers the trips (epic #526): a dropped-in / removed `.obt` re-groups
-            // the menu. Fed after the routes so the stage ids resolve against the fresh catalog.
-            self.trip_store.rescan();
-            self.app.set_trips(&self.trip_store.inputs());
-            // The same edge covers the simulator ride catalog (#454): a dropped-in fixture shows
-            // up on the Rides screen without a relaunch.
-            self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog());
-        }
-        ui.weak("re-scans the routes + trips + tracks folders like a BLE commit/delete");
-
         // Upload injection (P4): the route-upload popups' driver. Pick a catalog route, then
         // inject it as a fresh upload (a new file — copy of the pick) or a replace-by-id (the
         // pick's bytes rewritten in place). Each button runs the exact device sequence via
@@ -351,7 +330,7 @@ impl SimGui {
         {
             let routes = self.app.routes();
             if routes.is_empty() {
-                ui.weak("no routes to inject — add .obcr files to the routes folder");
+                ui.weak("no routes to inject — import a GPX or start with route fixtures");
             } else {
                 self.panel.upload_sel = self.panel.upload_sel.min(routes.len() - 1);
                 let ids = self.app.route_ids();
@@ -408,7 +387,7 @@ impl SimGui {
                     if ui.button("Inject trip upload").clicked() {
                         inject_trip = Some(trips[self.panel.trip_sel].id);
                     }
-                    if ui.button("Delete trip (removes the .obt)").clicked() {
+                    if ui.button("Delete trip object").clicked() {
                         delete_trip = Some(trips[self.panel.trip_sel].id);
                     }
                 });
@@ -423,10 +402,8 @@ impl SimGui {
             self.host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
         }
         if let Some(id) = delete_trip {
-            // A trip delete doesn't move the *route* store, so no store-changed edge — the trip
-            // re-feed is the whole mechanism (the deleted folder's routes fall back to unfiled).
             match self.trip_store.delete_by_id(id) {
-                Ok(_) => self.app.set_trips(&self.trip_store.inputs()),
+                Ok(_) => self.note_card_commit(),
                 Err(error) => eprintln!("trip delete: {error:?}"),
             }
         }
@@ -441,8 +418,6 @@ impl SimGui {
     ///   route or an aged synced ride disappears in seconds.
     /// - **Set route retention** stands in for the phone's `setRouteRetention` (until S4 gives it a
     ///   wire): pick a route + level and the sweep will delete it once it's been unused that long.
-    /// - **Mark ride synced** is the `ackRides` stand-in: it stamps a ride's `synced_at` so the
-    ///   sweep can auto-delete it per the device `ride_retention` setting.
     fn show_retention_controls(&mut self, ui: &mut egui::Ui) {
         use obc_app::Retention;
 
@@ -469,7 +444,7 @@ impl SimGui {
         {
             let routes = self.app.routes();
             if routes.is_empty() {
-                ui.weak("no routes — add .obcr files to the routes folder");
+                ui.weak("no routes — import a GPX or start with route fixtures");
             } else {
                 self.panel.retention_route_sel = self.panel.retention_route_sel.min(routes.len() - 1);
                 let ids = self.app.route_ids();
@@ -498,7 +473,13 @@ impl SimGui {
                 if ui.button("Set route retention").clicked() {
                     apply = Some((sel_id, self.panel.retention_level));
                 }
-                let meta = self.store.retention_of(sel_id);
+                let meta = self
+                    .store
+                    .ids()
+                    .iter()
+                    .position(|&id| id == sel_id)
+                    .and_then(|i| self.store.retention_metas().get(i).copied())
+                    .unwrap_or_default();
                 ui.weak(format!(
                     "route id {sel_id}: {} · last_used {}",
                     retention_label(meta.retention),
@@ -507,65 +488,32 @@ impl SimGui {
             }
         }
         if let Some((id, level)) = apply {
-            self.store.set_retention(id, level);
-        }
-
-        ui.separator();
-
-        // Mark a ride synced (the ackRides stand-in) so the sweep can auto-delete it.
-        let mut mark: Option<obc_app::CatalogObjectId> = None;
-        {
-            let rides = self.app.rides();
-            if rides.is_empty() {
-                ui.weak("no rides — record one (Ride ▶ … ▶ Finish) to test ride expiry");
-            } else {
-                self.panel.synced_ride_sel = self.panel.synced_ride_sel.min(rides.len() - 1);
-                let sel_id = rides[self.panel.synced_ride_sel].id;
-                egui::ComboBox::from_id_salt("synced-ride")
-                    .selected_text(rides[self.panel.synced_ride_sel].summary.name.as_str())
-                    .show_ui(ui, |ui| {
-                        for (i, r) in rides.iter().enumerate() {
-                            let tag = if r.summary.synced { " (synced)" } else { "" };
-                            ui.selectable_value(
-                                &mut self.panel.synced_ride_sel,
-                                i,
-                                format!("{}{tag}", r.summary.name.as_str()),
-                            );
-                        }
-                    });
-                if ui.button("Mark ride synced (ackRides)").clicked() {
-                    mark = Some(sel_id);
-                }
-                ui.weak("stamps synced_at = now; the sweep deletes it per the device ride_retention");
+            let last_used = self
+                .store
+                .ids()
+                .iter()
+                .position(|&current| current == id)
+                .and_then(|i| self.store.retention_metas().get(i).copied())
+                .unwrap_or_default()
+                .last_used_utc;
+            match crate::routes::seed_retention(&mut self.store, id, level, last_used) {
+                Ok(()) => self.note_card_commit(),
+                Err(error) => eprintln!("retention write: {error}"),
             }
-        }
-        if let Some(id) = mark {
-            let utc = self.app.wall_unix_now();
-            self.ride_store.mark_synced(id, utc);
-            self.ride_store.rescan();
-            self.app.set_rides(self.ride_store.catalog());
         }
     }
 
-    /// Drive the exact device route-upload sequence from the control panel (epic #447, P4):
-    /// mutate the routes folder (a fresh copy for "new"; an in-place bytes rewrite for
-    /// "replace-by-id"), then the store-changed edge → rescan + identity remap, **then** the
-    /// upload fact carrying the durable id — the same ordering the board's ride loop sees (the
-    /// rescan first, so the id resolves in the fresh catalog). A replace also drops the cached
-    /// active-route bytes so the next frame reopens them, mirroring the board's
-    /// close-and-reopen of the geometry handle.
+    /// Commit a fixture copy or exact replacement, then report its real object identity.
     fn inject_upload(&mut self, sel: usize, replace: bool) {
-        let id = if replace { self.store.touch_route(sel) } else { self.store.duplicate_route(sel) };
-        let Some(id) = id else { return };
-        // The store-changed edge is the rescan + id-carrying re-feed (see the "Store changed"
-        // button); then the route-upload fact carries the durable id — the rescan-then-resolve
-        // ordering the board's ride loop and the app both rely on.
-        self.store.rescan();
-        self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
-        if replace {
-            self.store.sync_active(None); // force the geometry reopen off the fresh bytes
-        }
-        let elevation = self.store.elevation_sparkline(id);
+        let id = match crate::routes::import_copy(&mut self.store, sel, replace) {
+            Ok(id) => id,
+            Err(error) => {
+                eprintln!("route upload: {error}");
+                return;
+            }
+        };
+        self.note_card_commit();
+        let elevation = crate::routes::elevation_sparkline(&self.store, id);
         self.host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced: replace, elevation });
     }
 

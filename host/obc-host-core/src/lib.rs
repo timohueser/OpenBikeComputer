@@ -15,9 +15,7 @@
 //!   generic over a host's route store via [`RouteRepository`].
 //! - [`flat_map`] / [`flat_store`] — map objects and revision-pinned readers on shared
 //!   memory, temporary-file, or explicitly opened persistent Unix card media.
-//! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
-//!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
-//!   source when there is none.
+//! - [`terrain`] — bounded elevation sampling from the exact retained map on the shared card.
 //! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
 //!   outcome scheduling, which the DeviceCore conformance matrix is built on.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
@@ -33,7 +31,14 @@
 pub mod conformance;
 mod dispatch;
 pub mod flat_map;
+mod flat_recorder;
+mod flat_rides;
+pub use flat_recorder::FlatRideRecorder;
 mod flat_routes;
+mod flat_trips;
+pub mod flat_weather;
+pub use flat_rides::FlatRideStore;
+pub use flat_trips::FlatTripStore;
 pub mod flat_store;
 pub use flat_routes::FlatRouteStore;
 mod frame;
@@ -50,26 +55,15 @@ pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
 pub use nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_advance, ReplaySensors};
-pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
+pub use repo::{
+    AppendStatus, RideRepository, RouteLease, RoutePublication, RouteRepository, TrackRepository, TripCatalog,
+};
 pub use session::{fill_nav_preview, ActiveRouteSession};
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemTrackStore};
 
-/// The id band a host's **ride** objects live in.
-///
-/// [`CatalogEffect::RemoveObject`](obc_app::catalog_state::CatalogEffect) names an object by
-/// identity and never by namespace, because the flat store the board runs numbers every object out
-/// of one space (FS7 #1389). The simulator's folder stores and the in-memory family below number
-/// each family from zero (routes) or from a `TP{id}.OBT` filename (trips), so two families could
-/// share an id and a removal would take the wrong one. Carving each non-route family out of a high
-/// band gives the executor the same one-space identity without renaming a file on disk: the band is
-/// added when a store *reads* an id and stripped when it builds a path.
-///
-/// Routes keep `[0, RIDE_ID_BASE)`, rides `[RIDE_ID_BASE, TRIP_ID_BASE)`, trips
-/// `[TRIP_ID_BASE, ..)`.
+/// Session ID band retained by legacy folder and summary-only ride fixtures.
 pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;
 
-/// The id band a host's **trip** objects live in — the twin of [`RIDE_ID_BASE`], and what lets the
-/// trip cascade's last step name the folder through the same namespace-free removal its member
-/// steps use (#1491).
+/// Session ID band retained by legacy trip fixtures. Physical deletion also carries its kind.
 pub const TRIP_ID_BASE: obc_app::CatalogObjectId = 1 << 48;

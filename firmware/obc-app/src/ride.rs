@@ -52,14 +52,10 @@ pub struct RideSummary {
     pub moving_time_s: u32,
     /// Total ascent, metres — the compact stats line.
     pub climb_m: u16,
-    /// Whether the phone has downloaded this ride at least once. `false` (not synced) renders the
-    /// warning-red delete footer with the "not synced" cue; the ride is still deletable.
+    /// Whether exact durable client archive proof exists. The delete footer warns when false.
     pub synced: bool,
-    /// When this ride was first verifiably synced to the phone, as UTC unix seconds — `0` means
-    /// unstamped (never synced, or a legacy sidecar written before `synced_at` existed). The
-    /// auto-expiry sweep (epic #638, S3) deletes a ride only once `now ≥ synced_at + ride_retention`,
-    /// and a synced ride with `synced_at == 0` is stamped `now` (the countdown starts) rather than
-    /// deleted on sight — so a legacy synced ride is never surprise-deleted.
+    /// First trusted UTC retention stamp for the archived ride. Zero protects an unstamped proof;
+    /// retention starts its clock through a checked metadata write before it can expire.
     pub synced_at_utc: u32,
 }
 

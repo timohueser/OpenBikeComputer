@@ -33,12 +33,11 @@ impl Preset {
 
 use obc_app::{
     peak_view::{surface::Builder, terrain::Terrain, Panorama},
-    screen::Screen,
     App,
 };
 use obc_formats::io::{ByteSource, Error};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
@@ -52,8 +51,6 @@ use std::{
 struct FileSource {
     file: RefCell<File>,
     len: u64,
-    reads: Cell<u32>,
-    bytes: Cell<u64>,
 }
 impl ByteSource for FileSource {
     fn len(&self) -> u64 {
@@ -63,8 +60,6 @@ impl ByteSource for FileSource {
         let mut file = self.file.borrow_mut();
         file.seek(SeekFrom::Start(offset)).map_err(|_| Error::Io)?;
         file.read_exact(buf).map_err(|_| Error::Io)?;
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + buf.len() as u64);
         Ok(())
     }
 }
@@ -126,10 +121,8 @@ fn generate(input: Input, position: (i32, i32), worker: &Worker) -> Result<Box<B
             let file = File::open(&path)
                 .map_err(|e| format!("{}: {e}. Run obc fixtures sync sim-peak-view first.", path.display()))?;
             let len = file.metadata().map_err(|e| e.to_string())?.len();
-            let source = FileSource { file: RefCell::new(file), len, reads: Cell::new(0), bytes: Cell::new(0) };
-            let result = generate_surface(&source, None, *preset.profile(), position, worker);
-            eprintln!("peak-view: {} terrain reads / {} bytes", source.reads.get(), source.bytes.get());
-            result
+            let source = FileSource { file: RefCell::new(file), len };
+            generate_surface(&source, None, *preset.profile(), position, worker)
         }
     }
 }
@@ -146,7 +139,7 @@ fn generate_surface(
     let ground = terrain.ground_height(position.0, position.1).ok_or("no terrain at observer")?;
     let mut candidates = Default::default();
     if let Some(reader) = reader {
-        obc_app::peak_view::collect_summits(reader, position, &mut candidates)
+        obc_app::peak_view::collect_summits(reader, position, (ground + 2.0).round() as i16, &[], &mut candidates)
             .map_err(|e| format!("summits: {e:?}"))?;
     } else {
         candidates.extend_from_slice(profile.peaks).map_err(|_| "too many fixture summits")?;
@@ -154,15 +147,24 @@ fn generate_surface(
             peak.project(position.0, position.1);
         }
     }
+    for peak in &mut candidates {
+        peak.score = obc_app::peak_view::apparent_size(peak, (ground + 2.0).round() as i16);
+    }
     profile.observer_lat = position.0;
     profile.observer_lon = position.1;
     let mut profile = PeakViewProfile { peaks: &candidates, ..profile };
-    profile.set_ground(ground);
+    if reader.is_some() {
+        profile.set_ground(ground);
+    } else {
+        profile.observer_elevation_m = (ground + 2.0).round() as i16;
+    }
     profile.default_heading_q4 = worker.heading.load(Ordering::Relaxed);
     let mut builder = Box::new(Builder::new(&profile));
-    let mut published = 0;
+    let mut published = Instant::now();
+    let mut search = obc_app::peak_view::SummitSearch::default();
+    let mut picture_reported = false;
     let mut first_ready = false;
-    while !builder.complete() {
+    loop {
         if worker.cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
@@ -174,23 +176,31 @@ fn generate_surface(
                 first_ready = true;
                 eprintln!("peak-view: view ready in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
             }
-            let progress = builder.progress();
-            if first_ready && !builder.complete() && progress != published {
+            if published.elapsed().as_millis() >= 500 {
                 let preview = Preview::from_builder(&builder);
-                published = progress;
+                published = Instant::now();
                 if worker.sender.send(Ok(Frame { preview, complete: false })).is_err() {
                     return Err("cancelled".into());
                 }
             }
         }
+        if terrain.failed() {
+            return Err("terrain read failed".into());
+        }
+        if builder.complete() {
+            if !picture_reported {
+                eprintln!("peak-view: generated in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+                picture_reported = true;
+            }
+            if let Some(reader) = reader {
+                search.refill(&mut builder, reader).map_err(|e| format!("summits: {e:?}"))?;
+            }
+            if builder.complete() {
+                break;
+            }
+        }
     }
-    eprintln!(
-        "peak-view: generated in {:.0} ms; {} samples, {} missing; core+cache {} bytes",
-        started.elapsed().as_secs_f64() * 1000.0,
-        builder.samples,
-        builder.missing,
-        std::mem::size_of::<Builder>() + std::mem::size_of::<Terrain<'_>>()
-    );
+
     if terrain.failed() {
         return Err("terrain read failed".into());
     }
@@ -210,9 +220,6 @@ impl Preview {
             peaks: builder.display_peaks().collect(),
         })
     }
-    fn view_ready(&self, heading: u16) -> bool {
-        self.panorama.view_ready(heading, self.profile.horizontal_fov_q4())
-    }
 }
 struct Frame {
     preview: Box<Preview>,
@@ -224,120 +231,71 @@ struct Worker {
     sender: mpsc::Sender<Result<Frame, String>>,
 }
 
-/// One cancellable worker publishes immutable ready views while completing the panorama.
+use obc_app::peak_view::runtime::{Failed, Lifecycle, Platform, Progress};
+
+/// The UI owns previews; one cancellable worker owns terrain I/O and the builder.
 pub(crate) struct Runtime {
+    lifecycle: Lifecycle,
+    job: Job,
+    clock: Instant,
+}
+struct Job {
     input: Option<Input>,
     receiver: Option<mpsc::Receiver<Result<Frame, String>>>,
     cancel: Arc<AtomicBool>,
     heading: Arc<AtomicU16>,
     result: Option<Box<Preview>>,
-    failed: bool,
-    position: Option<(i32, i32)>,
-    started: Instant,
-    first_presented: bool,
+    revision: u64,
+    pending: Option<Result<Frame, String>>,
 }
-impl Runtime {
-    pub fn new(map: &crate::map_file::LoadedMap, preset: Option<Preset>) -> Self {
-        Self {
-            input: Input::selected(map, preset),
-            receiver: None,
-            cancel: Arc::new(AtomicBool::new(false)),
-            heading: Arc::new(AtomicU16::new(0)),
-            result: None,
-            failed: false,
-            position: None,
-            started: Instant::now(),
-            first_presented: false,
-        }
-    }
-
-    pub fn profile(&self) -> Option<PeakViewProfile<'static>> {
-        self.input.as_ref().map(Input::profile)
-    }
-
-    pub fn panorama(&self) -> Option<&Panorama> {
-        self.result.as_ref().filter(|_| !self.failed).map(|b| &b.panorama)
-    }
-
-    pub fn note_frame_presented(&mut self, app: &App) {
-        if !self.first_presented
-            && !self.failed
-            && matches!(app.top_screen(), Screen::PeakView(_))
-            && self.result.as_ref().is_some_and(|result| result.view_ready(app.peak_view_heading_q4()))
-        {
-            self.first_presented = true;
-            eprintln!("peak-view: first view in {:.0} ms", self.started.elapsed().as_secs_f64() * 1000.0);
-        }
-    }
-
-    pub fn update(&mut self, app: &mut App) {
-        let active = matches!(app.top_screen(), Screen::PeakView(_));
-        if !active {
-            if app.peak_view_is_base() {
-                return;
-            }
-            self.cancel.store(true, Ordering::Relaxed);
-            self.receiver = None;
-            self.result = None;
-            self.failed = false;
-            self.position = None;
-            self.first_presented = false;
-            return;
-        }
-        let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
-            app.set_peak_view_waiting();
-            return;
-        };
-        if self.position.is_none_or(|old| obc_app::peak_view::moved(old, position)) && self.receiver.is_none() {
-            self.result = None;
-            self.failed = false;
-            self.position = Some(position);
-            self.first_presented = false;
-            app.state.peak_view_peak_count = 0;
-        }
+impl Platform for Job {
+    fn start(&mut self, app: &mut App, position: (i32, i32)) -> bool {
+        let Some(input) = self.input.clone() else { return false };
         let heading = app.peak_view_heading_q4();
         self.heading.store(heading, Ordering::Relaxed);
-        if self.result.is_none() && self.receiver.is_none() && !self.failed {
-            self.started = Instant::now();
-            let (sender, receiver) = mpsc::channel();
-            self.cancel = Arc::new(AtomicBool::new(false));
-            let worker = Worker { heading: Arc::clone(&self.heading), cancel: Arc::clone(&self.cancel), sender };
-            let Some(input) = self.input.clone() else {
-                app.set_peak_view_loading(false, true);
-                return;
-            };
-            let position = self.position.unwrap();
-            let mut profile = input.profile();
-            profile.observer_lat = position.0;
-            profile.observer_lon = position.1;
-            profile.default_heading_q4 = heading;
-            app.state.peak_view_profile = Some(profile);
-            std::thread::spawn(move || {
-                let result = generate(input, position, &worker)
-                    .map(|builder| Frame { preview: Preview::from_builder(&builder), complete: true });
-                let _ = worker.sender.send(result);
-            });
-            self.receiver = Some(receiver);
+        let mut profile = input.profile();
+        profile.observer_lat = position.0;
+        profile.observer_lon = position.1;
+        profile.default_heading_q4 = heading;
+        app.state.peak_view_profile = Some(profile);
+        self.result = Some(Box::new(Preview { panorama: Panorama::default(), profile, peaks: Vec::new() }));
+        self.revision = 0;
+        let (sender, receiver) = mpsc::channel();
+        self.cancel = Arc::new(AtomicBool::new(false));
+        let worker = Worker { heading: Arc::clone(&self.heading), cancel: Arc::clone(&self.cancel), sender };
+        std::thread::spawn(move || {
+            let result = generate(input, position, &worker)
+                .map(|builder| Frame { preview: Preview::from_builder(&builder), complete: true });
+            let _ = worker.sender.send(result);
+        });
+        self.receiver = Some(receiver);
+        true
+    }
+    fn step(&mut self, app: &mut App) -> Result<Progress, Failed> {
+        self.heading.store(app.peak_view_heading_q4(), Ordering::Relaxed);
+        if let Some(result) = self.pending.take() {
+            self.accept(app, result)?;
         }
         while let Some(receiver) = &self.receiver {
             match receiver.try_recv() {
-                Ok(result) => self.accept(app, result),
-                Err(mpsc::TryRecvError::Disconnected) => self.accept(app, Err("terrain worker stopped".into())),
+                Ok(result) => self.accept(app, result)?,
+                Err(mpsc::TryRecvError::Disconnected) => return Err(Failed),
                 Err(mpsc::TryRecvError::Empty) => break,
             }
         }
-        let view_ready = self.result.as_ref().is_some_and(|result| result.view_ready(heading));
-        app.set_peak_view_loading(!view_ready && !self.first_presented && !self.failed, self.failed);
-        app.set_peak_view_building(self.receiver.is_some());
+        Ok(Progress { complete: self.receiver.is_none(), revision: self.revision })
     }
-
-    fn accept(&mut self, app: &mut App, result: Result<Frame, String>) {
+    fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.receiver = None;
+        self.result = None;
+        self.pending = None;
+    }
+}
+impl Job {
+    fn accept(&mut self, app: &mut App, result: Result<Frame, String>) -> Result<(), Failed> {
         match result {
             Ok(frame) => {
-                let heading = app.peak_view_heading_q4();
-                let progress =
-                    |preview: &Preview| preview.panorama.view_progress(heading, preview.profile.horizontal_fov_q4());
-                let changed = self.result.as_ref().is_none_or(|old| progress(old) != progress(&frame.preview));
                 if frame.complete {
                     self.receiver = None;
                 }
@@ -345,31 +303,62 @@ impl Runtime {
                 app.state.peak_view_peaks[..frame.preview.peaks.len()].copy_from_slice(&frame.preview.peaks);
                 app.state.peak_view_peak_count = frame.preview.peaks.len() as u8;
                 self.result = Some(frame.preview);
-                if changed {
-                    app.redraw_peak_view();
-                }
+                self.revision += 1;
+                Ok(())
             }
             Err(error) => {
                 self.receiver = None;
                 eprintln!("peak-view: {error}");
-                self.failed = true;
+                Err(Failed)
             }
         }
     }
-
-    /// Deterministic headless frames finish the full job, not just its first ready view.
+}
+impl Runtime {
+    pub fn new(map: &crate::map_file::LoadedMap, preset: Option<Preset>) -> Self {
+        Self {
+            lifecycle: Lifecycle::default(),
+            clock: Instant::now(),
+            job: Job {
+                input: Input::selected(map, preset),
+                receiver: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                heading: Arc::new(AtomicU16::new(0)),
+                result: None,
+                revision: 0,
+                pending: None,
+            },
+        }
+    }
+    pub fn profile(&self) -> Option<PeakViewProfile<'static>> {
+        self.job.input.as_ref().map(Input::profile)
+    }
+    pub fn panorama(&self) -> Option<&Panorama> {
+        self.job.result.as_ref().map(|result| &result.panorama)
+    }
+    pub fn note_frame_presented(&mut self, app: &App) {
+        if let Some(ms) = self.lifecycle.note_presented(app, self.clock.elapsed().as_millis() as u64) {
+            eprintln!("peak-view: first view in {ms} ms");
+        }
+    }
+    pub fn update(&mut self, app: &mut App) {
+        // Keep Browse priority current even after the picture is complete.
+        self.job.heading.store(app.peak_view_heading_q4(), Ordering::Relaxed);
+        self.lifecycle.update(app, &mut self.job, self.clock.elapsed().as_millis() as u64);
+    }
     pub fn finish(&mut self, app: &mut App) {
         self.update(app);
-        while let Some(receiver) = &self.receiver {
+        while let Some(receiver) = &self.job.receiver {
             let result = receiver.recv().unwrap_or_else(|_| Err("terrain worker stopped".into()));
-            self.accept(app, result);
+            self.job.pending = Some(result);
+            self.update(app);
         }
         self.update(app);
     }
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.job.cancel();
     }
 }
 
@@ -380,7 +369,7 @@ mod tests {
     fn runtime_working_set_fits_the_device_arena() {
         assert!(std::mem::size_of::<Builder>() + std::mem::size_of::<Terrain<'_>>() <= 128 * 1024);
         for preset in [Preset::Gornergrat, Preset::KleineScheidegg, Preset::Grossglockner] {
-            assert!(preset.profile().peaks.len() <= 32);
+            assert!(preset.profile().peaks.len() <= 64);
         }
     }
 
@@ -425,20 +414,21 @@ mod tests {
         app.state.peak_view_profile = runtime.profile();
         assert!(app.show_peak_view());
         runtime.update(&mut app);
-        assert!(runtime.receiver.is_none(), "no fabricated observer before GPS");
-        app.state.user_fix = Some(obc_ports::Fix { lat: 200_000, lon: 200_000, course: None, speed_mps: Some(0.0) });
+        assert!(runtime.job.receiver.is_none(), "no fabricated observer before GPS");
+        let mut loc = crate::sim_location::SimLocationSource::new(Some(obc_ports::Fix::at(200_000, 200_000)));
+        app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         runtime.update(&mut app);
-        let cancelled = Arc::clone(&runtime.cancel);
-        assert!(runtime.receiver.is_some());
+        let cancelled = Arc::clone(&runtime.job.cancel);
+        assert!(runtime.job.receiver.is_some());
         app.apply_gesture(obc_app::Gesture::Back);
         runtime.update(&mut app);
         assert!(cancelled.load(Ordering::Relaxed));
-        assert!(runtime.receiver.is_none() && runtime.result.is_none());
+        assert!(runtime.job.receiver.is_none() && runtime.job.result.is_none());
         assert!(app.show_peak_view());
         runtime.finish(&mut app);
         assert!(runtime.panorama().is_some(), "embedded terrain generated without any fixture source");
         assert!(runtime.panorama().unwrap().has_incomplete_coverage());
-        let completed = Arc::clone(&runtime.cancel);
+        let completed = Arc::clone(&runtime.job.cancel);
         let panorama = runtime.panorama().unwrap() as *const Panorama;
         assert!(app.apply_chord(obc_app::Chord::Quick));
         runtime.update(&mut app);
@@ -448,14 +438,14 @@ mod tests {
         assert_eq!(runtime.panorama().unwrap() as *const Panorama, panorama, "a drawer page retains its base");
         assert!(app.apply_chord(obc_app::Chord::Quick));
         runtime.update(&mut app);
-        assert!(Arc::ptr_eq(&completed, &runtime.cancel), "closing the drawer does not start another panorama");
+        assert!(Arc::ptr_eq(&completed, &runtime.job.cancel), "closing the drawer does not start another panorama");
         app.state.compass_deg = Some(210.0);
         runtime.update(&mut app);
-        assert!(Arc::ptr_eq(&completed, &runtime.cancel));
-        assert!(runtime.receiver.is_none(), "turning reuses the panorama");
+        assert!(Arc::ptr_eq(&completed, &runtime.job.cancel));
+        assert!(runtime.job.receiver.is_none(), "turning reuses the panorama");
         app.state.user_fix.as_mut().unwrap().lat += 1000;
         runtime.finish(&mut app);
-        assert!(!Arc::ptr_eq(&completed, &runtime.cancel));
+        assert!(!Arc::ptr_eq(&completed, &runtime.job.cancel));
         assert!(runtime.panorama().is_some());
         assert_eq!(app.state.peak_view_profile.unwrap().observer_lat, 201_000);
         app.apply_gesture(obc_app::Gesture::Back);

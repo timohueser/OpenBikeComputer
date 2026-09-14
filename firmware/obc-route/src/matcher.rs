@@ -50,7 +50,8 @@ pub struct Match {
     /// threshold).
     pub off_route: bool,
     /// Cross-track distance from the fix to the nearest route point (m) — always live, so
-    /// the UI can show "off route · NNN m".
+    /// the UI can show "off route · NNN m". `u32::MAX` means no usable segment was
+    /// decoded (including a source read failure); no numeric distance is available.
     pub dist_m: u32,
 }
 

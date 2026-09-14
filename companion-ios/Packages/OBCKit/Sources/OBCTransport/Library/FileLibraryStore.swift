@@ -195,6 +195,10 @@ public struct FileLibraryStore: LibraryStore, Sendable {
         return ride.summary.source.map { RideArchiveReceipt(source: $0) }
     }
 
+    public func archivedRideReceipt(_ id: RideID) -> RideArchiveReceipt? {
+        archivedRideSource(id).map { RideArchiveReceipt(source: $0) }
+    }
+
     public func archivedRideSource(_ id: RideID) -> RideSource? {
         guard let manifest = rideManifest(id), manifest.downloaded,
               let source = manifest.summary.source, source.matches(id) else { return nil }

@@ -129,6 +129,32 @@ pub(crate) struct NavArm {
     pub(crate) output: [u8; NAV_OUTPUT_STAGE_BYTES],
 }
 
+/// Parsed sources and resumable transform state exist only while the nav guard owns the arena.
+#[cfg(has_nav)]
+pub(crate) struct DetourArm {
+    pub(crate) original: obc_route::RouteIndex,
+    pub(crate) leg: obc_route::RouteIndex,
+    work: DetourWork,
+    pub(crate) output: [u8; NAV_OUTPUT_STAGE_BYTES],
+    sealed: Option<obc_storage::flat::SealedAllocation<'static>>,
+    preview: heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
+    preview_chunk: usize,
+    preview_index: usize,
+}
+#[cfg(has_nav)]
+union DetourWork {
+    trim: ManuallyDrop<obc_route::Trimmer>,
+    splice: ManuallyDrop<obc_route::Splicer>,
+}
+#[cfg(has_nav)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NavPhase {
+    Plan,
+    Sources,
+    Trim,
+    Splice,
+}
+
 /// The arena itself: one block, three overlapping views.
 ///
 /// `repr(C, align(8))` rather than a plain union so the block's address is stable and 8-aligned for
@@ -142,6 +168,8 @@ union ScratchArena {
     peak_view: ManuallyDrop<PeakArm>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
+    #[cfg(has_nav)]
+    detour: ManuallyDrop<DetourArm>,
     /// USB upload bytes; written before read during one transfer grant.
     usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
 }
@@ -164,6 +192,9 @@ const _: () = assert!(
     "the render arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
      and at main.rs's budget assert before re-pinning anything"
 );
+
+#[cfg(has_nav)]
+const _: () = assert!(core::mem::size_of::<DetourArm>() <= NAV_ARM_BYTES);
 
 /// The arena's storage, in the **`.uninit`** section (cortex-m-rt's `link.x`: `NOLOAD`, placed
 /// after `.bss`, never touched by the reset handler's zeroing loop).
@@ -330,6 +361,7 @@ pub(crate) struct NavGuard {
     /// unforgeable: the guard is minted by [`claim_nav`] with the slot uninitialized, so the only
     /// way to reach a planner is to have written one, and dropping the guard takes the fact with it.
     planner_ready: bool,
+    phase: NavPhase,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -346,6 +378,163 @@ impl NavGuard {
         // and no other reference into the arena is live (module doc).
         unsafe { (*(arena_ptr() as *mut NavArm)).planner.write(planner) };
         self.planner_ready = true;
+        self.phase = NavPhase::Plan;
+    }
+
+    pub(crate) fn restore_plan(&mut self) {
+        // The caller has finished all transform references and returned any sealed result.
+        assert!(self.phase != NavPhase::Plan);
+        unsafe {
+            let arm = arena_ptr() as *mut NavArm;
+            core::ptr::write_bytes(arm as *mut u8, 0, core::mem::size_of::<NavArm>());
+            (*arm).tiles.reset();
+        }
+        self.phase = NavPhase::Plan;
+        self.planner_ready = false;
+    }
+
+    /// Discard planner scratch before materializing the two source indexes. The caller has drained
+    /// all outstanding output tickets before switching phases.
+    #[inline(never)]
+    pub(crate) fn begin_sources(&mut self) {
+        // SAFETY: this guard exclusively owns the arena, and no old-arm reference survives this call.
+        unsafe {
+            let arm = arena_ptr() as *mut DetourArm;
+            core::ptr::addr_of_mut!((*arm).original).write(obc_route::RouteIndex::empty());
+            core::ptr::addr_of_mut!((*arm).leg).write(obc_route::RouteIndex::empty());
+            core::ptr::addr_of_mut!((*arm).sealed).write(None);
+            core::ptr::addr_of_mut!((*arm).preview).write(heapless::Vec::new());
+            core::ptr::addr_of_mut!((*arm).preview_chunk).write(0);
+            core::ptr::addr_of_mut!((*arm).preview_index).write(0);
+            core::ptr::addr_of_mut!((*arm).output).write_bytes(0, 1);
+        }
+        self.phase = NavPhase::Sources;
+        self.planner_ready = false;
+    }
+
+    pub(crate) fn sources(&mut self) -> (&mut obc_route::RouteIndex, &mut obc_route::RouteIndex) {
+        assert!(self.phase != NavPhase::Plan);
+        let arm = unsafe { &mut *(arena_ptr() as *mut DetourArm) };
+        (&mut arm.original, &mut arm.leg)
+    }
+
+    /// The request owns this slot until its ticket settles. During that interval the caller must
+    /// not access the arm, switch phases, or release the guard, including on cancellation.
+    pub(crate) fn seal_request(&mut self, allocation: obc_storage::flat::Allocation) -> crate::flat_store::Request {
+        assert!(self.phase != NavPhase::Plan);
+        let slot = unsafe { &mut (*(arena_ptr() as *mut DetourArm)).sealed };
+        assert!(slot.is_none());
+        crate::flat_store::Request::Seal { allocation, out: slot }
+    }
+
+    pub(crate) fn take_sealed(&mut self) -> Option<obc_storage::flat::SealedAllocation<'static>> {
+        assert!(self.phase != NavPhase::Plan);
+        unsafe { (*(arena_ptr() as *mut DetourArm)).sealed.take() }
+    }
+
+    pub(crate) fn is_transform(&self) -> bool {
+        self.phase != NavPhase::Plan
+    }
+
+    pub(crate) fn put_sealed(&mut self, sealed: obc_storage::flat::SealedAllocation<'static>) {
+        assert!(self.phase != NavPhase::Plan);
+        let slot = unsafe { &mut (*(arena_ptr() as *mut DetourArm)).sealed };
+        assert!(slot.is_none());
+        *slot = Some(sealed);
+    }
+
+    pub(crate) fn begin_preview(&mut self) {
+        assert!(self.phase != NavPhase::Plan);
+        let arm = unsafe { &mut *(arena_ptr() as *mut DetourArm) };
+        arm.preview.clear();
+        arm.preview_chunk = 0;
+        arm.preview_index = 0;
+        self.phase = NavPhase::Sources;
+    }
+
+    pub(crate) fn preview_step(
+        &mut self,
+        source: &dyn obc_formats::io::ByteSource,
+        app: &mut obc_app::App,
+    ) -> Result<bool, obc_formats::io::Error> {
+        assert!(self.phase == NavPhase::Sources);
+        let arm = unsafe { &mut *(arena_ptr() as *mut DetourArm) };
+        let reader = obc_route::RouteReader::new(&arm.leg, source);
+        if arm.preview_chunk == reader.chunks().len() {
+            app.set_detour_preview(&arm.preview);
+            return Ok(true);
+        }
+        let total = reader.chunks().iter().map(|c| c.point_count as usize - 1).sum::<usize>() + 1;
+        let keep = obc_app::NAV_PREVIEW_MAX.min(total);
+        let mut points = heapless::Vec::<obc_route::RoutePoint, { obc_route::MAX_POINTS_PER_CHUNK }>::new();
+        reader.decode_chunk(arm.preview_chunk, &mut points)?;
+        for p in points.iter().skip(usize::from(arm.preview_chunk > 0)) {
+            let next = if keep > 1 { arm.preview.len() * (total - 1) / (keep - 1) } else { 0 };
+            if arm.preview.len() < keep && arm.preview_index == next {
+                let _ = arm.preview.push((p.lon, p.lat));
+            }
+            arm.preview_index += 1;
+        }
+        arm.preview_chunk += 1;
+        Ok(false)
+    }
+
+    #[inline(never)]
+    pub(crate) fn begin_trim(&mut self, target_m: u32, has_elevation: bool) {
+        assert!(self.phase != NavPhase::Plan);
+        unsafe {
+            core::ptr::addr_of_mut!((*(arena_ptr() as *mut DetourArm)).work.trim)
+                .write(ManuallyDrop::new(obc_route::Trimmer::new(target_m, has_elevation)));
+        }
+        self.phase = NavPhase::Trim;
+    }
+
+    #[inline(never)]
+    pub(crate) fn begin_splice(&mut self, split_m: u32, rejoin_m: u32, len_m: u32, has_elevation: bool) {
+        assert!(self.phase != NavPhase::Plan);
+        unsafe {
+            let arm = &mut *(arena_ptr() as *mut DetourArm);
+            core::ptr::addr_of_mut!(arm.work.splice).write(ManuallyDrop::new(obc_route::Splicer::new(
+                split_m,
+                rejoin_m,
+                len_m,
+                has_elevation,
+                arm.original.name(),
+            )));
+        }
+        self.phase = NavPhase::Splice;
+    }
+
+    pub(crate) fn transform(
+        &mut self,
+        original: &dyn obc_formats::io::ByteSource,
+        leg: &dyn obc_formats::io::ByteSource,
+    ) -> (crate::detour::TransformStep, usize, usize) {
+        assert!(matches!(self.phase, NavPhase::Trim | NavPhase::Splice));
+        let arm = unsafe { &mut *(arena_ptr() as *mut DetourArm) };
+        let orig = obc_route::RouteReader::new(&arm.original, original);
+        let leg = obc_route::RouteReader::new(&arm.leg, leg);
+        let mut sink = crate::ride::NavStageSink { stage: &mut arm.output, appended: 0, patch_len: 0 };
+        let step = unsafe {
+            match self.phase {
+                NavPhase::Trim => crate::detour::TransformStep::Trim((*arm.work.trim).step(&orig, &leg, &mut sink)),
+                NavPhase::Splice => {
+                    crate::detour::TransformStep::Splice((*arm.work.splice).step(&orig, &leg, &mut sink))
+                }
+                _ => unreachable!(),
+            }
+        };
+        (step, sink.appended, sink.patch_len)
+    }
+
+    pub(crate) fn output(&self) -> &[u8; NAV_OUTPUT_STAGE_BYTES] {
+        unsafe {
+            if self.phase == NavPhase::Plan {
+                &(*(arena_ptr() as *const NavArm)).output
+            } else {
+                &(*(arena_ptr() as *const DetourArm)).output
+            }
+        }
     }
 
     /// The three things one planner step touches, borrowed together — or `None` when no plan has
@@ -361,7 +550,7 @@ impl NavGuard {
         &mut obc_reader::NavTileCache,
         &mut [u8; NAV_OUTPUT_STAGE_BYTES],
     )> {
-        if !self.planner_ready {
+        if self.phase != NavPhase::Plan || !self.planner_ready {
             return None;
         }
         // SAFETY: the guard exists ⇒ `Nav` owns the block and `claim_nav` initialized the arm;
@@ -376,7 +565,8 @@ impl NavGuard {
     /// rung, the phase attribution) — `None` before [`begin_plan`](NavGuard::begin_plan).
     pub(crate) fn planner_ref(&self) -> Option<&obc_route::NavPlanner> {
         // SAFETY: as `plan_parts`, and the returned borrow is shared and bounded by `&self`.
-        self.planner_ready.then(|| unsafe { (*(arena_ptr() as *const NavArm)).planner.assume_init_ref() })
+        (self.phase == NavPhase::Plan && self.planner_ready)
+            .then(|| unsafe { (*(arena_ptr() as *const NavArm)).planner.assume_init_ref() })
     }
 
     /// The addresses the one plan-start diagnostic line reports (#501 fault dossiers): planner slot,
@@ -398,6 +588,7 @@ impl NavGuard {
 impl Deref for NavGuard {
     type Target = NavArm;
     fn deref(&self) -> &NavArm {
+        assert!(self.phase == NavPhase::Plan);
         // SAFETY: the guard exists ⇒ `Nav` owns the block and `claim_nav` initialized it in place.
         unsafe { &*(arena_ptr() as *const NavArm) }
     }
@@ -406,6 +597,7 @@ impl Deref for NavGuard {
 #[cfg(has_nav)]
 impl DerefMut for NavGuard {
     fn deref_mut(&mut self) -> &mut NavArm {
+        assert!(self.phase == NavPhase::Plan);
         // SAFETY: as `deref`; `&mut self` makes this the only live borrow.
         unsafe { &mut *(arena_ptr() as *mut NavArm) }
     }
@@ -414,6 +606,9 @@ impl DerefMut for NavGuard {
 #[cfg(has_nav)]
 impl Drop for NavGuard {
     fn drop(&mut self) {
+        if self.phase != NavPhase::Plan {
+            debug_assert!(unsafe { (*(arena_ptr() as *const DetourArm)).sealed.is_none() });
+        }
         release(ArenaOwner::Nav);
     }
 }
@@ -440,7 +635,7 @@ pub(crate) fn claim_nav(quiesced: MapQuiesced) -> Result<NavGuard, ArenaError> {
     }
     // `planner_ready: false` — the zero fill above left a *slot*, not a planner. `begin_plan` is the
     // only thing that changes that, and it is what the accessors key on.
-    Ok(NavGuard { planner_ready: false, _not_send: PhantomData })
+    Ok(NavGuard { planner_ready: false, phase: NavPhase::Plan, _not_send: PhantomData })
 }
 
 // ============================ The USB arm ============================
@@ -525,9 +720,11 @@ impl Drop for PeakGuard {
         release(ArenaOwner::PeakView);
     }
 }
+#[inline(never)]
 pub(crate) fn claim_peak(
     profile: &mut obc_app::PeakViewProfile<'_>,
     source: &'static dyn obc_formats::io::ByteSource,
+    reader: &obc_reader::Reader<'_>,
 ) -> Option<PeakGuard> {
     // SAFETY: the ride loop is the only owner-switcher.
     unsafe { gate() }.claim_peak_view().ok()?;
@@ -545,7 +742,23 @@ pub(crate) fn claim_peak(
         return None;
     };
     profile.set_ground(ground);
+    let mut peaks = obc_app::peak_view::Candidates::new();
+    if obc_app::peak_view::collect_summits(
+        reader,
+        (profile.observer_lat, profile.observer_lon),
+        profile.observer_elevation_m,
+        &[],
+        &mut peaks,
+    )
+    .is_err()
+    {
+        release(ArenaOwner::PeakView);
+        return None;
+    }
+    let mut framed = obc_app::PeakViewProfile { peaks: &peaks, ..*profile };
+    framed.set_ground(ground);
+    *profile = framed.detached();
     // SAFETY: the guard owns the whole arm; the final observer/framing is now known.
-    unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), profile) };
+    unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), &framed) };
     Some(PeakGuard { _not_send: PhantomData })
 }

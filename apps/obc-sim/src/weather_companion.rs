@@ -15,11 +15,12 @@
 use obc_ble::weather_request::{RequestContextBundle, RequestContextFacts, RequestContextFix};
 use obc_ble::{
     classify_upload, BundleFacts, BundleIdentity, DueScheduler, UploadDisposition, WeatherRefresh,
-    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_POSITION,
+    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT,
 };
 
 use crate::weather_live::LiveWeather;
 use crate::weather_store::SimWeather;
+use obc_host_core::flat_weather::{WeatherIdentity, WeatherInstall};
 
 /// What the last lifecycle pass did, for the dev panel. Outside the emulated device pixels.
 #[derive(Debug, Clone, Default)]
@@ -63,6 +64,7 @@ pub struct SimCompanion {
     /// §11.7's rule: no card ⇒ no requests, urgent included, because every upload would be
     /// answered `error` and the phone would burn its battery on the loop.
     store_ready: bool,
+    awaiting: Option<(u32, WeatherIdentity)>,
 }
 
 impl Default for SimCompanion {
@@ -73,7 +75,7 @@ impl Default for SimCompanion {
 
 impl SimCompanion {
     pub fn new(store_ready: bool) -> Self {
-        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), store_ready }
+        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), store_ready, awaiting: None }
     }
 
     /// Queue the typed urgent request that the app asked the platform to raise.
@@ -86,24 +88,70 @@ impl SimCompanion {
         self.scheduler.refreshing()
     }
 
-    /// One pass of the whole lifecycle. Returns fresh bundle bytes when an upload committed.
-    ///
-    /// `store` is the currently held bundle (for the §11.4 bundle-identity fields and the
-    /// scheduler's age arithmetic); `None` means the device holds nothing, which the scheduler
-    /// turns into `REASON_NO_BUNDLE` and an immediate request.
-    pub fn poll(
-        &mut self,
-        app: &obc_app::App,
-        store: Option<&SimWeather>,
-        live: &mut LiveWeather,
-        now: i64,
-    ) -> Option<Vec<u8>> {
-        // §11.8: the *raw* byte the rider's setting encodes, exactly as the board passes it. The
-        // typed enum is only for the scheduler's own arithmetic; collapsing an unknown byte to the
-        // default before it reaches the context would misreport the rider's cadence to the phone.
+    /// Finish accepted uploads only after the matching current card reader is adopted.
+    pub fn poll(&mut self, app: &obc_app::App, store: &mut SimWeather, live: &mut LiveWeather, now: i64) {
+        if store.remount_required() {
+            return;
+        }
+        if self.awaiting.is_some() || store.pending().is_some() {
+            if !store.refresh(now) {
+                return;
+            }
+            if let Some((request, identity)) = self.awaiting.take() {
+                if store.installed() == Some(identity) {
+                    self.complete(request, now, true);
+                }
+            }
+            return;
+        }
         let refresh_raw = app.settings().weather_refresh as u8;
-        let fallback = (app.state.cam_lat, app.state.cam_lon);
-        self.run(&app.weather_request_inputs(), refresh_raw, store.and_then(held_of), fallback, live, now)
+        let Some(bytes) = self.run(&app.weather_request_inputs(), refresh_raw, held_of(store), live, now) else {
+            return;
+        };
+        let Some(request) = self.scheduler.pending_request_id() else { return };
+        self.accept(store, &bytes, request, now);
+    }
+
+    fn complete(&mut self, request: u32, now: i64, committed: bool) {
+        if self.scheduler.pending_request_id() != Some(request) {
+            return;
+        }
+        self.scheduler.commit_succeeded(now.max(0) as u64);
+        self.state.pending_request_id = None;
+        if committed {
+            self.state.last_disposition = Some("committed");
+            self.state.commits += 1;
+        } else {
+            self.state.rejected += 1;
+        }
+    }
+
+    fn accept(&mut self, store: &mut SimWeather, bytes: &[u8], request: u32, now: i64) {
+        if !store.refresh(now) {
+            return;
+        }
+        let Some(incoming) = held_from_bytes(bytes) else { return };
+        let disposition = classify_upload(bundle_identity(incoming), held_of(store).map(bundle_identity));
+        self.state.last_disposition = Some(match disposition {
+            UploadDisposition::Commit => "commit pending",
+            UploadDisposition::DuplicateIgnored => "duplicate ignored",
+            UploadDisposition::StaleIgnored => "stale ignored",
+        });
+        if disposition != UploadDisposition::Commit {
+            self.complete(request, now, false);
+            return;
+        }
+        match store.install(bytes) {
+            Ok(WeatherInstall::Adopted(_)) => self.complete(request, now, true),
+            Ok(WeatherInstall::AwaitingReader { identity, error }) => {
+                eprintln!("weather committed {identity:?}; reader: {error}");
+                self.awaiting = Some((request, identity));
+            }
+            Err(error) => {
+                eprintln!("weather upload: {error}");
+                self.state.last_disposition = Some("store refused");
+            }
+        }
     }
 
     /// The lifecycle without the `App`: the scheduler's levels, the context fill, the fetch and
@@ -113,7 +161,6 @@ impl SimCompanion {
         inputs: &obc_app::ble::WeatherRequestInputs,
         refresh_raw: u8,
         held: Option<RequestContextBundle>,
-        fallback_position: (i32, i32),
         live: &mut LiveWeather,
         now: i64,
     ) -> Option<Vec<u8>> {
@@ -134,7 +181,8 @@ impl SimCompanion {
             None => BundleFacts::NONE,
         };
         let now_s = now.max(0) as u64;
-        let raise = self.scheduler.poll(now_s, refresh, inputs.ride_active, self.store_ready, facts);
+        let raise =
+            self.scheduler.poll(now_s, refresh, inputs.ride_active, self.store_ready, inputs.position.is_some(), facts);
         self.state.pending_request_id = self.scheduler.pending_request_id();
         self.state.next_wake_s = self.scheduler.next_wake_s(refresh, inputs.ride_active, self.store_ready);
         let raise = raise?;
@@ -144,13 +192,7 @@ impl SimCompanion {
         // 1-2. The phone reads the request context and disconnects. Building it for real is the
         //      point: the context is what tells the companion *where* and *what for*.
         let context = WeatherRequestContext::raised(refresh_raw, raise, request_context_facts(inputs, held));
-        let position = if context.has(VALID_POSITION) {
-            (context.lat_udeg, context.lon_udeg)
-        } else {
-            // No trusted fix: the phone falls back to its own last known position. The simulator's
-            // stand-in is the camera, which is what the rider is looking at.
-            fallback_position
-        };
+        let position = (context.lat_udeg, context.lon_udeg);
         // The corridor is a 90 km disc around wherever the device says the rider is. The bearing
         // and speed §11.4 carries are still read into the context — the device vouches for them and
         // the panel shows them — but nothing downstream projects a corridor from them any more:
@@ -164,34 +206,13 @@ impl SimCompanion {
         self.scheduler.attempt_failed(context.request_id);
         let bytes = bytes?;
 
-        // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
-        let incoming = held_from_bytes(&bytes)?;
-        let disposition = classify_upload(bundle_identity(incoming), held.map(bundle_identity));
-        self.state.last_disposition = Some(match disposition {
-            UploadDisposition::Commit => "commit",
-            UploadDisposition::DuplicateIgnored => "duplicate ignored",
-            UploadDisposition::StaleIgnored => "stale ignored",
-        });
-        // §11: *any* accepted upload finishes the request — including one the store then refuses
-        // as not-newer. Pacing follows acceptance, not novelty, or a device holding a current
-        // bundle would retry forever.
-        self.scheduler.commit_succeeded(now_s);
-        self.state.pending_request_id = None;
-        match disposition {
-            UploadDisposition::Commit => {
-                self.state.commits += 1;
-                Some(bytes)
-            }
-            _ => {
-                self.state.rejected += 1;
-                None
-            }
-        }
+        // Upload acceptance and scheduler completion belong to the real card boundary.
+        Some(bytes)
     }
 }
 
 fn held_of(store: &SimWeather) -> Option<RequestContextBundle> {
-    let (generation, generated_at, crc32) = store.validated_identity();
+    let (generation, generated_at, crc32) = store.validated_identity()?;
     Some(RequestContextBundle { generation, generated_at, crc32 })
 }
 
@@ -254,6 +275,92 @@ mod tests {
         }
     }
 
+    #[test]
+    fn upload_completion_tracks_real_card_adoption_and_current_duplicate_or_stale_verdicts() {
+        use crate::weather_store::DemoScenario;
+        use obc_host_core::flat_store::HostStore;
+        let owner = HostStore::memory().unwrap();
+        let mut store = SimWeather::open(owner.clone(), None).unwrap();
+        let mut demo = SimWeather::demo(
+            HostStore::memory().unwrap(),
+            Some(DemoScenario::Dry),
+            (7_000_000, 46_000_000, 9_000_000, 48_000_000),
+            None,
+        )
+        .unwrap();
+        let first = demo.bytes();
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.request_now();
+        companion.run(&parked(), 0, None, &mut live, 1);
+        let request = companion.scheduler.pending_request_id().unwrap();
+        companion.accept(&mut store, &first[..511], request, 1);
+        assert_eq!(companion.scheduler.pending_request_id(), Some(request));
+        assert_eq!(companion.state.commits, 0);
+        companion.accept(&mut store, &first, request, 1);
+        let installed = store.installed().unwrap();
+        assert_eq!(companion.scheduler.pending_request_id(), None);
+        assert_eq!(companion.state.commits, 1);
+        for now in [2, 3] {
+            companion.request_now();
+            companion.run(&parked(), 0, held_of(&store), &mut live, now);
+            let request = companion.scheduler.pending_request_id().unwrap();
+            if now == 3 {
+                demo.sync_clock(1_800_001_000, true);
+                SimWeather::from_bytes(owner.clone(), demo.bytes(), None).unwrap();
+                assert!(store.installed().is_none(), "retained reader cannot classify a replaced head");
+            }
+            companion.accept(&mut store, &first, request, now);
+            assert_eq!(companion.scheduler.pending_request_id(), None);
+        }
+        assert_eq!(companion.state.last_disposition, Some("stale ignored"));
+        assert_eq!(companion.state.rejected, 2);
+        assert_eq!(store.installed().unwrap().id, installed.id);
+        assert_eq!(store.installed().unwrap().revision.0, installed.revision.0 + 1);
+        assert_eq!(companion.state.commits, 1, "ignored uploads never publish another revision");
+    }
+
+    #[test]
+    fn committed_upload_waits_for_exact_reader_without_fetching_or_writing_again() {
+        use crate::weather_store::DemoScenario;
+        use obc_host_core::{flat_store::HostStore, FlatRouteStore, RouteRepository};
+        const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+        let owner = HostStore::memory().unwrap();
+        let routes = FlatRouteStore::new(owner.clone(), &[ROUTE; 5]).unwrap();
+        let mut holds: Vec<_> = routes.ids().iter().map(|id| routes.source(*id).unwrap()).collect();
+        let mut store =
+            SimWeather::demo(owner, Some(DemoScenario::Dry), (7_000_000, 46_000_000, 9_000_000, 48_000_000), None)
+                .unwrap();
+        let mut newer = SimWeather::demo(
+            HostStore::memory().unwrap(),
+            Some(DemoScenario::Dry),
+            (7_000_000, 46_000_000, 9_000_000, 48_000_000),
+            None,
+        )
+        .unwrap();
+        newer.sync_clock(1_800_001_000, true);
+        let mut companion = SimCompanion::new(true);
+        let mut live = offline_live();
+        companion.request_now();
+        companion.run(&parked(), 0, held_of(&store), &mut live, 1);
+        let request = companion.scheduler.pending_request_id().unwrap();
+        companion.accept(&mut store, &newer.bytes(), request, 1);
+        let (_, identity) = companion.awaiting.unwrap();
+        assert_eq!(store.pending(), Some(identity));
+        assert_eq!(companion.scheduler.pending_request_id(), Some(request));
+        assert_eq!(companion.state.commits, 0);
+        let app = obc_app::App::new(obc_app::AppState::new(0, 0, 1.0));
+        companion.poll(&app, &mut store, &mut live, 2);
+        assert_eq!(companion.state.raises, 1);
+        assert_eq!(companion.state.commits, 0);
+        holds.pop();
+        companion.poll(&app, &mut store, &mut live, 7);
+        assert_eq!(store.installed(), Some(identity));
+        assert_eq!(companion.scheduler.pending_request_id(), None);
+        assert_eq!(companion.state.commits, 1);
+        assert_eq!(companion.state.raises, 1, "reader retry does not fetch another upload");
+    }
+
     /// §11.7: a device with no storage raises **nothing** — not even the no-bundle request that
     /// the same levels raise immediately with a card. If it did, every upload would be answered
     /// `error` and the phone would spend its battery on the loop forever.
@@ -263,7 +370,7 @@ mod tests {
         let mut live = offline_live();
         companion.request_now();
         assert!(!companion.refreshing(), "a queued request is not an active fetch");
-        let bytes = companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
+        let bytes = companion.run(&parked(), 0, None, &mut live, 0);
         assert!(bytes.is_none());
         assert_eq!(companion.state.raises, 0, "a card-less device must not raise a weather request");
         assert_eq!(companion.state.next_wake_s, None, "…and must not schedule one either");
@@ -277,7 +384,12 @@ mod tests {
     fn with_a_card_the_same_levels_raise_and_fetch() {
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        let bytes = companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        let mut acquiring = riding();
+        acquiring.position = None;
+        assert!(companion.run(&acquiring, 2, None, &mut live, 1_799_999).is_none());
+        assert_eq!(companion.state.raises, 0, "no context is advertised before GPS");
+        assert_eq!(live.total_requests(), 0, "no phone fetch uses a fallback location");
+        let bytes = companion.run(&riding(), 2, None, &mut live, 1_800_000);
         assert!(bytes.is_none(), "the offline client cannot produce a bundle");
         assert_eq!(companion.state.raises, 1);
         assert!(live.total_requests() > 0, "the companion must actually go and fetch");
@@ -289,13 +401,13 @@ mod tests {
         let mut live = offline_live();
         companion.request_now();
 
-        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 0);
+        companion.run(&parked(), 0, None, &mut live, 0);
         assert_eq!(companion.state.raises, 1);
         assert_eq!(companion.state.last_reason, REASON_URGENT | REASON_NO_BUNDLE);
         assert!(!companion.refreshing(), "a failed fetch is not active during its retry wait");
         assert!(live.total_requests() > 0, "Off disables cadence, not a rider's typed urgent request");
 
-        companion.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 1);
+        companion.run(&parked(), 0, None, &mut live, 1);
         assert_eq!(companion.state.raises, 1, "one typed request cannot become a per-frame screen sniff");
     }
 
@@ -306,7 +418,7 @@ mod tests {
         let held = RequestContextBundle { generation: 7, generated_at: 0, crc32: 0xDEAD_BEEF };
         companion.request_now();
 
-        companion.run(&parked(), 0, Some(held), (48_060_000, 7_900_000), &mut live, 1);
+        companion.run(&parked(), 0, Some(held), &mut live, 1);
         assert_eq!(companion.state.raises, 1, "no metadata exists to prove that the bundle is reusable");
         assert_eq!(companion.state.last_reason, REASON_URGENT, "the recent held bundle is otherwise usable");
         assert_eq!(companion.state.last_reason & obc_ble::REASON_OUT_OF_AREA, 0);
@@ -317,20 +429,20 @@ mod tests {
     fn refreshing_level_tracks_cadence_completion_and_urgent_lapse() {
         let mut cadence = SimCompanion::new(true);
         let mut live = offline_live();
-        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 0);
+        cadence.run(&riding(), 2, None, &mut live, 0);
         assert!(!cadence.refreshing(), "a completed synchronous attempt is no longer active");
         cadence.scheduler.commit_succeeded(1);
-        cadence.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1);
+        cadence.run(&riding(), 2, None, &mut live, 1);
         assert!(!cadence.refreshing(), "completion clears the level before the next pass");
 
         let mut urgent = SimCompanion::new(true);
         let mut live = offline_live();
         urgent.request_now();
         for now in [0, 300, 900, 2_100] {
-            urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, now);
+            urgent.run(&parked(), 0, None, &mut live, now);
             assert!(!urgent.refreshing(), "the urgent ladder is waiting at {now}");
         }
-        urgent.run(&parked(), 0, None, (48_060_000, 7_900_000), &mut live, 2_160);
+        urgent.run(&parked(), 0, None, &mut live, 2_160);
         assert!(!urgent.refreshing(), "the final request window lapses without a cadence fallback");
         assert_eq!(urgent.state.pending_request_id, None);
     }
@@ -361,12 +473,12 @@ mod tests {
         moving.speed_deci_ms = Some(80); // 8 m/s ≈ 29 km/h
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        companion.run(&moving, 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        companion.run(&moving, 2, None, &mut live, 1_800_000);
         let directed = live.report.corridor_km.expect("a corridor was asked about");
 
         let mut companion = SimCompanion::new(true);
         let mut live = offline_live();
-        companion.run(&riding(), 2, None, (48_060_000, 7_900_000), &mut live, 1_800_000);
+        companion.run(&riding(), 2, None, &mut live, 1_800_000);
         let still = live.report.corridor_km.expect("a corridor was asked about");
         assert_eq!(directed, still, "a heading must not change the window");
         assert!((still.1 - 180.0).abs() < 1.0, "2 x 90 km north-south: {}", still.1);

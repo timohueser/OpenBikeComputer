@@ -38,11 +38,35 @@ makes no chord.
 
 ## Map and output
 
-The OBCM path is an import input. Startup streams it through a 16 KiB buffer into a temporary
-sparse flat-store card. Map and Peak View readers share the committed object; the final reader
-releases the temporary card. The input OBCM and its terrain sidecar remain unchanged. Import adds
-one startup write of the map payload and store metadata; the complete map is not held in RAM.
+The ordinary OBCM path is an import input. Startup copies the map through a 16 KiB buffer into a
+temporary sparse card, then imports the route, trip and saved-ride fixtures. All runtime readers use that same
+card. Input files stay unchanged. The final reader releases the temporary card.
 
+On Unix, create a persistent card explicitly, then reopen it without importing the files again:
+
+```sh
+target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/ --weather forecast.obcw
+target/release/obc-sim --card ride.obc
+target/release/obc-sim --import next-stage.gpx --card ride.obc
+```
+
+After an interrupted recording, `--card` offers Continue or Discard for the last valid checkpoint.
+Continue retains its card identity and accepted totals. If Save already journalled its footer,
+startup completes the catalog commit and lists the saved ride instead. Failed recovery validation
+can show a damaged-ride card; failed durability confirmation or terminal settlement stops startup.
+Close all readers and reopen after an uncertain card write. Startup never resets or migrates a card.
+
+
+Creation refuses an existing path and exits after importing. If an import fails, it reports failure
+and leaves the partial card for inspection. Reopening never initializes or resets the file. It
+requires exactly one readable map, complete route and trip catalogs, and valid installed weather
+when present. The last reader keeps the card's exclusive file lock, even after the session closes.
+Persistent cards are not supported on Windows; ordinary temporary sessions remain available.
+
+A reopened map is labelled **Card map**. Planning and map-referenced altitude sample the terrain
+inside that retained map object in both import and reopen sessions. They do not read an external
+`.obcd` sidecar. Missing terrain leaves elevations unavailable; invalid or unreadable terrain
+reports a diagnostic and keeps the map usable. Peak View keeps its separate bounded terrain cache.
 
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
@@ -55,17 +79,18 @@ Peak View appears in the normal menu when the loaded map contains indexed terrai
 simulator's current GPS position and the selected map's summit records. The background job reads
 the same immutable map bytes as the map screen. Without a GPS fix it waits; it does not use the
 camera centre as an observer. Normal framing widens when a nearby summit requires more vertical
-headroom. Low-relief observers receive up to 3× vertical exaggeration, fixed while turning;
-steep views keep 1.25×. The summit candidates reserve a slot for each bearing sector's tallest
+headroom. The normal view is at least 90° wide. Low-relief observers receive up to a 2.4× boost over the base 1.25× vertical scale, fixed while turning;
+steep views keep the base scale. The summit candidates reserve a slot for each bearing sector's tallest
 landmark. Explicit fixture frames retain their configured bounds. In a headless test,
 `--center LON,LAT --heading DEG` supplies an explicit simulated fix. Use the menu and `f` to complete generation before saving the frame.
 
 - `--peak-view gornergrat|scheidegg|glockner` selects an explicit geographic test fixture and
   opens Peak View in the GUI. This overrides the selected map's terrain for that test. It generates a
-  panorama from geographic terrain, with the current direction first. The compass spinner stops
-  when that view is ready; three static dots indicate background work on the remaining directions.
+  panorama from geographic terrain, with the current direction first. The compass and partial terrain appear
+  at once; three static dots indicate background work on the remaining directions.
+  Progress redraws occur at most twice per second.
   Background work extends both edges in about 17-degree batches. Turning prioritizes the new
-  direction. After the first view appears, completed terrain stays visible and follows the
+  direction. Completed terrain stays visible and follows the
   heading; a light hatch marks pending parts until they fill in. Back cancels. Drag **Compass (heading when
   stopped)** in Controls to turn. Changing the GPS position by more than 20 m rebuilds the view;
   smaller changes keep the current panorama to limit GPS jitter. The fixture has a limited area
@@ -75,7 +100,8 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   bounds. The renderer skips hidden blocks and shades visible terrain slopes under fixed
   illustration lighting. It does not store viewpoints or show snow and current sunlight.
   Named summits are aligned and checked for visibility during generation.
-  Browse freezes the heading; Select returns to Live.
+  Live has no selection. Select enters Browse on the most prominent visible peak. Up/Down steps
+  through visible peaks and turns the view by 15° past an edge. Select returns to Live.
 
   Fetch the checksummed terrain package once:
 
@@ -96,7 +122,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
     --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
   ```
 
-  The log separates generation time and storage reads from the final cached frame's drawing time.
+  The log separates generation time from the final cached frame's drawing time.
   These are host measurements. See the [board README](../../firmware/obc-fw-nrf54l/README.md)
   for device setup and timing checks.
 
@@ -104,10 +130,14 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 - `--gpx PATH` replays a GPX track as the location source.
 - `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
-- `--routes-dir DIR` mounts a route store (default `routes/`).
-- `--tracks-dir DIR` mounts the ride/track store (default `tracks/`).
-- `--import PATH` converts a GPX into the route store and exits; no map is required.
-- `--route-retention LEVEL:AGE` stamps route-retention metadata. `LEVEL` is 0–5; `AGE` accepts
+- `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
+- `--tracks-dir DIR` selects saved-ride import inputs and GPX export output (default `tracks/`).
+  A new session imports valid `ride-{number}.obcr` files without changing them. `--card` does not
+  import or rescan that directory. Runtime recording and the ride catalog use the shared card.
+  A successful Save can export `ride-{card-id}.gpx`; an existing output file is not overwritten.
+  Export failure leaves the committed ride on the card.
+- `--import PATH` commits a GPX as a route to `--card`, or converts it to an `.obcr` file in `--routes-dir`, then exits. No map is required.
+- `--route-retention LEVEL:AGE` commits route-retention metadata to the session card and reloads it. `LEVEL` is 0–5; `AGE` accepts
   seconds, `h`, `d`, or `unknown` (for example `3:2d`).
 
 ## Device state
@@ -138,7 +168,7 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   `upload-replace=ID`, `trip-upload=N`, `map-transfer=receiving:RECEIVED/TOTAL`,
   `map-transfer=installed`, `map-transfer=failed:KIND`, or `warning=LIST`. Warning tokens are
   `gps,altimeter,compass,map,rec`; map-transfer failure kinds are `storage`, `damaged`, `notamap`,
-  and `refused`. `trip-upload=N` names the file `TP{N}.OBT` in the `--routes-dir`, and the map-transfer figures
+  and `refused`. `trip-upload=N` names the file `TP{N}.OBT` in the `--routes-dir` and is not available with `--card`. The map-transfer figures
   are kibibytes — the unit the board's own progress seam carries. An aborted or unplugged transfer
   has no form: it clears the card rather than raising one.
 - `--dfu STATE` selects one complete DFU fixture state: `scan=KIND`, `progress=KIND`,
@@ -151,7 +181,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 These are independent product controls, not part of the simulator-fixture consolidation:
 
-- `--weather FILE.obcw|demo[:SCENARIO]|live` loads one weather bundle, deterministic demo, or live service.
+- `--weather FILE.obcw|demo[:SCENARIO]|live` imports weather from a file, deterministic demo, or live service
+  into the session card. `--card` without this flag reopens the installed bundle. No folder data is
+  migrated. A failed import leaves the prior committed data available; an uncertain commit requires
+  closing the session and reopening the card. Reader-slot pressure after a successful commit retries
+  reader acquisition without importing again.
   Demo scenarios are `scattered` (the default), `drizzle`, `frontal`, `storm`, `dry`, `incoming`,
   `stormahead`, `rainahead`, `gusty`, and `hourly`.
 - `--weather-now UNIX` overrides the freshness instant.

@@ -19,6 +19,7 @@ use obc_storage::flat::{
     Store as _, StoreError, RIDE_RESUME_LEN,
 };
 
+use obc_app::recorder::{CheckpointStatus, RecorderError};
 use obc_app::RideDamage;
 
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
@@ -35,8 +36,8 @@ static REPLY: Reply = Signal::<CriticalSectionRawMutex, _>::new();
 static mut DELTA: [u8; DELTA_BYTES] = [0; DELTA_BYTES];
 static mut RESUME: [u8; RIDE_RESUME_LEN] = [0; RIDE_RESUME_LEN];
 
-const RESUME_MAGIC: [u8; 4] = *b"OBRC";
-const RESUME_VERSION: u16 = 1;
+use obc_app::recorder::continuation::{decode as decode_resume, encode as encode_resume};
+const _: () = assert!(RIDE_RESUME_LEN == obc_app::recorder::continuation::RIDE_RESUME_LEN);
 
 #[derive(Clone, Copy)]
 struct ClockRebase {
@@ -105,6 +106,13 @@ enum State {
         id: ObjectId,
         revision: Revision,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppendResult {
+    Accepted,
+    NeedsCheckpoint,
+    Failed,
 }
 
 pub(crate) struct Recorder {
@@ -179,7 +187,10 @@ impl Recorder {
 
                 let sample_anchors_valid = total == 0 || (first_t_ms.is_some() && last_t_ms.is_some());
                 if total.is_multiple_of(SAMPLE_LEN as u64) && sample_anchors_valid {
-                    let resumed = if total == 0 {
+                    let initial = total == 0
+                        && recovered.checkpoint_sequence == 0
+                        && recovered.resume.iter().all(|byte| *byte == 0);
+                    let resumed = if initial {
                         Some((obc_app::RideContinuation::default(), None))
                     } else {
                         decode_resume(&recovered.resume)
@@ -372,43 +383,44 @@ impl Recorder {
         }
     }
 
-    /// Append one staged sample to the bounded tail. `false` is a refusal, and Recorder keeps that
-    /// sample and everything behind it staged rather than losing them.
-    ///
-    /// A refusal is always transient and always cleared by the checkpoint Recorder ranks ahead of
-    /// the append: either the journal is blocked (storage needs the exact failed write replayed
-    /// before it takes anything else), or the delta window is full (a checkpoint empties it). The
-    /// fixed footer's space stays reserved through both, because accepting a sample that displaced
-    /// it would strand the durable `RECORDING` object after the ride was already closed.
-    pub(crate) fn append(&mut self, mut point: TrackPoint) -> bool {
-        let State::Live(mut live) = self.state else { return false };
-        if live.session.is_none() || live.journal_blocked || live.delta_len + SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
-            return false;
+    /// Admit the whole issued batch and its App observation boundary together. Capacity refusal
+    /// leaves the previous bytes, CRC, times, point count and continuation untouched.
+    pub(crate) fn append(&mut self, points: &[TrackPoint], continuation: obc_app::RideContinuation) -> AppendResult {
+        let State::Live(mut live) = self.state else { return AppendResult::Failed };
+        if live.session.is_none() || points.len() > DELTA_SAMPLES {
+            return AppendResult::Failed;
         }
-        if let Some(clock) = live.clock_rebase {
-            point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
+        let Some(count) = live.points.checked_add(points.len() as u32) else { return AppendResult::Failed };
+        if live.journal_blocked || live.delta_len + points.len() * SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
+            return AppendResult::NeedsCheckpoint;
         }
-        let Some(points) = live.points.checked_add(1) else { return false };
-        let sample = obc_formats::track::encode_record(&point);
-        unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
-        live.delta_len += SAMPLE_LEN;
-        live.points = points;
-        live.first_t_ms.get_or_insert(point.t_ms);
-        live.last_t_ms = Some(point.t_ms);
-        live.crc.update(&sample);
+        for point in points {
+            let mut point = *point;
+            if let Some(clock) = live.clock_rebase {
+                point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
+            }
+            let sample = obc_formats::track::encode_record(&point);
+            unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
+            live.delta_len += SAMPLE_LEN;
+            live.first_t_ms.get_or_insert(point.t_ms);
+            live.last_t_ms = Some(point.t_ms);
+            live.crc.update(&sample);
+        }
+        live.points = count;
+        live.continuation = continuation;
         self.state = State::Live(live);
-        true
+        AppendResult::Accepted
     }
 
-    /// Make the ride recoverable up to this point. `false` is a failed journal write; Recorder owes
-    /// the same checkpoint again, and storage's equality contract needs it to be exactly the same.
+    /// Checkpoint the accepted boundary. A current continuation is supplied only when App staging
+    /// is empty. A failed attempt always replays its frozen tuple before considering fresh context.
     pub(crate) async fn checkpoint(
         &mut self,
         now_ms: u32,
         stats: &obc_route::RideStats,
-        continuation: obc_app::RideContinuation,
-    ) -> bool {
-        let State::Live(live) = self.state else { return true };
+        continuation: Option<obc_app::RideContinuation>,
+    ) -> Result<CheckpointStatus, RecorderError> {
+        let State::Live(live) = self.state else { return Err(RecorderError::Write) };
         // Once an attempt fails, storage's equality contract requires the *entire* logical
         // checkpoint to be replayed: append, CRC and opaque resume. App totals can keep moving even
         // while samples are frozen, so never rebuild resume from the current app on a retry.
@@ -418,7 +430,8 @@ impl Recorder {
             let stable_start = live.start_time.or_else(|| {
                 (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms))
             });
-            (encode_resume(continuation, stable_start), continuation, stable_start)
+            let accepted = continuation.unwrap_or(live.continuation);
+            (encode_resume(accepted, stable_start), accepted, stable_start)
         };
         match self.journal(live, &resume).await {
             Ok(()) => {
@@ -430,7 +443,7 @@ impl Recorder {
                 next.continuation = attempted_continuation;
                 next.journal_blocked = false;
                 self.state = State::Live(next);
-                true
+                Ok(CheckpointStatus::Durable)
             }
             Err(error) => {
                 let mut blocked = live;
@@ -443,7 +456,7 @@ impl Recorder {
                 self.state = State::Live(blocked);
                 self.warning_pending = true;
                 defmt::warn!("flat ride: checkpoint failed: {}", defmt::Debug2Format(&error));
-                false
+                Err(RecorderError::Write)
             }
         }
     }
@@ -771,69 +784,6 @@ fn start_time(stats: &obc_route::RideStats, first_t_ms: Option<u32>) -> u32 {
     }
     let first = first_t_ms.unwrap_or(stats.anchor_ms);
     stats.unix_at_anchor.wrapping_sub(stats.anchor_ms.wrapping_sub(first) / 1000)
-}
-
-fn encode_resume(state: obc_app::RideContinuation, start_time: Option<u32>) -> [u8; RIDE_RESUME_LEN] {
-    const _: () = assert!(RIDE_RESUME_LEN == 96);
-    let mut out = [0u8; RIDE_RESUME_LEN];
-    out[0..4].copy_from_slice(&RESUME_MAGIC);
-    out[4..6].copy_from_slice(&RESUME_VERSION.to_le_bytes());
-    out[6..8].copy_from_slice(&(RIDE_RESUME_LEN as u16).to_le_bytes());
-    out[8..12].copy_from_slice(&start_time.unwrap_or(0).to_le_bytes());
-    for (at, value) in
-        [(12, state.ridden_m), (16, state.moving_m), (20, state.moving_s), (24, state.climb_m), (28, state.descent_m)]
-    {
-        out[at..at + 4].copy_from_slice(&value.to_bits().to_le_bytes());
-    }
-    out[32..40].copy_from_slice(&state.hr_ms_sum.to_le_bytes());
-    out[40..44].copy_from_slice(&state.hr_ms.to_le_bytes());
-    out[44..46].copy_from_slice(&state.max_hr.to_le_bytes());
-    out[48..56].copy_from_slice(&state.power_ms_sum.to_le_bytes());
-    out[56..60].copy_from_slice(&state.power_ms.to_le_bytes());
-    out[60..62].copy_from_slice(&state.max_power.to_le_bytes());
-    out[64..72].copy_from_slice(&state.cadence_ms_sum.to_le_bytes());
-    out[72..76].copy_from_slice(&state.cadence_ms.to_le_bytes());
-    out[76] = u8::from(start_time.is_some());
-    out
-}
-
-fn decode_resume(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(obc_app::RideContinuation, Option<u32>)> {
-    if bytes[0..4] != RESUME_MAGIC
-        || u16::from_le_bytes(bytes[4..6].try_into().ok()?) != RESUME_VERSION
-        || u16::from_le_bytes(bytes[6..8].try_into().ok()?) as usize != RIDE_RESUME_LEN
-        || bytes[46..48].iter().any(|byte| *byte != 0)
-        || bytes[62..64].iter().any(|byte| *byte != 0)
-        || bytes[76] > 1
-        || bytes[77..].iter().any(|byte| *byte != 0)
-    {
-        return None;
-    }
-    let f32_at = |at: usize| {
-        let mut raw = [0u8; 4];
-        raw.copy_from_slice(&bytes[at..at + 4]);
-        f32::from_bits(u32::from_le_bytes(raw))
-    };
-    let state = obc_app::RideContinuation {
-        ridden_m: f32_at(12),
-        moving_m: f32_at(16),
-        moving_s: f32_at(20),
-        climb_m: f32_at(24),
-        descent_m: f32_at(28),
-        hr_ms_sum: u64::from_le_bytes(bytes[32..40].try_into().ok()?),
-        hr_ms: u32::from_le_bytes(bytes[40..44].try_into().ok()?),
-        max_hr: u16::from_le_bytes(bytes[44..46].try_into().ok()?),
-        power_ms_sum: u64::from_le_bytes(bytes[48..56].try_into().ok()?),
-        power_ms: u32::from_le_bytes(bytes[56..60].try_into().ok()?),
-        max_power: u16::from_le_bytes(bytes[60..62].try_into().ok()?),
-        cadence_ms_sum: u64::from_le_bytes(bytes[64..72].try_into().ok()?),
-        cadence_ms: u32::from_le_bytes(bytes[72..76].try_into().ok()?),
-    };
-    let finite_nonnegative = [state.ridden_m, state.moving_m, state.moving_s, state.climb_m, state.descent_m]
-        .iter()
-        .all(|value| value.is_finite() && *value >= 0.0);
-    let start = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
-    let start = (bytes[76] == 1).then_some(start);
-    finite_nonnegative.then_some((state, start))
 }
 
 /// The ride loop is the only mutable owner. A journal request lends the storage task an immutable
