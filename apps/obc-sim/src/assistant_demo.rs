@@ -10,6 +10,7 @@ use obc_replay::{Track, TrackPoint};
 use obc_route::{gpx_to_obcr, RouteStats};
 use std::fmt::Write;
 
+mod easier;
 mod landmark_samples;
 
 // Adapted from Wikipedia; article revisions and CC BY-SA 4.0 attribution are in
@@ -220,7 +221,7 @@ pub fn install(
     if length < 100.0 {
         return Err("the study needs at least 100 m of route; choose a larger area or move --center inward".into());
     }
-    if store.ids().len() + 21 > obc_app::MAX_ROUTES {
+    if store.ids().len() + 24 > obc_app::MAX_ROUTES {
         return Err("not enough route slots for the study".into());
     }
     let (original, _) = route(store, "Study route", &points, None)?;
@@ -279,6 +280,7 @@ pub fn install(
             continuation,
         });
     }
+    let alternatives = easier::install(store, original, &points, min, max)?;
     let fixture = Box::leak(Box::new(Fixture {
         original,
         start: (points[0].lon, points[0].lat),
@@ -289,6 +291,7 @@ pub fn install(
     settings.climb_mode = obc_app::ClimbMode::Manual;
     app.set_settings(settings);
     app.enable_assistant_demo(fixture);
+    app.state.assistant_demo.as_mut().unwrap().easier = Some(alternatives);
     app.set_assistant_candidates(seed.scenario.candidates());
     if !app.show_assistant_demo(seed.stage, seed.option) {
         return Err("that stage or option is unavailable in this candidate set".into());

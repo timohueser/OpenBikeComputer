@@ -1,5 +1,6 @@
 //! Ride Assistant interaction study, drawn by the device renderer over its ordinary map scene.
 
+mod easier;
 mod landmarks;
 mod whats_next;
 
@@ -26,6 +27,7 @@ enum Page {
     Questions,
     WhatsNext,
     Landmarks,
+    Easier,
     Sources,
     Categories,
     Choices,
@@ -41,11 +43,12 @@ pub struct AssistantScreen {
     selected: usize,
     ahead: whats_next::View,
     landmarks: landmarks::View,
+    easier: easier::View,
     preview_landmark: Option<u8>,
 }
 
 const QUESTIONS: [&str; 7] =
-    ["Find a place", "What's next", "Easier option", "Road blocked", "Back on route", "Landmarks", "Worth a detour"];
+    ["Find a place", "What's next", "Easier route", "Road blocked", "Back on route", "Landmarks", "Worth a detour"];
 const CATEGORIES: [&str; 6] = ["Water", "Shop", "Pharmacy", "Bike repair", "Accommodation", "Train station"];
 
 impl AssistantScreen {
@@ -59,6 +62,7 @@ impl AssistantScreen {
             selected: 0,
             ahead: whats_next::View::new(false),
             landmarks: landmarks::View::default(),
+            easier: easier::View::default(),
             preview_landmark: None,
         }
     }
@@ -69,6 +73,7 @@ impl AssistantScreen {
             selected: 0,
             ahead: whats_next::View::new(false),
             landmarks: landmarks::View::default(),
+            easier: easier::View::default(),
             preview_landmark: None,
         }
     }
@@ -83,6 +88,7 @@ impl AssistantScreen {
             selected: 0,
             ahead: whats_next::View::new(false),
             landmarks: landmarks::View::default(),
+            easier: easier::View::default(),
             preview_landmark: None,
         }
     }
@@ -93,6 +99,7 @@ impl AssistantScreen {
             Stage::WhatsNext | Stage::ExploreAhead => Page::WhatsNext,
             Stage::Categories => Page::Categories,
             Stage::Landmarks => Page::Landmarks,
+            Stage::Easier | Stage::EasierReview => Page::Easier,
             Stage::Choices => Page::Choices,
             Stage::Preview => Page::Preview,
             Stage::Visit => Page::Visit,
@@ -104,6 +111,7 @@ impl AssistantScreen {
             page,
             ahead: whats_next::View::new(stage == Stage::ExploreAhead),
             landmarks: landmarks::View::new(demo.fixture, demo.fixture.start),
+            easier: easier::View::new(selected, stage == Stage::EasierReview),
             preview_landmark: None,
             selected: match page {
                 Page::Choices => selected,
@@ -132,6 +140,17 @@ impl AssistantScreen {
             };
         }
         let Some(mut demo) = cx.state.assistant_demo else { return Transition::Pop };
+        if self.page == Page::Easier {
+            return match self.easier.handle(g, &mut demo) {
+                easier::Action::None => Transition::None,
+                easier::Action::Back => self.go(Page::Questions, 2),
+                easier::Action::Accept(route) => {
+                    cx.navigator.set_active_route(Some(route));
+                    cx.state.assistant_demo = Some(demo);
+                    Transition::Root(Screen::Map(MapScreen::new()))
+                }
+            };
+        }
         if self.page == Page::Sources {
             return match g {
                 Gesture::Back | Gesture::Press => Transition::Pop,
@@ -177,7 +196,7 @@ impl AssistantScreen {
             }
             Gesture::Back => match self.page {
                 Page::Questions | Page::Arrived | Page::Visit => Transition::Pop,
-                Page::WhatsNext | Page::Landmarks | Page::Sources => unreachable!(),
+                Page::WhatsNext | Page::Landmarks | Page::Sources | Page::Easier => unreachable!(),
                 Page::Categories => self.go(Page::Questions, 0),
                 Page::Choices => self.go(Page::Categories, 1),
                 Page::Preview if self.preview_landmark.is_some() => self.go(Page::Landmarks, 0),
@@ -190,6 +209,10 @@ impl AssistantScreen {
                     cx.state.up_ahead_filter = obc_reader::PoiCategorySet::ALL;
                     self.ahead = whats_next::View::new(false);
                     self.go(Page::WhatsNext, 0)
+                }
+                Page::Questions if self.selected == 2 => {
+                    self.easier = easier::View::default();
+                    self.go(Page::Easier, 0)
                 }
                 Page::Questions if self.selected == 5 => {
                     let origin = cx.state.user_fix.map(|fix| (fix.lon, fix.lat)).unwrap_or(demo.fixture.start);
@@ -222,7 +245,7 @@ impl AssistantScreen {
                 Page::Skip => {
                     demo.phase = Phase::Riding;
                     demo.visiting = None;
-                    cx.navigator.set_active_route(Some(demo.fixture.original));
+                    cx.navigator.set_active_route(Some(demo.riding_route()));
                     cx.state.assistant_demo = Some(demo);
                     Transition::Root(Screen::Map(MapScreen::new()))
                 }
@@ -243,6 +266,10 @@ impl AssistantScreen {
             return;
         }
         let Some(mut demo) = rx.state.assistant_demo else { return };
+        if self.page == Page::Easier {
+            self.easier.draw(cv, rx, demo);
+            return;
+        }
         if self.page == Page::Sources {
             landmarks::sources(cv, demo, self.selected);
             return;
@@ -270,7 +297,7 @@ impl AssistantScreen {
                     Point::new(18, y + 5),
                     Font::Body,
                     TextAlign::Left,
-                    if i == active || (self.page == Page::Questions && matches!(i, 1 | 5)) { INK } else { SUBTEXT },
+                    if i == active || (self.page == Page::Questions && matches!(i, 1 | 2 | 5)) { INK } else { SUBTEXT },
                 );
             }
             if rows.len() > 6 {

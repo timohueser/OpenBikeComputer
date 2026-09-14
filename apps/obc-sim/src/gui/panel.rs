@@ -147,7 +147,12 @@ impl SimGui {
                                             )
                                             .clicked()
                                         {
-                                            self.app.show_assistant_demo(stage, selected);
+                                            let option = if matches!(stage, Stage::Easier | Stage::EasierReview) {
+                                                0
+                                            } else {
+                                                selected
+                                            };
+                                            self.app.show_assistant_demo(stage, option);
                                             self.sync_assistant_position();
                                             ui.close_menu();
                                         }
