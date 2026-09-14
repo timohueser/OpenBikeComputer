@@ -1,7 +1,7 @@
 //! Nearby landmark study: stable map/list selection, short text pages, and the shared visit preview.
 
 use super::*;
-use crate::assistant_demo::{Fixture, Stop};
+use crate::assistant_demo::{photos::paragraph, Fixture, Stop};
 
 #[derive(Debug, Default)]
 pub(super) struct View {
@@ -44,7 +44,12 @@ impl View {
             Gesture::Step(n) => {
                 if let Some(page) = self.page {
                     let stop = &fixture.stops[self.nearby[self.selected].0 as usize];
-                    self.page = Some(list::step_selection(page, n, stop.landmark.unwrap().pages.len()));
+                    let landmark = stop.landmark.unwrap();
+                    self.page = Some(list::step_selection(
+                        page,
+                        n,
+                        landmark.pages.len() + usize::from(landmark.photo.is_some()),
+                    ));
                 } else {
                     self.selected = list::step_selection(self.selected, n, self.nearby.len().max(1));
                 }
@@ -74,9 +79,15 @@ impl View {
             cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
             cv.text(stop.name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
             subtitle(cv, stop, distance, 48);
-            paragraph(cv, landmark.pages[page], 82);
+            if let Some(text) = landmark.pages.get(page) {
+                paragraph(cv, text, 82);
+            } else if let Some(photo) = landmark.photo {
+                crate::assistant_demo::photos::draw(cv, photo, Point::new(40, 86));
+                cv.text("Ordered dither", Point::new(120, 218), Font::Label, TextAlign::Center, SUBTEXT);
+            }
             let mut pages = heapless::String::<24>::new();
-            let _ = write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len());
+            let _ =
+                write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len() + usize::from(landmark.photo.is_some()));
             cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
             button(cv, "Visit", 280, true);
             return;
@@ -129,29 +140,6 @@ fn subtitle(cv: &mut impl Surface, stop: &Stop, distance: u32, y: i32) {
     cv.text(&text, Point::new(30, y), Font::Label, TextAlign::Left, SUBTEXT);
 }
 
-fn paragraph(cv: &mut impl Surface, text: &str, mut y: i32) {
-    let mut line = heapless::String::<18>::new();
-    for word in text.split_whitespace() {
-        if !line.is_empty() && line.len() + 1 + word.len() > line.capacity() {
-            cv.text(&line, Point::new(12, y), Font::Label, TextAlign::Left, INK);
-            y += 24;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        for chunk in word.as_bytes().chunks(18) {
-            if !line.is_empty() && line.len() + chunk.len() > 18 {
-                cv.text(&line, Point::new(12, y), Font::Label, TextAlign::Left, INK);
-                y += 24;
-                line.clear();
-            }
-            let _ = line.push_str(core::str::from_utf8(chunk).unwrap_or("?"));
-        }
-    }
-    cv.text(&line, Point::new(12, y), Font::Label, TextAlign::Left, INK);
-}
-
 pub(super) fn marker(cv: &mut impl Surface, x: i32, y: i32, row: usize, selected: bool) {
     cv.round(rect(x - 13, y - 14, 27, 28), 4, INK);
     cv.round(rect(x - 11, y - 12, 23, 24), 3, if selected { AMBER } else { PARCHMENT });
@@ -163,21 +151,40 @@ pub(super) fn sources(cv: &mut impl Surface, demo: Demo, page: usize) {
     let (title, text) = match page {
         0 => ("Text sources", "Wikipedia contributors. Shortened and reworded. CC BY-SA 4.0. No warranties."),
         1 => ("Text licence", "https://creativecommons.org/licenses/by-sa/4.0/"),
-        _ => ("Article source", landmarks().nth(page - 2).map_or("", |l| l.article)),
+        _ if page < landmarks().count() + 2 => ("Article source", landmarks().nth(page - 2).unwrap().article),
+        _ => {
+            let offset = page - landmarks().count() - 2;
+            let photo = landmarks().filter_map(|l| l.photo).nth(offset / 3).unwrap();
+            match offset % 3 {
+                0 => ("Photo credit", photo.credit),
+                1 => ("Photo source", photo.source),
+                _ => ("Photo licence", photo.licence),
+            }
+        }
     };
     cv.fill(rect(0, 0, 240, 320), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
     cv.text(title, Point::new(12, 8), Font::Body, TextAlign::Left, PARCHMENT);
     let mut url = heapless::String::<128>::new();
-    if page >= 2 {
+    if page >= 2 && page < landmarks().count() + 2 {
         let _ = url.push_str("https://en.wikipedia.org/wiki/");
     }
     let _ = url.push_str(text);
     paragraph(cv, &url, 66);
     let mut pages = heapless::String::<24>::new();
-    let _ = write!(pages, "Up/down  {}/{}", page + 1, landmarks().count() + 2);
+    let _ = write!(pages, "Up/down  {}/{}", page + 1, source_pages(demo));
     cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
     button(cv, "Back", 280, true);
+}
+
+pub(super) fn source_pages(demo: Demo) -> usize {
+    2 + demo
+        .fixture
+        .stops
+        .iter()
+        .filter_map(|stop| stop.landmark)
+        .map(|l| 1 + usize::from(l.photo.is_some()) * 3)
+        .sum::<usize>()
 }
 
 #[cfg(test)]
@@ -187,7 +194,7 @@ mod tests {
 
     #[test]
     fn nearby_orders_by_direct_distance_and_keeps_unknown_hours() {
-        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", pages: &["A gorge."] };
+        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", photo: None, pages: &["A gorge."] };
         const STOP: Stop = Stop {
             name: "Landmark",
             landmark: Some(&INFO),

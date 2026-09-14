@@ -136,7 +136,7 @@ impl AssistantScreen {
             return match g {
                 Gesture::Back | Gesture::Press => Transition::Pop,
                 Gesture::Step(n) => {
-                    let count = demo.fixture.stops.iter().filter(|s| s.landmark.is_some()).count() + 2;
+                    let count = landmarks::source_pages(demo);
                     self.selected = list::step_selection(self.selected, n, count);
                     Transition::None
                 }
