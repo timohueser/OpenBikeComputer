@@ -1249,6 +1249,7 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),
             Screen::Assistant(s) if s.has_ahead_context() => Some(&context_drawer::UP_AHEAD),
 
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its

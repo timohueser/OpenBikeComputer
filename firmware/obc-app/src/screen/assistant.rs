@@ -26,6 +26,7 @@ enum Page {
     Questions,
     WhatsNext,
     Landmarks,
+    Sources,
     Categories,
     Choices,
     Preview,
@@ -60,6 +61,20 @@ impl AssistantScreen {
             landmarks: landmarks::View::default(),
             preview_landmark: None,
         }
+    }
+
+    pub(crate) fn sources() -> Self {
+        Self {
+            page: Page::Sources,
+            selected: 0,
+            ahead: whats_next::View::new(false),
+            landmarks: landmarks::View::default(),
+            preview_landmark: None,
+        }
+    }
+
+    pub(crate) fn has_landmark_context(&self) -> bool {
+        self.page == Page::Landmarks
     }
 
     pub fn arrival() -> Self {
@@ -117,6 +132,17 @@ impl AssistantScreen {
             };
         }
         let Some(mut demo) = cx.state.assistant_demo else { return Transition::Pop };
+        if self.page == Page::Sources {
+            return match g {
+                Gesture::Back | Gesture::Press => Transition::Pop,
+                Gesture::Step(n) => {
+                    let count = demo.fixture.stops.iter().filter(|s| s.landmark.is_some()).count() + 2;
+                    self.selected = list::step_selection(self.selected, n, count);
+                    Transition::None
+                }
+                _ => Transition::None,
+            };
+        }
         if self.page == Page::Landmarks {
             return match self.landmarks.handle(g, demo.fixture) {
                 landmarks::Action::None => Transition::None,
@@ -151,7 +177,7 @@ impl AssistantScreen {
             }
             Gesture::Back => match self.page {
                 Page::Questions | Page::Arrived | Page::Visit => Transition::Pop,
-                Page::WhatsNext | Page::Landmarks => unreachable!(),
+                Page::WhatsNext | Page::Landmarks | Page::Sources => unreachable!(),
                 Page::Categories => self.go(Page::Questions, 0),
                 Page::Choices => self.go(Page::Categories, 1),
                 Page::Preview if self.preview_landmark.is_some() => self.go(Page::Landmarks, 0),
@@ -217,6 +243,10 @@ impl AssistantScreen {
             return;
         }
         let Some(mut demo) = rx.state.assistant_demo else { return };
+        if self.page == Page::Sources {
+            landmarks::sources(cv, demo, self.selected);
+            return;
+        }
         if self.page == Page::Landmarks {
             self.landmarks.draw(cv, rx, demo);
             return;
