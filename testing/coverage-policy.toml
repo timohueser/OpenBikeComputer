@@ -46,12 +46,6 @@ exclude = []
 enforcement = "report"
 
 [[component]]
-id = "weather"
-include = ["firmware/obc-weather/src/**", "host/obc-wx-bake/src/**", "host/obc-wx-client/src/**"]
-exclude = []
-enforcement = "report"
-
-[[component]]
 id = "device-drivers"
 include = ["firmware/obc-ble/src/**", "firmware/obc-display/src/**", "firmware/obc-sensors/src/**"]
 exclude = []
@@ -61,8 +55,6 @@ enforcement = "report"
 id = "host-tools"
 include = ["host/**/src/**", "apps/obc-sim/src/**"]
 exclude = [
-  { path = "host/obc-wx-bake/src/**", evidence = "Reported separately by the weather component." },
-  { path = "host/obc-wx-client/src/**", evidence = "Reported separately by the weather component." },
 ]
 enforcement = "report"
 
@@ -90,6 +82,6 @@ enforcement = "report"
 
 [[component]]
 id = "dev-tools"
-include = ["tools/*.py", "firmware/tools/*.py", "builder/server/*.py", "ops/weather/*.py"]
+include = ["tools/*.py", "firmware/tools/*.py", "builder/server/*.py"]
 exclude = []
 enforcement = "report"

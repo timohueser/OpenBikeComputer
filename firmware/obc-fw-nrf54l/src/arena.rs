@@ -7,7 +7,7 @@
 //!
 //! The third is the protocol-v4 USB write-combining stage. Sixteen 4 KiB records share a 64 KiB arm
 //! so the flat store issues one 128-block card command instead of sixteen short program cycles.
-//! It remains below the 128 KiB render arm, so restoring the throughput arm costs no resident RAM.
+//! The USB arm sets the 128 KiB arena size.
 //!
 //! **This is the only place in the feature that names the block's bytes, and the only place that
 //! reads or writes them through a raw pointer.** Everything outside reaches an arm through a guard:
@@ -63,8 +63,8 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   The nav arm is that case today, with ~36 KB of headroom under the render one.
-//! - Growing either **maximum** arm — today render and USB are tied at the ceiling — costs the full
+//!   The nav and render arms are below the USB arm.
+//! - Growing the **maximum** arm — currently USB — costs the full
 //!   delta, 1:1. The report and the assertion below keep that accounting literal.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
@@ -188,8 +188,8 @@ pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
 // growth note in this module and at `main.rs`'s budget assert prices growth in either 1:1 and nav
 // growth at nothing until it passes them. Fail the build rather than let those notes go stale.
 const _: () = assert!(
-    NAV_ARM_BYTES <= ARENA_BYTES && USB_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES,
-    "the render arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
+    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES <= ARENA_BYTES && USB_ARM_BYTES == ARENA_BYTES,
+    "the USB arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
      and at main.rs's budget assert before re-pinning anything"
 );
 
@@ -697,7 +697,7 @@ pub(crate) struct PeakArm {
     pub builder: obc_app::peak_view::surface::Builder,
     pub terrain: obc_app::peak_view::terrain::Terrain<'static>,
 }
-const _: () = assert!(core::mem::size_of::<PeakArm>() <= RENDER_ARM_BYTES);
+const _: () = assert!(core::mem::size_of::<PeakArm>() <= ARENA_BYTES);
 
 pub(crate) struct PeakGuard {
     _not_send: PhantomData<*mut ()>,

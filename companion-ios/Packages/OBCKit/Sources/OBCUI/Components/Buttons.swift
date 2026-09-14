@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// **Primary / Ghost / Warm / Destructive buttons** (§9, EXT) — the OBC button
-/// re-tuned to iOS metrics: 13pt radius, 17pt semibold label, 15/20 padding,
-/// full width by default (`.btn` in the design). Disabled = 0.42 opacity.
-///
-///     Button("Upload to Trailhead") { … }.buttonStyle(.obcPrimary)
-///     Button("Save to Planned") { … }.buttonStyle(.obcGhost)
-///     Button("Delete route") { … }.buttonStyle(.obcDestructive)
 public struct OBCButtonStyle: ButtonStyle {
     public enum Kind {
         /// Forest fill, white label.

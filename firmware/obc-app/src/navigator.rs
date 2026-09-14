@@ -282,9 +282,6 @@ pub struct NavigatorMachine {
     /// The one route matcher and the active-route key it last locked to.
     route_match: RouteMatch,
     matched_route: Option<usize>,
-    /// Route-relative travel heading and its progress key.
-    travel_deg: Option<f32>,
-    travel_at_m: Option<u32>,
 }
 
 impl NavigatorMachine {
@@ -316,8 +313,6 @@ impl NavigatorMachine {
             climb_fill_count: 0,
             route_match: RouteMatch::new(),
             matched_route: None,
-            travel_deg: None,
-            travel_at_m: None,
         }
     );
 
@@ -619,8 +614,6 @@ impl NavigatorMachine {
             climb_fill_count,
             route_match,
             matched_route,
-            travel_deg,
-            travel_at_m,
         } = self;
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no navigation operation has been issued");
         assert!(live.is_none(), "no operation is in flight");
@@ -634,7 +627,6 @@ impl NavigatorMachine {
         assert!(climb_profile.cols().iter().all(|&column| column == 0), "the climb detail starts flat");
         assert_eq!(*climb_fill_count, 0, "the climb detail has not been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
-        assert!(travel_deg.is_none() && travel_at_m.is_none(), "no route-relative travel direction");
     }
 }
 

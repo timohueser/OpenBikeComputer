@@ -101,8 +101,6 @@ public protocol DeviceBonding: Sendable {
     func forgetBond() async throws
 }
 
-/// Device clock and route-retention control, without unrelated configuration,
-/// diagnostics, firmware-update, or weather authority.
 public protocol DeviceRetention: Sendable {
     /// Stamp the device's **trusted wall clock** (`setClock`, spec §4.4 cmd 5,
     /// epic #638). Sent on **every connect, after encryption and before the first
@@ -140,8 +138,6 @@ public struct CatalogChange: Equatable, Sendable {
     }
 }
 
-/// Stored route, trip, and ride operations, without link lifecycle, device
-/// configuration, diagnostics, weather discovery, or firmware update authority.
 public protocol DeviceObjects: Sendable {
     /// Optional local invalidation edges. The BLE implementation is a finished stream because v4
     /// removed the v2 notification; consumers reconcile on connect and audit while connected.
@@ -200,8 +196,6 @@ public protocol DeviceObjects: Sendable {
     func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation
 }
 
-/// Firmware delivery and install requests, without link lifecycle, device
-/// configuration, stored-object, diagnostics, or weather authority.
 public protocol DeviceUpdates: Sendable {
     // MARK: Firmware update (S7 — DFU delivery)
 
@@ -220,37 +214,12 @@ public protocol DeviceUpdates: Sendable {
     func installFirmware() async throws -> FirmwareInstallResult
 }
 
-/// The aggregate device boundary (Tier 1 — semantic), composed from the
-/// capability protocols that focused policies and view models use directly.
-/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
-///
-///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
-///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
-///
-/// Everything a screen (B2–B11) needs must be expressible through these
-/// capabilities. `Sendable` lets conformers cross concurrency domains.
-/// The two requirements declared directly below are deliberate exceptions:
-/// diagnostics has no production feature consumer to narrow, while the weather
-/// watch still spans the aggregate discovery owner (AR1/#1259). Extract either
-/// only when a real focused consumer exists.
 public protocol DeviceTransport: DeviceLink, DeviceBattery, DeviceConfiguration,
     DeviceBonding, DeviceObjects, DeviceRetention, DeviceUpdates {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
 
-    // MARK: Weather (spec §11 — the standing watch)
-
-    /// Arm or disarm the **standing weather watch** (WX9): a UUID-filtered scan for the bonded
-    /// device's Weather Request advertisement whenever nothing else needs the radio, so a device
-    /// raising a request wakes the app — foregrounded, backgrounded, or after the process was
-    /// killed (CoreBluetooth state restoration). The flag persists across relaunches.
-    ///
-    /// On the protocol rather than only on `BLETransport` because the rider owns it now: WX13's
-    /// *Background weather* switch is the first caller that ever passes `false`, and a view model
-    /// may not reach past `DeviceTransport` to find one (the golden rule). Stand-ins that model no
-    /// radio ignore it, which is the truthful stand-in behaviour — there is no scan to arm.
-    func setWeatherWatch(_ enabled: Bool)
 }
 
 extension DeviceLink {
@@ -319,11 +288,7 @@ extension DeviceRetention {
 }
 
 extension DeviceTransport {
-    /// Default: no radio, so no watch to arm — for preview/test stand-ins. Safe as a no-op in a
-    /// way the other defaults are not merely conveniently: the watch *is* a scan, and a transport
-    /// that does not scan has nothing to turn off. The rider's preference is stored by
-    /// ``WeatherPreferencesStore`` either way, so the setting survives a stand-in run.
-    public func setWeatherWatch(_ enabled: Bool) {}
+
 }
 
 extension DeviceObjects {

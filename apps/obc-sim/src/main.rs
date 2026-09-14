@@ -32,9 +32,7 @@ mod sim_location;
 mod sim_sensors;
 mod track;
 mod trips;
-mod weather_companion;
-mod weather_live;
-mod weather_store;
+
 use framebuffer::Framebuffer;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
@@ -90,13 +88,6 @@ enum DfuSeed {
     /// The boot-outcome failure verdict + the version that was staged (`None` when the board could
     /// not name one) — the "UPDATE FAILED" card's two inputs.
     Failed(obc_app::DfuFailure, Option<String>),
-}
-
-enum WeatherFault {
-    CorruptRequest(u32),
-    TruncateRequest(u32),
-    FailFrom(u32, u16),
-    Latency(u64),
 }
 
 struct Args {
@@ -166,39 +157,7 @@ struct Args {
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_ports::DateTime>,
-    /// `--weather FILE.obcw|demo[:SCENARIO]`: offer the production rain-overlay lease on every frame —
-    /// GUI and headless `--png` alike (WX10). Offering is not drawing: the app hands the lease on
-    /// only to a screen that declared it wants rain (`Caps::rain_overlay`), so the raster appears
-    /// on the WX11 **rain map** and the ordinary Map stays rain-free with a store mounted. A
-    /// file is one validated OBCW bundle (`specs/vectors/*.obcw` work directly). `demo`
-    /// synthesizes a deterministic bundle over the loaded map's own bbox —
-    /// scenarios `scattered` (default) | `drizzle` | `frontal` | `storm` — the WX10 look-tuning
-    /// scenes.
-    weather: Option<String>,
-    /// `--weather-now UNIX`: the UTC instant the rain freshness gate evaluates at. Defaults to the
-    /// loaded bundle's **first frame timestamp**, so fixture stores render deterministically; pass
-    /// the real time to exercise staleness (an expired instant renders a rain-free map).
-    weather_now: Option<i64>,
-    /// Headless `--png` only (WX11): draw the dashboard's non-blocking refresh cue (the title
-    /// bar's UPDATING slot) — the cached content stays fully visible, which is the point.
-    weather_refreshing: bool,
-    /// Headless `--png` only (WX11): push the weather alert card through the production
-    /// `App::show_weather_alert` seam — `rain[:MIN]`, `storm[:MIN]` or `gust[:MIN]` (default 28
-    /// minutes). Drives only the presentation; the *engine* is [`Args::weather_decide`].
-    weather_alert: Option<(obc_app::WeatherAlertKind, u16)>,
-    /// Headless `--png` only (WX12): run the production ride-decision path for the final frame —
-    /// sample the bundle **route-projected** (`App::ride_projection` → `sample_along`) and run
-    /// the real alert engine (`App::weather_alert_tick`: thresholds, dedup, cooldown), exactly
-    /// as the GUI does every frame. Source-agnostic: it decides over whichever bundle is loaded,
-    /// `demo:` or `live`. Opt-in so the WX10/WX11/WX14 fixture renders stay byte-identical (their
-    /// scenarios would otherwise grow alert cards).
-    weather_decide: bool,
-    /// `--weather live` knobs (WX14): the service origin, the corridor radius, and the failure
-    /// controls that make an outage, a corrupt tile or a cut connection reproducible on demand.
-    live: weather_live::LiveConfig,
-    /// `--no-card`: the device has no storage the companion could write a bundle to. §11.7's rule
-    /// is that such a device raises **no** weather request at all — urgent included — because
-    /// every upload would be answered `error` and the phone would burn on the retry loop.
+
     no_card: bool,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
@@ -266,12 +225,7 @@ impl Default for Args {
             palette: false,
             battery: None,
             clock: None,
-            weather: None,
-            weather_now: None,
-            weather_refreshing: false,
-            weather_alert: None,
-            weather_decide: false,
-            live: weather_live::LiveConfig::default(),
+
             no_card: false,
             lang: None,
             stat_fields: None,
@@ -580,31 +534,6 @@ fn parse_dfu(s: &str) -> Result<DfuSeed, String> {
     }
 }
 
-fn parse_weather_fault(s: &str) -> Result<WeatherFault, String> {
-    let (kind, value) = s
-        .split_once('=')
-        .ok_or("--weather-fault needs corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS")?;
-    match kind {
-        "corrupt-request" => Ok(WeatherFault::CorruptRequest(
-            value.parse().map_err(|_| "--weather-fault corrupt-request needs an index")?,
-        )),
-        "truncate-request" => Ok(WeatherFault::TruncateRequest(
-            value.parse().map_err(|_| "--weather-fault truncate-request needs an index")?,
-        )),
-        "fail-from" => {
-            let (n, code) = value.split_once(':').ok_or("--weather-fault fail-from needs N:CODE")?;
-            Ok(WeatherFault::FailFrom(
-                n.parse().map_err(|_| "--weather-fault fail-from: bad request index")?,
-                code.parse().map_err(|_| "--weather-fault fail-from: bad status code")?,
-            ))
-        }
-        "latency" => {
-            Ok(WeatherFault::Latency(value.parse().map_err(|_| "--weather-fault latency needs milliseconds")?))
-        }
-        _ => Err("--weather-fault needs corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS".into()),
-    }
-}
-
 fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut a = Args::default();
     let mut it = args.into_iter();
@@ -652,39 +581,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
-            "--weather" => a.weather = Some(it.next().ok_or("--weather needs a .obcw file or demo source")?),
-            "--weather-now" => {
-                a.weather_now = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-now needs unix seconds")?);
-            }
-            "--weather-refreshing" => a.weather_refreshing = true,
-            "--weather-service" => {
-                a.live.service = it.next().ok_or("--weather-service needs an origin URL")?;
-            }
-            "--weather-radius-km" => {
-                a.live.radius_km =
-                    Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-radius-km needs kilometres")?);
-            }
+
             "--no-card" => a.no_card = true,
-            "--weather-offline" => a.live.controls.offline = true,
-            "--weather-fault" => match parse_weather_fault(&it.next().ok_or("--weather-fault needs a value")?)? {
-                WeatherFault::CorruptRequest(n) => a.live.controls.corrupt_request = Some(n),
-                WeatherFault::TruncateRequest(n) => a.live.controls.truncate_request = Some(n),
-                WeatherFault::FailFrom(n, code) => a.live.controls.fail_from = Some((n, code)),
-                WeatherFault::Latency(ms) => a.live.controls.latency = std::time::Duration::from_millis(ms),
-            },
-            "--weather-alert" => {
-                let spec = it.next().ok_or("--weather-alert needs rain[:MIN], storm[:MIN] or gust[:MIN]")?;
-                let (kind, min) = spec.split_once(':').unwrap_or((spec.as_str(), "28"));
-                let kind = match kind {
-                    "rain" => obc_app::WeatherAlertKind::Rain,
-                    "storm" => obc_app::WeatherAlertKind::Storm,
-                    "gust" => obc_app::WeatherAlertKind::Gust,
-                    _ => return Err("--weather-alert: kind must be rain, storm or gust".into()),
-                };
-                let minutes: u16 = min.parse().map_err(|_| "--weather-alert: bad minutes")?;
-                a.weather_alert = Some((kind, minutes));
-            }
-            "--weather-decide" => a.weather_decide = true,
+
             "--route-retention" => {
                 a.route_retention =
                     Some(parse_route_retention(&it.next().ok_or("--route-retention needs LEVEL:AGE")?)?);
@@ -829,7 +728,7 @@ fn settle(
     map: &obc_host_core::flat_map::FlatMap,
     elev: &mut dyn obc_route::ElevationSource,
     platform: &mut HeadlessPlatform,
-    weather: Option<&obc_app::WeatherSnapshot>,
+
     now: u32,
 ) {
     let mut quiet = 0usize;
@@ -849,7 +748,6 @@ fn settle(
                 &[],
                 sensors,
                 route.as_ref(),
-                weather,
                 gui::SIM_SUPPORT,
             );
             let owed = plan.effects.has_pending() || plan.immediate || !plan.derived_needs.is_empty();
@@ -1077,6 +975,7 @@ Ride and storage fixtures:
   --route-retention L:A   Set route retention LEVEL and AGE (for example 3:2d)
 
 Device state:
+  --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
   --battery PCT           Initial battery charge, 0..=100
   --clock DATE            UTC anchor, YYYY-MM-DDTHH:MM
@@ -1101,19 +1000,6 @@ Scripted snapshots:
   --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
                           error=ERR|confirmed=VERSION|failed=WHY[:VERSION]
   --freeze                Show the live recalculation freeze over the map
-
-Weather (independent product controls):
-  --weather SOURCE        FILE.obcw|demo[:SCENARIO]|live (see README for scenarios)
-  --weather-now UNIX      Freshness instant
-  --weather-refreshing    Show the non-blocking refresh cue
-  --weather-alert ALERT   rain[:MIN]|storm[:MIN]|gust[:MIN]
-  --weather-decide        Run the production route-projected alert decision
-  --weather-service URL   Live weather-service origin
-  --weather-radius-km KM  Live corridor radius
-  --weather-offline       Force the live service offline
-  --weather-fault FAULT   corrupt-request=N|truncate-request=N|
-                          fail-from=N:CODE|latency=MS (repeat to compose)
-  --no-card               Simulate no writable companion storage
 
 Other:
   -h, --help              Print this help
@@ -1171,7 +1057,7 @@ fn main() {
         }
         return;
     }
-    let card::Session { owner, map, routes, trips, rides, tracks } =
+    let card::Session { map, routes, trips, rides, tracks, .. } =
         card::Session::load(&mut args).unwrap_or_else(|error| {
             eprintln!("session failed: {error}");
             std::process::exit(1);
@@ -1179,21 +1065,6 @@ fn main() {
     let source = map.map_source();
     eprintln!("card {:?} | map {} revision {}", source.store_id(), source.id().0, source.revision().0);
     if args.create_card.is_some() {
-        if let Some(arg) = args.weather.as_deref() {
-            let b = map.reader().bbox;
-            if let Err(error) = weather_live::build(
-                owner.clone(),
-                Some(arg),
-                args.weather_now,
-                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
-                &args.live,
-                ((b.min_lat + b.max_lat) / 2, (b.min_lon + b.max_lon) / 2),
-                !args.no_card,
-            ) {
-                eprintln!("weather import failed: {error}");
-                std::process::exit(1);
-            }
-        }
         eprintln!("card created; inputs unchanged");
         return;
     }
@@ -1277,69 +1148,6 @@ fn main() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
-        // `--weather` (WX10/WX11): built *before* the settings seed so the wall clock can anchor
-        // on the store's effective instant (screens' `now_utc` then agrees with the rain lease)
-        // and the script's rain-map time-steps clamp against the real frame count.
-        let map_bbox = (reader.bbox.min_lon, reader.bbox.min_lat, reader.bbox.max_lon, reader.bbox.max_lat);
-        // The corridor a live fetch centres on: the rider's fix when there is one (`--gpx` /
-        // `--center` have already seeded it), else the camera. The *service* never receives it —
-        // it only shapes which immutable objects get Range-read.
-        let wx_seed_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-        let wx_source = weather_live::build(
-            owner.clone(),
-            args.weather.as_deref(),
-            args.weather_now,
-            map_bbox,
-            &args.live,
-            wx_seed_pos,
-            !args.no_card,
-        )
-        .unwrap_or_else(|error| {
-            eprintln!("weather failed: {error}");
-            std::process::exit(1);
-        });
-        let mut weather = wx_source.store;
-        let weather_anchor = wx_source.clock_anchor;
-        // Headless is one fetch, by design: a `--png` render must be a single, reportable
-        // transaction. The report goes to stdout beside the other render diagnostics — never
-        // into the emulated device pixels, which carry no provenance badge.
-        if let Some(live) = wx_source.live.as_ref() {
-            let report = &live.report;
-            if args.no_card {
-                println!("weather live: no card — §11.7: no storage, no requests (nothing was fetched)");
-            } else {
-                match (&report.generation, &report.error) {
-                    (_, Some(error)) => println!("weather live: FAILED — {error}"),
-                    // The dataset's honest summary, now that there is no product to name: which
-                    // generation answered, what it cost, and how much of the corridor was measured
-                    // dry rather than fetched.
-                    (Some(generation), None) => println!(
-                        "weather live: generation {generation} | {} B bundle | service {} req, {} B | MET {} req, {} B | {} dry shard(s) | {}",
-                        report.bundle_bytes,
-                        report.service_requests,
-                        report.service_bytes,
-                        report.met_requests,
-                        report.met_bytes,
-                        report.dry_shards,
-                        report.no_rain_map.as_deref().unwrap_or("rain map available")
-                    ),
-                    (None, None) => println!(
-                        "weather live: hourly only — {}",
-                        report.no_rain_map.as_deref().unwrap_or("the manifest could not be read")
-                    ),
-                }
-            }
-        }
-        // WX11: with a weather store and no explicit `--clock`, pin the app clock to the weather
-        // instant. An explicit `--clock` always wins — the WX10 map sweeps pass one, so their
-        // output stays byte-identical. In live mode that instant is the *real* clock (see
-        // `weather_live`): anchoring on the newest frame would hide a stalled baker.
-        let weather_clock = if args.clock.is_none() {
-            weather_anchor.map(|now| obc_ports::DateTime::from_unix(now.max(0) as u64 as u32))
-        } else {
-            None
-        };
-
         // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
         // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
         // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
@@ -1347,16 +1155,9 @@ fn main() {
         // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
         // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
         // from this local set-point (see `App::set_settings`).
-        if args.clock.is_some()
-            || weather_clock.is_some()
-            || args.lang.is_some()
-            || args.stat_fields.is_some()
-            || args.sensors.is_some()
-        {
+        if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
-                settings.clock = clock;
-            } else if let Some(clock) = weather_clock {
                 settings.clock = clock;
             }
             if let Some(lang) = args.lang {
@@ -1501,23 +1302,7 @@ fn main() {
             args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_))),
         );
         host.set_plan_hold(hold);
-        // The script's synthesized button events reach the app through its own input plane, exactly
-        // as the board's high-priority plane feeds gestures between passes; a *frame* — the `f`
-        // token, the `T` token and the settle after the script — is what runs `App::run_pass`.
-        // WX11: a scripted rain-map time-step must clamp against the real frame count, and the rain
-        // map's entry must know the product's zoom floor — both derived by the domain at stage 10
-        // from the snapshot the host samples. Sampled once here (position: rider fix, else the
-        // camera centre — the demo bundles span the map bbox either way) and lent to **every**
-        // settle below: a host that stops offering its bundle is a host with no bundle, and the
-        // domain collapses the view state to match.
-        //
-        // Unprojected on purpose: the ride has not been driven yet. The final frame re-samples,
-        // projected under `--weather-decide`.
-        let wx_script = weather.as_mut().and_then(|w| {
-            let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-            w.sync_clock(app.wall_unix_now() as i64, false);
-            w.snapshot(Some(pos), None)
-        });
+
         let mut script_now = 100u32;
         if let Some(script) = &args.script {
             // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
@@ -1535,17 +1320,7 @@ fn main() {
                 // Both tokens are the same device frame; only `f` also draws. The keyed ride-track
                 // fill and the route overview's shape preview are answered inside the executor from
                 // the plan's `derived_needs`, so nothing here reaches for them by hand.
-                settle(
-                    &mut host,
-                    &mut session,
-                    app,
-                    &mut stores,
-                    map.planner_map(),
-                    &mut *elev,
-                    &mut platform,
-                    wx_script.as_ref(),
-                    now,
-                );
+                settle(&mut host, &mut session, app, &mut stores, map.planner_map(), &mut *elev, &mut platform, now);
                 peak_runtime.finish(app);
                 if matches!(what, ScriptHook::Render) {
                     // The frame carries the **streamed route** when one is active, exactly as the
@@ -1564,19 +1339,12 @@ fn main() {
                         &mut scratch,
                         &mut fb,
                         map_file::Scene { reader: &reader, route: route.as_ref() },
-                        None,
-                        wx_script.as_ref(),
                         peak_runtime.panorama(),
                         (rw as f32, rh as f32),
                         color_of,
                     );
                 }
             };
-            // One settle before the first token. A scripted host runs a pass only at an `f`/`T`
-            // token, so without this the device would take its first gestures never having been told
-            // anything about itself: no store level (and so no ride can start — a ride needs
-            // somewhere to go), and no weather step range for the gestures to clamp against. A real
-            // device mounts its card long before a rider touches a button; this is that.
             hook(&mut app, ScriptHook::Tick, script_now);
             script_now = apply_script(&mut app, script, script_now, &mut hook);
         }
@@ -1587,17 +1355,7 @@ fn main() {
             Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
         let mut settle_now =
             |app: &mut App, stores: &mut Stores<'_>, host: &mut HostLoop, platform: &mut HeadlessPlatform| {
-                settle(
-                    host,
-                    &mut session,
-                    app,
-                    stores,
-                    map.planner_map(),
-                    &mut *elev,
-                    platform,
-                    wx_script.as_ref(),
-                    script_now,
-                );
+                settle(host, &mut session, app, stores, map.planner_map(), &mut *elev, platform, script_now);
             };
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
@@ -1625,7 +1383,6 @@ fn main() {
                 map.planner_map(),
                 &mut *elev,
                 &mut platform,
-                wx_script.as_ref(),
                 script_now,
             );
         }
@@ -1647,7 +1404,6 @@ fn main() {
                 map.planner_map(),
                 &mut *elev,
                 &mut platform,
-                wx_script.as_ref(),
                 script_now,
             );
         }
@@ -1667,7 +1423,6 @@ fn main() {
                 map.planner_map(),
                 &mut *elev,
                 &mut platform,
-                wx_script.as_ref(),
                 script_now,
             );
         }
@@ -1682,7 +1437,6 @@ fn main() {
                 map.planner_map(),
                 &mut *elev,
                 &mut platform,
-                wx_script.as_ref(),
                 script_now,
             );
         }
@@ -1703,7 +1457,6 @@ fn main() {
                 map.planner_map(),
                 &mut *elev,
                 &mut platform,
-                wx_script.as_ref(),
                 script_now,
             );
         }
@@ -1732,7 +1485,6 @@ fn main() {
                     map.planner_map(),
                     &mut *elev,
                     &mut platform,
-                    wx_script.as_ref(),
                     now + 80,
                 );
             }
@@ -1752,17 +1504,7 @@ fn main() {
         if let Some(result) = boot_update {
             let _ = host.facts().note_update_result(result);
             let now = script_now.max(500_000);
-            settle(
-                &mut host,
-                &mut session,
-                &mut app,
-                &mut stores,
-                map.planner_map(),
-                &mut *elev,
-                &mut platform,
-                wx_script.as_ref(),
-                now,
-            );
+            settle(&mut host, &mut session, &mut app, &mut stores, map.planner_map(), &mut *elev, &mut platform, now);
         }
 
         // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
@@ -1805,7 +1547,6 @@ fn main() {
                         &[],
                         sensors,
                         route.as_ref(),
-                        None,
                         gui::SIM_SUPPORT,
                     )
                 };
@@ -1875,7 +1616,6 @@ fn main() {
                         &[],
                         sensors,
                         route.as_ref(),
-                        None,
                         gui::SIM_SUPPORT,
                     )
                 };
@@ -1894,77 +1634,15 @@ fn main() {
             }
         }
 
-        // The final frame's geometry: whatever the script, the injections and the replay left
-        // active, re-opened from the resident session.
-        session.sync(&app, stores.routes);
-        let route_src = stores.routes.active_source();
-        let route = match (session.index(), route_src) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
-
         // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
         // plan command takes, so the snapshot shows the real banner over the real frozen map.
         if args.freeze {
             app.debug_set_plan_live(true);
         }
 
-        // `--weather-alert` (WX11): push the alert card through the production seam WX12's
-        // decision engine will drive on the device.
-        if let Some((kind, minutes)) = args.weather_alert {
-            app.show_weather_alert(kind, minutes);
-        }
-
         let mut fb = Framebuffer::new(args.width, args.height);
         let mut scratch = Box::new(obc_render::RenderScratch::new());
-        // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
-        // the production resident snapshot — the same adapter/feed pair the device and the GUI
-        // use. No store / nothing current ⇒ `None`, byte-identical to a rain-free render.
-        let wx_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-        // `--weather-decide` (WX12): the production ride path — frame samples route-projected
-        // from the app's own matched progress + recent-pace estimate (`ride_projection` →
-        // `sample_along`), then the real alert engine (thresholds/dedup/cooldown) over the very
-        // snapshot the screens render. Source-agnostic: whichever bundle is loaded (`demo:`,
-        // a fixture file, or a `--weather live` fetch) is what it decides over. The alert engine
-        // itself is no longer opt-in: it runs at stage 10 on every host, over whatever bundle is
-        // sampled.
-        let wx_projection = if args.weather_decide { route.as_ref().zip(app.ride_projection()) } else { None };
-        let wx_snapshot = weather.as_mut().and_then(|w| {
-            w.sync_clock(app.wall_unix_now() as i64, false);
-            w.snapshot(Some(wx_pos), wx_projection)
-        });
-        // One settle carrying that snapshot: the domain derives the rain map's step range and zoom
-        // floor from it and runs the alert decision, both at stage 10 — the same stage the board
-        // runs them at. The route opened above ends here (the settle re-opens it) and the frame's
-        // own reader is taken again below.
-        //
-        // **Only for a scenario that mounted weather.** A settle is not free — it advances the
-        // card and spinner timers every screen shares — so a still frame that named no bundle keeps
-        // exactly the passes it always ran.
-        if weather.is_some() {
-            if let Some(identity) = weather.as_ref().and_then(|w| w.installed()) {
-                host.facts().note_weather_data(obc_app::device_core::WeatherData {
-                    data: obc_app::device_core::DataIdentity::new(identity.id.0),
-                    revision: obc_app::device_core::Revision::new(identity.revision.0),
-                });
-            }
-            // `--weather-refreshing`: the provider plane's level, reported as the external fact the
-            // domain reads. The cue is the domain's answer on every host now, never a render argument.
-            if args.weather_refreshing {
-                host.facts().note_weather_refreshing(true);
-            }
-            settle(
-                &mut host,
-                &mut session,
-                &mut app,
-                &mut stores,
-                map.planner_map(),
-                &mut *elev,
-                &mut platform,
-                wx_snapshot.as_ref(),
-                script_now,
-            );
-        }
+
         session.sync(&app, stores.routes);
         let route_src = stores.routes.active_source();
         let route = match (session.index(), route_src) {
@@ -1973,10 +1651,6 @@ fn main() {
         };
         let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
 
-        // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
-        // sim checks it against the `screens!` table's own name before a single pixel is written.
-        // Checked here — below every seam that can still change the top screen, including WX12's
-        // alert decision — so what is verified is exactly what gets saved.
         if let Some(expected) = &args.expect_screen {
             let landed = app.top_screen().name();
             if landed != expected {
@@ -1985,34 +1659,18 @@ fn main() {
             }
         }
 
-        let rain_step = app.state.rain_step;
         peak_runtime.finish(&mut app);
         let panorama = peak_runtime.panorama();
         let t0 = std::time::Instant::now();
-        let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
-                            weather_feed: Option<&obc_app::WeatherSnapshot>,
-                            app: &mut App,
-                            fb: &mut Framebuffer,
-                            scratch: &mut obc_render::RenderScratch| {
-            map_file::render_frame(
-                app,
-                scratch,
-                fb,
-                scene,
-                rain,
-                weather_feed,
-                panorama,
-                (args.width as f32, args.height as f32),
-                color_of,
-            )
-        };
-        let wx_wall_now = app.wall_unix_now() as i64;
-        let mut stats = match weather.as_mut() {
-            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
-                render_final(rain, wx_snapshot.as_ref(), &mut app, &mut fb, &mut scratch)
-            }),
-            None => render_final(None, wx_snapshot.as_ref(), &mut app, &mut fb, &mut scratch),
-        };
+        let mut stats = map_file::render_frame(
+            &mut app,
+            &mut scratch,
+            &mut fb,
+            scene,
+            panorama,
+            (args.width as f32, args.height as f32),
+            color_of,
+        );
         stats.render_us = t0.elapsed().as_micros() as u32;
         peak_runtime.note_frame_presented(&app);
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;
@@ -2048,21 +1706,6 @@ fn main() {
             stats.poly_rings,
             obc_render::MAX_FRAME_RINGS,
         );
-        // Rain overlay accounting (WX10), for the look-tuning rounds: how many 16×16 tiles were
-        // decoded, how many pixels the dither actually painted, and the overlay's own wall time.
-        if stats.rain_out_of_regime {
-            eprintln!(
-                "  rain: OUT OF REGIME — overlay suppressed (cells would drop below ~3 px; see RAIN_MAX_CELL_STEP)"
-            );
-        } else if stats.rain_tiles > 0 || stats.rain_px > 0 {
-            eprintln!(
-                "  rain: {} tiles decoded, {} px painted, {:.2} ms overlay",
-                stats.rain_tiles,
-                stats.rain_px,
-                stats.rain_us as f64 / 1000.0
-            );
-        }
-
         if let Err(e) = write_png(&fb, args.scale, path) {
             eprintln!("{e}");
             std::process::exit(1);
@@ -2072,7 +1715,7 @@ fn main() {
     }
 
     // Interactive: hand the map to the eframe host window.
-    if let Err(e) = gui::run(owner, map, routes, trips, rides, tracks, args) {
+    if let Err(e) = gui::run(map, routes, trips, rides, tracks, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
     }
@@ -2157,11 +1800,6 @@ mod cli_tests {
         assert!(parse(&["--inject", "map-transfer=failed:melted"]).is_err());
         assert!(parse(&["--inject", "trip-upload=nope"]).is_err());
         assert!(parse(&["--dfu", "failed=exploded"]).is_err());
-        let weather = parse(&["--weather-fault", "fail-from=3:503"]).unwrap();
-        assert_eq!(weather.live.controls.fail_from, Some((3, 503)));
-        let faults = parse(&["--weather-fault", "latency=10", "--weather-fault", "fail-from=2:503"]).unwrap();
-        assert_eq!(faults.live.controls.latency, std::time::Duration::from_millis(10));
-        assert_eq!(faults.live.controls.fail_from, Some((2, 503)));
     }
 
     #[test]
@@ -2203,16 +1841,7 @@ mod cli_tests {
             "--palette",
             "--battery",
             "--clock",
-            "--weather",
-            "--weather-now",
-            "--weather-refreshing",
-            "--weather-service",
-            "--weather-radius-km",
             "--no-card",
-            "--weather-offline",
-            "--weather-fault",
-            "--weather-alert",
-            "--weather-decide",
             "--route-retention",
             "--lang",
             "--stat-fields",

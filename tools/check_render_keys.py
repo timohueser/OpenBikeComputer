@@ -27,7 +27,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_PARTS = {".git", ".claude", ".codex", ".venv", "dist", "node_modules", "target"}
 
@@ -45,17 +44,12 @@ RETIRED = [
     # screen *class*: the Map and the Statistics grid draw different live data, and lumping them
     # together is what spent a ~97 ms map render on a heart-rate notification.
     re.compile(r"\bshows_live_" + r"data\b"),
-    # The seventh, and the last: a between-pass seam that sniffed the top screen and dirtied the map
-    # because a resample is invisible to a stack-local key. What replaced it is a monotone revision
-    # the weather domain holds, named by `WeatherKey` (#1549).
-    re.compile(r"\bweather_feed_" + r"changed\b"),
 ]
 
 # One file is exempt, and the reason is what the file is: `firmware/tools/resource_baseline.json` is
 # a measurement log whose `_resident_note_*` entries record what past slices moved, by name.
 # Rewriting those notes to dodge a grep would falsify the record this guard has no business in.
 EXEMPT = {Path("firmware/tools/resource_baseline.json")}
-
 
 def main() -> int:
     failures: list[str] = []
@@ -82,7 +76,6 @@ def main() -> int:
         return 1
     print("no hand-written repaint mirrors — the screens declare what they draw")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

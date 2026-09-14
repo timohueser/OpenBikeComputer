@@ -384,36 +384,6 @@ setting_enum! {
 }
 
 setting_enum! {
-    /// How often the device asks the phone for a fresh weather bundle (epic #1185 — WX11's settings
-    /// entry; the WX8 due scheduler consumes it): Off, or every 15 / 30 / 60 / 120 minutes.
-    /// Scheduled requests occur only during an active ride, and opening Weather is urgent regardless
-    /// of this interval — both are WX8's lifecycle rules; this is just the persisted knob.
-    ///
-    /// The discriminants are a **double** on-disk contract: the settings-codec byte *and* the BLE
-    /// Config `weather_refresh` field (obc-ble-interface-spec §11.8, `obc_ble::WeatherRefresh`) use
-    /// these exact values, so the two stores can never disagree — the board crate's compile-time
-    /// asserts pin the mapping variant by variant (`obc-fw-nrf54l/src/object_store.rs`).
-    /// Appended, never renumbered; an unknown stored byte sanitises to the default,
-    /// [`Every30`](WeatherRefresh::Every30).
-    pub enum WeatherRefresh {
-        /// No scheduled refresh (opening Weather still requests urgently).
-        Off = 0, key Msg::WeatherRefreshOff, None;
-        /// Every 15 minutes.
-        Every15 = 1, key Msg::WeatherRefreshM15, Some(15);
-        /// Every 30 minutes — the default (the epic's locked default interval).
-        Every30 = 2, key Msg::WeatherRefreshM30, Some(30);
-        /// Every 60 minutes.
-        Every60 = 3, key Msg::WeatherRefreshM60, Some(60);
-        /// Every 120 minutes.
-        Every120 = 4, key Msg::WeatherRefreshM120, Some(120);
-    }
-    default Every30;
-    /// The scheduled interval in minutes, or `None` for [`Off`](WeatherRefresh::Off) — the shape
-    /// the WX8 scheduler consumes (mirrors `obc_ble::WeatherRefresh::minutes`).
-    payload minutes: Option<u16>;
-}
-
-setting_enum! {
     /// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
     /// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode).
     ///
@@ -508,7 +478,7 @@ settings_table! {
     /// the `settings_table!` declaration below carries the four markers a row may take.
     pub struct Settings {
         /// Metric or imperial readouts.
-        units: Units = Units::Metric, since(16), ble_writable, reserved(1);
+        units: Units = Units::Metric, since(19), ble_writable, reserved(1);
         // The reserved byte 2 was the `gps_time` flag (removed #641). Its offset is frozen so v11
         // blobs keep their layout — written as a constant `0` and ignored on decode. (Repurpose
         // it, don't reorder, if a future field wants a byte here.)
@@ -518,44 +488,44 @@ settings_table! {
         /// folds in [`utc_offset_min`](Settings::utc_offset_min). Persisted so it seeds the boot display
         /// clock — display-only until re-stamped this boot (see
         /// [`App::clock_trusted`](crate::App::clock_trusted)).
-        clock: DateTime = DateTime::DEFAULT, since(16), sanitize_with(DateTimeEditorExt::sanitize);
+        clock: DateTime = DateTime::DEFAULT, since(19), sanitize_with(DateTimeEditorExt::sanitize);
         /// Local time's offset from UTC, in minutes (`+02:00` → `120`).
-        utc_offset_min: i16 = 0, since(16), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
+        utc_offset_min: i16 = 0, since(19), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
         /// Seconds between GPS fixes (the Power screen's interval).
-        fix_interval_s: u16 = 1, since(16), range(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
+        fix_interval_s: u16 = 1, since(19), range(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
         /// GPS low-power mode (the Power screen's toggle).
-        power_saver: bool = false, since(16);
+        power_saver: bool = false, since(19);
         /// The rider's ordered Statistics-grid field selection (the Stat Fields screen edits it).
-        stat_fields: StatFieldList = StatFieldList::DEFAULT, since(16);
+        stat_fields: StatFieldList = StatFieldList::DEFAULT, since(19);
         /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
-        stat_cycle_s: u16 = STAT_CYCLE_DEFAULT, since(16), range(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
+        stat_cycle_s: u16 = STAT_CYCLE_DEFAULT, since(19), range(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
         /// The user-facing device name (empty = factory `OBC-XXXX`). Written by the companion app over
         /// BLE, not any on-device screen — it lives here so the one settings blob persists it.
-        device_name: DeviceName = DeviceName::EMPTY, since(16), ble_writable;
+        device_name: DeviceName = DeviceName::EMPTY, since(19), ble_writable;
         /// The Bluetooth radio switch (the Bluetooth screen's toggle, epic #447 P8). Off = stop
         /// advertising + drop any live connection; on = the normal advertising lifecycle. **Device-only**
         /// — deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across (a phone must never be able to switch the radio out from under the rider, and
         /// couldn't turn it back on). Default **on**.
-        ble_enabled: bool = true, since(16);
+        ble_enabled: bool = true, since(19);
         /// How the Climb screen (epic #506) is reached — Off / Manual / Auto (the Stats settings screen
         /// cycles it). **Device-only**, like [`ble_enabled`](Settings::ble_enabled): deliberately *not*
         /// one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
         /// Default **Auto** — the climb panel auto-shows on the first climb.
-        climb_mode: ClimbMode = ClimbMode::Auto, since(16);
+        climb_mode: ClimbMode = ClimbMode::Auto, since(19);
         /// How long the UI sits idle before it navigates itself back to where it belongs (Home when not
         /// tracking, the Map mid-ride). **Device-only**, like [`climb_mode`](Settings::climb_mode):
         /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
-        idle_return: IdleReturn = IdleReturn::S30, since(16);
+        idle_return: IdleReturn = IdleReturn::S30, since(19);
         /// Show the small floating `HH:MM` clock on the Map (the map display sheet's toggle).
         /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
         /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
         /// **on**.
-        map_clock: bool = true, since(16);
+        map_clock: bool = true, since(19);
         /// Show the scale bar at the Map's bottom-left (the map display sheet's toggle).
         /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
-        map_scale_bar: bool = true, since(16);
+        map_scale_bar: bool = true, since(19);
         /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
         /// (N2/N5, epic #533). The create-route sheet's bike-type editor steps it through the map's profile *names*;
         /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
@@ -565,19 +535,19 @@ settings_table! {
         /// [`NavProfiles`](crate::NavProfiles)). Not range-clamped on decode for that reason — the value
         /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
-        bike_profile_idx: u8 = 0, since(16);
+        bike_profile_idx: u8 = 0, since(19);
         /// Whether — and when — the Map's bottom-centre waypoint chip appears (epic #523, the Stats
         /// settings screen cycles it). **Device-only**, like [`climb_mode`](Settings::climb_mode):
         /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across — a BLE Config write must never flip the rider's on-glass chrome. Default
         /// **Approach** (the chip surfaces only as a waypoint nears).
-        waypoint_mode: WaypointMode = WaypointMode::Approach, since(16);
+        waypoint_mode: WaypointMode = WaypointMode::Approach, since(19);
         /// The UI language (epic #602, the Language settings screen cycles it). **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode): deliberately *not* one of the BLE-writable fields
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across — the phone never repicks the
         /// rider's on-device language. Default **English**; every user-facing string is looked up in
         /// this language via [`t`](crate::i18n::t) at draw time.
-        language: Language = Language::En, since(16);
+        language: Language = Language::En, since(19);
         /// The saved BLE sensors (SE7, epic #707), one slot per quantity — index **0 HR · 1 Power ·
         /// 2 Cadence**. An empty slot ([`SavedSensor::present`] `== false`) is "no sensor saved". Written
         /// by the Sensors settings screen on pair/forget; the board's central manager reconnects to a
@@ -585,20 +555,20 @@ settings_table! {
         /// [`ble_enabled`](Settings::ble_enabled): never pulled across by
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
         /// Default: all three slots empty.
-        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(16);
+        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(19);
         /// How long after a ride is verifiably synced to the phone the device auto-deletes it (epic
         /// #638): Never / 1 day / 1 week / 1 month. **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode) — the auto-expiry setting is device-local (the app never
         /// surfaces it), so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
         /// Default **1 week**. Only synced rides are ever deleted; unsynced rides are never touched. S5
         /// adds the Auto-delete settings screen that edits this.
-        ride_retention: RideRetention = RideRetention::Week1, since(16);
+        ride_retention: RideRetention = RideRetention::Week1, since(19);
         /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
         /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's own device
         /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
         /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
-        up_ahead_source: UpAheadSource = UpAheadSource::Both, since(16);
+        up_ahead_source: UpAheadSource = UpAheadSource::Both, since(19);
         /// Draw the map's **terrain layer** — today the E3 contour lines (the map display sheet's
         /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
         /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
@@ -619,63 +589,12 @@ settings_table! {
         /// It is **expected to be removed**: if contours win the toggle goes and they are simply on; if
         /// they lose the whole feature goes. Built as the cheapest honest switch, not a settled
         /// preference — don't grow migration concerns around it.
-        map_contours: bool = true, since(16);
-        /// How often the device raises a **scheduled weather request** (weather epic #1185: WX8
-        /// #1193's due scheduler consumes it, the weather sheet's Interval row edits it) — the
-        /// typed [`WeatherRefresh`] whose discriminants ARE the BLE §11.8 wire bytes (pinned by
-        /// test). Division of labour (the #1221/#1224 merge resolution): the wire crate (`obc-ble`'s
-        /// own `WeatherRefresh`) owns the vocabulary and the direction-dependent validation rule at
-        /// the radio boundary — the board's Config write path validates there first and converts via
-        /// [`WeatherRefresh::from_byte`] — while this enum is `obc-app`'s typed representation the
-        /// interval editor cycles ([`stepped`](WeatherRefresh::stepped)) and the scheduler reads
-        /// ([`minutes`](WeatherRefresh::minutes)). [`decode`] sanitises an out-of-range stored byte
-        /// to the default — deliberately **30 min and not `Off`**: §7.3 pins that only an explicit
-        /// rider choice may disable weather. **BLE-writable** (like [`units`](Settings::units) /
-        /// [`device_name`](Settings::device_name)): the companion writes it via Config §7.3, so
-        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls it across.
-        weather_refresh: WeatherRefresh = WeatherRefresh::Every30, since(16), ble_writable, reserved(54);
-        // The reserved 54 bytes at offset 114 were the `weather_alert_marks` table (WX12 #1197,
-        // retired #1542). The marks are device **state**, not a preference: they now carry their
-        // own CRC-framed record with their own lifecycle, so one firing alert stops rewriting this
-        // whole blob and stops waiting for the rider to leave a settings screen. v16 wrote real
-        // marks here and v17 writes zeros, which is why `VERSION` moved; the span itself is frozen
-        // so a stored v16 blob keeps its layout — and `legacy_alert_marks` reads the rider's
-        // anchors back out of it exactly once, at the update.
-        /// The panel's brightness, as a **level index** into the five discrete backlight steps the
-        /// quick drawer's editor offers (#1515 D2) — `0` the dimmest, [`BRIGHTNESS_MAX`] the
-        /// brightest, which is also the factory default.
-        ///
-        /// **There is no level that turns the light off**: a rider who cannot read the panel cannot
-        /// find the control that turns it back on. Stored as a level rather than a duty cycle
-        /// because the steps are the rider's vocabulary; what a level *does* to the hardware is the
-        /// [`Backlight`](obc_ports::Backlight) port's business. **Device-only**, like
-        /// [`map_clock`](Settings::map_clock): a phone must never dim the rider's screen, so
-        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
-        brightness: u8 = BRIGHTNESS_MAX, since(18), range(0, BRIGHTNESS_MAX);
+        map_contours: bool = true, since(19);
+        brightness: u8 = BRIGHTNESS_MAX, since(19), range(0, BRIGHTNESS_MAX);
     }
 
-    /// The factory settings as a **`const`** — the same value [`Default`] returns (`default()`
-    /// delegates here, and the per-field defaults the literal names are pinned against each
-    /// type's own `Default` by test, so the two cannot drift). Exists so the board's ~13.6 KB object store can be built from a `.rodata` image
-    /// instead of a stack temporary: WX12 (#1197) grew this struct by 96 B and the optimizer
-    /// stopped collapsing the store's two-copy construction — the exact transient boot spike the
-    /// 2026-08-03 STKOF post-mortem banned, caught by the boot-chain guard. A future field must
-    /// be const-constructible here, which is a compile error rather than a convention.
     pub const DEFAULT;
 
-    /// Adopt the **BLE-writable** fields — `units` and `device_name` — from `other`, leaving every
-    /// on-device-only field (clock, GPS interval, power-saver, stat grid) untouched.
-    ///
-    /// This is the *phone → device* half of settings coherence (#456). The companion app can write
-    /// units + name over BLE Config; that write lands in the persistent store, and the live app copy
-    /// must adopt it same-session — both so the UI re-captions and so the app's next
-    /// change-detection save doesn't clobber the phone's write with its own stale copy. The merge is
-    /// deliberately narrow: only the fields BLE actually owns are pulled across, so a BLE write
-    /// racing an in-flight on-device edit of an *unrelated* field can't stomp it. Only the settings
-    /// screens mutate the on-device-only fields (the invariant `take_settings_dirty` already relies
-    /// on), and BLE only ever writes the `ble_writable` rows — so field-by-field is the correct
-    /// grain. WX8 (#1193) added the §7.3 `weather_refresh` field as the third, for the same clobber
-    /// reason: an on-device edit's whole-blob save must not overwrite the interval the phone just set.
     pub fn adopt_ble_fields;
 
     /// Clamp every field into its valid range — applied after a decode (see [`decode`]). One line
@@ -706,9 +625,7 @@ settings_table! {
 /// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
 /// widens the struct widens every one of those — this makes the growth an explicit decision.
 ///
-/// The v18 `brightness` row cost two bytes for one: the struct is 2-aligned, so the byte took a
-/// pad byte with it. The next `u8` row here is already paid for.
-const _: () = assert!(core::mem::size_of::<Settings>() == 114, "Settings grew — was that deliberate?");
+const _: () = assert!(core::mem::size_of::<Settings>() == 112, "Settings grew — was that deliberate?");
 
 impl Settings {
     /// The **local** wall-clock set-point the device shows: the UTC [`clock`](Settings::clock)
@@ -720,33 +637,11 @@ impl Settings {
     }
 }
 
-/// Codec version — the layout [`encode`] writes, and the newest layout [`decode`] can read.
-///
-/// **The migration rule, which is this format's whole contract:** the blob is append-only. A new
-/// field is appended carrying `since(VERSION + 1)`, `VERSION` is bumped, and the version's golden
-/// blob is committed. A retired field is **never** dropped — it becomes `reserved(n)`, so every
-/// field after it keeps its offset. Nothing is reordered, no stored discriminant is renumbered (a
-/// build error), and no composite silently changes size. Under that rule a stored version's field
-/// *payload* is a prefix of the current payload — the full encoded blob is not, since the CRC and
-/// padding sit after whichever payload length its version defined — which is what lets [`decode`]
-/// read the fields the stored version declared and default the tail instead of resetting the
-/// rider's settings on every update — see [`MIN_SUPPORTED`]. Each row's `since` column records the
-/// version that introduced it.
-pub const VERSION: u8 = 18;
+/// Current settings layout version.
+pub const VERSION: u8 = 19;
 
-/// The oldest stored version [`decode`] accepts. A version joins this floor only when its exact
-/// bytes are committed as a golden pair — v16 is the only version whose bytes exist in the
-/// repository.
-///
-/// That evidence rule is also why every current row reads `since(16)` rather than the version that
-/// historically appended it: below the floor a `since` decodes nothing, so older values would be
-/// transcribed inference — and inference applied to a rider's stored settings is *silent
-/// reinterpretation*, which is worse than the reset it would replace. Real `since` values start
-/// arriving with the rows appended at v17 and later.
-///
-/// A blob **newer** than the running firmware stays rejected outright: its payload length is
-/// unknown, so its CRC cannot even be checked. A downgrade therefore resets, deliberately.
-pub const MIN_SUPPORTED: u8 = 16;
+/// Settings use the current layout. Other versions reset to defaults.
+pub const MIN_SUPPORTED: u8 = 19;
 
 /// The encoded length of a `payload`-byte payload: the CRC-covered bytes + a 2-byte CRC, **rounded
 /// up to the device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) —
@@ -766,12 +661,7 @@ pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
 const PAYLOAD_LEN: usize = off::END;
 
-// The v16 layout and its v18 tail, in literals. Every number below was read off the bytes on disk and written by
-// hand — **not** derived from the table — so this is a real gate rather than a tautology: an
-// assert generated from the same token that produced the value cannot fail. Reorder two rows,
-// mistype a `SettingCodec::LEN`, or resize a composite and the build stops here instead of
-// silently rewriting every rider's stored settings. Byte 0 is the version and byte 2 is the
-// retired `gps_time` tombstone, both pinned by the gap between `units` and `clock`.
+// Literal byte offsets pin the current settings layout.
 const _: () = {
     assert!(off::units == 1, "units moved");
     assert!(off::clock == 3, "clock moved (or the retired gps_time byte lost its reservation)");
@@ -793,123 +683,10 @@ const _: () = {
     assert!(off::ride_retention == 110, "ride_retention moved");
     assert!(off::up_ahead_source == 111, "up_ahead_source moved");
     assert!(off::map_contours == 112, "map_contours moved");
-    assert!(off::weather_refresh == 113, "weather_refresh moved");
-    // 114..168 is the retired alert-mark span, held by `weather_refresh`'s `reserved(54)`. It has
-    // no offset of its own to pin; that the reservation still holds it is `off::brightness` below,
-    // which the v18 row was appended straight after it.
-    assert!(off::brightness == 168, "brightness moved");
-    assert!(PAYLOAD_LEN == 169, "the CRC moved");
-    assert!(ENCODED_LEN == 176, "the blob is no longer 11 RRAM lines");
+    assert!(off::brightness == 113, "brightness moved");
+    assert!(PAYLOAD_LEN == 114, "the CRC moved");
+    assert!(ENCODED_LEN == 128, "the blob is no longer 11 RRAM lines");
 };
-
-// The per-version payload lengths, in literals — read off the versions' bytes and written by hand,
-// **not** derived from the table, for the same reason the offsets above are: an assert generated
-// from the `since` tokens that produced `payload_len` could not fail. The failure mode this guards
-// is not a reset but a *silent* one, a field the blob does contain being handed back as its
-// default. Now that a row sits below `VERSION`, the rungs are independently load-bearing: mistype
-// `brightness`'s `since` and the v16 rung moves without tripping the `since <= VERSION` guard.
-// Every future bump adds its literal here beside its golden blob.
-const _: () = {
-    assert!(payload_len(16) == 168, "the v16 payload length moved — a `since` or a row's size changed");
-    assert!(payload_len(17) == 168, "the v17 payload length moved — a `since` or a row's size changed");
-    assert!(payload_len(18) == 169, "the v18 payload length moved — a `since` or a row's size changed");
-};
-
-// ==================== the one-time v16 alert-mark carry-across (#1542) ====================
-
-/// The version that stored the weather alert marks inside the preferences blob — the only one that
-/// ever did.
-const LEGACY_MARKS_VERSION: u8 = 16;
-/// The frozen offset of that span, and its length. Hand-written literals: they describe bytes that
-/// are already on devices and can therefore never move. The span is a `reserved(54)` tombstone now,
-/// so nothing after it can shift either.
-const LEGACY_MARKS_OFFSET: usize = 114;
-const LEGACY_MARKS_LEN: usize = 54;
-/// The v16 payload length — the CRC-covered prefix this reader validates before believing a byte
-/// of the span. Hand-written for the same reason.
-const LEGACY_MARKS_PAYLOAD_LEN: usize = 168;
-
-/// Read the weather alert marks out of a stored **v16** preferences blob, or `None` for any other
-/// version, a short read, or a failed CRC.
-///
-/// v17 retired the row: those 54 bytes are reserved and written as zeros, so a v17 blob must return
-/// `None` rather than resurrect zeros over live anchors. Called once at boot by each adapter, and
-/// only when the marks record itself did not answer — so an update carries the rider's dedup
-/// anchors across instead of costing them one duplicate storm card per class.
-pub fn legacy_alert_marks(bytes: &[u8]) -> Option<crate::weather_alerts::AlertMarks> {
-    if *bytes.first()? != LEGACY_MARKS_VERSION || bytes.len() < encoded_len(LEGACY_MARKS_PAYLOAD_LEN) {
-        return None;
-    }
-    let crc = u16::from_le_bytes([bytes[LEGACY_MARKS_PAYLOAD_LEN], bytes[LEGACY_MARKS_PAYLOAD_LEN + 1]]);
-    if crc != crate::store_meta::crc16(&bytes[0..LEGACY_MARKS_PAYLOAD_LEN]) {
-        return None;
-    }
-    Some(crate::weather_alerts::unpack_marks(&bytes[LEGACY_MARKS_OFFSET..LEGACY_MARKS_OFFSET + LEGACY_MARKS_LEN]))
-}
-
-// ==================== the golden blobs ====================
-//
-// One committed pair per version: the bytes `encode` writes for `Settings::DEFAULT` and for the
-// `every_field_set` fixture. **Captured, never derived** — a golden computed from the table it
-// guards could not fail. They are the matrix `decode` is held against, and the v16 pair is also
-// this slice's migration fixture, so re-capturing either of them would void every claim made about
-// a blob already on a device.
-
-#[cfg(test)]
-pub(crate) const V16_DEFAULT_BLOB: [u8; ENCODED_LEN] = [
-    16, 0, 0, 233, 7, 1, 1, 12, 0, 0, 0, 1, 0, 0, 6, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 1, 2, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1,
-    2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 212, 126, 0, 0, 0, 0, 0, 0,
-];
-#[cfg(test)]
-pub(crate) const V16_FULL_BLOB: [u8; ENCODED_LEN] = [
-    16, 1, 0, 234, 7, 6, 29, 14, 40, 120, 0, 5, 0, 1, 6, 1, 2, 3, 4, 5, 9, 0, 0, 0, 0, 0, 0, 8, 0, 10, 84, 105, 109,
-    111, 39, 115, 32, 79, 66, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 6, 5,
-    4, 3, 2, 1, 3, 2, 0, 4, 3, 132, 213, 73, 107, 0, 0, 0, 0, 0, 12, 207, 2, 241, 13, 132, 0, 11, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 255, 255, 255, 255, 255, 255, 255, 255, 64, 214, 50, 253, 0, 238, 133, 255, 0,
-    2, 122, 0, 0, 0, 0, 0, 0,
-];
-
-/// The **v17** pair (#1542). The only difference from v16 is what those two versions *mean* by the
-/// 54 bytes at offset 114: v16 wrote the rider's alert anchors there and v17 writes zeros. No field
-/// moved, which is exactly why the version had to — two byte-meanings under one version number is
-/// what the append-only law forbids.
-#[cfg(test)]
-const V17_DEFAULT_BLOB: [u8; ENCODED_LEN] = [
-    17, 0, 0, 233, 7, 1, 1, 12, 0, 0, 0, 1, 0, 0, 6, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 1, 2, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1,
-    2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 241, 101, 0, 0, 0, 0, 0, 0,
-];
-#[cfg(test)]
-const V17_FULL_BLOB: [u8; ENCODED_LEN] = [
-    17, 1, 0, 234, 7, 6, 29, 14, 40, 120, 0, 5, 0, 1, 6, 1, 2, 3, 4, 5, 9, 0, 0, 0, 0, 0, 0, 8, 0, 10, 84, 105, 109,
-    111, 39, 115, 32, 79, 66, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 6, 5,
-    4, 3, 2, 1, 3, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 141, 137, 0, 0, 0, 0, 0, 0,
-];
-
-#[cfg(test)]
-const V18_DEFAULT_BLOB: [u8; ENCODED_LEN] = [
-    18, 0, 0, 233, 7, 1, 1, 12, 0, 0, 0, 1, 0, 0, 6, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 1, 2, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1,
-    2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 72, 23, 0, 0, 0, 0, 0,
-];
-#[cfg(test)]
-const V18_FULL_BLOB: [u8; ENCODED_LEN] = [
-    18, 1, 0, 234, 7, 6, 29, 14, 40, 120, 0, 5, 0, 1, 6, 1, 2, 3, 4, 5, 9, 0, 0, 0, 0, 0, 0, 8, 0, 10, 84, 105, 109,
-    111, 39, 115, 32, 79, 66, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 6, 5,
-    4, 3, 2, 1, 3, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 79, 7, 0, 0, 0, 0, 0,
-];
 
 #[cfg(test)]
 mod tests {
@@ -935,7 +712,7 @@ mod tests {
         assert_eq!(d.saved_sensors, [SavedSensor::default(); SENSOR_SLOTS]);
         assert_eq!(d.ride_retention, RideRetention::default());
         assert_eq!(d.up_ahead_source, UpAheadSource::default());
-        assert_eq!(d.weather_refresh, WeatherRefresh::default());
+
         // And the whole const is its type's `Default` — the property the field list guards.
         assert_eq!(d, Settings::default());
     }
@@ -972,7 +749,7 @@ mod tests {
             ],
             ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
-            weather_refresh: WeatherRefresh::Every120,
+
             brightness: 1,
         }
     }
@@ -990,82 +767,6 @@ mod tests {
     fn codec_round_trips() {
         let s = every_field_set();
         assert_eq!(decode(&encode(&s)), Some(s));
-    }
-
-    /// The golden pairs. `encode` writes exactly these bytes for [`Settings::DEFAULT`] and for a
-    /// value with every field set — captured, not derived, so a renumbered `setting_enum!`
-    /// discriminant or a resized composite moves a byte here. This is the codec-side twin of the
-    /// macro's compile-time discriminant asserts.
-    ///
-    /// **Three versions' bytes are committed** — v16 the floor, v17 T3b's, v18 this firmware's —
-    /// which is what makes the tail-defaulting rungs real rather than theoretical. Only the newest
-    /// pair is what `encode` writes; the two older ones are what `decode` is held against, and
-    /// re-capturing either of *those* would void every claim about a blob already on a device.
-    #[test]
-    fn encode_matches_the_golden_blobs() {
-        assert_eq!(encode(&Settings::DEFAULT), V18_DEFAULT_BLOB, "the default blob is frozen");
-        assert_eq!(encode(&every_field_set()), V18_FULL_BLOB, "the fully-populated blob is frozen");
-        assert_eq!(decode(&V18_DEFAULT_BLOB), Some(Settings::DEFAULT), "…and both decode back");
-        assert_eq!(decode(&V18_FULL_BLOB), Some(every_field_set()));
-
-        // **Tail-defaulting, on two versions of real stored bytes.** Neither v16 nor v17 carried a
-        // `brightness` byte, so every field they do carry survives the update and only the appended
-        // row takes its default — and the value that default lands on is the one that matters: a
-        // device that has never seen v18 comes up at full brightness, not at a dark panel.
-        let carried = Settings { brightness: BRIGHTNESS_MAX, ..every_field_set() };
-        assert_eq!(decode(&V17_DEFAULT_BLOB), Some(Settings::DEFAULT), "a stored v17 default still reads");
-        assert_eq!(decode(&V17_FULL_BLOB), Some(carried), "…and a v17 full blob keeps every field it had");
-        assert_eq!(decode(&V16_DEFAULT_BLOB), Some(Settings::DEFAULT), "a stored v16 default still reads");
-        assert_eq!(decode(&V16_FULL_BLOB), Some(carried), "…and so does a stored v16 full blob");
-    }
-
-    /// A v16 blob decodes to **exactly** the shrunken fixture — every surviving field, unmoved —
-    /// and the 54-byte tail is the reservation that keeps that true. Two mutants at once:
-    /// `reserved(54)` landing on the wrong row would move `weather_refresh`, and dropping the row
-    /// with no reservation at all collapses `PAYLOAD_LEN` to 114, which launders a blob whose real
-    /// CRC never matched into a `Some`.
-    #[test]
-    fn a_v16_blob_decodes_every_surviving_field_and_reserves_the_tail() {
-        assert_eq!(
-            decode(&V16_FULL_BLOB),
-            Some(Settings { brightness: BRIGHTNESS_MAX, ..every_field_set() }),
-            "every surviving field, exactly — only the later v18 row defaults"
-        );
-        assert_eq!(off::weather_refresh, 113, "the row above the tail is where it was");
-        // The reservation is what keeps the *next* row where it is: dropping it would slide
-        // `brightness` down to 114 and every stored blob would be reinterpreted.
-        assert_eq!(off::brightness, 168, "the reservation still holds the tail");
-        // v17 and v18 write the span as zeros; v16 wrote the rider's anchors into the same bytes.
-        // That difference in *meaning* under an identical layout is the whole reason `VERSION` moved.
-        assert_eq!(&encode(&every_field_set())[114..168], &[0u8; 54], "v17 and after reserve the span");
-        assert_ne!(&V16_FULL_BLOB[114..168], &[0u8; 54], "…where v16 carried the anchors");
-    }
-
-    /// The one-time carry-across: a stored v16 blob hands back the anchors it holds, and a v17 blob
-    /// never does — its span is zeros, and resurrecting those over live anchors would be worse than
-    /// the loss the reader exists to prevent.
-    #[test]
-    fn legacy_v16_blob_yields_its_marks() {
-        use crate::weather_alerts::AlertMark;
-        assert_eq!(
-            legacy_alert_marks(&V16_FULL_BLOB),
-            Some([
-                Some(AlertMark { onset: 1_800_000_900, pos: Some((47_123_456, 8_654_321)), severity: 11 }),
-                None,
-                Some(AlertMark { onset: -1, pos: Some((-47_000_000, -8_000_000)), severity: 0 }),
-            ]),
-            "the anchors the v16 fixture stored, read back out of the frozen span"
-        );
-        assert_eq!(legacy_alert_marks(&V16_DEFAULT_BLOB), Some([None, None, None]), "no anchors is not a failure");
-
-        assert_eq!(legacy_alert_marks(&V17_DEFAULT_BLOB), None, "a v17 blob never answers");
-        assert_eq!(legacy_alert_marks(&V17_FULL_BLOB), None, "…whatever else it carries");
-        assert_eq!(legacy_alert_marks(&V18_FULL_BLOB), None, "and neither does a v18 one");
-
-        let mut torn = V16_FULL_BLOB;
-        torn[120] ^= 0xFF; // a mark byte, without fixing the CRC
-        assert_eq!(legacy_alert_marks(&torn), None, "a CRC mismatch yields no anchors");
-        assert_eq!(legacy_alert_marks(&V16_FULL_BLOB[..PAYLOAD_LEN]), None, "and neither does a short read");
     }
 
     /// One table over **every declared field**, replacing the twelve copied per-field codec tests
@@ -1087,23 +788,11 @@ mod tests {
         // §7.3). Deriving this from the table's own `ble_writable` markers would restate the token
         // that generates `adopt_ble_fields` and could never fail — so a marker added to a
         // device-only row, or dropped from one of these three, fails here by field name.
-        Settings::assert_field_table(&base, &other, &adopted, &["units", "device_name", "weather_refresh"]);
+        Settings::assert_field_table(&base, &other, &adopted, &["units", "device_name"]);
     }
 
-    /// M1's end-to-end pin: an unknown stored byte sanitises **through `decode`**, not merely
-    /// through `T::from_byte` in isolation — the generated `SettingCodec::read` has to actually
-    /// route the blob's byte through the type's clamp. Once for a `setting_enum!` row (and it is
-    /// the row that carries a rule: §7.3 pins that only an explicit rider choice may disable
-    /// weather, so corruption must land on 30 min, never `Off`) and once for `ride_retention`,
-    /// which is not a `setting_enum!` and has no other blob-level cover.
     #[test]
     fn decode_sanitises_an_unknown_enum_byte_through_the_blob() {
-        let mut b = encode(&Settings { weather_refresh: WeatherRefresh::Off, ..Settings::default() });
-        b[off::weather_refresh] = 200;
-        re_stamp_crc(&mut b);
-        let got = decode(&b).expect("valid CRC → Some, just sanitised");
-        assert_eq!(got.weather_refresh, WeatherRefresh::Every30, "§7.3: unknown → 30 min, never Off");
-
         let mut b = encode(&Settings { ride_retention: RideRetention::Never, ..Settings::default() });
         b[off::ride_retention] = 200;
         re_stamp_crc(&mut b);
@@ -1116,30 +805,6 @@ mod tests {
         b[off::brightness] = 200;
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().brightness, BRIGHTNESS_MAX, "an out-of-range level clamps to the brightest");
-    }
-
-    /// The weather-refresh knob's own semantics, kept from the codec test the table replaced: it
-    /// defaults to **30 min and never `Off`** (§7.3 pins that only an explicit rider choice may
-    /// disable weather), each value carries the interval the WX8 scheduler consumes, and the
-    /// picker walks the §11.8 wire order with wrap.
-    #[test]
-    fn weather_refresh_minutes_and_stepping() {
-        assert_eq!(Settings::default().weather_refresh, WeatherRefresh::Every30, "default = 30 min, not Off");
-
-        for (r, minutes) in [
-            (WeatherRefresh::Off, None),
-            (WeatherRefresh::Every15, Some(15u16)),
-            (WeatherRefresh::Every30, Some(30)),
-            (WeatherRefresh::Every60, Some(60)),
-            (WeatherRefresh::Every120, Some(120)),
-        ] {
-            assert_eq!(r.minutes(), minutes);
-        }
-
-        // The picker walks Off → 15 → 30 → 60 → 120 and wraps at both ends (the settings screen).
-        assert_eq!(WeatherRefresh::Off.stepped(1), WeatherRefresh::Every15);
-        assert_eq!(WeatherRefresh::Every120.stepped(1), WeatherRefresh::Off, "wraps past 120");
-        assert_eq!(WeatherRefresh::Off.stepped(-1), WeatherRefresh::Every120, "wraps past Off");
     }
 
     /// The routing-profile index is stored **verbatim** — never range-clamped on decode, because
@@ -1226,7 +891,7 @@ mod tests {
         check!(WaypointMode);
         check!(UpAheadSource);
         check!(IdleReturn);
-        check!(WeatherRefresh);
+
         check!(Language);
     }
 
@@ -1882,55 +1547,25 @@ pub enum SettingsIntent {
     RetryDue,
 }
 
-/// Which durable record an effect or outcome names.
-///
-/// Two records share this domain's slot, its machine and its vocabulary — and therefore need one
-/// discriminator that is **not** the token: each record has its own
-/// [`SettingsMachine`] instance, each instance mints from its own
-/// [`TokenSource`](crate::device_core::TokenSource), and two independent sources issue equal
-/// generations. Routing an answer by token alone would let a preferences ack clear a newer mark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsRecord {
-    /// The rider's preferences blob — [`Settings`].
-    Preferences,
-    /// The weather alert-mark record
-    /// ([`AlertMarks`](crate::weather_alerts::AlertMarks)): device state, not a preference.
-    AlertMarks,
-}
-
-/// The one bounded settings operation, carrying the [`OperationToken`] the domain issued.
-///
-/// The record is named by the **variant**, not by a field: the two size tripwires below leave a
-/// token and a revision exactly filling the word, and the enum tag is a byte that is already paid
-/// for.
+/// Persist the current settings revision. Values are read from resident settings at execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEffect {
     /// Write the live settings to durable storage as `revision`. The values themselves are read
     /// from the resident [`Settings`] under the snapshot-at-execute rule — no settings copy ever
     /// rides the effect.
     PersistRevision { token: OperationToken<SettingsTag>, revision: u16 },
-    /// Write the live alert-mark record as `revision`, under the same snapshot-at-execute rule.
-    PersistAlertMarks { token: OperationToken<SettingsTag>, revision: u16 },
 }
 
 impl SettingsEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<SettingsTag> {
         match self {
-            SettingsEffect::PersistRevision { token, .. } | SettingsEffect::PersistAlertMarks { token, .. } => *token,
-        }
-    }
-
-    /// The record this effect writes.
-    pub fn record(&self) -> SettingsRecord {
-        match self {
-            SettingsEffect::PersistRevision { .. } => SettingsRecord::Preferences,
-            SettingsEffect::PersistAlertMarks { .. } => SettingsRecord::AlertMarks,
+            SettingsEffect::PersistRevision { token, .. } => *token,
         }
     }
 }
 
-/// The result of one [`SettingsEffect`], named per record like the effect it answers. The typed
+/// The result of one [`SettingsEffect`]. The typed
 /// failure reuses [`SettingsSaveError`](obc_ports::SettingsSaveError) — the port already names
 /// every way a settings write can fail, and a second vocabulary for the same thing would only
 /// drift.
@@ -1944,12 +1579,6 @@ pub enum SettingsOutcome {
     /// The executor abandoned the preferences write without completing it — a platform with no
     /// durable store says so here instead of leaving the handshake parked forever.
     Cancelled { token: OperationToken<SettingsTag> },
-    /// `revision` of the alert-mark record reached durable storage.
-    MarksPersisted { token: OperationToken<SettingsTag>, revision: u16 },
-    /// The marks write for `revision` failed.
-    MarksPersistFailed { token: OperationToken<SettingsTag>, revision: u16, error: obc_ports::SettingsSaveError },
-    /// The executor abandoned the marks write without completing it.
-    MarksCancelled { token: OperationToken<SettingsTag> },
 }
 
 impl SettingsOutcome {
@@ -1958,22 +1587,7 @@ impl SettingsOutcome {
         match self {
             SettingsOutcome::Persisted { token, .. }
             | SettingsOutcome::PersistFailed { token, .. }
-            | SettingsOutcome::Cancelled { token }
-            | SettingsOutcome::MarksPersisted { token, .. }
-            | SettingsOutcome::MarksPersistFailed { token, .. }
-            | SettingsOutcome::MarksCancelled { token } => *token,
-        }
-    }
-
-    /// The record this outcome answers for — the routing key, checked *before* the token.
-    pub fn record(&self) -> SettingsRecord {
-        match self {
-            SettingsOutcome::Persisted { .. }
-            | SettingsOutcome::PersistFailed { .. }
-            | SettingsOutcome::Cancelled { .. } => SettingsRecord::Preferences,
-            SettingsOutcome::MarksPersisted { .. }
-            | SettingsOutcome::MarksPersistFailed { .. }
-            | SettingsOutcome::MarksCancelled { .. } => SettingsRecord::AlertMarks,
+            | SettingsOutcome::Cancelled { token } => *token,
         }
     }
 }
@@ -2105,29 +1719,14 @@ impl SettingsMachine {
         }
     }
 
-    /// The next bounded operation for `record`, or `None` when none is owed this pass.
-    ///
-    /// `record` is an *input*, not state: this machine is record-agnostic — a revision, a token, a
-    /// debounce, a backoff and a stale-ack rule — and each record owns one instance of it, so which
-    /// record an instance speaks for is settled where the instances are wired, not stored twice.
-    ///
-    /// The dirty state is *not* cleared here (the #810 fix): a failed write must keep the revision
-    /// retryable, so Clean is reached only by a matching success.
-    pub(crate) fn next_effect(
-        &mut self,
-        record: SettingsRecord,
-        in_settings_subtree: bool,
-        now_ms: u32,
-    ) -> Option<SettingsEffect> {
+    /// Offer a write after editing ends. A matching success clears the dirty state.
+    pub(crate) fn next_effect(&mut self, in_settings_subtree: bool, now_ms: u32) -> Option<SettingsEffect> {
         if !self.wants_write(in_settings_subtree, now_ms) {
             return None;
         }
         self.persist = PersistState::Awaiting;
         let (token, revision) = (self.ops.issue(), self.revision);
-        Some(match record {
-            SettingsRecord::Preferences => SettingsEffect::PersistRevision { token, revision },
-            SettingsRecord::AlertMarks => SettingsEffect::PersistAlertMarks { token, revision },
-        })
+        Some(SettingsEffect::PersistRevision { token, revision })
     }
 
     /// Consume the answer to a write. Returns `true` when the write **failed** and the rider must
@@ -2142,16 +1741,14 @@ impl SettingsMachine {
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         match outcome {
-            SettingsOutcome::Persisted { revision, .. } | SettingsOutcome::MarksPersisted { revision, .. } => {
+            SettingsOutcome::Persisted { revision, .. } => {
                 self.note_persisted(revision);
                 false
             }
-            SettingsOutcome::PersistFailed { revision, .. } | SettingsOutcome::MarksPersistFailed { revision, .. } => {
-                self.note_persist_failed(revision, now_ms)
-            }
+            SettingsOutcome::PersistFailed { revision, .. } => self.note_persist_failed(revision, now_ms),
             // A platform with no durable store says so here instead of parking the handshake
             // forever. The value stays dirty and retryable; nothing is claimed to have been written.
-            SettingsOutcome::Cancelled { .. } | SettingsOutcome::MarksCancelled { .. } => {
+            SettingsOutcome::Cancelled { .. } => {
                 if self.persist == PersistState::Awaiting {
                     self.persist = PersistState::Dirty;
                 }
@@ -2211,18 +1808,14 @@ mod settings_machine_tests {
     use super::*;
     use obc_ports::SettingsSaveError;
 
-    /// The machine is record-agnostic; these tests exercise it as the preferences instance.
-    const RECORD: SettingsRecord = SettingsRecord::Preferences;
-
     /// The token a write went out under, so a test can answer the operation the machine is actually
     /// holding.
     fn emit(
         machine: &mut SettingsMachine,
         now_ms: u32,
     ) -> (crate::device_core::OperationToken<crate::device_core::SettingsTag>, u16) {
-        match machine.next_effect(SettingsRecord::Preferences, false, now_ms).expect("a write is owed") {
+        match machine.next_effect(false, now_ms).expect("a write is owed") {
             SettingsEffect::PersistRevision { token, revision } => (token, revision),
-            other => panic!("the preferences instance emits its own record, not {other:?}"),
         }
     }
 
@@ -2232,12 +1825,12 @@ mod settings_machine_tests {
     fn no_write_leaves_while_the_rider_is_inside_the_settings_subtree() {
         let mut machine = SettingsMachine::new();
         machine.note_edited();
-        assert!(machine.next_effect(RECORD, true, 100).is_none(), "still editing");
-        assert!(machine.next_effect(RECORD, true, 200).is_none(), "…and still editing");
+        assert!(machine.next_effect(true, 100).is_none(), "still editing");
+        assert!(machine.next_effect(true, 200).is_none(), "…and still editing");
 
         let (_, revision) = emit(&mut machine, 300);
         assert_eq!(revision, 1, "the edit's revision leaves once");
-        assert!(machine.next_effect(RECORD, false, 400).is_none(), "awaiting an answer — never re-emitted");
+        assert!(machine.next_effect(false, 400).is_none(), "awaiting an answer — never re-emitted");
     }
 
     /// **#810.** A stale ack — one for a revision a newer edit has already superseded — must not
@@ -2272,10 +1865,7 @@ mod settings_machine_tests {
 
         let (_, retried) = emit(&mut machine, 1_000 + SETTINGS_RETRY_BACKOFF_MS);
         assert_eq!(retried, revision, "the same content, not a new one");
-        assert!(
-            machine.next_effect(RECORD, false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(),
-            "one retry in flight"
-        );
+        assert!(machine.next_effect(false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(), "one retry in flight");
     }
 
     /// A platform that takes the write and never answers (the web demo has no durable store) parks
@@ -2287,7 +1877,7 @@ mod settings_machine_tests {
         machine.note_edited();
         emit(&mut machine, 100);
         for ms in [200, 10_000, 100_000, 1_000_000] {
-            assert!(machine.next_effect(RECORD, false, ms).is_none(), "no RRAM spam under a silent executor");
+            assert!(machine.next_effect(false, ms).is_none(), "no RRAM spam under a silent executor");
         }
 
         // …and a `Cancelled` answer is how such a platform says so honestly: the value stays dirty

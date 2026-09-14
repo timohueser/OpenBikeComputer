@@ -47,20 +47,5 @@ public enum GATT {
     /// characteristic used by the v4 client.
     nonisolated(unsafe) public static let objectControl = CBUUID(string: "3C920009-9916-4EBA-ABC2-342FE08F6B10")
 
-    // MARK: OBC Weather Request (spec §11, WX3 / #1188)
-    // A random 128-bit base of its own, deliberately *not* a block inside the OBC Control base:
-    // iOS matches the advertisement on this UUID alone, so the two services must be independently
-    // advertisable. This service replaces OBC Control in the one legacy advertisement while a
-    // request is pending; **both** always exist in the connected GATT database — advertising a
-    // service the connected database lacks is exactly the trap this avoids.
-    // The base has never shipped, so `0001` is a first assignment, not a reuse.
-    nonisolated(unsafe) public static let weatherRequestService =
-        CBUUID(string: "B3B60000-33B4-4F02-A5FF-E5954D54B5AA")
-    /// The read-only, **authenticated** request context — 52 LE bytes, `WeatherRequestContext`.
-    /// Authenticated because the value describes where the rider is: an unbonded peer that connects
-    /// to the advertisement gets an ATT security error, and does not consume the pending request
-    /// either.
-    nonisolated(unsafe) public static let weatherRequestContext =
-        CBUUID(string: "B3B60001-33B4-4F02-A5FF-E5954D54B5AA")
 }
 #endif
