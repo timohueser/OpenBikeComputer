@@ -928,6 +928,8 @@ def required_jobs(plan: SelectionPlan, jobs: Mapping[str, WorkflowJob]) -> list[
 
 
 def _add_reason(selection: SuiteSelection, reason: str) -> None:
+    if selection.suite.get("pull_request") == "never":
+        return
     if reason not in selection.reasons:
         selection.reasons.append(reason)
 
