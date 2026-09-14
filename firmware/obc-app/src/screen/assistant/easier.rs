@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::assistant_demo::easier::Route;
+use embedded_graphics::primitives::Rectangle;
 
 const NAMES: [&str; 3] = ["Less climbing", "Smoother surface", "Shorter ride"];
 
@@ -58,8 +59,7 @@ impl View {
         if self.review {
             cv.clear(PARCHMENT);
             header(cv, rx.w, NAMES[self.selected], None);
-            cv.round(rect(8, 46, rx.w - 16, 70), 6, AMBER);
-            benefit(cv, current, next, self.selected, 45);
+            benefit(cv, current, next, self.selected, rect(8, 46, rx.w - 16, 70), None);
             cv.text("Now", Point::new(150, 129), Font::Label, TextAlign::Right, SUBTEXT);
             cv.text("New", Point::new(226, 129), Font::Label, TextAlign::Right, DETOUR);
             cv.hline(12, 157, rx.w - 24, RULE);
@@ -112,9 +112,7 @@ impl View {
         }
         header(cv, rx.w, "Easier route", Some(self.selected + 1));
         cv.fill(rect(0, 188, rx.w, rx.h - 188), PARCHMENT);
-        cv.round(rect(8, 190, rx.w - 16, 86), 6, AMBER);
-        cv.text(NAMES[self.selected], Point::new(16, 190), Font::Label, TextAlign::Left, INK);
-        benefit(cv, current, next, self.selected, 217);
+        benefit(cv, current, next, self.selected, rect(8, 190, rx.w - 16, 86), Some(NAMES[self.selected]));
         button(cv, "Preview route", 280, true);
     }
 }
@@ -142,17 +140,37 @@ fn distance(value: u32, ascent: bool) -> heapless::String<16> {
     text
 }
 
-fn benefit(cv: &mut impl Surface, current: &Route, next: &Route, goal: usize, y: i32) {
+fn benefit(cv: &mut impl Surface, current: &Route, next: &Route, goal: usize, area: Rectangle, title: Option<&str>) {
     let (old, new, label) = match goal {
         0 => (current.climb_m, next.climb_m, "ascent saved"),
         1 => (current.rough_m, next.rough_m, "rough avoided"),
         _ => (current.distance_m, next.distance_m, "distance saved"),
     };
     let text = distance(old.abs_diff(new), goal == 0);
-    cv.text(&text, Point::new(48, y), Font::Display, TextAlign::Left, INK);
-    cv.text(if new > old { "more than now" } else { label }, Point::new(48, y + 31), Font::Label, TextAlign::Left, INK);
-    let x = 26;
-    let y = y + 20;
+    let center = area.top_left.x + area.size.width as i32 / 2;
+    let label_height = Font::Label.cap_height() as i32;
+    let number_height = Font::Display.cap_height() as i32;
+    let heading_height = title.map_or(0, |_| label_height + 8);
+    let content_height = heading_height + number_height + 8 + label_height;
+    let mut top = area.top_left.y + (area.size.height as i32 - content_height) / 2;
+    cv.round(area, 6, AMBER);
+    if let Some(title) = title {
+        cv.text_vcentered(title, center, (top, label_height), Font::Label, TextAlign::Center, INK);
+        top += heading_height;
+    }
+    let row_width = 20 + 8 + obc_render::text::text_width(&text, Font::Display) as i32;
+    let left = center - row_width / 2;
+    cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, INK);
+    cv.text_vcentered(
+        if new > old { "more than now" } else { label },
+        center,
+        (top + number_height + 8, label_height),
+        Font::Label,
+        TextAlign::Center,
+        INK,
+    );
+    let x = left + 10;
+    let y = top + number_height / 2;
     match goal {
         0 => cv.triangle(Point::new(x - 9, y + 7), Point::new(x, y - 9), Point::new(x + 9, y + 7), INK),
         1 => {
