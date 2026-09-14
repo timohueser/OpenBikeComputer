@@ -98,23 +98,50 @@ pub fn sentences(text: &str) -> Vec<&str> {
             continue;
         }
         let word = text[..end].split_whitespace().next_back().unwrap_or("");
+        let stem = word.trim_end_matches('.');
+        let next = text[end..].split_whitespace().next().unwrap_or("");
+        let ordinal = !stem.is_empty() && stem.chars().all(|c| c.is_ascii_digit());
+        let roman = !stem.is_empty() && stem.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C' | 'D' | 'M'));
+        let continues = next.starts_with(char::is_lowercase) || next.starts_with('(');
+        let date_or_century = matches!(
+            next.trim_end_matches(['.', ',', ':', ';', '!', '?']).to_ascii_lowercase().as_str(),
+            "januar"
+                | "februar"
+                | "märz"
+                | "april"
+                | "mai"
+                | "juni"
+                | "juli"
+                | "august"
+                | "september"
+                | "oktober"
+                | "november"
+                | "dezember"
+                | "jahrhundert"
+                | "jahrhunderts"
+        );
         if ch == '.'
-            && (matches!(
-                word.to_ascii_lowercase().as_str(),
-                "mr."
-                    | "mrs."
-                    | "ms."
-                    | "dr."
-                    | "st."
-                    | "mt."
-                    | "prof."
-                    | "e.g."
-                    | "i.e."
-                    | "ca."
-                    | "c."
-                    | "no."
-                    | "etc."
-            ) || (word.chars().count() == 2 && word.chars().next().is_some_and(char::is_alphabetic)))
+            && ((ordinal && (continues || date_or_century))
+                || (roman && continues)
+                || matches!(
+                    word.to_ascii_lowercase().as_str(),
+                    "mr."
+                        | "mrs."
+                        | "ms."
+                        | "dr."
+                        | "st."
+                        | "mt."
+                        | "prof."
+                        | "e.g."
+                        | "i.e."
+                        | "ca."
+                        | "c."
+                        | "no."
+                        | "etc."
+                )
+                || (word.chars().count() == 2
+                    && word.chars().next().is_some_and(char::is_alphabetic)
+                    && (!roman || continues)))
         {
             continue;
         }
@@ -197,6 +224,14 @@ mod tests {
         let text = lead(html);
         assert_eq!(sentences(&text), ["St. Mary's is 2.5 km long (measured by Dr. May).", "It is old."]);
         assert!(article_pages(html).unwrap().join(" ").contains("Mary's"));
+        assert_eq!(
+            sentences("Die Burg wurde am 1. Mai 1280 von Heinrich IV. gegründet. Sie steht im 13. Jahrhundert."),
+            ["Die Burg wurde am 1. Mai 1280 von Heinrich IV. gegründet.", "Sie steht im 13. Jahrhundert."]
+        );
+        assert_eq!(
+            sentences("It belonged to Henry IV. It burned in 1940. Then it was rebuilt."),
+            ["It belonged to Henry IV.", "It burned in 1940.", "Then it was rebuilt."]
+        );
     }
     #[test]
     fn unsupported_and_oversized_first_sentence_are_not_replaced() {

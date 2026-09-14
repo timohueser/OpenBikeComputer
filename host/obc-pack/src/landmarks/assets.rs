@@ -182,6 +182,11 @@ pub(super) fn photo(
         return Err("photo_identity_mismatch".into());
     }
     let bytes = read_pinned(root, sources, input_path, photo::MAX_SOURCE_BYTES as u64)?;
+    let sha1 =
+        <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    if info["sha1"].as_str() != Some(&sha1) {
+        return Err("photo_revision_mismatch".into());
+    }
     let pixels = photo::prepare(&bytes).map_err(str::to_owned)?;
     let path = format!("{qid}.rgb222");
     Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
