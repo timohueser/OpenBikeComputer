@@ -166,6 +166,8 @@ pub struct AppState {
     /// edit could not reach. Read with [`Settings::up_ahead_source`](crate::Settings) as one
     /// [`UpAheadScope`](crate::corridor::UpAheadScope).
     pub up_ahead_filter: obc_reader::PoiCategorySet,
+    /// Explicit opt-in UI study; no fixture is installed by ordinary device startup.
+    pub assistant_demo: Option<crate::assistant_demo::Demo>,
 }
 
 impl AppState {
@@ -196,6 +198,7 @@ impl AppState {
             has_nav_graph: false,
 
             up_ahead_filter: obc_reader::PoiCategorySet::ALL,
+            assistant_demo: None,
         }
     }
 

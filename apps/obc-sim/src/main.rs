@@ -13,6 +13,7 @@ use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
 use obc_reader::rgb565_to_device64;
 
+mod assistant_demo;
 mod calib;
 mod card;
 mod device_input;
@@ -184,6 +185,7 @@ struct Args {
     /// flows that start a plan leave the opaque planning spinner as the base (no map to freeze),
     /// and the one gesture that puts a map base back under a live search also cancels the plan.
     freeze: bool,
+    assistant_demo: bool,
     /// One mutually-exclusive DFU fixture state for headless snapshots.
     dfu: Option<DfuSeed>,
     /// Headless `--png` only: stamp every loaded route's retention meta (epic #638 S5), so the
@@ -234,6 +236,7 @@ impl Default for Args {
             hold: None,
             inject: None,
             freeze: false,
+            assistant_demo: false,
             dfu: None,
             route_retention: None,
         }
@@ -563,6 +566,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
+            "--assistant-demo" => a.assistant_demo = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
@@ -625,6 +629,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     // `--palette` and `--import` need no map file.
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
         return Err("--card reopens without map or route-directory imports".into());
+    }
+    if a.assistant_demo && (a.card.is_some() || a.create_card.is_some() || a.gpx.is_some()) {
+        return Err("--assistant-demo uses a temporary card and its own position controls".into());
     }
     if a.card.is_some() && matches!(a.inject, Some(Injection::TripUpload { .. })) {
         return Err("trip-upload names a TP fixture and requires a map import session".into());
@@ -733,6 +740,7 @@ fn settle(
 ) {
     let mut quiet = 0usize;
     for _ in 0..MAX_SETTLE_PASSES {
+        app.start_assistant_demo_if_ready();
         session.sync(app, stores.routes);
         let (mut plan, owed) = {
             let src = stores.routes.active_source();
@@ -740,7 +748,8 @@ fn settle(
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            let mut loc = NoFix;
+            let fix = app.state.assistant_demo.and(app.state.user_fix);
+            let mut loc = crate::sim_location::SimLocationSource::new(fix);
             let sensors = obc_ports::Sensors::new(&mut loc);
             let plan = host.pass(
                 app,
@@ -782,15 +791,6 @@ fn nav_error(kind: NavFailure) -> obc_route::NavError {
     match kind {
         NavFailure::Exhausted => obc_route::NavError::Exhausted,
         NavFailure::NoPath => obc_route::NavError::NoPath,
-    }
-}
-
-/// A location port that never has a fix — the settling pass's sensor input. The headless driver
-/// drives position through the GPX replay below, never through a settle.
-struct NoFix;
-impl obc_ports::LocationSource for NoFix {
-    fn poll(&mut self) -> Option<obc_ports::Fix> {
-        None
     }
 }
 
@@ -892,6 +892,10 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             ' ' => {}
             'd' => step(app, &mut now, 1),
             'u' => step(app, &mut now, -1),
+            'A' => {
+                app.advance_assistant_demo();
+                hook(app, ScriptHook::Tick, now);
+            }
             'p' => tap(app, &mut now, Button::Select),
             'b' => tap(app, &mut now, Button::Back),
             'h' => press_hold(app, &mut now, Button::Select),
@@ -986,6 +990,7 @@ Device state:
   --sensors MODE          demo|screen
 
 Scripted snapshots:
+  --assistant-demo        Shop-visit UI study with synthetic stops on real map screens
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,
@@ -1228,6 +1233,12 @@ fn main() {
         // The startup import has committed route identities before the first catalog feed.
         let mut store = routes;
         app.set_routes_with_ids(store.catalog(), store.ids());
+        if args.assistant_demo {
+            assistant_demo::install(&mut app, &mut store).unwrap_or_else(|e| {
+                eprintln!("assistant demo: {e}");
+                std::process::exit(1)
+            });
+        }
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
         // to completion inside a pass; its planned detour stays resident here until commit/cancel.
         let mut host = HostLoop::new();
@@ -1651,6 +1662,14 @@ fn main() {
         };
         let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
 
+        if let Some(demo) = app.state.assistant_demo {
+            eprintln!(
+                "assistant study: {:?}; recording {}; route {:?}",
+                demo.phase,
+                app.recording(),
+                app.active_route_index()
+            );
+        }
         if let Some(expected) = &args.expect_screen {
             let landed = app.top_screen().name();
             if landed != expected {

@@ -128,6 +128,55 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ## Ride and storage fixtures
 
+### Ride Assistant interaction study
+
+Run the shop-visit prototype on the supplied map:
+
+```sh
+cargo build -p obc-sim --release
+target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo
+```
+
+This opt-in study runs in `obc-app`, with the device's 240×320 layout, fonts, map renderer,
+button handling, and recording system. It starts a ride to Grimselpass on a temporary card.
+The two shops and their access paths are fictional. Preloaded route legs supply the distance
+and climbing figures. This is an English, metric UI study; it does not search for real shops,
+calculate access routes, or detect arrival from GPS.
+
+Open the top drawer with Up + Select (Left arrow + Enter). Step once to **Ride Assistant**,
+then select **Find a place → Shop**. Compare **On the way** with **Nearest**, preview a visit,
+and select **Add stop**. The preview shows the extra distance and climbing for the full visit,
+including the return. The other questions and categories are grey placeholders.
+The study sets Climb mode to Manual so a climb does not interrupt the map comparison.
+
+Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
+and Up/Down still zoom. The same ride remains open. Use **Arrive at shop** in the simulator's
+Controls panel to raise the arrival screen. **Continue ride** starts the prepared return leg.
+Use **Rejoin original route** in Controls to restore the original route. These two Controls buttons
+simulate location events; they are not new device buttons.
+
+Back dismisses the arrival screen. Open Ride Assistant again to continue. Before arrival,
+the Assistant also has **Skip stop**. Confirming removal restores the original route at the current
+position; it does not calculate a path back. The original destination remains Grimselpass.
+
+The flag replaces the drawer's Bluetooth shortcut for this study. Bluetooth settings remain in
+Settings. Without the flag, the Assistant is absent. The flag requires a temporary card and cannot
+be combined with `--card`, `--create-card`, or `--gpx`. Do not change route catalogs during a study.
+
+For headless captures, `A` simulates arrival, or rejoining after Continue ride. For example:
+
+```sh
+target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
+  --script "Q w d p p p d p" --expect-screen Assistant --png shop-preview.png
+target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --assistant-demo \
+  --script "Q w d p p p d p p f A" --expect-screen Assistant --png shop-arrival.png
+```
+
+Physical-device execution, real POI data, automatic arrival detection, and the remaining Assistant
+questions are outside this prototype.
+
+### Storage inputs
+
 - `--gpx PATH` replays a GPX track as the location source.
 - `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
 - `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
