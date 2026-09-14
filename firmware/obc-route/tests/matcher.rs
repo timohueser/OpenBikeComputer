@@ -634,3 +634,25 @@ fn progress_at_a_chunk_seam_equals_cum_distance() {
         seam_dist
     );
 }
+
+#[test]
+fn missing_or_unreadable_segments_report_unavailable_cross_track_distance() {
+    use obc_formats::io::{ByteSource, Error};
+    struct Unreadable;
+    impl ByteSource for Unreadable {
+        fn len(&self) -> u64 {
+            4096
+        }
+        fn read_at(&self, _: u64, _: &mut [u8]) -> Result<(), Error> {
+            Err(Error::Io)
+        }
+    }
+    let bytes = convert("East", &gpx_from(EAST));
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let empty = RouteIndex::empty();
+    for route in [RouteReader::new(&empty, &source), RouteReader::new(&index, &Unreadable)] {
+        let result = RouteMatch::new().update(7_805_000, 48_000_000, &route);
+        assert_eq!(result, obc_route::Match { progress_m: 0, off_route: true, dist_m: u32::MAX });
+    }
+}

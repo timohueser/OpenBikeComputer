@@ -235,26 +235,53 @@ Do not infer state from a notification or operation log.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 296" role="img" aria-label="The client reads StoreId and commit sequence with LIST, compares its local inventory, and fetches required revisions with GET. Saving a ride on the client does not mark it synced on the device.">
-  <defs><marker id="software-companion-link-3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-  <text class="d-tag" x="20" y="26" text-anchor="start">Read the catalog, then fetch the required revisions</text>
-  <rect class="d-panel" x="20" y="62" width="200" height="90" rx="8" />
-  <text class="d-title" x="120" y="87" text-anchor="middle">1. LIST</text>
-  <text class="d-sub" x="120" y="107" text-anchor="middle">StoreId + commit sequence</text>
-  <text class="d-sub" x="120" y="124" text-anchor="middle">Paged catalog entries</text>
-  <path class="d-flow" d="M220 108 L258 108" marker-end="url(#software-companion-link-3)" />
-  <rect class="d-panel" x="260" y="62" width="200" height="90" rx="8" />
-  <text class="d-title" x="360" y="87" text-anchor="middle">2. Compare</text>
-  <text class="d-sub" x="360" y="107" text-anchor="middle">New store: reset inventory</text>
-  <text class="d-sub" x="360" y="124" text-anchor="middle">New commit: reconcile</text>
-  <path class="d-flow" d="M460 108 L498 108" marker-end="url(#software-companion-link-3)" />
-  <rect class="d-panel d-focus" x="500" y="62" width="200" height="90" rx="8" />
-  <text class="d-title" x="600" y="87" text-anchor="middle">3. GET</text>
-  <text class="d-sub" x="600" y="107" text-anchor="middle">Read an exact revision</text>
-  <text class="d-sub" x="600" y="124" text-anchor="middle">Verify length + CRC</text>
-  <rect class="d-panel" x="20" y="198" width="680" height="76" rx="8" />
-  <text class="d-title" x="360" y="223" text-anchor="middle">A local ride archive does not change device retention</text>
-  <text class="d-sub" x="360" y="243" text-anchor="middle">Protocol v4 has no ride-possession acknowledgment.</text>
+<svg viewBox="0 0 720 300" role="img" aria-label="The client uses LIST to reconcile the catalog. LIST supplies StoreId, commit sequence, and entries. The client uses GET for required objects. Protocol v4 does not send a ride acknowledgment.">
+  <defs>
+    <marker id="sy-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="sy-m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
+    <marker id="sy-k" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22">Reconciliation — LIST identifies the store and catalog</text>
+
+  <rect class="d-panel" x="16" y="70" width="150" height="72" rx="10" />
+  <text class="d-sub" x="91" y="42" text-anchor="middle" style="fill:#6b7758">on the device</text>
+  <text class="d-label" x="91" y="98" text-anchor="middle">store changes</text>
+  <text class="d-sub" x="91" y="116" text-anchor="middle">upload · ride</text>
+  <text class="d-sub" x="91" y="132" text-anchor="middle" style="fill:#a9501c">device-side delete</text>
+
+  <rect class="d-panel-2" x="192" y="70" width="162" height="72" rx="10" style="fill:#eef2df" />
+  <text class="d-label" x="273" y="98" text-anchor="middle" style="fill:#3c6b39">catalog commit</text>
+  <text class="d-sub" x="273" y="118" text-anchor="middle" style="font-size:9.5px">StoreId · sequence</text>
+  <text class="d-sub" x="273" y="134" text-anchor="middle">LIST response</text>
+
+  <rect class="d-panel" x="380" y="70" width="150" height="72" rx="10" />
+  <text class="d-sub" x="455" y="42" text-anchor="middle" style="fill:#6b7758">on the phone</text>
+  <text class="d-label" x="455" y="98" text-anchor="middle">LIST changed →</text>
+  <text class="d-sub" x="455" y="118" text-anchor="middle">download the list</text>
+  <text class="d-sub" x="455" y="134" text-anchor="middle">paged LIST</text>
+
+  <rect class="d-hot" x="562" y="70" width="142" height="72" rx="10" style="fill:#f8efe4" />
+  <text class="d-label" x="633" y="98" text-anchor="middle" style="fill:#a9501c">GET required</text>
+  <text class="d-sub" x="633" y="118" text-anchor="middle">objects, on</text>
+  <text class="d-sub" x="633" y="134" text-anchor="middle">the stream</text>
+
+  <line class="d-flow" x1="166" y1="106" x2="196" y2="106" marker-end="url(#sy-a)" />
+  <line class="d-flow" x1="348" y1="106" x2="378" y2="106" marker-end="url(#sy-a)" />
+  <line class="d-flow" x1="530" y1="106" x2="560" y2="106" marker-end="url(#sy-a)" />
+
+  <!-- loop back -->
+  <path d="M633 142 C 633 190, 91 190, 91 144" fill="none" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#sy-m)" />
+  <text class="d-sub" x="360" y="202" text-anchor="middle" style="fill:#6b7758">on the next audit</text>
+
+  <!-- retired ackRides lane -->
+  <line x1="20" y1="216" x2="700" y2="216" style="stroke:#d6cda8;stroke-width:1" />
+  <text class="d-tag" x="20" y="242" style="fill:#a9501c">Protocol v4 has no ride-acknowledgment mutation</text>
+  <rect class="d-panel" x="380" y="252" width="150" height="34" rx="9" />
+  <text class="d-sub" x="455" y="273" text-anchor="middle">phone stores verified ride</text>
+  <line x1="378" y1="269" x2="168" y2="269" style="stroke:#cf6a2a;stroke-width:1.6" marker-end="url(#sy-k)" />
+  <text class="d-sub" x="273" y="262" text-anchor="middle" style="fill:#a9501c;font-size:9px">ARCHIVE_RIDE</text>
+  <rect class="d-hot" x="16" y="252" width="150" height="34" rx="9" style="fill:#f8efe4" />
+  <text class="d-sub" x="91" y="273" text-anchor="middle" style="fill:#a9501c">device persists archive proof</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -272,11 +299,19 @@ card, object, revision, length and CRC, then commits and reads back the proof. A
 the original timestamp. A lost reply can be retried from the durable archive without starting a
 new countdown.
 
-This proof initially has no expiry timestamp. The companion does not send it yet, and the board
-continues to report rides unsynced and protected from automatic expiry. Live integration will let
-the existing retention policy start the countdown when the clock is trusted. The
-[archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
-the remaining integration work.
+The companion sends proof after saving a ride and after revalidating an existing archive.
+Reconnect retries these confirmations without downloading missing rides. Manual sync can download
+missing rides. If confirmation fails, the phone keeps its archive and shows the existing sync
+warning with the Resume action. A lost reply can mean the device already saved the proof; retry
+is safe. Local save counts do not establish device confirmation.
+
+This proof initially has no expiry timestamp. The board validates it before the retention policy
+starts the countdown on a trusted clock. Only an existing exact proof can receive that first stamp;
+a duplicate cannot reset it. A successful write becomes visible through a complete catalog reload.
+The policy covers up to 128 ride inventory records, including rides outside the 32-entry menu.
+Unknown clock, recording, missing proof and failed reads protect rides from automatic expiry.
+The [archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
+the remaining physical acceptance.
 
 The board and flat-store host persist route-use stamps in a card metadata object.
 Each row binds to the card and the exact source revision, length, and CRC. The store replaces
@@ -415,6 +450,18 @@ They do not exist in USB binding v5.
 
 The phone sets UTC and local offset after encryption.
 A GPS fix can also establish trusted UTC.
+
+## Weather position requests
+
+Before a weather request contacts the phone, the device checks its position. It can reuse a GPS
+fix from the last 30 seconds. Otherwise, it wakes GPS and waits for a new fix, even when no ride
+is recording. The same check occurs before it decides that a stored forecast still covers the
+current location. There is no fallback to an old fix or the phone's position.
+
+Weather and Peak View share receiver demand. After a fix arrives, GPS can sleep when neither
+feature nor a recording needs it. A weather acquisition attempt stops after 150 seconds without
+a fix. Opening Weather again can retry; automatic requests wait for their normal cadence. GPS
+acquisition does not start a phone fetch or show the UPDATING cue.
 
 ## Sensors: the device as BLE central
 

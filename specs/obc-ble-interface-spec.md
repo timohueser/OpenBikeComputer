@@ -1954,7 +1954,8 @@ that knows none of it behaves exactly as it did before.
 
 ### 11.1 The exchange
 
-1. A refresh comes due (§11.8) or the rider opens Weather. The device raises a
+1. A refresh comes due (§11.8) or the rider opens Weather. The device first obtains a
+   GPS fix no more than 30 seconds old, including while not recording. It then raises a
    request, fills the context attribute, and **swaps its advertised service UUID**
    from OBC Control to Weather Request (§2, §3.5).
 2. The phone — scanning for both UUIDs, in the background — wakes on the match and
@@ -2037,8 +2038,11 @@ A failure or activity timeout preserves the pending request and its retry ladder
 cannot deliver a failure report, the deadline still clears the cue. No failure is acknowledged
 as a successful update. These signals do not change the validity of stored forecasts.
 
-A missing position remains a valid diagnostic request, but cannot start an attempt from a read.
-When a position becomes available, the board re-arms pending work with the same request id.
+The board waits for a current position before raising a request or a retry. It requests GPS
+acquisition even while not recording. Acquisition stops after 150 seconds without a fix, clears
+that request, and releases its receiver demand. A later manual open can retry; scheduled work
+waits for the configured cadence. A retry that obtains a fix retains its pending request id.
+Neither the phone-attempt deadline nor the advertising budget starts during GPS acquisition.
 
 ### 11.4 `weatherRequestContext` — the request context (v1)
 
@@ -2101,10 +2105,9 @@ conversion at exactly the boundary where a mistake is invisible.
 **Optional groups are guarded by flags, not sentinels.** No fix is *absent*, not
 the equator; no bundle is *absent*, not generation `0`. This is the same rule §1
 applies to the identity read's trailing fields, and it exists for the same reason:
-a sentinel that is also a legal value eventually gets acted on. A device with no
-fix still raises a well-formed request for diagnostics and retry, but the current
-companion cannot fetch until the device supplies a fix; there is no phone-location
-fallback in this protocol version.
+a sentinel that is also a legal value eventually gets acted on. The wire format can represent
+a missing fix, but the board waits for a current fix before it raises work. A missing position
+cannot start a phone attempt; there is no phone-location fallback in this protocol version.
 
 **Decoding.** The read is **length-declared**:
 

@@ -18,6 +18,7 @@
 //! | `obc_demo_peak_ready() -> bool` | terrain and labels for the current view are ready |
 //! | `obc_demo_peak_active() -> bool` | Peak View is open, including under a drawer |
 //! | `obc_demo_heading() -> u16` | current heading in degrees |
+//! | `obc_demo_reset_status() -> String` | `Ready`, `Pending`, or latched `Failed` |
 //! | `obc_demo_screens() -> Vec<String>` | every `Screen::name()` — the tour drift-guard (S3) |
 //!
 //! The demo core ([`demo`]) is target-independent and unit-tested natively; only this
@@ -125,6 +126,12 @@ mod web {
     #[wasm_bindgen]
     pub fn obc_demo_peak_ready() -> bool {
         with_demo(|d| d.peak_ready())
+    }
+
+    /// A queued reset is Pending until cleanup and baseline installation finish.
+    #[wasm_bindgen]
+    pub fn obc_demo_reset_status() -> String {
+        with_demo(|d| format!("{:?}", d.reset_status()))
     }
 
     /// Every screen's `Screen::name()`, straight from the one `screens!` table — the drift-guard

@@ -7,7 +7,7 @@
 //!
 //! ```text
 //!   let plan = host.pass(app, now, gestures, sensors, route, weather, support); // one App::run_pass
-//!   host.execute(app, &mut plan, routes, rides, tracks, trips, reader, elev, platform, trace);
+//!   host.execute(app, &mut plan, routes, rides, tracks, trips, map, elev, platform);
 //! ```
 //!
 //! [`pass`](HostLoop::pass) hands `App` this frame's inputs and returns its [`PassPlan`];
@@ -24,7 +24,7 @@
 //! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
 //! [`ActiveRouteSession::sync`] and lends it to both.
 
-use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogObjectKind, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -32,7 +32,7 @@ use obc_app::device_core::{
     PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
-use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
+use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlanFamily, PlannerProgress, PlannerWork};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
@@ -60,30 +60,29 @@ pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &m
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
     app.set_rides(rides.catalog());
+    if let Some(records) = rides.retention_inventory() {
+        app.set_ride_retention_inventory(records);
+    }
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
 /// Remove one object from the store, and **nothing else** (#1541).
 ///
-/// The removal is namespace-free by design — routes, rides and trips are all objects to the store —
-/// so the identity is probed against the three repositories in a fixed order. An object none of
-/// them has vanished before the commit: a success for the goal state, and the one shape that must
-/// not read as a failure (#1433 §13).
-///
-/// Free-standing, and **without an `&mut App`**: the re-read a removal implies is `CatalogMachine`'s
-/// to order, and a function that cannot reach the app cannot compose one. That is the guard, and it
-/// is structural rather than a grep.
+/// Execute only the family selected by CatalogMachine. Absence never probes another repository.
 fn remove_object(
     token: OperationToken<CatalogTag>,
     object: u64,
+    kind: obc_app::catalog_state::CatalogObjectKind,
     routes: &mut dyn RouteRepository,
     rides: &mut dyn RideRepository,
     trips: &mut dyn TripCatalog,
 ) -> CatalogOutcome {
-    let result = routes
-        .delete_by_id(object)
-        .and_then(|existed| if existed { Ok(true) } else { rides.delete_by_id(object) })
-        .and_then(|existed| if existed { Ok(true) } else { trips.delete_by_id(object) });
+    use obc_app::catalog_state::CatalogObjectKind;
+    let result = match kind {
+        CatalogObjectKind::Route => routes.delete_by_id(object),
+        CatalogObjectKind::Ride => rides.delete_by_id(object),
+        CatalogObjectKind::Trip => trips.delete_by_id(object),
+    };
     match result {
         Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
         Err(error) => CatalogOutcome::Failed { token, error },
@@ -97,6 +96,27 @@ fn remove_object(
 pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
+    Ready(NavPlan, obc_route::RouteStats),
+}
+
+/// Sources admitted together; the reader is always made by the leased FlatMap.
+struct PlanSources {
+    map: crate::flat_store::ObjectSource,
+    original: Option<(crate::RouteLease, Box<obc_route::RouteIndex>)>,
+}
+impl PlanSources {
+    fn current(&self, map: &crate::flat_map::FlatMap, routes: &dyn RouteRepository) -> bool {
+        self.map.same_revision(&map.source())
+            && self.map.is_current()
+            && self.original.as_ref().is_none_or(|(held, _)| routes.pin_active().is_some_and(|now| held.matches(&now)))
+    }
+    fn original(&self) -> Option<obc_route::RouteReader<'_>> {
+        self.original.as_ref().map(|(source, index)| obc_route::RouteReader::new(index, source))
+    }
+}
+struct Preview {
+    ready: DetourReady,
+    sources: PlanSources,
 }
 
 /// Plan requests a host deliberately takes without starting. This is only needed by deterministic
@@ -207,7 +227,10 @@ pub struct HostLoop {
     plan_token: Option<OperationToken<NavigatorTag>>,
     /// A planned detour's bytes + frozen splice context (#882), held from the search's answer until
     /// the rider commits or cancels.
-    detour_ready: Option<DetourReady>,
+    detour_ready: Option<Preview>,
+    sources: Option<PlanSources>,
+    publication: Option<crate::RoutePublication>,
+    releasing: Option<NavigatorEffect>,
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
@@ -238,6 +261,9 @@ impl Default for HostLoop {
             plan: None,
             plan_token: None,
             detour_ready: None,
+            sources: None,
+            publication: None,
+            releasing: None,
             hold: PlanHold::NONE,
             opened_session: None,
             revision: 0,
@@ -261,7 +287,17 @@ impl HostLoop {
 
     /// Whether a plan (route or detour) is computing (the planning-spinner state).
     pub fn is_planning(&self) -> bool {
-        self.plan.is_some()
+        self.plan.is_some() || self.releasing.is_some()
+    }
+
+    /// Navigator owns work or sources that must be released before replacing this host loop.
+    pub fn owns_navigation(&self) -> bool {
+        self.plan_token.is_some()
+            || self.plan.is_some()
+            || self.sources.is_some()
+            || self.detour_ready.is_some()
+            || self.publication.is_some()
+            || self.releasing.is_some()
     }
 
     /// The operation a frozen or running search is holding, for a host that scripts its answer.
@@ -333,10 +369,8 @@ impl HostLoop {
 
     /// Perform the plan's bounded work and leave token-carrying outcomes for the next pass.
     ///
-    /// The phases run as **separate calls** on purpose: `serve_effects` reserves the fresh
-    /// [`NavPlan`] (its ~4 KB inline tile cache) and `step_plan` reaches the ~8 KB `RouteIndex`
-    /// parse in the finish tails — nesting them in one frame stacked both and overflowed the deep
-    /// sim tour test's thread stack. Sequential calls keep only one large frame live at a time.
+    /// Acquisition, stepping and commit use separate shallow calls so their large parse and
+    /// planner frames do not overlap. FlatMap binds the reader to its exact retained source.
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &mut self,
@@ -347,7 +381,7 @@ impl HostLoop {
         rides: &mut dyn RideRepository,
         tracks: &mut dyn TrackRepository,
         trips: &mut dyn TripCatalog,
-        reader: &obc_reader::Reader,
+        map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
         platform: &mut dyn HostPlatform,
     ) {
@@ -357,8 +391,13 @@ impl HostLoop {
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
         self.sync_recorder(app, tracks);
-        self.serve_effects(app, plan, session, routes, rides, trips, tracks, platform);
-        self.step_plan(app, session, routes, reader, elev);
+        let navigation = plan.effects.navigator.take().or_else(|| self.releasing.take());
+        self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
+        if let Some(effect) = navigation {
+            if let Some(outcome) = self.serve_navigator(app, effect, routes, map, elev) {
+                deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
+            }
+        }
         self.serve_derived(app, plan, session, routes, rides);
         if let Some(scope) = routes.store_scope() {
             self.inbox.facts.note_store_revision(scope);
@@ -375,7 +414,6 @@ impl HostLoop {
         &mut self,
         app: &mut App,
         plan: &mut PassPlan,
-        session: &ActiveRouteSession,
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
@@ -387,18 +425,13 @@ impl HostLoop {
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
         if let Some(effect) = plan.effects.retention.take() {
-            let outcome = serve_retention(effect, routes);
+            let outcome = serve_retention(effect, routes, rides);
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
             let opened = app.recorder.object_owed(self.opened_session).is_none();
             let outcome = serve_recorder(app, effect, tracks, opened);
             deliver(&mut self.inbox.outcomes.recorder, outcome, "recorder");
-        }
-        if let Some(effect) = plan.effects.navigator.take() {
-            if let Some(outcome) = self.serve_navigator(app, effect, session, routes) {
-                deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
-            }
         }
         if let Some(effect) = plan.effects.settings.take() {
             let outcome = match effect {
@@ -455,12 +488,6 @@ impl HostLoop {
 
     /// The two store operations: read the catalogs, remove one object.
     ///
-    /// The removal is **namespace-free** by design — routes, rides and trips are all objects to the
-    /// store — so the executor resolves the identity against the repositories in a fixed order.
-    /// That is only unambiguous while the three families number their objects out of one space; the
-    /// flat store does (FS7 #1389), and the simulator's folder stores do through
-    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) and [`TRIP_ID_BASE`](crate::TRIP_ID_BASE).
-    ///
     /// A trip's *cascade* is not composed here. `CatalogMachine` owns that order and sends it as one
     /// removal per member and one for the folder (#1491), so this executor performs no ordering of
     /// its own — the rule the module header states.
@@ -491,155 +518,212 @@ impl HostLoop {
                         }
                     }
                 };
-                rides.refresh();
-                trips.rescan();
+                let ride_scope = match rides.refresh_metadata() {
+                    Ok(scope) => scope,
+                    Err(error) => return CatalogOutcome::Failed { token, error: catalog_metadata_error(error) },
+                };
+                if let Err(error) = trips.rescan() {
+                    return CatalogOutcome::Failed { token, error };
+                }
+                if routes.store_scope() != scope
+                    || rides.store_scope() != ride_scope
+                    || ride_scope.is_some_and(|ride_scope| Some(ride_scope) != scope)
+                    || trips.store_scope().is_some_and(|trip| Some(trip) != scope)
+                {
+                    return CatalogOutcome::Failed { token, error: CatalogError::Stale };
+                }
                 feed_routes(app, routes, &mut NoTrace);
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
                 feed_rides(app, rides, &mut NoTrace);
                 CatalogOutcome::CatalogRead { token, scope }
             }
-            CatalogEffect::ExpireObject { token, object, scope } => {
-                if !app.route_ids().contains(&object) {
-                    return CatalogOutcome::Failed { token, error: CatalogError::Unsupported };
-                }
-                if !app.retention_expiry_due(object, scope) {
+            CatalogEffect::ExpireObject { token, object, kind, scope } => {
+                if !app.retention_expiry_due(object, kind, scope) {
                     return CatalogOutcome::Failed { token, error: CatalogError::Stale };
                 }
-                match routes.expire_route(object, scope) {
+                let result = match kind {
+                    CatalogObjectKind::Route => routes.expire_route(object, scope),
+                    CatalogObjectKind::Ride => rides.expire_ride(object, scope),
+                    CatalogObjectKind::Trip => Err(CatalogError::Unsupported),
+                };
+                match result {
                     Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
                     Err(error) => CatalogOutcome::Failed { token, error },
                 }
             }
-            CatalogEffect::RemoveObject { token, object } => remove_object(token, object, routes, rides, trips),
+            CatalogEffect::RemoveObject { token, object, kind } => {
+                remove_object(token, object, kind, routes, rides, trips)
+            }
         }
     }
 
-    /// One navigation operation. `None` means the executor is still working — a search runs across
-    /// frames, and its answer arrives from [`step_plan`](Self::step_plan).
+    /// Perform only the physical operation Navigator requested in this pass.
+    #[inline(never)]
     fn serve_navigator(
         &mut self,
         app: &mut App,
         effect: NavigatorEffect,
-        session: &ActiveRouteSession,
         routes: &mut dyn RouteRepository,
+        map: &crate::flat_map::FlatMap,
+        elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
         let token = effect.token();
+        self.plan_token = Some(token);
+        let failed = |error| Some(NavigatorOutcome::Failed { token, error });
         match effect {
-            NavigatorEffect::Acquire { work: PlannerWork::Route(request), .. } => {
-                self.plan_token = Some(token);
-                if !self.hold.route {
-                    self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
+            NavigatorEffect::Acquire { work, .. } => self.acquire_plan(app, token, work, routes, map),
+            NavigatorEffect::Step { .. } => {
+                if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
+                    return failed(NavigatorError::SourceChanged);
                 }
-                None
+                self.step_plan(app, token, map, elev)
             }
-            NavigatorEffect::Acquire { work: PlannerWork::Detour(request), .. } => {
-                self.plan_token = Some(token);
-                self.detour_ready = None;
-                if self.hold.detour {
-                    return None;
+            NavigatorEffect::CommitRoute { .. } => {
+                if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
+                    return failed(NavigatorError::SourceChanged);
                 }
-                let started = session.index().and_then(|index| {
-                    let src = routes.active_source()?;
-                    let orig = obc_route::RouteReader::new(index, src);
-                    DetourPlan::start(&request, app.settings().bike_profile_idx, &orig)
-                });
-                match started {
-                    Some(plan) => {
-                        self.plan = Some(InflightPlan::Detour(plan));
-                        None
+                let Some(InflightPlan::Ready(plan, stats)) = self.plan.as_ref() else {
+                    return failed(NavigatorError::Workspace);
+                };
+                Some(match commit_nav_plan(app, routes, Ok(*stats), plan.bytes(), plan.tile_stats(), &mut NoTrace) {
+                    Ok(publication) => {
+                        self.publication = Some(publication);
+                        NavigatorOutcome::PlanFinished { token, route: publication.id }
                     }
-                    // The active route vanished / can't resolve the rejoin — answer now.
-                    None => Some(NavigatorOutcome::Failed {
-                        token,
-                        error: NavigatorError::Plan(obc_route::NavError::NoPath),
-                    }),
-                }
-            }
-            NavigatorEffect::CommitDetour { .. } => {
-                let ready = self.detour_ready.take();
-                let result = commit_detour(app, routes, session.index(), ready, &mut NoTrace);
-                Some(match result {
-                    Ok(route) => NavigatorOutcome::DetourCommitted { token, route },
-                    Err(_) => NavigatorOutcome::Failed { token, error: NavigatorError::Store },
+                    Err(error) => NavigatorOutcome::Failed { token, error },
                 })
             }
-            // A release is Navigator telling the executor the rider walked away: drop whatever this
-            // host is holding for that family. `next_release` only issues one when the cancelled
-            // family's own operation was the live one (or nothing was), so there is never another
-            // family's search to protect here.
-            NavigatorEffect::Release { .. } => {
-                match self.plan.take() {
-                    Some(InflightPlan::Nav(_)) => {}
-                    // A detour search, or a preview with nothing running behind it.
-                    Some(InflightPlan::Detour(_)) | None => self.detour_ready = None,
+            NavigatorEffect::CommitDetour { .. } => {
+                let Some(preview) = self.detour_ready.as_ref() else { return failed(NavigatorError::Workspace) };
+                if !preview.sources.current(map, routes) {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                let Some(orig) = preview.sources.original() else { return failed(NavigatorError::Workspace) };
+                Some(match commit_detour(app, routes, &orig, &preview.ready, &mut NoTrace) {
+                    Ok(publication) => {
+                        self.publication = Some(publication);
+                        NavigatorOutcome::DetourCommitted { token, route: publication.id }
+                    }
+                    Err(error) => NavigatorOutcome::Failed { token, error },
+                })
+            }
+            NavigatorEffect::Release { family, retain_result, .. } => {
+                let keep_preview = retain_result && self.publication.is_none();
+                if !retain_result {
+                    if let Some(publication) = self.publication {
+                        match routes.retract_nav_route(publication) {
+                            Ok(()) => feed_routes(app, routes, &mut NoTrace),
+                            Err(CatalogError::RemoveFailed) => {
+                                self.releasing = Some(effect);
+                                return None;
+                            }
+                            Err(error) => eprintln!("nav release: compensation stopped ({error:?})"),
+                        }
+                    }
+                }
+                self.publication = None;
+                self.plan = None;
+                self.sources = None;
+                if family == PlanFamily::Detour && !keep_preview {
+                    self.detour_ready = None;
                 }
                 self.plan_token = None;
                 Some(NavigatorOutcome::Released { token })
             }
-            // One request runs the whole search here (#1400); stepped pacing
-            // is #1400's, with the board's typed effect staging.
-            NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
-                debug_assert!(false, "the executor paces the search: {effect:?} has no producer yet");
-                None
-            }
         }
     }
 
-    /// Step an in-flight plan **once** (the board's one-step-per-pass shape) and, on a terminal
-    /// outcome, commit and answer. Non-generic and `#[inline(never)]` so the `RouteIndex` parse
-    /// inside the finish tails never coexists with the plan-reservation frame above.
+    /// Keep the original-route parse frame separate from step and commit frames.
+    #[inline(never)]
+    fn acquire_plan(
+        &mut self,
+        app: &App,
+        token: OperationToken<NavigatorTag>,
+        work: PlannerWork,
+        routes: &dyn RouteRepository,
+        map: &crate::flat_map::FlatMap,
+    ) -> Option<NavigatorOutcome> {
+        let failed = |error| Some(NavigatorOutcome::Failed { token, error });
+        if self.plan.is_some() || self.sources.is_some() {
+            return failed(NavigatorError::Workspace);
+        }
+        if match work {
+            PlannerWork::Route(_) => self.hold.route,
+            PlannerWork::Detour(_) => self.hold.detour,
+        } {
+            return None;
+        }
+        let source = map.source();
+        if !source.is_current() {
+            return failed(NavigatorError::SourceChanged);
+        }
+        let original = match work {
+            PlannerWork::Route(request) => {
+                self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
+                None
+            }
+            PlannerWork::Detour(request) => {
+                let Some(source) = routes.pin_active() else { return failed(NavigatorError::Workspace) };
+                if app.route_ids().get(request.route) != Some(&source.id())
+                    || !routes.pin_active().is_some_and(|current| source.matches(&current))
+                {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                let Ok(index) = obc_route::RouteIndex::read(&source) else {
+                    return failed(NavigatorError::Workspace);
+                };
+                let orig = obc_route::RouteReader::new(&index, &source);
+                let Some(plan) = DetourPlan::start(&request, app.settings().bike_profile_idx, &orig) else {
+                    return failed(NavigatorError::Plan(obc_route::NavError::NoPath));
+                };
+                self.plan = Some(InflightPlan::Detour(plan));
+                Some((source, Box::new(index)))
+            }
+        };
+        self.sources = Some(PlanSources { map: source, original });
+        Some(NavigatorOutcome::Acquired { token })
+    }
+
     #[inline(never)]
     fn step_plan(
         &mut self,
         app: &mut App,
-        session: &ActiveRouteSession,
-        routes: &mut dyn RouteRepository,
-        reader: &obc_reader::Reader,
+        token: OperationToken<NavigatorTag>,
+        map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
-    ) {
-        // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
-        // step borrow.
+    ) -> Option<NavigatorOutcome> {
         let outcome = match self.plan.as_mut() {
-            None => return,
-            Some(InflightPlan::Nav(plan)) => plan.step(reader, elev),
-            Some(InflightPlan::Detour(plan)) => plan.step(reader, elev),
+            Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
+            Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
+            _ => return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace }),
         };
-        let terminal = match outcome {
-            obc_route::Step::Running => return,
-            obc_route::Step::Done(stats) => Ok(stats),
-            obc_route::Step::Failed(e) => Err(e),
+        let stats = match outcome {
+            obc_route::Step::Running => {
+                return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Searching })
+            }
+            obc_route::Step::Failed(error) => {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) })
+            }
+            obc_route::Step::Done(stats) => stats,
         };
-        let Some(token) = self.plan_token else {
-            debug_assert!(false, "a plan runs under the operation that started it");
-            self.plan = None;
-            return;
-        };
-        let answer = match self.plan.take().expect("just stepped it") {
+        Some(match self.plan.take().expect("just stepped it") {
             InflightPlan::Nav(plan) => {
-                let result = commit_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats(), &mut NoTrace);
-                match result {
-                    Ok(route) => NavigatorOutcome::PlanFinished { token, route },
-                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
-                }
+                self.plan = Some(InflightPlan::Ready(plan, stats));
+                NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
             }
             InflightPlan::Detour(plan) => {
-                // The detour is NOT committed here — the bytes park until the rider's commit (or a
-                // cancellation's `Release` drops them). Hand the finish the resident original route
-                // so it can trim the rejoin to first tail contact (#882); the source binding must
-                // outlive the call, so it's bound here rather than inside a closure.
-                let src = routes.active_source();
-                let orig = session.index().zip(src).map(|(i, s)| obc_route::RouteReader::new(i, s));
-                let (ready, result) = plan_detour_preview(app, terminal, plan, orig.as_ref(), &mut NoTrace);
-                self.detour_ready = ready;
+                let sources = self.sources.take().expect("admitted sources");
+                let (ready, result) =
+                    plan_detour_preview(app, Ok(stats), plan, sources.original().as_ref(), &mut NoTrace);
+                self.detour_ready = ready.map(|ready| Preview { ready, sources });
                 match result {
                     Ok(preview) => NavigatorOutcome::DetourFinished { token, preview },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 }
             }
-        };
-        self.plan_token = None;
-        deliver(&mut self.inbox.outcomes.navigator, answer, "navigator");
+            InflightPlan::Ready(..) => unreachable!("only an unfinished plan steps"),
+        })
     }
 
     /// Open a ride object when Recorder owes one.
@@ -659,7 +743,7 @@ impl HostLoop {
     /// the name, so a later route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
         let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
-        if tracks.open(id, active_route_name(app).as_deref()) {
+        if tracks.open(id, active_route_name(app).as_deref(), app.recorder.now_ms()) {
             self.opened_session = Some(id);
         }
     }
@@ -726,14 +810,30 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
 }
 
 /// Report only the repository's typed persistence result.
-fn serve_retention(effect: RetentionEffect, routes: &mut dyn RouteRepository) -> RetentionOutcome {
+fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> CatalogError {
+    if error == obc_app::retention::RetentionError::RemountRequired {
+        CatalogError::RemountRequired
+    } else {
+        CatalogError::Unreadable
+    }
+}
+
+fn serve_retention(
+    effect: RetentionEffect,
+    routes: &mut dyn RouteRepository,
+    rides: &mut dyn RideRepository,
+) -> RetentionOutcome {
     let token = effect.token();
-    match (effect, routes.write_metadata(effect)) {
+    let result = match effect {
+        RetentionEffect::WriteRouteMetadata { .. } => routes.write_metadata(effect),
+        RetentionEffect::WriteRideMetadata { .. } => rides.write_metadata(effect),
+    };
+    match (effect, result) {
         (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
             RetentionOutcome::RouteMetadataWritten { token, id }
         }
+        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => RetentionOutcome::RideMetadataWritten { token, id },
         (_, Err(error)) => RetentionOutcome::Failed { token, error },
-        _ => RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Unsupported },
     }
 }
 
@@ -753,25 +853,14 @@ fn serve_recorder(
         return RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
     }
     match effect {
-        RecorderEffect::Checkpoint { token } => match tracks.checkpoint() {
-            true => RecorderOutcome::Checkpointed { token },
-            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
-        },
-        // The samples this ride staged and no append has taken yet go in **before** the footer:
-        // they belong to the ride being saved, and the totals the footer carries already count the
-        // distance and the moving time they cover. This is inside the close's own service, so it
-        // orders nothing against the append rank.
-        //
-        // The footer facts come from Recorder, which stamped its wall-clock anchor as it minted
-        // this close — nothing assembles them a second time on the way out.
-        RecorderEffect::Finalize { token } => {
-            if opened {
-                for point in app.recorder.staged() {
-                    if !tracks.append(*point) {
-                        break; // the medium refused; the footer is still the honest total
-                    }
-                }
+        RecorderEffect::Checkpoint { token } => {
+            match tracks.checkpoint(app.recorder.ride_stats(), app.recorder.checkpoint_context()) {
+                Ok(status) => RecorderOutcome::Checkpointed { token, status },
+                Err(error) => RecorderOutcome::Failed { token, error },
             }
+        }
+        // Recorder drains acknowledged samples before it admits this footer-only close.
+        RecorderEffect::Finalize { token } => {
             match tracks.finalize(app.recorder.ride_stats()) {
                 RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
                 // The object was never created — a start this store refused, which already warned
@@ -782,8 +871,8 @@ fn serve_recorder(
             }
         }
         RecorderEffect::Discard { token } => match tracks.discard() {
-            true => RecorderOutcome::Discarded { token },
-            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+            Ok(()) => RecorderOutcome::Discarded { token },
+            Err(error) => RecorderOutcome::Failed { token, error },
         },
         // The staged samples, in order, for as long as the medium keeps taking them. A short write
         // is answered honestly: Recorder keeps the tail staged and offers it again next pass, so a
@@ -792,10 +881,11 @@ fn serve_recorder(
         RecorderEffect::Append { token, samples } => {
             let staged = app.recorder.staged();
             let want = (samples as usize).min(staged.len());
-            let written = staged[..want].iter().take_while(|point| tracks.append(**point)).count() as u16;
-            match written {
-                0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
-                _ => RecorderOutcome::Appended { token, samples: written },
+            match tracks.append_batch(&staged[..want], app.recorder.append_context(samples)) {
+                Ok(crate::repo::AppendStatus::Accepted(samples)) => RecorderOutcome::Appended { token, samples },
+                Ok(crate::repo::AppendStatus::Cancelled) => RecorderOutcome::Cancelled { token },
+                Ok(crate::repo::AppendStatus::NeedsCheckpoint) => RecorderOutcome::NeedsCheckpoint { token },
+                Err(error) => RecorderOutcome::Failed { token, error },
             }
         }
     }
@@ -857,16 +947,7 @@ mod tests {
             let mut rides = crate::MemRideStore::new(vec![]);
             let mut tracks = RecordingTrackStore::default();
             for _ in 0..2 {
-                host.serve_effects(
-                    &mut app,
-                    &mut plan,
-                    &ActiveRouteSession::new(),
-                    &mut routes,
-                    &mut rides,
-                    &mut (),
-                    &mut tracks,
-                    &mut platform,
-                );
+                host.serve_effects(&mut app, &mut plan, &mut routes, &mut rides, &mut (), &mut tracks, &mut platform);
             }
             assert_eq!(platform.calls, 1);
             assert_eq!(host.inbox.outcomes.bond.take(), Some(BondOutcome::from_result(effect.token(), result)));
@@ -874,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_removal_preserves_the_token_and_stops_repository_fallback() {
+    fn removal_preserves_token_and_never_probes_another_family() {
         use obc_app::catalog_state::CatalogError;
 
         struct FailedRide;
@@ -892,19 +973,71 @@ mod tests {
         struct UnreachedTrip;
         impl TripCatalog for UnreachedTrip {
             fn delete_by_id(&mut self, _: u64) -> Result<bool, CatalogError> {
-                panic!("failure must stop the namespace probe");
+                panic!("another family must not be reached");
             }
         }
 
         let token = obc_app::device_core::TokenSource::<CatalogTag>::new().issue();
-        let mut routes = crate::FlatRouteStore::from_bytes(&[]).unwrap();
+        const ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+        let mut routes = crate::FlatRouteStore::from_bytes(&[ROUTE]).unwrap();
+        let object = routes.ids()[0];
         assert_eq!(
-            remove_object(token, 7, &mut routes, &mut FailedRide, &mut UnreachedTrip),
+            remove_object(
+                token,
+                object,
+                obc_app::catalog_state::CatalogObjectKind::Ride,
+                &mut routes,
+                &mut FailedRide,
+                &mut UnreachedTrip
+            ),
             CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
         );
         assert_eq!(
-            remove_object(token, 7, &mut routes, &mut crate::MemRideStore::new(vec![]), &mut ()),
-            CatalogOutcome::ObjectRemoved { token, object: 7, existed: false },
+            remove_object(
+                token,
+                object,
+                obc_app::catalog_state::CatalogObjectKind::Ride,
+                &mut routes,
+                &mut crate::MemRideStore::new(vec![]),
+                &mut ()
+            ),
+            CatalogOutcome::ObjectRemoved { token, object, existed: false },
+        );
+        assert_eq!(routes.ids(), &[object], "same-numbered route is untouched by a ride request");
+    }
+
+    #[test]
+    fn trip_refresh_failure_or_another_card_cannot_grant_catalog_scope() {
+        use crate::flat_store::HostStore;
+        use obc_storage::flat::{DisplayName, ObjectKind};
+        let owner = HostStore::memory().unwrap();
+        let mut routes = crate::FlatRouteStore::new(owner.clone(), &[]).unwrap();
+        let mut trips = crate::FlatTripStore::new(owner.clone()).unwrap();
+        let mut sink = crate::VecSink::default();
+        obc_route::write_trip("Kept", &[], &mut sink).unwrap();
+        let trip = trips.import(sink.bytes()).unwrap();
+        let mut app = App::new_idle(obc_app::AppState::new(0, 0, 1.0));
+        let mut host = HostLoop::new();
+        let mut rides = crate::MemRideStore::new(vec![]);
+        let mut tokens = obc_app::device_core::TokenSource::<CatalogTag>::new();
+        let token = tokens.issue();
+        assert!(matches!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut trips),
+            CatalogOutcome::CatalogRead { scope: Some(_), .. }
+        ));
+        assert_eq!(app.trips()[0].id, trip);
+        owner.import(ObjectKind::Trip, None, &mut &b"bad"[..], 3, DisplayName::default()).unwrap();
+        let token = tokens.issue();
+        assert_eq!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut trips),
+            CatalogOutcome::Failed { token, error: CatalogError::Unreadable }
+        );
+        assert_eq!(app.trips()[0].id, trip, "failed refresh retains the previous projection");
+        let mut other = crate::FlatTripStore::new(HostStore::memory().unwrap()).unwrap();
+        let token = tokens.issue();
+        assert_eq!(
+            host.serve_catalog(&mut app, CatalogEffect::ReadCatalog { token }, &mut routes, &mut rides, &mut other),
+            CatalogOutcome::Failed { token, error: CatalogError::Stale }
         );
     }
 
@@ -936,10 +1069,15 @@ mod tests {
         footer: Option<RideStats>,
         failed_opens: usize,
         open_attempts: usize,
+        delta_limit: Option<usize>,
+        delta_points: usize,
+        failed_checkpoints: usize,
+        unsupported_checkpoints: bool,
+        failed_finalizes: usize,
     }
 
     impl TrackRepository for RecordingTrackStore {
-        fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+        fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
             self.open_attempts += 1;
             self.open = self.open_attempts > self.failed_opens;
             self.open
@@ -949,23 +1087,44 @@ mod tests {
             if !self.open {
                 return RideClose::Nothing;
             }
+            if self.failed_finalizes > 0 {
+                self.failed_finalizes -= 1;
+                return RideClose::Failed;
+            }
             self.open = false;
             self.footer = Some(stats);
             RideClose::Committed(7)
         }
 
-        fn discard(&mut self) -> bool {
+        fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
             self.open = false;
-            true
+            Ok(())
         }
 
-        fn checkpoint(&mut self) -> bool {
+        fn checkpoint(
+            &mut self,
+            _stats: RideStats,
+            _continuation: Option<obc_app::RideContinuation>,
+        ) -> Result<obc_app::recorder::CheckpointStatus, RecorderError> {
             assert!(self.open, "no checkpoint against an absent recorder");
-            true
+            if self.failed_checkpoints > 0 {
+                self.failed_checkpoints -= 1;
+                return Err(RecorderError::Write);
+            }
+            self.delta_points = 0;
+            Ok(if self.unsupported_checkpoints {
+                obc_app::recorder::CheckpointStatus::Unsupported
+            } else {
+                obc_app::recorder::CheckpointStatus::Durable
+            })
         }
 
         fn append(&mut self, point: TrackPoint) -> bool {
             assert!(self.open, "no append against an absent recorder");
+            if self.delta_limit.is_some_and(|limit| self.delta_points == limit) {
+                return false;
+            }
+            self.delta_points += 1;
             self.points.push(point);
             true
         }
@@ -997,7 +1156,7 @@ mod tests {
             // Refuse every append, so the samples stay staged. A refusal is a delay, not a loss.
             if let Some(effect) = plan.effects.recorder.take() {
                 assert!(matches!(effect, RecorderEffect::Append { .. }), "only appends here: {effect:?}");
-                let refused = RecorderOutcome::Failed { token: effect.token(), error: RecorderError::Write };
+                let refused = RecorderOutcome::Cancelled { token: effect.token() };
                 let _ = host.inbox.outcomes.recorder.try_put(refused);
             }
         }
@@ -1040,7 +1199,7 @@ mod tests {
                 let first_token = (step == 0).then(|| {
                     let effect = plan.effects.recorder.take().unwrap();
                     assert!(match (save, start) {
-                        (true, _) => matches!(effect, RecorderEffect::Finalize { .. }),
+                        (true, _) => matches!(effect, RecorderEffect::Append { .. }),
                         (_, 11_000) => matches!(effect, RecorderEffect::Checkpoint { .. }),
                         _ => matches!(effect, RecorderEffect::Append { .. }),
                     });
@@ -1055,7 +1214,7 @@ mod tests {
                     &mut rides,
                     &mut store,
                     &mut (),
-                    &map.reader(),
+                    &map,
                     &mut obc_route::NullElevation,
                     &mut (),
                 );
@@ -1064,24 +1223,18 @@ mod tests {
                     assert!(store.points.is_empty());
                     assert_eq!(app.recorder.staged(), expected);
                     let outcome = host.inbox.outcomes.recorder.take().unwrap();
-                    assert_eq!(
-                        outcome,
-                        if save {
-                            RecorderOutcome::Discarded { token }
-                        } else {
-                            RecorderOutcome::Failed { token, error: RecorderError::Write }
-                        }
-                    );
+                    assert_eq!(outcome, RecorderOutcome::Failed { token, error: RecorderError::Write });
                     host.inbox.outcomes.recorder.try_put(outcome).unwrap();
                 }
             }
-            assert!(app.recorder.staged().is_empty());
             if save {
-                assert_eq!(store.open_attempts, 1, "a terminal close does not reopen");
-                assert_eq!(app.recorder.session(), None);
+                assert_eq!(app.recorder.staged(), expected, "Save cannot drop samples whose open is still refused");
+                assert_eq!(store.open_attempts, 4, "the same session still owes its object");
+                assert!(app.recorder.session().is_some());
                 assert!(store.points.is_empty());
                 assert!(store.footer.is_none(), "no object was committed");
             } else {
+                assert!(app.recorder.staged().is_empty());
                 assert_eq!(store.open_attempts, 2, "one retry, then the session stays acknowledged");
                 assert_eq!(host.opened_session, app.recorder.session());
                 assert_eq!(store.points, expected, "the staged samples reach the object once, in order");
@@ -1089,42 +1242,76 @@ mod tests {
         }
     }
 
-    /// **The close writes the samples it was holding.** A ride whose tail no append reached is
-    /// saved with that tail in the ride object, ahead of the footer — because the footer's distance
-    /// and moving time already count the ground those samples cover, and an object whose figures
-    /// describe track it does not contain is the inconsistency this exists to prevent.
     #[test]
-    fn a_saved_ride_writes_the_samples_the_close_was_holding() {
-        let (mut app, mut host) = ride_with_a_staged_tail(4);
-        let mut store = RecordingTrackStore::default();
-        store.open(1, Some("ride"));
-
-        app.recorder.request(RecorderIntent::Save);
-        let mut loc = OneFix(None);
-        let mut plan = host.pass(
-            &mut app,
-            PassClock { ride: RideClock(9_000), ui: InputClock(9_000) },
-            &[],
-            Sensors::new(&mut loc),
-            None,
-            None,
-            SUPPORT,
-        );
-        let effect = plan.effects.recorder.take().expect("the rider's Save is a close");
-        assert!(matches!(effect, RecorderEffect::Finalize { .. }), "{effect:?}");
-
-        let outcome = serve_recorder(&app, effect, &mut store, true);
-        assert!(matches!(outcome, RecorderOutcome::Finalized { .. }), "{outcome:?}");
-
-        assert_eq!(store.points.len(), 4, "every staged sample reached the ride object");
-        let footer = store.footer.expect("the close wrote a footer");
-        let last = store.points.last().expect("…and the object is not empty");
-        assert_eq!(last.t_ms, 6_000, "the object's last sample is the ride's last fix");
-        assert!(footer.distance_m > 0, "the footer counts ground the object now contains");
-        assert_eq!(
-            footer.moving_time_s,
-            (last.t_ms - store.points[0].t_ms) / 1_000,
-            "and the moving time it reports is the span the samples cover"
-        );
+    fn save_drains_a_short_append_and_retries_checkpoint_and_footer_without_duplicates() {
+        for unsupported in [false, true] {
+            let (mut app, mut host) = ride_with_a_staged_tail(4);
+            let expected = app.recorder.staged().to_vec();
+            let mut store = RecordingTrackStore {
+                delta_limit: Some(2),
+                failed_checkpoints: usize::from(!unsupported),
+                unsupported_checkpoints: unsupported,
+                failed_finalizes: 1,
+                ..Default::default()
+            };
+            store.open(1, Some("ride"), 0);
+            app.recorder.request(RecorderIntent::Save);
+            let mut operations = Vec::new();
+            for step in 0..8 {
+                let now = 9_000 + step;
+                let mut loc = OneFix(None);
+                let mut plan = host.pass(
+                    &mut app,
+                    PassClock { ride: RideClock(now), ui: InputClock(now) },
+                    &[],
+                    Sensors::new(&mut loc),
+                    None,
+                    None,
+                    SUPPORT,
+                );
+                let Some(effect) = plan.effects.recorder.take() else { continue };
+                operations.push(match effect {
+                    RecorderEffect::Append { .. } => "append",
+                    RecorderEffect::Checkpoint { .. } => "checkpoint",
+                    RecorderEffect::Finalize { .. } => {
+                        assert!(app.recorder.staged().is_empty());
+                        assert_eq!(store.points, expected);
+                        "finalize"
+                    }
+                    RecorderEffect::Discard { .. } => panic!("Save cannot discard"),
+                });
+                let outcome = serve_recorder(&app, effect, &mut store, true);
+                if unsupported && matches!(effect, RecorderEffect::Checkpoint { .. }) {
+                    assert_eq!(
+                        outcome,
+                        RecorderOutcome::Checkpointed {
+                            token: effect.token(),
+                            status: obc_app::recorder::CheckpointStatus::Unsupported,
+                        }
+                    );
+                }
+                host.inbox.outcomes.recorder.try_put(outcome).unwrap();
+            }
+            let expected_operations = if unsupported {
+                vec!["append", "checkpoint", "append", "finalize", "finalize"]
+            } else {
+                vec!["append", "checkpoint", "checkpoint", "append", "finalize", "finalize"]
+            };
+            assert_eq!(operations, expected_operations);
+            assert_eq!(store.points, expected, "each accepted sample occurs once");
+            assert!(!app.recorder.recording());
+            let footer = store.footer.expect("one successful close writes the footer");
+            let last = store.points.last().unwrap();
+            assert_eq!(last.t_ms, 6_000);
+            assert!(footer.distance_m > 0);
+            assert_eq!(footer.moving_time_s, (last.t_ms - store.points[0].t_ms) / 1_000);
+        }
     }
 }
+
+#[cfg(test)]
+mod planner_tests;
+
+#[cfg(test)]
+#[path = "dispatch_ride_retention_tests.rs"]
+mod ride_retention_tests;

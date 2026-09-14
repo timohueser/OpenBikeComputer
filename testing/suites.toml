@@ -293,7 +293,7 @@ command = "cargo test -p obc-host-core --locked"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/flat_ride.rs"]
 coverage_component = "host-tools"
 ownership = [{ kind = "rust-package", name = "obc-host-core" }]
 cadence_conflict = { reason = "Board-parity fixture coverage and fast host helpers share one package command.", issue = "#1449" }
@@ -523,6 +523,22 @@ ownership = [{ kind = "rust-package", name = "obc-skin-preview" }]
 # Non-Rust test sources are owned by explicit roots or Swift target names.
 
 [[suite]]
+id = "web.demo-browser"
+surface = "web"
+level = "end-to-end"
+command = "npm test --prefix apps/obc-web-demo/tests/browser"
+fixtures = ["embedded-demo-assets"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["apps/obc-web-demo/**", "apps/obc-sim/assets/**", "docs/index.html", "docs/Trunk.toml"]
+platforms = ["linux", "macos"]
+coverage_component = "web"
+ownership = [
+  { kind = "path", source = "browser-test", pattern = "apps/obc-web-demo/tests/browser/*.test.js" },
+  { kind = "workflow", pattern = "npm test --prefix apps/obc-web-demo/tests/browser" },
+]
+
+[[suite]]
 id = "web.builder-vitest"
 surface = "web"
 level = "component"
@@ -541,15 +557,15 @@ ownership = [
 id = "python.repository-tools"
 surface = "dev-tools"
 level = "contract"
-command = "python3 -m unittest discover -s tools/tests -v"
+command = "rm -rf .artifacts/python/repository-tools && python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
-extra_triggers = ["tools/*.py", "tools/**/*.py", "testing/*.toml", "docs/testing.md", ".github/workflows/**"]
+extra_triggers = ["tools/requirements-test.txt", "tools/*.py", "tools/**/*.py", "testing/*.toml", "docs/testing.md", ".github/workflows/**"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "tools/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s tools/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools" },
   { kind = "workflow", pattern = "python3 tools/suite_registry.py *" },
   { kind = "workflow", pattern = "python3 tools/ci_aggregate.py" },
 ]
@@ -558,7 +574,7 @@ ownership = [
 id = "python.firmware-tools"
 surface = "dev-tools"
 level = "contract"
-command = "python3 -m unittest discover -s firmware/tools/tests -v"
+command = "rm -rf .artifacts/python/firmware-tools && python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
@@ -567,6 +583,7 @@ scheduled = "none"
 # `--expect-screen` stripped off an existing command — the frames are unchanged, so `ci.ui-snapshots`
 # still passes.
 extra_triggers = [
+  "tools/requirements-test.txt",
   "firmware/tools/*.py",
   "firmware/tools/**/*.py",
   "firmware/ui-snapshots.sh",
@@ -575,29 +592,29 @@ extra_triggers = [
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s firmware/tools/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools" },
 ]
 
 [[suite]]
 id = "python.weather-probe"
 surface = "weather"
 level = "unit"
-command = "python3 -m unittest discover -s ops/weather/tests -v"
+command = "rm -rf .artifacts/python/weather-probe && python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["ops/weather/*.py", "ops/weather/**/*.py"]
+extra_triggers = ["tools/requirements-test.txt", "ops/weather/*.py", "ops/weather/**/*.py"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "ops/weather/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m unittest discover -s ops/weather/tests -v" },
+  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe" },
 ]
 
 [[suite]]
 id = "python.builder"
 surface = "map-tools"
 level = "fixture"
-command = "PYTHONPATH=. python3 -m pytest builder/tests/ -v"
+command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
 fixtures = ["builder-corpus"]
 pull_request = "affected"
 scheduled = "none"
@@ -605,7 +622,7 @@ extra_triggers = ["builder/presets/**", "builder/server/*.py", "builder/server/*
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "builder/tests/test_*.py" },
-  { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v" },
+  { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml" },
 ]
 
 [[suite]]
@@ -926,3 +943,15 @@ extra_triggers = [
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]
+
+[[suite]]
+id = "e2e.desktop-linux-launch"
+surface = "desktop"
+level = "end-to-end"
+command = "xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+platforms = ["linux"]
+extra_triggers = ["apps/obc-desktop/**", "builder/app/**", "host/obc-pack/schema/*.example.json"]
+ownership = [{ kind = "workflow", pattern = "xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py" }]

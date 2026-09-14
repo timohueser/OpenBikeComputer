@@ -1302,13 +1302,15 @@
       }
 
       // Resolve with a STATUS so the runner can tell a real timeout from a cancel: 'reached' |
-      // 'timeout' | 'cancelled'.
+      // 'timeout' | 'cancelled' | 'reset-failed'.
       function until(targets, token) {
         return new Promise(function (resolve) {
           var t0 = performance.now();
           (function poll() {
             if (token !== runToken) return resolve('cancelled');
-            if (targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
+            var reset = api.obc_demo_reset_status();
+            if (reset === 'Failed') return resolve('reset-failed');
+            if (reset === 'Ready' && targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
             if (performance.now() - t0 > (targets.indexOf('PeakView') >= 0 ? 45000 : 12000)) return resolve('timeout');
             setTimeout(poll, 90);
           })();
@@ -1343,6 +1345,7 @@
             if (token !== runToken) return;
             while (rafId === null && token === runToken) { await sleep(150); }
             if (token !== runToken) return;
+            if (k > 0 && api.obc_demo_reset_status() === 'Failed') { takeControl(); return; }
             cmd(inputs[k].cmd);
             if (inputs[k].paced && k < inputs.length - 1) await sleep(CLICK_MS);
           }
@@ -1351,6 +1354,7 @@
           if (inputs.length) await sleep(120);
           var status = await until(step.until, token);
           if (status === 'cancelled') return;
+          if (status === 'reset-failed') { takeControl(); return; }
           if (status === 'timeout') {
             // Re-sync: restage the scenario and restart from step 0 (step 0's `enter` rebuilds the
             // baseline). Never advance a label past a screen the device never reached.

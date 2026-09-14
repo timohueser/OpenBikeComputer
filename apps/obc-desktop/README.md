@@ -77,6 +77,44 @@ npm test
 npm run build:all
 ```
 
+## Linux release-launch test
+
+The `desktop-launch` CI job downloads the release executable from `desktop`. Its embedded
+frontend is the existing `obc-desktop-frontend` build. The test opens the real window under
+Xvfb, checks its `tauri://localhost` origin, searches for Switzerland, and adds it to the map.
+A loopback catalog serves the producer's example fine-band cells with a 994 B price. The
+Rust catalog commands must fetch the root and all pinned index and region documents before
+the test can pass. No map download or device command is selected.
+
+On a Linux test host with no OBC device attached, first build the release app as above. Then,
+from the repository root:
+
+```sh
+sudo apt-get install webkit2gtk-driver xvfb imagemagick dbus-daemon
+cargo install tauri-driver --version 2.0.6 --locked
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r apps/obc-desktop/e2e/requirements.txt
+xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
+```
+
+Use a WebKit driver with the same version as the installed WebKitGTK runtime. CI installs an
+exactly matched pair and records both package versions. Selenium is pinned in the requirements
+file. The setup follows the [Tauri WebDriver CI guide](https://v2.tauri.app/develop/tests/webdriver/ci/).
+
+`OBC_DESKTOP_BINARY` can name an existing release executable. Evidence goes to
+`target/desktop-launch`, or `OBC_DESKTOP_EVIDENCE`: `result.json`, native catalog request logs,
+application and driver logs, rendered HTML, and a screenshot. A failed journey also captures
+`failure.png` when a webview session is available. CI uploads `desktop-launch-linux-ATTEMPT`
+after an executed success or failure. ImageMagick captures the X11 display if the session fails
+before WebDriver can take a screenshot. `dbus-run-session` gives the app and desktop portal
+services a private session bus with the Xvfb display. The suite uses bounded state waits with no retries and
+requires the app process to exit when its WebDriver session closes.
+
+This suite covers Linux software launch and catalog integration. It does not establish USB
+permissions, enumeration with a physical device, or route upload. Those checks remain in #994.
+Windows launch is not automated here. Tauri's native WebDriver route does not support macOS.
+
 ## Files and storage
 
 Each completed assembly is a uniquely named folder below

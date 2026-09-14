@@ -88,7 +88,35 @@ use obc_formats::io::{ByteSource, Error};
 use super::device::BlockDevice;
 use super::error::StoreError;
 use super::seam::{ObjectId, Revision, Store};
-use super::store::{FlatStore, Handle};
+use super::store::{FlatStore, Handle, SealedAllocation};
+
+/// A borrowed view of an owned sealed reservation. It cannot outlive its cleanup capability.
+pub struct SealedSource<'a, D: BlockDevice> {
+    store: &'a FlatStore<D>,
+    sealed: &'a SealedAllocation<'a>,
+}
+
+impl<D: BlockDevice> ByteSource for SealedSource<'_, D> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        if offset.checked_add(buf.len() as u64).is_none_or(|end| end > self.len()) {
+            return Err(Error::BadOffset);
+        }
+        match self.store.read_sealed(self.sealed, offset, buf) {
+            Ok(n) if n == buf.len() => Ok(()),
+            _ => Err(Error::Io),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        self.sealed.len()
+    }
+}
+
+impl<D: BlockDevice> FlatStore<D> {
+    pub fn sealed_source<'a>(&'a self, sealed: &'a SealedAllocation<'a>) -> SealedSource<'a, D> {
+        SealedSource { store: self, sealed }
+    }
+}
 
 /// An open object, as a reader sees it.
 ///
@@ -130,6 +158,11 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
     /// module's one saturation lived; with the seam at `u64` it is a move.
     fn with_len(store: &'a FlatStore<D>, handle: Handle, payload_len: u64) -> Self {
         StoreSource { store, handle: Some(handle), len: payload_len }
+    }
+
+    /// Retained bytes remain readable after replacement, but no longer authorize planning.
+    pub fn is_current(&self) -> bool {
+        self.store.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
     }
 
     /// Surrender the handle so the store can close it. **This is the only way out** — see the module

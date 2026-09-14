@@ -260,6 +260,14 @@ impl CoreHarness {
     /// The marks the actions do set are followed exactly (see [`clock_watermark`]).
     fn pass(&mut self) -> PassPlan {
         self.clock_ms += 1;
+        if self.state.outcomes.navigator.is_empty() {
+            if let Some(late) = self.state.late_nav.take() {
+                self.state.outcomes.navigator.try_put(late).unwrap();
+            }
+        }
+        if self.state.commit_success_pending && matches!(self.state.app.top_screen(), Screen::DetourPreview(_)) {
+            self.state.app.apply_gesture(Gesture::Press);
+        }
         let ride_preview = std::mem::take(&mut self.ride_preview);
         let nav_preview = std::mem::take(&mut self.nav_preview);
         // One scripted fix per pass while a scenario has queued any — what turns a ride into the
@@ -372,19 +380,42 @@ impl CoreHarness {
     fn serve_navigator(&mut self, effect: NavigatorEffect) -> Option<NavigatorOutcome> {
         let token = effect.token();
         match effect {
-            NavigatorEffect::Acquire { work: PlannerWork::Route(_), .. } => {
-                self.state.pending_nav_plan.take().map(|result| match result {
-                    Ok(route) => NavigatorOutcome::PlanFinished { token, route },
-                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+            NavigatorEffect::Acquire { .. } => {
+                self.state.nav_token = Some(token);
+                Some(NavigatorOutcome::Acquired { token })
+            }
+            NavigatorEffect::Step { .. } => {
+                self.state.nav_token = Some(token);
+                if self.state.commit_success_pending {
+                    return Some(NavigatorOutcome::DetourFinished {
+                        token,
+                        preview: obc_app::DetourPreview {
+                            cost_delta_m: 100,
+                            total_distance_m: 900,
+                            rejoin_m: 1_000,
+                            ascent_m: Some(30),
+                        },
+                    });
+                }
+                self.state.pending_nav_plan.as_ref().map(|result| match result {
+                    Ok(_) => {
+                        NavigatorOutcome::Stepped { token, progress: obc_app::navigator::PlannerProgress::Reached }
+                    }
+                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(*error) },
                 })
             }
-            NavigatorEffect::Acquire { work: PlannerWork::Detour(_), .. } => None,
-            // The splice's answer is scripted at the action, like the detour search's — see
-            // `serve_scripted`.
-            NavigatorEffect::CommitDetour { .. } => None,
-            NavigatorEffect::Release { .. } => Some(NavigatorOutcome::Released { token }),
-            NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
-                panic!("one request runs the whole search here; stepped pacing is #1400's — {effect:?}")
+            NavigatorEffect::CommitRoute { .. } => self.state.pending_nav_plan.take().map(|result| match result {
+                Ok(route) => NavigatorOutcome::PlanFinished { token, route },
+                Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+            }),
+            NavigatorEffect::CommitDetour { .. } => {
+                self.state.nav_token = Some(token);
+                std::mem::take(&mut self.state.commit_success_pending)
+                    .then_some(NavigatorOutcome::DetourCommitted { token, route: 10 })
+            }
+            NavigatorEffect::Release { .. } => {
+                self.state.abandoned_nav_token = self.state.nav_token.take();
+                Some(NavigatorOutcome::Released { token })
             }
         }
     }
@@ -413,7 +444,9 @@ impl CoreHarness {
     /// [`a_commit_reported_with_its_own_finalize_still_orders_one_read`] runs that pairing.
     fn serve_recorder(&mut self, effect: RecorderEffect) -> RecorderOutcome {
         match effect {
-            RecorderEffect::Checkpoint { token } => RecorderOutcome::Checkpointed { token },
+            RecorderEffect::Checkpoint { token } => {
+                RecorderOutcome::Checkpointed { token, status: obc_app::recorder::CheckpointStatus::Durable }
+            }
             RecorderEffect::Finalize { token } => {
                 if std::mem::take(&mut self.state.fail_next_finalize) {
                     // A typed reason, not a generic warning event: the ride is still on the store.
@@ -434,6 +467,11 @@ impl CoreHarness {
     }
 
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
+        use obc_app::catalog_state::CatalogObjectKind;
+        let kind = match effect {
+            CatalogEffect::RemoveObject { kind, .. } | CatalogEffect::ExpireObject { kind, .. } => Some(kind),
+            CatalogEffect::ReadCatalog { .. } => None,
+        };
         match effect {
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
@@ -450,13 +488,14 @@ impl CoreHarness {
                     refeed: Refeed::All,
                 }
             }
-            // One object out of the store, and nothing else. The namespace probe order is the real
-            // executor's; the re-read a completed removal implies is the domain's.
-            CatalogEffect::RemoveObject { token, object } | CatalogEffect::ExpireObject { token, object, .. } => {
+            // The domain's family is preserved through removal; it also orders the later reload.
+            CatalogEffect::RemoveObject { token, object, .. } | CatalogEffect::ExpireObject { token, object, .. } => {
                 // Counted before the probe, so a removal for an object that already left the store
                 // counts too — that is exactly the event #1548 removes.
                 self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
-                if let Some(index) = self.state.route_ids.iter().position(|&id| id == object) {
+                if let Some(index) =
+                    self.state.route_ids.iter().position(|&id| id == object && kind == Some(CatalogObjectKind::Route))
+                {
                     if std::mem::take(&mut self.state.route_delete_fail_once) {
                         // The store refused the removal. Not `existed: false` — the object is still
                         // there, which is what makes retention re-queue its candidate, and what
@@ -468,9 +507,14 @@ impl CoreHarness {
                     }
                     self.state.routes.remove(index);
                     self.state.route_ids.remove(index);
-                } else if let Some(index) = self.state.rides.iter().position(|entry| entry.id == object) {
+                } else if let Some(index) = self
+                    .state
+                    .rides
+                    .iter()
+                    .position(|entry| entry.id == object && kind == Some(CatalogObjectKind::Ride))
+                {
                     self.state.rides.remove(index);
-                } else if self.state.trip_present && object == TRIP {
+                } else if kind == Some(CatalogObjectKind::Trip) && self.state.trip_present && object == TRIP {
                     // The folder's own object — the cascade's last step, decided by the domain and
                     // not composed here.
                     self.state.trip_present = false;
@@ -519,9 +563,6 @@ impl CoreHarness {
     /// `persisted` is the revision a write went out for on this pass, when one did: the corpus's
     /// retry case is the one answer that must not precede its own request.
     fn serve_scripted(&mut self, persisted: Option<u16>, done: &mut Vec<Done>) {
-        if std::mem::take(&mut self.state.commit_success_pending) {
-            self.state.answer_nav(|token| NavigatorOutcome::DetourCommitted { token, route: 10 });
-        }
         // The answer carries the token of the write the executor is holding, so the domain checks
         // the operation *and* the revision — two independent guards (#810). The token is read
         // **first**: with no write in flight there is nothing for this script to answer, and
@@ -1165,7 +1206,25 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     // The plan already running is untouched by the withdrawal: its answer still lands.
     harness.state.facts.note_transfer(TransferState::Active);
     harness.pass();
-    let _ = harness.state.outcomes.navigator.try_put(NavigatorOutcome::PlanFinished { token: running, route: 10 });
+    harness.state.outcomes.navigator.try_put(NavigatorOutcome::Acquired { token: running }).unwrap();
+    let step = harness.pass().effects.navigator.take().expect("the acquired search may step");
+    harness
+        .state
+        .outcomes
+        .navigator
+        .try_put(NavigatorOutcome::Stepped {
+            token: step.token(),
+            progress: obc_app::navigator::PlannerProgress::Reached,
+        })
+        .unwrap();
+    let commit = harness.pass().effects.navigator.take().expect("a finished search may commit");
+    assert!(matches!(commit, NavigatorEffect::CommitRoute { .. }));
+    harness
+        .state
+        .outcomes
+        .navigator
+        .try_put(NavigatorOutcome::PlanFinished { token: commit.token(), route: 10 })
+        .unwrap();
     harness.pass();
     assert!(
         matches!(harness.state.app.top_screen(), Screen::RouteOverview(_)),
@@ -1199,8 +1258,11 @@ fn a_route_plan_that_lands_after_the_active_route_changed_is_refused() {
 
     // The rider walks away and asks again: Navigator replaces its operation.
     harness.app().apply_gesture(Gesture::Back);
-    harness.pass();
+    let release = harness.pass().effects.navigator.take().expect("release precedes replacement");
+    assert!(matches!(release, NavigatorEffect::Release { .. }));
     assert!(harness.app().debug_start_nav((0, 0), (2_000, 2_000), "second"), "the replacement is admitted");
+    assert!(harness.pass().effects.navigator.is_empty(), "replacement waits for acknowledged cleanup");
+    harness.state.outcomes.navigator.try_put(NavigatorOutcome::Released { token: release.token() }).unwrap();
     let mut plan = harness.pass();
     let second = plan.effects.navigator.take().expect("and goes out too").token();
     assert_ne!(first, second, "a replacement is a different operation");
@@ -2002,9 +2064,9 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
     assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
 }
 
-/// Replay counts include three settle/retry actions that cross the failed catalog read's deadline.
-/// They add three timed passes; immediate and sleep counts stay unchanged.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (211, 7, 133, 71);
+/// Explicit planner phases and cancellation settlement add seven timed passes to the replay.
+/// Immediate and sleep counts stay unchanged.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (218, 7, 140, 71);
 
 // ==================== the resource gate ====================
 

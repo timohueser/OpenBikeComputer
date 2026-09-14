@@ -17,8 +17,7 @@ pub struct MemRideStore {
 impl MemRideStore {
     /// Seed the catalog (newest first, as [`App::set_rides`](obc_app::App::set_rides) expects).
     /// Positional ids — the catalog is fixed, so they're session-stable — carved out of
-    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) so a ride and a route can never share an identity the
-    /// namespace-free `CatalogEffect::RemoveObject` would confuse.
+    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE)'s fixture band. Deletion also retains the Ride kind.
     pub fn new(catalog: Vec<RideSummary>) -> Self {
         let catalog = catalog
             .into_iter()
@@ -82,7 +81,7 @@ impl MemTrackStore {
 impl TrackRepository for MemTrackStore {
     /// Mirror the folder-backed store's recording flag without touching a filesystem. `name` is
     /// irrelevant with no on-disk log.
-    fn open(&mut self, _session: u32, _name: Option<&str>) -> bool {
+    fn open(&mut self, _session: u32, _name: Option<&str>, _now_ms: u32) -> bool {
         self.recording = true;
         true
     }
@@ -97,9 +96,9 @@ impl TrackRepository for MemTrackStore {
         RideClose::Committed(id)
     }
 
-    fn discard(&mut self) -> bool {
+    fn discard(&mut self) -> Result<(), obc_app::recorder::RecorderError> {
         self.recording = false;
-        true
+        Ok(())
     }
 }
 

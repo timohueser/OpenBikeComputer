@@ -50,6 +50,7 @@
 /// host tool and shell already shares, which makes it the cheapest common home (the alternative,
 /// `obc-host-core`, drags the whole device render path into a CLI tool's test build).
 pub mod scratch;
+pub mod terrain;
 
 /// A style record (OBCM §2, 8 bytes on the wire): `(id, z_index, color_rgb565, weight, priority,
 /// dashed, color2)`. `dashed` sets flag bit 2; `color2 = Some(_)` sets flag bit 3 and writes the

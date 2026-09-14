@@ -13,13 +13,14 @@
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
+use obc_app::recorder::RecorderOutcome;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::flat_map::FlatMap;
-use obc_host_core::RouteRepository;
 use obc_host_core::{
-    initial_camera, replay_advance, ActiveRouteSession, FlatRouteStore, HostLoop, MemRideStore, MemTrackStore,
+    initial_camera, replay_advance, ActiveRouteSession, FlatRideRecorder, FlatRideStore, FlatRouteStore, HostLoop,
     ReplaySensors, RgbaFrame,
 };
+use obc_host_core::{RideRepository, RouteRepository};
 use obc_ports::InputClock;
 use obc_reader::rgb565_to_device64;
 #[cfg(test)]
@@ -67,7 +68,7 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
-    // The in-memory repositories hold the route-use and ride-sync stamps for the session.
+    // The shared memory card holds metadata for this page session.
     retention_metadata: true,
 };
 
@@ -96,6 +97,17 @@ pub enum Cmd {
     /// One device-wide squeeze (#1515). Unlike a gesture it is applied straight to the app: the
     /// recognizer that would produce it lives below the page's command vocabulary.
     Chord(obc_app::Chord),
+}
+
+impl Cmd {
+    fn baseline(&self) -> Option<Baseline> {
+        match self {
+            Self::StageUpload => Some(Baseline::Upload),
+            Self::Enter => Some(Baseline::Tour),
+            Self::Ambient => Some(Baseline::Ambient),
+            _ => None,
+        }
+    }
 }
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
@@ -167,6 +179,14 @@ impl obc_ports::LocationSource for StoppedFix {
     }
 }
 
+/// Completion of the most recent queued baseline reset. Failure remains latched until retry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetStatus {
+    Ready,
+    Pending,
+    Failed,
+}
+
 pub struct Demo {
     map: FlatMap,
     /// The shared app (~136 KB — heap-allocated: a by-value `App` temporary is exactly the kind
@@ -177,8 +197,8 @@ pub struct Demo {
     /// the wasm stack trap.
     scratch: Box<obc_render::RenderScratch>,
     routes: FlatRouteStore,
-    rides: MemRideStore,
-    tracks: MemTrackStore,
+    rides: FlatRideStore,
+    tracks: FlatRideRecorder,
     player: GpxPlayer,
     baro: BaroSensor,
     compass: Compass,
@@ -229,6 +249,7 @@ pub struct Demo {
     tour_active: bool,
     /// First frame rendered — the page's readiness signal.
     ready: bool,
+    reset_status: ResetStatus,
 }
 
 impl Demo {
@@ -237,10 +258,15 @@ impl Demo {
     /// stay on the heap.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Box<Self> {
-        let owner = obc_host_core::flat_store::HostStore::memory().expect("session card initializes");
+        Self::on_card(obc_host_core::flat_store::HostStore::memory().expect("session card initializes"))
+    }
+
+    fn on_card(owner: obc_host_core::flat_store::HostStore) -> Box<Self> {
         let map = FlatMap::from_bytes_in(&owner, DEMO_MAP).expect("embedded demo map imports into the flat store");
-        let routes = FlatRouteStore::new(owner, &[DEMO_ROUTE]).expect("embedded routes import into the flat store");
-        let rides = MemRideStore::new(demo_rides());
+        let routes =
+            FlatRouteStore::new(owner.clone(), &[DEMO_ROUTE]).expect("embedded routes import into the flat store");
+        let tracks = FlatRideRecorder::new(owner.clone()).expect("new demo card has no recovery debt");
+        let rides = FlatRideStore::new(owner).expect("demo ride catalog loads");
         let track = Track::parse(DEMO_RIDE_GPX).expect("embedded demo GPX parses");
         let mut player = GpxPlayer::new(track);
         player.set_speed(DEMO_SPEED);
@@ -252,7 +278,7 @@ impl Demo {
             scratch: Box::new(obc_render::RenderScratch::new()),
             routes,
             rides,
-            tracks: MemTrackStore::new(),
+            tracks,
             player,
             baro: BaroSensor::new(),
             compass: Compass::default(),
@@ -268,8 +294,9 @@ impl Demo {
             pending_ride: false,
             tour_active: false,
             ready: false,
+            reset_status: ResetStatus::Ready,
         });
-        demo.reset(Baseline::Ambient);
+        demo.install_baseline(Baseline::Ambient);
         demo
     }
 
@@ -277,6 +304,9 @@ impl Demo {
     /// input is ignored.
     pub fn cmd(&mut self, cmd: &str) {
         if let Some(c) = parse_cmd(cmd) {
+            if c.baseline().is_some() {
+                self.reset_status = ResetStatus::Pending;
+            }
             self.queue.push(c);
         }
     }
@@ -310,6 +340,10 @@ impl Demo {
         })
     }
 
+    pub fn reset_status(&self) -> ResetStatus {
+        self.reset_status
+    }
+
     /// The rendered RGBA frame ([`FRAME_W`]`×`[`FRAME_H`]`×4` bytes), for `putImageData`.
     pub fn frame(&self) -> &[u8] {
         self.frame.as_rgba()
@@ -332,27 +366,52 @@ impl Demo {
         // rider's button land by exactly the same path. See [`queue`](Self::queue) for the
         // no-draw-between-cmds caveat that constrains how tour steps are grouped.
         let mut gestures: Vec<Gesture> = Vec::new();
-        for cmd in std::mem::take(&mut self.queue) {
-            self.apply(cmd, &mut gestures);
+        let mut reset_failed = false;
+        let mut commands = std::mem::take(&mut self.queue).into_iter();
+        while let Some(cmd) = commands.next() {
+            if let Some(baseline) = cmd.baseline() {
+                // A baseline supersedes earlier deferred inputs. Later commands depend on it.
+                gestures.clear();
+                if !self.reset(baseline) {
+                    self.reset_status = ResetStatus::Failed;
+                    reset_failed = true;
+                    break;
+                }
+                self.reset_status = if commands.as_slice().iter().any(|cmd| cmd.baseline().is_some()) {
+                    ResetStatus::Pending
+                } else {
+                    ResetStatus::Ready
+                };
+            } else {
+                self.apply(cmd, &mut gestures);
+            }
         }
 
         if self.app.peak_view_is_base() {
             self.player.pause();
         }
         self.peaks.update(&mut self.app, &self.map.reader());
-        self.arm_baseline_ride();
+        if !reset_failed {
+            self.arm_baseline_ride();
+        }
+        let was_playing = self.player.is_playing();
         let plan = self.device_frame(self.ui_now(), dt, &gestures);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
         // latch the pass may have armed rather than leaving it set for a plane that does not exist
         // — the same rule `App::handle_input` applies for the hosts that still go through it.
         let _ = self.app.take_hold_cancel();
 
-        // Ambient: restart the climb at the summit so the page stays alive. Point-to-point, so
-        // bump the tracking session to clear the breadcrumb + totals (a fresh lap instead of
-        // dragging a trail across the map). Suspended while a guided demo owns playback.
-        if !self.tour_active && !self.player.is_playing() && !self.app.peak_view_is_base() {
-            self.player.play();
-            self.app.recorder.request(obc_app::RecorderIntent::Start);
+        // At the summit, start the next ambient lap through the same acknowledged cleanup.
+        // A pause or a completed Save is not a new lap.
+        if self.reset_status == ResetStatus::Ready
+            && !self.tour_active
+            && was_playing
+            && !self.player.is_playing()
+            && self.player.time() >= self.player.duration()
+            && self.app.recording()
+            && !self.app.recorder.closing()
+        {
+            self.cmd("ambient");
         }
 
         // `plan.next_wake_ms` and `plan.immediate` are deliberately **ignored**: the page is
@@ -448,7 +507,6 @@ impl Demo {
         // token-carrying outcomes for the next pass. The demo has no trips (`&mut ()`) and no
         // platform work of its own (`&mut ()` — no card scan, bond, settings store or DFU on the
         // page), so the whole loop is repository sequencing that lives once in `obc-host-core`.
-        let reader = self.map.reader();
         self.host.execute(
             &mut self.app,
             &mut plan,
@@ -457,7 +515,7 @@ impl Demo {
             &mut self.rides,
             &mut self.tracks,
             &mut (),
-            &reader,
+            &self.map,
             &mut self.elevation,
             &mut (),
         );
@@ -490,13 +548,12 @@ impl Demo {
                 self.compass.0 = Some(degrees.rem_euclid(360.0));
                 self.player.pause();
             }
-            Cmd::StageUpload => self.reset(Baseline::Upload),
+            Cmd::StageUpload | Cmd::Enter | Cmd::Ambient => unreachable!("resets are queue barriers"),
             Cmd::ReceiveRoute => {
                 if let Some(&id) = self.routes.ids().first() {
                     self.host.facts().note_route_upload(RouteUpload { id, replaced: false, elevation: None });
                 }
             }
-            Cmd::Enter => self.reset(Baseline::Tour),
             Cmd::Exit => {
                 // "Take control": leave the device where the demo parked it, controls live.
                 self.tour_active = false;
@@ -504,21 +561,37 @@ impl Demo {
                     self.player.play();
                 }
             }
-            Cmd::Ambient => self.reset(Baseline::Ambient),
         }
     }
 
-    /// **The demo-reset seam** (epic #624 S2): the single path behind boot, `ambient`, and
-    /// `enter`. Rebuild the app to a clean `[Home, Map]` riding session on the demo route and stage
-    /// `baseline`. Rebuilding — rather than unwinding — guarantees a previous demo can't leak state
-    /// in. The three axes the seam is parameterized on:
-    /// - **climb_mode** — `Manual` for *both* baselines (constant, not a knob): the demo ride is
-    ///   one long climb, so `Auto` would yank the opening Map onto the Climb profile (req 2).
-    /// - **seek_time** — the only per-baseline construction difference: [`Baseline::Tour`] seeks
-    ///   mid-climb ([`TOUR_BASELINE_S`]), [`Baseline::Ambient`] starts from `0.0`.
-    /// - **controls_enabled** — captured by `tour_active` (`= baseline == Tour`): a guided tour
-    ///   owns playback (visitor controls paused on the page), ambient hands the visitor the wheel.
-    fn reset(&mut self, baseline: Baseline) {
+    /// Retire the old recorder through its exact acknowledgment before recycling App tokens.
+    fn reset(&mut self, baseline: Baseline) -> bool {
+        if self.host.owns_navigation() {
+            return false;
+        }
+        if !self.tracks.is_idle() || self.app.recording() || !self.host.outcomes().recorder.is_empty() {
+            self.app.recorder.request(obc_app::RecorderIntent::Discard);
+            // First consume any old reply, then issue Discard. The memory executor answers in
+            // this pass; the second pass must consume that exact answer before replacing App.
+            self.device_frame(self.ui_now(), 0.0, &[]);
+            if let Some(reply) = self.host.outcomes().recorder.take() {
+                // Put the unchanged token back for RecorderMachine to validate and consume.
+                self.host.outcomes().recorder.try_put(reply).expect("the inspected slot is empty");
+                if !matches!(reply, RecorderOutcome::Discarded { .. }) {
+                    return false;
+                }
+                self.device_frame(self.ui_now(), 0.0, &[]);
+            }
+            if !self.tracks.is_idle() || self.app.recording() || self.host.owns_navigation() {
+                return false;
+            }
+        }
+        self.install_baseline(baseline);
+        true
+    }
+
+    /// Rebuild only the device baseline. The same card retains maps, routes and saved rides.
+    fn install_baseline(&mut self, baseline: Baseline) {
         use obc_app::settings::{ClimbMode, Settings};
 
         // Both bookend baselines are page-driven. In particular, Upload must stay idle instead of
@@ -545,6 +618,9 @@ impl Demo {
         app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
         app.set_rides(self.rides.catalog());
+        if let Some(records) = self.rides.retention_inventory() {
+            app.set_ride_retention_inventory(records);
+        }
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
         //
@@ -617,24 +693,6 @@ impl Demo {
     }
 }
 
-/// The seeded demo ride catalog — two rides, one synced and one not, so the Rides screen's
-/// red/plain footers both show.
-fn demo_rides() -> Vec<obc_app::RideSummary> {
-    let mk = |name: &str, start: u32, dist: u32, mv: u32, climb: u16, synced: bool| obc_app::RideSummary {
-        name: heapless::String::try_from(name).unwrap_or_default(),
-        start_time: start,
-        distance_m: dist,
-        moving_time_s: mv,
-        climb_m: climb,
-        synced,
-        synced_at_utc: 0,
-    };
-    vec![
-        mk("Grimsel Climb", 1_720_100_000, 48_200, 3 * 3600 + 40 * 60, 1620, true),
-        mk("Evening Loop", 1_719_900_000, 22_500, 3600 + 12 * 60, 340, false),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,6 +702,101 @@ mod tests {
         *now_ms += 16.0;
         demo.tick(*now_ms);
         assert_eq!(demo.state(), expected, "`{command}` should reach {expected}");
+    }
+
+    #[test]
+    fn reset_drains_the_old_reply_before_reusing_session_tokens() {
+        let mut d = Demo::new();
+        let map = d.map.source();
+        let route = d.routes.ids()[0];
+        d.tick(0.0);
+        d.tick(250.0);
+        d.tick(500.0); // cross the replay's one-second fix boundary
+        assert!(!d.tracks.is_idle());
+        assert!(!d.host.outcomes().recorder.is_empty(), "the old App still owes its reply");
+        d.cmd("back");
+        d.cmd("ambient");
+        d.cmd("upload");
+        d.cmd("receive");
+        assert_eq!(d.reset_status(), ResetStatus::Pending);
+        assert_eq!(d.state(), "Map", "an old matching screen cannot acknowledge reset");
+        d.tick(750.0);
+        assert_eq!(d.reset_status(), ResetStatus::Ready);
+        assert_eq!(d.state(), "RouteReceived", "earlier gestures are superseded; later inputs follow the baseline");
+        assert!(d.tracks.is_idle());
+        assert!(!d.app.recording());
+        assert!(d.map.source().same_revision(&map));
+        assert_eq!(d.routes.ids(), &[route]);
+        assert!(d.rides.catalog().is_empty());
+        // Repeated cleanup must return the reservation and leave no old recording at Start.
+        for i in 0..4 {
+            d.cmd("ambient");
+            d.tick(1000.0 + i as f64 * 500.0);
+            d.tick(1250.0 + i as f64 * 500.0);
+            assert_eq!(d.reset_status(), ResetStatus::Ready);
+            assert!(d.app.recording());
+            assert!(!d.tracks.is_idle());
+        }
+        assert_ne!(Demo::new().map.source().store_id(), map.store_id(), "a new page owns a new volatile card");
+    }
+
+    #[test]
+    fn playback_end_cannot_discard_a_save_waiting_for_its_append_reply() {
+        let mut d = Demo::new();
+        d.tick(0.0);
+        d.tick(250.0);
+        d.tick(500.0);
+        let reply = d.host.outcomes().recorder.take().expect("the real append awaits delivery");
+        assert!(matches!(reply, RecorderOutcome::Appended { .. }));
+        assert!(!d.app.recorder.staged().is_empty());
+        d.app.recorder.request(obc_app::RecorderIntent::Save);
+        d.player.seek(d.player.duration() - 0.5);
+        d.tick(750.0);
+        assert!(!d.player.is_playing());
+        assert!(d.app.recording() && d.app.recorder.closing());
+        assert_eq!(d.reset_status(), ResetStatus::Ready);
+        assert!(d.queue.is_empty(), "playback end cannot supersede Save with automatic Discard");
+        d.host.outcomes().recorder.try_put(reply).unwrap();
+        for i in 4..12 {
+            d.tick(i as f64 * 250.0);
+        }
+        assert!(!d.app.recording());
+        assert!(d.tracks.is_idle());
+        assert_eq!(d.rides.catalog().len(), 1, "the original sample becomes a saved object");
+        assert!(!d.rides.catalog()[0].summary.synced);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn refused_discard_preserves_session_and_latches_reset_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("card.obc");
+        let owner = obc_host_core::flat_store::HostStore::create_file(&path).unwrap();
+        let mut d = Demo::on_card(owner);
+        d.tick(0.0);
+        d.tick(250.0);
+        let session = d.app.recorder.session();
+        let map = d.map.source();
+        let offset = d.ui_offset_ms;
+        // An actual unavailable catalog: the cached owner cannot read the truncated backing file.
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(0).unwrap();
+        d.cmd("upload");
+        d.cmd("receive");
+        d.tick(250.0);
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert_ne!(d.state(), "RouteReceived");
+        assert_eq!(d.app.recorder.session(), session);
+        assert!(!d.tracks.is_idle());
+        assert_eq!(d.ui_offset_ms, offset, "no Tour pre-roll ran");
+        assert!(d.map.source().same_revision(&map));
+        d.cmd("back");
+        d.tick(250.0);
+        assert_eq!(d.reset_status(), ResetStatus::Failed, "an unrelated input cannot erase failure");
+        d.cmd("enter");
+        assert_eq!(d.reset_status(), ResetStatus::Pending, "an explicit retry remains possible");
+        d.tick(250.0);
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert_eq!(d.ui_offset_ms, offset);
     }
 
     /// The shipped payload is a map **this build's reader accepts**.
@@ -819,9 +972,13 @@ mod tests {
 
     #[test]
     fn ride_log_bookend_pauses_selects_finish_and_saves() {
-        let mut d = Demo::new();
+        use obc_formats::io::ByteSource;
+        use obc_storage::flat::{ObjectId, Revision};
+        let owner = obc_host_core::flat_store::HostStore::memory().unwrap();
+        let mut d = Demo::on_card(owner.clone());
         let mut now = 0.0;
         d.tick(now);
+        assert!(d.rides.catalog().is_empty(), "no fabricated ride or archive proof");
 
         drive(&mut d, &mut now, "enter", "Map");
         let stats = d.app.recorder.ride_stats();
@@ -832,9 +989,14 @@ mod tests {
         drive(&mut d, &mut now, "step:1", "RideControl");
         drive(&mut d, &mut now, "hold", "Home");
         assert!(d.app.recording(), "the ride is open until the store answers for the close");
-        now += 16.0;
-        d.tick(now);
-        assert!(!d.app.recording(), "and the finalize's verdict is what closes it");
+        for _ in 0..8 {
+            now += 16.0;
+            d.tick(now);
+            if !d.app.recording() {
+                break;
+            }
+        }
+        assert!(!d.app.recording(), "the final staged samples drain before the finalize verdict closes it");
         // …and it stays ended. The baseline's Start is a one-shot; a page that re-asked for it
         // every frame would reopen a ride the rider just finished, about two frames later.
         for _ in 0..8 {
@@ -842,6 +1004,37 @@ mod tests {
             d.tick(now);
             assert!(!d.app.recording(), "the finished ride must not reopen itself");
         }
+        let saved = d.rides.catalog()[0].clone();
+        let source = owner.open(ObjectId(saved.id), Revision(1)).unwrap();
+        assert_eq!(source.store_id(), d.map.source().store_id());
+        let info = obc_route::RideInfo::read(&source).unwrap();
+        assert!(info.point_count > 100);
+        assert_eq!(saved.summary, obc_app::RideSummary::from_info(&info, false, 0));
+        assert!(!saved.summary.synced);
+        let mut samples = vec![0; info.point_count as usize * obc_formats::track::RECORD_LEN];
+        source.read_at(0, &mut samples).unwrap();
+        let points: Vec<_> = samples
+            .as_chunks::<{ obc_formats::track::RECORD_LEN }>()
+            .0
+            .iter()
+            .map(obc_formats::track::decode_record)
+            .collect();
+        assert!(points.windows(2).all(|pair| pair[0].t_ms < pair[1].t_ms));
+        assert!(points.iter().any(|point| point.lat != points[0].lat));
+        let mut profile = obc_route::Profile::EMPTY;
+        assert!(d.rides.fill_track(saved.id, &mut profile).unwrap().len() > 1);
+        d.cmd("exit");
+        d.cmd("pause");
+        now += 16.0;
+        d.tick(now);
+        assert!(!d.player.is_playing());
+        assert!(!d.app.recording(), "leaving the tour cannot reopen a saved ride");
+        d.cmd("upload");
+        now += 16.0;
+        d.tick(now);
+        assert_eq!(d.reset_status(), ResetStatus::Ready);
+        assert_eq!(d.rides.catalog(), &[saved]);
+        assert!(source.is_current(), "reset preserves the committed revision and its held reader");
     }
 
     /// `Screen::NAMES` (the drift-guard export) contains every state this host can report — a
@@ -899,6 +1092,22 @@ mod tests {
         d.cmd("press");
         now += 16.0;
         d.tick(now);
+        assert!(d.host.owns_navigation());
+        let offset = d.ui_offset_ms;
+        d.cmd("enter");
+        d.cmd("receive");
+        now += 16.0;
+        d.tick(now);
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert_eq!(d.ui_offset_ms, offset);
+        assert!(d.host.owns_navigation());
+        assert!(!d.app.recorder.closing());
+        d.player.seek(d.player.duration() - 0.5);
+        now += 250.0;
+        d.tick(now);
+        assert!(!d.player.is_playing());
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert!(d.queue.is_empty(), "an ambient end cannot clear a refused reset");
         for _ in 0..2_000 {
             if d.state() != "NavPlanning" {
                 break;

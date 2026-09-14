@@ -325,6 +325,18 @@ impl CatalogState {
         }
     }
 
+    /// Overlay a fully validated proof during a catalog refresh, in both resident projections.
+    pub(crate) fn set_ride_archive_proof(&mut self, id: CatalogObjectId, timestamp: u32) {
+        if let Some(record) = self.ride_inventory.iter_mut().find(|record| record.id == id) {
+            record.synced = true;
+            record.synced_at_utc = timestamp;
+            if let Some(ride) = self.rides.iter_mut().find(|ride| ride.id == id) {
+                ride.summary.synced = true;
+                ride.summary.synced_at_utc = timestamp;
+            }
+        }
+    }
+
     /// The paired `{id, summary}` at ride-catalog index `idx` — the ride twin of
     /// [`route_entry`](CatalogState::route_entry).
     pub(crate) fn ride_entry(&self, idx: usize) -> Option<&RideEntry> {
@@ -595,7 +607,7 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
     /// Automatic removal, bound to the catalog used by retention.
-    ExpireObject { id: CatalogObjectId, scope: StoreRevision },
+    ExpireObject { id: CatalogObjectId, kind: CatalogObjectKind, scope: StoreRevision },
     /// Delete one route.
     DeleteRoute { id: CatalogObjectId },
     /// Delete one ride.
@@ -604,16 +616,29 @@ pub enum CatalogIntent {
     DeleteTrip { id: CatalogObjectId },
 }
 
+/// The family selected by catalog policy, retained through physical deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CatalogObjectKind {
+    Route,
+    Ride,
+    Trip,
+}
+
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
     /// Revalidate live retention policy before admitting this exact snapshot.
-    ExpireObject { token: OperationToken<CatalogTag>, object: CatalogObjectId, scope: StoreRevision },
+    ExpireObject {
+        token: OperationToken<CatalogTag>,
+        object: CatalogObjectId,
+        kind: CatalogObjectKind,
+        scope: StoreRevision,
+    },
     /// Re-read the object store into the resident catalogs.
     ReadCatalog { token: OperationToken<CatalogTag> },
-    /// Remove one object. Deliberately namespace-free: routes, rides and trips are all objects to
-    /// the store, and it is the domain that knows which cascade step this is.
-    RemoveObject { token: OperationToken<CatalogTag>, object: CatalogObjectId },
+    /// Remove one object of the family selected by the domain.
+    RemoveObject { token: OperationToken<CatalogTag>, object: CatalogObjectId, kind: CatalogObjectKind },
 }
 
 impl CatalogEffect {
@@ -703,7 +728,7 @@ impl CatalogState {
     /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
     /// intent it has already decided about. A cascade is the one arm that puts it back, and it
     /// advances [`cascade`](CatalogState::cascade) every time it does — the ordinal only ever grows
-    /// and the stage list is bounded, so the walk always reaches the folder and releases the slot.
+    /// and the stage list is bounded. The walk reaches the folder or stops at its first failure.
     #[cfg(test)]
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
         self.next_effect_at(0)
@@ -743,11 +768,14 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
-            CatalogIntent::ExpireObject { id, scope } => {
-                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, scope }
+            CatalogIntent::ExpireObject { id, kind, scope } => {
+                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, kind, scope }
             }
-            CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
-                CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
+            CatalogIntent::DeleteRoute { id } => {
+                CatalogEffect::RemoveObject { token: self.ops.issue(), object: id, kind: CatalogObjectKind::Route }
+            }
+            CatalogIntent::DeleteRide { id } => {
+                CatalogEffect::RemoveObject { token: self.ops.issue(), object: id, kind: CatalogObjectKind::Ride }
             }
             // The cascade, one member per operation. The trip's stage ids are already resident and
             // the `.obt` is untouched until the last step, so ordinal `n` names the same member on
@@ -758,13 +786,21 @@ impl CatalogState {
                     Some(member) => {
                         self.cascade = Some(ordinal.saturating_add(1));
                         self.pending = Some(intent); // the folder is still owed
-                        CatalogEffect::RemoveObject { token: self.ops.issue(), object: member }
+                        CatalogEffect::RemoveObject {
+                            token: self.ops.issue(),
+                            object: member,
+                            kind: CatalogObjectKind::Route,
+                        }
                     }
                     // Every member has had its turn: the folder itself is the last removal, and
                     // taking the intent above is what ends the cascade.
                     None => {
                         self.cascade = None;
-                        CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
+                        CatalogEffect::RemoveObject {
+                            token: self.ops.issue(),
+                            object: id,
+                            kind: CatalogObjectKind::Trip,
+                        }
                     }
                 }
             }
@@ -790,16 +826,21 @@ impl CatalogState {
     /// The resident catalogs are not touched here: what is *in* the store reaches them through the
     /// refresh feed, and inventing a removal locally would make the two disagree until it did.
     ///
-    /// A cascade step reads the same as any other answer, including a failed one. The walk advanced
-    /// when the step went out, so a member the store refused is **left behind** rather than retried:
-    /// the folder still goes, and the leftover route comes back as an unfiled row the rider can
-    /// delete. Retrying instead would spin a cascade against a card that has stopped answering.
+    /// A failed cascade stops before any later member or the trip object is removed. The stored
+    /// trip keeps its stage references, so an explicit retry can pass already-absent members.
     pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) -> Option<CatalogObjectId> {
         if !self.ops.is_current(outcome.token()) {
             return None;
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
+        if matches!(outcome, CatalogOutcome::Failed { .. })
+            && self.cascade.is_some()
+            && matches!(self.pending, Some(CatalogIntent::DeleteTrip { .. }))
+        {
+            self.pending = None;
+            self.cascade = None;
+        }
         // A completed removal moved the store, so the resident catalogs are behind it — both
         // `existed` verdicts, because an object the store did not have may still be a resident row.
         // A read the store could not answer is still owed, and nothing else would order it again.
@@ -853,7 +894,7 @@ impl CatalogState {
 
 // Layout tripwires: an identity, a revision, a count — never a catalog.
 const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 40, "a request with one identity");
-const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 40, "a token and one identity");
+const _: () = assert!(core::mem::size_of::<CatalogEffect>() == 40, "kind fits the existing effect allocation");
 const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 40, "a token, an identity and a flag");
 const _: () = assert!(core::mem::size_of::<CatalogError>() <= 1, "a verdict, not a report");
 
@@ -943,7 +984,7 @@ mod tests {
         let mut removed = heapless::Vec::new();
         for _ in 0..=removed.capacity() {
             let Some(effect) = catalogs.next_effect() else { return removed };
-            let CatalogEffect::RemoveObject { token, object } = effect else { return removed };
+            let CatalogEffect::RemoveObject { token, object, .. } = effect else { return removed };
             let _ = removed.push(object);
             catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
         }
@@ -962,7 +1003,7 @@ mod tests {
         let effect = catalogs.next_effect().expect("the first member");
         let later = CatalogIntent::DeleteRoute { id: 99 };
         assert_eq!(catalogs.admit_intent(later).unwrap_err().rejected, later, "handed back, never lost");
-        let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+        let CatalogEffect::RemoveObject { token, object, .. } = effect else { panic!("a removal") };
         assert_eq!(object, 10, "stage order, first member first");
         catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
 
@@ -979,25 +1020,50 @@ mod tests {
         // Trip 1 has one member, route 7. Route 1 exists too, and shares the trip's number.
         let mut catalogs = with_trip(1, &[7], &[7, 1]);
         catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 1 }).unwrap();
-        let removed = drain_cascade(&mut catalogs);
-        assert_eq!(removed.as_slice(), &[7, 1], "the member, then the folder — and only twice");
-        // The second removal is the folder's identity, which the executor resolves in the trip
-        // namespace. Nothing in the walk ever named route 1 as a *member*.
-        assert_eq!(removed.iter().filter(|&&id| id == 1).count(), 1, "route 1 is not a member of trip 1");
+        for (id, expected) in [(7, CatalogObjectKind::Route), (1, CatalogObjectKind::Trip)] {
+            let CatalogEffect::RemoveObject { token, object, kind } = catalogs.next_effect().unwrap() else {
+                panic!("expected cascade removal")
+            };
+            assert_eq!((object, kind), (id, expected));
+            catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
+        }
+        assert!(!matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { .. })));
     }
 
-    /// A member the store refused is left behind rather than retried: the ordinal advanced when the
-    /// step went out, so the folder still goes and the leftover route reappears as an unfiled row.
-    /// Retrying would spin the cascade against a card that has stopped answering.
     #[test]
-    fn a_failed_member_step_does_not_stall_the_cascade() {
+    fn an_unrelated_failure_keeps_the_queued_trip_intent() {
+        for read in [false, true] {
+            let mut catalogs = with_trip(50, &[10], &[10, 99]);
+            if read {
+                catalogs.refresh_owed = true;
+            } else {
+                catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 99 }).unwrap();
+            }
+            let effect = catalogs.next_effect().unwrap();
+            catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+            catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::Unreadable });
+            assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[10, 50]);
+        }
+    }
+
+    /// Failure preserves the trip and unfinished members; an explicit retry can pass earlier absence.
+    #[test]
+    fn a_failed_member_stops_the_cascade_until_explicit_retry() {
         let mut catalogs = with_trip(50, &[10, 20], &[10, 20]);
         catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
-
-        let effect = catalogs.next_effect().expect("the first member");
-        catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::RemoveFailed });
-
-        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50], "the walk moved on and finished");
+        let first = catalogs.next_effect().unwrap();
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: first.token(), object: 10, existed: true });
+        let second = catalogs.next_effect().unwrap();
+        catalogs.apply_outcome(CatalogOutcome::Failed { token: second.token(), error: CatalogError::RemoveFailed });
+        let read = catalogs.next_effect().unwrap();
+        assert!(matches!(read, CatalogEffect::ReadCatalog { .. }), "earlier success still needs a reload");
+        catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token(), scope: None });
+        assert!(catalogs.next_effect().is_none(), "no automatic continuation or retry");
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+        let first = catalogs.next_effect().unwrap();
+        assert!(matches!(first, CatalogEffect::RemoveObject { object: 10, kind: CatalogObjectKind::Route, .. }));
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: first.token(), object: 10, existed: false });
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50]);
     }
 
     /// **Ordinal stability.** The walk holds a cursor, not a copy of the member list, so the only
@@ -1011,7 +1077,7 @@ mod tests {
         catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
 
         let effect = catalogs.next_effect().expect("the first member");
-        let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+        let CatalogEffect::RemoveObject { token, object, .. } = effect else { panic!("a removal") };
         assert_eq!(object, 10);
         catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
 
@@ -1073,7 +1139,8 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::RemoveObject { token, object } | CatalogEffect::ExpireObject { token, object, .. } => {
+                CatalogEffect::RemoveObject { token, object, .. }
+                | CatalogEffect::ExpireObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
                 }

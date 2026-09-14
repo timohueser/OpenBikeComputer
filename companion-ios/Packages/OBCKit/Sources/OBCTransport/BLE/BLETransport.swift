@@ -1155,6 +1155,35 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
+    public func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation {
+        let source = receipt.source
+        do {
+            try Task.checkCancellation()
+            let storeID = try await transferClient.storeID()
+            try Task.checkCancellation()
+            guard storeID.description == source.storeID else { return .sourceUnavailable }
+            _ = try await transferClient.archiveRide(
+                storeID: storeID, objectID: ObjectID(rawValue: source.objectID),
+                revision: Revision(rawValue: source.revision),
+                payloadLength: source.payloadLength, payloadCRC32: source.payloadCRC32)
+            return .confirmed
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch TransferClientError.storeChanged {
+            return .sourceUnavailable
+        } catch WireError.remote(let error) {
+            switch error.code {
+            case .unsupported: return .unsupported
+            case .invalidRequest, .notFound, .revisionConflict: return .sourceUnavailable
+            case .readOnly, .noSpace: return .refused
+            default: throw DeviceError.writeFailed
+            }
+        } catch {
+            try Task.checkCancellation()
+            throw deviceError(for: error)
+        }
+    }
+
     fileprivate func downloadRide(id: RideID, source: RideSource) async throws -> DownloadedRide {
         do {
             guard source.matches(id) else { throw DeviceError.readFailed }

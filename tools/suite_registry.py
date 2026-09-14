@@ -263,6 +263,7 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
 def discover_paths(root: Path) -> list[Discovered]:
     rules = (
         ("web-test", "builder/app", ("*.test.ts", "*.test.tsx", "*.test.js")),
+        ("browser-test", "apps/obc-web-demo/tests/browser", ("*.test.js",)),
         ("python-test", "tools/tests", ("test_*.py",)),
         ("python-test", "firmware/tools/tests", ("test_*.py",)),
         ("python-test", "ops/weather/tests", ("test_*.py",)),
@@ -448,7 +449,7 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
     if not words:
         errors.append(f"{suite_id}: command is empty")
         return
-    known_tools = {"bash", "cargo", "npm", "python3", "swift", "trunk", "xcodebuild"}
+    known_tools = {"bash", "cargo", "npm", "python3", "swift", "trunk", "xcodebuild", "xvfb-run"}
     expect_executable = True
     skip_cd_path = False
     for word in words:

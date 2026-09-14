@@ -239,7 +239,7 @@ fn planning_back_cancels_and_failures_show_the_detour_tiers() {
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Detour(_)), "cancel returns to the chooser, steps intact");
-    assert!(host.took_release(&mut app), "Back asks for the workspace back");
+    assert!(!host.took_release(&mut app), "the request was cancelled before acquisition");
     assert!(detour_req(&mut app, &mut host).is_none(), "the cancel annihilated the request");
 
     // Replan; the executor fails with the range tier → the detour fail card, dismiss → chooser.
@@ -554,7 +554,9 @@ fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
 
     app.apply_gesture(Gesture::Back); // pops the spinner *and* pends the cancel
     assert!(app.reroute_freeze_active(), "frozen until the cancel actually reaches the host");
-    assert_eq!(board.pass(&mut app), Painted::Frame, "which it does on this pass — so the map redraws");
+    assert_eq!(board.pass(&mut app), Painted::Banner, "release was requested, but not yet acknowledged");
+    assert!(searching(&app));
+    assert_eq!(board.pass(&mut app), Painted::Frame, "the release acknowledgment permits the map to redraw");
     assert!(!searching(&app));
     assert_eq!(board.pass(&mut app), Painted::Nothing, "and nothing is left demanding a repaint");
 }

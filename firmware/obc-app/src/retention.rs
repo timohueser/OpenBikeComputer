@@ -1,33 +1,17 @@
-//! Route auto-expiry + ride auto-delete — the retention vocabulary, the SD **route-retention
-//! sidecar** codec, and the portable **expiry sweep** (epic #638, S3 #643).
+//! Route and ride retention values and the portable expiry policy.
 //!
-//! Everything here is host-agnostic `no_std`: the same types drive the simulator, the board, and
-//! the unit tests. The *policy* — what expires, what re-stamps, and when either may happen — has
-//! exactly one owner, [`RetentionMachine`]; [`collect_sweep_actions`] is the pure discovery pass
-//! inside it, so the safety invariants stay testable without hardware. The machine never deletes:
-//! it emits a [`RetentionEffect`] for its own device-local sidecar writes and a
-//! [`CatalogIntent`](crate::catalog_state::CatalogIntent) for every expiry, so an auto-expired
-//! object leaves through exactly the path a rider-deleted one does and **no platform executor ever
-//! decides whether an object is expired**.
+//! [`RetentionMachine`] owns when objects expire and when their clocks must start. It emits
+//! [`RetentionEffect`] for checked card-metadata writes and
+//! [`CatalogIntent`](crate::catalog_state::CatalogIntent) for expiry. Executors perform those
+//! operations and report their outcomes; they do not decide whether an object is due.
 //!
-//! ## The safety core
+//! The policy requires a trusted clock from this boot. It protects active routes and unsynced
+//! rides, starts unknown clocks instead of deleting, and preserves objects with `Never` retention.
+//! [`collect_sweep_actions`] is the bounded discovery pass inside that policy.
 //!
-//! The device has no RTC. Nothing here ever runs unless the wall clock was established from a real
-//! time source **this boot** ([`App::clock_trusted`](crate::App::clock_trusted)) — a stale or
-//! fat-fingered clock can never drive a deletion. On top of that, the sweep holds the epic's seven
-//! invariants (see [`collect_sweep_actions`]): the active route is never deleted (it re-stamps), an
-//! unknown `last_used` is stamped rather than deleted, unsynced rides are never touched, and a
-//! `Never` retention deletes nothing.
-//!
-//! ## Where the state lives
-//!
-//! Retention is mutable **device-local** state, never baked into the byte-pinned OBCR route file.
-//! Per route it is a [`RouteRetentionMeta`] (a retention level + a `last_used` UTC stamp), carried
-//! alongside the route catalog and persisted host-side in the [route-retention
-//! sidecar](RouteRetentionStore) — the direct analogue of the ride synced-set sidecar
-//! ([`SyncedRides`](crate::ride::SyncedRides)). A torn or absent sidecar decodes **empty** → every
-//! route reads `Never` → nothing deletes (the safe direction; the app re-pushes retention at
-//! reconcile in S7, so it self-heals).
+//! Runtime executors load [`RouteRetentionMeta`] alongside the catalog. Mutable retention metadata
+//! lives in the card's metadata object, separately from route payload bytes. Committed metadata is
+//! reloaded before the App publishes new stamps; an unreadable catalog cannot authorize expiry.
 
 use crate::ride::UI_RIDES_CAP;
 use crate::route::MAX_ROUTES;
@@ -35,9 +19,8 @@ use crate::route::MAX_ROUTES;
 /// Seconds in a day — the retention arithmetic unit (`expires_at = last_used + days · DAY_SECS`).
 pub const DAY_SECS: u32 = 86_400;
 
-/// Per-route **retention level** — the shared wire/storage value (epic #638). A `u8` on the wire
-/// (the `setRouteRetention` command, S4) and in the sidecar; **an unknown byte decodes to
-/// [`Never`](Retention::Never)** so a forward-compat value can never surprise-delete a route.
+/// Per-route retention level, encoded as a byte. An unknown value decodes to
+/// [`Never`](Retention::Never), so it cannot authorize expiry.
 ///
 /// The discriminants are a stable on-disk/on-wire contract — appended, never renumbered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -211,165 +194,12 @@ impl RouteRetentionMeta {
     }
 }
 
-// ==================== the route-retention SD sidecar ====================
-//
-// route object id → (retention, last_used), CRC-framed exactly like the ride synced-set sidecar
-// ([`SyncedRides`](crate::ride)). The codec lives here (host-testable, off-target) so the
-// "torn/absent → empty → nothing deletes" contract is unit-tested without the board crate; the
-// board only does the file read/write. A blank page, a short slice, a torn write, an unknown
-// version, or an overrunning count all decode to the **empty** store — every route reads `Never`,
-// the safe default that deletes nothing and self-heals when the app re-pushes retention (S7).
-
-/// The sidecar magic tag; anything else there decodes to the empty store.
-const RET_MAGIC: [u8; 4] = *b"OBRR";
-/// Sidecar layout version — bump on any format change (an old version reads as empty).
-const RET_VERSION: u8 = 1;
-/// Fixed header bytes before the entry list: `magic(4) · version(1) · pad(1) · count u16 LE`.
-const RET_HEADER_LEN: usize = 8;
-/// Bytes per entry: `id u16 LE · retention u8 · last_used u32 LE`.
-const RET_ENTRY_LEN: usize = 7;
-
-/// One persisted route-retention row: a durable route id and its [`RouteRetentionMeta`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RetEntry {
-    id: u16,
-    meta: RouteRetentionMeta,
-}
-
-/// The persisted route-retention set: route object id → [`RouteRetentionMeta`]. Bounded by
-/// [`MAX_ROUTES`] (a retention can only exist for a stored route). `Default` is empty — every route
-/// reads [`Never`](Retention::Never).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RouteRetentionStore {
-    entries: heapless::Vec<RetEntry, MAX_ROUTES>,
-}
-
-impl RouteRetentionStore {
-    /// An empty store — nothing has a retention set (every route reads `Never`).
-    pub fn new() -> Self {
-        RouteRetentionStore::default()
-    }
-
-    /// This route's retention meta, or the default ([`Never`](Retention::Never), `last_used = 0`)
-    /// when the route has no stored entry.
-    pub fn get(&self, id: u16) -> RouteRetentionMeta {
-        self.entries.iter().find(|e| e.id == id).map(|e| e.meta).unwrap_or_default()
-    }
-
-    /// Set (or replace) route `id`'s retention meta. Returns `true` when the store actually changed
-    /// (so the host only rewrites the sidecar on a real edit). A `Never` + `last_used == 0` write
-    /// drops the entry (the empty default already reads that way — keeps the sidecar tight).
-    pub fn set(&mut self, id: u16, meta: RouteRetentionMeta) -> bool {
-        let default_row = meta == RouteRetentionMeta::default();
-        match self.entries.iter().position(|e| e.id == id) {
-            Some(pos) if self.entries[pos].meta == meta => false,
-            Some(pos) if default_row => {
-                // A row that reverted to the default carries no information — drop it.
-                self.entries.swap_remove(pos);
-                true
-            }
-            Some(pos) => {
-                self.entries[pos].meta = meta;
-                true
-            }
-            None if default_row => false, // nothing stored, nothing to store
-            None => self.entries.push(RetEntry { id, meta }).is_ok(),
-        }
-    }
-
-    /// Stamp route `id`'s `last_used` (keeping its retention level), inserting a default-retention
-    /// row if the route had none. Returns whether the store changed. The sweep / upload / activation
-    /// stamp path.
-    pub fn stamp_last_used(&mut self, id: u16, last_used_utc: u32) -> bool {
-        let meta = RouteRetentionMeta { retention: self.get(id).retention, last_used_utc };
-        self.set(id, meta)
-    }
-
-    /// Drop every entry whose id is **not** in `live_ids` — the tidy-up a rescan/delete runs so the
-    /// sidecar never carries retention for a route that no longer exists (ids never reuse, so this
-    /// is belt-and-braces, mirroring the synced-set's `remove` on delete). Returns whether anything
-    /// was dropped.
-    pub fn retain_ids(&mut self, live_ids: &[u16]) -> bool {
-        let before = self.entries.len();
-        self.entries.retain(|e| live_ids.contains(&e.id));
-        self.entries.len() != before
-    }
-
-    /// The stored rows, for the codec / tests.
-    fn rows(&self) -> &[RetEntry] {
-        &self.entries
-    }
-}
-
-/// The encoded sidecar's byte length for `count` entries: the fixed header, the entry list, then the
-/// trailing CRC-16.
-pub const fn route_retention_len(count: usize) -> usize {
-    RET_HEADER_LEN + count * RET_ENTRY_LEN + 2
-}
-
-/// The largest an encoded route-retention sidecar can be (a full store) — the buffer a host reserves.
-pub const ROUTE_RETENTION_MAX_LEN: usize = route_retention_len(MAX_ROUTES);
-
-/// Pack the route-retention store into `out`, returning the encoded byte length. `out` must be at
-/// least [`route_retention_len`]`(store.len())` (use a [`ROUTE_RETENTION_MAX_LEN`] buffer). Inverse
-/// of [`decode_route_retention`].
-pub fn encode_route_retention(store: &RouteRetentionStore, out: &mut [u8]) -> usize {
-    let rows = store.rows();
-    let len = route_retention_len(rows.len());
-    out[0..4].copy_from_slice(&RET_MAGIC);
-    out[4] = RET_VERSION;
-    out[5] = 0;
-    out[6..8].copy_from_slice(&(rows.len() as u16).to_le_bytes());
-    for (i, row) in rows.iter().enumerate() {
-        let o = RET_HEADER_LEN + i * RET_ENTRY_LEN;
-        out[o..o + 2].copy_from_slice(&row.id.to_le_bytes());
-        out[o + 2] = row.meta.retention.as_u8();
-        out[o + 3..o + 7].copy_from_slice(&row.meta.last_used_utc.to_le_bytes());
-    }
-    let crc = crate::store_meta::crc16(&out[..len - 2]);
-    out[len - 2..len].copy_from_slice(&crc.to_le_bytes());
-    len
-}
-
-/// Decode a route-retention sidecar, always returning a store — a blank page, a short slice, a torn
-/// write, an unknown version, an overrunning count, or a CRC mismatch all yield the **empty** store
-/// (every route reads `Never`, the safe default). Never panics on malformed input. Retention bytes
-/// are sanitised through [`Retention::from_u8`] (unknown → `Never`), so a forward-compat level never
-/// deletes.
-pub fn decode_route_retention(bytes: &[u8]) -> RouteRetentionStore {
-    let empty = RouteRetentionStore::new();
-    if bytes.len() < RET_HEADER_LEN + 2 {
-        return empty; // shorter than an empty-store sidecar → treat as absent
-    }
-    if bytes[0..4] != RET_MAGIC || bytes[4] != RET_VERSION {
-        return empty;
-    }
-    let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-    let len = route_retention_len(count);
-    if count > MAX_ROUTES || bytes.len() < len {
-        return empty; // a count that claims more entries than the slice (or the cap) holds is corrupt
-    }
-    let crc = u16::from_le_bytes([bytes[len - 2], bytes[len - 1]]);
-    if crc != crate::store_meta::crc16(&bytes[..len - 2]) {
-        return empty;
-    }
-    let mut store = RouteRetentionStore::new();
-    for i in 0..count {
-        let o = RET_HEADER_LEN + i * RET_ENTRY_LEN;
-        let id = u16::from_le_bytes([bytes[o], bytes[o + 1]]);
-        let retention = Retention::from_u8(bytes[o + 2]);
-        let last_used_utc = u32::from_le_bytes([bytes[o + 3], bytes[o + 4], bytes[o + 5], bytes[o + 6]]);
-        let _ = store.set(id, RouteRetentionMeta { retention, last_used_utc });
-    }
-    store
-}
-
 // ==================== the expiry sweep ====================
 
 /// One bounded action the retention sweep requests. The
 /// stamps carry the id only — the [`utc`] is filled from the wall clock at drain time (day-grain
 /// expiry is indifferent to the few seconds between the sweep and the drain), keeping this a
-/// pocket-sized 4-byte value so the pending queue stays cheap.
+/// bounded action carrying the full catalog object identity.
 ///
 /// [`utc`]: crate::App::wall_unix_now
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,7 +382,7 @@ impl RetentionView<'_> {
 
     /// The active route's durable id, but only while it is a route that can actually expire. A
     /// `Never` route (the migration default, and every route until a rider sets a level) needs no
-    /// `last_used`, so stamping it on each activation would churn the sidecar for no benefit.
+    /// `last_used`, so stamping it on each activation would churn the metadata for no benefit.
     fn expiring_active_route(&self) -> Option<crate::CatalogObjectId> {
         let idx = self.active_route?;
         self.route_metas.get(idx)?.retention.days()?;
@@ -566,7 +396,7 @@ impl RetentionView<'_> {
 ///
 /// It produces exactly two things, and never a deletion itself:
 ///
-/// - [`RetentionEffect`] — the two bounded device-local sidecar writes, through
+/// - [`RetentionEffect`] — the two bounded device-local metadata writes, through
 ///   [`next_metadata_effect`](RetentionMachine::next_metadata_effect).
 /// - [`CatalogIntent`] — an expiry, handed to `CatalogMachine` through
 ///   [`next_expiry`](RetentionMachine::next_expiry), so an auto-expired object leaves by exactly the
@@ -604,7 +434,7 @@ pub(crate) struct RetentionMachine {
     /// slot, so an activation retiring some other queued candidate cannot re-open the window
     /// mid-flight.
     delete_inflight: Option<(crate::CatalogObjectId, u32)>,
-    /// The token source for the sidecar writes. One write is in flight at a time (the domain's
+    /// The token source for the metadata writes. One write is in flight at a time (the domain's
     /// single effect slot), so one source is all the domain needs.
     ops: crate::device_core::TokenSource<crate::device_core::RetentionTag>,
     /// The stamp currently out with the executor, so a failure can be re-queued for the id it was
@@ -690,7 +520,7 @@ impl RetentionMachine {
             || self.retry_at.is_some_and(|at| view.now_ms.wrapping_sub(at) >= (1 << 31))
             || self.inflight_write.is_some()
         {
-            return None; // one sidecar write at a time
+            return None; // one metadata write at a time
         }
         self.retry_at = None;
         for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
@@ -782,8 +612,19 @@ impl RetentionMachine {
         *self = Self::new();
         self.ops = ops;
     }
-    pub(crate) fn route_due(&mut self, id: crate::CatalogObjectId, view: &RetentionView) -> bool {
-        view.now_utc.is_some() && !view.recording && self.still_due(SweepKind::DeleteRoute, id, view)
+    pub(crate) fn object_due(
+        &mut self,
+        id: crate::CatalogObjectId,
+        kind: crate::catalog_state::CatalogObjectKind,
+        view: &RetentionView,
+    ) -> bool {
+        use crate::catalog_state::CatalogObjectKind;
+        let kind = match kind {
+            CatalogObjectKind::Route => SweepKind::DeleteRoute,
+            CatalogObjectKind::Ride => SweepKind::DeleteRide,
+            CatalogObjectKind::Trip => return false,
+        };
+        view.now_utc.is_some() && !view.recording && self.still_due(kind, id, view)
     }
 
     /// The next **expiry intent** for `CatalogMachine`, with the whole policy re-derived from live
@@ -985,7 +826,7 @@ impl RetentionMachine {
     ///
     /// - **invariant 1** — an untrusted clock stamps nothing, queues nothing, sweeps nothing;
     /// - **the expiring filter** — a route with no expiry clock (`Retention::Never`, the default
-    ///   until a rider sets a level) needs no `last_used`, so stamping it would be a sidecar write
+    ///   until a rider sets a level) needs no `last_used`, so stamping it would be a metadata write
     ///   for a countdown that does not exist.
     ///
     /// Both are exactly what [`expiring_active_route`](RetentionView::expiring_active_route) and the
@@ -1022,7 +863,7 @@ impl RetentionMachine {
     ///
     /// It deliberately does **not** also apply the expiring filter its sibling
     /// [`note_route_activated`](Self::note_route_activated) does. An activation recurs, so a
-    /// `Retention::Never` route stamped on every activation would churn the sidecar for a countdown
+    /// `Retention::Never` route stamped on every activation would churn the metadata for a countdown
     /// that does not exist. An upload happens once, and the app sets a route's level in a *separate*
     /// command that never touches `last_used`: a route uploaded as `Never` and levelled afterwards
     /// would then anchor at the next hourly sweep, which is the imprecision this stamp exists to
@@ -1193,78 +1034,6 @@ mod tests {
         // Saturating deadline can't wrap into the past.
         let late = RouteRetentionMeta::new(Retention::Month2, u32::MAX - 10);
         assert_eq!(late.expires_at(), Some(u32::MAX));
-    }
-
-    #[test]
-    fn sidecar_round_trips() {
-        let mut store = RouteRetentionStore::new();
-        assert!(store.set(3, RouteRetentionMeta::new(Retention::Week1, 5_000)));
-        assert!(store.set(7, RouteRetentionMeta::new(Retention::Month1, 9_999)));
-        assert!(store.stamp_last_used(3, 6_000), "stamp updates last_used");
-        assert_eq!(store.get(3), RouteRetentionMeta::new(Retention::Week1, 6_000));
-        assert_eq!(store.get(42), RouteRetentionMeta::default(), "absent → Never/0");
-
-        let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
-        let n = encode_route_retention(&store, &mut buf);
-        assert_eq!(decode_route_retention(&buf[..n]), store);
-
-        // Empty store is a valid, non-crashing round-trip.
-        let empty = RouteRetentionStore::new();
-        let n = encode_route_retention(&empty, &mut buf);
-        assert_eq!(decode_route_retention(&buf[..n]), empty);
-    }
-
-    #[test]
-    fn sidecar_torn_or_missing_decodes_empty() {
-        let mut store = RouteRetentionStore::new();
-        store.set(9, RouteRetentionMeta::new(Retention::Day1, 100));
-        store.set(12, RouteRetentionMeta::new(Retention::Week2, 200));
-        let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
-        let n = encode_route_retention(&store, &mut buf);
-
-        assert_eq!(decode_route_retention(&[]), RouteRetentionStore::new(), "absent → empty");
-        assert_eq!(decode_route_retention(&[0u8; 4]), RouteRetentionStore::new(), "runt → empty");
-        assert_eq!(decode_route_retention(&[0u8; RET_HEADER_LEN + 2]), RouteRetentionStore::new(), "blank page");
-        assert_eq!(decode_route_retention(&[0xFF; 80]), RouteRetentionStore::new(), "erased page → empty");
-
-        let mut torn = buf;
-        torn[RET_HEADER_LEN] ^= 0xFF; // flip an id byte, don't fix the CRC
-        assert_eq!(decode_route_retention(&torn[..n]), RouteRetentionStore::new(), "CRC mismatch → empty");
-
-        let mut bad_count = buf;
-        bad_count[6..8].copy_from_slice(&0xFFFFu16.to_le_bytes());
-        assert_eq!(decode_route_retention(&bad_count[..n]), RouteRetentionStore::new(), "overrunning count → empty");
-
-        let mut old = buf;
-        old[4] = RET_VERSION + 1;
-        assert_eq!(decode_route_retention(&old[..n]), RouteRetentionStore::new(), "foreign version → empty");
-    }
-
-    #[test]
-    fn sidecar_retain_ids_drops_absent() {
-        let mut store = RouteRetentionStore::new();
-        store.set(1, RouteRetentionMeta::new(Retention::Day1, 10));
-        store.set(2, RouteRetentionMeta::new(Retention::Day1, 20));
-        store.set(3, RouteRetentionMeta::new(Retention::Day1, 30));
-        assert!(store.retain_ids(&[1, 3]), "dropped id 2");
-        assert_eq!(store.get(2), RouteRetentionMeta::default());
-        assert_eq!(store.get(1).last_used_utc, 10);
-        assert!(!store.retain_ids(&[1, 3]), "idempotent — nothing more to drop");
-    }
-
-    /// Unknown retention byte in the sidecar decodes to Never (never deletes) — the forward-compat
-    /// safety property carried through the codec, not just the enum.
-    #[test]
-    fn sidecar_unknown_retention_byte_reads_never() {
-        let mut store = RouteRetentionStore::new();
-        store.set(5, RouteRetentionMeta::new(Retention::Week1, 123));
-        let mut buf = [0u8; ROUTE_RETENTION_MAX_LEN];
-        let n = encode_route_retention(&store, &mut buf);
-        buf[RET_HEADER_LEN + 2] = 0x7F; // forge an unknown retention level on the one entry
-        let crc = crate::store_meta::crc16(&buf[..n - 2]);
-        buf[n - 2..n].copy_from_slice(&crc.to_le_bytes()); // re-CRC so it passes framing
-        let got = decode_route_retention(&buf[..n]);
-        assert_eq!(got.get(5).retention, Retention::Never, "unknown level → Never");
     }
 
     fn ins() -> SweepInputs<'static> {
@@ -1474,26 +1243,6 @@ mod tests {
         assert_eq!(runs, 2, "next wall-clock hour → sweeps again");
     }
 
-    /// The `setRouteRetention` idempotence pin (epic #638 S4): `set` reports a change only on a real
-    /// edit — the board's command handler bumps the route revision on exactly that, so setting the
-    /// same value twice is `ok` with **no** bump. A retention change **preserves `last_used`** (the
-    /// command must never reset the usage clock): the board sets `{new_level, existing last_used}`.
-    #[test]
-    fn set_route_retention_change_semantics() {
-        let mut store = RouteRetentionStore::new();
-        // First set of a level is a change.
-        assert!(store.set(7, RouteRetentionMeta::new(Retention::Week2, 1_000)), "first set changes the store");
-        // Same value again → no change (the no-bump idempotence pin).
-        assert!(!store.set(7, RouteRetentionMeta::new(Retention::Week2, 1_000)), "same value twice → no change");
-        // The board's `set_route_retention_level` preserves last_used: read it, set {new, last_used}.
-        let preserved = store.get(7).last_used_utc;
-        assert_eq!(preserved, 1_000);
-        assert!(store.set(7, RouteRetentionMeta::new(Retention::Day1, preserved)), "a real level change is reported");
-        assert_eq!(store.get(7), RouteRetentionMeta::new(Retention::Day1, 1_000), "level changed, last_used kept");
-        // Reverting to the same new level again → no change.
-        assert!(!store.set(7, RouteRetentionMeta::new(Retention::Day1, preserved)), "unchanged again → no change");
-    }
-
     // ==================== the domain boundary (#1437) ====================
 
     fn view<'a>(
@@ -1574,7 +1323,7 @@ mod tests {
         assert_eq!(meta, RouteRetentionMeta::new(Retention::Week2, now), "the level survives a use stamp");
         assert!(
             rt.next_metadata_effect(&view(Some(now), &ids, &metas, &rides)).is_none(),
-            "one sidecar write in flight at a time"
+            "one metadata write in flight at a time"
         );
 
         // A failed write is retried on a later pass rather than waiting for the next hourly sweep.
@@ -1684,7 +1433,7 @@ mod tests {
 // RetentionMachine owns the stamps, the deadlines and the sweep. It advances *before*
 // CatalogMachine, so an expiry it decides on this pass reaches the catalog as a `CatalogIntent`
 // in the same pass — the deletion itself is never a retention effect. What is left here is the
-// device-local sidecar write: two bounded metadata writes that bump no store revision.
+// device-local metadata write: two bounded writes checked against the loaded card and catalog scope.
 
 use crate::catalog_state::CatalogIntent;
 use crate::device_core::{OperationToken, RetentionTag, StoreRevision};
@@ -1702,17 +1451,17 @@ pub enum RetentionIntent {
     RideMetadataChanged { id: CatalogObjectId, synced_at: u32 },
 }
 
-/// One bounded sidecar write, carrying the [`OperationToken`] the domain issued.
+/// One bounded metadata write, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionEffect {
-    /// Write route `id`'s retention level and last-used stamp to the route-retention sidecar.
+    /// Write route `id`'s retention level and last-used stamp to the card metadata.
     WriteRouteMetadata {
         token: OperationToken<RetentionTag>,
         scope: Option<StoreRevision>,
         id: CatalogObjectId,
         meta: RouteRetentionMeta,
     },
-    /// Write ride `id`'s `synced_at` stamp to the synced-set sidecar.
+    /// Start the retention clock on an existing exact ride proof in card metadata.
     WriteRideMetadata {
         token: OperationToken<RetentionTag>,
         scope: Option<StoreRevision>,
@@ -1750,8 +1499,7 @@ pub enum RetentionError {
     Stale,
     Busy,
     RemountRequired,
-    /// The sidecar write failed. Retention is the safe-direction store: an unwritten stamp reads
-    /// back as unknown, which never deletes — so this is retried, never escalated.
+    /// The metadata write failed. Resident stamps advance only after a successful reload.
     WriteFailed,
 }
 
@@ -1780,7 +1528,7 @@ impl RetentionOutcome {
     }
 }
 
-// Layout tripwires: an identity plus the two-field sidecar record, never the sidecar itself.
+// Layout tripwires: an identity and bounded metadata values, not a whole stored object.
 const _: () = assert!(core::mem::size_of::<RetentionIntent>() <= 24, "an identity and a stamp");
 const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 56, "a token, an identity and a stamp");
 const _: () = assert!(core::mem::size_of::<RetentionOutcome>() <= 16, "a token and an identity");

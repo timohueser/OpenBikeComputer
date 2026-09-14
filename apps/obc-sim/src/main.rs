@@ -11,9 +11,10 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
-use obc_reader::{rgb565_to_device64, Reader};
+use obc_reader::rgb565_to_device64;
 
 mod calib;
+mod card;
 mod device_input;
 mod dfu;
 mod framebuffer;
@@ -38,12 +39,11 @@ use framebuffer::Framebuffer;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
 };
+use obc_host_core::{FlatRideStore as RideStore, RideRepository};
+use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
-use rides::RideStore;
-use routes::RouteStore;
 use track::TrackStore;
-use trips::TripStore;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
@@ -145,8 +145,10 @@ struct Args {
     /// Headless `--png` only: render from the device's real power-on state (Home / Idle,
     /// no route) instead of straight from the map.
     boot: bool,
-    /// Folder of `.obcr` routes — the stand-in for the device SD card; defaults to `routes/`.
+    /// One-time route/trip fixture import directory; defaults to `routes/`.
     routes_dir: Option<String>,
+    card: Option<String>,
+    create_card: Option<String>,
     /// Folder for saved `.gpx` tracks + the in-progress `.obct` log; defaults to `tracks/`.
     tracks_dir: Option<String>,
     /// Convert this GPX into the routes folder and exit. Needs no map.
@@ -256,6 +258,8 @@ impl Default for Args {
             expect_screen: None,
             boot: false,
             routes_dir: None,
+            card: None,
+            create_card: None,
             tracks_dir: None,
             import: None,
             physical: false,
@@ -633,6 +637,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
+            "--card" => a.card = Some(it.next().ok_or("--card needs a path")?),
+            "--create-card" => a.create_card = Some(it.next().ok_or("--create-card needs a path")?),
             "--routes-dir" => a.routes_dir = Some(it.next().ok_or("--routes-dir needs a path")?),
             "--tracks-dir" => a.tracks_dir = Some(it.next().ok_or("--tracks-dir needs a path")?),
             "--import" => a.import = Some(it.next().ok_or("--import needs a GPX path")?),
@@ -718,7 +724,16 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         }
     }
     // `--palette` and `--import` need no map file.
-    if a.map.is_empty() && !a.palette && a.import.is_none() {
+    if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
+        return Err("--card reopens without map or route-directory imports".into());
+    }
+    if a.card.is_some() && matches!(a.inject, Some(Injection::TripUpload { .. })) {
+        return Err("trip-upload names a TP fixture and requires a map import session".into());
+    }
+    if a.create_card.is_some() && (a.import.is_some() || a.palette || a.png.is_some()) {
+        return Err("--create-card imports its map and routes once, then exits".into());
+    }
+    if a.map.is_empty() && !a.palette && a.import.is_none() && a.card.is_none() {
         return Err("missing map path (one .obcm file)".into());
     }
     Ok(a)
@@ -811,7 +826,7 @@ fn settle(
     session: &mut ActiveRouteSession,
     app: &mut App,
     stores: &mut Stores<'_>,
-    reader: &Reader,
+    map: &obc_host_core::flat_map::FlatMap,
     elev: &mut dyn obc_route::ElevationSource,
     platform: &mut HeadlessPlatform,
     weather: Option<&obc_app::WeatherSnapshot>,
@@ -822,7 +837,7 @@ fn settle(
         session.sync(app, stores.routes);
         let (mut plan, owed) = {
             let src = stores.routes.active_source();
-            let route = match (session.index(), src.as_ref()) {
+            let route = match (session.index(), src) {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
@@ -848,7 +863,7 @@ fn settle(
             stores.rides,
             stores.tracks,
             stores.trips,
-            reader,
+            map,
             elev,
             platform,
         );
@@ -1054,9 +1069,11 @@ Map and output:
 Ride and storage fixtures:
   --gpx PATH              Replay a GPX track
   --at SECONDS            GPX playback time for a headless render
-  --routes-dir DIR        Route-store directory (default: routes/)
+  --card PATH             Reopen an existing persistent Unix card without importing files
+  --create-card PATH      Create a new Unix card, import MAP/routes once, then exit
+  --routes-dir DIR        Route and trip import directory (default: routes/)
   --tracks-dir DIR        Ride/track-store directory (default: tracks/)
-  --import PATH           Convert a GPX into the route store and exit
+  --import PATH           Import GPX to --card, or convert to --routes-dir, then exit
   --route-retention L:A   Set route retention LEVEL and AGE (for example 3:2d)
 
 Device state:
@@ -1110,7 +1127,7 @@ fn main() {
         print!("{HELP}");
         return;
     }
-    let args = match parse_args() {
+    let mut args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}\n\n{HELP}");
@@ -1136,42 +1153,50 @@ fn main() {
         return;
     }
 
-    // `--import` converts a GPX into the routes folder (the device's USB-drop path). Needs no map.
     if let Some(gpx) = &args.import {
-        let dir = args.routes_dir();
-        let mut store = RouteStore::open(&dir);
-        match store.import_gpx(std::path::Path::new(gpx)) {
-            Ok(s) => eprintln!(
-                "imported {gpx} → {dir}/ | {} km, +{} m / -{} m | {} pts, {} chunks, ele {}..{} m",
-                (s.total_distance_m + 500) / 1000,
-                s.total_ascent_m,
-                s.total_descent_m,
-                s.point_count,
-                s.chunk_count,
-                s.min_ele_m,
-                s.max_ele_m
-            ),
-            Err(e) => {
-                eprintln!("import failed: {e}");
+        let result = if let Some(path) = &args.card {
+            card::persistent(path, false).and_then(|owner| {
+                let mut routes = RouteStore::new(owner, &[]).map_err(|error| error.to_string())?;
+                routes::import_gpx(&mut routes, std::path::Path::new(gpx))
+            })
+        } else {
+            routes::export_gpx(std::path::Path::new(gpx), std::path::Path::new(&args.routes_dir()))
+        };
+        match result {
+            Ok(stats) => eprintln!("imported {gpx} | {} m, +{} m", stats.total_distance_m, stats.total_ascent_m),
+            Err(error) => {
+                eprintln!("import failed: {error}");
                 std::process::exit(1);
             }
         }
         return;
     }
-
-    // One map is one `.obcm` file, read whole.
-    let map = map_file::MapSource::load_single(&args.map).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
-
-    // Parse the tables **once**, here, for the process lifetime — the shape the device uses (parse
-    // at boot, hold for the session), not a per-frame rebuild. A file that does not parse is
-    // refused before a single frame renders and the sim exits non-zero saying why.
-    let map = map_file::LoadedMap::open(map).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
+    let card::Session { owner, map, routes, trips, rides, tracks } =
+        card::Session::load(&mut args).unwrap_or_else(|error| {
+            eprintln!("session failed: {error}");
+            std::process::exit(1);
+        });
+    let source = map.map_source();
+    eprintln!("card {:?} | map {} revision {}", source.store_id(), source.id().0, source.revision().0);
+    if args.create_card.is_some() {
+        if let Some(arg) = args.weather.as_deref() {
+            let b = map.reader().bbox;
+            if let Err(error) = weather_live::build(
+                owner.clone(),
+                Some(arg),
+                args.weather_now,
+                (b.min_lon, b.min_lat, b.max_lon, b.max_lat),
+                &args.live,
+                ((b.min_lat + b.max_lat) / 2, (b.min_lon + b.max_lon) / 2),
+                !args.no_card,
+            ) {
+                eprintln!("weather import failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        eprintln!("card created; inputs unchanged");
+        return;
+    }
     {
         let reader = map.reader();
         eprintln!(
@@ -1216,6 +1241,7 @@ fn main() {
         // `--heading` renders a rotated (heading-up) frame; the rotation derives from the
         // fix's course, so seed one at the map center.
         if let Some(deg) = args.heading {
+            state.compass_deg = Some(deg);
             state.heading_up = true;
             let (lat, lon) = state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((cy, cx));
             state.user_fix = Some(Fix { lat, lon, course: Some(deg), speed_mps: None });
@@ -1247,6 +1273,10 @@ fn main() {
             }
         }
         let mut app = if args.boot { App::new_idle(state) } else { App::new(state) };
+        if app.state.user_fix.is_some() {
+            let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
+        }
         // `--weather` (WX10/WX11): built *before* the settings seed so the wall clock can anchor
         // on the store's effective instant (screens' `now_utc` then agrees with the rain lease)
         // and the script's rain-map time-steps clamp against the real frame count.
@@ -1255,11 +1285,19 @@ fn main() {
         // `--center` have already seeded it), else the camera. The *service* never receives it —
         // it only shapes which immutable objects get Range-read.
         let wx_seed_pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-        let wx_source = args
-            .weather
-            .as_ref()
-            .map(|arg| weather_live::build(arg, args.weather_now, map_bbox, &args.live, wx_seed_pos, !args.no_card))
-            .unwrap_or(weather_live::WeatherSource { store: None, live: None, clock_anchor: None });
+        let wx_source = weather_live::build(
+            owner.clone(),
+            args.weather.as_deref(),
+            args.weather_now,
+            map_bbox,
+            &args.live,
+            wx_seed_pos,
+            !args.no_card,
+        )
+        .unwrap_or_else(|error| {
+            eprintln!("weather failed: {error}");
+            std::process::exit(1);
+        });
         let mut weather = wx_source.store;
         let weather_anchor = wx_source.clock_anchor;
         // Headless is one fetch, by design: a `--png` render must be a single, reportable
@@ -1386,13 +1424,15 @@ fn main() {
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.display_name();
         app.set_map_info(map_name, tables.version);
-        // Load the routes folder so the Route menu has real entries and a picked route
-        // can be drawn.
-        let mut store = RouteStore::open(args.routes_dir());
+        // The startup import has committed route identities before the first catalog feed.
+        let mut store = routes;
         app.set_routes_with_ids(store.catalog(), store.ids());
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
         // to completion inside a pass; its planned detour stays resident here until commit/cancel.
         let mut host = HostLoop::new();
+        if let Some(scope) = store.store_scope() {
+            host.facts().note_store_revision(scope);
+        }
         // `--route-retention` (epic #638 S5): overlay every route's retention meta so the Route
         // overview's expiry row renders (the board reads this from the SD retention sidecar). The
         // `last_used` stamp is anchored to the wall clock — `AGE` seconds before now — so the
@@ -1405,20 +1445,23 @@ fn main() {
             // first pass orders. Overlaying the app's copy alone reverted on that read.
             let ids: Vec<_> = store.ids().to_vec();
             for id in ids {
-                store.set_retention(id, obc_app::Retention::from_u8(level));
-                store.stamp_route_used(id, last_used);
+                routes::seed_retention(&mut store, id, obc_app::Retention::from_u8(level), last_used).unwrap_or_else(
+                    |error| {
+                        eprintln!("retention fixture failed: {error}");
+                        std::process::exit(1);
+                    },
+                );
             }
             let metas = store.retention_metas();
             app.set_route_meta(&metas);
         }
-        // Scan the `.obt` trips beside the routes (epic #526, TR2) — grouped-route folders. Fed
+        // Trip stage references have already been remapped to the card's route identities. Fed
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
-        let mut trip_store = TripStore::open(args.routes_dir());
+        let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
-        // Load the simulator tracks folder so the Rides screen (#454) lists its v3 fixtures and
-        // process-local synced flags.
-        let mut ride_store = RideStore::open(args.tracks_dir());
+        // The complete saved-ride projection comes from the same card as the map and routes.
+        let mut ride_store = rides;
         app.set_rides(ride_store.catalog());
         // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.
         let ble = args.ble.unwrap_or_default();
@@ -1427,15 +1470,12 @@ fn main() {
             passkey: ble.passkey,
             paired: ble.paired,
         });
-        // The map's terrain (EL7), mounted **once** for the whole headless run like the map itself:
-        // the `.obcd` sidecar beside the `.obcm`, or the null source when there is none. Two
-        // consumers share it — a scripted route plan fills its elevation from it (EL7), and the
-        // replay below feeds the map-referenced altimeter from it (EL8) — so it is mounted here,
-        // above both, rather than once per user (mounting borrows the whole file for the session).
+        // Planner emission and map-referenced altitude share terrain from this retained map.
         let mut elev = map.elevation();
         // The open ride log. Opened here, above the script, because every settling pass reconciles
         // it against the app's tracking session exactly as a frame loop does.
-        let mut tracks = TrackStore::open(args.tracks_dir());
+        let mut tracks = tracks;
+        tracks.offer_recovery(&mut app);
         // The resident active-route parse, shared by every settle and by the final render.
         let mut session = ActiveRouteSession::new();
         // What only this host can do: the fixed card-free figure, and the `--dfu` answers.
@@ -1500,7 +1540,7 @@ fn main() {
                     &mut session,
                     app,
                     &mut stores,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                     wx_script.as_ref(),
@@ -1514,7 +1554,7 @@ fn main() {
                     // throwaway frame would leave it pending and the next gesture would step an
                     // empty list.
                     let src = stores.routes.active_source();
-                    let route = match (session.index(), src.as_ref()) {
+                    let route = match (session.index(), src) {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
@@ -1547,7 +1587,17 @@ fn main() {
             Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
         let mut settle_now =
             |app: &mut App, stores: &mut Stores<'_>, host: &mut HostLoop, platform: &mut HeadlessPlatform| {
-                settle(host, &mut session, app, stores, &reader, &mut *elev, platform, wx_script.as_ref(), script_now);
+                settle(
+                    host,
+                    &mut session,
+                    app,
+                    stores,
+                    map.planner_map(),
+                    &mut *elev,
+                    platform,
+                    wx_script.as_ref(),
+                    script_now,
+                );
             };
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
@@ -1572,7 +1622,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1594,7 +1644,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1607,27 +1657,21 @@ fn main() {
         // route's mini elevation band is built from the committed OBCR at "commit time", exactly the
         // seam the board fills (#682); the idle card draws it.
         if let Some(Injection::Upload { id, replaced }) = args.inject {
-            let elevation = stores.routes.elevation_sparkline(id);
+            let elevation = routes::elevation_sparkline(stores.routes, id);
             host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced, elevation });
             settle(
                 &mut host,
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
                 script_now,
             );
         }
-        // The **trip** twin (epic #526): a trip always lands after its member routes, so the one
-        // "TRIP RECEIVED" card replaces the burst's last per-route popup.
-        //
-        // `N` names the file `TP{N}.OBT`, which the trip store lists under `TRIP_ID_BASE + N`:
-        // routes and trips are numbered from unrelated counters in these folders, so the store
-        // carves the trips into their own band and the fact must name the identity the catalog
-        // holds.
+        // Import fixture numbers were resolved to committed trip identities at startup.
         if let Some(Injection::TripUpload { id }) = args.inject {
             host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
             settle(
@@ -1635,7 +1679,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1656,7 +1700,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1685,7 +1729,7 @@ fn main() {
                     &mut session,
                     &mut app,
                     &mut stores,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                     wx_script.as_ref(),
@@ -1713,7 +1757,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_script.as_ref(),
@@ -1750,7 +1794,7 @@ fn main() {
                 session.sync(&app, stores.routes);
                 let mut plan = {
                     let src = stores.routes.active_source();
-                    let route = match (session.index(), src.as_ref()) {
+                    let route = match (session.index(), src) {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
@@ -1773,12 +1817,12 @@ fn main() {
                     stores.rides,
                     stores.tracks,
                     stores.trips,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                 );
                 // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
-                // mounted `.obcd` the router emits from, drained right behind the pass exactly as
+                // retained map terrain the router emits from, drained right behind the pass exactly as
                 // the board's ride loop does.
                 app.sample_terrain(&mut *elev);
                 t += step;
@@ -1814,7 +1858,7 @@ fn main() {
                 let ride = obc_ports::RideClock((p.time() * 1000.0) as u32);
                 let mut plan = {
                     let src = stores.routes.active_source();
-                    let route = match (session.index(), src.as_ref()) {
+                    let route = match (session.index(), src) {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
@@ -1843,7 +1887,7 @@ fn main() {
                     stores.rides,
                     stores.tracks,
                     stores.trips,
-                    &reader,
+                    map.planner_map(),
                     &mut *elev,
                     &mut platform,
                 );
@@ -1854,7 +1898,7 @@ fn main() {
         // active, re-opened from the resident session.
         session.sync(&app, stores.routes);
         let route_src = stores.routes.active_source();
-        let route = match (session.index(), route_src.as_ref()) {
+        let route = match (session.index(), route_src) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -1898,6 +1942,12 @@ fn main() {
         // card and spinner timers every screen shares — so a still frame that named no bundle keeps
         // exactly the passes it always ran.
         if weather.is_some() {
+            if let Some(identity) = weather.as_ref().and_then(|w| w.installed()) {
+                host.facts().note_weather_data(obc_app::device_core::WeatherData {
+                    data: obc_app::device_core::DataIdentity::new(identity.id.0),
+                    revision: obc_app::device_core::Revision::new(identity.revision.0),
+                });
+            }
             // `--weather-refreshing`: the provider plane's level, reported as the external fact the
             // domain reads. The cue is the domain's answer on every host now, never a render argument.
             if args.weather_refreshing {
@@ -1908,7 +1958,7 @@ fn main() {
                 &mut session,
                 &mut app,
                 &mut stores,
-                &reader,
+                map.planner_map(),
                 &mut *elev,
                 &mut platform,
                 wx_snapshot.as_ref(),
@@ -1917,7 +1967,7 @@ fn main() {
         }
         session.sync(&app, stores.routes);
         let route_src = stores.routes.active_source();
-        let route = match (session.index(), route_src.as_ref()) {
+        let route = match (session.index(), route_src) {
             (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
             _ => None,
         };
@@ -2022,7 +2072,7 @@ fn main() {
     }
 
     // Interactive: hand the map to the eframe host window.
-    if let Err(e) = gui::run(map, args) {
+    if let Err(e) = gui::run(owner, map, routes, trips, rides, tracks, args) {
         eprintln!("gui error: {e}");
         std::process::exit(1);
     }
@@ -2036,6 +2086,18 @@ mod cli_tests {
         let mut args = vec!["map.obcm".to_string()];
         args.extend(options.iter().map(|s| (*s).to_string()));
         parse_args_from(args)
+    }
+
+    #[test]
+    fn persistent_commands_do_not_mix_reopen_with_import_or_reset() {
+        let reopen = parse_args_from(["--card", "card.obc"].into_iter().map(String::from)).unwrap();
+        assert!(reopen.map.is_empty());
+        assert!(parse(&["--card", "card.obc"]).is_err());
+        assert!(
+            parse_args_from(["--card", "card.obc", "--inject", "trip-upload=1"].into_iter().map(String::from)).is_err()
+        );
+        assert!(parse(&["--create-card", "card.obc", "--png", "out.png"]).is_err());
+        assert!(parse(&["--create-card", "card.obc"]).is_ok());
     }
 
     #[test]

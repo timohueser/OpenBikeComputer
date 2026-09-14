@@ -1,6 +1,5 @@
 //! Peak View: a heading-relative relief panorama with restrained summit labels,
-//! and one permanent selected-peak ledger. The horizontal window follows each profile's vertical
-//! span (see [`fov_q4`]) with mild vertical exaggeration.
+//! and a selected-peak ledger in Browse. Each observer has fixed panorama framing.
 //!
 //! The draw order is compass, terrain, peak annotations, then the selected-peak ledger.
 
@@ -10,7 +9,7 @@ use embedded_graphics::prelude::Point;
 use obc_render::{rect, text::Font, text::TextAlign, Surface};
 
 use crate::input::Gesture;
-use crate::peak_view::PeakViewProfile;
+use crate::peak_view::{runtime::Status, PeakViewProfile};
 use crate::Msg;
 
 use super::vocab::spinner::Spinner;
@@ -30,42 +29,36 @@ mod terrain;
 #[derive(Debug, Default)]
 pub struct PeakViewScreen {
     browse_heading_q4: Option<u16>,
-    selected: u8,
+    selected: Option<(i32, i32)>,
     spin: Spinner,
-    loading: bool,
-    failed: bool,
-    waiting: bool,
-    building: bool,
+    status: Status,
 }
 
 impl PeakViewScreen {
-    pub fn new() -> Self {
-        Self { loading: true, ..Self::default() }
+    pub fn new(fix: Option<obc_ports::Fix>) -> Self {
+        Self { status: if fix.is_some() { Status::Building(0) } else { Status::Waiting }, ..Self::default() }
     }
 
-    pub fn set_loading(&mut self, loading: bool, failed: bool) -> bool {
-        let changed = self.loading != loading || self.failed != failed || self.waiting;
-        self.waiting = false;
-        self.loading = loading;
-        self.failed = failed;
-        if loading {
+    pub fn needs_position(&self) -> bool {
+        self.status == Status::Waiting
+    }
+
+    pub fn set_status(&mut self, status: Status) -> bool {
+        let changed = self.status != status;
+        if matches!(status, Status::Waiting | Status::Unavailable) {
             self.browse_heading_q4 = None;
+            self.selected = None;
         }
+        self.status = status;
         changed
     }
 
-    pub fn set_waiting(&mut self) -> bool {
-        let changed = !self.waiting;
-        self.waiting = true;
-        self.loading = false;
-        self.failed = false;
-        changed
+    fn selected_index(&self, profile: &PeakViewProfile) -> Option<usize> {
+        self.selected.and_then(|position| profile.peaks.iter().position(|peak| (peak.lat, peak.lon) == position))
     }
 
-    pub fn set_building(&mut self, building: bool) -> bool {
-        let changed = self.building != building;
-        self.building = building;
-        changed
+    fn select(&mut self, profile: &PeakViewProfile, index: Option<usize>) {
+        self.selected = index.map(|i| (profile.peaks[i].lat, profile.peaks[i].lon));
     }
 
     pub fn heading_q4(&self, state: &crate::AppState) -> u16 {
@@ -75,7 +68,7 @@ impl PeakViewScreen {
     }
 
     pub fn tick_timers(&mut self, now_ms: u32, w: i32, h: i32) -> super::ScreenTick {
-        if self.loading || self.waiting {
+        if matches!(self.status, Status::Waiting | Status::Unavailable) {
             self.spin.tick_at_cadence(now_ms, w, h, 166)
         } else {
             super::ScreenTick::idle()
@@ -83,7 +76,7 @@ impl PeakViewScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        if self.loading || self.failed || self.waiting {
+        if matches!(self.status, Status::Waiting | Status::Unavailable) {
             return if matches!(g, Gesture::Back) { Transition::Pop } else { Transition::None };
         }
         let Some(ref profile) = current_profile(cx.state) else {
@@ -91,29 +84,55 @@ impl PeakViewScreen {
         };
         match g {
             Gesture::Step(n) => {
-                let heading = self.browse_heading_q4.unwrap_or_else(|| live_heading_q4(cx.state, profile));
-                let current = self
-                    .browse_heading_q4
-                    .map(|_| self.selected as usize)
-                    .or_else(|| nearest_visible_peak(profile, heading));
-                let Some(next) = stepped_visible_peak(profile, heading, current, n) else {
+                if n == 0 {
                     return Transition::None;
-                };
-                self.selected = next as u8;
+                }
+                let mut heading = self.heading_q4(cx.state);
+                if self.browse_heading_q4.is_none() {
+                    self.selected = None;
+                }
+                for _ in 0..n.unsigned_abs() {
+                    let visible = visible_indices(profile, heading);
+                    let current = self.selected_index(profile).and_then(|i| visible.iter().position(|old| *old == i));
+                    let next = if let Some(at) = current {
+                        let next = at as i32 + n.signum();
+                        (0..visible.len() as i32).contains(&next).then(|| visible[next as usize])
+                    } else {
+                        if n > 0 { visible.first() } else { visible.last() }.copied()
+                    };
+                    if next.is_some() {
+                        self.select(profile, next);
+                    } else {
+                        heading = normalize_q4(i32::from(heading) + 60 * n.signum()) as u16;
+                        let entered = visible_indices(profile, heading);
+                        let mut new = entered.iter().copied().filter(|i| !visible.contains(i));
+                        let next = if n > 0 { new.next() } else { new.next_back() };
+                        self.select(
+                            profile,
+                            next.or_else(|| self.selected_index(profile).filter(|i| entered.contains(i))),
+                        );
+                    }
+                }
                 self.browse_heading_q4 = Some(heading);
                 Transition::None
             }
             Gesture::Press => {
                 if self.browse_heading_q4.take().is_none() {
                     let heading = live_heading_q4(cx.state, profile);
-                    if let Some(selected) = nearest_visible_peak(profile, heading) {
-                        self.selected = selected as u8;
-                        self.browse_heading_q4 = Some(heading);
-                    }
+                    self.select(
+                        profile,
+                        visible_indices(profile, heading).into_iter().max_by_key(|i| profile.peaks[*i].score),
+                    );
+                    self.browse_heading_q4 = Some(heading);
+                } else {
+                    self.selected = None;
                 }
                 Transition::None
             }
-            Gesture::Back if self.browse_heading_q4.take().is_some() => Transition::None,
+            Gesture::Back if self.browse_heading_q4.take().is_some() => {
+                self.selected = None;
+                Transition::None
+            }
             Gesture::Back => Transition::Pop,
             Gesture::Hold | Gesture::BackHold => Transition::None,
         }
@@ -121,19 +140,11 @@ impl PeakViewScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         cv.clear(palette::PARCHMENT);
-        if self.loading || self.failed || self.waiting {
+        if matches!(self.status, Status::Waiting | Status::Unavailable) {
             super::vocab::chrome::title_frame(cv, rx.w, rx.h, rx.t(Msg::MenuPeaks), "");
-            if self.loading || self.waiting {
-                self.spin.draw_needle(cv, rx.w, rx.h);
-            }
+            self.spin.draw_needle(cv, rx.w, rx.h);
             cv.text(
-                rx.t(if self.waiting {
-                    Msg::PeakViewWaitingGps
-                } else if self.failed {
-                    Msg::PeakViewUnavailable
-                } else {
-                    Msg::PeakViewPreparing
-                }),
+                rx.t(if self.status == Status::Waiting { Msg::PeakViewWaitingGps } else { Msg::PeakViewUnavailable }),
                 Point::new(rx.w / 2, rx.h / 2 + 65),
                 Font::Label,
                 TextAlign::Center,
@@ -153,24 +164,23 @@ impl PeakViewScreen {
         };
 
         let heading_q4 = self.browse_heading_q4.unwrap_or_else(|| live_heading_q4(rx.state, profile));
-        let selected = if self.browse_heading_q4.is_some() {
-            profile.peaks.get(self.selected as usize).map(|_| self.selected as usize)
-        } else {
-            nearest_visible_peak(profile, heading_q4)
-        };
+        let selected = self
+            .browse_heading_q4
+            .and_then(|_| self.selected_index(profile))
+            .filter(|i| peak_is_visible(profile, *i, heading_q4));
 
         let mode = self.browse_heading_q4.map(|_| rx.t(Msg::PeakViewManual));
-        draw_compass(cv, rx.w, heading_q4, fov_q4(profile), mode);
-        if self.building {
+        draw_compass(cv, rx.w, heading_q4, profile.horizontal_fov_q4(), mode);
+        if matches!(self.status, Status::Building(_)) {
             for x in [rx.w - 18, rx.w - 13, rx.w - 8] {
                 cv.fill(rect(x, COMPASS_H - 8, 2, 2), palette::PARCHMENT);
             }
         }
         let chart_bottom = rx.h - LEDGER_H;
-        if let Some(terrain) = rx.peak_view {
-            terrain::draw(cv, terrain, profile, heading_q4, rx.w, chart_bottom);
+        terrain::draw(cv, rx.peak_view, profile, heading_q4, rx.w, chart_bottom);
+        if rx.peak_view.is_some() {
+            draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
         }
-        draw_peak_annotations(cv, profile, heading_q4, selected, rx.w, chart_bottom);
         draw_ledger(cv, rx, profile, selected, heading_q4);
     }
 }
@@ -185,14 +195,10 @@ fn current_profile(state: &crate::AppState) -> Option<PeakViewProfile<'_>> {
 
 fn live_heading_q4(state: &crate::AppState, profile: &PeakViewProfile) -> u16 {
     state
-        .effective_heading_deg()
+        .compass_deg
+        .or_else(|| state.effective_heading_deg())
         .map(|deg| normalize_q4((deg * 4.0 + 0.5) as i32) as u16)
         .unwrap_or(profile.default_heading_q4)
-}
-
-/// Wide relief gets a wider window; distant relief gets a closer view.
-fn fov_q4(profile: &PeakViewProfile) -> i32 {
-    profile.horizontal_fov_q4()
 }
 
 fn normalize_q4(angle: i32) -> i32 {
@@ -208,63 +214,20 @@ fn bearing_x(bearing: u16, center: u16, w: i32, fov: i32) -> Option<i32> {
     (delta.abs() <= fov / 2).then_some((delta + fov / 2) * (w - 1) / fov)
 }
 
-fn nearest_visible_peak(profile: &PeakViewProfile, heading_q4: u16) -> Option<usize> {
-    profile
-        .peaks
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| peak_is_visible(profile, *index, heading_q4))
-        .min_by_key(|(index, peak)| (bearing_delta_q4(peak.azimuth_q4, heading_q4).abs(), peak.distance_m, *index))
-        .map(|(index, _)| index)
-}
-
-/// Select by left-to-right ridge order without allocating a second peak list. Named summits on
-/// exposed near, middle, and far crests inside the frozen panorama all participate.
-fn stepped_visible_peak(
-    profile: &PeakViewProfile,
-    heading_q4: u16,
-    current: Option<usize>,
-    steps: i32,
-) -> Option<usize> {
-    let mut current = current
-        .filter(|index| peak_is_visible(profile, *index, heading_q4))
-        .or_else(|| nearest_visible_peak(profile, heading_q4))?;
-    for _ in 0..steps.unsigned_abs() {
-        current = adjacent_visible_peak(profile, heading_q4, current, steps.is_positive())?;
-    }
-    Some(current)
-}
-
-fn peak_order_key(profile: &PeakViewProfile, index: usize, heading_q4: u16) -> Option<(i32, u32, usize)> {
-    let peak = profile.peaks.get(index)?;
-    Some((bearing_delta_q4(peak.azimuth_q4, heading_q4), peak.distance_m, index))
-}
-
-fn adjacent_visible_peak(profile: &PeakViewProfile, heading_q4: u16, current: usize, forward: bool) -> Option<usize> {
-    let current_key = peak_order_key(profile, current, heading_q4)?;
-    let candidates = profile.peaks.iter().enumerate().filter(|(index, _)| peak_is_visible(profile, *index, heading_q4));
-    if forward {
-        candidates
-            .clone()
-            .filter(|(index, _)| peak_order_key(profile, *index, heading_q4).is_some_and(|key| key > current_key))
-            .min_by_key(|(index, _)| peak_order_key(profile, *index, heading_q4))
-            .or_else(|| candidates.min_by_key(|(index, _)| peak_order_key(profile, *index, heading_q4)))
-            .map(|(index, _)| index)
-    } else {
-        candidates
-            .clone()
-            .filter(|(index, _)| peak_order_key(profile, *index, heading_q4).is_some_and(|key| key < current_key))
-            .max_by_key(|(index, _)| peak_order_key(profile, *index, heading_q4))
-            .or_else(|| candidates.max_by_key(|(index, _)| peak_order_key(profile, *index, heading_q4)))
-            .map(|(index, _)| index)
-    }
+fn visible_indices(profile: &PeakViewProfile, heading: u16) -> heapless::Vec<usize, 64> {
+    let mut indices: heapless::Vec<_, 64> =
+        (0..profile.peaks.len()).filter(|i| peak_is_visible(profile, *i, heading)).collect();
+    indices.sort_unstable_by_key(|i| {
+        let peak = &profile.peaks[*i];
+        (bearing_delta_q4(peak.azimuth_q4, heading), peak.distance_m, peak.lat, peak.lon)
+    });
+    indices
 }
 
 fn peak_is_visible(profile: &PeakViewProfile, index: usize, heading_q4: u16) -> bool {
-    profile
-        .peaks
-        .get(index)
-        .is_some_and(|peak| peak.visible && bearing_delta_q4(peak.azimuth_q4, heading_q4).abs() <= fov_q4(profile) / 2)
+    profile.peaks.get(index).is_some_and(|peak| {
+        peak.visible && bearing_delta_q4(peak.azimuth_q4, heading_q4).abs() <= profile.horizontal_fov_q4() / 2
+    })
 }
 
 fn draw_compass(cv: &mut impl Surface, w: i32, heading_q4: u16, fov: i32, mode: Option<&str>) {
@@ -309,6 +272,48 @@ fn angle_y(profile: &PeakViewProfile, angle_q4: i16, bottom: i32) -> i32 {
     (bottom - above_bottom * height / span).clamp(COMPASS_H, bottom - 1)
 }
 
+fn vertical_name<'a>(name: &str, cells: i32, out: &'a mut heapless::String<24>) -> &'a str {
+    out.clear();
+    let cells = cells.max(2) as usize;
+    if name.chars().count() <= cells {
+        let _ = out.push_str(name);
+    } else {
+        for ch in name.chars().take(cells - 2) {
+            let _ = out.push(ch);
+        }
+        while out.ends_with(' ') {
+            out.pop();
+        }
+        let _ = out.push_str("..");
+    }
+    out.as_str()
+}
+
+/// Show every name that fits. Apparent elevation breaks collisions; selection does not rearrange labels.
+fn annotation_indices(profile: &PeakViewProfile, heading: u16, w: i32) -> heapless::Vec<usize, 64> {
+    let mut indices = visible_indices(profile, heading);
+    indices.sort_unstable_by_key(|i| {
+        let peak = &profile.peaks[*i];
+        (core::cmp::Reverse(peak.score), peak.distance_m, peak.lat, peak.lon)
+    });
+    let x = |i: usize| {
+        bearing_x(profile.peaks[i].azimuth_q4, heading, w, profile.horizontal_fov_q4())
+            .unwrap_or(0)
+            .clamp(6, w.max(12) - 6)
+    };
+    let mut count = 0;
+    for at in 0..indices.len() {
+        let i = indices[at];
+        if indices[..count].iter().any(|old| (x(i) - x(*old)).abs() < 15) {
+            continue;
+        }
+        indices[count] = i;
+        count += 1;
+    }
+    indices.truncate(count);
+    indices
+}
+
 fn draw_peak_annotations(
     cv: &mut impl Surface,
     profile: &PeakViewProfile,
@@ -317,52 +322,24 @@ fn draw_peak_annotations(
     w: i32,
     bottom: i32,
 ) {
-    // Keep the ten strongest visible candidates, then take the first five that do not collide.
-    // This base set never depends on selection: choosing Matterhorn may recolor its own label, but
-    // it must not free a slot and make an unrelated name suddenly appear.
-    let mut ranked: [Option<(usize, u32)>; 10] = [None; 10];
-    for (i, peak) in profile.peaks.iter().enumerate() {
-        if !peak_is_visible(profile, i, heading_q4) {
-            continue;
-        }
-        for slot in 0..ranked.len() {
-            if ranked[slot].is_none_or(|(_, score)| peak.score > score) {
-                for move_to in (slot + 1..ranked.len()).rev() {
-                    ranked[move_to] = ranked[move_to - 1];
-                }
-                ranked[slot] = Some((i, peak.score));
-                break;
-            }
-        }
-    }
-
-    let mut label_x = [i32::MIN; 5];
-    let mut labels = 0;
-    for candidate in ranked.into_iter().flatten() {
-        if labels == label_x.len() {
-            break;
-        }
-        let peak = &profile.peaks[candidate.0];
-        let anchor = peak.azimuth_q4;
-        let x = bearing_x(anchor, heading_q4, w, fov_q4(profile)).unwrap_or(0);
-        if label_x[..labels].iter().any(|old| (x - *old).abs() < 15) {
-            continue;
-        }
+    for i in annotation_indices(profile, heading_q4, w) {
+        let peak = &profile.peaks[i];
+        let x = bearing_x(peak.azimuth_q4, heading_q4, w, profile.horizontal_fov_q4()).unwrap_or(0);
         let summit_y = angle_y(profile, peak.angle_q4, bottom);
-        let run_h = peak.name.as_str().chars().count() as i32 * 6;
-        if summit_y - LABEL_GAP - run_h >= COMPASS_H + 2 {
-            let color = if Some(candidate.0) == selected { palette::WOOD } else { palette::INK };
-            cv.vline(x, summit_y - LABEL_GAP + 1, LABEL_GAP - 1, 1, color);
-            cv.text_ccw(peak.name.as_str(), Point::new(x - 6, summit_y - LABEL_GAP), Font::Label, 2, color);
-            label_x[labels] = x;
-            labels += 1;
-        }
+        let headroom = (summit_y - LABEL_GAP - COMPASS_H - 2).max(12);
+        let mut caption = heapless::String::<24>::new();
+        let name = vertical_name(peak.name.as_str(), headroom / 6, &mut caption);
+        let label_bottom = (summit_y - LABEL_GAP).max(COMPASS_H + 14);
+        let color = if Some(i) == selected { palette::WOOD } else { palette::INK };
+        let leader_top = (summit_y - LABEL_GAP + 1).max(COMPASS_H + 2);
+        cv.vline(x, leader_top, (summit_y - leader_top).max(0), 1, color);
+        cv.text_ccw(name, Point::new((x - 6).clamp(0, (w - 12).max(0)), label_bottom), Font::Label, 2, color);
     }
 
     if let Some(i) = selected {
         let peak = &profile.peaks[i];
         let anchor = peak.azimuth_q4;
-        if let Some(x) = bearing_x(anchor, heading_q4, w, fov_q4(profile)) {
+        if let Some(x) = bearing_x(anchor, heading_q4, w, profile.horizontal_fov_q4()) {
             let y = angle_y(profile, peak.angle_q4, bottom);
             cv.triangle(Point::new(x, y + 1), Point::new(x - 7, y - 11), Point::new(x + 7, y - 11), palette::INK);
             cv.triangle(Point::new(x, y - 1), Point::new(x - 5, y - 9), Point::new(x + 5, y - 9), palette::AMBER);
@@ -375,7 +352,10 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
     cv.fill(rect(0, top, rx.w, LEDGER_H), palette::PARCHMENT);
     cv.hline(0, top, rx.w, palette::WOOD);
     let Some(peak) = selected.and_then(|i| profile.peaks.get(i)) else {
-        let pending = rx.peak_view.is_some_and(|terrain| !terrain.view_ready(heading, fov_q4(profile)));
+        let pending = rx.peak_view.is_none_or(|terrain| !terrain.view_ready(heading, profile.horizontal_fov_q4()));
+        if !pending && !visible_indices(profile, heading).is_empty() {
+            return;
+        }
         let mut caption = heapless::String::new();
         let status = super::vocab::tiles::fit_caption(
             rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }),
@@ -427,7 +407,7 @@ mod tests {
         },
         PeakViewPeak {
             name: PeakName::new("C"),
-            lat: 0,
+            lat: 1,
             lon: 0,
             elevation_m: Some(1500),
             distance_m: 3000,
@@ -438,7 +418,7 @@ mod tests {
         },
         PeakViewPeak {
             name: PeakName::new("B"),
-            lat: 0,
+            lat: 2,
             lon: 0,
             elevation_m: Some(2000),
             distance_m: 2000,
@@ -448,24 +428,21 @@ mod tests {
             score: 3,
         },
     ];
-    // The wide angle range gives this profile a ~104-degree derived window, so the three peaks
-    // spread across the circle stay selectable from the headings the tests use.
+    // A wide window keeps the peaks selectable from the headings used below.
     static PROFILE: PeakViewProfile<'static> = PeakViewProfile {
-        id: 99,
-        name: "test",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 0,
-        angle_bottom_q4: -40,
-        angle_top_q4: 200,
-        vertical_scale_q8: 320,
+        fov_q4: 467,
+        vertical_centre_q4: 80,
+        vertical_span_q4: 345,
         peaks: &PEAKS,
     };
     static STACKED_PEAKS: [PeakViewPeak; 3] = [
         PeakViewPeak {
             name: PeakName::new("Near"),
-            lat: 0,
+            lat: 3,
             lon: 0,
             elevation_m: Some(1000),
             distance_m: 1000,
@@ -476,7 +453,7 @@ mod tests {
         },
         PeakViewPeak {
             name: PeakName::new("Middle"),
-            lat: 0,
+            lat: 4,
             lon: 0,
             elevation_m: Some(2000),
             distance_m: 4000,
@@ -487,7 +464,7 @@ mod tests {
         },
         PeakViewPeak {
             name: PeakName::new("Far"),
-            lat: 0,
+            lat: 5,
             lon: 0,
             elevation_m: Some(3000),
             distance_m: 8000,
@@ -498,82 +475,168 @@ mod tests {
         },
     ];
     static STACKED_PROFILE: PeakViewProfile<'static> = PeakViewProfile {
-        id: 100,
-        name: "stacked",
         observer_lat: 0,
         observer_lon: 0,
         observer_elevation_m: 0,
         default_heading_q4: 120,
-        angle_bottom_q4: -4,
-        angle_top_q4: 16,
-        vertical_scale_q8: 320,
+        fov_q4: 38,
+        vertical_centre_q4: 6,
+        vertical_span_q4: 28,
         peaks: &STACKED_PEAKS,
     };
 
     #[test]
-    fn peak_selection_wraps_across_north() {
+    fn opening_uses_an_available_fix_before_the_runtime_starts() {
+        for has_fix in [false, true] {
+            let mut app = crate::App::new(AppState::new(0, 0, 1.0));
+            app.state.peak_view_profile = Some(PROFILE);
+            let mut loc = crate::harness::support::OnceFix(has_fix.then_some(obc_ports::Fix::at(0, 0)));
+            app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
+            assert!(app.show_peak_view());
+            let super::super::Screen::PeakView(screen) = app.top_screen() else { panic!("Peak View") };
+            assert_eq!(screen.status, if has_fix { Status::Building(0) } else { Status::Waiting });
+        }
+    }
+
+    #[test]
+    fn visible_order_crosses_north_and_includes_stacked_crests() {
         assert_eq!(bearing_delta_q4(40, 1400), 80);
-        assert_eq!(nearest_visible_peak(&PROFILE, 0), Some(0));
-        assert_eq!(nearest_visible_peak(&PROFILE, 1430), Some(2));
+        assert_eq!(&visible_indices(&PROFILE, 0)[..], &[2, 0]);
+        assert_eq!(&visible_indices(&STACKED_PROFILE, 120)[..], &[0, 1, 2]);
+        let hidden = [PEAKS[0], PeakViewPeak { visible: false, ..PEAKS[2] }];
+        assert_eq!(&visible_indices(&PeakViewProfile { peaks: &hidden, ..PROFILE }, 0)[..], &[0]);
     }
 
     #[test]
-    fn an_occluded_summit_is_neither_selected_nor_stepped_to() {
-        static PEAKS_WITH_HIDDEN: [PeakViewPeak; 3] =
-            [PEAKS[0], PeakViewPeak { visible: false, azimuth_q4: 0, ..PEAKS[1] }, PEAKS[2]];
-        let profile = PeakViewProfile { peaks: &PEAKS_WITH_HIDDEN, ..PROFILE };
-        assert!(!peak_is_visible(&profile, 1, 0));
-        assert_eq!(nearest_visible_peak(&profile, 0), Some(0));
-        assert_eq!(stepped_visible_peak(&profile, 0, Some(0), 1), Some(2));
+    fn annotations_fill_available_space_and_rank_only_collisions() {
+        let mut peaks = [PEAKS[0]; 16];
+        for (i, peak) in peaks.iter_mut().enumerate() {
+            peak.lat = i as i32;
+            peak.azimuth_q4 = 20 * i as u16;
+            peak.score = 100 - i as u32;
+        }
+        // Ten high-ranked candidates collide. The six lower-ranked names still have room.
+        for peak in &mut peaks[..10] {
+            peak.azimuth_q4 = 0;
+        }
+        let profile = PeakViewProfile { fov_q4: 320, peaks: &peaks, ..PROFILE };
+        let labels = annotation_indices(&profile, 160, 256);
+        assert_eq!(&labels[..], &[0, 10, 11, 12, 13, 14, 15]);
+        let reordered: std::vec::Vec<_> = peaks.iter().rev().copied().collect();
+        let reordered = PeakViewProfile { peaks: &reordered, ..profile };
+        let selected: std::vec::Vec<_> =
+            annotation_indices(&reordered, 160, 256).into_iter().map(|i| reordered.peaks[i].lat).collect();
+        assert_eq!(selected, [0, 10, 11, 12, 13, 14, 15]);
     }
 
     #[test]
-    fn stacked_near_middle_and_far_crests_are_independently_selectable() {
-        assert!((0..3).all(|index| peak_is_visible(&STACKED_PROFILE, index, 120)));
-        assert_eq!(nearest_visible_peak(&STACKED_PROFILE, 120), Some(0));
-        assert_eq!(stepped_visible_peak(&STACKED_PROFILE, 120, Some(0), 1), Some(1));
-        assert_eq!(stepped_visible_peak(&STACKED_PROFILE, 120, Some(1), 1), Some(2));
-    }
-
-    #[test]
-    fn browse_freezes_the_profile_and_steps_only_through_its_visible_peaks() {
+    fn browse_selects_by_prominence_pans_and_survives_refill() {
         let mut state = AppState::new(0, 0, 1.0);
         state.peak_view_profile = Some(PROFILE);
         state.compass_deg = Some(0.0);
         let mut activity = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
-        let mut screen = PeakViewScreen::new();
-        screen.set_loading(false, false);
+        let mut screen = PeakViewScreen::new(None);
+        screen.set_status(Status::Building(0));
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
-
-        assert!(matches!(screen.handle(Gesture::Step(1), &mut cx), Transition::None));
-        assert_eq!(screen.browse_heading_q4, Some(0), "Browse must not recenter the terrain on the selected peak");
-        assert_eq!(screen.selected, 2, "the next summit is B on the left edge; C is outside this profile");
-
+        assert_eq!(screen.selected, None);
+        screen.handle(Gesture::Press, &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        screen.handle(Gesture::Press, &mut cx);
+        assert_eq!(screen.selected, None);
         screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
         assert_eq!(screen.browse_heading_q4, Some(0));
-        assert_eq!(screen.selected, 0, "selection wraps among the peaks visible in the frozen profile");
+        cx.state.peak_view_peaks[0] = PEAKS[2];
+        cx.state.peak_view_peaks[1] = PEAKS[0];
+        cx.state.peak_view_peak_count = 2;
+        assert_eq!(screen.selected_index(&current_profile(cx.state).unwrap()), Some(1));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(60));
+        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        screen.handle(Gesture::Step(2), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(180));
+        screen.handle(Gesture::Press, &mut cx);
+        assert_eq!(screen.heading_q4(cx.state), 0);
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
     }
+
     #[test]
-    fn loading_animates_cancels_and_stops_waking_when_ready() {
-        let mut screen = PeakViewScreen::new();
+    fn browse_visits_every_peak_across_empty_space_and_reverses_without_skips() {
         let mut state = AppState::new(0, 0, 1.0);
-        state.peak_view_profile = Some(PROFILE);
+        state.peak_view_profile = Some(PeakViewProfile { fov_q4: 240, ..PROFILE });
+        state.compass_deg = Some(0.0);
+        // Two peaks enter together at 40 degrees; two more share the same bearing.
+        for (i, bearing) in [340, 0, 40, 44, 110, 110, 180, 280].into_iter().enumerate() {
+            state.peak_view_peaks[i] =
+                PeakViewPeak { lat: i as i32, azimuth_q4: bearing * 4, distance_m: 1000 + i as u32, ..PEAKS[0] };
+        }
+        state.peak_view_peak_count = 8;
         let mut activity = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
+        for (direction, expected) in [(1, [0, 1, 2, 3, 4, 5, 6, 7, 0]), (-1, [1, 0, 7, 6, 5, 4, 3, 2, 1])] {
+            let mut screen = PeakViewScreen::new(None);
+            screen.set_status(Status::Ready);
+            let mut visited = std::vec::Vec::new();
+            for _ in 0..40 {
+                let heading = screen.heading_q4(cx.state);
+                screen.handle(Gesture::Step(direction), &mut cx);
+                let turn = bearing_delta_q4(screen.heading_q4(cx.state), heading);
+                assert!(turn == 0 || turn == direction * 60);
+                if let Some((id, _)) = screen.selected {
+                    if visited.last() != Some(&id) {
+                        visited.push(id);
+                    }
+                }
+                if visited.len() == expected.len() {
+                    break;
+                }
+            }
+            assert_eq!(visited, expected);
+        }
+
+        let mut screen = PeakViewScreen::new(None);
+        screen.set_status(Status::Ready);
+        screen.handle(Gesture::Step(2), &mut cx);
+        assert_eq!(screen.selected, Some((1, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(60));
+        assert_eq!(screen.selected, Some((2, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.selected, Some((3, 0)));
+        screen.handle(Gesture::Step(1), &mut cx);
+        assert_eq!(screen.browse_heading_q4, Some(120));
+        assert_eq!(screen.selected, Some((3, 0)));
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((2, 0)));
+        screen.handle(Gesture::Step(4), &mut cx);
+        assert_eq!(screen.selected, None);
+        screen.handle(Gesture::Step(-1), &mut cx);
+        assert_eq!(screen.selected, Some((3, 0)));
+    }
+
+    #[test]
+    fn vertical_labels_keep_utf8_and_fit_even_the_smallest_headroom() {
+        let mut out = heapless::String::new();
+        assert_eq!(vertical_name("Grossglockner", 6, &mut out), "Gros..");
+        assert_eq!(vertical_name("Älplerhorn", 4, &mut out), "Äl..");
+        assert_eq!(vertical_name("Peak", 0, &mut out), "..");
+        assert_eq!(vertical_name("Peak", 4, &mut out), "Peak");
+    }
+
+    #[test]
+    fn only_waiting_and_unavailable_animate() {
+        let mut screen = PeakViewScreen::new(None);
         screen.tick_timers(0, 240, 320);
-        assert!(!screen.tick_timers(100, 240, 320).changed);
-        let tick = screen.tick_timers(166, 240, 320);
-        assert!(tick.changed && tick.next_wake_ms.is_some());
-        assert!(matches!(screen.handle(Gesture::Step(1), &mut cx), Transition::None));
-        assert!(screen.browse_heading_q4.is_none());
-        assert!(matches!(screen.handle(Gesture::Back, &mut cx), Transition::Pop));
-        screen.set_loading(false, false);
-        assert!(screen.set_building(true));
-        assert!(!screen.set_building(true), "background progress does not request another redraw");
+        assert!(screen.tick_timers(166, 240, 320).changed);
+        assert!(screen.set_status(Status::Building(0)));
+        assert!(!screen.set_status(Status::Building(0)));
         assert!(screen.tick_timers(200, 240, 320).next_wake_ms.is_none());
-        screen.set_loading(false, true);
-        assert!(matches!(screen.handle(Gesture::Back, &mut cx), Transition::Pop));
     }
 }

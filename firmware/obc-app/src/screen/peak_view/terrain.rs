@@ -1,5 +1,5 @@
 //! Draw completed bearings from RAM and mark pending bearings without inventing terrain.
-use super::{fov_q4, palette, COMPASS_H};
+use super::{palette, COMPASS_H};
 use crate::peak_view::{panorama::ROWS, Panorama, PeakViewProfile};
 use obc_render::Surface;
 
@@ -7,7 +7,7 @@ const TONES: [u16; 4] = [palette::PARCHMENT, palette::rgb565(170, 170, 170), pal
 
 pub(super) fn draw(
     cv: &mut impl Surface,
-    terrain: &Panorama,
+    terrain: Option<&Panorama>,
     profile: &PeakViewProfile,
     heading: u16,
     w: i32,
@@ -16,15 +16,15 @@ pub(super) fn draw(
     if w < 2 || bottom <= COMPASS_H {
         return;
     }
-    let fov = fov_q4(profile);
+    let fov = profile.horizontal_fov_q4();
     for x in 0..w {
         let bearing = (i32::from(heading) - fov / 2 + x * fov / (w - 1)).rem_euclid(1440) as u16;
-        if !terrain.ready_at_bearing_q4(bearing) {
+        let Some(terrain) = terrain.filter(|terrain| terrain.ready_at_bearing_q4(bearing)) else {
             for y in (COMPASS_H + (24 - x % 24) % 24..bottom).step_by(24) {
                 cv.vline(x, y, 1, 1, TONES[1]);
             }
             continue;
-        }
+        };
         let mut start = 0;
         while start < ROWS {
             let tone = terrain.tone_at_bearing_q4(bearing, start);
@@ -40,5 +40,24 @@ pub(super) fn draw(
         if x % 8 < 4 && terrain.incomplete_at_bearing_q4(bearing) {
             cv.vline(x, COMPASS_H + 1, 2, 1, palette::AMBER);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor, prelude::Point};
+
+    #[test]
+    fn before_the_job_exists_draws_the_same_hatch_as_unfinished_terrain() {
+        let mut absent = MockDisplay::<BinaryColor>::new();
+        let mut pending = MockDisplay::<BinaryColor>::new();
+        let color = |_: u16| BinaryColor::On;
+        let profile = PeakViewProfile::at(0, 0, 0);
+        draw(&mut obc_render::Canvas::new(&mut absent, &color), None, &profile, 0, 48, 60);
+        draw(&mut obc_render::Canvas::new(&mut pending, &color), Some(&Panorama::default()), &profile, 0, 48, 60);
+        assert_eq!(absent, pending);
+        assert_eq!(absent.get_pixel(Point::new(0, COMPASS_H)), Some(BinaryColor::On));
+        assert_eq!(absent.get_pixel(Point::new(1, COMPASS_H)), None);
     }
 }

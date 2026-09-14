@@ -40,7 +40,7 @@ pub mod surface;
 pub use cache::TileCache;
 pub use deadband::{DeadBand, Elev, ELE_DEADBAND_M};
 pub use integrator::ProfileIntegrator;
-pub use reader::{TerrainHeader, TerrainReader};
+pub use reader::{TerrainHeader, TerrainReader, TerrainTables};
 pub use source::{ElevationSource, NullElevation, TerrainElevation};
 
 /// The v1 tile-cache depth: four 512 B tiles ≈ 2.1 KB. Four because a single bilinear query can

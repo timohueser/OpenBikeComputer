@@ -556,9 +556,7 @@ impl obc_ports::FuelGauge for CountingGauge {
 /// The suites' navigation executor: one pass at a time, it takes the search DeviceCore hands out,
 /// answers it with a scripted terminal result and returns the workspace when Navigator asks for it.
 ///
-/// A legacy host ran a whole search per request and this planner keeps that shape — Navigator's
-/// pacing effects (`Step` / `CommitRoute`) belong to an executor that paces, and one arriving here
-/// is a change of who decides rather than something to serve quietly.
+/// Acquire and release are acknowledged. Each next step waits for the scripted result.
 ///
 /// The outcome slots are the planner's own, exactly like a real executor's: an answer it deposits
 /// is read by the *next* pass. The passes it runs are the app's frames, so it also collects what
@@ -624,17 +622,20 @@ impl<'r> Planner<'r> {
             Some(NavigatorEffect::Acquire { token, work }) => {
                 self.token = Some(token);
                 self.work = Some(work);
+                self.outcomes.navigator.try_put(NavigatorOutcome::Acquired { token }).unwrap();
+            }
+            Some(NavigatorEffect::Step { token } | NavigatorEffect::CommitRoute { token }) => {
+                self.token = Some(token);
             }
             Some(NavigatorEffect::CommitDetour { token }) => {
                 self.token = Some(token);
                 self.commit_asked = true;
             }
-            Some(NavigatorEffect::Release { token }) => {
+            Some(NavigatorEffect::Release { token, .. }) => {
                 self.released = true;
                 self.abandoned = self.token.take();
                 let _ = self.outcomes.navigator.try_put(NavigatorOutcome::Released { token });
             }
-            Some(other) => panic!("one request runs the whole search here — {other:?}"),
             None => {}
         }
         plan
@@ -665,7 +666,15 @@ impl<'r> Planner<'r> {
     pub fn answer(&mut self, app: &mut App, outcome: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorOutcome) {
         self.settle(app, None);
         let token = self.token.take().expect("an operation is running to answer");
-        self.settle(app, Some(outcome(token)));
+        let mut answer = outcome(token);
+        if let NavigatorOutcome::PlanFinished { route, .. } = answer {
+            self.settle(
+                app,
+                Some(NavigatorOutcome::Stepped { token, progress: obc_app::navigator::PlannerProgress::Reached }),
+            );
+            answer = NavigatorOutcome::PlanFinished { token: self.token.take().expect("commit requested"), route };
+        }
+        self.settle(app, Some(answer));
     }
 
     /// Answer an operation the app already abandoned — the slow executor that finished its search

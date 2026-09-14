@@ -67,8 +67,7 @@ mkdir -p "$OUT"
 # ride. Both fixture rows are conservatively unsynced; flat synced/retention metadata belongs to
 # the later ride-domain boundary (#1398). Staged in a temp dir cleaned on exit.
 TRACKS="$(mktemp -d)"
-# A scratch routes dir for the create-route sweep below — the router writes its reserved
-# `_nav.obcr` there instead of littering a `routes/` in the working directory.
+# An empty import directory for create-route sessions. Generated routes stay on each session's card.
 NAVDIR="$(mktemp -d)"
 # A routes dir with a trip folder (epic #526, TR3): the two specs/vectors routes + the sim crate's
 # grimsel-climb, named so their sorted-scan ids are 0/1/2, plus the committed `TP1.OBT` ("Alpen
@@ -125,19 +124,19 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 "$SIM" "$MAP" --boot --script "p p h" --routes-dir "$TRIPDIR" --expect-screen TripDelete --png "$OUT/trip-delete-confirm.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --expect-screen Menu --png "$OUT/menu.png"
 # Peak View's geographic fixture: Live follows the preset's stopped-compass heading;
-# Select freezes that panorama and keeps the current summit in the MANUAL ledger.
+# Select freezes that panorama and selects its most prominent visible summit.
 # Geographic fixture files are independent from MAP. `f` finishes the full panorama before capture or Browse input.
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
+"$SIM" "$MAP" --boot --peak-view scheidegg --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-scheidegg.png"
+"$SIM" "$MAP" --boot --peak-view glockner --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-glockner.png"
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f p" --expect-screen PeakView --png "$OUT/peak-view-browse.png"
 # A heading outside the initial west-facing crop proves that Live mode discovers a different set
 # of named ridge summits from the fixture's full-circle peak catalog.
 "$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
-# Two Up steps select Rote Nase on the inner ridge below Stockhorn at a nearby bearing.
-# Both distance bands must remain Browse targets instead of collapsing into one outer-silhouette name.
-"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
-# One Down step enters Browse and selects Matterhorn. Generic labels are selection-independent:
-# selecting it keeps the other labels in place.
-"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
+# Up enters Browse from the right edge and steps left through the ridge candidates.
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
+# Down enters Browse from the left edge and steps right. Generic labels stay in place.
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
 # synced/retention metadata boundary lands.
@@ -230,8 +229,8 @@ NAVCONFIRM="B d d w p d d d p f p p"
 # it from the overview (which starts the ride), then `T` runs one route-aware tick — the GUI ticks
 # every frame, but the headless script path doesn't, and the Detour chooser reads the tick-built
 # `route_total_m`. The chooser opens off the ride context sheet (`C d p`); the flow then walks
-# plan → preview (+cost line) → commit — the commit splices INTO the reserved `_nav.obcr` the
-# prefix planned (the self-splice case) and lands back on the riding map.
+# plan → preview (+cost line) → commit — the commit splices the prefix's planned route into a
+# fresh card object and lands back on the riding map.
 DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # (a0) The map context with **every row live** — the Monaco graph, a loaded route and an on-route
 # rider are exactly what the Detour row needs, so this is the arrangement `map-context.png` cannot
@@ -255,7 +254,7 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p w p" --inject detour-fail=exhausted --expect-screen NavFail --png "$OUT/detour-fail.png"
 # (e) Committed: preview Press splices `original[0..rider] + detour + original[rejoin..]` into the
-# reserved route, re-adopts it (session kept), and truncates the flow back to the riding map; the
+# fresh route, adopts it (session kept), and truncates the flow back to the riding map; the
 # trailing `T` re-syncs the route-derived state so the map draws the spliced line.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
@@ -583,26 +582,53 @@ WXRIDE="p p p p B d d d d w p"
 ELEVDIR="$(mktemp -d)"
 trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
-# --- Terrain-filled device-planned route (elevation epic #1068, EL7) -----------------------------
-# The unlock, end to end: the sim mounts `grimsel.obcd` (the terrain sidecar beside the map, EL2)
-# and the on-device router samples it as it emits, so a route the *device* planned now carries real
-# per-point elevation — and every already-shipped elevation consumer lights up with no change of
-# its own. Before EL7 all four frames below were flat: `▲0 m` in the list, an empty band, and a
-# Climb screen that could not open because no climb could be detected in a zero-elevation profile.
-#
+# --- Terrain-filled device-planned route -------------------------------------------------------
+# The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
+# planner reads terrain through the retained map object, as it does for an assembled device map.
+# Only these three frames use the staged map; registered fixture bytes remain unchanged.
+ELEVMAP="$ELEVDIR/terrain.obcm"
+python3 - "$MAP" "$ELEVMAP" <<'PYTERRAIN'
+from pathlib import Path
+import struct
+import sys
+
+source, output = map(Path, sys.argv[1:])
+map_bytes = bytearray(source.read_bytes())
+# OBCM §1.1/§1.3: v14 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0e" and map_bytes[40] == 4
+terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
+assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
+if not terrain_offset:
+    terrain = source.with_suffix(".obcd").read_bytes()
+    assert len(terrain) >= 64 and terrain[:5] == b"OBCT\x01", "expected the pinned OBCT v1 input"
+    map_bytes.extend(b"\xff" * (-len(map_bytes) % 16))
+    terrain_offset = len(map_bytes) // 16
+    map_bytes.extend(terrain)
+    map_bytes.extend(b"\xff" * (-len(map_bytes) % 16))
+    terrain_length = len(map_bytes) // 16 - terrain_offset
+    struct.pack_into("<II", map_bytes, 41, terrain_offset, terrain_length)
+assert (terrain_offset + terrain_length) * 16 <= len(map_bytes)
+output.write_bytes(map_bytes)
+PYTERRAIN
+
 # The plan: a fix at the Grimsel replay's first track point, routed to the "Handegg" Lodging POI up
 # the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
 # Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
 # the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
-    --script "B d d w p d d p f d d d p p p f" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
-# (a) The route list row for that saved plan: `6 km  ▲394 m` — the climb group is read straight off
+ELEVPLAN="B d d w p d d p f d d d p p p f"
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+    --script "$ELEVPLAN" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
+# (a) The route list row for that saved plan: `6 km  ▲396 m` — the climb group is read straight off
 # the emitted header, which the router filled from the raster.
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p" --expect-screen RouteMenu --png "$OUT/elev-routemenu.png"
+# Each session plans its own route, then returns from the POIs station to Routes. The import
+# directory is not a runtime store shared by separate simulator processes.
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+    --script "$ELEVPLAN B u u w p" --expect-screen RouteMenu --png "$OUT/elev-routemenu.png"
 # (b) Its overview, held long enough for the content pager to flip to page B: the elevation profile
 # band with the summit label, over the CLIMB / DESCENT rows. Seven `w` settles ≈ 5.6 s, just past
 # the 5 s flip.
-"$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
+"$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
+    --script "$ELEVPLAN B u u w p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
 # The **map context** (#1515 D3, extended by D4c): a Down+Back squeeze (`C`) on the riding Map

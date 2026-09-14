@@ -93,8 +93,8 @@ public struct MainScreenView: View {
                 OBCInlineBanner(
                     tone: .warning,
                     systemImage: "exclamationmark.triangle",
-                    title: "Sync interrupted.",
-                    message: "Got \(interruption.landed) of \(interruption.total) rides.",
+                    title: interruption.title,
+                    message: interruption.message,
                     actionTitle: "Resume",
                     action: { sync.resumeSync() }
                 )

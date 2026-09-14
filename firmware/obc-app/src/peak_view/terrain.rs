@@ -68,9 +68,6 @@ impl SurfaceTerrain for Terrain<'_> {
 
     fn level(&self, index: usize) -> Option<SurfaceLevel> {
         let g = self.reader.geometry(index)?;
-        if index > 0 && g.posting_log2 > 11 {
-            return None;
-        }
         let shift = g.cell_log2 - g.posting_log2;
         Some(SurfaceLevel {
             min_y: g.cell_min_i << shift,
@@ -79,13 +76,6 @@ impl SurfaceTerrain for Terrain<'_> {
             columns: u32::from(g.cell_cols) << shift,
             posting_log2: g.posting_log2,
             cell_log2: g.cell_log2,
-            max_distance_m: if index + 1 == self.reader.level_count() {
-                100_000.0
-            } else {
-                // Preserve geographic detail near the observer without letting a finer
-                // native source multiply fine-cell traversal all the way to 25 km.
-                (25_000.0 * (1u32 << g.posting_log2) as f32 / 512.0).min(100_000.0)
-            },
         })
     }
 

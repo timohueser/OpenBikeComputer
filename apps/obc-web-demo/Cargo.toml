@@ -28,10 +28,6 @@ obc-replay = { path = "../../host/obc-replay" }
 # The display seam lives in obc-display (#807); only its pure `ls021` geometry surface is used.
 obc-display = { path = "../../firmware/obc-display" }
 embedded-graphics = "0.8"
-# The fixed-cap string type `RideSummary.name` carries (same 0.8 the shared crates pin) — the
-# demo's seeded ride catalog constructs summaries directly.
-heapless = "0.8"
-
 # --- Web (wasm32) surface — the only target this host actually ships on. The demo core above
 # stays target-independent so `cargo test` exercises it natively in the workspace.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -40,3 +36,8 @@ wasm-bindgen = "0.2"
 js-sys = "0.3"
 # Surface Rust panics in the browser console instead of an opaque trap.
 console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+obc-formats = { path = "../../firmware/obc-formats" }
+obc-storage = { path = "../../firmware/obc-storage" }
+tempfile = "3"
