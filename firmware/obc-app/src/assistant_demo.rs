@@ -1,4 +1,4 @@
-//! Explicitly enabled shop-visit UI study. The simulator supplies the route fixtures and costs.
+//! Explicitly enabled Ride Assistant UI study. The simulator supplies the route fixtures and costs.
 
 use crate::{screen, App, CameraMode, Mode, RecorderIntent};
 
@@ -11,6 +11,7 @@ pub enum Stage {
     Questions,
     WhatsNext,
     ExploreAhead,
+    Landmarks,
     Categories,
     Choices,
     Preview,
@@ -23,11 +24,12 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [(Self, &'static str); 13] = [
+    pub const ALL: [(Self, &'static str); 14] = [
         (Self::Map, "map"),
         (Self::Questions, "questions"),
         (Self::WhatsNext, "whats-next"),
         (Self::ExploreAhead, "explore-ahead"),
+        (Self::Landmarks, "landmarks"),
         (Self::Categories, "categories"),
         (Self::Choices, "choices"),
         (Self::Preview, "preview"),
@@ -42,14 +44,28 @@ impl Stage {
     pub fn needs_stop(self) -> bool {
         !matches!(
             self,
-            Self::Map | Self::Questions | Self::WhatsNext | Self::ExploreAhead | Self::Categories | Self::Choices
+            Self::Map
+                | Self::Questions
+                | Self::WhatsNext
+                | Self::ExploreAhead
+                | Self::Landmarks
+                | Self::Categories
+                | Self::Choices
         )
     }
+}
+
+/// Curated text pages supplied by the host study, with article attribution on the final page.
+#[derive(Debug, PartialEq)]
+pub struct Landmark {
+    pub kind: &'static str,
+    pub pages: &'static [&'static str],
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Stop {
     pub name: &'static str,
+    pub landmark: Option<&'static Landmark>,
     /// Current opening status supplied by the study; None means hours are unknown.
     pub open_now: Option<bool>,
     pub approach: &'static [(i32, i32)],
@@ -90,6 +106,8 @@ pub enum Phase {
 pub struct Demo {
     pub fixture: &'static Fixture,
     pub selected: u8,
+    /// Accepted fixture index, independent of the current browsing selection.
+    pub visiting: Option<u8>,
     pub phase: Phase,
     pub candidates: Candidates,
     awaiting_start: bool,
@@ -98,6 +116,10 @@ pub struct Demo {
 impl Demo {
     pub fn stop(self) -> &'static Stop {
         &self.fixture.stops[self.candidates.indices[self.selected as usize] as usize]
+    }
+
+    pub fn visit_stop(self) -> &'static Stop {
+        self.visiting.map(|i| &self.fixture.stops[i as usize]).unwrap_or_else(|| self.stop())
     }
 
     pub fn stops(self) -> impl Iterator<Item = &'static Stop> {
@@ -115,6 +137,7 @@ impl App {
         self.state.assistant_demo = Some(Demo {
             fixture,
             selected: 0,
+            visiting: None,
             phase: Phase::Riding,
             awaiting_start: true,
             candidates: candidates::select(fixture.stops, 0..fixture.stops.len()),
@@ -146,6 +169,7 @@ impl App {
             Stage::Arrived | Stage::Returning => Phase::Returning,
             _ => Phase::Riding,
         };
+        demo.visiting = (demo.phase != Phase::Riding).then(|| demo.candidates.indices[selected]);
         let route = match demo.phase {
             Phase::Riding => demo.fixture.original,
             Phase::ToStop => demo.stop().outbound,
@@ -160,7 +184,7 @@ impl App {
         self.activate_route(route);
         self.assistant_demo_position(position);
         screen::apply(&mut self.ui.stack, screen::Transition::Root(screen::Screen::Map(screen::MapScreen::new())));
-        if let Some(page) = screen::AssistantScreen::for_stage(stage, selected) {
+        if let Some(page) = screen::AssistantScreen::for_stage(stage, selected, demo) {
             screen::apply(&mut self.ui.stack, screen::Transition::Push(screen::Screen::Assistant(page)));
         }
         self.ui.map_dirty = true;
@@ -187,8 +211,8 @@ impl App {
         match demo.phase {
             Phase::ToStop => {
                 demo.phase = Phase::Returning;
-                self.assistant_demo_position(demo.stop().position());
-                self.activate_route(demo.stop().continuation);
+                self.assistant_demo_position(demo.visit_stop().position());
+                self.activate_route(demo.visit_stop().continuation);
                 screen::apply(
                     &mut self.ui.stack,
                     screen::Transition::Push(screen::Screen::Assistant(screen::AssistantScreen::arrival())),
@@ -196,8 +220,9 @@ impl App {
             }
             Phase::Returning => {
                 demo.phase = Phase::Riding;
-                self.assistant_demo_position(demo.stop().approach[0]);
+                self.assistant_demo_position(demo.visit_stop().approach[0]);
                 self.activate_route(demo.fixture.original);
+                demo.visiting = None;
             }
             Phase::Riding => return,
         }
@@ -223,6 +248,7 @@ mod tests {
 
     const STOP: Stop = Stop {
         name: "Shop",
+        landmark: None,
         open_now: None,
         approach: &[(100, 100), (200, 200)],
         distance_m: 800,
@@ -265,6 +291,61 @@ mod tests {
         for _ in 0..3 {
             app.apply_gesture(Gesture::Press);
         }
+    }
+
+    #[test]
+    fn landmark_visit_keeps_its_return_leg_while_browsing_other_places() {
+        static INFO: Landmark = Landmark { kind: "Gorge", pages: &["A narrow gorge."] };
+        static PLACES: Fixture = Fixture {
+            original: 0,
+            start: (0, 0),
+            stops: &[
+                STOP,
+                STOP,
+                Stop {
+                    name: "Landmark",
+                    landmark: Some(&INFO),
+                    outbound: 2,
+                    continuation: 1,
+                    approach: &[(300, 300), (400, 400)],
+                    ..STOP
+                },
+            ],
+        };
+        let mut app = app();
+        app.enable_assistant_demo(&PLACES);
+        let session = app.recorder.session();
+        assert_eq!(app.state.assistant_demo.unwrap().candidates.len, 2, "landmarks are not shops");
+        open(&mut app);
+        app.apply_gesture(Gesture::Step(5));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press); // Read.
+        app.apply_gesture(Gesture::Step(1)); // Source page.
+        app.apply_gesture(Gesture::Press); // Preview.
+        assert_eq!(app.active_route_index(), Some(0));
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Press); // Return to preview without losing the landmark.
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.active_route_index(), Some(2));
+        assert_eq!(app.state.assistant_demo.unwrap().visiting, Some(2));
+
+        open(&mut app);
+        app.apply_gesture(Gesture::Step(2));
+        app.apply_gesture(Gesture::Press); // Assistant during visit.
+        app.apply_gesture(Gesture::Press); // Find a place.
+        app.apply_gesture(Gesture::Press); // Shops.
+        app.apply_gesture(Gesture::Step(1));
+        assert_eq!(app.state.assistant_demo.unwrap().selected, 1);
+        assert_eq!(app.active_route_index(), Some(2), "browsing leaves accepted guidance intact");
+        app.advance_assistant_demo();
+        assert_eq!(app.active_route_index(), Some(1), "use the landmark return, not the shop return");
+        assert_eq!(app.state.user_fix.map(|fix| (fix.lon, fix.lat)), Some((400, 400)));
+        app.advance_assistant_demo();
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(app.state.assistant_demo.unwrap().visiting, None);
+        assert_eq!(app.state.user_fix.map(|fix| (fix.lon, fix.lat)), Some((300, 300)));
+        assert_eq!(app.recorder.session(), session);
+        assert!(app.recorder.recording());
     }
 
     #[test]

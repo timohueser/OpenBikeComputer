@@ -1,7 +1,7 @@
-//! Portable, synthetic shop visits using real route objects and app screens.
+//! Portable, synthetic place visits using real route objects and app screens.
 
 use obc_app::{
-    assistant_demo::{Fixture, Stage, Stop},
+    assistant_demo::{Fixture, Landmark, Stage, Stop},
     App,
 };
 use obc_formats::io::SliceSource;
@@ -9,6 +9,30 @@ use obc_host_core::{FlatRouteStore, RouteRepository, VecSink};
 use obc_replay::{Track, TrackPoint};
 use obc_route::{gpx_to_obcr, RouteStats};
 use std::fmt::Write;
+
+// Adapted from Wikipedia; article revisions and CC BY-SA 4.0 attribution are in
+// docs/assets/ride-assistant/landmarks-study/README.md. Positions and access routes are synthetic.
+static AARE: Landmark = Landmark {
+    kind: "Gorge",
+    pages: &[
+        "The Aare cuts a narrow passage through limestone near Meiringen. In places, the rock walls stand about 50 metres high.",
+        "Glacial meltwater carved the gorge. Paths and walkways have let visitors explore it since 1889.",
+    ],
+};
+static FALLS: Landmark = Landmark {
+    kind: "Waterfall",
+    pages: &[
+        "These waterfalls tumble down a hillside near Meiringen. The highest single drop is about 110 metres.",
+        "Conan Doyle set the fictional clash of Holmes and Moriarty here in his 1893 story The Final Problem.",
+    ],
+};
+static GELMER: Landmark = Landmark {
+    kind: "Funicular",
+    pages: &[
+        "A cable railway from Handegg to the Gelmersee reservoir. The steepest section has a gradient of 106 percent.",
+        "Built in 1926 to carry materials for reservoir construction, the railway opened to the public in 2001.",
+    ],
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scenario {
@@ -177,18 +201,21 @@ pub fn install(
     if length < 100.0 {
         return Err("the study needs at least 100 m of route; choose a larger area or move --center inward".into());
     }
-    if store.ids().len() + 13 > obc_app::MAX_ROUTES {
+    if store.ids().len() + 19 > obc_app::MAX_ROUTES {
         return Err("not enough route slots for the study".into());
     }
     let (original, _) = route(store, "Study route", &points, None)?;
     let mut stops = Vec::new();
-    for (name, fraction, target_m, spur_m, climb) in [
-        ("Village shop", 0.30, 2_000.0, 110.0, 3.0),
-        ("Farm shop", 0.03, 300.0, 490.0, 150.0),
-        ("Supermarket", 0.50, 3_500.0, 50.0, 2.0),
-        ("General store", 0.68, 4_500.0, 130.0, 2.0),
-        ("Ridge shop", 0.80, 5_500.0, 700.0, 100.0),
-        ("Bakery", 0.16, 1_000.0, 40.0, 2.0),
+    for (name, fraction, target_m, spur_m, climb, landmark) in [
+        ("Village shop", 0.30, 2_000.0, 110.0, 3.0, None),
+        ("Farm shop", 0.03, 300.0, 490.0, 150.0, None),
+        ("Supermarket", 0.50, 3_500.0, 50.0, 2.0, None),
+        ("General store", 0.68, 4_500.0, 130.0, 2.0, None),
+        ("Ridge shop", 0.80, 5_500.0, 700.0, 100.0, None),
+        ("Bakery", 0.16, 1_000.0, 40.0, 2.0, None),
+        ("Aare Gorge", 0.05, 400.0, 250.0, 12.0, Some(&AARE)),
+        ("Reichenbach Falls", 0.12, 900.0, 400.0, 50.0, Some(&FALLS)),
+        ("Gelmerbahn", 0.25, 1_800.0, 350.0, 25.0, Some(&GELMER)),
     ] {
         let distance = (length * fraction).min(target_m);
         let join = cumulative.partition_point(|&d| d < distance).min(points.len() - 2).max(1);
@@ -207,6 +234,7 @@ pub fn install(
             .map_err(|e| format!("demo access: {e:?}"))?;
         stops.push(Stop {
             open_now: None,
+            landmark,
             name,
             approach: Box::leak(Box::new(approach.map(|p| (p.lon, p.lat)))),
             distance_m: cost.total_distance_m,

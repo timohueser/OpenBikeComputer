@@ -156,7 +156,7 @@ impl SimGui {
                             );
                             let phase = self.app.state.assistant_demo.unwrap().phase;
                             let event = match phase {
-                                Phase::ToStop => Some("Arrive at shop"),
+                                Phase::ToStop => Some("Arrive at place"),
                                 Phase::Returning => Some("Rejoin original route"),
                                 _ => None,
                             };
@@ -166,7 +166,7 @@ impl SimGui {
                                     self.sync_assistant_position();
                                 }
                             } else {
-                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find shops.");
+                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find places.");
                             }
                             separator_above(ui);
                         }

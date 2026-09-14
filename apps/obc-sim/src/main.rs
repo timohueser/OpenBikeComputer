@@ -1026,7 +1026,7 @@ Scripted snapshots:
   --assistant-route GPX   Use this route instead of a synthetic local route
   --assistant-scenario S  four (default), two-along, useful-detour, worse-detour,
                           four-along, detours-only, one, empty
-  --assistant-stage S     map (default), questions, categories, choices, preview,
+  --assistant-stage S     map (default), questions, landmarks, categories, choices, preview,
                           to-stop, visit, arrival, returning, rejoined, remove-stop
   --assistant-option N    Select result 1..4 (default 1); Assistant flags enable the study
   --script TOKENS         Apply device-button script tokens before rendering
