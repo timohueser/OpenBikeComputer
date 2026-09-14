@@ -544,6 +544,16 @@ class LocalInterfaceTests(unittest.TestCase):
         self.assertEqual(registry.run_plan(plan, self.root, dry_run=True), 0)
         self.assertFalse(self.marker.exists())
 
+    def test_manual_fixture_runs_explicitly_without_a_ci_route(self) -> None:
+        suite = next(suite for suite in self.suites if suite["id"] == "fixture.weather")
+        suite["pull_request"] = "never"
+        suite["scheduled"] = "manual"
+        self.routes[suite["id"]] = []
+        plan = registry.select_by_level(self.inventory, self.routes, "fixtures", "weather")
+        self.assertFalse(plan.errors)
+        self.assertEqual(registry.run_plan(plan, self.root), 0)
+        self.assertEqual(self.marker.read_text(), "fixture.weather\n")
+
     def test_platform_restricted_suite_is_skipped_not_passed(self) -> None:
         plan = registry.select_by_level(self.inventory, self.routes, "e2e")
         self.assertEqual(registry.run_plan(plan, self.root), 0)
