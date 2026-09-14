@@ -14,6 +14,7 @@ pub struct Candidates {
 }
 
 pub(super) fn select(stops: &[Stop], available: impl Iterator<Item = usize> + Clone) -> Candidates {
+    let available = available.filter(|&i| stops.get(i).is_some_and(|s| s.open_now != Some(false)));
     let mut on_way = heapless::Vec::<u8, MAX_RESULTS>::new();
     let mut detours = heapless::Vec::<u8, MAX_RESULTS>::new();
     for id in available.clone() {
@@ -69,6 +70,7 @@ mod tests {
     fn stop(distance_m: u32, climb_m: u32, extra_m: u32) -> Stop {
         Stop {
             name: "Shop",
+            open_now: None,
             approach: &[(0, 0)],
             distance_m,
             climb_m,
@@ -79,6 +81,20 @@ mod tests {
             outbound: 0,
             continuation: 0,
         }
+    }
+
+    #[test]
+    fn closed_shops_do_not_fill_or_dominate_results() {
+        let mut closed = stop(100, 0, 0);
+        closed.open_now = Some(false);
+        let unknown = stop(800, 80, 900);
+        let mut open = stop(1200, 40, 100);
+        open.open_now = Some(true);
+        let stops = [closed, unknown, open];
+        let result = select(&stops, 0..3);
+        assert_eq!(&result.indices[..result.len as usize], &[2]);
+        let result = select(&stops, 0..2);
+        assert_eq!(&result.indices[..result.len as usize], &[1]);
     }
 
     #[test]

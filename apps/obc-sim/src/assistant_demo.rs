@@ -206,6 +206,7 @@ pub fn install(
         let spur = gpx_to_obcr(&SliceSource(spur_xml.as_bytes()), "Access", &mut spur_sink)
             .map_err(|e| format!("demo access: {e:?}"))?;
         stops.push(Stop {
+            open_now: None,
             name,
             approach: Box::leak(Box::new(approach.map(|p| (p.lon, p.lat)))),
             distance_m: cost.total_distance_m,

@@ -9,6 +9,8 @@ pub use candidates::{Candidates, MAX_RESULTS, ON_WAY_EXTRA_M};
 pub enum Stage {
     Map,
     Questions,
+    WhatsNext,
+    ExploreAhead,
     Categories,
     Choices,
     Preview,
@@ -21,9 +23,11 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [(Self, &'static str); 11] = [
+    pub const ALL: [(Self, &'static str); 13] = [
         (Self::Map, "map"),
         (Self::Questions, "questions"),
+        (Self::WhatsNext, "whats-next"),
+        (Self::ExploreAhead, "explore-ahead"),
         (Self::Categories, "categories"),
         (Self::Choices, "choices"),
         (Self::Preview, "preview"),
@@ -36,13 +40,18 @@ impl Stage {
     ];
 
     pub fn needs_stop(self) -> bool {
-        !matches!(self, Self::Map | Self::Questions | Self::Categories | Self::Choices)
+        !matches!(
+            self,
+            Self::Map | Self::Questions | Self::WhatsNext | Self::ExploreAhead | Self::Categories | Self::Choices
+        )
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Stop {
     pub name: &'static str,
+    /// Current opening status supplied by the study; None means hours are unknown.
+    pub open_now: Option<bool>,
     pub approach: &'static [(i32, i32)],
     pub distance_m: u32,
     pub climb_m: u32,
@@ -214,6 +223,7 @@ mod tests {
 
     const STOP: Stop = Stop {
         name: "Shop",
+        open_now: None,
         approach: &[(100, 100), (200, 200)],
         distance_m: 800,
         climb_m: 90,
@@ -255,6 +265,27 @@ mod tests {
         for _ in 0..3 {
             app.apply_gesture(Gesture::Press);
         }
+    }
+
+    #[test]
+    fn whats_next_opens_its_filter_drawer_and_keeps_navigation_and_recording() {
+        let mut app = app();
+        let session = app.recorder.session();
+        open(&mut app);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.apply_chord(Chord::Context), "the brief has no list filters");
+        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Context));
+        assert!(matches!(app.top_screen(), screen::Screen::ContextDrawer(_)));
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), screen::Screen::Assistant(s) if s.has_ahead_context()));
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(app.recorder.session(), session);
+        assert!(app.recorder.recording());
     }
 
     #[test]
