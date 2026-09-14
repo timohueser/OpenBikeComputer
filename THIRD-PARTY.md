@@ -17,6 +17,12 @@ copyright holders and terms are untouched; only the spacing between them is.
 
 Two obligations live outside this file, because their artifacts are built elsewhere:
 
+- **The map builder's web bundle** emits `third-party-licenses.txt` beside itself at
+  build time, generated from the modules the bundler actually included.
+- **Map data** is © OpenStreetMap contributors, under the
+  [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both
+  credits ship on the device (Settings ▸ System ▸ About) and in every published catalog.
+
 GEOS deserves a line, because deny.toml's note about it predates the current tree:
 `geos-src` declares MIT for the *wrapper* while the C++ sources it carries are
 **LGPL-2.1**, and that obligation follows whatever links them. Today nothing
@@ -8647,8 +8653,10 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
+
 The above copyright notice and this permission notice shall be included in
 all copies or substantial portions of the Software.
+
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -9929,3 +9937,4 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 ```
+
