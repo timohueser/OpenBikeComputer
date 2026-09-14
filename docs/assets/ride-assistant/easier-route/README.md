@@ -1,86 +1,73 @@
-# Easier route wireframe proposal
+# Easier route study
 
-Status: three concepts for rider review. No simulator or routing implementation is added.
-The wireframes use the 240 × 320 display, Terminus label font, brown header, and amber selection.
-[wireframes.html](wireframes.html) is the self-contained interactive fragment used in the review.
-It has no network dependencies. The host can optionally provide the time-row design control.
+The reviewed design is **C, map first**. The simulator uses the device map renderer and real
+map data, with synthetic alternatives and costs. [The original wireframes](wireframes.html)
+are retained as the earlier proposal. Run instructions are in the
+[simulator README](../../../../apps/obc-sim/README.md#easier-route-study).
 
-## Shared example
+## Reviewed behavior
 
-All values are fictional and describe the remaining journey to the same destination.
-“Rough” is a placeholder for the future surface rule, not a defined routing classification.
-The example assumes known surface data. It must not imply that unknown surface is smooth.
+Up/Down browses Less climbing, Smoother surface, and Shorter ride. The camera stays fixed.
+The current route is magenta; the candidate is blue. Comparison lines are thinner than the
+normal navigation line. Start and finish have symbols, without a legend or additional labels.
 
-| Route | Distance | Ascent | Rough surface | Optional approximate ride time |
-| --- | ---: | ---: | ---: | ---: |
-| Current | 42 km | 860 m | 6 km | 2 h 55 min |
-| Less climbing | 45 km | 440 m | 6 km | 3 h 10 min |
-| Smoother surface | 47 km | 980 m | 2 km | 3 h 15 min |
-| Shorter ride | 36 km | 1,110 m | 6 km | 2 h 30 min |
+The amber card shows the goal, a small pictogram, a large saving, and a short caption. Select
+opens the current/new cost table. The saving stays above the table. The review omits the
+same-destination sentence and a separate negative headline. Tradeoffs remain in the table.
+Back preserves the selected alternative. **Use this route** activates its prepared route and
+returns to Map without restarting recording. The accepted alternative becomes the baseline
+when the comparison is reopened.
 
-The optional time row explores a future estimate. It is off by default. The distance goal is
-called **Shorter ride**. Do not call it fastest before the time model can support that claim.
+## Simulator captures
 
-## A: Goal first — recommended for discussion
+| Goal | Map and card | Review |
+| --- | --- | --- |
+| Less climbing | ![Less climbing](less-climbing.png) | ![Climbing comparison](less-climbing-review.png) |
+| Smoother surface | ![Smoother surface](smoother-surface.png) | ![Surface comparison](smoother-surface-review.png) |
+| Shorter ride | ![Shorter ride](shorter-ride.png) | ![Distance comparison](shorter-ride-review.png) |
 
-The header says **Easier route**. The current remaining distance and ascent sit below it.
-Three two-line rows show each goal and its main change:
+## Mock data and limits
 
-- **Less climbing:** 420 m less ascent, 3 km more distance.
-- **Smoother surface:** 4 km less rough surface, 5 km more distance.
-- **Shorter ride:** 6 km less distance, 250 m more ascent.
+| Route | Remaining distance | Ascent | Rough surface |
+| --- | ---: | ---: | ---: |
+| Current | 42 km | 860 m | 6 km |
+| Less climbing | 45 km | 440 m | 6 km |
+| Smoother surface | 47 km | 980 m | 2 km |
+| Shorter ride | 36 km | 1,110 m | 6 km |
 
-Up and Down change the selected row. Select opens **Preview route**. This layout starts with
-the rider's question and makes the three available benefits easy to compare. The compact
-summary does not list every tradeoff: the smoother route's additional ascent is in the review.
+The host creates three bounded paths with the original route's start and finish. Intermediate
+geometry is synthetic and need not follow roads. These cost figures are illustrative, not
+measurements of those paths. “Rough” is a placeholder; no surface classification is implemented.
+Unknown surface must not count as smooth in production. A shorter route is not necessarily
+faster. The simulator does not show ETA estimates.
 
-## B: Compare numbers
-
-Show one alternative at a time with current/new columns for distance, ascent, and rough
-surface. Up and Down browse alternatives. Select opens the review. An optional time row can
-show approximate durations when the time model is available.
-
-This exposes more of the cost before preview. It needs more reading and makes comparison
-between alternatives depend on memory. It may work better as the second screen of A.
-
-## C: Map first
-
-Show the current and alternate route above a selected card with its main benefit and cost.
-Up and Down change the candidate. Select opens the review. The wireframe lines are a schematic,
-not real geography or a routing result.
-
-This helps explain where the route changes. It uses much of the small display before the rider
-has chosen a goal. A geographical comparison could instead be a page inside A's preview.
-
-## Shared review
-
-The wireframes use a cost review with **Same destination**, the selected goal, and current/new
-columns. **Use this route** is the explicit acceptance action. Back returns to the choice and
-preserves selection. Exploring alternatives does not change the accepted route.
-
-A map/profile preview, route computation, no-route state, unavailable alternatives, unknown
-surface/elevation, and preservation of required stops need definition in the later spec. Do
-not silently skip required stops or turn missing data into a claimed improvement. Keep “less
-climbing” separate from guarantees about maximum slope or technical difficulty.
+Alternatives are unavailable during a mock place visit. After a visit, the prepared return
+leg still follows the original fixture; production must calculate that leg for the accepted
+route. The mock does not preserve required stops or calculate routes from a moving rider's
+current position. These limits need explicit treatment in the implementation epic.
 
 ## Next design step
 
-Choose and refine the layout, then build this fourth simulator shell. After that, draft the
-implementation epic and sub-issues for Find a place, What's next, Landmarks, and Easier route,
-including map creation and routing work. The requested adversarial review belongs to that
-future epic stage. These wireframes do not settle the routing algorithm or time model.
+The fourth simulator shell is ready for review. After review, draft the implementation epic
+and sub-issues for Find a place, What's next, Landmarks, and Easier route, including map creation
+and routing. The requested adversarial review belongs to that future epic stage.
 
 ## Verification
 
-- Browser: inspected all three layouts; exercised selection, review, Back with selection
-  preserved, and explicit acceptance. At a 320 px viewport, the layouts stack without
-  horizontal overflow.
-- Node VM check: exercised every candidate, review, and acceptance with the optional time row
-  both off and on. The draw bounds stayed within 240 × 320.
-- `python3 docs/assets/ride-assistant/landmark-selection/count.py`: output matches counts.json.
-- `python3 docs/build_docs.py --check-links`: passed.
+- `./tools/obc test -p obc-app -p obc-sim`: passed. Focused additions cover unchanged navigation
+  before acceptance, Back preserving selection, continued recording, independence from shop
+  results, and synthetic route endpoints and map bounds.
+- `cargo clippy -p obc-app -p obc-sim --all-targets -- -D warnings`: passed.
+- `cargo build -p obc-sim`: passed.
+- `cargo fmt --all` and `cargo fmt` for the board, bootloader, and desktop roots: completed.
 - `./tools/obc suites check`: passed.
+- `python3 docs/build_docs.py --check-links`: passed.
 - `git diff --check`: passed.
+- Six named device-renderer captures inspected. The menu-entry capture matches the direct
+  stage capture. The `p b p p f` script with empty shop results accepts route 23, reaches Map,
+  and reports recording active.
+- The affected-suite dry run against origin/develop includes earlier branch work. Package
+  checks above cover this change; the full branch selection was not run again.
 
-Rust tests, Clippy, firmware builds, resource checks, the simulator snapshot sweep, and board
-flashing were omitted: this change contains design assets, selection data, and documentation.
+Full CI, the full UI snapshot sweep, resource measurement, board builds, and flashing were
+omitted. This is an opt-in simulator prototype; no codec or routing backend is introduced.

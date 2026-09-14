@@ -154,8 +154,30 @@ then select **Find a place → Shop**. Up/Down (Left/Right arrow) moves through 
 All result markers stay on the map; the card below shows the selected shop, distance to reach
 it, climbing, and extra distance. Select previews the full visit. **Add stop** accepts the shop
 and its return to the original route. A–D identify results during comparison. After selection,
-the shop uses the existing basket icon. What's next and Landmarks are also active. Next town is removed. The other questions and place
+the shop uses the existing basket icon. What's next, Landmarks, and Easier route are also active. Next town is removed. The other questions and place
 categories are grey placeholders.
+
+### Easier route study
+
+Select **Easier route** in Ride Assistant, or use `--assistant-stage easier`.
+Up/Down browses Less climbing, Smoother surface, and Shorter ride. The real map stays at a
+fixed scale while the blue candidate changes beside the magenta active route. The start and
+finish use symbols. The card shows a large saving with a small pictogram.
+
+Select opens the current/new cost table, with the saving above it. Back preserves selection.
+**Use this route** activates the prepared alternative and returns to the map. The recording
+continues. The accepted alternative supplies the baseline if the rider opens the comparison
+again. Route alternatives are unavailable during a place visit in this mock.
+
+Use `--assistant-stage easier-review` for the table. `--assistant-option 1`, `2`, or `3` chooses
+the initial goal in either stage, independently of the shop scenario, including empty results.
+
+These routes share the original start and finish, but their intermediate geometry and costs
+are synthetic. They are drawn over real map data; they do not follow a computed road network.
+The costs are the wireframe's illustrative figures, not measurements of these paths. There is
+no ETA model, surface analysis, automatic alternative search, or required-stop preservation yet.
+After a mock place visit, the prepared return leg still follows the original fixture; production
+must calculate that leg for the accepted route. See the [reviewed design and captures](../../docs/assets/ride-assistant/easier-route/README.md).
 
 ### Landmarks study
 
@@ -258,8 +280,8 @@ The same presets work in the GUI and headless mode:
 | Flag | Values |
 | --- | --- |
 | `--assistant-scenario` | `four` (default), `two-along`, `useful-detour`, `worse-detour`, `four-along`, `detours-only`, `one`, `empty` |
-| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `landmarks`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
-| `--assistant-option` | Result number `1`–`4`, default `1`. Must exist in the selected set. |
+| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `landmarks`, `easier`, `easier-review`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
+| `--assistant-option` | Result number `1`–`4`, default `1`; Easier route uses `1`–`3` independently of shops. |
 
 Scenario names describe the supplied candidate sets. The selection rules still apply: a small map
 or a different GPX can change which detours qualify. Each launch prints the available and suggested
