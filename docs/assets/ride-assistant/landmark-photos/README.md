@@ -1,9 +1,10 @@
 # Landmark photo study
 
-The small ordered-dither samples are now included in the simulator and a display-only board
-demo. Both use the same RGB222 pixel assets. The other versions are comparison samples.
+The small and large ordered-dither samples are included in the simulator and a display-only
+board demo. Dunlough Castle adds a third subject for the size comparison. Both use the same RGB222 pixel assets. The other versions are comparison samples.
 The photos are the
-lead images returned by Wikipedia's pageimages API for Aare Gorge and Reichenbach Falls.
+lead images returned by Wikipedia's pageimages API for Aare Gorge, Reichenbach Falls, and
+Dunlough Castle.
 The source records are in [sources.json](sources.json).
 
 ## Small image: 160 × 120 pixel box
@@ -127,3 +128,30 @@ Allow separately for attribution, file indexes, and duplicates. No exact average
 density is claimed before selection and deduplication. An optional country image pack looks
 feasible in storage terms; selection quality, licensing metadata, and physical display quality
 need to be tested before deciding to ship it.
+
+## Size comparison on the device
+
+The board demo starts at 216 × 240. Select switches to 160 × 120 and back. Up/Down changes
+between Aare Gorge, Reichenbach Falls, and Dunlough Castle while keeping the chosen size.
+Back opens the image credits; Select cycles source and licence pages, and Back closes them.
+The larger image uses the full space between the header and bottom action.
+
+| Place | 160 × 120 | 216 × 240 |
+| --- | --- | --- |
+| Aare Gorge | ![Small gorge](../landmarks-study/aare-photo.png) | ![Large gorge](../landmarks-study/aare-photo-large.png) |
+| Reichenbach Falls | ![Small waterfall](../landmarks-study/falls-photo.png) | ![Large waterfall](../landmarks-study/falls-photo-large.png) |
+| Dunlough Castle | ![Small castle](../landmarks-study/dunlough-photo.png) | ![Large castle](../landmarks-study/dunlough-photo-large.png) |
+
+These are native 240 × 320 simulator captures, not enlarged images. No crop is applied.
+The waterfall fills about 80 × 120 pixels in the small box and 160 × 240 in the larger box.
+The landscape photographs benefit less: their width rises from 160 to 216 pixels. The larger
+asset has 2.7 times as many pixels, including white margins: 51,840 bytes rather than 19,200.
+This comparison includes both sizes; a production pack can choose one.
+
+Dunlough uses Wikipedia's lead photograph, *2019-07-30-Dunlough Castle-0819*, by
+Superbass / Wikimedia Commons.
+[Original and attribution](https://commons.wikimedia.org/wiki/File:2019-07-30-Dunlough_Castle-0819.jpg),
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+It is resized, padded, and ordered dithered using the same commands as the other photographs.
+Both adaptations retain CC BY-SA 4.0. The Locationscout link identifies the requested place;
+the demo photograph comes from Wikimedia Commons. Metadata is in sources.json.

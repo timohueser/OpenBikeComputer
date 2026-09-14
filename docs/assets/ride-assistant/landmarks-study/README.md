@@ -24,9 +24,9 @@ selected landmark. **Down + Back → Sources** opens attribution, the licence UR
 URLs without adding pages to each description. Back restores the reading page. **Visit** opens the shared route preview. **Add stop** accepts the complete
 visit. Reading another place leaves that accepted destination and return route intact.
 
-Known-closed landmarks are excluded. These three examples have unknown hours. Distances on the
+Known-closed landmarks are excluded. These four examples have unknown hours. Distances on the
 nearby card are straight-line distances from the rider. Route costs in the preview come from the
-prepared mock route legs. Three results are a fixture limit, not a production policy.
+prepared mock route legs. Four results are a fixture limit, not a production policy.
 
 ## Text sources and licence
 
@@ -40,6 +40,7 @@ They are shortened and reworded for the device. The application code retains its
 | Aare Gorge | [Aare Gorge, revision 1327206534](https://en.wikipedia.org/w/index.php?title=Aare_Gorge&oldid=1327206534) | Limestone gorge, wall height, glacial meltwater, walkways since 1889. |
 | Reichenbach Falls | [Reichenbach Falls, revision 1362225684](https://en.wikipedia.org/w/index.php?title=Reichenbach_Falls&oldid=1362225684) | Upper fall height and the fictional events in Conan Doyle's 1893 story. |
 | Gelmerbahn | [Gelmer Funicular, revision 1322069534](https://en.wikipedia.org/w/index.php?title=Gelmer_Funicular&oldid=1322069534) | Railway to Gelmersee, 106 percent maximum gradient, 1926 construction, public opening in 2001. |
+| Dunlough Castle | [Dunlough Castle, revision 1322295338](https://en.wikipedia.org/w/index.php?title=Dunlough_Castle&oldid=1322295338) | Three towers, lake and cliff setting, defensive wall, foundation in 1207. |
 
 ## Photos
 
@@ -47,9 +48,10 @@ They are shortened and reworded for the device. The application code retains its
 | --- | --- | --- | --- |
 | ![Aare Gorge photo](aare-photo.png) | ![Reichenbach Falls photo](falls-photo.png) | ![Photo credit](photo-credit.png) | ![Photo source URL](photo-source.png) |
 
-Each description has two text pages. Aare Gorge and Reichenbach Falls add a third page with a
-160 × 120 ordered-dither photo. Up from the first page opens the photo. The source drawer
-includes each photo's credit, source URL, and licence URL. The three examples have 11 source
+Each description has two text pages. Aare Gorge, Reichenbach Falls, and Dunlough Castle add
+160 × 120 and 216 × 240 ordered-dither photo pages. Up from the first page opens the larger
+photo; Up again opens the smaller photo. The source drawer
+includes each photo's credit, source URL, and licence URL. The four examples have 15 source
 pages in total. Gelmerbahn has no photo. It remains a UI fixture, not a proposed production
 category: the [selection proposal](../landmark-selection/README.md) excludes industrial and
 transport landmarks.
@@ -58,6 +60,18 @@ The [photo study](../landmark-photos/README.md) gives attribution, processing co
 storage measurements. Fixed RGB222 assets provide the same pixels to the simulator and the
 [display-only board demo](../../../../firmware/obc-fw-nrf54l/README.md#landmark-photo-demo).
 No JPEG decoder or landmark map format was added.
+
+## Dunlough Castle and larger photos
+
+| What it is | History | Large photo |
+| --- | --- | --- |
+| ![Castle description](dunlough.png) | ![Castle history](dunlough-facts.png) | ![Large castle photo](dunlough-photo-large.png) |
+
+Dunlough Castle is a fourth synthetic-location fixture. Its article and photograph describe
+the real Irish castle, but its map position and route legs are placed in the Swiss study map.
+The [size comparison](../landmark-photos/README.md#size-comparison-on-the-device) shows both
+sizes for all three photographed landmarks. Visit uses the same detour preview from either
+photo page. Large photo pages use the full area between the header and Visit action.
 
 ## Verification
 
@@ -75,9 +89,11 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 git diff --check
 ```
 
-The focused app and simulator suites and Clippy passed. Eleven named frames check the four
-changed text pages, both photos, and source pages. Both photo rectangles match the selected
-ordered-dither reference PNGs pixel for pixel. These are targeted captures, not a full UI sweep.
+The focused app and simulator suites and Clippy passed. Nineteen named frames cover the
+nearby map, changed text pages, six photo pages, and source pages. All six photo rectangles
+match their ordered-dither reference PNGs pixel for pixel. The screen-size assertion still
+passes with four landmarks; the view stores indexes and computes distance when needed.
+These are targeted captures, not a full UI sweep.
 
 The board command, run from `firmware/obc-fw-nrf54l`, was:
 
@@ -85,10 +101,9 @@ The board command, run from `firmware/obc-fw-nrf54l`, was:
 cargo run --release --bin display_test --features landmark-photo-demo
 ```
 
-Verified programming succeeded on nRF54LM20A. RTT reported display startup and button-driven
-changes between both photos. The user can assess physical panel appearance. The demo does not
+Verified programming succeeded on nRF54LM20A. RTT reported display startup with the larger Aare Gorge photo. The user can assess physical panel appearance. The demo does not
 exercise SD, navigation, GPS, or BLE. The source ELF SHA-256 is
-`2f2724d220f932a56bc4ad3a391fa8a23a1186429fbde1fc71ef3f5d8d2c2f22`.
+`b6b75923989b7f5d32fb37138ea67c7a6b6dea425cf0a3b7e16eec4f88fcd836`.
 
 The affected dry run includes unrelated changes from this branch's older base. The full
 workspace gate and affected plan were deliberately omitted. No resource gate, full UI sweep,
@@ -101,7 +116,7 @@ external-fixture suite, or normal-application hardware suite was run.
 | ![Sources action in the bottom drawer](sources-drawer.png) | ![Licence URL](licence.png) | ![Article URL](article-source.png) |
 
 The descriptions have two text pages. Attribution remains accessible from the nearby map and
-reading pages. The source view lists all three study articles. This uses the existing drawer,
+reading pages. The source view lists all four study articles. This uses the existing drawer,
 and does not create another button combination. The source action and Back leave navigation
 and recording unchanged. The relevant guidance is
 [CC BY-SA 4.0 section 3(a)(2)](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en#s3a)

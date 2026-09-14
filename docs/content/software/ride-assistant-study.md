@@ -49,8 +49,8 @@ a name, a kind, and straight-line distance. Keep the map stable while the rider 
 selection. Show short text that explains what the landmark is and why it is interesting.
 Give longer text its own pages. Do not shrink it to fit beside the map.
 
-The simulator uses three examples with text adapted from Wikipedia: Aare Gorge, Reichenbach
-Falls, and the Gelmerbahn. Each has two short text pages. **Down + Back → Sources** opens attribution, the licence URL,
+The simulator uses four examples with text adapted from Wikipedia: Aare Gorge, Reichenbach
+Falls, Gelmerbahn, and Dunlough Castle. Each has two short text pages. **Down + Back → Sources** opens attribution, the licence URL,
 and the article URLs. Back restores the reading page. The locations and
 access routes are fictional. The [study captures and attribution](../../assets/ride-assistant/landmarks-study/README.md)
 identify the article revisions and licence.
@@ -59,11 +59,11 @@ identify the article revisions and licence.
 the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
 together. Browsing another place must not change this accepted visit or interrupt recording.
 
-Aare Gorge and Reichenbach Falls have a third page with a small ordered-dither photo.
-Up from the first text page opens the photo. Photo credits, source URLs, and licence URLs
+Aare Gorge, Reichenbach Falls, and Dunlough Castle each have small and large ordered-dither
+photo pages. Up from the first text page opens the large photo; Up again opens the small one. Photo credits, source URLs, and licence URLs
 are in **Sources**. The [photo study](../../assets/ride-assistant/landmark-photos/README.md)
 compares rendering methods and storage cost. The simulator and a display-only board demo
-use the same 160 × 120 RGB222 pixels. The device does not need a JPEG decoder.
+use the same 160 × 120 and 216 × 240 RGB222 assets. The device does not need a JPEG decoder.
 The current assets are fixed examples. Map creation, image selection, and storage remain
 future work. The [category proposal](../../assets/ride-assistant/landmark-selection/README.md)
 defines a provisional scope for review.
