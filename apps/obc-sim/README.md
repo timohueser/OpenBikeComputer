@@ -147,6 +147,7 @@ Open the top drawer with Up + Select (Left arrow + Enter). Step once to **Ride A
 then select **Find a place → Shop**. Compare **On the way** with **Nearest**, preview a visit,
 and select **Add stop**. The preview shows the extra distance and climbing for the full visit,
 including the return. The other questions and categories are grey placeholders.
+A/B identify the results during comparison. After selection, the shop uses the existing basket icon.
 The study sets Climb mode to Manual so a climb does not interrupt the map comparison.
 
 Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
@@ -155,9 +156,23 @@ Controls panel to raise the arrival screen. **Continue ride** starts the prepare
 Use **Rejoin original route** in Controls to restore the original route. These two Controls buttons
 simulate location events; they are not new device buttons.
 
-Back dismisses the arrival screen. Open Ride Assistant again to continue. Before arrival,
-the Assistant also has **Skip stop**. Confirming removal restores the original route at the current
-position; it does not calculate a path back. The original destination remains Grimselpass.
+During a visit, the drawer opens the current visit rather than the question list:
+
+| Ride stage | Navigation | Ride Assistant |
+| --- | --- | --- |
+| Going to the shop | Follow the selected path to the shop. | Show the visit, or remove the stop. |
+| At the shop | The current path ends at the shop. | Show the arrival screen with **Continue ride**. |
+| Returning to the route | Follow the prepared return leg. | Show the current visit. |
+| Back on the original route | Resume the original route. | Show the question list again. |
+
+Back on the arrival screen dismisses that screen and shows the map. It does not cancel the visit,
+pause recording, or start return guidance. Open the drawer and select **Ride Assistant** to show
+the same arrival screen again. Select **Continue ride** to start the return leg. Back on the normal
+navigation map still opens Statistics.
+
+Before arrival, the Assistant also has **Skip stop**. Confirming removal restores the original
+route at the current position; it does not calculate a path back. The original destination remains
+Grimselpass. This explicit arrival confirmation is the current prototype behavior.
 
 The flag replaces the drawer's Bluetooth shortcut for this study. Bluetooth settings remain in
 Settings. Without the flag, the Assistant is absent. The flag requires a temporary card and cannot
