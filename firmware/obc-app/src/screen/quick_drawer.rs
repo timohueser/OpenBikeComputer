@@ -245,11 +245,13 @@ impl QuickDrawerScreen {
                     self.slide_to(Page::Brightness, cx.now_ms);
                     Transition::None
                 }
-                // The radio switch is the persisted setting itself: the App's before/after `==`
-                // arms the save, and the board re-reads the row it already watches.
                 Some(Control::Ble) => {
-                    cx.settings.ble_enabled = !cx.settings.ble_enabled;
-                    Transition::None
+                    if let Some(demo) = cx.state.assistant_demo {
+                        Transition::Replace(Screen::Assistant(super::AssistantScreen::new(demo)))
+                    } else {
+                        cx.settings.ble_enabled = !cx.settings.ble_enabled;
+                        Transition::None
+                    }
                 }
                 // Central settings **replace** the sheet, so Back out of settings lands on the
                 // base screen rather than on a drawer the rider has finished with.
@@ -489,6 +491,16 @@ impl QuickDrawerScreen {
             cv.disc(c, if selected { 19 } else { 20 }, fill);
             match control {
                 Control::Brightness => draw_bulb(cv, c, ink, fill),
+                Control::Ble if rx.state.assistant_demo.is_some() => {
+                    cv.disc(c, 12, ink);
+                    cv.disc(c, 10, fill);
+                    cv.triangle(
+                        Point::new(c.x + 6, c.y - 8),
+                        Point::new(c.x + 1, c.y + 2),
+                        Point::new(c.x - 6, c.y + 8),
+                        ink,
+                    );
+                }
                 Control::Ble => draw_ble_rune(cv, c, ink),
                 Control::Settings => draw_gear(cv, c, ink, fill),
                 Control::Power => draw_power(cv, c, ink, fill),
@@ -497,6 +509,7 @@ impl QuickDrawerScreen {
 
         let caption = match row.get(self.selected as usize) {
             Some(Control::Brightness) => rx.t(Msg::QuickBrightness),
+            Some(Control::Ble) if rx.state.assistant_demo.is_some() => "Ride Assistant",
             Some(Control::Ble) => {
                 rx.t(if rx.settings.ble_enabled { Msg::QuickBluetoothOn } else { Msg::QuickBluetoothOff })
             }

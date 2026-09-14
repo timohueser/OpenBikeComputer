@@ -29,6 +29,7 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
 mod detour;
@@ -65,6 +66,7 @@ mod weather_hourly;
 pub mod weather_icons;
 mod weather_map;
 
+pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
@@ -1082,6 +1084,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
+    Assistant(AssistantScreen) => Caps::map(),
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
@@ -1343,6 +1346,9 @@ impl Screen {
             // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
             // scheduled *Interval*. The pushed alert card is `Caps::modal()` and declares nothing.
             Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_) => Some(&context_drawer::WEATHER),
+            Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),
+            Screen::Assistant(s) if s.has_ahead_context() => Some(&context_drawer::UP_AHEAD),
+
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
             // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
@@ -1809,7 +1815,7 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview", "WeatherRainMap"],
+            ["Map", "Assistant", "Detour", "DetourPreview", "WeatherRainMap"],
             "the map-class screens, and only those — Statistics and the Climb view draw panels, \
              which are cheap enough to keep the recess"
         );
