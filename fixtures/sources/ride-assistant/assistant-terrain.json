@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "regions_path": "regions.geojson",
+  "sources": [
+    {
+      "path": "Copernicus_DSM_COG_10_N46_00_E008_00_DEM.tif",
+      "sha256": "47769664394ee1ff3b51f5c1b43a3441d7f7bce8d086d0ed2f3a892b895fae3e",
+      "bytes": 42038015,
+      "retrieved_at": "2026-09-14T21:39:44.515619+00:00",
+      "url": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N46_00_E008_00_DEM/Copernicus_DSM_COG_10_N46_00_E008_00_DEM.tif",
+      "source_timestamp": "Mon, 09 May 2022 14:25:46 GMT",
+      "revision": "HTTP ETag \"0e7068e0cc74d941c7af5cda6a640a7b\"",
+      "license": "Copernicus DEM Licence",
+      "license_url": "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model",
+      "transform": "none",
+      "retrieval_note": "Existing shared DEM cache bytes match source Content-Length and MD5 ETag"
+    },
+    {
+      "path": "Copernicus_DSM_COG_10_N51_00_W010_00_DEM.tif",
+      "sha256": "7e87dc609f464a4e071442bd76c99c08e4ff8781b9cdeeb8e6d2139f770e82e2",
+      "bytes": 14276456,
+      "retrieved_at": "2026-09-14T21:39:44.547901+00:00",
+      "url": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N51_00_W010_00_DEM/Copernicus_DSM_COG_10_N51_00_W010_00_DEM.tif",
+      "source_timestamp": "Mon, 09 May 2022 14:30:25 GMT",
+      "revision": "HTTP ETag \"0a1c8679ad4f27bc9b4f48a07b789e40\"",
+      "license": "Copernicus DEM Licence",
+      "license_url": "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model",
+      "transform": "none",
+      "retrieval_note": "Downloaded from source URL"
+    }
+  ]
+}

@@ -123,6 +123,14 @@ still hold across both the format bump and the snapshot refresh, so the
 addressing change is byte-neutral to the router and the fortnight of edits
 missed that corridor.
 
+## Ride Assistant inputs
+
+The `assistant-inputs` profile contains independent OSM, terrain, Wiki, and authored replay
+packages. See [the source recipes](sources/ride-assistant/README.md) for source dates, exact
+revisions, licenses, offline build commands, review identities, and remaining simulator wiring.
+The Swiss package includes country-wide raw OSM; four Wiki review sites do not prove country-wide
+content coverage. The initial map outputs precede landmark format integration.
+
 ## Storage contract
 
 `fixtures.openbikecomputer.com` is a read-only custom domain for a separate R2
