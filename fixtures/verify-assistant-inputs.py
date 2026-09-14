@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Verify captured source manifests and recorded review identities offline."""
+import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -44,13 +46,23 @@ def main() -> int:
         manifest = json.loads((wiki / "manifest.json").read_text())
         for place in manifest["places"]:
             entity = json.loads((wiki / "entities" / (place["qid"] + ".json")).read_text())["entities"][place["qid"]]
-            if entity["lastrevid"] != place["entity_revision"]:
+            if entity["lastrevid"] != place["entity_revision"] or entity["claims"]["P625"][0]["mainsnak"]["datavalue"]["value"] != place["coordinate"]:
                 raise FixtureError(f"entity revision differs: {place['qid']}")
             for article in place["articles"]:
                 response = json.loads((wiki / article["path"]).read_text())
                 revision = next(iter(response["query"]["pages"].values()))["revisions"][0]
                 if revision["revid"] != article["revision"] or revision["timestamp"] != article["timestamp"]:
                     raise FixtureError(f"article revision differs: {article['path']}")
+                html = (wiki / article["html_path"]).read_text()
+                rendered_revision = re.search(r'"wgRevisionId":(\d+)', html)
+                if not rendered_revision or int(rendered_revision[1]) != article["revision"]:
+                    raise FixtureError(f"rendered revision differs: {article['html_path']}")
+            for image in place["images"]:
+                response = json.loads((wiki / image["metadata_path"]).read_text())
+                info = next(iter(response["query"]["pages"].values()))["imageinfo"][0]
+                with (wiki / image["path"]).open("rb") as source:
+                    if hashlib.file_digest(source, "sha1").hexdigest() != info["sha1"]:
+                        raise FixtureError(f"Commons original differs: {image['path']}")
         print(f"Verified {len(examples)} OSM review identities and {len(manifest['places'])} Wiki sites")
     except (FixtureError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"assistant inputs: {error}; run tools/obc fixtures sync assistant-inputs, then retry", file=sys.stderr)
