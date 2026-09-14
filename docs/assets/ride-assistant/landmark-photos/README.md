@@ -1,6 +1,8 @@
 # Landmark photo study
 
-These are image-processing samples, not an image feature in the firmware. The photos are the
+The small ordered-dither samples are now included in the simulator and a display-only board
+demo. Both use the same RGB222 pixel assets. The other versions are comparison samples.
+The photos are the
 lead images returned by Wikipedia's pageimages API for Aare Gorge and Reichenbach Falls.
 The source records are in [sources.json](sources.json).
 

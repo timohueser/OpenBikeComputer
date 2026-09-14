@@ -1,0 +1,67 @@
+{
+  "date": "2026-09-14",
+  "source_items": 20506,
+  "groups_overlap": true,
+  "groups": {
+    "Natural curiosities": {
+      "items": 143,
+      "with_p18_image": 112,
+      "with_english_article": 28,
+      "raw_photo_bytes": 2150400
+    },
+    "Lakes and glaciers": {
+      "items": 447,
+      "with_p18_image": 377,
+      "with_english_article": 286,
+      "raw_photo_bytes": 7238400
+    },
+    "Castles and fortifications": {
+      "items": 955,
+      "with_p18_image": 896,
+      "with_english_article": 427,
+      "raw_photo_bytes": 17203200
+    },
+    "Archaeology and megaliths": {
+      "items": 433,
+      "with_p18_image": 357,
+      "with_english_article": 129,
+      "raw_photo_bytes": 6854400
+    },
+    "Monasteries and abbeys": {
+      "items": 171,
+      "with_p18_image": 138,
+      "with_english_article": 69,
+      "raw_photo_bytes": 2649600
+    },
+    "Cathedrals": {
+      "items": 14,
+      "with_p18_image": 14,
+      "with_english_article": 12,
+      "raw_photo_bytes": 268800
+    },
+    "Mountains and passes": {
+      "items": 2353,
+      "with_p18_image": 1747,
+      "with_english_article": 1675,
+      "raw_photo_bytes": 33542400
+    },
+    "Other churches and bridges, review only": {
+      "items": 2074,
+      "with_p18_image": 1942,
+      "with_english_article": 153,
+      "raw_photo_bytes": 37286400
+    }
+  },
+  "core_distinct": {
+    "items": 1911,
+    "with_p18_image": 1662,
+    "with_english_article": 857,
+    "raw_photo_bytes": 31910400
+  },
+  "core_plus_mountains_and_passes_distinct": {
+    "items": 4255,
+    "with_p18_image": 3400,
+    "with_english_article": 2527,
+    "raw_photo_bytes": 65280000
+  }
+}

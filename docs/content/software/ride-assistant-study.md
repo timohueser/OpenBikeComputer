@@ -59,10 +59,14 @@ identify the article revisions and licence.
 the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
 together. Browsing another place must not change this accepted visit or interrupt recording.
 
-The device prototype remains text-only. A [photo study](../../assets/ride-assistant/landmark-photos/README.md)
-compares plain quantization and two dither methods in the device palette. A later image feature
-can convert small pictures during map creation. That approach would not need a JPEG decoder on the device. Image selection,
-source attribution, storage cost, and readability need a separate study.
+Aare Gorge and Reichenbach Falls have a third page with a small ordered-dither photo.
+Up from the first text page opens the photo. Photo credits, source URLs, and licence URLs
+are in **Sources**. The [photo study](../../assets/ride-assistant/landmark-photos/README.md)
+compares rendering methods and storage cost. The simulator and a display-only board demo
+use the same 160 × 120 RGB222 pixels. The device does not need a JPEG decoder.
+The current assets are fixed examples. Map creation, image selection, and storage remain
+future work. The [category proposal](../../assets/ride-assistant/landmark-selection/README.md)
+defines a provisional scope for review.
 
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
