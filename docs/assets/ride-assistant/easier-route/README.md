@@ -11,7 +11,9 @@ Up/Down browses Less climbing, Smoother surface, and Shorter ride. The camera st
 The current route is magenta; the candidate is blue. Comparison lines are thinner than the
 normal navigation line. Start and finish have symbols, without a legend or additional labels.
 
-The amber card shows the goal, a small pictogram, a large saving, and a short caption. Select
+The amber card centers its title and caption. The pictogram and large saving form one centered
+row, with the icon aligned to the number's visible height. Both pages use the same spacing
+rule: 8 px between rows, with the content centered vertically in its card. Select
 opens the current/new cost table. The saving stays above the table. The review omits the
 same-destination sentence and a separate negative headline. Tradeoffs remain in the table.
 Back preserves the selected alternative. **Use this route** activates its prepared route and
@@ -71,3 +73,11 @@ and routing. The requested adversarial review belongs to that future epic stage.
 
 Full CI, the full UI snapshot sweep, resource measurement, board builds, and flashing were
 omitted. This is an opt-in simulator prototype; no codec or routing backend is introduced.
+
+### Alignment refinement
+
+`cargo clippy -p obc-app --all-targets -- -D warnings`, `cargo build -p obc-sim`, workspace and
+standalone-root formatting, `python3 docs/build_docs.py --check-links`, and `git diff --check`
+passed. All six named captures were refreshed and inspected. The comparison table is unchanged.
+Unit tests, full snapshot sweeps, resource checks, and board builds were not repeated for this
+layout-only adjustment.
