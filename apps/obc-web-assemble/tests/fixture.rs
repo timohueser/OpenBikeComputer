@@ -9,7 +9,7 @@
 //! ```text
 //! # 1. cut the synthetic extract into cells, and write the terrain cells beside it
 //! #    (writes tests/fixture/cells/, cells.json, skin.json, terrain/, terrain.json)
-//! cargo test -p obc-web-assemble --test fixture regenerate -- --ignored --nocapture
+//! cargo test -p obc-web-assemble --test fixture -- --ignored --nocapture
 //! # 2. assemble them with the NATIVE CLI — the bytes both sides are then held to
 //! cargo run --release -p obcm-assemble -- \
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \

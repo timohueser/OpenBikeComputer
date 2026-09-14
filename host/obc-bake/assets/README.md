@@ -134,3 +134,17 @@ half a percent of the geometry bytes plus a gap at each region boundary, and the
 fortnight of OSM edits moved content the other way. A repack that produced a
 *byte-identical* file would be the surprising outcome; an equally-sized one is
 not, and the version byte (`0x0D` → `0x0E`) is what to check.
+
+## OBCM v15 source
+
+The current preview was packed on 2026-09-15 with the current routing preset,
+the canonical bbox above, and no terrain. The cached Geofabrik Freiburg source
+has snapshot metadata `2026-08-04`, Last-Modified `2026-08-04T03:56:44Z`, size
+158362659 bytes, and SHA-256
+`1f1928036dbed787f42b3176d5bca8f4d213c64a936fa86d242d3dc993300707`.
+The source URL is
+`https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf`.
+The source file was already cached locally; the repack did not need a download.
+The output is 483840 bytes. It carries the 64-byte service identity and approach
+records. The source date differs from the prior preview; tests check distinct,
+deterministic skin renders and do not use a fixed golden PNG.
