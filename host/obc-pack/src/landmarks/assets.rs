@@ -126,14 +126,27 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     let display = format!("{title}\n{language}\nWikipedia contributors\n{}\nRevision {revision}\n{}\n{}\nExcerpt; typography and page layout changed.", display_url(&url), display_url(&license), credits(&notices, &format!("https://{language}.wikipedia.org")));
     let attribution = attribution(url, revision.to_string(), license, notices, display)?;
     let body = Html::parse_fragment(&body);
-    let lead_image = body
-        .select(&Selector::parse("a.mw-file-description[href], h2").expect("fixed selector"))
+    let lead_image = commons_lead_image(&body);
+    Ok(Article { language: language.to_owned(), pages, attribution, lead_image })
+}
+
+fn commons_lead_image(body: &Html) -> Option<String> {
+    body.select(&Selector::parse("a.mw-file-description[href], h2").expect("fixed selector"))
         .next()
+        .filter(|element| {
+            element
+                .select(&Selector::parse("img[src]").expect("fixed selector"))
+                .next()
+                .and_then(|image| image.value().attr("src"))
+                .is_some_and(|url| {
+                    url.starts_with("https://upload.wikimedia.org/wikipedia/commons/")
+                        || url.starts_with("//upload.wikimedia.org/wikipedia/commons/")
+                })
+        })
         .and_then(|element| element.value().attr("href"))
         .and_then(|href| href.split_once("/wiki/File:"))
         .and_then(|(_, file)| percent_encoding::percent_decode_str(file).decode_utf8().ok())
-        .map(|file| file.replace('_', " "));
-    Ok(Article { language: language.to_owned(), pages, attribution, lead_image })
+        .map(|file| file.replace('_', " "))
 }
 
 pub(super) struct Article {
@@ -190,4 +203,17 @@ pub(super) fn photo(
     let pixels = photo::prepare(&bytes).map_err(str::to_owned)?;
     let path = format!("{qid}.rgb222");
     Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_local_wikipedia_lead_cannot_alias_a_commons_filename() {
+        for (repository, expected) in [("commons", Some("Example.jpg")), ("en", None)] {
+            let body = Html::parse_fragment(&format!("<a class='mw-file-description' href='/wiki/File:Example.jpg'><img src='https://upload.wikimedia.org/wikipedia/{repository}/a/ab/Example.jpg'></a><a class='mw-file-description' href='/wiki/File:Later.jpg'><img src='//upload.wikimedia.org/wikipedia/commons/b/bb/Later.jpg'></a>"));
+            assert_eq!(commons_lead_image(&body).as_deref(), expected);
+        }
+    }
 }
