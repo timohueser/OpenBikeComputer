@@ -203,6 +203,13 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     }];
     let pois = (0..6)
         .map(|k| Poi {
+            metadata: obc_formats::obcm::PoiMetadata {
+                source: obc_formats::obcm::SourceId::osm(1, k as u64 + 1),
+                approach: None,
+            },
+            access_nodes: Vec::new(),
+            wikidata: None,
+            wikipedia: None,
             subtype: 1,
             lon_udeg: (lon0 + k * 200_000) as i32,
             lat_udeg: 47_310_000,
@@ -212,7 +219,10 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
             elevation_m: None,
         })
         .collect();
-    (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
+    (
+        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
+        ways,
+    )
 }
 
 // --- the harness ------------------------------------------------------------------

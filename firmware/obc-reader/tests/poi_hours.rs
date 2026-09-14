@@ -63,7 +63,9 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
     let cat3_chunk_off = align_up(cat3_index_off + 4); // one u32 node
     let index_gap = cat3_chunk_off - (cat3_index_off + 4);
     let pool_off = cat3_chunk_off + chunk.len();
-    let cats: Vec<PoiCat> = (1..=6u8)
+    let cats: Vec<PoiCat> = obc_formats::obcm::PoiCategory::ALL
+        .into_iter()
+        .map(|c| c.id())
         .map(|id| {
             if id == 3 {
                 PoiCat { category_id: 3, index_offset: cat3_index_off, node_count: 1, chunk_count: 1 }
@@ -190,8 +192,8 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
 
     let real_len = bytes.len();
     let poi_off = resolve_offset(&bytes, 32);
-    let count_field = poi_off + 3 + 6 * 13 + 4;
-    let off_field = poi_off + 3 + 6 * 13; // hours_pool_offset u32 (scaled)
+    let count_field = poi_off + 3 + 7 * 13 + 4;
+    let off_field = poi_off + 3 + 7 * 13; // hours_pool_offset u32 (scaled)
     let pool_off = resolve_offset(&bytes, off_field);
     // Forge just enough blobs that the LAST one's read runs one blob past the real bytes (blob 0 is
     // still fully present). Derived from the real length so it's robust to the trailing nav section's

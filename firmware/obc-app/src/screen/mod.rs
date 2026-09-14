@@ -217,6 +217,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 /// Logic context handed to [`Screen::handle`]: the mutable app state a screen adjusts. The
 /// render half is [`Render`].
 pub struct Ctx<'a> {
+    pub place_local: Option<(u8, u16)>,
     pub state: &'a mut AppState,
     pub activity: &'a mut Activity,
     /// The persisted device settings — the settings screens edit this in place; a change is
@@ -310,6 +311,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
     static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
+        place_local: None,
         state,
         activity,
         settings,
@@ -458,7 +460,7 @@ pub struct Render<'a> {
     /// only while the query still waits for its inputs (no `Reader` / no route geometry this frame),
     /// which is what keeps the Up-ahead empty state from flashing an answer the next frame
     /// contradicts.
-    pub corridor_settled: bool,
+    pub corridor_status: obc_reader::reader::places::QueryProgress,
     /// The App-owned per-category **"next ahead" cache** (epic #946, U5) — the distilled map-POI
     /// half of the six `Next: <category>` stat tiles, refreshed on the progress-keyed policy in
     /// [`NextAhead`](crate::next_ahead::NextAhead) rather than per frame. Read-only; only
@@ -490,6 +492,7 @@ pub struct Render<'a> {
     /// [`App::clock_is_set`](crate::App::clock_is_set)). The Home date line draws only when set, so a
     /// date with no trusted origin is never shown; the `HH:MM` clock still draws either way.
     pub clock_set: bool,
+    pub place_local: Option<(u8, u16)>,
     pub hold_progress: f32,
     /// No current GPS fix this frame: no fix yet (acquiring) or the last has gone stale (lost). The
     /// riding views draw the "No GPS Fix" banner when set, and the Map suppresses the off-route pill
@@ -620,6 +623,7 @@ impl<S: MapScene> DerefMut for RenderFrame<'_, S> {
 /// immutable prepared state (the narrowed, mutable-scratch-free [`Render`]). The POI screens use
 /// the map `Reader`; the Skip-ahead chooser uses the streamed route and live route progress.
 pub struct Prepare<'a, 'd> {
+    pub place_local: Option<(u8, u16)>,
     /// The streamed-map `Reader`, or `None` when the host didn't build it this frame — the POI
     /// acquisitions retry next frame until [`base_needs_reader`](crate::App::base_needs_reader)
     /// (which reads the same [`ReaderNeed`] declaration) stops asking the board to build it.

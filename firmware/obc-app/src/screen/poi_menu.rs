@@ -82,6 +82,7 @@ pub(crate) fn category_msg(cat: PoiCategory) -> Msg {
         PoiCategory::Resupply => Msg::PoiCatResupply,
         PoiCategory::Pharmacy => Msg::PoiCatPharmacy,
         PoiCategory::BikeShop => Msg::PoiCatBikeShop,
+        PoiCategory::Train => Msg::PoiCatTrain,
     }
 }
 
@@ -98,6 +99,7 @@ pub(super) fn draw_category_icon(cv: &mut impl Surface, cat: PoiCategory, c: Poi
         PoiCategory::Resupply => icon_resupply(cv, c, color, bg),
         PoiCategory::Pharmacy => icon_pharmacy(cv, c, color, bg),
         PoiCategory::BikeShop => icon_bike(cv, c, color, bg),
+        PoiCategory::Train => icon_train(cv, c, color, bg),
     }
 }
 
@@ -180,4 +182,13 @@ fn icon_bike(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
                                   // Saddle bar + handlebar stub.
     cv.line(Point::new(saddle.x - 3, saddle.y), Point::new(saddle.x + 2, saddle.y), color);
     cv.line(Point::new(head.x - 1, head.y - 2), Point::new(head.x + 4, head.y - 3), color);
+}
+
+fn icon_train(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
+    cv.round(rect(c.x - 8, c.y - 10, 16, 18), 3, color);
+    cv.fill(rect(c.x - 5, c.y - 7, 10, 7), bg);
+    cv.disc(Point::new(c.x - 4, c.y + 4), 2, bg);
+    cv.disc(Point::new(c.x + 4, c.y + 4), 2, bg);
+    cv.line(Point::new(c.x - 4, c.y + 8), Point::new(c.x - 7, c.y + 11), color);
+    cv.line(Point::new(c.x + 4, c.y + 8), Point::new(c.x + 7, c.y + 11), color);
 }

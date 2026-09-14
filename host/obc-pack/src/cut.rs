@@ -1228,6 +1228,7 @@ mod tests {
             },
         };
         let ing = Ingested {
+            landmark_links: Vec::new(),
             features: vec![polygon(2), polygon(1)], // land first, explicit sea second
             coastlines: Vec::new(),
             pois: Vec::new(),

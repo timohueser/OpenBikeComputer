@@ -396,11 +396,12 @@ impl UiRuntime {
         progress_m: u32,
         route_total_m: u32,
         detour_preview: &[(i32, i32)],
+        place_local: Option<(u8, u16)>,
     ) {
         // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
         // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
         // than inside one screen's `prepare`. A no-op unless a screen armed it.
-        self.corridor_scratch.prepare(reader, route);
+        self.corridor_scratch.prepare(reader, route, place_local);
         // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
         // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
         // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
@@ -417,6 +418,7 @@ impl UiRuntime {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         if let Some(scr) = self.stack.get_mut(base) {
             let mut px = screen::Prepare {
+                place_local,
                 reader,
                 route,
                 poi_scratch: &mut self.poi_scratch,
@@ -427,6 +429,10 @@ impl UiRuntime {
                 detour_preview,
             };
             scr.prepare(&mut px);
+            if matches!(scr, Screen::PoiList(s) if s.pending(&self.poi_scratch)) || self.corridor_scratch.pending() {
+                self.map_dirty = true;
+                self.next_wake_ms = Some(1);
+            }
         }
     }
 
@@ -515,7 +521,7 @@ impl UiRuntime {
     /// Whether the given POI list screen still needs a `Reader` at draw — its category's snapshot
     /// hasn't been taken into the shared scratch yet. Drives [`base_needs_reader`](App::base_needs_reader).
     pub(crate) fn poi_snapshot_pending(&self, screen: &crate::screen::PoiListScreen) -> bool {
-        !self.poi_scratch.holds(screen.category())
+        screen.pending(&self.poi_scratch)
     }
 
     /// Feed the host's per-slot **sensor status** ([`SensorStatus`](crate::sensors::SensorStatus)) —

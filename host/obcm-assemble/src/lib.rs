@@ -559,7 +559,7 @@ pub fn assemble_full(
     // Everything the spec says to report rather than refuse (§4.5.2, §5.7, `OBCM_Spec.md` §8.3).
     if stats.poi_duplicates > 0 {
         warnings.push(format!(
-            "{} POI record(s) were dropped as duplicates of a (lat, lon, subtype) already seen. §3.6 gives each POI \
+            "{} POI record(s) were dropped as duplicates of a source identity already seen. §3.6 gives each POI \
              exactly one cell, so a non-zero count means the selection overlaps itself or a cell was baked twice \
              (OBCA §4.5.2).",
             stats.poi_duplicates

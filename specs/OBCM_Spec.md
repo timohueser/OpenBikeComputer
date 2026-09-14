@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v14)
+# OBCM File Format Specification (v15)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -158,7 +158,7 @@ ceiling a statement about the nav graph alone. **No sub-region ceiling sits unde
 change 3 is there so that the last `uint32` byte offset in the format did not quietly become the new
 limit the moment the old one lifted.
 
-**v14 is the only supported version**; earlier maps get repacked.
+**v15 is the only supported version**; earlier maps get repacked.
 
 **The version byte is the hard cut, and it cuts in both directions.** A reader MUST check `Version`
 before it reads any byte behind it and MUST refuse anything other than `0x0E`, whether the value is
@@ -243,7 +243,7 @@ Packed as `struct "<4sBiiiiIBIHIIBII"`.
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x0E` |
+| 4 | Version | 1 | `uint8` | `0x0F` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -795,11 +795,10 @@ Point-of-interest features the packer classifies from OSM nodes and closed-way
 centroids (see the category table below). Unlike geometry, POIs are **not**
 rendered on the map; the device surfaces them as a category → nearest-list
 browser. They are indexed for a nearest-N query, not a viewport walk, so each
-category gets its own small quadtree over 36-byte point records (v7 widened them
-from 32).
+category gets its own small quadtree over 64-byte point records.
 
 The section is reached from `POI Section Offset` (header offset 32) and is
-**always present**: a map with no POIs writes a directory of six empty
+**always present**: a map with no POIs writes a directory of seven empty service
 categories, never a zero offset. Service POI records carry a `HoursRef` u16 into
 the trailing **hours-pool section** (§7.5), reached from the directory's
 `hours_pool_offset`.
@@ -807,7 +806,7 @@ the trailing **hours-pool section** (§7.5), reached from the directory's
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (6, or 7 when named summits are present)
+uint8   Category Count            (7, or 8 when named summits are present)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
@@ -845,10 +844,10 @@ one exactly as it walks a LOD index, collecting `(chunk_id, node_bbox)` for each
 non-empty leaf; the `node_bbox` is **not** needed to decode a POI record (records
 store absolute coordinates), only to prune the walk.
 
-### 7.3 POI records — fixed 36 bytes
+### 7.3 POI records — fixed 64 bytes
 
-Records are packed into `Chunk Size`-byte chunks (512 ⇒ `512 / 36 = 14`
-records/chunk). Each record is exactly 36 bytes (v7 widened them from 32). A `0xFF`
+Records are packed into `Chunk Size`-byte chunks (512 ⇒ `512 / 64 = 8`
+records/chunk). Each record is exactly 64 bytes. A `0xFF`
 **Subtype** byte marks the end of records in a chunk (mirrors the geometry chunk's
 `0xFF` style-ID sentinel); trailing bytes of a partial final chunk are
 `0xFF`-padded.
@@ -861,10 +860,25 @@ records/chunk). Each record is exactly 36 bytes (v7 widened them from 32). A `0x
 | 9 | Name Len | 1 | `uint8` | Length of the stored name in bytes (`0` = unnamed) |
 | 10 | Name | 24 | `char[24]` | Printable ASCII for services; UTF-8 for summits; unused tail bytes are `0xFF` |
 | 34 | Payload | 2 | `uint16` or `int16` | Services: `HoursRef`, a 0-based pool index (`0xFFFF` = none). Summits: signed elevation in metres (`-32768` = unknown). |
+| 36 | Source | 8 | `uint64` | OSM source identity: upper two bits node=1, way=2, relation=3; lower 62 bits positive OSM ID |
+| 44 | Approach Source | 8 | `uint64` | Explicit mapped access-node identity, or zero when unavailable |
+| 52 | Approach Lat | 4 | `int32` | Access coordinate latitude in microdegrees |
+| 56 | Approach Lon | 4 | `int32` | Access coordinate longitude in microdegrees |
+| 60 | Approach Profiles | 1 | `uint8` | Allowed profile-table indices as bits; zero means unavailable |
+| 61 | Reserved | 3 | bytes | Zero |
+
+The metadata tail is shared with landmark source records. An unavailable approach has all
+20 approach/reserved bytes zero. An available approach comes from the source node itself or
+an explicit source-way member on routable topology. Proximity is not an association. The
+source key, approach and profile bits belong to the installed map revision. A runtime planner
+must check the current profile and actual graph connectivity before it accepts a visit.
+Assemblers preserve the metadata tail and deduplicate service records by source identity,
+not coordinate or subtype. Only the hours-pool reference is remapped.
+
 
 Coordinates are **absolute** (no per-node anchor/delta as in geometry §5): at a
-fixed 36 bytes the delta win isn't worth the decode asymmetry with geometry
-chunks, and fixed-size records keep chunk packing trivial (`Chunk Size / 36`
+fixed 64 bytes the delta win isn't worth the decode asymmetry with geometry
+chunks, and fixed-size records keep chunk packing trivial (`Chunk Size / 64`
 records per chunk, no per-record length bookkeeping). The **category** is not
 stored per record — it is derived on-device from the subtype (each subtype maps to
 exactly one category, §7.4) — and is implicit anyway from which category's
@@ -920,13 +934,14 @@ end-of-chunk sentinel and can never be a subtype id.
 | 5 | Pharmacy | 17 | `amenity=pharmacy` | Pharmacy |
 | 6 | Bike shop | 18 | `shop=bicycle` | Bike shop |
 | 7 | Summit landmark | 19 | Named `natural=peak` node | Summit |
+| 8 | Train station | 20 | `railway=station` | Train station |
 
-The six service categories are always present in the directory. Category 7 is an optional
+The seven service categories (IDs 1–6 and 8) are always present in the directory. Category 7 is an optional
 landmark index for Peak View and is not part of the service POI browser. The producer emits
 it only when named summit nodes exist. Closed-way centroids and unnamed peaks are excluded.
 Each subtype belongs to exactly one category; its record must be stored in that category.
 Summit coordinates are the original node coordinates rounded to microdegrees. Distinct
-summits less than 50 metres apart remain separate; only exact coordinate duplicates collapse.
+summits less than 50 metres apart remain separate; only repeated source identities collapse.
 
 ### 7.5 Hours-pool section (v7)
 
@@ -951,12 +966,12 @@ empty pool is just the 2-byte `Count == 0`. Hours are parsed and normalized from
 OSM `opening_hours` **at pack time** (the grammar never runs on the device); the
 device does a trivial weekday lookup.
 
-**Blob layout (29 bytes).** `Flags` bit 0 = **seasonal** (the source rule carried a
-month/date/season selector and a representative in-season week was baked — the UI
-ignores this in v1), bit 1 = **truncated** (a rule the encoding can't model — a
-`PH`/`SH` non-`off` rule, `sunrise`/`sunset`, or a 3rd+ interval on a day — was
-dropped); other bits reserved `0`. The seven days run **Mon (index 0) .. Sun (index
-6)**, each with up to two `(Open Q, Close Q)` intervals.
+**Blob layout (29 bytes).** `Flags` bit 0 is **seasonal**. Bit 1 is **uncertain**:
+a rule or interval was dropped, or compilation rounded a source boundary. This includes
+all public- or school-holiday exceptions, including `PH off`. Other bits are reserved zero.
+Any nonzero flag makes the current opening status **Unknown**. Invalid endpoint bytes,
+missing schedules and read failures also produce **Unknown**. Only definite **Closed**
+excludes a place; unknown hours must never be presented as open.
 
 **Time convention.** A time-of-day is quarter-hours from midnight, `0..=96` (`96` =
 24:00), so the resolution is 15 minutes. Per interval:
@@ -966,6 +981,10 @@ dropped); other bits reserved `0`. The seven days run **Mon (index 0) .. Sun (in
 - **Open all day (24 h)** — slot 0 `(0, 96)`, slot 1 `(0, 0)`.
 - **Overnight wrap** — `Close Q <= Open Q` (both nonzero): the interval runs past
   midnight, stored as-is (never split across days). E.g. `22:00-02:00` → `(88, 8)`.
+- An overnight interval opens on its stored start day and closes on the following day.
+  Sunday spillover is evaluated on Monday. Opening is inclusive; closing is exclusive.
+- Current status uses trusted UTC plus the configured local UTC offset. An unavailable
+  clock or offset authority yields Unknown. Hours are evaluated now, not at predicted arrival.
 - A day with more than two intervals is truncated to the first two and the blob's
   `Flags` truncated bit is set.
 
