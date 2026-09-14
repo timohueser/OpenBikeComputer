@@ -2,6 +2,50 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn a_mutable_commons_url_must_still_match_the_captured_image_revision() {
+    let root = obcm_testkit::scratch::scratch_dir("landmarks", "photo-revision");
+    let image = image::DynamicImage::new_rgb8(2, 2);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let bytes = bytes.into_inner();
+    let upstream =
+        <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let capture = json!({"path":"image.png", "metadata_path":"metadata.json"});
+    let allowed = BTreeSet::from(["Image.png".into()]);
+    fs::write(root.join("image.png"), &bytes).unwrap();
+    for (expected_sha1, valid) in [(upstream.as_str(), true), ("0000000000000000000000000000000000000000", false)] {
+        let metadata = json!({"query":{"pages":{"1":{"title":"File:Image.png","imageinfo":[{
+            "url":"https://upload.wikimedia.org/image.png", "descriptionurl":"https://commons.wikimedia.org/wiki/File:Image.png",
+            "timestamp":"2026-01-01T00:00:00Z", "sha1":expected_sha1,
+            "extmetadata":{"Artist":{"value":"Example"}, "LicenseUrl":{"value":"https://creativecommons.org/licenses/by/4.0/"}}
+        }]}}}});
+        let raw = serde_json::to_vec(&metadata).unwrap();
+        fs::write(root.join("metadata.json"), &raw).unwrap();
+        let sources = [
+            Source {
+                path: "image.png".into(),
+                url: "https://upload.wikimedia.org/image.png".into(),
+                bytes: bytes.len() as u64,
+                sha256: hash(&bytes),
+            },
+            Source {
+                path: "metadata.json".into(),
+                url: "https://commons.wikimedia.org/w/api.php".into(),
+                bytes: raw.len() as u64,
+                sha256: hash(&raw),
+            },
+        ];
+        let result = assets::photo(&root, &sources, &capture, &allowed, "Q1");
+        if valid {
+            assert_eq!(result.unwrap().0.bytes, 51_840);
+        } else {
+            assert_eq!(result.unwrap_err(), "photo_revision_mismatch");
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn offline_compiler_preserves_colocated_sites_and_boundary_fallback_with_no_photo() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "compile");
     let mut sources = Vec::new();
