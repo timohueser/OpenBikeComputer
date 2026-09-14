@@ -169,9 +169,8 @@ preview as Find a place, with route distance, climbing, and the extra cost inclu
 Aare Gorge, Reichenbach Falls, Gelmerbahn, and Dunlough Castle have short text adapted from Wikipedia.
 Down + Back opens the bottom drawer. **Sources** opens the text attribution, licence URL, and
 article URLs for the study, plus each photo's credit, source, and licence. Back restores the
-reading page and selection. Aare Gorge, Reichenbach Falls, and Dunlough Castle have two
-photo pages: 160 × 120 and 216 × 240, with ordered dithering. Up from the first text page
-opens the larger photo; Up again opens the smaller one. See the
+reading page and selection. Aare Gorge, Reichenbach Falls, and Dunlough Castle each have a
+216 × 240 ordered-dither photo page. Up from the first text page opens the photo. See the
 [captures and article attribution](../../docs/assets/ride-assistant/landmarks-study/README.md).
 The article facts are real, but landmark positions and access paths are synthetic. They fit
 inside the loaded map and do not describe actual access to those landmarks. All four have
@@ -182,6 +181,16 @@ This study has four results. It does not define the production result limit, sea
 or ranking policy. Text is curated to fit two readable pages. There is no Wikipedia fetch,
 landmark map format, JPEG decoder, or live route calculation in the device prototype. The
 photos use fixed RGB222 assets shared with the [board photo demo](../../firmware/obc-fw-nrf54l/README.md#landmark-photo-demo).
+
+### Random glacier and pass samples
+
+`--assistant-landmarks glaciers` or `--assistant-landmarks passes` opens three fixed random
+Swiss examples in the same landmark view. Both sets keep the same mock route/visit behavior.
+Selection is reproducible and does not require English text or an image. Missing images stay
+missing. The German-only Gutzgletscher text is translated for this preview. Sources use the
+actual article language. The data is compiled into the simulator; there is no live fetch.
+
+See [sample selection, sources, and captures](../../docs/assets/ride-assistant/glacier-pass-study/README.md).
 
 ### What's next study
 

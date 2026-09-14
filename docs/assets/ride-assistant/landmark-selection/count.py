@@ -24,7 +24,7 @@ def main():
             "items": len(qids),
             "with_p18_image": images,
             "with_english_article": sum("en" in items[qid]["languages"] for qid in qids),
-            "raw_photo_bytes": images * 160 * 120,
+            "raw_photo_bytes": images * selection["image_dimensions"][0] * selection["image_dimensions"][1],
         }
 
     for name, group in selection["groups"].items():
@@ -32,16 +32,17 @@ def main():
         groups[name] = stats(matches)
         if group["include"]:
             included.update(matches)
-    peaks = {
-        qid for qid, value in roots.items() if value.intersection(selection["groups"]["Mountains and passes"]["roots"])
-    } - excluded
+    pending_roots = {
+        root for name in selection["pending_groups"] for root in selection["groups"][name]["roots"]
+    }
+    pending = {qid for qid, value in roots.items() if value.intersection(pending_roots)} - excluded
     print(json.dumps({
         "date": selection["date"],
         "source_items": len(items),
         "groups_overlap": True,
         "groups": groups,
         "core_distinct": stats(included),
-        "core_plus_mountains_and_passes_distinct": stats(included | peaks),
+        "core_plus_glaciers_and_passes_distinct": stats(included | pending),
     }, indent=2))
 
 

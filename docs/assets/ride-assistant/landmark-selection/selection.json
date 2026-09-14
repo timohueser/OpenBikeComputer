@@ -8,7 +8,10 @@
     "Q3215290",
     "Q47486890",
     "Q96353874",
-    "Q992794"
+    "Q992794",
+    "Q23397",
+    "Q8502",
+    "Q1015644"
   ],
   "groups": {
     "Natural curiosities": {
@@ -23,13 +26,6 @@
         "Q581776",
         "Q811534",
         "Q124714"
-      ]
-    },
-    "Lakes and glaciers": {
-      "include": true,
-      "roots": [
-        "Q23397",
-        "Q35666"
       ]
     },
     "Castles and fortifications": {
@@ -66,19 +62,26 @@
         "Q2977"
       ]
     },
-    "Mountains and passes": {
+    "Glaciers": {
       "include": false,
       "roots": [
-        "Q8502",
-        "Q133056"
+        "Q35666"
       ]
     },
-    "Other churches and bridges, review only": {
+    "Passes": {
       "include": false,
       "roots": [
-        "Q16970",
-        "Q12280"
+        "Q133056"
       ]
     }
-  }
+  },
+  "image_dimensions": [
+    216,
+    240
+  ],
+  "pending_groups": [
+    "Glaciers",
+    "Passes"
+  ],
+  "policy": "Deterministic type filter; glacier/pass inclusion pending sample review. No editorial or AI ranking."
 }

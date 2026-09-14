@@ -59,14 +59,16 @@ identify the article revisions and licence.
 the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
 together. Browsing another place must not change this accepted visit or interrupt recording.
 
-Aare Gorge, Reichenbach Falls, and Dunlough Castle each have small and large ordered-dither
-photo pages. Up from the first text page opens the large photo; Up again opens the small one. Photo credits, source URLs, and licence URLs
+Aare Gorge, Reichenbach Falls, and Dunlough Castle each have a large ordered-dither
+photo page. Up from the first text page opens the photo. Photo credits, source URLs, and licence URLs
 are in **Sources**. The [photo study](../../assets/ride-assistant/landmark-photos/README.md)
 compares rendering methods and storage cost. The simulator and a display-only board demo
-use the same 160 × 120 and 216 × 240 RGB222 assets. The device does not need a JPEG decoder.
+use the same 216 × 240 RGB222 assets. The large format is the accepted choice. The device does not need a JPEG decoder.
 The current assets are fixed examples. Map creation, image selection, and storage remain
 future work. The [category proposal](../../assets/ride-assistant/landmark-selection/README.md)
-defines a provisional scope for review.
+uses fixed type rules, with no AI selection or per-place manual ranking. Lakes and mountains
+are excluded. [Random glacier and pass samples](../../assets/ride-assistant/glacier-pass-study/README.md)
+show content quality and missing-image cases before these groups are accepted.
 
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.

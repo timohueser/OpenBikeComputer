@@ -1,7 +1,8 @@
 # Landmark photo study
 
-The small and large ordered-dither samples are included in the simulator and a display-only
-board demo. Dunlough Castle adds a third subject for the size comparison. Both use the same RGB222 pixel assets. The other versions are comparison samples.
+The large ordered-dither samples are included in the simulator and a display-only board
+demo. The small versions remain here as comparison artifacts. Dunlough Castle is the third
+subject in the size comparison. Both use the same RGB222 pixel assets. The other versions are comparison samples.
 The photos are the
 lead images returned by Wikipedia's pageimages API for Aare Gorge, Reichenbach Falls, and
 Dunlough Castle.
@@ -131,10 +132,10 @@ need to be tested before deciding to ship it.
 
 ## Size comparison on the device
 
-The board demo starts at 216 × 240. Select switches to 160 × 120 and back. Up/Down changes
-between Aare Gorge, Reichenbach Falls, and Dunlough Castle while keeping the chosen size.
-Back opens the image credits; Select cycles source and licence pages, and Back closes them.
-The larger image uses the full space between the header and bottom action.
+The size comparison is complete: 216 × 240 is the accepted format. The small-photo page and
+size toggle are removed from the active demos. The saved comparison captures below show both
+sizes; their controls describe that earlier experiment. The current board demo uses Up/Down
+to change place, Select for sources, and Back to return to the photo.
 
 | Place | 160 × 120 | 216 × 240 |
 | --- | --- | --- |
@@ -155,3 +156,6 @@ Superbass / Wikimedia Commons.
 It is resized, padded, and ordered dithered using the same commands as the other photographs.
 Both adaptations retain CC BY-SA 4.0. The Locationscout link identifies the requested place;
 the demo photograph comes from Wikimedia Commons. Metadata is in sources.json.
+
+See the [seven-photo lossless storage experiment](../glacier-pass-study/README.md#image-storage)
+for packing, white-margin omission, and compression measurements.

@@ -44,13 +44,12 @@ They are shortened and reworded for the device. The application code retains its
 
 ## Photos
 
-| Aare Gorge | Reichenbach Falls | Photo credit | Photo source |
+| Aare Gorge, accepted size | Reichenbach Falls, accepted size | Photo credit | Photo source |
 | --- | --- | --- | --- |
-| ![Aare Gorge photo](aare-photo.png) | ![Reichenbach Falls photo](falls-photo.png) | ![Photo credit](photo-credit.png) | ![Photo source URL](photo-source.png) |
+| ![Aare Gorge photo](aare-photo-large.png) | ![Reichenbach Falls photo](falls-photo-large.png) | ![Photo credit](photo-credit.png) | ![Photo source URL](photo-source.png) |
 
 Each description has two text pages. Aare Gorge, Reichenbach Falls, and Dunlough Castle add
-160 × 120 and 216 × 240 ordered-dither photo pages. Up from the first page opens the larger
-photo; Up again opens the smaller photo. The source drawer
+a 216 × 240 ordered-dither photo page. Up from the first page opens the photo. The source drawer
 includes each photo's credit, source URL, and licence URL. The four examples have 15 source
 pages in total. Gelmerbahn has no photo. It remains a UI fixture, not a proposed production
 category: the [selection proposal](../landmark-selection/README.md) excludes industrial and
@@ -69,9 +68,9 @@ No JPEG decoder or landmark map format was added.
 
 Dunlough Castle is a fourth synthetic-location fixture. Its article and photograph describe
 the real Irish castle, but its map position and route legs are placed in the Swiss study map.
-The [size comparison](../landmark-photos/README.md#size-comparison-on-the-device) shows both
-sizes for all three photographed landmarks. Visit uses the same detour preview from either
-photo page. Large photo pages use the full area between the header and Visit action.
+The [archived size comparison](../landmark-photos/README.md#size-comparison-on-the-device)
+shows why the larger size was selected. Visit uses the same detour preview from the photo
+page. Large photo pages use the full area between the header and Visit action.
 
 ## Verification
 
@@ -89,9 +88,10 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 git diff --check
 ```
 
-The focused app and simulator suites and Clippy passed. Nineteen named frames cover the
-nearby map, changed text pages, six photo pages, and source pages. All six photo rectangles
-match their ordered-dither reference PNGs pixel for pixel. The screen-size assertion still
+The focused app and simulator suites and Clippy passed. The original example text and large
+photo pages were captured again after removing the small-photo page. The
+[random sample study](../glacier-pass-study/README.md#run-and-verify) records the additional
+text, photo, source, and pixel checks. The screen-size assertion still
 passes with four landmarks; the view stores indexes and computes distance when needed.
 These are targeted captures, not a full UI sweep.
 
@@ -103,7 +103,7 @@ cargo run --release --bin display_test --features landmark-photo-demo
 
 Verified programming succeeded on nRF54LM20A. RTT reported display startup with the larger Aare Gorge photo. The user can assess physical panel appearance. The demo does not
 exercise SD, navigation, GPS, or BLE. The source ELF SHA-256 is
-`b6b75923989b7f5d32fb37138ea67c7a6b6dea425cf0a3b7e16eec4f88fcd836`.
+`18f4ffb98685ad00d821c2accf25b309c372b3da51f1979f3dfb6c38cf42e29b`.
 
 The affected dry run includes unrelated changes from this branch's older base. The full
 workspace gate and affected plan were deliberately omitted. No resource gate, full UI sweep,

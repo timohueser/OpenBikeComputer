@@ -1,104 +1,110 @@
-# Landmark category proposal
+# Deterministic landmark selection
 
-The question is: “What is this place, and why is it interesting?” Keep places that a rider or
-hiker can identify in the landscape. A short article and an optional photo should explain the
-place without internet access. This is a proposal for review, not a production extraction rule.
+Selection uses fixed rules over a versioned source snapshot. There is no AI classification,
+manual per-place decision, popularity score, or review queue. The rules below are the current
+proposal for map creation. The stored count script implements the type gate; it is not a
+complete production extractor.
 
-## Proposed selection
+## Category rules
 
-| Group | Include | Boundary |
-| --- | --- | --- |
-| Natural curiosities | Waterfalls, gorges, caves, natural arches, distinctive rocks, glacial erratics, remarkable trees, natural springs | Require an article about the feature. Ordinary trees, rocks, and water taps do not qualify. Commercial spas do not qualify. |
-| Lakes and glaciers | Named natural lakes and glaciers with an article | Do not route to a lake centre or onto a glacier. Find a legal access point separately. Reservoirs are outside this first proposal. |
-| Castles and fortifications | Castles, castle ruins, historic forts, towers and surviving walls | Keep small local ruins. Do not require tourist popularity or a minimum number of language editions. Verify that something remains to see. |
-| Archaeology and megaliths | Standing stones, stone circles, dolmens, burial mounds, Roman remains and other visible archaeological sites | Exclude movable museum objects, buried sites with no visible feature, and abstract historical events. |
-| Monasteries and abbeys | Historic complexes and their remains | Keep the physical site, not an organization or collection. Ordinary parish churches are not automatic inclusions. |
-| Significant architecture | Cathedrals initially; individual notable bridges or other buildings after review | A Wikipedia article or heritage designation alone is too broad. The first automatic count includes cathedrals only. |
-| Mountains and passes — decision pending | Named summits and passes with articles | Share identity and content with Peak Viewer. Do not duplicate pins or pack the same photo twice. Count this group separately before deciding where to show it. |
+An item needs a coordinate, a Wikipedia article, and a permitted Wikidata type. Match P31
+(instance of) through zero or more P279 (subclass of) steps. Exact root IDs are in
+[selection.json](selection.json). Deduplicate by Wikidata ID. Explicit excluded roots win
+when an item has multiple types. This deliberately gives false-negative exclusions priority
+over a conflicting category assignment.
 
-Exclude industry, mines, factories, power plants, dams, railways, stations, ordinary roads,
-commercial attractions, shops, restaurants, hotels, sports venues, ordinary buildings,
-sculptures, and generic memorials. Find a place already handles practical stops. Exclude town
-and administrative-area entries. Parks, valleys, rivers, and large protected areas need an
-area-oriented presentation; their centre coordinates are poor nearby landmark pins.
+| Group | Fixed rule |
+| --- | --- |
+| Natural curiosities | Permit waterfalls, canyons/gorges, caves, natural arches, rocks, glacial erratics, boulders, remarkable trees, and springs through the listed roots. Article and coordinate are mandatory. |
+| Remarkable trees | Require type [Q811534](https://www.wikidata.org/wiki/Q811534) or a subclass. This is a source classification, not a judgment computed from age, size, photographs, or prose. Ordinary tree records and species articles do not match this rule. |
+| Castles and fortifications | Permit the castle, castle ruin, château, fortress, and fortification roots. Exclude the deserted-castle-site root Q1015644. No minimum article popularity or number of languages. |
+| Archaeology | Permit the archaeological-site, dolmen, tumulus, menhir, megalithic-tomb, and megalithic-site roots. This captures stone circles through the megalithic hierarchy. Events and movable finds do not qualify merely through their own types. |
+| Monasteries and abbeys | Permit the monastery and abbey roots; exclude destroyed-monastery records. A religious organization or collection alone does not qualify. |
+| Architecture | Cathedrals and subclasses qualify. Ordinary churches and bridges do not. Additional architecture needs another explicit rule before inclusion; there are no individually selected exceptions. |
+| Glaciers | Separate candidate group, pending the [random sample review](../glacier-pass-study/README.md). |
+| Passes | Separate candidate group, pending the same sample review. |
 
-The Gelmerbahn stays in the existing mock UI as a text fixture. It is outside the proposed
-production selection because transport and industrial landmarks are excluded.
+**Lakes and mountains are excluded**, even if another permitted type is also present. Lake
+names belong on the map; mountains belong in Peak Viewer. Settlements, administrative areas,
+industry, transport facilities, ordinary buildings, and commercial venues remain outside the
+intended scope. Existing industrial-building and industrial-archaeology exclusions take
+priority. A misclassified commercial spring can still pass the current type gate: this is a
+source error, not a reason to add a hand-maintained exception for that individual place.
 
-Do not make a photo mandatory. Do not remove a small ruin because only a local-language
-Wikipedia article exists. Known-closed places must be filtered at runtime; unknown hours stay
-visible. This count does not evaluate opening hours.
+## What the rules cannot prove
 
-## Source model
+“Verify that something remains to see” was not an implementable rule. It is removed.
+A castle-ruin type is positive structured evidence of ruins. A deserted-site or destroyed-site
+type is a reason to omit the item. If the source just says castle or archaeological site, the
+current rule keeps it. It does not prove that visible remains exist. This admits occasional
+empty or buried sites; a strict visibility guarantee is not possible from these fields alone.
 
-Wikipedia does not provide a single clean outdoor-landmark category menu. Use Wikidata's
-[instance of](https://www.wikidata.org/wiki/Property:P31) and
-[subclass of](https://www.wikidata.org/wiki/Property:P279) relationships for a first candidate
-filter, and Wikipedia articles for readable content. Article categories are not our device UI.
-One Wikidata identifier is one candidate even when it has several types or language editions.
+Do not use [P576](https://www.wikidata.org/wiki/Property:P576) as a blanket deletion test.
+It covers dissolution and abolition as well as demolition. A dissolved abbey can have intact
+buildings, and a destroyed castle can have ruins. The captured data does not contain P576;
+the current count makes no claim to apply such a filter. If stronger exclusion is needed,
+add a fixed rule using explicit physical-state data rather than interpreting article prose.
 
-Use the [image property](https://www.wikidata.org/wiki/Property:P18) as an image candidate,
-not proof of a suitable photograph. It can point to a diagram, map, old image, or poor view.
-Each accepted image still needs source, author, licence, and adaptation records from Commons.
-Wikipedia lead images can also exist without P18, so this is not complete photo coverage.
+Likewise, “significant architecture” must become a whitelist of types or formal designations,
+not an editorial judgment. Cathedrals are the initial type rule. A future extension could
+require a bridge/building type **and** a listed national-level heritage designation (P1435),
+with exact accepted designation IDs configured per country. No generic “has heritage status”
+rule and no per-building human or AI ranking are proposed.
 
-The two prototype descriptions were edited to fit. Their quality does not prove that an
-automatic first-paragraph excerpt will fit or explain every place well. Text extraction and
-language handling need a separate content-quality check.
+A coordinate is an identity/location point, not a route destination. Map creation must find
+an accessible mapped entrance or approach point before offering a visit. A glacier centre or
+hanging glacier is not a valid visit destination. If no approach is known, information can
+still be shown, but route creation must not silently snap onto the feature itself.
 
-## Measured Swiss candidates
+Known-closed places are filtered at runtime; unknown hours remain visible. The country count
+does not evaluate opening hours. The Gelmerbahn stays as an old UI fixture, outside the
+production selection.
 
-Captured from the Wikidata Query Service on **14 September 2026**. Scope: country P17 is
-Switzerland, a coordinate P625 and a type P31 exist, and at least one English, German, French,
-or Italian Wikipedia article exists. Match the selected type roots through zero or more P279
-steps. Explicit excluded roots take priority. The root identifiers are in
-[selection.json](selection.json); captured matching types and English labels are in
-[types.json](types.json).
+## Text and pictures
 
-| Group | Candidates | With a P18 image |
+Use Wikipedia articles for text and Wikidata for identity and types. The sample prose is
+edited for the prototype; Gutzgletscher is translated from German. This is separate
+from the random draw and the deterministic selection policy. It does not demonstrate an
+automatic summarizer or commit us to AI-generated map content.
+
+A reproducible image rule can use P18, then the chosen article's lead image, and reject files
+without supported formats or complete reusable-licence metadata. Stable source order resolves
+multiple candidates. It cannot guarantee a picturesque or explanatory view. Our lead-image
+samples include a ski vehicle and a hotel. Keep absent images absent. Do not add visual AI
+ranking or hand-pick substitutes to hide these limitations.
+
+Large 216 × 240 ordered-dither images are the accepted direction. The current demo embeds
+pixels in firmware, not on SD. See the [lossless storage experiment](../glacier-pass-study/README.md#image-storage).
+
+## Swiss count after the category changes
+
+The snapshot was captured on 14 September 2026. Scope: P17 Switzerland, P625 coordinates,
+P31 type, and an English, German, French, or Italian Wikipedia article. This is not a boundary
+polygon scan. Source omissions and type errors remain. The counts are candidates, not a
+finished map pack.
+
+| Group | Candidates | With P18 image |
 | --- | ---: | ---: |
-| Natural curiosities | 143 | 112 |
-| Lakes and glaciers | 447 | 377 |
-| Castles and fortifications | 955 | 896 |
-| Archaeology and megaliths | 433 | 357 |
+| Natural curiosities | 141 | 110 |
+| Castles and fortifications | 914 | 863 |
+| Archaeology and megaliths | 385 | 317 |
 | Monasteries and abbeys | 171 | 138 |
 | Cathedrals | 14 | 14 |
-| **Distinct core total** | **1,911** | **1,662** |
-| Mountains and passes, separate group | 2,353 | 1,747 |
-| **Distinct core plus mountains and passes** | **4,255** | **3,400** |
+| **Distinct accepted-category candidates** | **1,417** | **1,246** |
+| Glaciers, pending | 148 | 128 |
+| Passes, pending | 286 | 236 |
+| **Distinct total if both pending groups are kept** | **1,851** | **1,610** |
 
-Rows overlap. For example, a castle ruin can also be an archaeological site. The totals use
-unique Wikidata IDs, not the sum of the rows. The broad church-and-bridge review group contains
-2,074 candidates and is **not** included in either total. It illustrates why architecture needs
-a stricter selection than “has a Wikipedia article.”
+Group rows overlap. Totals deduplicate IDs. Only 565 core candidates have an English article;
+with both pending groups, 805 do. Non-English articles remain candidates, not ready English
+summaries. P18 presence does not guarantee a suitable photo, and lead images can exist without
+P18. The random sample used the full glacier/pass type pools before these exclusions, with no
+English-language or image requirement: 149 glaciers and 293 passes. It was not redrawn.
 
-These are measured candidate counts, not a finished catalogue. Missing country statements,
-coordinates, types, or one of the four article languages cause omissions. The country statement
-is not a Swiss boundary-polygon test. Bad or broad classification causes false positives. A
-sample review found a commercial thermal bath among springs, a reservoir typed only as a lake,
-and former religious sites that need a check for surviving remains. The candidate filter does
-not yet implement the physical-visibility and significance rules above. The snapshots are for
-planning and category review, not for routing to these coordinates.
-
-Only **857 of the 1,911 core candidates have an English article**. A production English pack
-needs an explicit language policy. Requiring English now would remove over half of the local
-candidates. The other-language entries are included in the storage estimate, not claimed to
-have ready English summaries.
-
-## Storage consequence
-
-At one 160 × 120 RGB222 image per candidate with P18:
-
-| Scope | Raw image bytes | Six-bit packed pixels |
-| --- | ---: | ---: |
-| Core, 1,662 images | 31.91 MB | 23.93 MB |
-| Core plus mountains/passes, 3,400 images | 65.28 MB | 48.96 MB |
-
-MB is decimal. These amounts cover pixels only. Text, credits, source URLs, indexes, and file
-headers are additional. Even if every core candidate received a photo, pixels would total
-36.69 MB. Final image selection can reduce these figures; additional images outside P18 can
-increase them. Do not project compression ratios from the two demonstration pictures.
-No decoder or map-storage format decision is needed to establish this scale.
+At one large image for each P18-bearing candidate, pixel storage is **64.59 MB raw / 48.44 MB
+six-bit packed** for the core, or **83.46 MB raw / 62.60 MB packed** with both pending groups.
+These decimal MB figures exclude text, credits, indexes, and headers. Compression is measured
+on seven photos only; no country-wide compression ratio is claimed.
 
 ## Reproduce and refine
 
