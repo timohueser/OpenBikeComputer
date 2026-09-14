@@ -282,8 +282,8 @@ It does not remove their bytes from the map.
 
 ### Extracting POIs
 
-The packer uses a fixed table of 18 service-POI tag mappings.
-The table covers water, campsites, accommodation, resupply, pharmacies, and bicycle shops.
+The packer uses a fixed table of service-POI tag mappings.
+The table covers water, campsites, accommodation, resupply, pharmacies, bicycle shops, and train stations.
 The first matching table row supplies the subtype.
 
 POI subtype IDs, categories, and fallback labels are normative.
@@ -291,17 +291,23 @@ The packer stores names as at most 24 printable ASCII bytes.
 It transliterates supported Latin characters.
 An unnamed POI uses its subtype fallback label.
 
-The packer deduplicates nearby candidates within each category.
-It gives node POIs priority over area centroids.
+The packer keeps the OSM type and ID for each place.
+It removes repeated copies of the same source object and keeps nearby objects separate.
 It then builds one spatial index for each category.
 
+A place has a route approach only when a source node belongs to a routable way.
+An area can use one of its own boundary nodes when that node also belongs to a routable way.
+The stored approach has that node's identity, coordinate, and supported profile bits.
+A nearby road or entrance does not establish access.
+Wiki-tagged objects retain their source links and normalized hours for the landmark compiler.
+Relations can retain these facts without a coordinate or approach.
+
 Named summit nodes use a separate category for Peak View. Their names retain UTF-8 characters,
-and their records carry elevation instead of opening hours. Nearby summits are not merged by
-the service-POI 50 m rule; only exact coordinate duplicates collapse.
+and their records carry elevation instead of opening hours. Distinct summit source identities remain separate.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 24 bytes. Finally a dedup step collapses a node and a way-centroid of the same category within 50 metres into one POI, keeping the node.">
+<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 24 bytes. The packer removes repeated source identities and keeps nearby objects separate.">
   <defs>
     <marker id="aP6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -330,7 +336,7 @@ the service-POI 50 m rule; only exact coordinate duplicates collapse.
     <text class="d-sub" x="246" y="96"  style="font-size:12px">amenity=drinking_water → Water</text>
     <text class="d-sub" x="246" y="112" style="font-size:12px">natural=spring &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Water</text>
     <text class="d-sub" x="246" y="128" style="font-size:12px">tourism=camp_site &nbsp;&nbsp;→ Campsite</text>
-    <text class="d-sub" x="246" y="142" style="font-size:12px;fill:#a9501c">… 18 subtypes, 6 categories</text>
+    <text class="d-sub" x="246" y="142" style="font-size:12px;fill:#a9501c">… 19 subtypes, 7 categories</text>
   </g>
 
   <!-- fold names -->
@@ -343,16 +349,16 @@ the service-POI 50 m rule; only exact coordinate duplicates collapse.
   <!-- dedup -->
   <line class="d-flow" x1="360" y1="150" x2="360" y2="196" marker-end="url(#aP6)" />
   <rect class="d-hot" x="120" y="200" width="560" height="76" rx="12" style="fill:#f8efe4" />
-  <text class="d-tag" x="138" y="220" style="fill:#a9501c">dedup — same category within 50 m = one POI</text>
+  <text class="d-tag" x="138" y="220" style="fill:#a9501c">dedup — repeated OSM type and ID = one POI</text>
   <!-- node + centroid merging -->
-  <circle cx="168" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="150" y="268" style="font-size:12px">node</text>
-  <circle cx="210" cy="248" r="4" class="d-water" /><text class="d-sub" x="196" y="268" style="font-size:12px">centroid</text>
+  <circle cx="168" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="150" y="268" style="font-size:12px">copy 1</text>
+  <circle cx="210" cy="248" r="4" class="d-water" /><text class="d-sub" x="196" y="268" style="font-size:12px">copy 2</text>
   <line x1="176" y1="248" x2="202" y2="248" stroke="#9aa884" stroke-width="1.2" stroke-dasharray="3 2" />
   <line class="d-flow" x1="250" y1="248" x2="300" y2="248" marker-end="url(#aP6)" />
-  <circle cx="330" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="346" y="252" style="font-size:12px">the node wins</text>
-  <text class="d-sub" x="470" y="240" style="font-size:12px">prefer node to centroid;</text>
-  <text class="d-sub" x="470" y="254" style="font-size:12px">prefer a named candidate;</text>
-  <text class="d-sub" x="470" y="268" style="font-size:12px">then first-seen.</text>
+  <circle cx="330" cy="248" r="5" class="d-hot-fill" /><text class="d-sub" x="346" y="252" style="font-size:12px">one source copy</text>
+  <text class="d-sub" x="470" y="240" style="font-size:12px">keep distinct objects;</text>
+  <text class="d-sub" x="470" y="254" style="font-size:12px">retain mapped approaches;</text>
+  <text class="d-sub" x="470" y="268" style="font-size:12px">keep source order.</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -375,8 +381,17 @@ The subset supports these forms:
 - Representative seasonal weeks.
 
 The parser rounds times to the nearest 15 minutes with half-to-even rounding.
-It flags a partial result when it drops an unsupported rule.
+It flags a partial result when it rounds a time or drops an unsupported rule.
 A fully unsupported value produces no schedule.
+
+The device uses one Open, Closed, or Unknown result for all place consumers.
+A missing schedule, a partial or seasonal schedule, or untrusted local time produces Unknown.
+GPS UTC alone does not establish local time: a rider or phone must also set the UTC offset.
+An overnight interval continues into the next day, including the Sunday-to-Monday boundary.
+Known-closed places are removed before the query fills its bounded page.
+Queries continue beyond sixteen places with source-based keys.
+Clock ticks update status without changing the selected identity or geometric order.
+Read failures and unavailable coverage remain distinct from an empty result.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">

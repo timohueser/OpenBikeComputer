@@ -1085,7 +1085,16 @@ mod tests {
             c.harvest(
                 key,
                 &[obc_reader::CorridorPoi {
-                    poi: Poi { lat: 0, lon: 0, subtype, name: n, hours_ref: 0xFFFF, distance_m: dist_along_m },
+                    poi: Poi {
+                        opening: Default::default(),
+                        metadata: Default::default(),
+                        lat: 0,
+                        lon: 0,
+                        subtype,
+                        name: n,
+                        hours_ref: 0xFFFF,
+                        distance_m: dist_along_m,
+                    },
                     dist_along_m,
                     offset_m: 0,
                 }],
@@ -1129,7 +1138,7 @@ mod tests {
             assert_eq!(f.rows(), 1, "{f:?} is one row tall");
         }
         // The categories, in canonical id order — the picker's block mirrors the POI menu's.
-        assert_eq!(six.map(|f| f.category().unwrap()), PoiCategory::ALL);
+        assert_eq!(six.map(|f| f.category().unwrap()).as_slice(), &PoiCategory::ALL[..6]);
         // Every other field carries no category, so nothing else can pick up the icon anatomy.
         for f in StatField::ALL {
             assert_eq!(f.category().is_some(), six.contains(&f), "{f:?} category-ness");
@@ -1265,7 +1274,7 @@ mod tests {
                 assert!(!f.name(lang).is_empty());
             }
             // The words are distinct within a language, so six picker rows can't read alike.
-            let names: heapless::Vec<&str, 6> = PoiCategory::ALL.iter().map(|c| t(category_msg(*c), lang)).collect();
+            let names: heapless::Vec<&str, 7> = PoiCategory::ALL.iter().map(|c| t(category_msg(*c), lang)).collect();
             for (i, n) in names.iter().enumerate() {
                 assert!(!names[i + 1..].contains(n), "{n:?} appears twice in {lang:?}");
             }

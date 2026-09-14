@@ -275,6 +275,7 @@ fn a_coverage_cut_is_deterministic_and_stays_glued() {
     .expect("cut config parses");
     let (forest, meadow) = (1u8, 2u8);
     let ing = Ingested {
+        landmark_links: Vec::new(),
         features: vec![
             IngestFeature { style_id: forest, min_lod: 0, geom: west() },
             IngestFeature { style_id: meadow, min_lod: 0, geom: east() },

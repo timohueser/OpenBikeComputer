@@ -25,6 +25,7 @@ mod cache;
 mod errors;
 mod geometry;
 mod nav;
+pub mod places;
 mod poi;
 mod summit;
 

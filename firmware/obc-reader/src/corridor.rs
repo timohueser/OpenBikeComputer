@@ -19,7 +19,7 @@
 //! — no full-route re-read per snapshot.
 
 use crate::reader::Poi;
-use obc_formats::obcm::{PoiCategory, POI_CATEGORY_COUNT};
+use obc_formats::obcm::PoiCategory;
 #[cfg(test)]
 use obc_map_scene::ground_dist_m_cl;
 use obc_map_scene::{cos_lat, delta_m, BBox, M_PER_DEG};
@@ -47,7 +47,15 @@ impl PoiCategorySet {
     /// No categories — the query returns nothing.
     pub const EMPTY: PoiCategorySet = PoiCategorySet(0);
     /// Every §7.4 category ("Everything").
-    pub const ALL: PoiCategorySet = PoiCategorySet(((1u16 << POI_CATEGORY_COUNT) - 1) as u8);
+    pub const ALL: PoiCategorySet = {
+        let mut set = Self::EMPTY;
+        let mut i = 0;
+        while i < PoiCategory::ALL.len() {
+            set = set.with(PoiCategory::ALL[i]);
+            i += 1;
+        }
+        set
+    };
 
     /// The single-category set.
     #[inline]
@@ -342,7 +350,7 @@ mod tests {
     /// The category set round-trips its members and "Everything" holds all six.
     #[test]
     fn category_set_membership() {
-        assert_eq!(PoiCategorySet::ALL.len(), 6);
+        assert_eq!(PoiCategorySet::ALL.len(), 7);
         assert!(PoiCategory::ALL.iter().all(|c| PoiCategorySet::ALL.contains(*c)));
         assert!(PoiCategorySet::EMPTY.is_empty());
         let only = PoiCategorySet::only(PoiCategory::Water);

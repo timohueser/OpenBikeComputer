@@ -213,6 +213,13 @@ fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
     Poi {
+        metadata: obc_formats::obcm::PoiMetadata {
+            source: obc_formats::obcm::SourceId::osm(1, ((lat as u64) << 26) ^ ((lon as u64) << 5) ^ subtype as u64),
+            approach: None,
+        },
+        access_nodes: Vec::new(),
+        wikidata: None,
+        wikipedia: None,
         subtype,
         lon_udeg: lon as i32,
         lat_udeg: lat as i32,
@@ -288,7 +295,10 @@ fn extract(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         poi_with_hours(5, LAT + 5_000, SEAM - 15_000, "West camp", "Mo-Fr 08:00-18:00"),
         poi_with_hours(13, LAT + 25_000, SEAM + 60_000, "Shop", "Mo-Sa 09:00-12:00,14:00-19:00"),
     ];
-    (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
+    (
+        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
+        ways,
+    )
 }
 
 /// A skin reproducing the config's own styling exactly, in ascending id order (OBCA §4.7 makes the
