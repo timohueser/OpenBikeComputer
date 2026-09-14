@@ -48,7 +48,7 @@ impl View {
                     self.page = Some(list::step_selection(
                         page,
                         n,
-                        landmark.pages.len() + 2 * usize::from(landmark.photo.is_some()),
+                        landmark.pages.len() + usize::from(landmark.photo.is_some()),
                     ));
                 } else {
                     self.selected = list::step_selection(self.selected, n, self.nearby.len().max(1));
@@ -78,29 +78,19 @@ impl View {
             cv.fill(rect(0, 0, rx.w, rx.h), PARCHMENT);
             cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
             cv.text(stop.name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
-            if page == landmark.pages.len() + 1 {
-                if let Some(photo) = landmark.photo {
-                    crate::assistant_demo::photos::draw(cv, photo, Point::new(12, 40), true);
-                    let mut label = heapless::String::<24>::new();
-                    let _ = write!(label, "Visit  {0}/{0}", landmark.pages.len() + 2);
-                    button(cv, &label, 280, true);
-                    return;
-                }
-            }
-            subtitle(cv, stop, direct_distance(self.origin, stop), 48);
             if let Some(text) = landmark.pages.get(page) {
+                subtitle(cv, stop, direct_distance(self.origin, stop), 48);
                 paragraph(cv, text, 82);
             } else if let Some(photo) = landmark.photo {
-                crate::assistant_demo::photos::draw(cv, photo, Point::new(40, 86), false);
-                cv.text("160 x 120", Point::new(120, 218), Font::Label, TextAlign::Center, SUBTEXT);
+                crate::assistant_demo::photos::draw(cv, photo, Point::new(12, 40));
+                let mut label = heapless::String::<24>::new();
+                let _ = write!(label, "Visit  {0}/{0}", landmark.pages.len() + 1);
+                button(cv, &label, 280, true);
+                return;
             }
             let mut pages = heapless::String::<24>::new();
-            let _ = write!(
-                pages,
-                "Up/down  {}/{}",
-                page + 1,
-                landmark.pages.len() + 2 * usize::from(landmark.photo.is_some())
-            );
+            let _ =
+                write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len() + usize::from(landmark.photo.is_some()));
             cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
             button(cv, "Visit", 280, true);
             return;
@@ -187,12 +177,7 @@ pub(super) fn sources(cv: &mut impl Surface, demo: Demo, page: usize) {
     cv.fill(rect(0, 0, 240, 320), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
     cv.text(title, Point::new(12, 8), Font::Body, TextAlign::Left, PARCHMENT);
-    let mut url = heapless::String::<128>::new();
-    if page >= 2 && page < landmarks().count() + 2 {
-        let _ = url.push_str("https://en.wikipedia.org/wiki/");
-    }
-    let _ = url.push_str(text);
-    paragraph(cv, &url, 66);
+    paragraph(cv, text, 66);
     let mut pages = heapless::String::<24>::new();
     let _ = write!(pages, "Up/down  {}/{}", page + 1, source_pages(demo));
     cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
@@ -216,7 +201,12 @@ mod tests {
 
     #[test]
     fn nearby_orders_by_direct_distance_and_keeps_unknown_hours() {
-        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", photo: None, pages: &["A gorge."] };
+        static INFO: Landmark = Landmark {
+            kind: "Gorge",
+            article: "https://en.wikipedia.org/wiki/Aare_Gorge",
+            photo: None,
+            pages: &["A gorge."],
+        };
         const STOP: Stop = Stop {
             name: "Landmark",
             landmark: Some(&INFO),

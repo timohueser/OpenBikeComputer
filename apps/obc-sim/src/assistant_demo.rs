@@ -10,11 +10,13 @@ use obc_replay::{Track, TrackPoint};
 use obc_route::{gpx_to_obcr, RouteStats};
 use std::fmt::Write;
 
+mod landmark_samples;
+
 // Adapted from Wikipedia; article revisions and CC BY-SA 4.0 attribution are in
 // docs/assets/ride-assistant/landmarks-study/README.md. Positions and access routes are synthetic.
 static AARE: Landmark = Landmark {
     kind: "Gorge",
-    article: "Aare_Gorge",
+    article: "https://en.wikipedia.org/wiki/Aare_Gorge",
     photo: Some(&obc_app::assistant_demo::photos::AARE),
     pages: &[
         "The Aare cuts a narrow passage through limestone near Meiringen. In places, the rock walls stand about 50 metres high.",
@@ -23,7 +25,7 @@ static AARE: Landmark = Landmark {
 };
 static FALLS: Landmark = Landmark {
     kind: "Waterfall",
-    article: "Reichenbach_Falls",
+    article: "https://en.wikipedia.org/wiki/Reichenbach_Falls",
     photo: Some(&obc_app::assistant_demo::photos::FALLS),
     pages: &[
         "These waterfalls tumble down a hillside near Meiringen. The highest single drop is about 110 metres.",
@@ -32,7 +34,7 @@ static FALLS: Landmark = Landmark {
 };
 static GELMER: Landmark = Landmark {
     kind: "Funicular",
-    article: "Gelmer_Funicular",
+    article: "https://en.wikipedia.org/wiki/Gelmer_Funicular",
     photo: None,
     pages: &[
         "A cable railway from Handegg to the Gelmersee reservoir. The steepest section has a gradient of 106 percent.",
@@ -42,7 +44,7 @@ static GELMER: Landmark = Landmark {
 
 static DUNLOUGH: Landmark = Landmark {
     kind: "Castle",
-    article: "Dunlough_Castle",
+    article: "https://en.wikipedia.org/wiki/Dunlough_Castle",
     photo: Some(&obc_app::assistant_demo::photos::DUNLOUGH),
     pages: &[
         "Three ruined towers stand between a lake and the Atlantic cliffs at Three Castle Head in County Cork.",
@@ -98,12 +100,13 @@ pub struct Seed {
     pub route: Option<String>,
     pub stage: Stage,
     pub scenario: Scenario,
+    pub landmarks: Option<String>,
     pub option: usize,
 }
 
 impl Default for Seed {
     fn default() -> Self {
-        Self { route: None, stage: Stage::Map, scenario: Scenario::default(), option: 0 }
+        Self { route: None, stage: Stage::Map, scenario: Scenario::default(), landmarks: None, option: 0 }
     }
 }
 
@@ -222,7 +225,7 @@ pub fn install(
     }
     let (original, _) = route(store, "Study route", &points, None)?;
     let mut stops = Vec::new();
-    for (name, fraction, target_m, spur_m, climb, landmark) in [
+    let mut places = vec![
         ("Village shop", 0.30, 2_000.0, 110.0, 3.0, None),
         ("Farm shop", 0.03, 300.0, 490.0, 150.0, None),
         ("Supermarket", 0.50, 3_500.0, 50.0, 2.0, None),
@@ -233,7 +236,19 @@ pub fn install(
         ("Reichenbach Falls", 0.12, 900.0, 400.0, 50.0, Some(&FALLS)),
         ("Gelmerbahn", 0.25, 1_800.0, 350.0, 25.0, Some(&GELMER)),
         ("Dunlough Castle", 0.35, 2_400.0, 450.0, 30.0, Some(&DUNLOUGH)),
-    ] {
+    ];
+    if let Some(key) = seed.landmarks.as_deref() {
+        let samples = match key {
+            "glaciers" => &landmark_samples::GLACIERS,
+            "passes" => &landmark_samples::PASSES,
+            _ => return Err("unknown landmark sample set".into()),
+        };
+        places.truncate(6);
+        places.extend(samples.iter().enumerate().map(|(i, &(name, landmark))| {
+            (name, 0.05 + i as f64 * 0.1, 400.0 + i as f64 * 800.0, 250.0, 12.0, Some(landmark))
+        }));
+    }
+    for (name, fraction, target_m, spur_m, climb, landmark) in places {
         let distance = (length * fraction).min(target_m);
         let join = cumulative.partition_point(|&d| d < distance).min(points.len() - 2).max(1);
         let approach = access(points[join], min, max, spur_m, climb);

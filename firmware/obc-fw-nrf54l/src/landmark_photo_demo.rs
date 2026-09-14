@@ -18,12 +18,9 @@ use obc_render::{
 pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input<'static>; 4]) -> ! {
     let mut selected = 0;
     let mut page = 0;
-    let mut large = true;
     let mut previous = [false; 4];
     let mut dirty = true;
-    defmt::info!(
-        "Landmark photos: Up/Down changes photo; Select changes size; Back opens/closes sources. SD untouched."
-    );
+    defmt::info!("Landmark photos: Up/Down changes photo; Select cycles sources; Back returns to photo. SD untouched.");
     loop {
         if dirty {
             let (name, photo) = [
@@ -39,10 +36,7 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
                 cv.round(rect(4, 4, 232, 34), 6, WOOD);
                 cv.text(name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
                 if page == 0 {
-                    photos::draw(&mut cv, photo, if large { Point::new(12, 40) } else { Point::new(40, 86) }, large);
-                    if !large {
-                        cv.text("160 x 120", Point::new(120, 218), Font::Label, TextAlign::Center, INK);
-                    }
+                    photos::draw(&mut cv, photo, Point::new(12, 40));
                 } else {
                     photos::paragraph(
                         &mut cv,
@@ -54,20 +48,12 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
                         66,
                     );
                 }
-                if page != 0 || !large {
+                if page != 0 {
                     cv.text("Up/down: photo", Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
                 }
                 cv.round(rect(12, 280, 216, 32), 6, AMBER);
                 cv.text(
-                    if page == 0 {
-                        if large {
-                            "Smaller"
-                        } else {
-                            "Bigger"
-                        }
-                    } else {
-                        "Next source"
-                    },
+                    if page == 0 { "Sources" } else { "Next source" },
                     Point::new(120, 282),
                     Font::Body,
                     TextAlign::Center,
@@ -77,7 +63,7 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
             if !panel.push_frame(frame).await {
                 defmt::warn!("Photo present stalled");
             }
-            defmt::info!("Landmark photo: {=str}, page {=usize}, large {=bool}", name, page, large);
+            defmt::info!("Landmark photo: {=str}, page {=usize}", name, page);
             dirty = false;
         }
         Timer::after_millis(30).await;
@@ -89,8 +75,7 @@ pub async fn run(frame: &mut Frame64, panel: &mut Ls021Flpr<'_>, buttons: [Input
                         selected = (selected + if i == 0 { 2 } else { 1 }) % 3;
                         page = 0;
                     }
-                    2 => page = if page == 0 { 1 } else { 0 },
-                    _ if page == 0 => large = !large,
+                    2 => page = 0,
                     _ => page = (page + 1) % 4,
                 }
                 dirty = true;
