@@ -206,6 +206,7 @@ class LeadImage(HTMLParser):
         self.in_content = False
         self.finished = False
         self.filename = None
+        self.pending_filename = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -217,7 +218,16 @@ class LeadImage(HTMLParser):
             self.finished = True
             path = urlparse(attrs.get("href", "")).path
             if "/wiki/File:" in path:
-                self.filename = unquote(path.split("/wiki/File:", 1)[1]).replace("_", " ")
+                self.pending_filename = unquote(path.split("/wiki/File:", 1)[1]).replace("_", " ")
+        if tag == "img" and self.pending_filename:
+            source = urlparse(attrs.get("src", ""))
+            if source.hostname == "upload.wikimedia.org" and source.path.startswith("/wikipedia/commons/"):
+                self.filename = self.pending_filename
+            self.pending_filename = None
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self.pending_filename = None
 
 
 def entity(capture: Capture, qid: str, directory: str = "entities") -> dict | None:
