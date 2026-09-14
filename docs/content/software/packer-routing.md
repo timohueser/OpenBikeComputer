@@ -769,15 +769,16 @@ The publisher uploads content before it publishes the new catalog root.
 ## Following a route
 
 The GPX converter creates an OBCR route.
-It keeps exact source statistics before it reduces display geometry.
+It measures the retained geometry after decimation.
+It preserves elevation changes, surface transitions, and missing-data boundaries.
 It chunks the route and shares the seam point between adjacent chunks.
 The same `no_std` converter runs on the device, simulator, and web host.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 760px">
-<svg viewBox="0 0 760 322" role="img" aria-label="Converting GPX track points to an OBCR route in one streaming pass after waypoint collection. Left panel, the shape: the stored line keeps only the corners (and one vertex at least every 1.2 km) — vertices within 1 metre of the line between their neighbours are dropped — yet distance and climb are summed over every original point, so the stats stay exact even though the stored geometry is sparse. Right panel, the climb: a raw elevation trace is integrated through a 3-metre dead-band; small wiggles inside the band book no ascent, and only once the trace leaves the band is the climb booked and the reference re-anchored. The same dead-band is shared by the elevation profile and the live barometric climb on the device.">
-  <text class="d-tag" x="20" y="22">GPX → OBCR · one pass over track points</text>
-  <text class="d-sub" x="20" y="38" style="font-size:12px">decimate the geometry, but measure distance + climb from every raw point</text>
+<svg viewBox="0 0 760 322" role="img" aria-label="Converting GPX track points to an OBCR route in one streaming pass after waypoint collection. Left panel, the shape: the stored line keeps only the corners (and one vertex at least every 1.2 km) — vertices within 1 metre of the line between their neighbours are dropped — Distance and climb are measured from the retained points; validity gaps stop the elevation integrator. Right panel, the climb: a raw elevation trace is integrated through a 3-metre dead-band; small wiggles inside the band book no ascent, and only once the trace leaves the band is the climb booked and the reference re-anchored. The same dead-band is shared by the elevation profile and the live barometric climb on the device.">
+  <text class="d-tag" x="20" y="22">GPX → OBCR · bounded streaming conversion</text>
+  <text class="d-sub" x="20" y="38" style="font-size:12px">retain shape and elevation changes, then measure distance + climb</text>
   <line x1="384" y1="58" x2="384" y2="300" stroke="#9aa884" stroke-opacity="0.45" stroke-width="1" />
   <text class="d-sub" x="26" y="62" style="font-size:12px;fill:#4d5b3c">① the shape — decimate, keep the corners</text>
   <polyline points="55,206 130,131 225,166 330,116" fill="none" stroke="#cf6a2a" stroke-width="2" />
