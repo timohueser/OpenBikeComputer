@@ -1,12 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import Capture, LeadImage, bbox, claim_values, query
+from tools.landmark_capture import Capture, LeadImage, bbox, claim_values, digest, query, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -58,6 +59,33 @@ class LandmarkCaptureTests(unittest.TestCase):
             outcome = capture.outcomes()[0]
             self.assertEqual(outcome["status"], "invalid-response")
             self.assertIn("sha256", outcome)
+            self.assertEqual(semantic_sources([outcome]), [])
+            capture.retry_failed()
+            with patch("tools.landmark_capture.urlopen", return_value=Response(b'{"valid":true}')):
+                self.assertEqual(capture.json("query.json", Response.url), {"valid": True})
+            archived = json.loads(next((Path(directory) / "attempts").glob("*.json")).read_text())
+            original = (Path(directory) / archived["archived_response_path"]).read_bytes()
+            self.assertEqual(digest(original), outcome["sha256"])
+            self.assertEqual(len(semantic_sources(capture.outcomes())), 1)
+
+    def test_selection_refuses_a_rebuilt_compiler_and_policy_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "obc-bake"
+            executable.write_bytes(b"first binary")
+            def compile(argv, **_kwargs):
+                (Path(argv[-1]) / "content.json").write_text(json.dumps({"candidate_qids": ["Q1"], "category_policy_sha256": "policy", "policy_sha256": "compiler-policy"}))
+            with patch("tools.landmark_capture.subprocess.run", side_effect=compile):
+                result = select_candidates(executable, root / "manifest", root / "boundary", "policy")
+                self.assertEqual(result["compiler_sha256"], digest(b"first binary"))
+                with self.assertRaisesRegex(ValueError, "discovery policy differs"):
+                    select_candidates(executable, root / "manifest", root / "boundary", "different")
+            def rebuild(argv, **kwargs):
+                compile(argv, **kwargs)
+                executable.write_bytes(b"second binary")
+            with patch("tools.landmark_capture.subprocess.run", side_effect=rebuild):
+                with self.assertRaisesRegex(ValueError, "compiler changed"):
+                    select_candidates(executable, root / "manifest", root / "boundary", "policy")
 
     def test_best_rank_does_not_resurrect_a_normal_value(self):
         def claim(rank, value=None):
