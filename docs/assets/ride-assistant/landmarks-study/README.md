@@ -41,15 +41,27 @@ They are shortened and reworded for the device. The application code retains its
 | Reichenbach Falls | [Reichenbach Falls, revision 1362225684](https://en.wikipedia.org/w/index.php?title=Reichenbach_Falls&oldid=1362225684) | Upper fall height and the fictional events in Conan Doyle's 1893 story. |
 | Gelmerbahn | [Gelmer Funicular, revision 1322069534](https://en.wikipedia.org/w/index.php?title=Gelmer_Funicular&oldid=1322069534) | Railway to Gelmersee, 106 percent maximum gradient, 1926 construction, public opening in 2001. |
 
-The device prototype has no photographs. The separate [photo study](../landmark-photos/README.md)
-compares device-sized images and estimates their storage cost. A later implementation could
-preconvert a small image during map creation and store palette pixels. For example, 160 × 90 at one byte per pixel is 14,400 bytes before
-metadata or compression. This is a possible design, not an implemented image format.
+## Photos
+
+| Aare Gorge | Reichenbach Falls | Photo credit | Photo source |
+| --- | --- | --- | --- |
+| ![Aare Gorge photo](aare-photo.png) | ![Reichenbach Falls photo](falls-photo.png) | ![Photo credit](photo-credit.png) | ![Photo source URL](photo-source.png) |
+
+Each description has two text pages. Aare Gorge and Reichenbach Falls add a third page with a
+160 × 120 ordered-dither photo. Up from the first page opens the photo. The source drawer
+includes each photo's credit, source URL, and licence URL. The three examples have 11 source
+pages in total. Gelmerbahn has no photo. It remains a UI fixture, not a proposed production
+category: the [selection proposal](../landmark-selection/README.md) excludes industrial and
+transport landmarks.
+
+The [photo study](../landmark-photos/README.md) gives attribution, processing commands, and
+storage measurements. Fixed RGB222 assets provide the same pixels to the simulator and the
+[display-only board demo](../../../../firmware/obc-fw-nrf54l/README.md#landmark-photo-demo).
+No JPEG decoder or landmark map format was added.
 
 ## Verification
 
 ```sh
-cargo check -p obc-sim
 ./tools/obc test -p obc-app -p obc-sim
 cargo clippy -p obc-app -p obc-sim --all-targets -- -D warnings
 cargo build -p obc-sim
@@ -63,17 +75,24 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 git diff --check
 ```
 
-The focused app and simulator suites passed. Tests cover nearby ordering, opening-state
-filtering, selection retention, and the accepted landmark visit through arrival and rejoin
-while browsing another place. Recording remains active in the same session.
+The focused app and simulator suites and Clippy passed. Eleven named frames check the four
+changed text pages, both photos, and source pages. Both photo rectangles match the selected
+ordered-dither reference PNGs pixel for pixel. These are targeted captures, not a full UI sweep.
 
-Ten named frames were captured and inspected, including all six article pages. The nearby map
-was captured again after its layout changed. These are targeted frames, not a full UI sweep.
-The headless scripts also check the expected screen. No backend or board behavior is claimed.
+The board command, run from `firmware/obc-fw-nrf54l`, was:
 
-The affected dry run includes unrelated changes from this handoff branch's older base.
-The full affected plan was deliberately omitted. No full workspace gate, external-fixture suite,
-resource measurement, board build, browser test, or hardware test was run.
+```sh
+cargo run --release --bin display_test --features landmark-photo-demo
+```
+
+Verified programming succeeded on nRF54LM20A. RTT reported display startup and button-driven
+changes between both photos. The user can assess physical panel appearance. The demo does not
+exercise SD, navigation, GPS, or BLE. The source ELF SHA-256 is
+`2f2724d220f932a56bc4ad3a391fa8a23a1186429fbde1fc71ef3f5d8d2c2f22`.
+
+The affected dry run includes unrelated changes from this branch's older base. The full
+workspace gate and affected plan were deliberately omitted. No resource gate, full UI sweep,
+external-fixture suite, or normal-application hardware suite was run.
 
 ## Source drawer refinement
 
@@ -81,7 +100,7 @@ resource measurement, board build, browser test, or hardware test was run.
 | --- | --- | --- |
 | ![Sources action in the bottom drawer](sources-drawer.png) | ![Licence URL](licence.png) | ![Article URL](article-source.png) |
 
-The descriptions now have two pages. Attribution remains accessible from the nearby map and
+The descriptions have two text pages. Attribution remains accessible from the nearby map and
 reading pages. The source view lists all three study articles. This uses the existing drawer,
 and does not create another button combination. The source action and Back leave navigation
 and recording unchanged. The relevant guidance is
@@ -90,7 +109,5 @@ and [Wikimedia's text reuse terms](https://foundation.wikimedia.org/wiki/Policy:
 They permit attribution appropriate to the medium and attribution through article URLs.
 The drawer is our interpretation of an accessible placement for this small offline screen.
 
-The focused app and simulator tests, Clippy, package build, format commands, registry check,
-and documentation link check listed above passed for this refinement. Eleven named captures
-check the updated reading pages, drawer, source URLs, and Back restoring the second text page.
-The same full-workspace and hardware checks remain deliberately omitted.
+Source drawer placement uses the existing controls. Back restores the reading page and
+selection, including the photo page.
