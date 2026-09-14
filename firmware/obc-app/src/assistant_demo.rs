@@ -55,10 +55,11 @@ impl Stage {
     }
 }
 
-/// Curated text pages supplied by the host study, with article attribution on the final page.
+/// Curated text and article identity supplied by the host study.
 #[derive(Debug, PartialEq)]
 pub struct Landmark {
     pub kind: &'static str,
+    pub article: &'static str,
     pub pages: &'static [&'static str],
 }
 
@@ -295,7 +296,7 @@ mod tests {
 
     #[test]
     fn landmark_visit_keeps_its_return_leg_while_browsing_other_places() {
-        static INFO: Landmark = Landmark { kind: "Gorge", pages: &["A narrow gorge."] };
+        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", pages: &["A narrow gorge."] };
         static PLACES: Fixture = Fixture {
             original: 0,
             start: (0, 0),
@@ -320,7 +321,7 @@ mod tests {
         app.apply_gesture(Gesture::Step(5));
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Press); // Read.
-        app.apply_gesture(Gesture::Step(1)); // Source page.
+        app.apply_gesture(Gesture::Step(1)); // Next text page.
         app.apply_gesture(Gesture::Press); // Preview.
         assert_eq!(app.active_route_index(), Some(0));
         app.apply_gesture(Gesture::Back);
@@ -346,6 +347,28 @@ mod tests {
         assert_eq!(app.state.user_fix.map(|fix| (fix.lon, fix.lat)), Some((300, 300)));
         assert_eq!(app.recorder.session(), session);
         assert!(app.recorder.recording());
+    }
+
+    #[test]
+    fn landmark_sources_use_the_context_drawer_and_back_restores_reading() {
+        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", pages: &["A gorge.", "A walkway."] };
+        static PLACES: Fixture =
+            Fixture { original: 0, start: (0, 0), stops: &[STOP, Stop { landmark: Some(&INFO), ..STOP }] };
+        let mut app = app();
+        app.enable_assistant_demo(&PLACES);
+        app.show_assistant_demo(Stage::Landmarks, 0);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        let session = app.recorder.session();
+        assert!(app.apply_chord(Chord::Context));
+        assert!(matches!(app.top_screen(), screen::Screen::ContextDrawer(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), screen::Screen::Assistant(s) if !s.has_landmark_context()));
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), screen::Screen::Assistant(s) if s.has_landmark_context()));
+        assert_eq!(app.active_route_index(), Some(0));
+        assert_eq!(app.recorder.session(), session);
     }
 
     #[test]

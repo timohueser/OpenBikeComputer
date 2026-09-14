@@ -14,6 +14,7 @@ use std::fmt::Write;
 // docs/assets/ride-assistant/landmarks-study/README.md. Positions and access routes are synthetic.
 static AARE: Landmark = Landmark {
     kind: "Gorge",
+    article: "Aare_Gorge",
     pages: &[
         "The Aare cuts a narrow passage through limestone near Meiringen. In places, the rock walls stand about 50 metres high.",
         "Glacial meltwater carved the gorge. Paths and walkways have let visitors explore it since 1889.",
@@ -21,6 +22,7 @@ static AARE: Landmark = Landmark {
 };
 static FALLS: Landmark = Landmark {
     kind: "Waterfall",
+    article: "Reichenbach_Falls",
     pages: &[
         "These waterfalls tumble down a hillside near Meiringen. The highest single drop is about 110 metres.",
         "Conan Doyle set the fictional clash of Holmes and Moriarty here in his 1893 story The Final Problem.",
@@ -28,6 +30,7 @@ static FALLS: Landmark = Landmark {
 };
 static GELMER: Landmark = Landmark {
     kind: "Funicular",
+    article: "Gelmer_Funicular",
     pages: &[
         "A cable railway from Handegg to the Gelmersee reservoir. The steepest section has a gradient of 106 percent.",
         "Built in 1926 to carry materials for reservoir construction, the railway opened to the public in 2001.",

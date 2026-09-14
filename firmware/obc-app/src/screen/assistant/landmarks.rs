@@ -44,7 +44,7 @@ impl View {
             Gesture::Step(n) => {
                 if let Some(page) = self.page {
                     let stop = &fixture.stops[self.nearby[self.selected].0 as usize];
-                    self.page = Some(list::step_selection(page, n, stop.landmark.unwrap().pages.len() + 1));
+                    self.page = Some(list::step_selection(page, n, stop.landmark.unwrap().pages.len()));
                 } else {
                     self.selected = list::step_selection(self.selected, n, self.nearby.len().max(1));
                 }
@@ -74,20 +74,9 @@ impl View {
             cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
             cv.text(stop.name, Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
             subtitle(cv, stop, distance, 48);
-            if let Some(text) = landmark.pages.get(page) {
-                paragraph(cv, text, 82);
-            } else {
-                paragraph(cv, "Source: Wikipedia contributors. Text adapted under CC BY-SA 4.0.", 82);
-                cv.text(
-                    if stop.open_now == Some(true) { "Open now" } else { "Hours unknown" },
-                    Point::new(12, 216),
-                    Font::Label,
-                    TextAlign::Left,
-                    SUBTEXT,
-                );
-            }
+            paragraph(cv, landmark.pages[page], 82);
             let mut pages = heapless::String::<24>::new();
-            let _ = write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len() + 1);
+            let _ = write!(pages, "Up/down  {}/{}", page + 1, landmark.pages.len());
             cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
             button(cv, "Visit", 280, true);
             return;
@@ -151,7 +140,14 @@ fn paragraph(cv: &mut impl Surface, text: &str, mut y: i32) {
         if !line.is_empty() {
             let _ = line.push(' ');
         }
-        let _ = line.push_str(word);
+        for chunk in word.as_bytes().chunks(18) {
+            if !line.is_empty() && line.len() + chunk.len() > 18 {
+                cv.text(&line, Point::new(12, y), Font::Label, TextAlign::Left, INK);
+                y += 24;
+                line.clear();
+            }
+            let _ = line.push_str(core::str::from_utf8(chunk).unwrap_or("?"));
+        }
     }
     cv.text(&line, Point::new(12, y), Font::Label, TextAlign::Left, INK);
 }
@@ -162,6 +158,28 @@ pub(super) fn marker(cv: &mut impl Surface, x: i32, y: i32, row: usize, selected
     cv.text(letter(row), Point::new(x, y - 12), Font::Label, TextAlign::Center, INK);
 }
 
+pub(super) fn sources(cv: &mut impl Surface, demo: Demo, page: usize) {
+    let landmarks = || demo.fixture.stops.iter().filter_map(|stop| stop.landmark);
+    let (title, text) = match page {
+        0 => ("Text sources", "Wikipedia contributors. Shortened and reworded. CC BY-SA 4.0. No warranties."),
+        1 => ("Text licence", "https://creativecommons.org/licenses/by-sa/4.0/"),
+        _ => ("Article source", landmarks().nth(page - 2).map_or("", |l| l.article)),
+    };
+    cv.fill(rect(0, 0, 240, 320), PARCHMENT);
+    cv.round(rect(4, 4, 232, 34), 6, WOOD);
+    cv.text(title, Point::new(12, 8), Font::Body, TextAlign::Left, PARCHMENT);
+    let mut url = heapless::String::<128>::new();
+    if page >= 2 {
+        let _ = url.push_str("https://en.wikipedia.org/wiki/");
+    }
+    let _ = url.push_str(text);
+    paragraph(cv, &url, 66);
+    let mut pages = heapless::String::<24>::new();
+    let _ = write!(pages, "Up/down  {}/{}", page + 1, landmarks().count() + 2);
+    cv.text(&pages, Point::new(120, 252), Font::Label, TextAlign::Center, SUBTEXT);
+    button(cv, "Back", 280, true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,7 +187,7 @@ mod tests {
 
     #[test]
     fn nearby_orders_by_direct_distance_and_keeps_unknown_hours() {
-        static INFO: Landmark = Landmark { kind: "Gorge", pages: &["A gorge."] };
+        static INFO: Landmark = Landmark { kind: "Gorge", article: "Aare_Gorge", pages: &["A gorge."] };
         const STOP: Stop = Stop {
             name: "Landmark",
             landmark: Some(&INFO),
