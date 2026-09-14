@@ -1,5 +1,7 @@
 //! Shop-visit interaction study, drawn by the device renderer over its ordinary map scene.
 
+mod whats_next;
+
 use core::fmt::Write;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
@@ -21,6 +23,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Questions,
+    WhatsNext,
     Categories,
     Choices,
     Preview,
@@ -33,10 +36,19 @@ enum Page {
 pub struct AssistantScreen {
     page: Page,
     selected: usize,
+    ahead: whats_next::View,
 }
 
-const QUESTIONS: [&str; 7] =
-    ["Find a place", "Next town", "Easier option", "Road blocked", "Back on route", "Landmarks", "Worth a detour"];
+const QUESTIONS: [&str; 8] = [
+    "Find a place",
+    "What's next",
+    "Next town",
+    "Easier option",
+    "Road blocked",
+    "Back on route",
+    "Landmarks",
+    "Worth a detour",
+];
 const CATEGORIES: [&str; 6] = ["Water", "Shop", "Pharmacy", "Bike repair", "Accommodation", "Train station"];
 
 impl AssistantScreen {
@@ -45,16 +57,17 @@ impl AssistantScreen {
             Phase::Riding => Page::Questions,
             Phase::ToStop | Phase::Returning => Page::Visit,
         };
-        Self { page, selected: 0 }
+        Self { page, selected: 0, ahead: whats_next::View::new(false) }
     }
 
     pub fn arrival() -> Self {
-        Self { page: Page::Arrived, selected: 0 }
+        Self { page: Page::Arrived, selected: 0, ahead: whats_next::View::new(false) }
     }
 
     pub(crate) fn for_stage(stage: Stage, selected: usize) -> Option<Self> {
         let page = match stage {
             Stage::Questions => Page::Questions,
+            Stage::WhatsNext | Stage::ExploreAhead => Page::WhatsNext,
             Stage::Categories => Page::Categories,
             Stage::Choices => Page::Choices,
             Stage::Preview => Page::Preview,
@@ -65,6 +78,7 @@ impl AssistantScreen {
         };
         Some(Self {
             page,
+            ahead: whats_next::View::new(stage == Stage::ExploreAhead),
             selected: match page {
                 Page::Choices => selected,
                 Page::Categories => 1,
@@ -79,15 +93,32 @@ impl AssistantScreen {
         Transition::None
     }
 
+    pub(crate) fn has_ahead_context(&self) -> bool {
+        self.page == Page::WhatsNext && self.ahead.is_timeline()
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        if self.page == Page::WhatsNext {
+            return if self.ahead.handle(g, cx.up_ahead_scope()) {
+                self.go(Page::Questions, 1)
+            } else {
+                Transition::None
+            };
+        }
         let Some(mut demo) = cx.state.assistant_demo else { return Transition::Pop };
         match g {
             Gesture::Step(n) => {
                 let count = match self.page {
-                    Page::Questions => 7,
+                    Page::Questions => QUESTIONS.len(),
                     Page::Categories => 6,
                     Page::Choices => demo.candidates.len as usize,
-                    Page::Visit if demo.phase == Phase::ToStop => 2,
+                    Page::Visit => {
+                        if demo.phase == Phase::ToStop {
+                            3
+                        } else {
+                            2
+                        }
+                    }
                     _ => 1,
                 };
                 self.selected = list::step_selection(self.selected, n, count.max(1));
@@ -99,6 +130,7 @@ impl AssistantScreen {
             }
             Gesture::Back => match self.page {
                 Page::Questions | Page::Arrived | Page::Visit => Transition::Pop,
+                Page::WhatsNext => unreachable!(),
                 Page::Categories => self.go(Page::Questions, 0),
                 Page::Choices => self.go(Page::Categories, 1),
                 Page::Preview => self.go(Page::Choices, demo.selected as usize),
@@ -106,6 +138,11 @@ impl AssistantScreen {
             },
             Gesture::Press => match self.page {
                 Page::Questions if self.selected == 0 => self.go(Page::Categories, 1),
+                Page::Questions if self.selected == 1 => {
+                    cx.state.up_ahead_filter = obc_reader::PoiCategorySet::ALL;
+                    self.ahead = whats_next::View::new(false);
+                    self.go(Page::WhatsNext, 0)
+                }
                 Page::Categories if self.selected == 1 => {
                     demo.selected = 0;
                     cx.state.assistant_demo = Some(demo);
@@ -123,7 +160,8 @@ impl AssistantScreen {
                     Transition::Root(Screen::Map(MapScreen::new()))
                 }
                 Page::Visit if self.selected == 0 => Transition::Pop,
-                Page::Visit if demo.phase == Phase::ToStop => self.go(Page::Skip, 0),
+                Page::Visit if demo.phase == Phase::ToStop && self.selected == 1 => self.go(Page::Skip, 0),
+                Page::Visit => self.go(Page::Questions, 0),
                 Page::Arrived => Transition::Pop,
                 Page::Skip => {
                     demo.phase = Phase::Riding;
@@ -143,6 +181,10 @@ impl AssistantScreen {
         F: Fn(u16) -> D::Color,
         S: obc_map_scene::MapScene,
     {
+        if self.page == Page::WhatsNext {
+            self.ahead.draw(cv, rx.up_ahead_scope());
+            return;
+        }
         let Some(mut demo) = rx.state.assistant_demo else { return };
         if self.page == Page::Questions || self.page == Page::Categories {
             let (title, rows, active): (&str, &[&str], usize) = if self.page == Page::Questions {
@@ -163,7 +205,7 @@ impl AssistantScreen {
                     Point::new(18, y + 5),
                     Font::Body,
                     TextAlign::Left,
-                    if i == active { INK } else { SUBTEXT },
+                    if i == active || (self.page == Page::Questions && i == 1) { INK } else { SUBTEXT },
                 );
             }
             if rows.len() > 6 {
@@ -179,7 +221,7 @@ impl AssistantScreen {
         let map_bottom = match self.page {
             Page::Choices => 208,
             Page::Preview => 192,
-            Page::Visit => 204,
+            Page::Visit => 174,
             Page::Arrived => 154,
             _ => 176,
         };
@@ -277,11 +319,12 @@ impl AssistantScreen {
             cv.text("Rejoin when ready.", Point::new(14, 243), Font::Label, TextAlign::Left, SUBTEXT);
             button(cv, "Remove stop", 280, true);
         } else {
-            cv.text(stop.name, Point::new(14, 208), Font::Body, TextAlign::Left, INK);
-            button(cv, "Back to map", 244, self.selected == 0);
+            cv.text(stop.name, Point::new(14, 178), Font::Body, TextAlign::Left, INK);
+            button(cv, "Back to map", 208, self.selected == 0);
             if demo.phase == Phase::ToStop {
-                button(cv, "Skip stop", 280, self.selected == 1);
+                button(cv, "Skip stop", 244, self.selected == 1);
             }
+            button(cv, "Assistant", 280, self.selected == if demo.phase == Phase::ToStop { 2 } else { 1 });
         }
     }
 }
