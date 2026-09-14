@@ -40,6 +40,16 @@ static GELMER: Landmark = Landmark {
     ],
 };
 
+static DUNLOUGH: Landmark = Landmark {
+    kind: "Castle",
+    article: "Dunlough_Castle",
+    photo: Some(&obc_app::assistant_demo::photos::DUNLOUGH),
+    pages: &[
+        "Three ruined towers stand between a lake and the Atlantic cliffs at Three Castle Head in County Cork.",
+        "A defensive wall links the towers. The castle was founded by Donagh O'Mahony in 1207.",
+    ],
+};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scenario {
     #[default]
@@ -207,7 +217,7 @@ pub fn install(
     if length < 100.0 {
         return Err("the study needs at least 100 m of route; choose a larger area or move --center inward".into());
     }
-    if store.ids().len() + 19 > obc_app::MAX_ROUTES {
+    if store.ids().len() + 21 > obc_app::MAX_ROUTES {
         return Err("not enough route slots for the study".into());
     }
     let (original, _) = route(store, "Study route", &points, None)?;
@@ -222,6 +232,7 @@ pub fn install(
         ("Aare Gorge", 0.05, 400.0, 250.0, 12.0, Some(&AARE)),
         ("Reichenbach Falls", 0.12, 900.0, 400.0, 50.0, Some(&FALLS)),
         ("Gelmerbahn", 0.25, 1_800.0, 350.0, 25.0, Some(&GELMER)),
+        ("Dunlough Castle", 0.35, 2_400.0, 450.0, 30.0, Some(&DUNLOUGH)),
     ] {
         let distance = (length * fraction).min(target_m);
         let join = cumulative.partition_point(|&d| d < distance).min(points.len() - 2).max(1);
