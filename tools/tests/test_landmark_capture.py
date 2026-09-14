@@ -116,6 +116,7 @@ class LandmarkCaptureTests(unittest.TestCase):
         parser = LeadImage()
         parser.feed('<div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Local.jpg"><img src="//upload.wikimedia.org/wikipedia/en/a/a1/Local.jpg"></a><a class="mw-file-description" href="/wiki/File:Later.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/a/a1/Later.jpg"></a></div>')
         self.assertIsNone(parser.filename)
+        self.assertEqual(parser.status, "unsupported-repository")
 
 
 if __name__ == "__main__":

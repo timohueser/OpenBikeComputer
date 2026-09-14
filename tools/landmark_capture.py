@@ -207,6 +207,7 @@ class LeadImage(HTMLParser):
         self.finished = False
         self.filename = None
         self.pending_filename = None
+        self.status = "absent"
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -214,6 +215,7 @@ class LeadImage(HTMLParser):
             self.in_content = True
         if self.in_content and tag == "h2":
             self.finished = True
+            self.status = "unsupported-lead"
         if self.in_content and not self.finished and tag == "a" and "mw-file-description" in attrs.get("class", "").split():
             self.finished = True
             path = urlparse(attrs.get("href", "")).path
@@ -223,6 +225,9 @@ class LeadImage(HTMLParser):
             source = urlparse(attrs.get("src", ""))
             if source.hostname == "upload.wikimedia.org" and source.path.startswith("/wikipedia/commons/"):
                 self.filename = self.pending_filename
+                self.status = "commons"
+            else:
+                self.status = "unsupported-repository"
             self.pending_filename = None
 
     def handle_endtag(self, tag):
@@ -253,7 +258,7 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
         return None, None, "rendered-acquisition-failed"
     parser = LeadImage()
     parser.feed((capture.root / html_path).read_text())
-    record = dict(language=language, title=page["title"], url=rendered_url, revision=revision["revid"], timestamp=revision["timestamp"], path=path, html_path=html_path, attribution_source=html_path, notices_source=path)
+    record = dict(language=language, title=page["title"], url=rendered_url, revision=revision["revid"], timestamp=revision["timestamp"], path=path, html_path=html_path, attribution_source=html_path, notices_source=path, lead_image_status=parser.status)
     return record, parser.filename, "captured"
 
 
@@ -303,10 +308,12 @@ def capture_place(capture: Capture, qid: str) -> dict:
         place["outcomes"].append(dict(asset="article", language=language, status=status))
         if record:
             place["articles"].append(record)
+            if not lead:
+                place["outcomes"].append(dict(asset="photo", source="wikipedia-lead", language=language, status=record["lead_image_status"]))
         if lead:
             candidates.add((lead, "wikipedia-lead", language))
     if not candidates:
-        place["outcomes"].append(dict(asset="photo", status="no-candidate"))
+        place["outcomes"].append(dict(asset="photo", status="no-supported-candidate"))
     for name, source, language in sorted(candidates, key=lambda v: (v[1] != "P18", v[0], v[2] or "")):
         image, status = photo(capture, name)
         place["outcomes"].append(dict(asset="photo", source=source, filename=name, language=language, status=status))
