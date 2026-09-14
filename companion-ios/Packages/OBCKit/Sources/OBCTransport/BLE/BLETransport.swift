@@ -615,7 +615,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             let result = try await transferClient.put(
                 payload, objectID: target.map { ObjectID(rawValue: $0.raw) },
                 expectedRevision: expected, kind: kind,
-                retainPrevious: false, displayName: displayName
+                displayName: displayName
             ) { done, total in
                 progress(TransferProgress(bytesDone: done, total: total))
             }
@@ -932,7 +932,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         if stateMulticast.value != .connected { stateMulticast.send(.connected) }
         if let peripheral {
             // Reaching the authenticated CoC proves this opaque CoreBluetooth identifier belongs to
-            // the trusted device; only then may a future restored background intent bind to it.
+            // the trusted device; later reconnects can use it to select the same peripheral.
             discoveryStore.saveKnownPeripheralID(peripheral.identifier)
         }
         awaitingGatedRetry = false
@@ -1514,7 +1514,7 @@ extension BLETransport: CBPeripheralDelegate {
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
             // Only the **un-gated** BAS notify is armed here (#297). The gated
-            // the `objectControl` indication and the PSM read wait for
+            // `objectControl` indication and the PSM read wait for
             // `authenticate()`, so first-time pairing doesn't raise the passkey
             // sheet before the D2 row tap. The device's connect-time battery notify
             // fires before this subscription lands (its next is ~30 s out) — read
