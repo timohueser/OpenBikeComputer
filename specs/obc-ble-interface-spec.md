@@ -146,8 +146,8 @@ bytes, takes the six it understands, and loses nothing it had; a peer that expec
 it against an older device reads six, gets *absent*, and takes the defined unknown
 branch. Neither side is wrong and neither needs to stop, so bumping would break a
 pair that is fully interoperable in order to announce a field that is allowed to be
-missing. The precedent is `routeList`'s 76 → 84-byte entry (§7.4, §9): a trailing
-field appended to an existing layout whose length is self-describing is additive,
+missing. A trailing field appended to an existing layout whose length is
+self-describing is additive,
 and additive changes do not bump. What *would* require a bump is changing or
 reordering a field already defined here — which this does not do: bytes 0–5 keep
 their meaning and their offsets, and the new field is byte 6.
@@ -1204,13 +1204,13 @@ after a confirmed DFU. Duplicating it here would only risk the two disagreeing.
 Downloaded over the CoC (they outgrow the 512-byte ATT cap fast). Shared shape: a
 **6-byte header** + fixed entries, so entry `k` is at `6 + entry_len·k` — O(1)
 indexing, no string scanning. The list types **differ in entry length**
-(`routeList` 84 bytes, `rideList` 72, `tripList` 76), so the entry size is carried
+(`routeList` 76 bytes, `rideList` 72, `tripList` 76), so the entry size is carried
 per-list in the header's `entry_len` byte; readers step by it, never a constant.
 
 ```
 List header (6 bytes):
   version     u8   = 2
-  entry_len   u8   the entry size (84 routeList · 72 rideList · 76 tripList) — readers skip by it
+  entry_len   u8   the entry size (76 routeList · 72 rideList · 76 tripList) — readers skip by it
   count       u16  entries actually in this object (after the MAX_RIDES / MAX_ROUTES / MAX_TRIPS cap)
   total       u16  full catalog size BEFORE the cap
 ```
@@ -1268,8 +1268,7 @@ entries are **unchanged** (72 bytes) — which is why entry length is per-list.
 `routeList`'s **v2 core**: the same trailing whole-object `crc32`, so the app's
 identity / outdated-copy machinery works on trips exactly as on routes (a stage
 reorder changes neither `byte_len` nor `name`, so only the `crc32` reveals it). It
-has no additional fields, so
-`tripList` stays 76 bytes while `routeList` grew to 84:
+has no additional fields. Both entries are 76 bytes:
 
 ```
   object_id         u16
