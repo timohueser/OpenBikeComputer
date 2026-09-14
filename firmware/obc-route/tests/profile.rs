@@ -201,7 +201,7 @@ const NO_ELE: &str = r#"<?xml version="1.0"?>
 </trkseg></trk></gpx>"#;
 
 #[test]
-fn no_elevation_route_has_flat_zero_gap_free_band() {
+fn no_elevation_route_has_unknown_band() {
     let bytes = convert("Unmeasured", NO_ELE);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
@@ -211,9 +211,9 @@ fn no_elevation_route_has_flat_zero_gap_free_band() {
 
     // The whole band is the flat 0 m fallback, with no sentinel (min > max) holes.
     assert_eq!((p.min_ele_m, p.max_ele_m), (0, 0));
-    assert_eq!(p.peak_ele_m(), 0);
+    assert_eq!(p.peak_ele_m(), i16::MIN);
     for (i, &(mn, mx)) in p.cols().iter().enumerate() {
-        assert_eq!((mn, mx), (0, 0), "column {i} should be the flat 0 m fallback");
+        assert!(mn > mx, "column {i} has no measured elevation");
     }
     // No climb anywhere, so "to climb" is 0 across the whole route.
     assert_eq!(p.ascent_to(0.0), 0);

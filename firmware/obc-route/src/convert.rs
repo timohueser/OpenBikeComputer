@@ -1,19 +1,5 @@
-//! GPX → OBCR conversion (`no_std`), plus the shared streaming OBCR emitter.
-//!
-//! A single streaming pass over the GPX track points ([`GpxScanner`]) that
-//! simultaneously: accumulates **exact** ride stats (distance via incremental
-//! equirectangular segments, ascent/descent via a smoothed-elevation hysteresis),
-//! **decimates** the geometry for storage (1-step-lookahead perpendicular distance,
-//! plus a max span that also keeps deltas inside `int16`), and **chunks** the kept
-//! points — streaming each finished chunk out through the [`ByteSink`] while keeping
-//! only a bounded index in RAM. The header is written last (`patch_at(0, …)`) once the
-//! offsets and totals are known. See `OBCR_Spec.md` §5.
-//!
-//! The format-shaped middle of that pass — reserve header, decimate + densify, chunk,
-//! index, backfill — is [`ObcrEmitter`], shared with the nav router's route emit
-//! ([`crate::nav`], #465) so the two OBCR producers can't drift; only the *stats* each
-//! producer bakes into the header (elevation figures, waypoints, the distance total)
-//! stay caller-side.
+//! Streaming GPX conversion and the shared bounded OBCR emitter.
+//! The emitter owns retained geometry, incoming facts, chunk seams and measured totals.
 
 use heapless::Vec;
 
@@ -41,7 +27,7 @@ const MAX_SPAN_M: f32 = 1200.0;
 /// packer's `MAX_SEGMENT` so both formats densify on the same threshold.
 const MAX_SEGMENT_UDEG: i64 = 30_000;
 
-/// Max bytes of one chunk's record body (`(points-1) × 6`).
+/// Max bytes of one chunk's record body (`(points-1) × 7`).
 const BODY_CAP: usize = (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN;
 
 /// Stats computed during conversion (also written into the header).
@@ -56,28 +42,26 @@ pub struct RouteStats {
     pub max_ele_m: i16,
     /// Waypoints stored in the waypoint section (0 when the GPX carried no `<wpt>`).
     pub waypoint_count: u16,
-    /// **Did a real height ever resolve while this route was emitted?** The producer's own
-    /// answer, not an inspection of the stored bytes: the GPX converter sets it when the track
-    /// carried at least one `<ele>`, the nav emit when at least one
-    /// [`ElevationSource`](obc_elevation::ElevationSource) sample answered `Some`
-    /// ([`EleFill::seen`](crate::nav)).
-    ///
-    /// It exists because `0 m` is a **real** height (a Dutch route is not an elevation-less one),
-    /// so no consumer can recover this by looking at the values. The detour splice reads it to
-    /// decide whether the detour's per-point heights are sampled terrain it must keep or the `0`
-    /// placeholder it must replace (#1091), and the detour preview to decide whether it has a
-    /// climb figure to show at all.
-    ///
-    /// Not a stored field: OBCR has no per-route "has elevation" flag and gains none here. What a
-    /// *reader* can say about already-stored bytes is the weaker
-    /// [`RouteReader::has_elevation`](crate::RouteReader::has_elevation).
+    /// At least one retained point has a valid elevation; zero metres is valid.
     pub has_elevation: bool,
 }
 
 /// Convert a GPX byte source into a `.obcr` written to `sink`, naming the route
 /// `name`. Returns the computed [`RouteStats`].
 pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<RouteStats, Error> {
+    gpx_to_obcr_attributed(src, name, sink, None, |_, _| Ok(0))
+}
+
+/// Import with a bounded incoming-segment attribution provider. Plain GPX stays unknown.
+pub fn gpx_to_obcr_attributed(
+    src: &dyn ByteSource,
+    name: &str,
+    sink: &mut dyn ByteSink,
+    map_source: Option<obc_formats::obcr::RouteSourceKey>,
+    mut surface: impl FnMut((i32, i32), (i32, i32)) -> Result<u8, Error>,
+) -> Result<RouteStats, Error> {
     let mut em = ObcrEmitter::new(sink)?;
+    em.set_attribution_map(map_source);
 
     // Waypoint pass first (GPX carries `<wpt>` file-level, before the track): collect
     // up to MAX_WAYPOINTS into a bounded resident set, then place each on the track
@@ -97,6 +81,8 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
                 category_id,
                 lateral_offset_m: 0,
                 sign_pending: false,
+                provenance: None,
+                raw_index: 0,
             };
             if wps.push(place).is_err() {
                 break; // cap reached — keep the first MAX_WAYPOINTS
@@ -106,25 +92,12 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
 
     let mut scan = GpxScanner::new(src);
 
-    // Dead-banded ascent/descent (shared with the elevation profile + app climb);
-    // min/max track the raw <ele> values. The emitter owns distance/geometry.
-    let mut elev = DeadBand::<f64>::new();
-    let mut last_ele = 0f32;
-    let mut min_ele = i16::MAX;
-    let mut max_ele = i16::MIN;
+    let mut raw_index = 0;
     // The previous raw point, kept only for the waypoint offset's *direction of travel*.
     let mut prev_raw: Option<(i32, i32)> = None;
 
-    while let Some(p) = scan.next_point()? {
-        // Elevation: carry the last known value when a point lacks <ele>.
-        if let Some(e) = p.ele {
-            last_ele = e;
-            min_ele = min_ele.min(round_i16(e as f64));
-            max_ele = max_ele.max(round_i16(e as f64));
-        }
-        elev.push(last_ele as f64);
-
-        em.push(sink, p.lon, p.lat, round_i16(last_ele as f64), elev.ascent() as u32)?;
+    while !wps.is_empty() {
+        let Some(p) = scan.next_point()? else { break };
 
         // Waypoint placement: nearest **raw** track point wins; its cumulative distance is
         // the waypoint's position along the route. Matches the phone importer's nearest-point
@@ -147,7 +120,7 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
                 let d2 = dx * dx + dy * dy;
                 if d2 < w.best_d2 {
                     w.best_d2 = d2;
-                    w.along_m = em.cum_dist() as u32;
+                    w.raw_index = raw_index;
                     match prev_raw {
                         Some(pr) => {
                             w.lateral_offset_m = signed_offset_m(d2, cross(pr, here, here, (w.wp.lon, w.wp.lat), cl));
@@ -163,50 +136,34 @@ pub fn gpx_to_obcr(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) ->
             }
         }
         prev_raw = Some((p.lon, p.lat));
+        raw_index += 1;
     }
 
-    // The min/max pair is still crossed iff no `<ele>` was ever parsed — the producer's own
-    // "did elevation resolve?" answer, taken *before* the zeroing clamp erases the distinction.
-    let has_elevation = min_ele <= max_ele;
-    if min_ele > max_ele {
-        min_ele = 0;
-        max_ele = 0;
+    let mut scan = GpxScanner::new(src);
+    let mut previous = None;
+    let mut raw_index = 0;
+    while let Some(p) = scan.next_point()? {
+        let ele = p.ele.map_or(i16::MIN, |e| round_i16(e as f64));
+        em.set_surface(if let Some(prev) = previous { surface(prev, (p.lon, p.lat))? } else { 0 });
+        em.push(sink, p.lon, p.lat, ele)?;
+        if wps.iter().any(|w| w.raw_index == raw_index) {
+            em.flush_pending(sink)?;
+            for w in wps.iter_mut().filter(|w| w.raw_index == raw_index) {
+                w.along_m = em.enc.distance as u32;
+            }
+        }
+        previous = Some((p.lon, p.lat));
+        raw_index += 1;
     }
-    let stats = EmitStats {
-        min_ele_m: min_ele,
-        max_ele_m: max_ele,
-        ascent_m: elev.ascent() as u32,
-        descent_m: elev.descent() as u32,
-        total_distance_m: None,
-        has_elevation,
-    };
-    em.finish(sink, name, stats, &mut wps)
-}
-
-/// The producer-owned figures [`ObcrEmitter::finish`] bakes into the header: the elevation
-/// stats the caller tracked (GPX: dead-banded over raw `<ele>`; nav routes: sampled from the
-/// map's terrain since EL7, all zero with a null source) and an optional total-distance override
-/// (the router stores summed edge costs, the length #116 locked, rather than the emitter's
-/// re-measured polyline distance).
-pub(crate) struct EmitStats {
-    pub min_ele_m: i16,
-    pub max_ele_m: i16,
-    pub ascent_m: u32,
-    pub descent_m: u32,
-    /// `None` ⇒ the emitter's cumulative raw-path distance.
-    pub total_distance_m: Option<u32>,
-    /// The producer's explicit "a real height resolved" answer — rides out on
-    /// [`RouteStats::has_elevation`] and is never written to the file.
-    pub has_elevation: bool,
+    em.finish(sink, name, &mut wps)
 }
 
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
-/// ([`crate::nav`]): reserves the v3 header up front, feeds raw points through the
+/// ([`crate::nav`]): reserves the v4 header up front, feeds raw points through the
 /// 1-step-lookahead decimator and the `int16`-delta densify guard into the chunk
 /// [`Encoder`], then backfills the header once offsets and totals are known. Owns every
 /// format/geometry invariant (bbox growth, start point, cumulative distance, chunk
-/// seams) so the two OBCR producers stay byte-compatible by construction; per-producer
-/// stats come in through [`ObcrEmitter::finish`]'s [`EmitStats`].
+/// seams) so the two OBCR producers stay byte-compatible by construction; the final encoded geometry owns all route facts.
 pub(crate) struct ObcrEmitter {
     enc: Encoder,
     /// Cumulative raw-path distance in `f64`: each per-segment distance is a small `f32`
@@ -224,10 +181,13 @@ pub(crate) struct ObcrEmitter {
     /// Elevation-detail keep threshold (m), `0` = off — see
     /// [`keep_elevation_detail`](ObcrEmitter::keep_elevation_detail).
     ele_keep_m: i16,
+    surface: u8,
+    flags: u8,
+    map_source: Option<obc_formats::obcr::RouteSourceKey>,
 }
 
 impl ObcrEmitter {
-    /// Reserve the v3 header on `sink`; the body follows immediately
+    /// Reserve the v4 header on `sink`; the body follows immediately
     /// (`data_offset = HEADER_FULL_LEN`).
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
         Self::begin(sink)?;
@@ -245,7 +205,10 @@ impl ObcrEmitter {
             emitted: 0,
             last_kept: None,
             pending: None,
-            ele_keep_m: 0,
+            ele_keep_m: 1,
+            surface: 0,
+            flags: 0,
+            map_source: None,
         }
     }
 
@@ -254,25 +217,28 @@ impl ObcrEmitter {
         sink.write(&[0u8; HEADER_FULL_LEN])
     }
 
-    /// Keep a candidate whose height differs from the last kept vertex by at least `threshold_m`,
-    /// on top of the geometric rules. Off (`0`) unless a producer turns it on.
-    ///
-    /// The decimator is otherwise purely planar: it drops anything within [`EPSILON_M`] of the
-    /// chord, so an interpolated point on a *straight* road is always dropped — including the one
-    /// standing on a crest. That is harmless for a GPX import, whose kept vertices are real track
-    /// points with their own `<ele>` at ~10 m spacing, and wrong for the nav router's emit-time
-    /// fill (EL7, epic #1068), whose extra points exist **only** to carry height: decimating them
-    /// away would leave the stored profile — and therefore a GPX export, and therefore a re-import's
-    /// stats — coarser than the totals the header claims. Setting this to the elevation dead-band
-    /// makes "kept" and "booked by the dead-band" the same set of vertices.
-    ///
-    /// Off for [`gpx_to_obcr`], so imported routes decimate byte-identically to before.
+    /// Retain elevation changes of at least this many metres. The default is one metre.
     pub(crate) fn keep_elevation_detail(&mut self, threshold_m: i16) {
         self.ele_keep_m = threshold_m;
     }
 
-    /// Cumulative raw-path distance so far (m) — includes the point just pushed, so the GPX
-    /// pass reads it for waypoint `along_m` placement.
+    pub(crate) fn set_surface(&mut self, surface: u8) {
+        self.surface = surface & 7;
+    }
+
+    pub(crate) fn set_elevation_incomplete(&mut self, incomplete: bool) {
+        self.surface = (self.surface & 7) | if incomplete { 8 } else { 0 };
+    }
+
+    pub(crate) fn set_flags(&mut self, flags: u8) {
+        self.flags = flags;
+    }
+
+    pub(crate) fn set_attribution_map(&mut self, source: Option<obc_formats::obcr::RouteSourceKey>) {
+        self.map_source = source;
+    }
+
+    /// Cumulative input distance so far, used to map transform waypoint positions.
     #[inline]
     pub(crate) fn cum_dist(&self) -> f64 {
         self.cum_dist
@@ -280,14 +246,7 @@ impl ObcrEmitter {
 
     /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
     /// point is emitted (densified) to the encoder.
-    pub(crate) fn push(
-        &mut self,
-        sink: &mut dyn ByteSink,
-        lon: i32,
-        lat: i32,
-        ele: i16,
-        cum_ascent: u32,
-    ) -> Result<(), Error> {
+    pub(crate) fn push(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
         // Distance from the previous raw point.
         if let Some(pr) = self.prev {
             self.cum_dist += ground_dist_m(pr, (lon, lat)) as f64;
@@ -297,7 +256,13 @@ impl ObcrEmitter {
         self.prev = Some((lon, lat));
         self.bbox = Some(grow(self.bbox, lon, lat));
 
-        let c = Cand { lon, lat, ele, cum_d: self.cum_dist as u32, cum_a: cum_ascent };
+        let c = Cand {
+            lon,
+            lat,
+            ele,
+            surface: self.surface & if ele == i16::MIN { 7 } else { 15 },
+            cum_d: self.cum_dist as u32,
+        };
         match (self.last_kept, self.pending) {
             (None, _) => {
                 self.emitted += emit_densified(&mut self.enc, sink, None, c)?;
@@ -309,12 +274,27 @@ impl ObcrEmitter {
                 let span = (c.cum_d - lk.cum_d) as f32;
                 let ele_break =
                     self.ele_keep_m > 0 && (i32::from(pd.ele) - i32::from(lk.ele)).abs() >= i32::from(self.ele_keep_m);
-                if perp > EPSILON_M || span > MAX_SPAN_M || ele_break || reverses(lk, pd, c) {
+                if perp > EPSILON_M
+                    || span > MAX_SPAN_M
+                    || ele_break
+                    || pd.surface != c.surface
+                    || (pd.ele == i16::MIN) != (lk.ele == i16::MIN)
+                    || (pd.ele == i16::MIN) != (c.ele == i16::MIN)
+                    || reverses(lk, pd, c)
+                {
                     self.emitted += emit_densified(&mut self.enc, sink, Some(lk), pd)?;
                     self.last_kept = Some(pd);
                 }
                 self.pending = Some(c);
             }
+        }
+        Ok(())
+    }
+
+    fn flush_pending(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
+        if let Some(pd) = self.pending.take() {
+            self.emitted += emit_densified(&mut self.enc, sink, self.last_kept, pd)?;
+            self.last_kept = Some(pd);
         }
         Ok(())
     }
@@ -327,13 +307,10 @@ impl ObcrEmitter {
         &mut self,
         sink: &mut dyn ByteSink,
         name: &str,
-        stats: EmitStats,
         wps: &mut Vec<WpPlace, MAX_WAYPOINTS>,
     ) -> Result<RouteStats, Error> {
         // The final point is always kept.
-        if let Some(pd) = self.pending {
-            self.emitted += emit_densified(&mut self.enc, sink, self.last_kept, pd)?;
-        }
+        self.flush_pending(sink)?;
         if self.emitted == 0 {
             return Err(Error::Empty);
         }
@@ -347,16 +324,21 @@ impl ObcrEmitter {
         let stats = RouteStats {
             point_count: self.emitted,
             chunk_count: self.enc.index.len() as u32,
-            total_distance_m: stats.total_distance_m.unwrap_or(self.cum_dist as u32),
-            total_ascent_m: stats.ascent_m,
-            total_descent_m: stats.descent_m,
-            min_ele_m: stats.min_ele_m,
-            max_ele_m: stats.max_ele_m,
+            total_distance_m: self.enc.distance as u32,
+            total_ascent_m: self.enc.band.ascent() as u32,
+            total_descent_m: self.enc.band.descent() as u32,
+            min_ele_m: if self.enc.min_ele <= self.enc.max_ele { self.enc.min_ele } else { 0 },
+            max_ele_m: if self.enc.min_ele <= self.enc.max_ele { self.enc.max_ele } else { 0 },
             waypoint_count: wps.len() as u16,
-            has_elevation: stats.has_elevation,
+            has_elevation: self.enc.min_ele <= self.enc.max_ele,
         };
 
-        let header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
+        let mut header = build_header(name, &bbox, self.start, index_offset, wpt_offset, &stats);
+        header[5] |= self.flags;
+        if let Some(source) = self.map_source {
+            header[5] |= obc_formats::obcr::FLAG_ATTRIBUTION_MAP;
+            source.encode(header[128..160].as_mut().try_into().unwrap());
+        }
         sink.patch_at(0, &header)?;
         Ok(stats)
     }
@@ -379,6 +361,8 @@ pub(crate) struct WpPlace {
     /// The winning track point had no predecessor (it was the track's first), so the offset's
     /// magnitude is stored but its side still waits for the outgoing segment.
     sign_pending: bool,
+    provenance: Option<obc_formats::obcr::WaypointProvenance>,
+    raw_index: u32,
 }
 
 impl WpPlace {
@@ -401,6 +385,8 @@ impl WpPlace {
             category_id: w.category_id,
             lateral_offset_m: w.lateral_offset_m,
             sign_pending: false,
+            provenance: w.provenance,
+            raw_index: 0,
         }
     }
 }
@@ -453,6 +439,9 @@ fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS
         rec[15] = w.wp.name.len() as u8;
         put_i16(&mut rec, 16, w.lateral_offset_m); // rec[18..20] reserved
         rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + w.wp.name.len()].copy_from_slice(w.wp.name.as_bytes());
+        if let Some(provenance) = w.provenance {
+            rec[44..80].copy_from_slice(&provenance.encode());
+        }
         sink.write(&rec)?;
     }
     Ok(offset)
@@ -464,8 +453,8 @@ struct Cand {
     lon: i32,
     lat: i32,
     ele: i16,
+    surface: u8,
     cum_d: u32,
-    cum_a: u32,
 }
 
 /// Emit `c`, first inserting linearly-interpolated synthetic vertices so no stored
@@ -508,9 +497,13 @@ fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
     Cand {
         lon: f(a.lon, b.lon),
         lat: f(a.lat, b.lat),
-        ele: round_i16(a.ele as f64 + (b.ele as f64 - a.ele as f64) * t),
+        ele: if a.ele == i16::MIN || b.ele == i16::MIN {
+            i16::MIN
+        } else {
+            round_i16(a.ele as f64 + (b.ele as f64 - a.ele as f64) * t)
+        },
+        surface: b.surface,
         cum_d: g(a.cum_d, b.cum_d),
-        cum_a: g(a.cum_a, b.cum_a),
     }
 }
 
@@ -518,10 +511,15 @@ fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
 /// body out and collecting its `ChunkMeta` in a bounded resident index.
 struct Encoder {
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
-    cur: Vec<(i32, i32, i16), MAX_POINTS_PER_CHUNK>,
+    cur: Vec<(i32, i32, i16, u8), MAX_POINTS_PER_CHUNK>,
     data_pos: u32,
     chunk_start_dist: u32,
     chunk_start_ascent: u32,
+    distance: f64,
+    previous: Option<(i32, i32)>,
+    band: DeadBand<f64>,
+    min_ele: i16,
+    max_ele: i16,
 }
 
 impl Encoder {
@@ -532,21 +530,44 @@ impl Encoder {
             data_pos: data_offset,
             chunk_start_dist: 0,
             chunk_start_ascent: 0,
+            distance: 0.0,
+            previous: None,
+            band: DeadBand::new(),
+            min_ele: i16::MAX,
+            max_ele: i16::MIN,
         }
     }
 
     fn emit(&mut self, sink: &mut dyn ByteSink, c: Cand) -> Result<(), Error> {
-        if self.cur.is_empty() {
-            self.chunk_start_dist = c.cum_d;
-            self.chunk_start_ascent = c.cum_a;
+        let before = self.distance as u32;
+        let first = self.previous.is_none();
+        if let Some(previous) = self.previous {
+            self.distance += ground_dist_m(previous, (c.lon, c.lat)) as f64;
         }
-        let _ = self.cur.push((c.lon, c.lat, c.ele));
+        self.previous = Some((c.lon, c.lat));
+        if c.surface & 8 != 0 {
+            self.band.pause();
+        }
+        if c.ele == i16::MIN {
+            self.band.pause();
+        } else {
+            if first || self.distance as u32 > before {
+                self.band.push(c.ele as f64);
+            }
+            self.min_ele = self.min_ele.min(c.ele);
+            self.max_ele = self.max_ele.max(c.ele);
+        }
+        if self.cur.is_empty() {
+            self.chunk_start_dist = self.distance as u32;
+            self.chunk_start_ascent = self.band.ascent() as u32;
+        }
+        let _ = self.cur.push((c.lon, c.lat, c.ele, c.surface));
         if self.cur.len() == MAX_POINTS_PER_CHUNK {
             self.finalize(sink)?;
             // Reseed the next chunk with this point as the shared seam / anchor.
-            self.chunk_start_dist = c.cum_d;
-            self.chunk_start_ascent = c.cum_a;
-            let _ = self.cur.push((c.lon, c.lat, c.ele));
+            self.chunk_start_dist = self.distance as u32;
+            self.chunk_start_ascent = self.band.ascent() as u32;
+            let _ = self.cur.push((c.lon, c.lat, c.ele, c.surface));
         }
         Ok(())
     }
@@ -564,17 +585,18 @@ impl Encoder {
         if n == 0 {
             return Ok(());
         }
-        let (ax, ay, ae) = self.cur[0];
+        let (ax, ay, ae, _) = self.cur[0];
         let mut bbox = BBox { min_lon: ax, min_lat: ay, max_lon: ax, max_lat: ay };
         let mut body: Vec<u8, BODY_CAP> = Vec::new();
         for i in 1..n {
-            let (x, y, e) = self.cur[i];
-            let (px, py, _) = self.cur[i - 1];
+            let (x, y, e, surface) = self.cur[i];
+            let (px, py, _, _) = self.cur[i - 1];
             let _ = body.extend_from_slice(&((x - px) as i16).to_le_bytes());
             let _ = body.extend_from_slice(&((y - py) as i16).to_le_bytes());
             let _ = body.extend_from_slice(&e.to_le_bytes());
+            let _ = body.push(surface);
         }
-        for &(x, y, _) in &self.cur {
+        for &(x, y, _, _) in &self.cur {
             bbox_extend(&mut bbox, x, y);
         }
         sink.write(&body)?;
@@ -629,6 +651,7 @@ fn build_header(
     let mut h = [0u8; HEADER_FULL_LEN];
     h[0..4].copy_from_slice(MAGIC);
     h[4] = VERSION;
+    h[5] = if s.has_elevation { obc_formats::obcr::FLAG_HAS_ELEVATION } else { 0 };
     // h[5] flags = 0, h[7] reserved = 0
 
     // Name truncated to NAME_CAP on a char boundary.
@@ -708,5 +731,5 @@ fn bbox_extend(bbox: &mut BBox, lon: i32, lat: i32) {
 }
 
 fn round_i16(m: f64) -> i16 {
-    libm::round(m).clamp(i16::MIN as f64, i16::MAX as f64) as i16
+    libm::round(m).clamp((i16::MIN + 1) as f64, i16::MAX as f64) as i16
 }

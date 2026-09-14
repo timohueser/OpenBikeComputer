@@ -487,6 +487,13 @@ impl<'a> Reader<'a> {
         Some((&buf[..], start))
     }
 
+    /// Surface class and whether every terrain integration sample was present.
+    pub fn nav_edge_facts(&self, edge_id: u32) -> Option<(u8, bool)> {
+        let mut bytes = [0u8; NAV_EDGE_STACK_BUDGET];
+        let (chunk, within) = self.nav_edge_record_uncached(&mut bytes, edge_id)?;
+        Some((chunk[within + 6] >> 5, rd_u16(chunk, within + 4) & 0x8000 != 0))
+    }
+
     /// Fetch one §8.4 edge polyline by its `edge_id` (a packed `(chunk, ordinal)` pair since v14),
     /// decoding anchor + deltas into `points` as the crate's `(lon, lat)` µdeg pairs. Returns the
     /// edge's `length_m`. R3 calls this only at OBCR emit, stitching the came-from chain's geometry.
@@ -507,7 +514,7 @@ impl<'a> Reader<'a> {
         let mut chunk_buf = [0u8; NAV_EDGE_STACK_BUDGET];
         let (chunk, within) = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
         let length_m = rd_u32(chunk, within);
-        let pt_count = rd_u16(chunk, within + 4) as usize;
+        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
         // byte 6 is `way_kind` (§8.4); the anchor sits behind it, at 7 (lat) / 11 (lon).
         let anchor_lat = rd_i32(chunk, within + 7);
         let anchor_lon = rd_i32(chunk, within + 11);
@@ -568,6 +575,17 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Return a projection only when exactly one nearby edge qualifies.
+    pub fn unique_nav_edge_candidate_cached(
+        &self,
+        view: &BBox,
+        tiles: &mut NavTileCache,
+        p: (i32, i32),
+        max_distance_m: f32,
+    ) -> Result<Option<NavEdgeCandidate>, Error> {
+        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, true)
+    }
+
     /// Find the nearest exact edge projection among (a) edges incident to graph nodes in `view`
     /// and (b) edges named by v13 interior anchors in `view`. The two indexes together are the
     /// completeness argument: endpoints cover short edges; long edges have interior anchors no
@@ -582,11 +600,24 @@ impl<'a> Reader<'a> {
         p: (i32, i32),
         max_distance_m: f32,
     ) -> Result<Option<NavEdgeCandidate>, Error> {
+        self.nav_edge_candidate_cached(view, tiles, p, max_distance_m, false)
+    }
+
+    #[inline(never)]
+    fn nav_edge_candidate_cached(
+        &self,
+        view: &BBox,
+        tiles: &mut NavTileCache,
+        p: (i32, i32),
+        max_distance_m: f32,
+        require_unique: bool,
+    ) -> Result<Option<NavEdgeCandidate>, Error> {
         let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(None);
         }
         let mut best: Option<NavEdgeCandidate> = None;
+        let mut ambiguous = false;
         let mut read_error = None;
 
         // First the ordinary node tree: this supplies every short edge and also helps long edges
@@ -614,6 +645,11 @@ impl<'a> Reader<'a> {
                 }
                 for nb in n.neighbors() {
                     let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else { continue };
+                    if candidate.distance_m <= max_distance_m
+                        && best.is_some_and(|old| old.edge_id != candidate.edge_id)
+                    {
+                        ambiguous = true;
+                    }
                     if candidate.distance_m <= max_distance_m
                         && best.is_none_or(|old| candidate_beats(&candidate, &old))
                     {
@@ -655,6 +691,11 @@ impl<'a> Reader<'a> {
                     }
                     let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else { continue };
                     if candidate.distance_m <= max_distance_m
+                        && best.is_some_and(|old| old.edge_id != candidate.edge_id)
+                    {
+                        ambiguous = true;
+                    }
+                    if candidate.distance_m <= max_distance_m
                         && best.is_none_or(|old| candidate_beats(&candidate, &old))
                     {
                         best = Some(candidate);
@@ -666,7 +707,7 @@ impl<'a> Reader<'a> {
         if let Some(error) = read_error {
             return Err(Error::Source(error));
         }
-        Ok(best)
+        Ok(if require_unique && ambiguous { None } else { best })
     }
 
     /// Resolve the winning candidate's endpoint ids and directional ascents through two degenerate
@@ -735,7 +776,7 @@ impl<'a> Reader<'a> {
         }
         let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
-        let pt_count = rd_u16(chunk, within + 4) as usize;
+        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
         if pt_count < 2 || from.segment as usize + 1 >= pt_count || to.segment as usize + 1 >= pt_count {
             return None;
         }
@@ -797,7 +838,7 @@ impl<'a> Reader<'a> {
         }
         let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
-        let pt_count = rd_u16(chunk, within + 4) as usize;
+        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
         if pt_count < 2 || pt_count - 1 > u16::MAX as usize {
             return None;
         }
@@ -928,7 +969,7 @@ impl<'a> Reader<'a> {
         }
         let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
-        let pt_count = rd_u16(chunk, within + 4) as usize;
+        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
         // byte within+6 is `way_kind` (§8.4); the anchor sits behind it, at +7 (lat) / +11 (lon).
         let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7)); // (lon, lat)
         if pt_count == 0 {

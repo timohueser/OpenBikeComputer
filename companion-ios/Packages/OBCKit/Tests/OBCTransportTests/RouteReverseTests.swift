@@ -23,7 +23,7 @@ import OBCDomain
     private static func length(of points: [RoutePoint]) -> Double {
         guard points.count > 1 else { return 0 }
         return (1..<points.count).reduce(0.0) { sum, i in
-            sum + points[i - 1].coordinate.distance(to: points[i].coordinate)
+            sum + points[i - 1].coordinate.routeDistance(to: points[i].coordinate)
         }
     }
 

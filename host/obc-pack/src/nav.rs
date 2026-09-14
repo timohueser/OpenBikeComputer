@@ -784,27 +784,43 @@ pub const ASCENT_SAMPLE_STEP_M: f32 = 50.0;
 /// terrain at all every sample is `None` and the answer is `(0, 0)`: that is the degrade path, and it
 /// is what makes a map packed without `--terrain` route exactly as v11 did.
 pub fn integrate_edge_ascent(polyline: &[(i32, i32)], source: &mut dyn ElevationSource) -> (u16, u16) {
-    let forward = ascent_along(polyline.iter().copied(), source);
-    let backward = ascent_along(polyline.iter().rev().copied(), source);
+    let (forward, backward, _) = integrate_edge_facts(polyline, source);
     (forward, backward)
 }
 
+/// Directional ascent and whether every integration sample resolved.
+pub fn integrate_edge_facts(polyline: &[(i32, i32)], source: &mut dyn ElevationSource) -> (u16, u16, bool) {
+    let (forward, a) = ascent_along(polyline.iter().copied(), source);
+    let (backward, b) = ascent_along(polyline.iter().rev().copied(), source);
+    (forward, backward, a && b)
+}
+
 /// One direction of [`integrate_edge_ascent`]: densify to [`ASCENT_SAMPLE_STEP_M`], sample, fold.
-fn ascent_along(pts: impl Iterator<Item = (i32, i32)>, source: &mut dyn ElevationSource) -> u16 {
+fn ascent_along(pts: impl Iterator<Item = (i32, i32)>, source: &mut dyn ElevationSource) -> (u16, bool) {
     let mut it = ProfileIntegrator::<f32>::new();
+    let mut complete = true;
     let mut dist = 0.0f32;
     let mut prev: Option<(i32, i32)> = None;
-    fn push(it: &mut ProfileIntegrator<f32>, dist: f32, p: (i32, i32), source: &mut dyn ElevationSource) {
+    fn push(
+        it: &mut ProfileIntegrator<f32>,
+        dist: f32,
+        p: (i32, i32),
+        source: &mut dyn ElevationSource,
+        complete: &mut bool,
+    ) {
         match source.sample(p.1, p.0) {
             Some(h) => it.push(dist, f32::from(h)),
             // No height here: keep the length, drop the reference. Booking the climb across an
             // unsampled stretch would invent metres the rider never rides.
-            None => it.band().pause(),
+            None => {
+                *complete = false;
+                it.band().pause();
+            }
         }
     }
     for p in pts {
         let Some(from) = prev else {
-            push(&mut it, dist, p, source);
+            push(&mut it, dist, p, source, &mut complete);
             prev = Some(p);
             continue;
         };
@@ -812,12 +828,12 @@ fn ascent_along(pts: impl Iterator<Item = (i32, i32)>, source: &mut dyn Elevatio
         let steps = (seg / ASCENT_SAMPLE_STEP_M).ceil().max(1.0) as u32;
         for t in 1..=steps {
             let at = lerp_udeg(from, p, t, steps);
-            push(&mut it, dist + seg * (t as f32 / steps as f32), at, source);
+            push(&mut it, dist + seg * (t as f32 / steps as f32), at, source, &mut complete);
         }
         dist += seg;
         prev = Some(p);
     }
-    it.ascent_u16()
+    (it.ascent_u16(), complete)
 }
 
 /// A **direction-independent** segment length (m), used only to choose how many samples a segment

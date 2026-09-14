@@ -14,17 +14,16 @@ final class RouteStatsTests: XCTestCase {
         }
     }
 
-    func testDistanceIsCumulativeHaversine() {
+    func testDistanceIsCumulativeStoredRouteMetric() {
         let stats = RouteStats.compute(from: track([nil, nil, nil]))
         XCTAssertEqual(stats.distanceMeters, 2 * 1112, accuracy: 5)
     }
 
     func testClimbAndDescentUseHysteresisAgainstJitter() {
-        // Confirmed walk: 100 → (101, 100.5 inside the ±2 band) → 105 (+5)
-        // → 103 (−2 descent) → 110 (+7): climb 12, descent 2.
+        // The shared 3 m band ignores the 103 m dip: 100 → 105 → 110.
         let stats = RouteStats.compute(from: track([100, 101, 100.5, 105, 103, 110]))
-        XCTAssertEqual(stats.elevationGainMeters, 12, accuracy: 0.001)
-        XCTAssertEqual(stats.elevationLossMeters, 2, accuracy: 0.001)
+        XCTAssertEqual(stats.elevationGainMeters, 10, accuracy: 0.001)
+        XCTAssertEqual(stats.elevationLossMeters, 0, accuracy: 0.001)
     }
 
     func testMaxGradeOverSustainedWindow() {

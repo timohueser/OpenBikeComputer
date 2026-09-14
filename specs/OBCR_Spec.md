@@ -1,4 +1,4 @@
-# OBCR File Format Specification (v3)
+# OBCR File Format Specification (v4)
 
 OBCR (OpenStreetMap Binary Chunked Route) is a compact binary **route** format —
 the route-planning sibling of the [`OBCM`](OBCM_Spec.md) map format. A route is a
@@ -15,12 +15,7 @@ is its code authority for versions, fixed lengths, magic, and sentinels;
 `firmware/obc-formats/src/io.rs` owns the neutral byte-source/sink traits and checked
 little-endian primitives used by both producer and reader.
 
-**Versions.** v3 is the **only** accepted version. It widened the waypoint record
-from 40 to 44 bytes — a category from the source symbol (§4.1) and a signed
-lateral offset — and readers **reject** v1 and v2 rather than reading them: the
-record moved, and a route is cheap to re-import from its GPX (the same posture the
-OBCM v8→v9 bump took). Historically, v1 had no waypoints and a 112-byte header;
-v2 added the header extension and a 40-byte waypoint record.
+**Versions.** v4 is the only accepted version. Re-import older routes from their source files.
 
 The waypoints section is still reached only via an explicit offset, so a reader
 that doesn't care about waypoints skips it in O(1) by construction and the ride
@@ -40,9 +35,8 @@ an explicit offset and every count is stored).
    OBCM's quadtree: a route is a path, so the index is a flat list scanned linearly
    (chunk counts are small).
 2. **Stats precomputed, exact.** Total distance / ascent / descent / elevation range
-   are computed at conversion from **all** raw GPX points and stored in the header.
-   The displayed totals are therefore exact even though the stored geometry is
-   decimated for drawing.
+   are computed from retained geometry by the shared emitter. Interval facts use
+   the same points, distance metric, and elevation validity.
 3. **Convert where it lands.** The GPX→OBCR converter is one portable `no_std`
    routine; the device runs it on a USB/BLE upload, the simulator runs it on import.
    There is no off-device conversion step.
@@ -57,10 +51,11 @@ All multi-byte integers are **little-endian**. Distances/elevations are whole
 ## File layout
 
 ```
-[Header]                 (128 bytes, fixed)
+[Header]                 (160 bytes, fixed)
 [Chunk 0 data][Chunk 1 data]...[Chunk N-1 data]
 [Chunk Index]            (Chunk Count × 44-byte ChunkMeta)
-[Waypoints]              (optional: Waypoint Count × 44-byte records)
+[Waypoints]              (optional: Waypoint Count × 80-byte records)
+[Visit descriptor]       (optional: 80 bytes)
 ```
 
 Every section is reached by an **explicit offset** (`Index Offset`, `Data Offset`,
@@ -76,8 +71,8 @@ the chunks have streamed out (see §5).
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCR"` |
-| 4 | Version | 1 | `uint8` | `0x03`; readers reject anything else |
-| 5 | Flags | 1 | `uint8` | Reserved, `0` |
+| 4 | Version | 1 | `uint8` | `0x04`; readers reject anything else |
+| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; other bits zero |
 | 6 | Name Len | 1 | `uint8` | Used bytes of the Name field (≤ 48) |
 | 7 | Reserved | 1 | `uint8` | `0` |
 | 8 | Min Lon | 4 | `int32` | Global bbox, microdegrees |
@@ -87,8 +82,8 @@ the chunks have streamed out (see §5).
 | 24 | Start Lon | 4 | `int32` | First route point (camera centering) |
 | 28 | Start Lat | 4 | `int32` | |
 | 32 | Point Count | 4 | `uint32` | Distinct stored points (seams counted once) |
-| 36 | Total Distance | 4 | `uint32` | Meters, exact (from raw GPX) |
-| 40 | Total Ascent | 4 | `uint32` | Meters, smoothed (from raw GPX) |
+| 36 | Total Distance | 4 | `uint32` | Meters, measured from retained geometry |
+| 40 | Total Ascent | 4 | `uint32` | Meters, dead-banded retained geometry |
 | 44 | Total Descent | 4 | `uint32` | Meters, smoothed |
 | 48 | Min Elevation | 2 | `int16` | Meters |
 | 50 | Max Elevation | 2 | `int16` | Meters |
@@ -97,21 +92,32 @@ the chunks have streamed out (see §5).
 | 60 | Data Offset | 4 | `uint32` | Byte offset to Chunk 0 data |
 | 64 | Name | 48 | `char[48]` | UTF-8 route name, null-padded |
 
-With the canonical layout, `Data Offset == 128` (chunks follow the header) and
+With the canonical layout, `Data Offset == 160` (chunks follow the header) and
 `Index Offset == Data Offset + total chunk-data bytes`. Distance/ascent in **km/m**
 for the UI are derived from these meters fields (`distance_km = round(total_distance /
 1000)`).
 
-Every field the ride path needs lives in these 112 bytes — a reader that doesn't
-care about waypoints never touches the extension.
+Readers validate the complete fixed header, including optional-section envelopes.
 
-### 1.1 Header extension (16 bytes, at offset 112)
+### 1.1 Header extension (48 bytes, at offset 112)
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 112 | Waypoint Offset | 4 | `uint32` | Byte offset to the waypoints section; `0` when Waypoint Count is 0 |
 | 116 | Waypoint Count | 2 | `uint16` | Stored waypoint records |
-| 118 | Reserved | 10 | — | `0` |
+| 118 | Visit version | 1 | `uint8` | 0 absent; 1 descriptor schema below; other values rejected |
+| 119 | Reserved | 1 | `uint8` | 0 |
+| 120 | Visit offset | 4 | `uint32` | Absolute descriptor offset; 0 when absent |
+| 124 | Visit length | 4 | `uint32` | Exactly 80 when present; 0 when absent |
+| 128 | Attribution-map key | 32 | bytes | Store ID (16), object ID (`uint64`), revision (`uint64`) |
+
+An absent map key is all zero. A present key names the installed map used for
+surface attribution. Object ID and revision are nonzero. A file path or default
+ID does not establish map identity. Facts from a different map revision are stale;
+facts without a key are unbound. Historical surfaces can still be displayed.
+
+A descriptor must fit inside the object and must not overlap the index or waypoint
+table. Unsupported versions and nonzero absent-section fields are errors.
 
 ---
 
@@ -144,13 +150,25 @@ map-matching). The bbox enables the linear viewport query for drawing.
 
 The chunk's **first point is the anchor** (Anchor Lon/Lat/Elevation from its
 `ChunkMeta`) and is **not** stored in the data. The remaining `Point Count − 1` points
-follow as fixed 6-byte records:
+follow as fixed 7-byte records:
 
 | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- |
 | dLon | 2 | `int16` | Δ longitude from the previous point (microdegrees) |
 | dLat | 2 | `int16` | Δ latitude from the previous point |
-| Elevation | 2 | `int16` | **Absolute** elevation, meters |
+| Elevation | 2 | `int16` | Absolute elevation, meters; `INT16_MIN` unknown |
+| Segment facts | 1 | `uint8` | bits 0..2 surface class; bit 3 incoming elevation incomplete; bits 4..7 zero |
+
+Surface classes match OBCM: 0 unknown, 1 paved, 2 compacted, 3 gravel, 4 dirt,
+5 rough, 6 cobbles, 7 grass. Each record owns the incoming segment. The shared
+chunk anchor has no second incoming segment: the preceding chunk owns that segment.
+A trim that starts at an anchor must retain validity for the next incoming segment.
+
+A valid elevation is in `-32767..=32767` metres; producers clamp values to that
+range. Zero is valid sea-level elevation. Missing endpoints invalidate the incoming
+segment. Bit 3 also invalidates a segment with valid endpoints when graph integration
+found an interior terrain gap. A missing value or invalid segment pauses ascent;
+the next valid run starts a fresh reference.
 
 Decoding a chunk:
 
@@ -172,7 +190,7 @@ sharing, §Design principle 4).
 
 ## 4. Waypoints
 
-`Waypoint Count` fixed 44-byte records at `Waypoint Offset`, sorted ascending by
+`Waypoint Count` fixed 80-byte records at `Waypoint Offset`, sorted ascending by
 `Distance Along` (ties keep source order). A point of interest pinned to a position
 along the route: what the rider planned around, carried beside the map's own POIs in
 one route-ordered list.
@@ -188,6 +206,16 @@ one route-ordered list.
 | 16 | Lateral Offset | 2 | `int16` | Meters off the route line, **positive = right** of the direction of travel; `0` = on-route. Saturating |
 | 18 | Reserved | 2 | — | `0` |
 | 20 | Name | 24 | `char[24]` | UTF-8 short name, null-padded |
+| 44 | Original store | 16 | bytes | Original route Store ID |
+| 60 | Original object | 8 | `uint64` | Original route Object ID |
+| 68 | Original revision | 8 | `uint64` | Original route revision |
+| 76 | Original ordinal | 2 | `uint16` | Original waypoint ordinal |
+| 78 | Provenance flags | 2 | `uint16` | 1 present; 0 absent; other values rejected |
+
+Absent provenance requires all 36 bytes at offsets 44..80 to be zero. Present
+provenance requires nonzero object and revision. A transform preserves existing
+provenance. The first accepted visit producer supplies it when it has the original
+route's exact source identity.
 
 **Category** reuses the map's browsable POI categories verbatim —
 `1` water · `2` campsite · `3` accommodation · `4` resupply · `5` pharmacy ·
@@ -240,40 +268,66 @@ wants the bakery and the café in one list.
 
 ---
 
-## 5. Conversion semantics (`gpx → .obcr`)
+## 5. Conversion and measured facts
 
-- **Single streaming pass** over the GPX `<trkpt lat lon><ele>` points (O(1) RAM,
-  any route length). Distance accumulates via incremental haversine; ascent/descent
-  accumulate from a smoothed elevation series with a small gain threshold (≈3 m) so
-  totals read like a planner's.
-- **Geometry is decimated** for storage (perpendicular-distance + max segment span)
-  while **stats use every raw point** — the header totals stay exact.
-- **Chunking:** points are grouped into chunks of ≤ `MAX_POINTS_PER_CHUNK` (256),
-  each emitting a `ChunkMeta`. The index is hard-capped at `MAX_ROUTE_CHUNKS` (256 —
-  ≈65 k stored points, ~650 km at 10 m spacing): a route that would need more chunks
-  **fails conversion** with `Error::TooLarge` rather than being silently coarsened,
-  so the resident index stays bounded. The cap is a stack budget, not a storage one —
-  a `RouteIndex` is `MAX_ROUTE_CHUNKS × 48 B` and several call paths hold one by
-  value, so raising it means first making those paths resident.
-- **Waypoints:** a bounded `<wpt>` pass runs **before** the track pass (GPX carries
-  waypoints file-level, ahead of the track), collecting up to `MAX_WAYPOINTS` (32,
-  a converter cap — the format allows 65535). Each waypoint's `<sym>`/`<type>` is
-  mapped to its category (§4.1) there and then, so the freeform symbol text never
-  outlives the scan. During the track pass each waypoint tracks its nearest raw
-  point, which fixes both its `Distance Along` **and** its signed `Lateral Offset`
-  (§4); after the index they're sorted by `Distance Along` and written. Names
-  truncate to 24 bytes on a char boundary; entity references are not unescaped (the
-  phone-side importer runs a real XML parser; this path only backs the on-device
-  GPX upload).
-- **Rewrites keep what they didn't move.** A detour splice re-emits the route's
-  waypoints: those on the avoided span are dropped, those after it shift onto the
-  new distance axis, and every survivor keeps its category byte and its lateral
-  offset verbatim — a splice only replaces the avoided span, so a surviving
-  waypoint still sits beside the geometry its offset was measured against.
-- **Writer order (device-safe, streamed):** write a placeholder header → stream chunk
-  data while collecting `ChunkMeta` in a bounded in-RAM index → write the index →
-  write the waypoint table → `seek(0)` and patch the header (offsets, counts,
-  totals). Chunk bytes are never all resident at once.
+- The emitter measures the final retained geometry. Search costs never replace route distance.
+- Segment distance uses `obc_map_scene::ground_dist_m`: microdegree coordinates,
+  `f32` local equirectangular segment math, accumulated in `f64`. Stored totals and
+  cumulative anchors truncate to whole metres.
+- Facts policy 1 uses a 3 m elevation dead-band. A segment that crosses no integer
+  distance boundary books no ascent or descent. Missing samples and bit 3 pause
+  the reference. Min/max use valid retained elevations only; both are zero if none exist.
+- Integer-prefix clipping divides each segment's booked ascent and descent over
+  its integer distance span. Adjacent intervals conserve distance, surface, ascent,
+  and descent exactly. Grades use ordered endpoint rise over physical distance.
+- GPX completeness means complete samples of the imported geometry. It makes no
+  claim about unsampled terrain. Plain imports store unknown surface. Map-assisted
+  imports require a unique graph edge at both endpoints and the midpoint, consistent
+  direction and along-edge distance, and bounded distance from the graph. Parallel
+  roads, repeated crossings, ambiguous junctions, and long sparse spans stay unknown.
+- The decimator retains elevation changes, reversals, surface transitions, and
+  validity boundaries. Coordinate deltas are split before they exceed `int16`.
+- Geometry uses at most 256 points per chunk and 256 chunks. Over-cap routes fail.
+  The GPX importer collects at most 32 waypoints. If waypoints exist, a separate
+  track pass selects their nearest raw vertices; the emit pass retains these anchors
+  and records their distance on the final stored geometry. No route-length array is added.
+- Writers stream header placeholder, chunks, index, and waypoints, then patch the
+  header. Transform producers retain surfaces, validity, waypoint provenance, and
+  unresolved-avoidance state. A shared map key survives only when both sources agree.
+
+## 6. Accepted visit descriptor
+
+Schema 1 is exactly 80 bytes. Anchors are cumulative metres on the named geometry.
+The original route remains a separate immutable object.
+
+| Offset | Field | Bytes |
+| :-- | :-- | :-- |
+| 0 | Original Store ID, Object ID, revision | 16 + 8 + 8 |
+| 32 | Original entry, stop, rejoin anchors | 3 × `uint32` |
+| 44 | Accepted entry, stop, rejoin anchors | 3 × `uint32` |
+| 56 | Target source ID | `uint64` |
+| 64 | Target longitude, latitude, microdegrees | 2 × `int32` |
+| 72 | Target source kind: 1 OSM node, 2 way, 3 relation, 4 Wikidata Q ID | `uint8` |
+| 73 | Reserved, zero | 7 |
+
+Each anchor triple is monotonic. Accepted rejoin cannot exceed route length.
+Coordinates are within geographic bounds; target ID, original object ID, and
+revision are nonzero. Unknown target kinds are errors. This record describes the
+accepted route; navigation phase and durable checkpoint CRC/length are separate.
+
+## 7. Producer and consumer matrix
+
+| Path | Surface and elevation | Optional metadata |
+| :-- | :-- | :-- |
+| Rust GPX / browser converter | Unknown surface by default; explicit missing elevation | No visit descriptor; no original identity invented |
+| Simulator GPX import with mounted map | Conservative graph attribution and exact installed map key | Same as GPX |
+| Rust navigation emitter | Graph surface; sampled heights; graph interior-gap validity | Optional map key supplied by owner |
+| Rust trim / detour splice | Preserve incoming facts; measure final geometry | Preserve waypoint provenance and unresolved avoidance; reject visit-bearing inputs until visit transform is supplied |
+| Rust reader / interval API / profiles | v4 only; bounded chunk scratch; gaps remain incomplete | Validate source key, provenance, descriptor |
+| Swift encoder / library / reversal | v4; preserve surfaces and missing spans; reverse incoming ownership | Preserve waypoint provenance; fresh imports have no map key or visit descriptor |
+| Swift decoder | v4; decode surfaces and gaps | Decode and validate map key and descriptor; no visit producer |
+| Catalog summaries and BLE transfer | Read v4 header; transfer immutable bytes | Do not rewrite payload metadata |
+| Shared vectors / authored fixture converter | Production Rust writer | Checked by Rust and Swift readers |
 
 ---
 
@@ -292,8 +346,8 @@ Format-contract tests build synthetic
 
 ```rust
 pub trait ByteSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error>;
-    fn len(&self) -> u32;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+    fn len(&self) -> u64;
 }
 ```
 

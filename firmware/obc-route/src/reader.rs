@@ -51,6 +51,15 @@ pub struct RoutePoint {
     pub lon: i32,
     pub lat: i32,
     pub ele: i16,
+    /// Surface class of the incoming segment; 0 means unknown.
+    pub surface: u8,
+    pub elevation_incomplete: bool,
+}
+
+impl RoutePoint {
+    pub fn elevation(self) -> Option<i16> {
+        (self.ele != obc_formats::obcr::ELEVATION_NONE).then_some(self.ele)
+    }
 }
 
 /// An interpolated position on the route polyline at an exact, clamped along-route distance.
@@ -177,6 +186,7 @@ pub struct RouteIndex {
     /// index and the board's in-place resident slot have identical cache-adoption semantics.
     /// Zero belongs only to [`empty`](Self::empty) / a failed parse.
     identity: u32,
+    flags: u8,
 }
 
 /// A parsed route, ready to query and decode: a [`RouteIndex`] (resident, reusable across
@@ -214,6 +224,7 @@ impl RouteIndex {
             index: Vec::new(),
             cum_seg: Vec::new(),
             identity: 0,
+            flags: 0,
         }
     }
 
@@ -260,6 +271,7 @@ impl RouteIndex {
         self.identity = 0;
 
         let h = read_header(src)?;
+        self.flags = h.flags;
         if h.chunk_count as usize > MAX_ROUTE_CHUNKS {
             return Err(Error::TooLarge);
         }
@@ -327,21 +339,17 @@ impl RouteIndex {
     // (`Profile::ascent_to`) at column resolution, not from the coarse per-chunk
     // `cum_ascent_m` (too few chunks to place "to climb" accurately).
 
-    /// Does this **already-stored** route carry elevation at all?
-    ///
-    /// OBCR has no per-route "has elevation" flag and no per-point "unknown" encoding, so a reader
-    /// cannot recover the producer's [`RouteStats::has_elevation`](crate::RouteStats) — the honest
-    /// answer for a stored file is this one: the header's four elevation fields are **all zero**
-    /// exactly when its producer wrote the documented *no-elevation shape* (a GPX with no `<ele>`
-    /// at all, or a nav plan whose every terrain sample was a hole — see
-    /// [`EleFill::stats`](crate::nav)). A real route can only collide with it by being flat, at
-    /// sea level, for its whole length.
-    ///
-    /// Use [`RouteStats::has_elevation`](crate::RouteStats) whenever the route was just produced
-    /// in-process (the detour splice's detour side); this is for the other case — the resident
-    /// route the rider loaded, whose producer is long gone.
+    /// At least one retained point has a valid elevation. Flat sea-level routes remain valid.
     pub fn has_elevation(&self) -> bool {
-        !(self.min_ele_m == 0 && self.max_ele_m == 0 && self.total_ascent_m == 0 && self.total_descent_m == 0)
+        self.flags & obc_formats::obcr::FLAG_HAS_ELEVATION != 0
+    }
+
+    pub fn has_unresolved_avoidance(&self) -> bool {
+        self.flags & obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE != 0
+    }
+
+    pub fn identity(&self) -> u32 {
+        self.identity
     }
 
     /// A [`RouteSummary`] for this route (for the menu / centering).
@@ -420,6 +428,29 @@ impl<'a> RouteReader<'a> {
         decode_chunk_from(self.src, m, n, out)
     }
 
+    pub fn attribution_map(&self) -> Result<Option<obc_formats::obcr::RouteSourceKey>, Error> {
+        if self.flags & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 {
+            return Ok(None);
+        }
+        let mut bytes = [0; 32];
+        self.src.read_at(128, &mut bytes)?;
+        obc_formats::obcr::RouteSourceKey::decode(&bytes).map(Some).map_err(|_| Error::BadOffset)
+    }
+
+    pub fn visit_descriptor(&self) -> Result<Option<obc_formats::obcr::VisitDescriptor>, Error> {
+        if self.flags & 128 == 0 {
+            return Ok(None);
+        }
+        let mut ext = [0; 16];
+        self.src.read_at(112, &mut ext)?;
+        if ext[6] == 0 {
+            return Ok(None);
+        }
+        let mut bytes = [0; obc_formats::obcr::VISIT_DESCRIPTOR_LEN];
+        self.src.read_at(rd_u32(&ext, 8) as u64, &mut bytes)?;
+        obc_formats::obcr::VisitDescriptor::decode(&bytes).map(Some).map_err(|_| Error::BadOffset)
+    }
+
     /// Locate `progress_m` on the route, clamping it to the route end and linearly interpolating
     /// inside the containing segment. Uses caller-owned decode scratch so the matcher can seek its
     /// resident buffer without adding a stack-sized route copy.
@@ -450,16 +481,15 @@ impl<'a> RouteReader<'a> {
             return Some((first, k, 0));
         }
 
-        let cl = obc_map_scene::cos_lat(first.lat);
-        let mut s = cm.cum_distance_m as f32;
+        let mut s = cm.cum_distance_m as f64;
         for i in 0..buf.len() - 1 {
             let a = buf[i];
             let b = buf[i + 1];
-            let dl = obc_map_scene::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+            let dl = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat)) as f64;
             let last = i + 2 == buf.len();
-            if target as f32 <= s + dl || last {
-                let t = if dl > 1e-3 { ((target as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
-                return Some((interpolate_point(a, b, t), k, i));
+            if target as f64 <= s + dl || last {
+                let t = if dl > 1e-3 { ((target as f64 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
+                return Some((interpolate_point(a, b, t as f32), k, i));
             }
             s += dl;
         }
@@ -477,7 +507,7 @@ impl<'a> RouteReader<'a> {
     pub fn elevation_at(&self, progress_m: u32) -> Option<i16> {
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         let target = progress_m.min(self.total_distance_m);
-        Some(self.locate_interpolated(target, &mut buf)?.0.ele)
+        self.locate_interpolated(target, &mut buf)?.0.elevation()
     }
 
     /// Return the coordinate at `progress_m`, clamped to the route end. This is the cold UI-facing
@@ -615,7 +645,17 @@ fn interpolate_point(a: RoutePoint, b: RoutePoint, t: f32) -> RoutePoint {
     RoutePoint {
         lon: libm::roundf(a.lon as f32 + (b.lon - a.lon) as f32 * t) as i32,
         lat: libm::roundf(a.lat as f32 + (b.lat - a.lat) as f32 * t) as i32,
-        ele: libm::roundf(a.ele as f32 + (b.ele - a.ele) as f32 * t) as i16,
+        ele: if t <= 0.0 {
+            a.ele
+        } else if t >= 1.0 {
+            b.ele
+        } else if a.elevation().is_none() || b.elevation().is_none() {
+            i16::MIN
+        } else {
+            libm::roundf(a.ele as f32 + (i32::from(b.ele) - i32::from(a.ele)) as f32 * t) as i16
+        },
+        surface: b.surface,
+        elevation_incomplete: b.elevation_incomplete,
     }
 }
 
@@ -669,23 +709,22 @@ pub(crate) fn decode_route_points_between_checked(
     if buf.len() < 2 {
         return Ok(None);
     }
-    let cl = obc_map_scene::cos_lat(buf[0].lat);
-    let mut s = cm.cum_distance_m as f32;
+    let mut s = cm.cum_distance_m as f64;
     let mut first: Option<(usize, RoutePoint)> = None;
     let mut last: Option<(usize, RoutePoint)> = None;
     for i in 0..buf.len() - 1 {
         let a = buf[i];
         let b = buf[i + 1];
-        let dl = obc_map_scene::ground_dist_m_cl((a.lon, a.lat), (b.lon, b.lat), cl);
+        let dl = obc_map_scene::ground_dist_m((a.lon, a.lat), (b.lon, b.lat)) as f64;
         let seg_hi = s + dl;
-        if seg_hi >= lo as f32 && s <= hi as f32 {
-            let t0 = if dl > 1e-3 { ((lo as f32 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
-            let t1 = if dl > 1e-3 { ((hi as f32 - s) / dl).clamp(0.0, 1.0) } else { 1.0 };
-            first.get_or_insert((i, interpolate_point(a, b, t0)));
-            last = Some((i + 1, interpolate_point(a, b, t1)));
+        if seg_hi >= lo as f64 && s <= hi as f64 {
+            let t0 = if dl > 1e-3 { ((lo as f64 - s) / dl).clamp(0.0, 1.0) } else { 0.0 };
+            let t1 = if dl > 1e-3 { ((hi as f64 - s) / dl).clamp(0.0, 1.0) } else { 1.0 };
+            first.get_or_insert((i, interpolate_point(a, b, t0 as f32)));
+            last = Some((i + 1, interpolate_point(a, b, t1 as f32)));
         }
         s = seg_hi;
-        if s > hi as f32 {
+        if s > hi as f64 {
             break;
         }
     }
@@ -736,7 +775,7 @@ pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u64) -> Res
         return Err(Error::BadOffset);
     }
     // …and cross-check that region against the point count. The data is exactly the non-anchor
-    // points (§3: `point_count − 1` fixed 6-byte records) and every writer emits it that way, but
+    // points (§3: `point_count − 1` fixed 7-byte records) and every writer emits it that way, but
     // the decode path sizes its read from `point_count` alone — so a forged meta whose `byte_len`
     // disagrees would silently hand the decoder the *next* chunk's bytes as this chunk's geometry.
     if cm.byte_len != (point_count as u32).saturating_sub(1) * POINT_RECORD_LEN as u32 {
@@ -751,9 +790,15 @@ pub(crate) fn decode_chunk_from(
     n: usize,
     out: &mut Vec<RoutePoint, MAX_POINTS_PER_CHUNK>,
 ) -> Result<(), Error> {
-    let _ = out.push(RoutePoint { lon: m.anchor_lon, lat: m.anchor_lat, ele: m.anchor_ele });
+    let _ = out.push(RoutePoint {
+        lon: m.anchor_lon,
+        lat: m.anchor_lat,
+        ele: m.anchor_ele,
+        surface: 0,
+        elevation_incomplete: false,
+    });
 
-    // Remaining n-1 points are fixed 6-byte records; read the chunk in one go.
+    // Remaining n-1 points are fixed 7-byte records; read the chunk in one go.
     let want = (n - 1) * POINT_RECORD_LEN;
     let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN];
     let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
@@ -767,8 +812,17 @@ pub(crate) fn decode_chunk_from(
         lon += rd_i16(bytes, o) as i32;
         lat += rd_i16(bytes, o + 2) as i32;
         let ele = rd_i16(bytes, o + 4);
+        if bytes[o + 6] & !15 != 0 {
+            return Err(Error::BadOffset);
+        }
         o += POINT_RECORD_LEN;
-        let _ = out.push(RoutePoint { lon, lat, ele });
+        let _ = out.push(RoutePoint {
+            lon,
+            lat,
+            ele,
+            surface: bytes[o - 1] & 7,
+            elevation_incomplete: bytes[o - 1] & 8 != 0,
+        });
     }
     Ok(())
 }
@@ -997,7 +1051,7 @@ impl core::ops::Deref for RouteReader<'_> {
 }
 
 /// Parsed header fields (shared by [`RouteIndex::read`] and [`RouteSummary::read`]). No `version`
-/// field: [`read_header`] accepts exactly one version, so every reader below it is v3 by
+/// field: [`read_header`] accepts exactly one version, so every reader below it is v4 by
 /// construction.
 pub(crate) struct Header {
     pub(crate) bbox: BBox,
@@ -1012,10 +1066,11 @@ pub(crate) struct Header {
     pub(crate) chunk_count: u32,
     pub(crate) index_offset: u32,
     pub(crate) name: String<NAME_CAP>,
+    pub(crate) flags: u8,
 }
 
 pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
-    let mut h = [0u8; HEADER_LEN];
+    let mut h = [0u8; HEADER_FULL_LEN];
     src.read_at(0, &mut h).map_err(|_| Error::BadOffset)?;
     // The magic + version gate is `obc-formats`' to own, not this reader's: one prefix check for
     // every OBCR consumer. It reports `Version` only *after* the magic matched, so the two-step
@@ -1027,12 +1082,53 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         Err(DecodeError::Version) => return Err(Error::BadVersion),
         Err(_) => return Err(Error::BadMagic),
     }
+    if h[5] & !7 != 0 || h[7] != 0 || h[119] != 0 {
+        return Err(Error::BadOffset);
+    }
+    if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {
+        return Err(Error::BadOffset);
+    }
+    if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP != 0 {
+        obc_formats::obcr::RouteSourceKey::decode(&h[128..160]).map_err(|_| Error::BadOffset)?;
+    }
+    let descriptor_offset = rd_u32(&h, 120);
+    let descriptor_len = rd_u32(&h, 124);
+    if h[118] == 0 {
+        if descriptor_offset != 0 || descriptor_len != 0 {
+            return Err(Error::BadOffset);
+        }
+    } else if h[118] != obc_formats::obcr::VISIT_DESCRIPTOR_VERSION {
+        return Err(Error::BadVersion);
+    } else if descriptor_len != obc_formats::obcr::VISIT_DESCRIPTOR_LEN as u32
+        || descriptor_offset < HEADER_FULL_LEN as u32
+        || u64::from(descriptor_offset) + u64::from(descriptor_len) > src.len()
+    {
+        return Err(Error::BadOffset);
+    }
+    if h[118] != 0 {
+        let mut bytes = [0; obc_formats::obcr::VISIT_DESCRIPTOR_LEN];
+        src.read_at(u64::from(descriptor_offset), &mut bytes)?;
+        let descriptor = obc_formats::obcr::VisitDescriptor::decode(&bytes).map_err(|_| Error::BadOffset)?;
+        if descriptor.accepted_anchors_m[2] > rd_u32(&h, 36) {
+            return Err(Error::BadOffset);
+        }
+        let overlap = |offset: u32, length: u64| {
+            u64::from(descriptor_offset) < u64::from(offset) + length
+                && u64::from(offset) < u64::from(descriptor_offset) + u64::from(descriptor_len)
+        };
+        if overlap(rd_u32(&h, 56), u64::from(rd_u32(&h, 52)) * CHUNK_META_LEN as u64)
+            || overlap(rd_u32(&h, 112), u64::from(rd_u16(&h, 116)) * WAYPOINT_LEN as u64)
+        {
+            return Err(Error::BadOffset);
+        }
+    }
     let name_len = (h[6] as usize).min(NAME_CAP);
     let mut name = String::new();
     if let Ok(s) = core::str::from_utf8(&h[64..64 + name_len]) {
         let _ = name.push_str(s);
     }
     Ok(Header {
+        flags: h[5] | if h[118] != 0 { 128 } else { 0 },
         bbox: BBox {
             min_lon: rd_i32(&h, 8),
             min_lat: rd_i32(&h, 12),
@@ -1075,6 +1171,7 @@ pub struct Waypoint {
     /// clamps rather than wrapping.
     pub lateral_offset_m: i16,
     pub name: String<WAYPOINT_NAME_CAP>,
+    pub provenance: Option<obc_formats::obcr::WaypointProvenance>,
 }
 
 impl Waypoint {
@@ -1135,6 +1232,7 @@ impl WaypointCursor {
             lon: rd_i32(&rec, 4),
             lat: rd_i32(&rec, 8),
             ele: rd_i16(&rec, 12),
+            provenance: obc_formats::obcr::WaypointProvenance::decode(&rec[44..80]).map_err(|_| Error::BadOffset)?,
             category_id: rec[14],
             lateral_offset_m: rd_i16(&rec, 16),
             name,

@@ -1177,7 +1177,11 @@ impl eframe::App for SimGui {
         for path in dropped {
             let is_gpx = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gpx"));
             if is_gpx {
-                match crate::routes::import_gpx(&mut self.store, &path) {
+                match crate::routes::import_gpx(
+                    &mut self.store,
+                    &path,
+                    Some((&self.map.reader(), self.map.route_attribution_key())),
+                ) {
                     Ok(s) => {
                         self.gpx_error = None;
                         self.note_card_commit();

@@ -364,6 +364,7 @@ pub fn nav_edge_step(chunk: &[u8], p: usize) -> Option<usize> {
     if n == NAV_EDGE_PT_COUNT_SENTINEL {
         return None;
     }
+    let n = n & NAV_EDGE_POINT_COUNT_MASK;
     if n < 2 {
         return None;
     }
@@ -502,6 +503,9 @@ pub const NAV_NEIGHBOR_LEN: usize = 17;
 /// carry different values (§8.3's one exception to "both sides agree").
 pub const NAV_NEIGHBOR_ASCENT_OFF: usize = 15;
 pub const NAV_EDGE_FIXED_LEN: usize = 15;
+/// All terrain integration samples were present for this edge.
+pub const NAV_EDGE_ELEVATION_COMPLETE: u16 = 0x8000;
+pub const NAV_EDGE_POINT_COUNT_MASK: u16 = 0x7fff;
 /// Width of one §8.6 profile record. **56 in v12** (#1073): the 52-byte v9 record plus
 /// [`NAV_PROFILE_CLIMB_WEIGHT_OFF`] and three reserved bytes written `0`.
 pub const NAV_PROFILE_LEN: usize = 56;

@@ -26,16 +26,16 @@
   },
   "fixtures": {
     "route-waypoints.obcr": {
-      "format": "OBCR v3",
-      "byte_len": 308,
-      "crc32": "0x1BFB6E3C",
+      "format": "OBCR v4",
+      "byte_len": 420,
+      "crc32": "0x75A4426E",
       "name": "Vector Loop",
-      "version": 3,
+      "version": 4,
       "point_count": 9,
       "chunk_count": 1,
       "total_distance_m": 2207,
       "total_ascent_m": 76,
-      "waypoint_record_len": 44,
+      "waypoint_record_len": 80,
       "waypoints": [
         {
           "dist_along_m": 0,
@@ -60,9 +60,9 @@
       ]
     },
     "route-plain.obcr": {
-      "format": "OBCR v3",
-      "byte_len": 220,
-      "crc32": "0x1557AE0B",
+      "format": "OBCR v4",
+      "byte_len": 260,
+      "crc32": "0x1B26FEAF",
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },
@@ -272,8 +272,8 @@
       "op": 1,
       "type": 1,
       "object_id": 65535,
-      "total_len": 308,
-      "crc32": "0x1BFB6E3C"
+      "total_len": 420,
+      "crc32": "0x75A4426E"
     },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
@@ -296,7 +296,7 @@
       "msg": 1,
       "object_id": 7,
       "status": "committed (0)",
-      "committed_offset": 308
+      "committed_offset": 420
     },
     "status-transfer-storage-full.bin": {
       "format": "status msg 1 (spec 4.3)",
@@ -384,39 +384,39 @@
       "entries": [
         {
           "object_id": 7,
-          "byte_len": 308,
+          "byte_len": 420,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 2,
           "name": "Vector Loop",
-          "crc32": "0x1BFB6E3C",
+          "crc32": "0x75A4426E",
           "expires_at": 1784808000,
           "retention": 3,
           "retention_state": "live countdown (2 weeks)"
         },
         {
           "object_id": 8,
-          "byte_len": 220,
+          "byte_len": 260,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
+          "crc32": "0x1B26FEAF",
           "expires_at": 0,
           "retention": 1,
           "retention_state": "clock not yet started (last_used == 0)"
         },
         {
           "object_id": 9,
-          "byte_len": 220,
+          "byte_len": 260,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
+          "crc32": "0x1B26FEAF",
           "expires_at": 0,
           "retention": 0,
           "retention_state": "never (synthetic entry \u2014 no .obcr file)"
@@ -468,8 +468,8 @@
       "op": 2,
       "type": 1,
       "object_id": 7,
-      "total_len": 308,
-      "crc32": "0x1BFB6E3C"
+      "total_len": 420,
+      "crc32": "0x75A4426E"
     },
     "trip-v2.bin": {
       "format": "trip object v2 (spec 7.7) \u2014 56-byte header + 8 bytes/stage, references flat ObjectIds",

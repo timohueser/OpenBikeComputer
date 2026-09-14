@@ -3,7 +3,7 @@ import OBCDomain
 import OBCFormats
 @testable import OBCTransport
 
-/// The route encoder (B12, #286): its OBCR v3 reader pinned against the shared
+/// The route encoder (B12, #286): its OBCR v4 reader pinned against the shared
 /// firmware-produced fixtures (`specs/vectors/route-*.obcr`, decoded by the
 /// production `obc-route` reader on the other side), plus encode→decode round-trips
 /// proving geometry, exact stats, and waypoints survive an upload.
@@ -33,7 +33,7 @@ final class RouteObjectCodecTests: XCTestCase {
         let decoded = try RouteObjectCodec.decode(try fixture("route-waypoints.obcr"))
 
         // Header stats (manifest.json).
-        XCTAssertEqual(decoded.version, 3)
+        XCTAssertEqual(decoded.version, 4)
         XCTAssertEqual(decoded.name, "Vector Loop")
         XCTAssertEqual(decoded.storedPointCount, 9)
         XCTAssertEqual(decoded.totalDistanceMeters, 2207)
@@ -68,7 +68,7 @@ final class RouteObjectCodecTests: XCTestCase {
     /// refused rather than read with the old 40-byte record.
     func testRejectsPreV3Routes() throws {
         var bytes = try fixture("route-waypoints.obcr")
-        for old: UInt8 in [1, 2] {
+        for old: UInt8 in [1, 2, 3] {
             bytes[bytes.startIndex + 4] = old
             XCTAssertThrowsError(try RouteObjectCodec.decode(bytes), "v\(old) must not decode")
         }
@@ -112,7 +112,7 @@ final class RouteObjectCodecTests: XCTestCase {
         let bytes = RouteObjectCodec.encode(route, name: route.name!)
         let decoded = try RouteObjectCodec.decode(bytes)
 
-        XCTAssertEqual(decoded.version, 3)
+        XCTAssertEqual(decoded.version, 4)
         XCTAssertEqual(decoded.name, "Round Trip Ridge")
 
         // Exact stats mirror RouteStats (the E1 display) at whole-meter resolution.
@@ -187,6 +187,30 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(decoded.points.count, 2)
     }
 
+    func testMissingCoverageAndProvenanceSurviveTheCodec() throws {
+        let source = WaypointProvenance(store: Data(repeating: 1, count: 16), object: 2, revision: 3, ordinal: 4)
+        let points = [
+            RoutePoint(coordinate: Coordinate(latitude: 0, longitude: 0), elevationMeters: 0),
+            RoutePoint(coordinate: Coordinate(latitude: 0, longitude: 0.0005), elevationMeters: nil, surface: 3),
+            RoutePoint(coordinate: Coordinate(latitude: 0, longitude: 0.001), elevationMeters: 100, surface: 3, elevationIncomplete: true),
+        ]
+        let waypoint = Waypoint(index: 0, name: "Source", distanceAlongMeters: 0, coordinate: points[0].coordinate, provenance: source)
+        let bytes = RouteObjectCodec.encode(points: points, waypoints: [waypoint], name: "Gap")
+        let decoded = try RouteObjectCodec.decode(bytes)
+        XCTAssertEqual(decoded.points[0].elevationMeters, 0)
+        XCTAssertNil(decoded.points[1].elevationMeters)
+        XCTAssertTrue(decoded.points[2].elevationIncomplete)
+        XCTAssertEqual(decoded.points[2].surface, 3)
+        XCTAssertEqual(decoded.totalAscentMeters, 0)
+        XCTAssertEqual(decoded.waypoints[0].provenance, source)
+        var invalid = bytes
+        invalid[118] = 1
+        XCTAssertThrowsError(try RouteObjectCodec.decode(invalid))
+        invalid = bytes
+        invalid[128] = 1
+        XCTAssertThrowsError(try RouteObjectCodec.decode(invalid))
+    }
+
     func testEmptyGeometryEncodesToEmptyData() {
         XCTAssertTrue(RouteObjectCodec.encode(points: [], waypoints: [], name: "Nothing").isEmpty)
     }
@@ -225,10 +249,10 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertEqual(first, second, "the OBCR encode must be byte-identical run to run")
 
         // The stored fixture CRC — an encoder change must re-pin this on purpose,
-        // not dim adoption silently. Re-pinned for OBCR v3 (#947: version byte 3,
+        // not dim adoption silently. Re-pinned for OBCR v4 (#947: version byte 3,
         // the 44-byte waypoint record, and this waypoint's category + signed
         // offset now inside it); was `0x6B3F_72E3` under v2.
-        let goldenCRC: UInt32 = 0xFC21_7148
+        let goldenCRC: UInt32 = 0xDC3CBE0B
         XCTAssertEqual(
             CRC32.checksum(first), goldenCRC,
             "OBCR encoding changed; adoption's re-encode CRC moved — re-pin goldenCRC consciously")
