@@ -1180,7 +1180,7 @@ def select_by_level(
         selection = SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
         if suite["level"] == resolved and surface in (None, suite["surface"]):
             selection.reasons.append(reason)
-            if not selection.jobs:
+            if not selection.jobs and suite.get("pull_request") != "never":
                 errors.append(
                     f"selected suite {suite['id']} has no executable CI route; "
                     f"command is `{suite['command']}`"
