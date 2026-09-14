@@ -1014,3 +1014,30 @@ Use a complete regional map to check production coverage and the map-size budget
 rejects more than 10% growth relative to the same complete map with native heights only, including
 terrain indices and alignment. Simulator fixture packages are separate acceptance inputs; see
 [the simulator README](../../apps/obc-sim/README.md).
+
+## Landmark photo demo
+
+This display-only demo shows Aare Gorge, Reichenbach Falls, and Dunlough Castle.
+It shares the simulator's accepted 216 × 240 ordered-dither RGB222 assets. It uses the production framebuffer and FLPR
+presenter. It does not initialize or write the SD card. GPS, navigation, and BLE are not part
+of this demo. It replaces the application image until normal firmware is flashed again.
+
+From this directory, with the J4 debug probe connected:
+
+```sh
+cargo run --release --bin display_test --features landmark-photo-demo
+```
+
+This command uses the shared board runner and verified single-buffer programming described
+above. Up or Down changes the place. Select cycles through photo credit, source URL, licence
+URL, and photo. Back returns to the photo. These buttons use the normal board pins.
+The pixels are embedded in firmware flash; this is not an SD-card loading test.
+The COM task continues while the image is stationary.
+
+To restore this checkout's normal application, stop the demo's RTT session and run:
+
+```sh
+cargo run --release --bin obc-fw-nrf54l
+```
+
+See the [photo study and attribution](../../docs/assets/ride-assistant/landmark-photos/README.md).
