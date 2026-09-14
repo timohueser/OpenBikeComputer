@@ -995,8 +995,8 @@ terrain indices and alignment. Simulator fixture packages are separate acceptanc
 
 ## Landmark photo demo
 
-This display-only demo shows Aare Gorge and Reichenbach Falls with the same 160 × 120
-ordered-dither RGB222 assets as the simulator. It uses the production framebuffer and FLPR
+This display-only demo shows Aare Gorge, Reichenbach Falls, and Dunlough Castle.
+It shares the simulator's 160 × 120 and 216 × 240 ordered-dither RGB222 assets. It uses the production framebuffer and FLPR
 presenter. It does not initialize or write the SD card. GPS, navigation, and BLE are not part
 of this demo. It replaces the application image until normal firmware is flashed again.
 
@@ -1007,8 +1007,10 @@ cargo run --release --bin display_test --features landmark-photo-demo
 ```
 
 This command uses the shared board runner and verified single-buffer programming described
-above. Up or Down changes the photo. Select cycles through photo credit, source URL, licence
-URL, and the photo. Back returns to the photo. These buttons use the normal board pins.
+above. It starts with the larger photo. Up or Down changes the place and keeps the selected
+size. Select switches between small and large. Back opens the credits; Select then cycles
+through the source URL, licence URL, and photo. Back closes the credits. These buttons use
+the normal board pins.
 The COM task continues while the image is stationary.
 
 To restore this checkout's normal application, stop the demo's RTT session and run:

@@ -160,26 +160,27 @@ categories are grey placeholders.
 ### Landmarks study
 
 Select **Landmarks** in Ride Assistant, or start with `--assistant-stage landmarks`.
-Up/Down selects one of three nearby landmarks. All markers remain on the map. The selected
+Up/Down selects one of four nearby landmarks. All markers remain on the map. The selected
 card shows the name, kind, and straight-line distance from the rider. Select opens the text.
 Up/Down changes the page; Back restores the selected marker. **Visit** opens the same
 preview as Find a place, with route distance, climbing, and the extra cost including return.
 **Add stop** accepts that visit. Reading another place does not change the accepted route.
 
-Aare Gorge, Reichenbach Falls, and the Gelmerbahn have short text adapted from Wikipedia.
+Aare Gorge, Reichenbach Falls, Gelmerbahn, and Dunlough Castle have short text adapted from Wikipedia.
 Down + Back opens the bottom drawer. **Sources** opens the text attribution, licence URL, and
 article URLs for the study, plus each photo's credit, source, and licence. Back restores the
-reading page and selection. Aare Gorge and Reichenbach Falls have a third page with a
-160 × 120 ordered-dither photo. Up from the first text page opens the photo directly. See the
+reading page and selection. Aare Gorge, Reichenbach Falls, and Dunlough Castle have two
+photo pages: 160 × 120 and 216 × 240, with ordered dithering. Up from the first text page
+opens the larger photo; Up again opens the smaller one. See the
 [captures and article attribution](../../docs/assets/ride-assistant/landmarks-study/README.md).
 The article facts are real, but landmark positions and access paths are synthetic. They fit
-inside the loaded map and do not describe actual access to those landmarks. All three have
+inside the loaded map and do not describe actual access to those landmarks. All four have
 unknown opening hours. Known-closed landmarks are excluded; places with unknown hours remain
 in the results.
 
-This study has three results. It does not define the production result limit, search radius,
+This study has four results. It does not define the production result limit, search radius,
 or ranking policy. Text is curated to fit two readable pages. There is no Wikipedia fetch,
-landmark map format, JPEG decoder, or live route calculation in the device prototype. The two
+landmark map format, JPEG decoder, or live route calculation in the device prototype. The
 photos use fixed RGB222 assets shared with the [board photo demo](../../firmware/obc-fw-nrf54l/README.md#landmark-photo-demo).
 
 ### What's next study
