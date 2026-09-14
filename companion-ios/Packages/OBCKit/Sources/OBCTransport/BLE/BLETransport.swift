@@ -1428,11 +1428,10 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-
+        discoveryPolicy.didDisconnect()
         if discoverContinuation != nil {
             failDiscover(.notConnected)
         } else if discoveryPolicy.foregroundRequested {
-            discoveryPolicy.didDisconnect()
             startConnectIfReady()
         }
     }
