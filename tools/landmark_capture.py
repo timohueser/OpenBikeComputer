@@ -92,6 +92,14 @@ class Capture:
             temporary.write_bytes(data)
             temporary.replace(target)
             outcome.update(status="ok", bytes=len(data), sha256=digest(data))
+            if path.endswith(".json"):
+                try:
+                    value = json.loads(data)
+                    valid = isinstance(value, dict) and "error" not in value
+                except (UnicodeDecodeError, ValueError):
+                    valid = False
+                if not valid:
+                    outcome.update(status="invalid-response", reason="response is not valid API JSON or contains an API error")
         except HTTPError as error:
             outcome.update(status="http-error", http_status=error.code, reason=str(error))
         except (URLError, TimeoutError, OSError) as error:
@@ -105,15 +113,7 @@ class Capture:
         outcome = self.fetch(path, url)
         if outcome["status"] != "ok":
             return None
-        try:
-            value = json.loads((self.root / path).read_bytes())
-            if isinstance(value, dict) and "error" not in value:
-                return value
-        except (UnicodeDecodeError, ValueError):
-            pass
-        outcome.update(status="invalid-response", reason="response is not valid API JSON or contains an API error")
-        write_json(self.root / "outcomes" / (digest(path.encode()) + ".json"), outcome)
-        return None
+        return json.loads((self.root / path).read_bytes())
 
     def outcomes(self) -> list[dict]:
         return sorted((json.loads(p.read_text()) for p in (self.root / "outcomes").glob("*.json")), key=lambda v: v["path"])
@@ -341,9 +341,10 @@ def run(args) -> int:
         outcomes = capture.outcomes()
         failures = [o for o in outcomes if o["status"] != "ok"]
         unresolved = [o for o in failures if not o["path"].startswith("queries/")]
-        coverage = dict(kind="geographic-policy-superset", country_complete=asset_phase_complete and all(q["complete"] for q in queries) and not unresolved and not missing,
+        entities_complete = len(places) == len(qids)
+        coverage = dict(kind="geographic-policy-superset", country_complete=asset_phase_complete and entities_complete and all(q["complete"] for q in queries) and not unresolved and not missing,
                     query_coverage_complete=all(q["complete"] for q in queries), bbox=bbox(boundary), boundary_path="boundary.geojson", policy_path="policy.json",
-                    queries=queries, candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places),
+                    queries=queries, candidate_identities=len(qids), acquired_entities=sum("entity_revision" in p for p in places), entity_coverage_complete=entities_complete,
                     asset_phase_complete=asset_phase_complete, request_failures=len(failures), unresolved_source_failures=len(unresolved), missing_classes=missing,
                     selection="Best-rank P31/P279 policy-root union in geographic bounding box; compiler applies exact polygon, best-rank claims and exclusions. No P17 constraint.")
         write_json(args.out / "manifest.json", dict(schema=1, sources=[{k: o[k] for k in ("path", "url", "retrieved_at", "sha256", "bytes")} for o in outcomes if "sha256" in o], places=places, classes_path="classes.json", missing_classes=missing, coverage=coverage, outcomes=outcomes))
@@ -385,7 +386,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         return run(args)
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")
 
 
