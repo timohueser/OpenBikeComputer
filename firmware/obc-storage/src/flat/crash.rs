@@ -72,6 +72,7 @@ pub(super) fn entry(
     }
     Entry {
         meta: EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(id),
             revision: Revision(revision),
             kind,

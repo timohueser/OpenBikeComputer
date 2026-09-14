@@ -1102,7 +1102,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     ) -> Reaction {
         match self.admit_put(store, link, ceilings, request, put) {
             Ok(()) => Reaction::Idle,
-            Err(refusal) => self.emit_error(out, Opcode::Put, request, refusal),
+            Err(refusal) => {
+                if refusal.code == ErrorCode::NoSpace {
+                    self.upload_end = Some((put.kind, UploadEnd::Refused(refusal.code)));
+                }
+                self.emit_error(out, Opcode::Put, request, refusal)
+            }
         }
     }
 

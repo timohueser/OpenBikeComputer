@@ -11,7 +11,7 @@
 
 use obc_app::catalog_state::CatalogError;
 use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
-use obc_app::{App, CatalogObjectId, RideEntry, RouteRetentionMeta};
+use obc_app::{App, CatalogObjectId, RideEntry};
 use obc_formats::io::ByteSource;
 use obc_ports::TrackPoint;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -64,6 +64,16 @@ impl ByteSource for RouteLease {
 
 /// Route projections, retained readers and physical writes used by the shared host executor.
 pub trait RouteRepository {
+    fn set_route_clock(&mut self, _utc: Option<u32>) {}
+    fn cleanup_route(
+        &mut self,
+        _before_utc: u32,
+        _store: obc_app::device_core::StoreIdentity,
+        _active: Option<CatalogObjectId>,
+    ) -> Result<Option<CatalogObjectId>, CatalogError> {
+        Err(CatalogError::Unsupported)
+    }
+
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
@@ -95,14 +105,6 @@ pub trait RouteRepository {
     /// Force the active bytes to re-read on the next [`sync_active`](RouteRepository::sync_active)
     /// even under an unchanged index — a re-route rewrites the nav bytes beneath the same catalog slot.
     fn invalidate_active(&mut self);
-    /// Each catalog entry's device-local retention meta (epic #638, S3), parallel to
-    /// [`ids`](RouteRepository::ids) — fed alongside the catalog through
-    /// [`App::set_routes_with_meta`](obc_app::App::set_routes_with_meta) so the auto-expiry sweep
-    /// reads device truth. Defaults to empty → every route reads
-    /// [`Never`](obc_app::Retention::Never) (nothing expires), which a retention-less host keeps.
-    fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
-        Vec::new()
-    }
     /// Current physical card identity/sequence, if this repository owns a flat card.
     fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
         None
@@ -110,21 +112,8 @@ pub trait RouteRepository {
     /// Reload catalog and metadata together; only a complete validated projection returns a scope.
     fn refresh_metadata(
         &mut self,
-    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::metadata::MetadataError> {
         Ok(None)
-    }
-    fn write_metadata(
-        &mut self,
-        _effect: obc_app::retention::RetentionEffect,
-    ) -> Result<(), obc_app::retention::RetentionError> {
-        Err(obc_app::retention::RetentionError::Unsupported)
-    }
-    fn expire_route(
-        &mut self,
-        _id: CatalogObjectId,
-        _scope: obc_app::device_core::StoreRevision,
-    ) -> Result<bool, CatalogError> {
-        Err(CatalogError::Unsupported)
     }
 }
 
@@ -143,29 +132,12 @@ pub trait RideRepository {
     /// Complete catalog and durable policy refresh. Legacy stores have no card authority.
     fn refresh_metadata(
         &mut self,
-    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::metadata::MetadataError> {
         self.refresh();
         Ok(None)
     }
     fn store_scope(&self) -> Option<obc_app::device_core::StoreRevision> {
         None
-    }
-    /// Full retention inventory when the summary catalog is capped for display.
-    fn retention_inventory(&self) -> Option<&[obc_app::RideRetentionRecord]> {
-        None
-    }
-    fn write_metadata(
-        &mut self,
-        _effect: obc_app::retention::RetentionEffect,
-    ) -> Result<(), obc_app::retention::RetentionError> {
-        Err(obc_app::retention::RetentionError::Unsupported)
-    }
-    fn expire_ride(
-        &mut self,
-        _id: CatalogObjectId,
-        _scope: obc_app::device_core::StoreRevision,
-    ) -> Result<bool, CatalogError> {
-        Err(CatalogError::Unsupported)
     }
 }
 

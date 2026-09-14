@@ -28,10 +28,6 @@ final class UploadSheetTests: XCTestCase {
         add(attachment)
     }
 
-    /// E2 for the Blue Mounds fixture — a route the mock device does **not**
-    /// hold, so Upload is offered (a device-held fixture boots up to date with
-    /// the button disabled) — then tap Upload and confirm through the S7 Auto-delete
-    /// step (`beginUpload`) so the transfer starts.
     @MainActor
     private func startUpload(_ app: XCUIApplication) {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
@@ -41,18 +37,9 @@ final class UploadSheetTests: XCTestCase {
         let upload = app.buttons["detail.upload"]
         XCTAssertTrue(upload.waitForExistence(timeout: 5), "upload action missing")
         upload.tap()
-        beginFromReady(app)
     }
 
-    /// The pre-transfer confirm (epic #638 S7): a retention-capable device opens
-    /// the sheet on the Auto-delete step — tap **Upload** to start the transfer.
     @MainActor
-    private func beginFromReady(_ app: XCUIApplication) {
-        let begin = app.buttons["upload.begin"]
-        XCTAssertTrue(begin.waitForExistence(timeout: 5), "ready confirm missing")
-        begin.tap()
-    }
-
     /// F → F₂ against the mock: moving progress at a realistic speed, the
     /// done confirm, and the detail still underneath — the app never left it.
     @MainActor
@@ -119,7 +106,6 @@ final class UploadSheetTests: XCTestCase {
         let upload = app.buttons["detail.upload"]
         XCTAssertTrue(upload.waitForExistence(timeout: 10), "E1 upload action missing")
         upload.tap()
-        beginFromReady(app)
 
         XCTAssertTrue(app.staticTexts["On the device"].waitForExistence(timeout: 15), "F₂ missing")
         app.buttons["upload.done"].tap()

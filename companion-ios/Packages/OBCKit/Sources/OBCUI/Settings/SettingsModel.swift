@@ -35,12 +35,6 @@ public final class SettingsModel {
     /// auto-dismiss writes it back through the binding.
     public var renameWriteFailed = false
 
-    /// The default retention a **new** upload seeds (epic #638 S7) — an app-local
-    /// preference, mirrored from ``RetentionDefaultsStore`` on init and written
-    /// back through ``setDefaultRetention(_:)``. Read-only from the view; the
-    /// Auto-delete row picks a level via the setter so the persist can't be
-    /// skipped. Changing it seeds only future uploads — never a retro write.
-    public private(set) var defaultRetention: Retention
 
     /// "Check for updates automatically" (#773 U5) — **on by default**. It gates both proactive
     /// surfaces: the launch sheet and the background refresh, and with it the network request
@@ -85,10 +79,6 @@ public final class SettingsModel {
 
     private let transport: any DeviceLink & DeviceBattery & DeviceConfiguration & DeviceBonding
     private let bondStore: any BondStore
-    /// The app-local default-retention preference (epic #638) — the persist seam
-    /// behind the Auto-delete row, shared with `MainScreenModel` so a change here
-    /// seeds the next upload's picker.
-    private let retentionDefaults: any RetentionDefaultsStore
     /// The proactive-update preference store (#773 U5) — the same seam the launch sheet and the
     /// background refresh read, so flipping the toggle here silences both at once.
     private let updateSurface: any UpdateSurfaceStore
@@ -104,32 +94,17 @@ public final class SettingsModel {
     public init(
         transport: any DeviceLink & DeviceBattery & DeviceConfiguration & DeviceBonding,
         bondStore: any BondStore,
-        retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
         onDeviceRenamed: @escaping (String) -> Void = { _ in },
         onForget: @escaping () -> Void = {}
     ) {
         self.transport = transport
         self.bondStore = bondStore
-        self.retentionDefaults = retentionDefaults
-        self.defaultRetention = retentionDefaults.loadDefaultRetention()
         self.updateSurface = updateSurface
         self.autoCheckUpdates = updateSurface.loadAutoCheckEnabled()
         self.onDeviceRenamed = onDeviceRenamed
         self.onForget = onForget
     }
-
-    // MARK: Default retention (epic #638 S7)
-
-    /// Pick the default retention for new uploads: update the observable state and
-    /// persist it. A no-op when unchanged. Seeds only future uploads — existing
-    /// routes keep whatever level they already carry (no retro writes).
-    public func setDefaultRetention(_ retention: Retention) {
-        guard retention != defaultRetention else { return }
-        defaultRetention = retention
-        retentionDefaults.saveDefaultRetention(retention)
-    }
-
     // MARK: Automatic update checks (#773 U5)
 
     /// Flip "Check for updates automatically" and persist it. The policy reads this store every

@@ -59,6 +59,7 @@ fn publish(store: &FlatStore<&SparseDisk>, payload: &[u8], name: &str) -> Object
     let mut allocation = store.allocate(payload.len() as u64).expect("the extents are free");
     store.write(&mut allocation, payload).expect("the payload fits");
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::MapShard,

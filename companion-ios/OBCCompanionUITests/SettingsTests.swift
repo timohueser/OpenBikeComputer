@@ -50,8 +50,6 @@ final class SettingsTests: XCTestCase {
                       "device status line missing")
         XCTAssertTrue(app.staticTexts["Rename device"].exists)
         XCTAssertTrue(app.staticTexts["Forget device"].exists)
-        // The S7 default-retention row (epic #638).
-        XCTAssertTrue(app.staticTexts["Auto-delete new routes"].exists, "the routes default row is missing")
         snap(app, "G-settings")
 
         // The screen now scrolls past a fold — reveal each lower group in turn
