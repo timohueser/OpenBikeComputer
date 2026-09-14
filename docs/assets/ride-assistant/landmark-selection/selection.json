@@ -11,7 +11,8 @@
     "Q992794",
     "Q23397",
     "Q8502",
-    "Q1015644"
+    "Q1015644",
+    "Q35666"
   ],
   "groups": {
     "Natural curiosities": {
@@ -69,7 +70,7 @@
       ]
     },
     "Passes": {
-      "include": false,
+      "include": true,
       "roots": [
         "Q133056"
       ]
@@ -79,9 +80,5 @@
     216,
     240
   ],
-  "pending_groups": [
-    "Glaciers",
-    "Passes"
-  ],
-  "policy": "Deterministic type filter; glacier/pass inclusion pending sample review. No editorial or AI ranking."
+  "policy": "Deterministic type filter. Passes included; glaciers, lakes, and mountains excluded. No editorial or AI ranking."
 }

@@ -1,5 +1,8 @@
 # Random glacier and pass examples
 
+Review decision: keep passes; exclude glaciers. Keep large ordered-dither images and use basic
+lossless compression in production. These sample fixtures remain available for comparison.
+
 Large 216 × 240 ordered-dither photos are the accepted format. These six examples test the
 content, not the image size. Positions and visit routes are synthetic inside the Swiss study
 map. They do not describe access to the real places. In particular, a glacier location must
