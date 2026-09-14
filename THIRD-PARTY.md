@@ -15,18 +15,7 @@ texts from clearlydefined.io — which is how several of the copyright lines bel
 survive at all — and that service's whitespace is not stable between machines. Words,
 copyright holders and terms are untouched; only the spacing between them is.
 
-Three obligations live outside this file, because their artifacts are built elsewhere:
-
-- **The map builder's web bundle** emits `third-party-licenses.txt` beside itself at
-  build time, generated from the modules the bundler actually included.
-- **Map data** is © OpenStreetMap contributors, under the
-  [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both
-  credits ship on the device (Settings ▸ System ▸ About) and in every published catalog.
-- **Weather sources** are credited in the companion app, on its Weather screen, and the
-  credit text comes from the weather service's own manifest rather than from a list kept
-  here: a source a baker deploy adds has to appear on a phone that shipped before it
-  existed, so a baked-in list could only ever be out of date. MET Norway's line is the
-  one constant, declared by the provider adapter that calls it.
+Two obligations live outside this file, because their artifacts are built elsewhere:
 
 GEOS deserves a line, because deny.toml's note about it predates the current tree:
 `geos-src` declares MIT for the *wrapper* while the C++ sources it carries are
@@ -8658,10 +8647,8 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
-
 The above copyright notice and this permission notice shall be included in
 all copies or substantial portions of the Software.
-
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -9942,4 +9929,3 @@ the following restrictions:
 
 3. This notice may not be removed or altered from any source distribution.
 ```
-

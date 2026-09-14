@@ -8,7 +8,7 @@ copy: ai
 
 The companion link moves stored objects between OpenBikeComputer and a client.
 BLE and USB use the same protocol-v4 frames.
-BLE also supplies pairing, settings, clock, bond removal, and weather-refresh controls.
+BLE also supplies pairing, settings, clock, and bond removal controls.
 USB supplies object transfer and device information only.
 
 The normative contracts are:
@@ -111,7 +111,6 @@ A changed commit sequence tells the client to read the catalog again.
 | 1 | Route | OBCR route |
 | 2 | Trip | Ordered route membership |
 | 3 | Ride | Device-produced recording |
-| 4 | Weather bundle | OBCW weather data |
 | 5 | Map | One OBCM file with embedded terrain |
 | 6 | Retired | Map-set manifest; producers must not write it |
 | 7 | Update package | OBCU firmware package |
@@ -444,24 +443,12 @@ The device also refuses an unencrypted CoC.
 </figure>
 
 BLE keeps a device-local command and configuration surface beside protocol v4.
-It supports clock setting, bond removal, weather refresh, and settings.
+It supports clock setting, bond removal, and settings.
 These controls are not flat-store objects.
 They do not exist in USB binding v5.
 
 The phone sets UTC and local offset after encryption.
 A GPS fix can also establish trusted UTC.
-
-## Weather position requests
-
-Before a weather request contacts the phone, the device checks its position. It can reuse a GPS
-fix from the last 30 seconds. Otherwise, it wakes GPS and waits for a new fix, even when no ride
-is recording. The same check occurs before it decides that a stored forecast still covers the
-current location. There is no fallback to an old fix or the phone's position.
-
-Weather and Peak View share receiver demand. After a fix arrives, GPS can sleep when neither
-feature nor a recording needs it. A weather acquisition attempt stops after 150 seconds without
-a fix. Opening Weather again can retry; automatic requests wait for their normal cadence. GPS
-acquisition does not start a phone fetch or show the UPDATING cue.
 
 ## Sensors: the device as BLE central
 
