@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import suite_registry as registry
 
-
 class SuiteRegistryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -72,9 +71,7 @@ class SuiteRegistryTests(unittest.TestCase):
             "apps/obc-web-demo/tests/browser/demo.test.js": "test('x', () => {})",
             "tools/tests/test_tool.py": "def test_x(): pass",
             "firmware/tools/tests/test_firmware.py": "def test_x(): pass",
-            "ops/weather/tests/test_weather.py": "def test_x(): pass",
             "builder/tests/test_builder.py": "def test_x(): pass",
-            "tools/rain-radar-demo/tests/radar.test.ts": "test('x', () => {})",
             "companion-ios/OBCCompanionUITests/SmokeTests.swift": "func testSmoke() {}",
             "companion-ios/Packages/OBCKit/Package.swift": '.testTarget(name: "OBCKitTests")',
             ".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - run: cargo test --workspace --locked\n",
@@ -92,7 +89,6 @@ class SuiteRegistryTests(unittest.TestCase):
                 "web-test",
                 "browser-test",
                 "python-test",
-                "rain-radar-test",
                 "xcuitest",
                 "swift-target",
                 "workflow-command",
@@ -250,7 +246,6 @@ class SuiteRegistryTests(unittest.TestCase):
         )
         self.assertEqual(registry.cargo_job_coverage(self.root, graph), {"demo": {"test"}})
 
-
 class SuiteSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -262,10 +257,11 @@ class SuiteSelectionTests(unittest.TestCase):
             self._suite("rust.desktop", "rust-package", "desktop", platforms=["linux", "macos", "windows"]),
             self._suite("web.unit", "path", "web-test", pattern="web/**/*.test.ts", triggers=["web/src/**", "specs/vectors/**"]),
             self._suite("swift.contract", "swift-target", "SwiftTests", package="ios/Package.swift", triggers=["specs/vectors/**"]),
-            self._suite("python.weather", "path", "python-test", pattern="weather/tests/test_*.py", triggers=["weather/**"]),
+            self._suite("python.service", "path", "python-test", pattern="service/tests/test_*.py", triggers=["service/**"]),
             self._suite("python.tool", "path", "python-test", pattern="tools/tests/test_*.py", triggers=["tools/tool.py"]),
             self._suite("python.builder", "path", "python-test", pattern="builder/tests/test_*.py", triggers=["builder/server/**/*.py"]),
             self._suite("fixture.consumer", "path", "python-test", pattern="fixtures/tests/test_*.py", fixtures=["catalog"]),
+            self._suite("missing.route", "path", "browser-test", pattern="demo/tests/*.test.ts", triggers=["demo/**"]),
             self._suite("ci.policy", "workflow", "python3 tools/check.py", triggers=["testing/**", ".github/workflows/**"]),
             self._suite(
                 "ci.dependencies",
@@ -274,7 +270,6 @@ class SuiteSelectionTests(unittest.TestCase):
                 triggers=["firmware/tools/dependency_rules.json"],
             ),
             self._suite("ci.docs", "workflow", "python3 docs/build.py", triggers=["docs/**"]),
-            self._suite("missing.route", "path", "rain-radar-test", pattern="demo/tests/*.test.ts", triggers=["demo/**"]),
         ]
         matches = {suite["id"]: [] for suite in self.suites}
         self.inventory = registry.Inventory(self.suites, [], [], matches)
@@ -367,7 +362,7 @@ class SuiteSelectionTests(unittest.TestCase):
             "crates/core/src/lib.rs": {"rust.core", "rust.leaf", "rust.consumer"},
             "crates/core/tests/common/mod.rs": {"rust.core", "rust.leaf", "rust.consumer"},
             "specs/vectors/format.json": {"rust.core", "rust.consumer", "web.unit", "swift.contract"},
-            "weather/probe.py": {"python.weather"},
+            "service/probe.py": {"python.service"},
             "tools/tool.py": {"python.tool"},
             "builder/server/nested/routes.py": {"python.builder"},
             "fixtures/catalog.toml": {"fixture.consumer"},
@@ -449,7 +444,6 @@ class SuiteSelectionTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qam", "head"], cwd=self.root, check=True)
         self.assertEqual(registry.git_changed_paths(self.root, base, "HEAD"), ["web/src/view.ts"])
 
-
 class LocalInterfaceTests(unittest.TestCase):
     """The level, surface, and dry-run behavior of `obc test`, on a synthetic registry."""
 
@@ -462,7 +456,7 @@ class LocalInterfaceTests(unittest.TestCase):
             self._suite("unit.maps", "unit", "maps"),
             self._suite("component.maps", "component", "maps"),
             self._suite("contract.formats", "contract", "formats"),
-            self._suite("fixture.weather", "fixture", "weather"),
+            self._suite("fixture.map", "fixture", "map"),
             self._suite("e2e.ios", "end-to-end", "ios", platforms=["nonexistent-os"]),
         ]
         self.inventory = registry.Inventory(self.suites, [], [], {s["id"]: [] for s in self.suites})
@@ -497,8 +491,8 @@ class LocalInterfaceTests(unittest.TestCase):
             (("unit", "maps"), ["unit.maps"]),
             (("component", None), ["component.maps"]),
             (("contract", None), ["contract.formats"]),
-            (("fixtures", None), ["fixture.weather"]),
-            (("fixture", None), ["fixture.weather"]),
+            (("fixtures", None), ["fixture.map"]),
+            (("fixture", None), ["fixture.map"]),
             (("e2e", None), ["e2e.ios"]),
             (("end-to-end", None), ["e2e.ios"]),
         ]
@@ -545,7 +539,6 @@ class LocalInterfaceTests(unittest.TestCase):
         with self.assertRaisesRegex(registry.RegistryError, "--base origin/develop"):
             registry.command_run(arguments)
 
-
 def synthetic_workflow(runs_on: str = "    runs-on: ubuntu-latest\n") -> str:
     return (
         "name: CI\non:\n  pull_request:\njobs:\n"
@@ -557,7 +550,6 @@ def synthetic_workflow(runs_on: str = "    runs-on: ubuntu-latest\n") -> str:
         "  ci:\n    needs: [selection, unit]\n    runs-on: ubuntu-latest\n    steps:\n"
         "      - run: python3 tools/ci_aggregate.py\n"
     )
-
 
 def synthetic_suite(suite_id, command, ownership, pull_request="affected"):
     return {
@@ -571,7 +563,6 @@ def synthetic_suite(suite_id, command, ownership, pull_request="affected"):
         "extra_triggers": [],
         "ownership": ownership,
     }
-
 
 class CiRoutingTests(unittest.TestCase):
     """Job routing and its four post-cutover validation failures, on a synthetic workflow."""
@@ -714,7 +705,6 @@ class CiRoutingTests(unittest.TestCase):
         )
         self.assertEqual(registry.gate_claims(suites, graph)["test"], {"ci.policy", "rust.core"})
 
-
 class ShippedRoutingTests(unittest.TestCase):
     """The shipped registry's own routing, so a real change class cannot drift silently."""
 
@@ -749,7 +739,6 @@ class ShippedRoutingTests(unittest.TestCase):
             "web.builder-vitest": ["web"],
             "python.repository-tools": ["fixture-registry", "selection"],
             "python.firmware-tools": ["test"],
-            "python.weather-probe": ["test"],
             "python.builder": ["test"],
             "web.demo-browser": ["wasm"],
         }
@@ -777,26 +766,12 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "test-weather", "wasm", "wasm-bridges"],
+                ["boot", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
                 ["specs/vectors/obcm-v2.json"],
                 ["clippy", "device", "fmt", "ios-unit", "test", "wasm-bridges", "web"],
-            ),
-            # The bakery's four runners are the most expensive thing on the gate, so the two
-            # directions of its route are pinned: a change under the baker starts them, and a leaf
-            # crate elsewhere in the workspace does not, even though every leg compiles
-            # `--workspace`. `obc-weather` is the device-side reader, not the baker.
-            (
-                "the weather baker",
-                ["host/obc-wx-bake/src/pack/rebake.rs"],
-                ["clippy", "fmt", "test", "test-weather"],
-            ),
-            (
-                "the device weather reader",
-                ["firmware/obc-weather/src/lib.rs"],
-                ["clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
             ),
             (
                 "desktop launch harness",
@@ -812,12 +787,12 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "wasm", "wasm-bridges", "web"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "test-weather", "wasm", "wasm-bridges", "web"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "wasm", "wasm-bridges", "web"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
@@ -832,15 +807,13 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "repository tooling",
                 ["tools/fixtures.py"],
-                ["desktop", "desktop-frontend", "test", "test-weather", "wasm-bridges"],
+                ["desktop", "desktop-frontend", "test", "wasm-bridges"],
             ),
         ]
         for name, paths, expected in cases:
             with self.subTest(change=name):
                 jobs = self.jobs_for(*paths) - self.unconditional
                 self.assertEqual(sorted(jobs), expected)
-
-
 
 class ExceptionIssueStateTests(unittest.TestCase):
     def suite(self, reference: str, field: str = "quarantine", name: str = "demo") -> dict:

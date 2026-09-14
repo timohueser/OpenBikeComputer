@@ -11,7 +11,7 @@
 //!
 //! ## Why absolute calibration doesn't matter
 //! Only *relative* height change feeds climb, and the climb accumulator's dead-band lives downstream
-//! (`obc-route/deadband.rs`). So [`pa_to_m`] hard-codes sea-level `P0 = 101325 Pa`: weather drift
+//! (`obc-route/deadband.rs`). So [`pa_to_m`] hard-codes sea-level `P0 = 101325 Pa`: air pressure drift
 //! shifts every sample by the same offset and cancels in the differences.
 
 /// I²C addresses. The breakout straps `SDO`: high → `0x47` (default), low → `0x46`. The driver
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn only_relative_change_matters_so_p0_offset_cancels() {
         // Two pressures 100 Pa apart give the same climb delta regardless of the absolute P0 anchor:
-        // a constant weather offset shifts both samples equally and cancels in the difference.
+        // a constant air pressure offset shifts both samples equally and cancels in the difference.
         let d1 = pa_to_m(95_000.0) - pa_to_m(95_100.0);
         let d2 = pa_to_m(94_000.0) - pa_to_m(94_100.0);
         // Not identical (the curve is nonlinear) but within a few cm over a 100 Pa step — the

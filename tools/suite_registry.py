@@ -24,7 +24,6 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-
 LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "hardware"}
 # The only two spoken aliases: `obc test fixtures` and `obc test e2e`.
 LEVEL_ALIASES = {"fixtures": "fixture", "e2e": "end-to-end"}
@@ -113,10 +112,8 @@ WORKFLOW_MARKERS = (
     "gen-third-party.sh",
 )
 
-
 class RegistryError(Exception):
     """One or more registry invariants failed."""
-
 
 @dataclass(frozen=True, order=True)
 class Discovered:
@@ -130,13 +127,11 @@ class Discovered:
         suffix = f" ({self.path})" if self.path else ""
         return f"{self.kind}:{self.name}{suffix}"
 
-
 @dataclass(frozen=True, order=True)
 class WorkflowStep:
     command: str
     job: str
     working_directory: str = ""
-
 
 @dataclass(frozen=True)
 class WorkflowJob:
@@ -146,14 +141,12 @@ class WorkflowJob:
     plan_gated: bool
     gates_on: str = ""
 
-
 @dataclass
 class Inventory:
     suites: list[dict[str, Any]]
     coverage: list[dict[str, Any]]
     discovered: list[Discovered]
     matches: dict[str, list[Discovered]]
-
 
 @dataclass(frozen=True)
 class CargoPackage:
@@ -163,12 +156,10 @@ class CargoPackage:
     dependencies: frozenset[str]
     root_workspace: bool = True
 
-
 @dataclass(frozen=True)
 class CargoGraph:
     packages: Mapping[str, CargoPackage]
     reverse_dependencies: Mapping[str, frozenset[str]]
-
 
 @dataclass
 class SuiteSelection:
@@ -179,7 +170,6 @@ class SuiteSelection:
     @property
     def selected(self) -> bool:
         return bool(self.reasons)
-
 
 @dataclass
 class SelectionPlan:
@@ -193,10 +183,8 @@ class SelectionPlan:
     def selected(self) -> list[SuiteSelection]:
         return [selection for selection in self.suites if selection.selected]
 
-
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
-
 
 def _read_toml(path: Path) -> dict[str, Any]:
     try:
@@ -205,10 +193,8 @@ def _read_toml(path: Path) -> dict[str, Any]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise RegistryError(f"cannot parse {path}: {exc}") from exc
 
-
 def _relative(path: Path, root: Path) -> str:
     return path.resolve().relative_to(root.resolve()).as_posix()
-
 
 def _cargo_metadata(root: Path, manifest: Path | None = None) -> dict[str, Any]:
     command = ["cargo", "metadata", "--format-version", "1", "--locked", "--no-deps"]
@@ -220,7 +206,6 @@ def _cargo_metadata(root: Path, manifest: Path | None = None) -> dict[str, Any]:
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         detail = getattr(exc, "stderr", "") or str(exc)
         raise RegistryError(f"cargo metadata failed: {detail.strip()}") from exc
-
 
 def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata) -> list[Discovered]:
     manifests: list[Path | None] = [None]
@@ -259,16 +244,13 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
                 found[(package_name, "", relative_manifest)] = item
     return sorted(found.values())
 
-
 def discover_paths(root: Path) -> list[Discovered]:
     rules = (
         ("web-test", "builder/app", ("*.test.ts", "*.test.tsx", "*.test.js")),
         ("browser-test", "apps/obc-web-demo/tests/browser", ("*.test.js",)),
         ("python-test", "tools/tests", ("test_*.py",)),
         ("python-test", "firmware/tools/tests", ("test_*.py",)),
-        ("python-test", "ops/weather/tests", ("test_*.py",)),
         ("python-test", "builder/tests", ("test_*.py",)),
-        ("rain-radar-test", "tools/rain-radar-demo/tests", ("*.test.ts", "*.test.js")),
         ("xcuitest", "companion-ios/OBCCompanionUITests", ("*.swift",)),
     )
     found: list[Discovered] = []
@@ -282,7 +264,6 @@ def discover_paths(root: Path) -> list[Discovered]:
                     relative = _relative(path, root)
                     found.append(Discovered(kind, relative, relative))
     return sorted(set(found))
-
 
 def discover_swift(root: Path) -> list[Discovered]:
     found: list[Discovered] = []
@@ -298,13 +279,11 @@ def discover_swift(root: Path) -> list[Discovered]:
             found.append(Discovered("swift-package", manifest.parent.name, relative))
     return sorted(found)
 
-
 def _strip_yaml_scalar(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         return value[1:-1]
     return value
-
 
 def scan_workflow(root: Path) -> list[WorkflowStep]:
     """Read every repository-behavior command in the workflow with its job and directory."""
@@ -374,7 +353,6 @@ def scan_workflow(root: Path) -> list[WorkflowStep]:
         record(_strip_yaml_scalar(value))
     return steps
 
-
 def discover_workflow(root: Path) -> list[Discovered]:
     return sorted(
         {
@@ -383,16 +361,13 @@ def discover_workflow(root: Path) -> list[Discovered]:
         }
     )
 
-
 def discover_all(root: Path, metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata) -> list[Discovered]:
     return sorted(discover_rust(root, metadata_loader) + discover_paths(root) + discover_swift(root) + discover_workflow(root))
-
 
 def _path_matches(root: Path, pattern: str, item: Discovered) -> bool:
     if item.path and fnmatch.fnmatchcase(item.path, pattern):
         return True
     return any(path.is_file() and _relative(path, root) == item.path for path in root.glob(pattern))
-
 
 def ownership_matches(root: Path, owner: dict[str, Any], item: Discovered) -> bool:
     kind = owner.get("kind")
@@ -408,7 +383,6 @@ def ownership_matches(root: Path, owner: dict[str, Any], item: Discovered) -> bo
         return item.kind == "workflow-command" and fnmatch.fnmatchcase(item.name, owner.get("pattern", ""))
     return False
 
-
 def _validate_issue_block(suite_id: str, field: str, value: Any, errors: list[str]) -> None:
     if not isinstance(value, dict):
         errors.append(f"{suite_id}: {field} must be a table")
@@ -419,7 +393,6 @@ def _validate_issue_block(suite_id: str, field: str, value: Any, errors: list[st
         errors.append(f"{suite_id}: {field} requires a reason")
     if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
         errors.append(f"{suite_id}: {field} requires a GitHub issue reference")
-
 
 def _has_real_sleep(source: Path) -> bool:
     text = source.read_text(encoding="utf-8")
@@ -433,7 +406,6 @@ def _has_real_sleep(source: Path) -> bool:
         and node.func.attr == "sleep"
         for node in ast.walk(ast.parse(text, filename=str(source)))
     )
-
 
 def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str], errors: list[str]) -> None:
     suite_id = suite.get("id", "<missing-id>")
@@ -487,10 +459,8 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
     if package_match and package_match.group(1) not in rust_packages:
         errors.append(f"{suite_id}: command names unknown Cargo package {package_match.group(1)}")
 
-
 def _collect_rust_packages(discovered: Iterable[Discovered]) -> set[str]:
     return {item.name.split(":", 1)[0] for item in discovered if item.kind in {"rust-target", "rust-manifest"}}
-
 
 def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any], discovered: list[Discovered]) -> Inventory:
     errors: list[str] = []
@@ -610,13 +580,11 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
         raise RegistryError("\n".join(f"- {error}" for error in errors))
     return Inventory(suites, coverage, discovered, matches)
 
-
 def load_inventory(root: Path | None = None) -> Inventory:
     root = (root or repository_root()).resolve()
     suites = _read_toml(root / "testing/suites.toml")
     coverage = _read_toml(root / "testing/coverage-policy.toml")
     return validate(root, suites, coverage, discover_all(root))
-
 
 def _metadata_manifests(root: Path) -> list[Path | None]:
     manifests: list[Path | None] = [None]
@@ -629,7 +597,6 @@ def _metadata_manifests(root: Path) -> list[Path | None]:
         if candidate.exists():
             manifests.append(candidate)
     return manifests
-
 
 def build_cargo_graph(
     root: Path,
@@ -669,7 +636,6 @@ def build_cargo_graph(
             reverse[dependency].add(name)
     return CargoGraph(packages, {name: frozenset(values) for name, values in reverse.items()})
 
-
 def _glob_matches(path: str, pattern: str) -> bool:
     """Match repository globs, including the zero-directory meaning of `**/`."""
 
@@ -682,7 +648,6 @@ def _glob_matches(path: str, pattern: str) -> bool:
             return True
     return False
 
-
 def git_changed_paths(root: Path, base: str, head: str) -> list[str]:
     command = ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...{head}"]
     try:
@@ -691,7 +656,6 @@ def git_changed_paths(root: Path, base: str, head: str) -> list[str]:
         detail = getattr(exc, "stderr", "") or str(exc)
         raise RegistryError(f"cannot read changed paths from Git: {detail.strip()}") from exc
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
-
 
 def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
     """Derive each CI job's runner image, upstream needs, and whether the plan gates it."""
@@ -744,7 +708,6 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
     flush()
     return jobs
 
-
 def aggregate_job(root: Path) -> str:
     """The gate job evaluating the plan; it is never a route for the suites it reports."""
 
@@ -752,7 +715,6 @@ def aggregate_job(root: Path) -> str:
         if "ci_aggregate.py" in step.command:
             return step.job
     return ""
-
 
 def _cargo_invocations(command: str) -> list[list[str]]:
     """Split a shell command into the argument list of each `cargo` invocation it runs."""
@@ -779,7 +741,6 @@ def _cargo_invocations(command: str) -> list[list[str]]:
     if current is not None:
         invocations.append(current)
     return invocations
-
 
 def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> set[str]:
     """Resolve which Cargo packages one invocation compiles, lints, formats, or runs."""
@@ -819,13 +780,11 @@ def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> s
         return _directory_package(directory, graph)
     return set()
 
-
 SCRIPT_RE = re.compile(r"(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.sh)(?:\s|$)")
 WASM_PACK_RE = re.compile(r"\bwasm-pack\s+build\s+([\w./-]+)")
 TRUNK_RE = re.compile(r"\btrunk\s+build\b[^|;&]*?--config\s+([\w./-]+)")
 TRUNK_LINK_RE = re.compile(r"<link[^>]*data-trunk[^>]*>")
 HREF_RE = re.compile(r'href="([^"]+)"')
-
 
 def _trunk_packages(command: str, root: Path, graph: CargoGraph) -> set[str]:
     """Packages a `trunk build --config CFG` compiles, read from the config's HTML target."""
@@ -849,7 +808,6 @@ def _trunk_packages(command: str, root: Path, graph: CargoGraph) -> set[str]:
             packages |= {name for name, item in graph.packages.items() if item.manifest == manifest}
     return packages
 
-
 def _executed_commands(root: Path, step: WorkflowStep) -> list[tuple[str, str]]:
     """A step's command plus the lines of any repository script that command runs."""
 
@@ -860,11 +818,9 @@ def _executed_commands(root: Path, step: WorkflowStep) -> list[tuple[str, str]]:
             commands.extend((line.strip(), "") for line in script.read_text(encoding="utf-8").splitlines())
     return commands
 
-
 def _directory_package(directory: str, graph: CargoGraph) -> set[str]:
     root = directory.rstrip("/")
     return {name for name, package in graph.packages.items() if package.root == root}
-
 
 def cargo_job_coverage(root: Path, graph: CargoGraph) -> dict[str, set[str]]:
     """Map each Cargo package to the CI jobs whose steps build, lint, or run it."""
@@ -883,7 +839,6 @@ def cargo_job_coverage(root: Path, graph: CargoGraph) -> dict[str, set[str]]:
             for package in packages:
                 coverage.setdefault(package, set()).add(step.job)
     return coverage
-
 
 def suite_workflow_jobs(inventory: Inventory, root: Path, graph: CargoGraph) -> dict[str, list[str]]:
     """Derive each suite's CI jobs; an empty list is an intentionally visible missing route."""
@@ -904,13 +859,11 @@ def suite_workflow_jobs(inventory: Inventory, root: Path, graph: CargoGraph) -> 
         routes[suite_id] = sorted(jobs - {gate})
     return routes
 
-
 def unconditional_jobs(root: Path) -> set[str]:
     """Jobs that start on every run: the plan gates everything else."""
 
     gate = aggregate_job(root)
     return {name for name, job in workflow_jobs(root).items() if not job.plan_gated and name != gate}
-
 
 def required_jobs(plan: SelectionPlan, jobs: Mapping[str, WorkflowJob]) -> list[str]:
     """Close the plan's jobs over the workflow `needs` graph so artifact producers run."""
@@ -925,11 +878,9 @@ def required_jobs(plan: SelectionPlan, jobs: Mapping[str, WorkflowJob]) -> list[
                 pending.append(upstream)
     return sorted(required)
 
-
 def _add_reason(selection: SuiteSelection, reason: str) -> None:
     if reason not in selection.reasons:
         selection.reasons.append(reason)
-
 
 def _rust_suite_names(suite: dict[str, Any]) -> set[str]:
     return {
@@ -937,7 +888,6 @@ def _rust_suite_names(suite: dict[str, Any]) -> set[str]:
         for owner in suite.get("ownership", [])
         if owner.get("kind") == "rust-package"
     }
-
 
 def _reverse_dependency_closure(graph: CargoGraph, package: str) -> dict[str, str]:
     """Return reverse dependents mapped to the edge that first selected them."""
@@ -953,7 +903,6 @@ def _reverse_dependency_closure(graph: CargoGraph, package: str) -> dict[str, st
             pending.append(consumer)
     return selected
 
-
 def _suite_owns_changed_test(suite: dict[str, Any], path: str) -> bool:
     for owner in suite.get("ownership", []):
         if owner.get("kind") == "path" and _glob_matches(path, owner.get("pattern", "")):
@@ -965,10 +914,8 @@ def _suite_owns_changed_test(suite: dict[str, Any], path: str) -> bool:
                 return True
     return False
 
-
 def _is_policy_path(path: str) -> bool:
     return any(_glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS)
-
 
 def _looks_like_production(path: str) -> bool:
     if path.startswith(("docs/", "artifacts/", ".claude/", ".repowise/")):
@@ -977,7 +924,6 @@ def _looks_like_production(path: str) -> bool:
     if name.startswith("test_") or "/tests/" in path or "/test/" in path:
         return False
     return Path(path).suffix.lower() in CODE_OR_POLICY_SUFFIXES
-
 
 def select_suites(
     inventory: Inventory,
@@ -1109,9 +1055,7 @@ def select_suites(
         errors=sorted(set(errors)),
     )
 
-
 NOT_SELECTED = "no changed path, Cargo edge, or required cadence selected this suite"
-
 
 def selection_plan_data(
     plan: SelectionPlan, jobs: Mapping[str, WorkflowJob] | None = None
@@ -1137,7 +1081,6 @@ def selection_plan_data(
         ],
     }
 
-
 def render_selection_text(plan: SelectionPlan) -> str:
     lines = [f"selection {plan.base}...{plan.head}: {len(plan.changed_paths)} changed path(s)"]
     for selection in plan.suites:
@@ -1149,7 +1092,6 @@ def render_selection_text(plan: SelectionPlan) -> str:
         lines.append("errors:")
         lines.extend(f"  - {error}" for error in plan.errors)
     return "\n".join(lines)
-
 
 def select_by_level(
     inventory: Inventory,
@@ -1185,10 +1127,8 @@ def select_by_level(
         selections.append(selection)
     return SelectionPlan(base="", head="", changed_paths=[], suites=selections, errors=errors)
 
-
 def host_platform() -> str:
     return PLATFORMS.get(sys.platform, sys.platform)
-
 
 def run_plan(plan: SelectionPlan, root: Path, *, dry_run: bool = False) -> int:
     """Print the plan with one reason per suite, then run each selected suite command."""
@@ -1221,11 +1161,9 @@ def run_plan(plan: SelectionPlan, root: Path, *, dry_run: bool = False) -> int:
             return 1
     return 0
 
-
 def _check_gates(command: str) -> list[str]:
     match = re.fullmatch(r"obc check\s+(.+)", str(command).strip())
     return match.group(1).split() if match else []
-
 
 def gate_claims(
     suites: Sequence[dict[str, Any]], graph: CargoGraph | None = None
@@ -1259,7 +1197,6 @@ def gate_claims(
         claims[gate] = expanded
     return claims
 
-
 def coarse_filters(root: Path) -> dict[str, list[str]]:
     workflow = root / ".github/workflows/ci.yml"
     filters: dict[str, list[str]] = {}
@@ -1284,7 +1221,6 @@ def coarse_filters(root: Path) -> dict[str, list[str]]:
             break
     return filters
 
-
 AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
@@ -1292,7 +1228,6 @@ AUDITED_PATHS = (
     "rustfmt.toml",
     ".cargo/config.toml",
     "specs/vectors/obcm-v2.json",
-    "ops/weather/check_freshness.py",
     "tools/suite_registry.py",
     "builder/server/nested/handler.py",
     "fixtures/catalog.toml",
@@ -1304,10 +1239,8 @@ AUDITED_PATHS = (
     "docs/index.md",
 )
 
-
 def _representative_path(pattern: str) -> str:
     return pattern.replace("**", "x").replace("*", "x").strip("/") or "x"
-
 
 def validate_ci_routing(
     root: Path,
@@ -1369,7 +1302,6 @@ def validate_ci_routing(
         raise RegistryError("\n".join(f"- {error}" for error in sorted(set(errors))))
     return list(AUDITED_PATHS)
 
-
 def _suite_summary(suite: dict[str, Any], owned: Sequence[Discovered]) -> dict[str, Any]:
     return {
         "id": suite["id"],
@@ -1380,7 +1312,6 @@ def _suite_summary(suite: dict[str, Any], owned: Sequence[Discovered]) -> dict[s
         "command": suite["command"],
         "discovered_units": len(owned),
     }
-
 
 def command_check(args: argparse.Namespace) -> int:
     inventory = load_inventory(args.root)
@@ -1393,7 +1324,6 @@ def command_check(args: argparse.Namespace) -> int:
     print("by surface: " + ", ".join(f"{key}={value}" for key, value in sorted(by_surface.items())))
     print("by level: " + ", ".join(f"{key}={value}" for key, value in sorted(by_level.items())))
     return 0
-
 
 def check_issue_states(suites: Sequence[dict[str, Any]], repository: str) -> int:
     """Online maintenance only: one bounded request per distinct exception issue."""
@@ -1443,14 +1373,12 @@ def check_issue_states(suites: Sequence[dict[str, Any]], repository: str) -> int
         raise RegistryError("\n".join(errors))
     return len(references)
 
-
 def command_check_issues(args: argparse.Namespace) -> int:
     root = args.root or repository_root()
     suites = _read_toml(root / "testing/suites.toml")["suite"]
     count = check_issue_states(suites, args.repo)
     print(f"exception issue state OK: {count} distinct open issues")
     return 0
-
 
 def command_list(args: argparse.Namespace) -> int:
     inventory = load_inventory(args.root)
@@ -1464,7 +1392,6 @@ def command_list(args: argparse.Namespace) -> int:
                 f"pr={row['pull_request']:<8} schedule={row['scheduled']:<7} units={row['discovered_units']}"
             )
     return 0
-
 
 def command_explain(args: argparse.Namespace) -> int:
     inventory = load_inventory(args.root)
@@ -1497,7 +1424,6 @@ def command_explain(args: argparse.Namespace) -> int:
         print(f"  - {item.label}")
     return 0
 
-
 def _affected_plan(root: Path, base: str, head: str) -> SelectionPlan:
     inventory = load_inventory(root)
     graph = build_cargo_graph(root)
@@ -1511,7 +1437,6 @@ def _affected_plan(root: Path, base: str, head: str) -> SelectionPlan:
         unconditional=unconditional_jobs(root),
     )
 
-
 def command_select(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     plan = _affected_plan(root, args.base, args.head)
@@ -1523,7 +1448,6 @@ def command_select(args: argparse.Namespace) -> int:
     else:
         print(render_selection_text(plan))
     return 1 if plan.errors else 0
-
 
 def command_run(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
@@ -1540,7 +1464,6 @@ def command_run(args: argparse.Namespace) -> int:
         routes = suite_workflow_jobs(inventory, root, build_cargo_graph(root))
         plan = select_by_level(inventory, routes, args.level, args.surface)
     return run_plan(plan, root, dry_run=args.dry_run)
-
 
 def command_gates(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
@@ -1583,7 +1506,6 @@ def command_gates(args: argparse.Namespace) -> int:
         print(f"  - {suite['id']}: {reason}")
     return 0
 
-
 def command_validate_filters(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     inventory = load_inventory(root)
@@ -1594,7 +1516,6 @@ def command_validate_filters(args: argparse.Namespace) -> int:
         f"and {len(audited)} audited selection classes"
     )
     return 0
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect and validate testing/suites.toml")
@@ -1640,7 +1561,6 @@ def build_parser() -> argparse.ArgumentParser:
     filters.set_defaults(func=command_validate_filters)
     return parser
 
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1649,7 +1569,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RegistryError as exc:
         print(f"suite registry check failed:\n{exc}", file=sys.stderr)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -49,7 +49,7 @@ REMOVE_FAIL = "1.050 WARN  catalog: object 42 removal failed — the domain re-q
 READ = "1.200 INFO  flat: Route menu loaded 7 route(s)"
 XFER_ON = "2.000 INFO  xfer: transfer level active (flat engine)"
 XFER_OFF = "2.900 INFO  xfer: transfer level idle (flat engine)"
-ALARM_EFFECT = "3.000 ERROR exec: an effect this board cannot serve was decided (recorder #1398 / weather #1401)"
+ALARM_EFFECT = "3.000 ERROR exec: an effect this board cannot serve was decided"
 ALARM_RESIDUAL = (
     "3.100 ERROR exec: DeleteRoute { id: 4 } came back on the legacy protocol — DeviceCore owns it "
     "now, so it is skipped"
@@ -58,7 +58,6 @@ ALARM_RESIDUAL = (
 # What a healthy `N` cycle actually looks like: the spinner repaints several times while the planner
 # steps, and no banner appears at all (no gesture engages the freeze on today's board).
 HEALTHY = [START, SPINNER, SPINNER, SPINNER, ANSWER, SPINNER, MAP]
-
 
 class CycleVerdicts(unittest.TestCase):
     def test_a_healthy_cycle_passes_with_its_spinner_repaints(self):
@@ -115,7 +114,6 @@ class CycleVerdicts(unittest.TestCase):
         self.assertIn("outlived", assert_sequence([START, ANSWER, MAP, BANNER]))
         self.assertIsNone(assert_sequence([START, BANNER, ANSWER, MAP]), "…and before it is the freeze")
 
-
 class ExecutorAlarms(unittest.TestCase):
     """The typed executor's `defmt::error!`s are the *only* witness on a release image: the matching
     `debug_assert!` is compiled out, and every one of these shapes was impossible before the cutover
@@ -142,7 +140,6 @@ class ExecutorAlarms(unittest.TestCase):
         self.assertEqual(alarms([START, refusal, ANSWER, MAP]), [])
         self.assertIsNone(read_cycle([START, refusal, ANSWER, MAP]).verdict())
 
-
 class TypedRemoval(unittest.TestCase):
     def test_a_real_object_and_an_absent_one_are_told_apart(self):
         """`existed false` is a **success** — the subject vanished before the commit and the goal
@@ -166,7 +163,6 @@ class TypedRemoval(unittest.TestCase):
     def test_a_map_frame_is_not_mistaken_for_a_removal(self):
         self.assertEqual(removals(HEALTHY), [])
 
-
 class CatalogRefresh(unittest.TestCase):
     def test_one_commit_orders_one_re_read(self):
         """The whole point of reporting `FlatStore::sequence()` as a level instead of counting commit
@@ -174,7 +170,6 @@ class CatalogRefresh(unittest.TestCase):
         self.assertEqual(catalog_reads([READ]), 1)
         self.assertEqual(catalog_reads([READ, SPINNER, READ]), 2)
         self.assertEqual(catalog_reads(HEALTHY), 0)
-
 
 class TransferLevel(unittest.TestCase):
     def test_the_level_edges_are_read_in_order(self):
@@ -185,7 +180,6 @@ class TransferLevel(unittest.TestCase):
         self.assertEqual(transfer_edges([XFER_ON, MAP]), ["active"])
         self.assertEqual(transfer_edges(HEALTHY), [])
 
-
 class Liveness(unittest.TestCase):
     def test_a_wedged_vcom_still_grows_the_log(self):
         """**The trap the probe exists for.** Counting bytes passes here; counting the board's own
@@ -195,7 +189,6 @@ class Liveness(unittest.TestCase):
     def test_acknowledgements_are_counted_not_merely_detected(self):
         """A lossy cable is worth reporting and is not a wedge, so the probe needs the count."""
         self.assertEqual(step_acks([STEP, MAP, STEP, STEP]), 3)
-
 
 class StackAndFaults(unittest.TestCase):
     def test_peaks_are_read_with_the_boards_own_available_stack(self):
@@ -228,7 +221,6 @@ class StackAndFaults(unittest.TestCase):
     def test_a_boot_fault_or_a_watchdog_reset_ends_a_soak(self):
         self.assertEqual(len(faults(["2.0 ERROR boot fault: MAP UNREADABLE", "3.0 INFO watchdog reset"])), 2)
         self.assertEqual(faults(HEALTHY), [])
-
 
 if __name__ == "__main__":
     unittest.main()
