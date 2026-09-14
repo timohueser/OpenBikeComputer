@@ -1,0 +1,322 @@
+{
+  "schema": 1,
+  "examples": [
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "node",
+      "osm_id": 1456026791,
+      "version": 14,
+      "timestamp": "2025-12-16T20:12:49Z",
+      "coordinate": [
+        8.3376971,
+        46.5615193
+      ],
+      "coordinate_kind": "node",
+      "tags": {
+        "ele": "2164",
+        "mountain_pass": "yes",
+        "name": "Grimselpass",
+        "name:et": "Grimseli kuru",
+        "name:fr": "Col du Grimsel",
+        "name:ru": "Гримзель",
+        "official_name": "Grimselpass",
+        "wikidata": "Q666668",
+        "wikipedia": "de:Grimselpass"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "node",
+      "osm_id": 1882174874,
+      "version": 4,
+      "timestamp": "2021-09-16T09:40:32Z",
+      "coordinate": [
+        8.2048151,
+        46.7200856
+      ],
+      "coordinate_kind": "node",
+      "tags": {
+        "contact:email": "info@aareschlucht.ch",
+        "contact:phone": "+41 33 971 40 48",
+        "name": "Aaresschlucht Westeingang",
+        "tourism": "attraction",
+        "website": "https://www.aareschlucht.ch/",
+        "wikidata": "Q301191",
+        "wikipedia": "de:Aareschlucht"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "node",
+      "osm_id": 2903487307,
+      "version": 11,
+      "timestamp": "2023-08-22T03:53:27Z",
+      "coordinate": [
+        8.1824429,
+        46.7132933
+      ],
+      "coordinate_kind": "node",
+      "tags": {
+        "name": "Reichenbachfall",
+        "name:cs": "Reichenbašské vodopády",
+        "name:en": "Reichenbach Falls",
+        "name:es": "Cataratas de Reichenbach",
+        "name:fr": "Chutes du Reichenbach",
+        "name:he": "מפלי רייכנבאך",
+        "name:lb": "Reichenbach-Waasserfäll",
+        "name:lt": "Raichenbacho krioklys",
+        "name:no": "Reichenbachfossen",
+        "name:pl": "Wodospad Reichenbach",
+        "name:ru": "Рейхенбахский водопад",
+        "name:uk": "Рейхенбахський водоспад",
+        "waterway": "waterfall",
+        "wikidata": "Q183395",
+        "wikimedia_commons": "Category:Reichenbach Falls",
+        "wikipedia": "de:Reichenbachfall"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "node",
+      "osm_id": 5007055738,
+      "version": 5,
+      "timestamp": "2023-12-02T20:35:48Z",
+      "coordinate": [
+        8.1842711,
+        46.7273586
+      ],
+      "coordinate_kind": "node",
+      "tags": {
+        "addr:city": "Meiringen",
+        "addr:housenumber": "12",
+        "addr:postcode": "3860",
+        "addr:street": "Bahnhofplatz",
+        "ele": "595",
+        "name": "Meiringen",
+        "operator": "ZB",
+        "public_transport": "station",
+        "railway": "station",
+        "railway:ref": "MR",
+        "train": "yes",
+        "uic_name": "Meiringen",
+        "uic_ref": "8508308",
+        "wheelchair": "yes",
+        "wikidata": "Q5544215"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "node",
+      "osm_id": 6781569985,
+      "version": 4,
+      "timestamp": "2026-08-26T19:04:13Z",
+      "coordinate": [
+        8.1869894,
+        46.7268667
+      ],
+      "coordinate_kind": "node",
+      "tags": {
+        "access": "yes",
+        "amenity": "drinking_water",
+        "bottle": "yes",
+        "fee": "no",
+        "fountain": "drinking",
+        "wheelchair": "yes"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 177805091,
+      "version": 10,
+      "timestamp": "2021-11-02T14:15:52Z",
+      "coordinate": [
+        8.2164815,
+        46.7122021
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "addr:city": "Innertkirchen",
+        "addr:country": "CH",
+        "addr:housenumber": "48",
+        "addr:place": "Chirchen",
+        "addr:postcode": "3862",
+        "building": "yes",
+        "building:levels": "1",
+        "contact:email": "info@aareschlucht.ch",
+        "contact:phone": "+41 33 971 10 48",
+        "ele": "650",
+        "name": "Aareschlucht Osteingang",
+        "tourism": "attraction",
+        "website": "https://www.aareschlucht.ch/",
+        "wikidata": "Q301191",
+        "wikipedia": "de:Aareschlucht"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:switzerland.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 539763497,
+      "version": 2,
+      "timestamp": "2018-04-13T07:57:08Z",
+      "coordinate": [
+        8.2172278,
+        46.711888
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "name": "Aareschlucht",
+        "natural": "valley",
+        "wikidata": "Q301191",
+        "wikipedia": "de:Aareschlucht"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:west-cork.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 294965063,
+      "version": 4,
+      "timestamp": "2019-03-27T22:29:26Z",
+      "coordinate": [
+        -9.8200671,
+        51.4795854
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "highway": "path",
+        "sac_scale": "mountain_hiking",
+        "surface": "mud",
+        "trail_visibility": "intermediate"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:west-cork.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 300189816,
+      "version": 3,
+      "timestamp": "2019-03-27T22:21:02Z",
+      "coordinate": [
+        -9.8298275,
+        51.4824619
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "building": "yes",
+        "castle_type": "defensive",
+        "historic": "castle",
+        "name": "Dunlough Castle",
+        "ruins": "yes",
+        "start_date": "1207",
+        "tourism": "attraction",
+        "wikidata": "Q5315471",
+        "wikipedia": "en:Dunlough Castle"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:west-cork.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 584198754,
+      "version": 3,
+      "timestamp": "2019-03-27T22:29:26Z",
+      "coordinate": [
+        -9.8248272,
+        51.4803761
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "highway": "path",
+        "sac_scale": "mountain_hiking",
+        "surface": "mud",
+        "trail_visibility": "intermediate"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    },
+    {
+      "source": "assistant-osm:west-cork.osm.pbf",
+      "osm_type": "way",
+      "osm_id": 584201046,
+      "version": 2,
+      "timestamp": "2019-02-23T23:02:14Z",
+      "coordinate": [
+        -9.829892,
+        51.4824706
+      ],
+      "coordinate_kind": "first-way-node",
+      "tags": {
+        "highway": "path",
+        "sac_scale": "mountain_hiking",
+        "surface": "ground",
+        "trail_visibility": "intermediate"
+      },
+      "missing_facts": [
+        "opening_hours",
+        "bicycle",
+        "access",
+        "name:ga"
+      ]
+    }
+  ],
+  "notes": [
+    "Coordinates are source coordinates, not computed rideable approaches.",
+    "Dunlough approach has mountain_hiking and mud/ground; it does not explicitly forbid bicycles.",
+    "Hours are absent for these examples. Use separate real tagged services or authored contract cases for hour transitions."
+  ]
+}
