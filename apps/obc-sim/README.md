@@ -167,11 +167,13 @@ preview as Find a place, with route distance, climbing, and the extra cost inclu
 **Add stop** accepts that visit. Reading another place does not change the accepted route.
 
 Aare Gorge, Reichenbach Falls, and the Gelmerbahn have short text adapted from Wikipedia.
-The third page identifies the source, licence, and supplied opening status. See the
+Down + Back opens the bottom drawer. **Sources** opens the text attribution, licence URL, and
+article URLs for the study. Back restores the reading page and selection. See the
 [captures and article attribution](../../docs/assets/ride-assistant/landmarks-study/README.md).
 The article facts are real, but landmark positions and access paths are synthetic. They fit
 inside the loaded map and do not describe actual access to those landmarks. All three have
-unknown opening hours. Known-closed landmarks are excluded; unknown hours remain visible.
+unknown opening hours. Known-closed landmarks are excluded; places with unknown hours remain
+in the results.
 
 This study has three results. It does not define the production result limit, search radius,
 or ranking policy. Text is curated to fit two readable pages. There is no Wikipedia fetch,
