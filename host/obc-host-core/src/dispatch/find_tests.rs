@@ -46,7 +46,7 @@ enum Scenario {
 
 fn run_find(scenario: Scenario) {
     let free_ride = scenario == Scenario::FreeRide;
-    let expected_plans = if free_ride { 8 } else { 16 };
+    let expected_plans = if free_ride { 4 } else { 8 };
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
     points.extend((1..=8).map(|n| (500_000 + n * 10_000, 500_000)));

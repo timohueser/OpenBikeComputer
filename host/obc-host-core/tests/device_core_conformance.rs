@@ -1686,8 +1686,9 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
     assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
 }
 
-/// The wake counts for the complete scenario table.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 125, 65);
+/// The wake counts for the complete scenario table. Cancelling a detour uncovers the Map while
+/// planner cleanup is pending, so its visible planning banner keeps a one-second animation deadline.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 126, 64);
 
 // ==================== the resource gate ====================
 

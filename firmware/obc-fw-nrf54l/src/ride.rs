@@ -166,9 +166,6 @@ async fn read_catalogs(
     app.begin_catalog_refresh();
     metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
     let start = crate::flat_store::catalog_scope(flat);
-    // Drop the held revision before rebuilding identity/index state. A replace at the same ObjectId
-    // must reopen the new revision, not keep rendering the hold.
-    crate::flat_store::reconcile_route(flat, None);
     let routes_loaded = crate::flat_store::load_routes(flat, app);
     let trips_loaded = crate::flat_store::load_trips(flat, app);
     let rides_loaded = crate::flat_store::load_rides(flat, app);
@@ -877,6 +874,7 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
+    let mut find_loading_painted = false;
     let mut power_off = crate::panel_power::SystemOff;
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
@@ -1375,9 +1373,20 @@ pub(crate) async fn run_app(
                     // The rescan block: rebuild the flat route/trip/ride identities and remap the
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
+                        let old_source = crate::flat_store::route_source_key();
                         let read = read_catalogs(flat, app, &mut exec.facts).await;
-                        prev_active = None; // force reconcile_route/track to re-run against the new indexing
-                        index_route = None; // and the chunk index to rebuild off the freshly-opened file
+                        let active = app.active_route_index();
+                        crate::flat_store::reconcile_route(flat, active.and_then(|i| app.route_ids().get(i).copied()));
+                        if read.is_ok() && old_source.is_some() && crate::flat_store::route_source_key() == old_source {
+                            prev_active = active;
+                            if route_index_valid {
+                                index_route = active;
+                            }
+                        } else {
+                            prev_active = None;
+                            index_route = None;
+                            route_index_valid = false;
+                        }
 
                         // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
                         // (#1541) — one per pass, which is one per wake.
@@ -2637,9 +2646,18 @@ pub(crate) async fn run_app(
                     // the level forever.
                     derived.nav_preview = Some(match route.as_ref() {
                         Some(r) => {
-                            let _ =
-                                derived_pts.extend_from_slice(&r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>());
-                            obc_app::device_core::DerivedInput::filled(key)
+                            let points = if key.assistant {
+                                r.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
+                            } else {
+                                Ok(r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
+                            };
+                            match points {
+                                Ok(points) => {
+                                    let _ = derived_pts.extend_from_slice(&points);
+                                    obc_app::device_core::DerivedInput::filled(key)
+                                }
+                                Err(_) => obc_app::device_core::DerivedInput::failed(key),
+                            }
                         }
                         None => obc_app::device_core::DerivedInput::failed(key),
                     });
@@ -2885,6 +2903,24 @@ pub(crate) async fn run_app(
             // of them is full-frame, so each also drops a region-scoped clip (`dirty.region`) — the
             // region only survives when the pass's own ticks were the sole dirt.
             let mut dirty = render;
+            // Keep an already-painted loading base while reader work advances between planner owners.
+            find_loading_painted &= app.find_preparing() && app.find_place_state() != obc_app::find_place::State::Start;
+            #[cfg(has_nav)]
+            let find_can_prepare = nav_guard.is_none();
+            #[cfg(not(has_nav))]
+            let find_can_prepare = true;
+            if find_loading_painted && find_can_prepare {
+                let reader = Reader::new(flat_map, map_tables, map_cache);
+                app.prepare_find(Some(&reader), route.as_ref());
+                if !app.find_preparing() {
+                    if app.find_place_state() == obc_app::find_place::State::Ready {
+                        defmt::info!("find: ready results={=usize}", app.find_place_result_count());
+                    }
+                    find_loading_painted = false;
+                    dirty.map = true;
+                    dirty.region = None;
+                }
+            }
             if pending_map_redraw {
                 dirty.map = true;
                 dirty.region = None;
@@ -2893,6 +2929,7 @@ pub(crate) async fn run_app(
             // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
             // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
             if display.take_relaunch_repaint() {
+                find_loading_painted = false;
                 dirty.map = true;
                 dirty.region = None;
             }
@@ -2954,7 +2991,7 @@ pub(crate) async fn run_app(
             // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
             // only at the gate: no map render is attempted while the nav arm is out, so the claim
             // below is never refused on the ordinary path.
-            let frozen = app.reroute_freeze_active();
+            let frozen = app.reroute_freeze_active() || find_loading_painted;
             if frozen && dirty.map {
                 pending_map_redraw = true;
                 dirty.map = false;
@@ -2964,7 +3001,8 @@ pub(crate) async fn run_app(
             // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
             // the closing brace — every reader/source/track borrow of the card ended above, and the
             // present await below *cannot* hold the guard, by construction. ═══
-            let rendered: Option<RenderedFrame> = if frozen {
+            let banner_rows = app.reroute_banner_rows(FRAME_H as f32);
+            let rendered: Option<RenderedFrame> = if frozen || (!dirty.map && dirty.overlay && banner_rows.is_some()) {
                 // The banner rides the overlay plane, which on this board means: draw it straight
                 // into the resident framebuffer and let the self-diffing present push the handful of
                 // rows it changed. It deliberately does **not** go through the FLPR's
@@ -2972,10 +3010,9 @@ pub(crate) async fn run_app(
                 // bounded at 16 columns (`MAX_OVERLAY_COLS`), because the bulge is a 16 px strip at
                 // the right edge; a 240-px-wide banner band would need a ~26 KB transient on the
                 // overlay frame's stack, on the crate where transients overflow it. Painting into the
-                // frame is free instead, and safe because the map render that would otherwise own
-                // those pixels is precisely what is not running — the full repaint when the freeze
-                // lifts restores them.
-                match app.reroute_banner_rows(FRAME_H as f32).filter(|_| dirty.overlay) {
+                // frame is safe while its base is unchanged. The same path advances the activity
+                // dots between planner runs; a pending base redraw paints its banner in that pass.
+                match banner_rows.filter(|_| dirty.overlay) {
                     Some((y0, rows)) => {
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                             let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
@@ -3159,6 +3196,9 @@ pub(crate) async fn run_app(
             } else {
                 None
             };
+            if dirty.map && rendered.is_some() {
+                find_loading_painted = app.find_preparing();
+            }
             (rendered, dirty.map, hold_p, next_wake_ms, immediate, t_store.elapsed().as_micros())
         };
 
@@ -3208,6 +3248,7 @@ pub(crate) async fn run_app(
             // A transport fault (`present` → false, e.g. a stalled FLPR) latches a retry like the
             // reader-build failure rather than faulting.
             if !ok {
+                find_loading_painted = false;
                 pending_map_redraw = true;
             }
 
@@ -3416,7 +3457,13 @@ pub(crate) async fn run_app(
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
         let immediate = immediate || peak_view.busy();
-        let next_ms = if animating || exec.polling_store() {
+        #[cfg(has_nav)]
+        let visit_immediate = visit.immediate(&NAV_STORE_REPLY, immediate || exec.owed());
+        #[cfg(not(has_nav))]
+        let visit_immediate = false;
+        let next_ms = if visit_immediate {
+            Some(0)
+        } else if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
         } else if immediate || exec.owed() {
             Some(0)

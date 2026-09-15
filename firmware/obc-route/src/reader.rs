@@ -94,7 +94,7 @@ pub struct ChunkMeta {
 
 /// The lightweight route description for the Route menu — readable from the header alone
 /// (no chunk index), so a catalog scan is one small read per file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteSummary {
     pub name: String<NAME_CAP>,
     /// Total distance, km (rounded) — the v1 stat display unit.
@@ -593,6 +593,83 @@ impl<'a> RouteReader<'a> {
                 visit(&lonlat[..n]);
             }
         }
+    }
+
+    /// Assistant Visit shape from departure through rejoin; other reviews show the full route.
+    /// The stored continuation stays intact and ordinary route overviews still use `preview_polyline`.
+    pub fn assistant_preview_polyline<const N: usize>(&self) -> Result<Vec<(i32, i32), N>, Error> {
+        let Some(visit) = self.visit_descriptor()? else {
+            let shape = self.preview_polyline::<N>();
+            let count = if self.chunks().is_empty() { 0 } else { self.idx.segment_count() as usize + 1 };
+            return if shape.len() == count.min(N) { Ok(shape) } else { Err(Error::BadOffset) };
+        };
+        let [lo, stop, hi] = visit.accepted_anchors_m;
+        let mut shape = Vec::new();
+        if N >= 3 {
+            self.append_preview_span(lo, stop, N / 2 + 1, &mut shape)?;
+            self.append_preview_span(stop, hi, N, &mut shape)?;
+        } else if N > 0 {
+            self.append_preview_span(lo, hi, N, &mut shape)?;
+        }
+        Ok(shape)
+    }
+
+    fn append_preview_span<const N: usize>(
+        &self,
+        lo: u32,
+        hi: u32,
+        limit: usize,
+        shape: &mut Vec<(i32, i32), N>,
+    ) -> Result<(), Error> {
+        let mut count = 0;
+        self.preview_span(lo, hi, |_| count += 1)?;
+        let continues = !shape.is_empty();
+        let keep = limit.min(N - shape.len() + usize::from(continues)).min(count);
+        let mut ordinal = 0;
+        let mut selected = 0;
+        self.preview_span(lo, hi, |point| {
+            let next = if keep > 1 { selected * (count - 1) / (keep - 1) } else { 0 };
+            if selected < keep && ordinal == next {
+                // Both spans share the stop occurrence. Keep its first representation even when
+                // a chunk boundary quantizes the second span's start to a different coordinate.
+                if !(continues && selected == 0) && shape.last() != Some(&point) {
+                    let _ = shape.push(point);
+                }
+                selected += 1;
+            }
+            ordinal += 1;
+        })
+    }
+
+    #[inline(never)]
+    fn preview_span(&self, lo: u32, hi: u32, mut visit: impl FnMut((i32, i32))) -> Result<(), Error> {
+        let mut points = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        let mut previous = None;
+        for (k, chunk) in self.chunks().iter().enumerate() {
+            if chunk.cum_distance_m > hi {
+                break;
+            }
+            if self.chunks().get(k + 1).is_some_and(|next| next.cum_distance_m < lo) {
+                continue;
+            }
+            let upper = if hi == self.total_distance_m { u32::MAX } else { hi };
+            let found = if chunk.point_count == 1 {
+                self.decode_chunk(k, &mut points)?;
+                Some(points.len())
+            } else {
+                decode_route_points_between_checked(self, k, lo, upper, &mut points)?
+            };
+            if found.is_some() {
+                for point in &points {
+                    let point = (point.lon, point.lat);
+                    if previous != Some(point) {
+                        visit(point);
+                        previous = Some(point);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The route's polyline decimated to at most `N` points — uniform by point index, the first
