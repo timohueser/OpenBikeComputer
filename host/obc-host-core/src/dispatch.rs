@@ -1140,7 +1140,6 @@ mod tests {
                 &[],
                 Sensors::new(&mut loc),
                 None,
-                None,
                 SUPPORT,
             );
             host.execute(
@@ -1349,7 +1348,6 @@ mod tests {
                     PassClock { ride: RideClock(now), ui: InputClock(now) },
                     &[],
                     Sensors::new(&mut fix),
-                    None,
                     None,
                     SUPPORT,
                 );
