@@ -2929,6 +2929,7 @@ pub(crate) async fn run_app(
             // A FLPR relaunch landed since the last pass (#349): the fresh core has no frame history
             // and the diff store was reset — schedule the full repaint even if nothing else is dirty.
             if display.take_relaunch_repaint() {
+                find_loading_painted = false;
                 dirty.map = true;
                 dirty.region = None;
             }
@@ -3247,6 +3248,7 @@ pub(crate) async fn run_app(
             // A transport fault (`present` → false, e.g. a stalled FLPR) latches a retry like the
             // reader-build failure rather than faulting.
             if !ok {
+                find_loading_painted = false;
                 pending_map_redraw = true;
             }
 
