@@ -26,14 +26,15 @@ cd companion-ios && xcodegen generate
 
 Then open `OBCCompanion.xcodeproj` and run the `OBCDevice` scheme.
 
-**Run `obc ios-host` before the first build.** Xcode reads the XCFramework while it plans the
-build, before the target's own script phases run. With no bundle at `target/OBCHost.xcframework`
-the build stops with "There is no XCFramework found at ...".
+**Run `obc ios-host` once, with both slices, before the first build.** Xcode reads the XCFramework
+while it plans the build, before the target's own script phases run. With no bundle at
+`target/OBCHost.xcframework` the build stops with "There is no XCFramework found at ...".
 
-The target has a pre-build script that runs `tools/build-ios-host.sh` on every build, so the
-bundle stays current. The same order still applies: the build links the library that was on disk
-when it started. A change in the Rust host therefore lands on the **next** build. Run `obc
-ios-host` yourself after a Rust change, or build twice.
+From then on the target's pre-build script keeps the slice for the current destination fresh, one
+build behind: the build links the library that was on disk when it started, so a change in the Rust
+host reaches the app on the next run. A slice is never dropped — a simulator build repacks the
+simulator slice and keeps the device one — so you can switch the destination between a simulator
+and a phone at any time.
 
 The simulator slice is `aarch64-apple-ios-sim` only, so the target excludes `x86_64` for the
 simulator SDK. An Intel Mac cannot run this app.
