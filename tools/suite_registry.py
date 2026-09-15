@@ -1131,7 +1131,7 @@ def select_by_level(
     errors: list[str] = []
     for suite in inventory.suites:
         selection = SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
-        if suite["level"] == resolved and surface in (None, suite["surface"]):
+        if suite["level"] == resolved and surface in (None, suite["surface"]) and suite.get("scheduled") != "manual":
             selection.reasons.append(reason)
             if not selection.jobs and suite.get("pull_request") != "never":
                 errors.append(

@@ -940,7 +940,7 @@ ownership = [{ kind = "rust-package", name = "obc-display", targets = ["row_hash
 id = "fixtures.obc-route"
 surface = "map-tools"
 level = "fixture"
-command = "cargo test -p obc-route --features external-fixtures --locked --test nav_fixtures"
+command = "./tools/obc test fixtures -p obc-route --test nav_fixtures"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
@@ -951,7 +951,7 @@ ownership = [{ kind = "rust-package", name = "obc-route", targets = ["nav_fixtur
 id = "fixtures.obc-reader"
 surface = "map-tools"
 level = "fixture"
-command = "cargo test -p obc-reader --features external-fixtures --locked --test poi_fixtures"
+command = "./tools/obc test fixtures -p obc-reader --test poi_fixtures"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
@@ -962,7 +962,7 @@ ownership = [{ kind = "rust-package", name = "obc-reader", targets = ["poi_fixtu
 id = "fixtures.obc-host-core"
 surface = "map-tools"
 level = "fixture"
-command = "cargo test -p obc-host-core --features external-fixtures --locked --test altitude_fusion"
+command = "./tools/obc test fixtures -p obc-host-core --test altitude_fusion"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
@@ -973,7 +973,7 @@ ownership = [{ kind = "rust-package", name = "obc-host-core", targets = ["altitu
 id = "fixtures.obc-sim"
 surface = "map-tools"
 level = "fixture"
-command = "cargo test -p obc-sim --features external-fixtures --locked --test present_fixtures"
+command = "./tools/obc test fixtures -p obc-sim --test present_fixtures"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
@@ -984,7 +984,7 @@ ownership = [{ kind = "rust-package", name = "obc-sim", targets = ["present_fixt
 id = "fixtures.obc-dem"
 surface = "map-tools"
 level = "fixture"
-command = "cargo test -p obc-dem --features external-fixtures --locked --test assets"
+command = "./tools/obc test fixtures -p obc-dem --test assets"
 fixtures = ["test", "captured-dem"]
 pull_request = "affected"
 scheduled = "none"
