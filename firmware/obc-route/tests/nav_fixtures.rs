@@ -1,0 +1,154 @@
+#![cfg(feature = "external-fixtures")]
+
+mod common;
+use common::nav::{digest, plan_p};
+use common::{route_points, VecSink};
+use obc_formats::io::SliceSource;
+use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
+use obc_route::nav::{plan_route, NavScratch};
+
+/// N5's acceptance ride (#538): over the **real re-packed grimsel map** (the sim's committed
+/// asset, shipping the default Road/Gravel/MTB/Touring table), the same endpoints planned under
+/// Road (profile 0) vs MTB (profile 2) produce **different polylines** — the profile weights
+/// genuinely steer the search, end-to-end through the same `plan_route` both hosts call. The raw
+/// lengths differ too (by ~2.8 km — the paved detour Road prefers vs the direct track MTB takes),
+/// so the assert can't pass on emit jitter.
+///
+/// The endpoints are a pinned pair from a deterministic sweep of the map's own nav nodes, chosen
+/// **inside the canonical grimsel extract bbox** (`8.15034,46.48261,8.46007,46.72070` — see
+/// `obc-sim/assets/README.md`'s provenance rules; the header bbox is always somewhat wider than
+/// the extract, so pinning against the extract bbox is what survives a re-pack). Verified
+/// divergent on **both** the currently-committed fixture and the canonical re-pack of PR #549
+/// (identical road/mtb lengths, 8 867 m / 6 051 m, on the two packs), so the test stays green
+/// whichever lands first — both plans stay well inside the 1536-node table. A future re-pack
+/// from a newer
+/// OSM snapshot could still move the graph enough to need a re-pin — the sweep in this PR's
+/// description is the recipe.
+// Reads the real grimsel fixture from disk, which Miri's default isolation forbids (and the 6.5 MB
+// parse is glacial under Miri anyway) — skip it there. The UB tripwire this suite exists for is the
+// §8 record decode over the synthetic writer→reader fixtures, which stay in the Miri run.
+#[cfg_attr(miri, ignore)]
+#[test]
+fn road_vs_mtb_diverge_over_grimsel() {
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let from = (8_169_610, 46_694_536);
+    let to = (8_217_309, 46_706_261);
+
+    let (road, obcr_road, _) = plan_p(&bytes, from, to, "Road", 0);
+    let (mtb, obcr_mtb, _) = plan_p(&bytes, from, to, "MTB", 2);
+    let road = road.expect("Road plans");
+    let mtb = mtb.expect("MTB plans");
+
+    let pts_road = route_points(&obcr_road);
+    let pts_mtb = route_points(&obcr_mtb);
+    assert_ne!(pts_road, pts_mtb, "Road vs MTB must pick different polylines here");
+    assert_ne!(road.total_distance_m, mtb.total_distance_m, "the two profiles' picks differ in raw ground length too");
+}
+
+/// The end-to-end article, on the committed fixtures: the Grimsel map's nav graph planned through
+/// the Grimsel **terrain sidecar** (EL2's `grimsel.obcd`, the same file the simulator mounts).
+/// Nothing synthetic — this is the number a rider would see on the Route overview.
+// Reads the committed fixtures from disk, which Miri's default isolation forbids — skip it there,
+// like `road_vs_mtb_diverge_over_grimsel`. (Missed when EL7 landed; the module's standing
+// `cargo +nightly miri test -p obc-route --test nav` aborted on it.)
+#[cfg_attr(miri, ignore)]
+#[test]
+fn a_real_grimsel_plan_carries_the_pass_road_profile() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let terrain_src = SliceSource(&dem);
+    let mut terrain = obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src)
+        .expect("the baked terrain parses");
+
+    // Innertkirchen → up the pass road (the profile-divergence fixture's endpoints).
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    let src = SliceSource(&map);
+    let tables = MapTables::parse(&src).expect("grimsel parses");
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<{ obc_route::NAV_MAX_NODES }>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let route = plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink)
+        .expect("the pass road plans");
+
+    // Alpine valley floor to well up the pass: heights in the hundreds-to-thousands, never the
+    // 0 m a missing fill would leave, and a climb that is real without being absurd.
+    assert!((500..=2_200).contains(&route.min_ele_m), "min {} m is not alpine ground", route.min_ele_m);
+    assert!((500..=2_600).contains(&route.max_ele_m), "max {} m is not alpine ground", route.max_ele_m);
+    assert!(route.max_ele_m > route.min_ele_m + 100, "a pass road is not flat ({route:?})");
+    assert!((100..=3_000).contains(&route.total_ascent_m), "ascent {} m is implausible", route.total_ascent_m);
+    let pts = route_points(&sink.buf);
+    assert!(pts.iter().all(|p| p.ele > 0), "every stored point has a real height");
+    let (hits, misses) = terrain.stats();
+    assert!(hits > misses, "the 4-tile cache serves the walk ({hits} hit / {misses} miss)");
+}
+
+/// **Round-trip parity** — the property the shared dead-band exists for: write a planned route out
+/// as GPX (what any exporter does with the stored points) and re-import it through
+/// [`gpx_to_obcr`](obc_route::gpx_to_obcr); the re-imported route's own climb agrees with the
+/// header the planner wrote. Without the emit-time fill both sides are 0 and the check is vacuous;
+/// with it, the two independently-computed totals have to land on each other.
+///
+/// This route lies wholly inside the terrain coverage. Every exported point must have a
+/// measured height, so the export cannot turn an unknown span into a false elevation sample.
+#[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
+#[test]
+fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let terrain_src = SliceSource(&dem);
+    let mut terrain =
+        obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src).unwrap();
+
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    let src = SliceSource(&map);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let r = Reader::new(&src, &tables, &cache);
+    let mut scratch = Box::new(NavScratch::<{ obc_route::NAV_MAX_NODES }>::new());
+    let mut tiles = NavTileCache::new();
+    let mut sink = VecSink::default();
+    let planned =
+        plan_route(&r, from, to, "Grimsel", 0, &mut scratch, &mut tiles, &mut terrain, &mut sink).expect("plans");
+
+    // The export: one `<trkpt>` per stored point, exactly the fields an exporter has to hand.
+    let mut gpx = String::from("<gpx><trk><trkseg>");
+    for p in route_points(&sink.buf) {
+        assert!(p.ele > 0, "an exported point with no height would export a lie");
+        gpx.push_str(&format!(
+            "<trkpt lat=\"{:.6}\" lon=\"{:.6}\"><ele>{}</ele></trkpt>",
+            p.lat as f64 / 1e6,
+            p.lon as f64 / 1e6,
+            p.ele
+        ));
+    }
+    gpx.push_str("</trkseg></trk></gpx>");
+
+    let mut back = VecSink::default();
+    let reimported = obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "Grimsel", &mut back).expect("re-imports");
+
+    assert_eq!((reimported.min_ele_m, reimported.max_ele_m), (planned.min_ele_m, planned.max_ele_m));
+    let (a, b) = (planned.total_ascent_m as i64, reimported.total_ascent_m as i64);
+    assert!(
+        (a - b).abs() * 20 <= a.max(1),
+        "planned +{a} m vs re-imported +{b} m — the two dead-band integrations must agree within 5%"
+    );
+}
+
+/// Stock profiles on the registered Grimsel map produce stable OBCR bytes.
+#[cfg_attr(miri, ignore)]
+#[test]
+fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
+    let actual = core::array::from_fn::<_, 4, _>(|idx| {
+        let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
+        res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
+        digest(&obcr)
+    });
+    assert_eq!(actual, GRIMSEL_ROUTE_DIGESTS, "registered fixture routes moved");
+}
+
+const GRIMSEL_ROUTE_DIGESTS: [u64; 4] =
+    [0xf19d_4c75_e881_a991, 0xb5ae_0e8d_eb90_d7b7, 0xbf1c_9f49_2699_20e0, 0x618f_00e9_7a9c_7042];

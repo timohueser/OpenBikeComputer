@@ -27,3 +27,8 @@ default = []
 std = ["dep:sha2"]
 # Board-only performance profile; forwards to the wide CRC tables without changing compact users.
 fast-crc = ["obc-crc/slice-by-8"]
+
+[[example]]
+name = "flat_vectors"
+required-features = ["std"]
+test = false

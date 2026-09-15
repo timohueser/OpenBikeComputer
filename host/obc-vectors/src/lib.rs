@@ -16,7 +16,7 @@
 //! Regenerate after a deliberate spec change with:
 //!
 //! ```text
-//! cargo test -p obc-vectors regenerate -- --ignored
+//! cargo run -p obc-vectors --example regenerate --locked
 //! ```
 
 use std::path::PathBuf;

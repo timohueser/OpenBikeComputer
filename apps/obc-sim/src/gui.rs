@@ -16,7 +16,7 @@ use std::path::Path;
 
 use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::device_core::{PassClock, PlatformSupport};
+use obc_app::device_core::PassClock;
 use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, Dirty, Gesture};
 use obc_display::FbDevice64;
@@ -80,12 +80,8 @@ struct CalibState {
     measured_mm: String,
 }
 
-/// What the desktop simulator implements. Everything the shared screens can reach: the sim is the
-/// device's development twin, and a capability withdrawn here would hide a screen the device has.
-/// The bounded work behind DFU is simply never answered ([`SimPlatform`]), exactly as the old
-/// command loop dropped that request — the headless `--png` path stages synthetic answers instead.
-pub(crate) const SIM_SUPPORT: PlatformSupport =
-    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
+mod support;
+pub(crate) use support::SIM_SUPPORT;
 
 /// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed
 /// card-free figure (the desktop sim has no FAT to scan).

@@ -1,4 +1,4 @@
-//! **The fixture regenerator** — `#[ignore]`d, and the only thing allowed to write
+//! **The fixture regenerator** — an explicit example, and the only thing allowed to write
 //! `tests/fixture/`.
 //!
 //! `tests/determinism.rs` and `builder/app/src/lib/assemble/bridge.test.ts` both assert that an
@@ -9,7 +9,7 @@
 //! ```text
 //! # 1. cut the synthetic extract into cells, and write the terrain cells beside it
 //! #    (writes tests/fixture/cells/, cells.json, skin.json, terrain/, terrain.json)
-//! cargo test -p obc-web-assemble --test fixture -- --ignored --nocapture
+//! cargo run -p obc-web-assemble --example fixture --locked
 //! # 2. assemble them with the NATIVE CLI — the bytes both sides are then held to
 //! cargo run --release -p obcm-assemble -- \
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
@@ -336,9 +336,7 @@ fn skin_json(cfg: &Config) -> String {
 
 /// Regenerate `tests/fixture/cells/`, `cells.json` and `skin.json`. See the module header for the
 /// second half (the native CLI run that produces `expected/`).
-#[test]
-#[ignore = "regenerates the checked-in fixture; run deliberately, see the module header"]
-fn regenerate() {
+fn main() {
     let dir = fixture_dir();
     let cfg = Config::parse(CONFIG).expect("the fixture config parses");
     let (ing, ways) = extract(&cfg);
