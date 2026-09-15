@@ -627,7 +627,21 @@ impl HostLoop {
                             );
                             feed_routes(app, routes, &mut NoTrace);
                             match preview {
-                                Ok(preview) => app.assistant_preview_outcome(token, preview),
+                                Ok(preview) => {
+                                    let outcome = app.assistant_preview_outcome(token, preview);
+                                    let src = obc_formats::io::SliceSource(bytes);
+                                    if let Ok(index) = obc_route::RouteIndex::read(&src) {
+                                        let reader = obc_route::RouteReader::new(&index, &src);
+                                        let points = reader.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                                        if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                            && !app.set_assistant_preview_shape(token, preview.source, &points)
+                                        {
+                                            return failed(NavigatorError::SourceChanged);
+                                        }
+                                        app.assistant_easier_bounds(preview.source, index.bbox);
+                                    }
+                                    outcome
+                                }
                                 Err(error) => NavigatorOutcome::Failed { token, error },
                             }
                         }
@@ -723,7 +737,11 @@ impl HostLoop {
                 None
             }
             PlannerWork::AssistantRoute(request) => {
-                if app.assistant_visit_target().is_some() {
+                if app.assistant_visit_target().is_some()
+                    || app
+                        .assistant_review_context()
+                        .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_)))
+                {
                     let Some(scope) = routes.store_scope() else { return failed(NavigatorError::SourceChanged) };
                     let held = routes.pin_active();
                     let fingerprint = held.as_ref().and_then(|route| routes.fingerprint(route.id()));
@@ -778,12 +796,17 @@ impl HostLoop {
                 };
                 if matches!(
                     context.purpose,
-                    obc_app::navigator::ReviewPurpose::Visit | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                    obc_app::navigator::ReviewPurpose::Visit
+                        | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                        | obc_app::navigator::ReviewPurpose::Easier(_)
                 ) {
                     let Some((source, index)) = original.as_ref() else {
                         return failed(NavigatorError::Unavailable);
                     };
                     let route = obc_route::RouteReader::new(index, source);
+                    if !app.assistant_easier_original(context, &route) {
+                        return failed(NavigatorError::Unavailable);
+                    }
                     match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
                         Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
                         Err(error) => return failed(error),
@@ -792,9 +815,7 @@ impl HostLoop {
                     let mut plan = NavPlan::start(&request, context.profile);
                     plan.set_attribution_map(context.map);
                     plan.set_assistant_candidate();
-                    if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                        plan.set_unresolved_avoidance();
-                    }
+
                     self.plan = Some(InflightPlan::Nav(plan));
                 }
                 original

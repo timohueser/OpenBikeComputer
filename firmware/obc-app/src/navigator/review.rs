@@ -13,7 +13,7 @@ pub enum ReviewPurpose {
     Destination,
     Visit,
     ReturnToRoute,
-    Easier,
+    Easier(obc_route::nav::Objective),
 }
 
 /// Frozen request inputs. Exact sources must still match before candidate publication and acceptance.
@@ -81,7 +81,7 @@ impl ReviewedRoute {
         if !info.assistant_candidate
             || bytes.len() != source.length
             || info.attribution_map != Some(context.map)
-            || info.unresolved_avoidance != (context.unresolved_avoidance || context.purpose == ReviewPurpose::Easier)
+            || info.unresolved_avoidance != context.unresolved_avoidance
         {
             return Err(NavigatorError::SourceChanged);
         }
@@ -104,7 +104,7 @@ impl ReviewedRoute {
         };
         let visit_costs = if matches!(
             context.purpose,
-            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)
         ) {
             let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
             Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
@@ -324,7 +324,7 @@ impl NavigatorMachine {
             } else {
                 JourneyPhase::Following
             },
-            unresolved_avoidance: context.purpose == ReviewPurpose::Easier,
+            unresolved_avoidance: context.unresolved_avoidance,
             lower_m: progress_m,
             upper_m,
         };

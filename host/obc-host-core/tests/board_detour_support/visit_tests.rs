@@ -272,3 +272,31 @@ fn rejected_forward_tail_rebuilds_proven_out_and_back() {
     h.settle(ReviewStatus::Idle);
     h.h.assert_clean();
 }
+
+#[test]
+fn easier_uses_shared_board_owner_and_releases_each_leg_without_adding_avoidance() {
+    for objective in obc_route::nav::Objective::TRIALS {
+        let mut h = VisitHarness::new();
+        let mut context = h.h.app.assistant_review_context().unwrap();
+        h.h.app.cancel_assistant();
+        context.purpose = ReviewPurpose::Easier(objective);
+        h.h.app.plan_assistant(obc_app::NavRequest::new(context.origin, (520_000, 500_000), "Easier"), context);
+        h.settle(ReviewStatus::Preview);
+        let preview = h.h.app.assistant_preview().unwrap();
+        let info =
+            h.h.store
+                .with_source(
+                    ObjectId(preview.source.object),
+                    Some(obc_storage::flat::Revision(preview.source.revision)),
+                    |source| obc_route::RouteObjectInfo::read(source).unwrap(),
+                )
+                .unwrap();
+        assert!(info.assistant_candidate && !info.unresolved_avoidance && info.visit.is_none());
+        assert!(!preview.visit_costs.unwrap().complete_elevation);
+        assert!(!h.h.app.assistant_preview_shape().is_empty());
+        assert_eq!(h.h.app.active_route_index(), Some(0));
+        h.h.app.cancel_assistant();
+        h.settle(ReviewStatus::Idle);
+        h.h.assert_clean();
+    }
+}

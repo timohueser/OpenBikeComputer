@@ -78,6 +78,8 @@ pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind
 pub use passkey::PasskeyScreen;
 pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
+mod easier;
+pub use easier::EasierScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
 /// The quick drawer's open duration, for the in-crate harness that has to settle a sheet before it
@@ -1031,6 +1033,7 @@ screens! {
     /// One category's distance-sorted nearest-16 with live bearing arrows.
     PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
+    Easier(EasierScreen) => Caps::map(),
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours),
     /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
@@ -1691,7 +1694,7 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview"],
+            ["Map", "Detour", "DetourPreview", "Easier"],
             "the map-class screens, and only those — Statistics and the Climb view draw panels, \
              which are cheap enough to keep the recess"
         );

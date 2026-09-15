@@ -38,6 +38,7 @@ pub mod device_core;
 mod device_status;
 pub mod dfu;
 pub mod dirty;
+mod easier;
 pub mod fault;
 #[cfg(test)]
 mod harness;
