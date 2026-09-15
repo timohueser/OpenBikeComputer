@@ -695,7 +695,8 @@ impl Executor {
                 self.phase = Phase::Stopped;
                 if !releasing {
                     // Ranked candidates use the catalog owner's refresh; selecting one restores its binding.
-                    if app.find_place_state() != obc_app::find_place::State::Planning {
+                    let ranked = app.find_place_state() == obc_app::find_place::State::Planning;
+                    if !ranked {
                         crate::flat_store::load_routes(store, app);
                     }
                     let context = app.assistant_review_context()?;
@@ -705,26 +706,32 @@ impl Executor {
                     };
                     let preview = store.with_source(id, Some(Revision(1)), |source| {
                         let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context)?;
-                        let shape = crate::assistant::preview_shape(
-                            guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2,
-                            source,
-                        )
-                        .map_err(|_| NavigatorError::Store)?;
-                        let bounds = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2.bbox;
-                        Ok::<_, NavigatorError>((preview, shape, bounds))
+                        let display = if ranked {
+                            None
+                        } else {
+                            let index = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2;
+                            let shape =
+                                crate::assistant::preview_shape(index, source).map_err(|_| NavigatorError::Store)?;
+                            Some((shape, index.bbox))
+                        };
+                        Ok::<_, NavigatorError>((preview, display))
                     });
                     let token = self.token.take()?;
                     return Some(match preview {
-                        Ok(Ok((preview, shape, bounds))) => {
+                        Ok(Ok((preview, display))) => {
                             let outcome = app.assistant_preview_outcome(token, preview);
-                            app.assistant_easier_bounds(preview.source, bounds);
-                            if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
-                                && !app.set_assistant_preview_shape(token, preview.source, &shape)
-                            {
-                                NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
-                            } else {
-                                outcome
+                            if let Some((shape, bounds)) = display {
+                                app.assistant_easier_bounds(preview.source, bounds);
+                                if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                    && !app.set_assistant_preview_shape(token, preview.source, &shape)
+                                {
+                                    return Some(NavigatorOutcome::Failed {
+                                        token,
+                                        error: NavigatorError::SourceChanged,
+                                    });
+                                }
                             }
+                            outcome
                         }
                         _ => {
                             self.uncertain = true;
