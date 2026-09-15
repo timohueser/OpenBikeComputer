@@ -44,7 +44,8 @@ actor RetryGate {
 private final class FakeJobs: WeatherJobControlling, @unchecked Sendable {
     private let lock = NSLock()
     private var job: WeatherJobPending?
-    private(set) var retryCount = 0
+    private var _retryCount = 0
+    var retryCount: Int { lock.withLock { _retryCount } }
     /// What the retry does to the checkpoint — the engine clears it on success.
     var clearsOnRetry = true
     /// When set, `retryNow()` parks here until the test opens it — the engine's real contract is
@@ -56,7 +57,7 @@ private final class FakeJobs: WeatherJobControlling, @unchecked Sendable {
     func pendingJob() async -> WeatherJobPending? { lock.withLock { job } }
 
     func retryNow() async {
-        lock.withLock { retryCount += 1 }
+        lock.withLock { _retryCount += 1 }
         if let gate = lock.withLock({ gate }) { await gate.wait() }
         lock.withLock { if clearsOnRetry { job = nil } }
     }
@@ -489,7 +490,7 @@ struct WeatherSettingsModelTests {
         try await waitFor("pending", interval: .milliseconds(5)) { model.pending != nil }
 
         let tap = Task { await model.retryNow() }
-        try await waitFor("in flight", interval: .milliseconds(5)) { model.isRetrying }
+        try await waitFor("in flight", interval: .milliseconds(5)) { model.isRetrying && jobs.retryCount == 1 }
         // A rider pressing again while it spins must not start a second run.
         await model.retryNow()
         #expect(jobs.retryCount == 1)
