@@ -19,8 +19,7 @@
       "obc-dfu",
       "obc-reader",
       "obc-render",
-      "obc-route",
-      "obc-weather"
+      "obc-route"
     ],
     "app": [
       "obc-app"
@@ -50,8 +49,6 @@
       "obc-web-assemble",
       "obc-web-convert",
       "obc-web-demo",
-      "obc-wx-bake",
-      "obc-wx-client",
       "obcm-assemble",
       "obcm-testkit"
     ],

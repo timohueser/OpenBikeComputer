@@ -99,9 +99,6 @@ struct PlaceWire {
 
 type PlaceSearch = Result<Vec<PlaceResult>, String>;
 
-/// Manual position control for weather and other location-dependent bench tests. Search is
-/// deliberately click-driven (never autocomplete), cached for the process lifetime, and runs off
-/// the UI thread. The endpoint can be replaced without rebuilding through `OBC_GEOCODER_URL`.
 #[derive(Default)]
 struct FixedLocationPanel {
     query: String,

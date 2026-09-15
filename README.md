@@ -30,11 +30,9 @@ The main features and capabilities we are aiming for are the following (roughly 
 - Long battery life, ideally 4+ days between recharges, if you need to recharge it should work reliably with dynamo hubs that provide 5V
 - Helps you keep your phone in your pocket by providing all the info you frequently check on the bike:
     - POIS (Shops, water sources, campsites etc.) near you and along the route (including opening hours), with the ability to create a route there on the fly
-    - Weather and rain radar (this is the only one that will use BLE to talk to the phone)
     - And a fun one: Mountain peaks around you (PeakFinder style)
 
 This repository contains all the software and hardware files needed to build the OBC and the goal is to eventually provide kits that allow you to build the OBC yourself. The project currently is an active prototype, not a finished product and you can read about the progress of development in our [Blog](https://openbikecomputer.com/blog/). Here are some peeks at the software and hardware designs:
-
 
 <table>
   <tr>
@@ -58,15 +56,11 @@ This repository contains all the software and hardware files needed to build the
       <img src="docs/assets/device/peak-view.webp" width="200" alt="Peak View shows the Eiger and Mönch from Kleine Scheidegg, with the Eiger's height and distance">
     </td>
     <td align="center" width="33%">
-      <img src="docs/assets/device/weather.webp" width="200" alt="The weather screen shows rain in 34 minutes and the next two hours">
-    </td>
-    <td align="center" width="33%">
       <img src="docs/assets/device/poi.webp" width="200" alt="A bakery point of interest with its distance, opening hours and an open badge">
     </td>
   </tr>
   <tr>
     <td align="center"><sub>Identify the peaks around you.</sub></td>
-    <td align="center"><sub>Know when the rain arrives.</sub></td>
     <td align="center"><sub>Find a shop, and when it opens.</sub></td>
   </tr>
 </table>
@@ -133,7 +127,7 @@ This is the current direction, not a release schedule.
 
 | Stage | Status |
 | --- | --- |
-| Shared application, offline maps, routing, ride recording, and weather | Available in the simulator and browser demo |
+| Shared application, offline maps, routing, ride recording | Available in the simulator and browser demo |
 | iOS companion and BLE/USB transfer flows | Working with the development platform |
 | nRF54LM20 development-kit prototype with the 240 × 320 reflective display | Running on hardware |
 | Custom PCB and enclosure | In development |
@@ -151,7 +145,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | Path | Purpose |
 | --- | --- |
 | `firmware/` | Device application, rendering, protocols, storage, board image, and bootloader |
-| `host/` | Host tools, map and weather bakers, fixtures, and test support |
+| `host/` | Host tools, map bakers, fixtures, and test support |
 | `apps/` | Desktop simulator, desktop shell, and browser/WebAssembly hosts |
 | `builder/` | Svelte map builder, presets, and maintainer server |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |

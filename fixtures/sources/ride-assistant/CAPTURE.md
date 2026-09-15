@@ -74,3 +74,53 @@ Publish only through the [fixture package workflow](../../README.md#adding-or-re
 pack the capture directory, register its immutable hash and byte count, publish it, then sync
 and verify from an empty cache. Do not put captures in the production maps bucket. Use an
 explicit fixture profile for the full-country source package; it is too large for routine tests.
+
+## Pinned Switzerland capture
+
+The `assistant-country` profile contains `assistant-wiki-switzerland`. It is separate from the
+four-site `assistant-wiki` review package and routine fixture tests. Its 5,348,363,006-byte archive
+has SHA-256 `1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8`.
+The source interval is 2026-09-14 22:15 UTC through 2026-09-15 05:23 UTC. All 24 category queries
+completed, and all 6,221 candidate entities and their class closure were captured. There are no
+unresolved requests or missing classes. The package retains 17 earlier failed-attempt records.
+
+Run an explicit country recount with the optimized compiler:
+
+```sh
+cargo build -p obc-bake --release --locked
+tools/obc fixtures sync assistant-country
+target/release/obc-bake landmarks \
+  --snapshot "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki-switzerland/manifest.json" \
+  --boundary "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki-switzerland/boundary.geojson" \
+  --language en --out .artifacts/switzerland-content
+```
+
+Use a fresh output directory for each pass. The source package supplies 3,013 exact-revision
+article captures and 1,481 unique original images. These acquisition counts are not usable-content
+counts: the compiler applies text, license and attribution limits after capture.
+
+The [recorded recount](switzerland-recount.json) pins compiler commit `7b5f9d50`, source and
+policy hashes, output hashes, language counts and omissions. For requested English, the result is:
+
+| Measure | Count |
+| --- | ---: |
+| Geographic/type candidates before article selection | 3,508 |
+| Usable texts | 1,495 |
+| Usable photos | 1,119 |
+| Raw RGB222 photo bytes | 58,008,960 |
+| English / German / French / Italian texts | 669 / 692 / 117 / 17 |
+
+Tellenburg castle ruin (Q1247344) keeps its English text but omits its P18 photo because the
+captured creator, Хрюша, uses unsupported glyphs. Grimsel Pass (Q666668) keeps its English text
+but omits its CC BY-SA photo because the captured metadata does not identify its creator. Both
+omissions retain the original response, exact photo identity and explicit reason. No source asset
+was changed to produce these cases.
+
+Two compiler passes ran with network access denied by macOS `sandbox-exec`. All 1,120 output files
+were byte-identical. Their total size is 66,835,644 bytes, including the 8,826,684-byte internal
+content manifest. The fixture publisher checked the complete public archive; an empty fixture
+cache then downloaded, extracted and verified the package with the normal fixture commands.
+
+The mapped-approach count and final compressed map, index and Sources storage are RA09/RA13
+outputs. They remain unset in this source recount. Physical SD latency and stack high-water
+acceptance remain pending; no device is connected.
