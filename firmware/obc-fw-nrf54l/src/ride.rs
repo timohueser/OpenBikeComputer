@@ -2237,13 +2237,24 @@ pub(crate) async fn run_app(
                                                                     obc_storage::flat::ObjectId(id),
                                                                     Some(obc_storage::flat::Revision(source.revision)),
                                                                     |bytes| {
+                                                                        if let Some(target) =
+                                                                            app.assistant_visit_target()
+                                                                        {
+                                                                            target
+                                                                                .validate_destination(
+                                                                                    bytes,
+                                                                                    context.profile,
+                                                                                )
+                                                                                .map_err(|_| {
+                                                                                    NavigatorError::Unavailable
+                                                                                })?;
+                                                                        }
                                                                         obc_app::navigator::ReviewedRoute::read(
                                                                             source, bytes, context,
                                                                         )
                                                                     },
                                                                 )
-                                                                .ok()
-                                                                .and_then(Result::ok);
+                                                                .ok();
                                                         }
                                                     }
                                                     crate::flat_store::load_routes(flat, app);
@@ -2354,20 +2365,38 @@ pub(crate) async fn run_app(
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match result {
                                     Ok(_) if app.assistant_review_context().is_some() => match finished_review {
-                                        Some(preview) => {
+                                        Some(Ok(preview)) => {
                                             guard.begin_sources();
-                                            let shape=flat.with_source(obc_storage::flat::ObjectId(preview.source.object),Some(obc_storage::flat::Revision(preview.source.revision)),
-                                                |source| crate::assistant::preview_shape(guard.sources().1,source));
+                                            let shape = flat.with_source(
+                                                obc_storage::flat::ObjectId(preview.source.object),
+                                                Some(obc_storage::flat::Revision(preview.source.revision)),
+                                                |source| crate::assistant::preview_shape(guard.sources().1, source),
+                                            );
                                             match shape {
                                                 Ok(Ok(shape)) => {
-                                                    let outcome=app.assistant_preview_outcome(token,preview);
-                                                    if matches!(outcome,NavigatorOutcome::ReviewReady{..}) && !app.set_assistant_preview_shape(token,preview.source,&shape) {
-                                                        NavigatorOutcome::Failed {token,error:NavigatorError::SourceChanged}
-                                                    } else {outcome}
+                                                    let outcome = app.assistant_preview_outcome(token, preview);
+                                                    if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                                        && !app.set_assistant_preview_shape(
+                                                            token,
+                                                            preview.source,
+                                                            &shape,
+                                                        )
+                                                    {
+                                                        NavigatorOutcome::Failed {
+                                                            token,
+                                                            error: NavigatorError::SourceChanged,
+                                                        }
+                                                    } else {
+                                                        outcome
+                                                    }
                                                 }
-                                                _ => NavigatorOutcome::Failed {token,error:NavigatorError::DurabilityUnknown},
+                                                _ => NavigatorOutcome::Failed {
+                                                    token,
+                                                    error: NavigatorError::DurabilityUnknown,
+                                                },
                                             }
-                                        },
+                                        }
+                                        Some(Err(error)) => NavigatorOutcome::Failed { token, error },
                                         None => {
                                             NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
                                         }
