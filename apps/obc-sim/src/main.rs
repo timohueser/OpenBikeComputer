@@ -152,11 +152,11 @@ struct Args {
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
-    /// Headless `--png` only: seed the device's UTC wall-clock anchor to `YYYY-MM-DDTHH:MM`. With
-    /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
-    /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
-    /// device default (2025-01-01 12:00, a Wednesday noon).
+    /// Explicit UTC time and local offset, through the trusted clock entry.
     clock: Option<obc_ports::DateTime>,
+    /// Apply another explicit time after the button script, before the final settle and render.
+    clock_after_script: Option<obc_ports::DateTime>,
+    utc_offset_min: Option<i16>,
 
     no_card: bool,
     route_cleanup: bool,
@@ -219,6 +219,8 @@ impl Default for Args {
             palette: false,
             battery: None,
             clock: None,
+            clock_after_script: None,
+            utc_offset_min: None,
 
             no_card: false,
             route_cleanup: false,
@@ -235,6 +237,12 @@ impl Default for Args {
 }
 
 impl Args {
+    fn stamp_initial_clock(&self, app: &mut obc_app::App) {
+        if let Some(clock) = self.clock {
+            app.stamp_clock(clock, 0, Some(self.utc_offset_min.unwrap_or(0)), obc_app::ClockTrust::Ble);
+        }
+    }
+
     pub(crate) fn routes_dir(&self) -> String {
         self.routes_dir.clone().unwrap_or_else(|| "routes".to_string())
     }
@@ -551,6 +559,22 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
+            "--clock-after-script" => {
+                a.clock_after_script =
+                    Some(parse_clock(&it.next().ok_or("--clock-after-script needs YYYY-MM-DDTHH:MM")?)?);
+            }
+
+            "--utc-offset-min" => {
+                let offset = it
+                    .next()
+                    .ok_or("--utc-offset-min needs minutes")?
+                    .parse::<i16>()
+                    .map_err(|_| "--utc-offset-min needs an integer number of minutes")?;
+                if !(obc_app::settings::UTC_OFFSET_MIN..=obc_app::settings::UTC_OFFSET_MAX).contains(&offset) {
+                    return Err("--utc-offset-min is outside the device's supported range".into());
+                }
+                a.utc_offset_min = Some(offset);
+            }
 
             "--route-cleanup" => a.route_cleanup = true,
             "--no-card" => a.no_card = true,
@@ -587,6 +611,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
                 }
             }
         }
+    }
+    if a.utc_offset_min.is_some() && a.clock.is_none() && a.clock_after_script.is_none() {
+        return Err("--utc-offset-min requires --clock or --clock-after-script".into());
     }
     // `--palette` and `--import` need no map file.
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
@@ -944,7 +971,9 @@ Device state:
   --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
   --battery PCT           Initial battery charge, 0..=100
-  --clock DATE            UTC anchor, YYYY-MM-DDTHH:MM
+  --clock DATE            Trusted UTC time, YYYY-MM-DDTHH:MM (local offset defaults to 0)
+  --clock-after-script DATE  Set trusted UTC time after the script (same format and offset)
+  --utc-offset-min N      Local offset for explicit clocks, minutes (-720..840; default 0)
   --lang LANG             UI language: en|de|fr|es
   --stat-fields LIST      Comma-separated Statistics field ids
   --physical              Use saved physical-size calibration in the GUI
@@ -1144,13 +1173,8 @@ fn main() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
-        // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
-        // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
-        // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
-        // screen draws its de/fr/es copy. Both stay at the device default otherwise — with neither
-        // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
-        // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
-        // from this local set-point (see `App::set_settings`).
+        // Explicit headless settings are applied before the script. Without an explicit clock,
+        // the device's boot time remains untrusted.
         if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
@@ -1202,6 +1226,7 @@ fn main() {
             }
             app.set_settings(settings);
         }
+        args.stamp_initial_clock(&mut app);
         // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label (N5),
         // and whether it carries a nav graph at all (#882: gates the ride menu's Detour station).
         app.set_nav_profiles(tables.nav_profiles());
@@ -1234,9 +1259,6 @@ fn main() {
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
         if args.route_cleanup {
-            if let Some(clock) = args.clock {
-                app.stamp_clock(clock, 0, None, obc_app::ClockTrust::Ble);
-            }
             if let Some(scope) = store.store_scope() {
                 app.offer_route_cleanup(scope.store);
             }
@@ -1361,6 +1383,9 @@ fn main() {
             };
             hook(&mut app, ScriptHook::Tick, script_now);
             script_now = apply_script(&mut app, script, script_now, &mut hook);
+        }
+        if let Some(clock) = args.clock_after_script {
+            app.stamp_clock(clock, 0, Some(args.utc_offset_min.unwrap_or(0)), obc_app::ClockTrust::Ble);
         }
         // Everything the script's last press asked for, with no trailing `f`: settle it now so the
         // final render reflects the answer (the create-route commit, the detour plan/commit, the
@@ -1743,6 +1768,19 @@ mod cli_tests {
         let mut args = vec!["map.obcm".to_string()];
         args.extend(options.iter().map(|s| (*s).to_string()));
         parse_args_from(args)
+    }
+
+    #[test]
+    fn explicit_clock_offsets_use_the_device_range_and_require_a_time() {
+        for offset in ["-720", "0", "60", "120", "840"] {
+            let args = parse(&["--clock", "2026-09-14T10:00", "--utc-offset-min", offset]).unwrap();
+            assert_eq!(args.utc_offset_min, Some(offset.parse().unwrap()));
+        }
+        assert!(parse(&["--clock-after-script", "2026-09-14T10:00", "--utc-offset-min", "60"]).is_ok());
+        for offset in ["-721", "841", "no"] {
+            assert!(parse(&["--clock", "2026-09-14T10:00", "--utc-offset-min", offset]).is_err());
+        }
+        assert!(parse(&["--utc-offset-min", "60"]).is_err());
     }
 
     #[test]
