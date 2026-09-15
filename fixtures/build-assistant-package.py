@@ -105,7 +105,7 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     tree = work / "tree"
     run(bin_dir / "obc-bake", "bake", region_id, "--regions", regions, "--source", local_source,
         "--dem-sources", store.package_root("assistant-terrain"), "--landmarks", landmarks,
-        "--presets-dir", ROOT / "builder/presets", "--out", tree, "--base-url", "http://localhost/assistant",
+        "--presets-dir", ROOT / "builder/presets", "--skin", "default", "--out", tree, "--base-url", "http://localhost/assistant",
         "--generated-at", "2026-09-15T00:00:00Z", "--summary-json", work / "summary.json", "--fail-fast")
     native = work / "native-terrain"
     run(bin_dir / "obc-dem", "bake", "--sources", store.package_root("assistant-terrain"),
