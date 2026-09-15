@@ -681,7 +681,7 @@ command = "firmware/ui-snapshots.sh OUT && python3 firmware/tools/ui_snapshot_ma
 fixtures = ["sim"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["firmware/ui-snapshots.sh", "firmware/ui-snapshots.sha256", "firmware/tools/ui_snapshot_manifest.py", "firmware/obc-app/src/**", "firmware/obc-render/src/**", "apps/obc-sim/src/**"]
+extra_triggers = ["firmware/ui-snapshots.sh", "firmware/ui-snapshots.sha256", "firmware/tools/ui_snapshot_manifest.py", "firmware/obc-app/src/**", "firmware/obc-render/src/**", "apps/obc-sim/src/**", "firmware/obc-app/i18n/*.toml", "firmware/obc-app/assets/**", "firmware/obc-render/fonts/**", "apps/obc-sim/assets/**", "fixtures/catalog.toml", "fixtures/sources/sim-*/**"]
 coverage_component = "host-tools"
 # The step's `cargo build -p obc-sim` line is a build, already owned by `ci.rust-builds`; what this
 # suite owns is the check that reads the manifest.

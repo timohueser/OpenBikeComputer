@@ -1206,6 +1206,8 @@ def gate_claims(
                 if owner.get("kind") != "workflow" or set("*?[").intersection(pattern):
                     continue
                 for args in _cargo_invocations(pattern):
+                    if "--doc" in args:
+                        continue  # Doctests do not execute the package test targets.
                     candidates = set().union(*(by_package.get(package, set()) for package in _cargo_packages(args, "", graph)))
                     if "--filter-expr" in args:
                         expression = args[args.index("--filter-expr") + 1]

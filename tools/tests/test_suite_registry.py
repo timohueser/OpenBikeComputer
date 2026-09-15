@@ -545,7 +545,12 @@ class LocalInterfaceTests(unittest.TestCase):
         self.routes[suite["id"]] = []
         plan = registry.select_by_level(self.inventory, self.routes, "fixtures", "map")
         self.assertFalse(plan.errors)
-        self.assertEqual(registry.run_plan(plan, self.root), 0)
+        self.assertFalse(plan.selected)
+        arguments = registry.build_parser().parse_args(["--root", str(self.root), "run", "--scheduled", "manual", "--surface", "map"])
+        with patch.object(registry, "load_inventory", return_value=self.inventory), \
+             patch.object(registry, "build_cargo_graph", return_value=registry.CargoGraph({}, {})), \
+             patch.object(registry, "suite_workflow_jobs", return_value=self.routes):
+            self.assertEqual(registry.command_run(arguments), 0)
         self.assertEqual(self.marker.read_text(), "fixture.map\n")
 
     def test_platform_restricted_suite_is_skipped_not_passed(self) -> None:
@@ -852,11 +857,20 @@ class ShippedRoutingTests(unittest.TestCase):
 
     def test_snapshot_sweep_requires_its_own_rendering_inputs(self):
         for path, selected in [("testing/coverage-policy.toml", False), (".github/workflows/ci.yml", False),
-                               ("firmware/obc-render/src/stroke.rs", True), ("firmware/ui-snapshots.sha256", True)]:
+                               ("firmware/obc-render/src/stroke.rs", True), ("firmware/ui-snapshots.sha256", True),
+                               ("firmware/obc-app/i18n/en.toml", True), ("firmware/obc-app/assets/landmark.bin", True),
+                               ("firmware/obc-render/fonts/terminus/font.bdf", True)]:
             plan = registry.select_suites(self.inventory, [path], self.graph, self.routes,
                                           unconditional=self.unconditional)
             actual = next(item.selected for item in plan.suites if item.suite["id"] == "ci.ui-snapshots")
             self.assertEqual(actual, selected, path)
+
+    def test_shipped_fast_gate_never_claims_fixture_live_or_manual_suites(self):
+        claims = registry.gate_claims(self.inventory.suites, self.graph)["test"]
+        by_id = {suite["id"]: suite for suite in self.inventory.suites}
+        self.assertIn("rust.obc-route", claims)
+        self.assertFalse({id for id in claims if by_id[id]["level"] in {"fixture", "live", "hardware"}
+                          or by_id[id]["scheduled"] == "manual"})
 
 class ExceptionIssueStateTests(unittest.TestCase):
     def suite(self, reference: str, field: str = "quarantine", name: str = "demo") -> dict:
