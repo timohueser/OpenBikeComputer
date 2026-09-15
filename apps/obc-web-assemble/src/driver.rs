@@ -182,8 +182,7 @@ pub trait MapWrites {
     /// Append `bytes` to the map. A short write is a failure, not a partial success.
     fn write(&self, bytes: &[u8]) -> Result<(), String>;
     /// Fill `into` with `into.len()` bytes at `offset` of the **sealed** map, for the §4.8
-    /// read-back. Served through a [`BlockCache`], so this is called on the order of once per
-    /// [`DEFAULT_READ_BLOCK`] rather than once per engine read.
+    /// read-back. Small reads use a bounded [`BlockCache`] with [`VERIFY_READ_BLOCK`] windows.
     fn read_at(&self, offset: u64, into: &mut [u8]) -> Result<(), String>;
     /// No more bytes are coming. A host that buffers must flush here: the very next thing that
     /// happens is §4.8 reading the map back.
