@@ -63,14 +63,7 @@ cancellation in the same batch that puts the map base back. So [`Cycle`] **count
 and fails on more than one, but does not require one; the pixels are proven off-device by
 `obc-sim --freeze --png`.
 
-**Scenario G proves the fact, not a refusal.** S5 open question 2 was "`CoreMode`'s transfer level
-does not see a route/trip/weather upload", and this slice closes it by feeding
-`ExternalFacts::note_transfer` from the flat engine's own live transfer — which the board reports on
-RTT as `xfer: transfer level active/idle`. Turning that level into a *named refusal* needs a consumer
-of `Capabilities::navigator`, and today the only consumer of `Capabilities` at all is the weather
-stage. So G asserts the level moves for a **route** upload (it never did before) and says out loud
-that the refusal half belongs to Gate 4 / #1400. Claiming a refusal here would be claiming a rule the
-firmware does not yet have.
+Scenario G checks that route uploads change the transfer level reported by the board.
 
 Everything above `Link` is pure log analysis with no pyserial in it, which is what
 `tools/tests/test_s6b_board_cutover_soak.py` drives against recorded RTT text.
@@ -146,14 +139,12 @@ REFUSAL_ARENA = "the scratch arena is busy"
 STACK_RESERVE = 65_536
 DEEP_RIDE_MARGIN_MIN = 8_704
 
-
 def alarms(lines: list[str]) -> list[str]:
     """Every executor alarm in the window. These are `defmt::error!`s the typed executor raises for
     a shape that cannot happen — an effect no board half serves, two answers for one domain in one
     frame, a class DeviceCore owns coming back on the legacy protocol. On a release image the
     matching `debug_assert!` is compiled out, so **this line is the only witness**."""
     return [line.strip() for line in lines if any(a in line for a in EXEC_ALARMS)]
-
 
 @dataclass
 class Cycle:
@@ -188,7 +179,6 @@ class Cycle:
             return f"{self.banner_frames} banner repaints for one freeze — the edge is repainting per pass"
         return None
 
-
 def read_cycle(lines: list[str]) -> Cycle:
     """Fold one cycle's RTT lines into a [`Cycle`]. Ordering is not asserted here — `verdict` is
     about counts, and `assert_sequence` below is what pins the order."""
@@ -210,7 +200,6 @@ def read_cycle(lines: list[str]) -> Cycle:
         elif PLAN_REFUSED in line:
             cycle.refusals.append(line.strip())
     return cycle
-
 
 def assert_sequence(lines: list[str]) -> str | None:
     """The order a cycle must walk: start → answer → the map catches up, with any banner repaint
@@ -251,7 +240,6 @@ def assert_sequence(lines: list[str]) -> str | None:
         return "a banner repaint at or after the answer — the freeze outlived its search"
     return None
 
-
 def removals(lines: list[str]) -> list[bool]:
     """Every answered `CatalogEffect::RemoveObject` in the window, as its `existed` flag."""
     out = []
@@ -260,16 +248,13 @@ def removals(lines: list[str]) -> list[bool]:
             out.append("existed true" in line)
     return out
 
-
 def catalog_reads(lines: list[str]) -> int:
     """How many completed catalog re-reads the window contains — scenario F counts these."""
     return sum(CATALOG_READ in line for line in lines)
 
-
 def transfer_edges(lines: list[str]) -> list[str]:
     """The transfer level's edges in order: `"active"` / `"idle"`."""
     return ["active" if XFER_ACTIVE in line else "idle" for line in lines if XFER_ACTIVE in line or XFER_IDLE in line]
-
 
 def stack_peaks(lines: list[str]) -> list[tuple[int, int]]:
     """Every `stack high-water N / M B` peak in the window, as `(used, total)`.
@@ -291,7 +276,6 @@ def stack_peaks(lines: list[str]) -> list[tuple[int, int]]:
             peaks.append((int(used_digits), int(total_digits) if total_digits else STACK_RESERVE))
     return peaks
 
-
 def margin_verdict(peaks: list[tuple[int, int]]) -> str | None:
     """Scenario C's stack gate: the **smallest margin** any reported peak leaves must clear
     `deep_ride_margin_min`, measured against the stack the board says it has rather than the linker's
@@ -307,19 +291,15 @@ def margin_verdict(peaks: list[tuple[int, int]]) -> str | None:
         return f"stack peak {worst} B of {total} B leaves {margin} B, under the {DEEP_RIDE_MARGIN_MIN} B floor"
     return None
 
-
 def step_acks(lines: list[str]) -> int:
     """How many injected selection steps the board acknowledged in this window."""
     return sum(STEP_ACK in line for line in lines)
-
 
 def faults(lines: list[str]) -> list[str]:
     """Boot faults and WDT resets seen in the window — either one ends a soak."""
     return [line.strip() for line in lines if BOOT_FAULT in line.lower() or "watchdog" in line.lower()]
 
-
 # ── the wire ─────────────────────────────────────────────────────────────────────────────────────
-
 
 class Link:
     """The VCOM line, and the RTT log beside it. Every `send` is one `\\n`-terminated debug-link
@@ -401,7 +381,6 @@ class Link:
         """`N <from_lon> <from_lat> <to_lon> <to_lat>` — **LON FIRST**, unlike the lat-first `F`."""
         self.send(f"N {frm[0]} {frm[1]} {to[0]} {to[1]}")
 
-
 def liveness_probe(link: Link, retry: bool = True) -> None:
     """**Run this before trusting a single assertion.** The J-Link CDC wedges with `write()` still
     succeeding and RTT still flowing, and a blind script then passes every step against a board that
@@ -432,7 +411,6 @@ def liveness_probe(link: Link, retry: bool = True) -> None:
     if acks < 6:
         print(f"  liveness: only {acks}/6 taps acknowledged — the cable is lossy, results may be noisy")
 
-
 def reached_map(link: Link) -> bool:
     """Whether the base screen is the Map, probed the only way a quiet screen can be.
 
@@ -443,10 +421,8 @@ def reached_map(link: Link) -> bool:
     link.zoom(22.0)
     return link.wait_for(mark, MAP_FRAME, timeout=2.0)
 
-
 class Aborted(SystemExit):
     """The run cannot continue: the rig lost the screen it drives from."""
-
 
 def heal_to_map(link: Link, attempts: int = 6) -> None:
     """**Lesson 2 — the per-cycle self-heal, with a loud abort.**
@@ -472,9 +448,7 @@ def heal_to_map(link: Link, attempts: int = 6) -> None:
         "device to the Map by hand, and re-run."
     )
 
-
 # ── the scenarios ────────────────────────────────────────────────────────────────────────────────
-
 
 def ride_to_map(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> None:
     """Get a **map base** under the rig, whatever the card holds.
@@ -524,14 +498,12 @@ def ride_to_map(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> None:
         "N route(s)` (does the card hold any?), then re-run."
     )
 
-
 def stream_fixes(link: Link, base: tuple[int, int], steps: int, delay: float = 1.0) -> None:
     """`F` fixes at ~1 Hz in small increments — teleport rejection drops anything larger."""
     lat, lon = base
     for i in range(steps):
         link.fix(lat + i * 40, lon + i * 40)
         time.sleep(delay)
-
 
 def plan_cycle(
     link: Link, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]
@@ -560,7 +532,6 @@ def plan_cycle(
     lines = link.since(mark)
     return read_cycle(lines), lines
 
-
 def report(prefix: str, cycle: Cycle, lines: list[str]) -> int:
     """Print a cycle's verdict; return 1 when it failed. A failure prints its landmark tally, because
     the usual cause is the key sequence drifting, not the firmware."""
@@ -575,7 +546,6 @@ def report(prefix: str, cycle: Cycle, lines: list[str]) -> int:
         f"alarms={len(cycle.alarms)}"
     )
     return 1
-
 
 def scenario_a(link: Link, cycles: int, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
     """**A — the `render ⊥ nav` claim/release cycle on the new spine**, ≥50 times (S5 A, re-proven).
@@ -601,7 +571,6 @@ def scenario_a(link: Link, cycles: int, frm: tuple[int, int], to: tuple[int, int
     print(f"A: {cycles - failures}/{cycles} cycles passed; {banners} banner repaints observed")
     print("   (0 banner repaints is expected — see the module docs on why no gesture engages the freeze)")
     return failures
-
 
 def scenario_b(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> int:
     """**B — `nav ⊥ usb` and `render ⊥ usb`** (S5 B, re-proven). Semi-automatic: a hand on the cable.
@@ -680,7 +649,6 @@ def scenario_b(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> int:
     print(f"  arena arm: {granted} granted / {reclaimed} reclaimed (expect one each per upload)")
     return failures
 
-
 def scenario_c(link: Link, minutes: int, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
     """**C — the stuck-arm soak** (S5 C, re-proven). A continuous ride with a plan cycle every ~60 s
     and a periodic zoom nudge. Every released nav arm must be followed by a map render, the stack
@@ -705,7 +673,6 @@ def scenario_c(link: Link, minutes: int, frm: tuple[int, int], to: tuple[int, in
         n += 1
     print(f"C: {n} cycles over {minutes} min, {failures} failures")
     return failures
-
 
 def scenario_d(link: Link) -> int:
     """**D — typed catalog removal.** New to this slice: the rider's delete is a
@@ -742,7 +709,6 @@ def scenario_d(link: Link) -> int:
     input("   Press Enter when both are confirmed. ")
     return failures
 
-
 def scenario_e(link: Link) -> int:
     """**E — removal under backpressure.** New to this slice, and the reason the removal left
     `MENU_DELETES`: that queue *drops* an id when it is full, which the domain would read as an
@@ -770,7 +736,6 @@ def scenario_e(link: Link) -> int:
     if any(REMOVE_FAILED in line for line in window):
         print("  note: the store refused at least once and the domain re-queued it — that is the design")
     return failures
-
 
 def scenario_f(link: Link) -> int:
     """**F — one store commit, one catalog refresh.** New to this slice: the board reports
@@ -808,7 +773,6 @@ def scenario_f(link: Link) -> int:
     input("   Press Enter when confirmed. ")
     return failures
 
-
 def scenario_g(link: Link) -> int:
     """**G — `note_transfer` closes the S5 gap.** New to this slice, and read the module docs before
     reading the verdict: this proves the **fact**, not a refusal.
@@ -831,7 +795,6 @@ def scenario_g(link: Link) -> int:
     print(f"  the route upload moved the transfer level and released it ({' → '.join(edges)}): ok")
     print("  (the *refusal* half needs a `Capabilities` consumer — Gate 4 / #1400, not this slice)")
     return 0
-
 
 def scenario_h(link: Link, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
     """**H — the recorder still closes** (the residual `FinishTrack`).
@@ -860,7 +823,6 @@ def scenario_h(link: Link, frm: tuple[int, int], to: tuple[int, int], base: tupl
     input("   Press Enter when both are confirmed. ")
     return failures
 
-
 def scenario_i(link: Link) -> int:
     """**I — settings, DFU and the card scan**: the three effects the executor serves under the store
     guard, each of which used to be a drained command."""
@@ -880,7 +842,6 @@ def scenario_i(link: Link) -> int:
     if not failures:
         print("  no executor alarms across the scan/arm/reboot: ok")
     return failures
-
 
 def scenario_j(link: Link, base: tuple[int, int]) -> int:
     """**J — wake and pace unchanged.** The typed executor asks for an immediate second pass whenever
@@ -905,7 +866,6 @@ def scenario_j(link: Link, base: tuple[int, int]) -> int:
     print("   (S5 measured 7.5 MB/s on this path; record the figure on the issue.)")
     return failures
 
-
 def scenario_k() -> int:
     """**K — the human-eye pass.** Nothing here is automatable, and the rig says so rather than
     pretending: banner legibility on the reflective panel, whether the whole-frame catch-up after a
@@ -922,12 +882,10 @@ def scenario_k() -> int:
     input("   Press Enter when all four are recorded. ")
     return 0
 
-
 def coord(raw: str) -> tuple[int, int]:
     """`LON,LAT` in integer microdegrees — the `N` line's own order."""
     lon, lat = raw.split(",")
     return int(lon), int(lat)
-
 
 def resolve_port(explicit: str | None) -> str:
     if explicit:
@@ -937,9 +895,7 @@ def resolve_port(explicit: str | None) -> str:
         raise SystemExit("no /dev/cu.usbmodem*133 — is the DK plugged in?")
     return matches[0]
 
-
 SCENARIOS = "ABCDEFGHIJK"
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -993,7 +949,6 @@ def main() -> int:
 
     print("PASS" if failures == 0 else f"FAIL ({failures})")
     return 0 if failures == 0 else 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

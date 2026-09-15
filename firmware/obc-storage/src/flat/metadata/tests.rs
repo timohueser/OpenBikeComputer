@@ -325,7 +325,7 @@ fn a_full_read_handle_table_refuses_before_publication_and_retries_after_close()
     let store = FlatStore::initialize(&disk, CARD).unwrap();
     let route = publish(&store, ObjectKind::Route, b"route");
     let mut handles = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..crate::flat::store::MAX_OPEN_OBJECTS {
         let object = publish(&store, ObjectKind::Ride, b"ride");
         handles.push(store.open(object.id, Some(object.revision)).unwrap());
     }

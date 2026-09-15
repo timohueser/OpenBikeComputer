@@ -115,7 +115,6 @@ same numbers and defines no others.
 | 1 | route | OBCR payload |
 | 2 | trip | ordered route membership |
 | 3 | ride | produced by the device; the one growing object (§7) |
-| 4 | weather bundle | OBCW payload; at most one retained previous revision |
 | 5 | map shard | OBCM or OBCT payload. **Since OBCM v14 (#1420) a map is one object** carrying its terrain inside it (`OBCM_Spec.md` §1.3), so this kind is simply *map*; the name and the value stay until FS7.5c renames it |
 | 6 | map set manifest | ~~names shards by `ObjectId`; a set activates when its manifest commits~~ — **retired with `OBCA_Spec.md` §5** (#1420). No producer writes this kind after FS7.5b; the value is not reissued |
 | 7 | update package | OBCU image |
@@ -291,7 +290,6 @@ Flags:
 | Bit | Name | Meaning |
 | --: | :-- | :-- |
 | 0 | `RECORDING` | the active ride. Payload length and CRC are the values of the last commit, not of the current recording; the ride journal (§7) is authoritative for what is beyond them. At most one entry in the catalog carries it. |
-| 1 | `RETAINED` | this entry is a non-head revision the store keeps alive on purpose, so that a reader mid-stream and a domain that wants continuity — weather's previous bundle, today — still have bytes. It is set and cleared only by a commit, and everything else in this suite refers here rather than restating it. |
 | 2 | `RESERVED` | the entry owns extents and the store does not write the payload. Only kind 8 uses it; the bootloader writes those bytes. Payload length is zero and `read` on it is refused. |
 
 Bits `3..15` are zero.
@@ -392,11 +390,6 @@ Step 1 exists because step 3 may otherwise leave a gate that certifies a body on
 `B`'s old gate would still name an old entry count and an old body CRC, both of which a partially
 written body can accidentally satisfy in the prefix the count selects. Invalidating first makes
 "body not yet certified" the only intermediate state.
-
-One commit carries a batch of entry mutations — put an entry, remove an entry — and applies them
-atomically, because the mechanism rewrites the whole live prefix regardless. Weather retention (put
-the new head, set `RETAINED` on the displaced entry) and finalising a ride (clear `RECORDING`, trim
-the ranges, set length and CRC) are each one commit.
 
 The cost is `ceil(n/4) + 3` block **writes** and three synchronizations, and — because the mechanism
 rewrites the whole live prefix — two passes over the array's `ceil(n/4)` blocks to produce them: one to

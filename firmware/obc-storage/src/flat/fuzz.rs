@@ -164,7 +164,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
             ObjectKind::Route,
             ObjectKind::Trip,
             ObjectKind::Ride,
-            ObjectKind::WeatherBundle,
+            ObjectKind::Route,
             ObjectKind::MapShard,
             ObjectKind::RollbackReserve,
         ];

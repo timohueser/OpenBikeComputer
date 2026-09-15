@@ -89,17 +89,6 @@ resource-report = []
 # command the operator has to spell out; it is never part of a shipping image.
 flat-store-reset = []
 
-# The on-glass harness for the WX3 Weather Request discovery spike (#1188). When enabled, boot
-# raises one weather-request advertising intent so the iOS background-discovery states can be
-# measured without the rest of the weather lifecycle existing. The intent is cleared by the first
-# authenticated context read or by the bounded 60-second advertising budget, whichever comes first;
-# default builds never raise it, and the capability word reports no weather in every build (see
-# `link::identity::feature_bits`).
-#
-# The service itself is in GATT in *every* BLE build regardless of this feature — advertising a
-# service the connected database does not contain is the trap this spike exists to avoid.
-ble-weather-request = []
-
 [dependencies]
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
@@ -164,10 +153,6 @@ obc-storage = { path = "../obc-storage" }
 # The transport-free v4 engine and wire codecs shared by BLE, USB, and the flat store.
 obc-link = { path = "../obc-link", features = ["fast-crc"] }
 obc-crc = { path = "../obc-crc" }
-# Shared no_std OBCW reader/cache and deterministic generation selector. The board supplies only
-# the flat-store adapter; no provider, UI or BLE policy enters this edge.
-obc-weather = { path = "../obc-weather" }
-# The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
 # `Rgb565` / `DrawTarget` / `Point` / `Rectangle` for the map path's `color_fn` + the hold-bulge
 # overlay composite's `Band` target; pinned to the same 0.8 obc-platform/obc-render resolve so the

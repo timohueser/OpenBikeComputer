@@ -29,6 +29,95 @@ impl VisitTarget {
             && a.profile_mask & (1 << profile) != 0)
             .then_some((a.lon, a.lat))
     }
+    /// Validate the actual graph endpoint for a direct destination. A near snap is insufficient.
+    pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
+        use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
+        use obc_formats::obcr::CHUNK_META_LEN;
+        let approach = self.approach(self.map, profile).ok_or(Error::BadOffset)?;
+        let h = read_header(src)?;
+        let k = h.chunk_count.checked_sub(1).ok_or(Error::BadOffset)?;
+        let offset =
+            k.checked_mul(CHUNK_META_LEN as u32).and_then(|n| h.index_offset.checked_add(n)).ok_or(Error::BadOffset)?;
+        let mut bytes = [0; CHUNK_META_LEN];
+        src.read_at(u64::from(offset), &mut bytes)?;
+        let meta = parse_chunk_meta(&bytes, src.len())?;
+        if meta.point_count == 0 {
+            return Err(Error::BadOffset);
+        }
+        let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
+        let p = points.last().ok_or(Error::BadOffset)?;
+        if obc_map_scene::ground_dist_m((p.lon, p.lat), approach) > APPROACH_TOLERANCE_M {
+            return Err(Error::BadOffset);
+        }
+        Ok(())
+    }
+}
+
+/// Elevation confidence and arrival ascent measured from the same complete candidate geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisitCosts {
+    pub arrival_ascent_m: u32,
+    pub arrival_elevation_complete: bool,
+    pub complete_elevation: bool,
+}
+impl VisitCosts {
+    /// Read with one bounded chunk buffer, without allocating a second route index.
+    #[inline(never)]
+    pub fn read(src: &dyn obc_formats::io::ByteSource, arrival: [u32; 2]) -> Result<Self, Error> {
+        use crate::facts::FactsAccumulator;
+        use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
+        use obc_formats::obcr::CHUNK_META_LEN;
+        let h = read_header(src)?;
+        if h.chunk_count == 0
+            || h.chunk_count as usize > crate::MAX_ROUTE_CHUNKS
+            || arrival[0] > arrival[1]
+            || arrival[1] > h.total_distance_m
+        {
+            return Err(Error::BadOffset);
+        }
+        let mut full = FactsAccumulator::new(0, None, 0, h.total_distance_m);
+        let mut to_stop = FactsAccumulator::new(0, None, arrival[0], arrival[1]);
+        let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        let mut previous = None;
+        let mut count = 0u32;
+        for k in 0..h.chunk_count {
+            let offset = k
+                .checked_mul(CHUNK_META_LEN as u32)
+                .and_then(|n| h.index_offset.checked_add(n))
+                .ok_or(Error::BadOffset)?;
+            let mut bytes = [0; CHUNK_META_LEN];
+            src.read_at(u64::from(offset), &mut bytes)?;
+            let meta = parse_chunk_meta(&bytes, src.len())?;
+            if meta.point_count == 0 {
+                return Err(Error::BadOffset);
+            }
+            points.clear();
+            decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
+            if let Some(last) = previous {
+                let first = points[0];
+                if last != (first.lon, first.lat, first.ele) {
+                    return Err(Error::BadOffset);
+                }
+            }
+            for &point in points.iter().skip(usize::from(k > 0)) {
+                full.push(point, &mut |_| {});
+                to_stop.push(point, &mut |_| {});
+                count += 1;
+                previous = Some((point.lon, point.lat, point.ele));
+            }
+        }
+        let full = full.finish(h.total_distance_m)?;
+        let to_stop = to_stop.finish(h.total_distance_m)?;
+        if count != h.point_count || full.ascent_m != h.total_ascent_m || full.descent_m != h.total_descent_m {
+            return Err(Error::BadOffset);
+        }
+        Ok(Self {
+            arrival_ascent_m: to_stop.ascent_m,
+            arrival_elevation_complete: to_stop.complete_elevation(),
+            complete_elevation: full.complete_elevation(),
+        })
+    }
 }
 
 /// Elevation confidence and arrival ascent measured from the same complete candidate geometry.

@@ -77,12 +77,7 @@
     {
       "name": "put-create-request",
       "file": "controls/put-create-request.json",
-      "sha256": "3648e83222d087a575fbb1cd3aa8eade11181197547749fbed078d6b94a8c646"
-    },
-    {
-      "name": "put-replace-retaining-request",
-      "file": "controls/put-replace-retaining-request.json",
-      "sha256": "fbae1012ead19aa8c215a3f8272f4c80ca7a0612b5ae411652c3bd021f88ee12"
+      "sha256": "e485c21177c4c02ee8ed6d836642cc597cca41b6f28e4516c792ec3dd2509ee9"
     },
     {
       "name": "put-response",
@@ -363,7 +358,7 @@
     {
       "name": "put-undefined-request-flag",
       "file": "negative/put-undefined-request-flag.json",
-      "sha256": "ff1d675751d2ea925832a0795714fec121a6f5b647b4e54b7643a3443406a2a9"
+      "sha256": "ad96a4d4bbd8b15f5007b9473ff9490f00a2a39fa99336bf8a2e4ac8312c4ce0"
     },
     {
       "name": "put-unknown-kind",

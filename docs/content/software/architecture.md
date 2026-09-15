@@ -17,7 +17,7 @@ The shared core does not depend on a host.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 486" role="img" aria-label="Hosts depend on the shared application. The application composes map, route, weather, and rendering modules. Foundation crates define data and host interfaces. This is a layer overview, not a complete dependency graph.">
+<svg viewBox="0 0 720 486" role="img" aria-label="Hosts depend on the shared application. The application composes map, route, and rendering modules. Foundation crates define data and host interfaces. This is a layer overview, not a complete dependency graph.">
   <defs><marker id="software-architecture-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
   <text class="d-tag" x="20" y="26" text-anchor="start">Runtime layers</text>
   <rect class="d-panel" x="20" y="54" width="210" height="72" rx="8" />
@@ -40,7 +40,7 @@ The shared core does not depend on a host.
   <path class="d-flow" d="M360 254 L360 283" marker-end="url(#software-architecture-1)" />
   <rect class="d-panel" x="20" y="286" width="680" height="74" rx="8" />
   <text class="d-title" x="360" y="311" text-anchor="middle">Shared modules</text>
-  <text class="d-sub" x="360" y="331" text-anchor="middle">obc-render · obc-reader · obc-route · obc-weather</text>
+  <text class="d-sub" x="360" y="331" text-anchor="middle">obc-render · obc-reader · obc-route</text>
   <path class="d-flow" d="M360 360 L360 389" marker-end="url(#software-architecture-1)" />
   <rect class="d-panel" x="20" y="392" width="680" height="74" rx="8" />
   <text class="d-title" x="360" y="417" text-anchor="middle">Foundations</text>
@@ -60,7 +60,6 @@ The runtime uses these layers:
 | `obc-render` | Project, select, and draw map features. |
 | `obc-reader` | Read OBCM tables, indexes, and chunks. |
 | `obc-route` | Read and write routes. Match positions and calculate routes. |
-| `obc-weather` | Validate OBCW data and decode rain tiles. |
 | Foundation crates | Define formats, map-scene interfaces, elevation rules, and ports. |
 
 `App` is the composition root for the shared application.
@@ -168,10 +167,9 @@ pub trait ByteSource {
 }
 ```
 
-Map cells carry the canonical style table, including each style's drawing order.
-The assembler keeps each style on its original side of the reserved rain gap: at most 16 or at least 24.
-It checks all cells and the selected skin before writing output, including local CLI assemblies.
-A skin can reorder styles within either band. This uses the existing cell bytes and needs no catalog update.
+Map cells carry the canonical style ids. The assembler checks all cells and the selected skin
+before writing output, including local CLI assemblies. A skin can change drawing order while
+preserving those ids. This uses the existing cell bytes and needs no catalog update.
 
 The reader requests only the required tables and chunks.
 The device reads these bytes from a flat-store object.
@@ -211,22 +209,6 @@ The browser card remains volatile. It allocates memory in 16 KiB pages; released
 available for reuse, so memory use follows the session's high-water mark. The bundled 3,752-byte
 route uses one page instead of a retained byte vector.
 
-Native weather uses the same card owner as the map, routes and trips. Files, generated demos and
-HTTP responses are import inputs. The [weather adapter](src:host/obc-host-core/src/flat_weather.rs)
-validates each input before atomic replacement and retains an exact revision reader. Reopening a
-card loads its installed weather without importing again. An absent bundle means no weather;
-unreadable, malformed or multiple current bundles cause an error.
-
-A weather upload completes after the matching committed revision has a validated reader.
-If a write succeeds while reader slots are full, the host retains its committed identity and
-retries reader acquisition. It does not repeat the write. Existing readers remain available for
-display, but only validated current card data can authorize duplicate or stale upload acceptance.
-An uncertain commit stops further weather work until the session closes and the card reopens.
-Before adopting an independently observed revision, the host confirms its exact catalog head
-through a sync barrier. Visibility in the operating system cache alone does not prove durability.
-Reopened observations age against the current clock; explicit fixture imports can use a fixed
-clock for deterministic rendering.
-
 Catalog deletion retains the selected object kind, so equal numeric IDs in separate repositories
 cannot redirect a removal. The domain removes a trip's member routes before the trip object.
 A failed member stops that cascade. The trip and remaining members stay stored; an explicit retry
@@ -255,7 +237,7 @@ claim. The browser memory card first completes the real journal operation; a fil
 durable checkpoint only after its storage barrier succeeds.
 
 Native recording and the saved-ride catalog share the same card owner as map, routes, trips and
-weather. The [physical recorder](src:host/obc-host-core/src/flat_recorder.rs) reserves one recording
+rides. The [physical recorder](src:host/obc-host-core/src/flat_recorder.rs) reserves one recording
 object and keeps only the bounded sample delta, CRC, continuation and final footer in memory.
 Checkpoints write the real tail journal. Save journals one footer, then clears the recording flag
 on that exact object. GPX export follows the successful card commit; an export failure does not
@@ -452,6 +434,30 @@ current map binding, and re-verified route bytes. An accepted visit also protect
 original route from expiry, deletion, and replacement until that dependency is released
 by a durable phase update. New fixes received during a phase write remain available to
 the phase owner after acknowledgment.
+
+A visit is one complete route: a real path to a mapped accessible approach, a real return or
+forward connection, and the remaining original route. The selected place keeps a separate
+display coordinate. A nearby graph projection does not justify an invented final rideable
+segment. Without an active route, the same place request creates a direct destination.
+
+The shared visit builder keeps one output and one reusable leg. It first builds an out-and-back.
+It can compare one forward connection, clipped to the next stored waypoint or the destination.
+If the forward route does not reduce the complete measured distance, it rebuilds the first route
+once. This uses at most six searches. The final bytes supply the review distance and ascent;
+missing elevation remains unknown. The full stored waypoint section keeps every remaining
+annotation, including its original route key and ordinal. The display window does not limit output.
+
+After acceptance, Navigator follows outbound, at-stop, and return intervals on those same bytes.
+Progress and proximity checks prevent stationary acceptance from causing arrival. Phase writes
+use the existing checkpoint operation. Arrival does not search, publish another route, or restart
+Recorder. Dismiss only closes the informational arrival state. Rejoin clears that state and
+releases the original dependency through a durable checkpoint.
+
+Before departure, cancellation restores the original route after the checkpoint clear. After
+departure, it prepares a real connector to the accepted route's preserved original tail. The rider
+must review and accept that connector. A second visit and an incompatible detour remain unavailable
+while a visit is active. The [shared builder](src:firmware/obc-route/src/visit.rs) owns composition;
+[Navigator](src:firmware/obc-app/src/navigator/visit.rs) owns requests and phase changes.
 
 A replacement plan cannot acquire the workspace before the previous release is acknowledged.
 Release after successful planning keeps the accepted route or detour preview. Releasing working

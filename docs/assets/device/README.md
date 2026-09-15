@@ -41,11 +41,6 @@ CLIMBOFF="B u p p d d d p b b b"
 "$SIM" "$GRIMSEL" --boot --scale 3 --peak-view scheidegg --heading 115 \
     --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
 
-# The weather frame uses a deterministic demo bundle. "p d d d d w p" walks
-# Home -> Menu -> Weather.
-"$SIM" "$GRIMSEL" --boot --scale 3 --weather demo:incoming --weather-now 1800001500 \
-    --script "p d d d d w p" --expect-screen Weather --png "$OUT/weather.png"
-
 # Opening hours need the hours-rich Monaco fixture and a fixed clock (Mon 12:00 -> OPEN).
 "$SIM" "$MONACO" --boot --scale 3 --center 7418500,43732500 --heading 0 \
     --clock 2025-01-06T12:00 --script "B d d w p d d d p f p" \

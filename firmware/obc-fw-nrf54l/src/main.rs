@@ -68,6 +68,8 @@ mod assistant;
 #[cfg(has_nav)]
 mod detour;
 mod peak_view;
+#[cfg(has_nav)]
+mod visit;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
 // panel via the FLPR (the VPR coprocessor). The FLPR presenter backend + launch live in
 // `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
@@ -424,7 +426,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 38;
+    const ENTRIES: usize = 36;
 
     #[used]
     #[no_mangle]
@@ -441,10 +443,6 @@ mod resource_report {
         // costs to read is one resolved FAT chain and one source over it.
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
-        // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
-        // target-ABI size report, not a second allocation; the linked resident gate remains the
-        // authority once WX10 places the cache in the rain-render path.
-        entry("weather_reader_cache", obc_weather::READER_CACHE_RESIDENT_BYTES),
         // The **scratch arena** (#1146 P2) and its three arms. `arena_total` is the only one of the
         // three that is resident RAM — it is `max` of the other two, not their sum, and both are
         // reported beside it precisely so a reader can see *which* arm sets the total and how much
@@ -511,11 +509,7 @@ mod resource_report {
         // Named beside the store it reads from so the two halves of "what does reading a flat card
         // cost" are in one place, and named as one row because they are one boot step's residue.
         entry("flat_map_read", flat_store::MAP_READ_BYTES),
-        // The selected Route and WeatherBundle revisions each spend one bounded flat-store hold
-        // row and one `StoreSource`. They are released/reopened on catalog movement, unlike the map
-        // source which remains held for the whole boot.
         entry("flat_route_read", flat_store::ROUTE_READ_BYTES),
-        entry("flat_weather_read", flat_store::WEATHER_READ_BYTES),
         // The protocol-v4 transfer engine (FS7.5-c3a), which lives in the storage task because that
         // is the one execution context allowed to write. Mostly its staging buffer, still the
         // 512-byte minimum after c3b brought USB — and that is a decision, not an omission: §5.2's
