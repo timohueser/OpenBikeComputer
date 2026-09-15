@@ -14,6 +14,7 @@ struct VisitHarness {
     outcomes: OutcomeSlots,
     facts: ExternalFacts,
     now: u32,
+    catalog: Option<obc_app::catalog_state::CatalogEffect>,
 }
 impl VisitHarness {
     fn new() -> Self {
@@ -33,6 +34,7 @@ impl VisitHarness {
             outcomes: OutcomeSlots::default(),
             facts: ExternalFacts::NONE,
             now: 0,
+            catalog: None,
         };
         this.pass();
         let map = flat_store::planner_map_key(this.h.store);
@@ -71,30 +73,9 @@ impl VisitHarness {
     fn pass_with(&mut self, position: &mut dyn obc_ports::LocationSource, catalogs: bool) {
         self.now += 1;
         self.visit.accepted(&self.h.app, self.h.store);
-        self.facts.note_store_revision(StoreRevision {
-            store: StoreIdentity::from_bytes(self.h.store.store_id().0),
-            revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
-        });
-        let mut plan = self.h.app.run_pass(PassInputs {
-            now: PassClock { ride: obc_ports::RideClock(self.now), ui: obc_ports::InputClock(self.now) },
-            gestures: &[],
-            sensors: obc_ports::Sensors::new(position),
-            route: None,
-            support: PlatformSupport {
-                detour: true,
-                settings_persistence: false,
-                dfu: false,
-                bonding: false,
-                storage_space_report: false,
-            },
-            outcomes: &mut self.outcomes,
-            facts: &mut self.facts,
-            derived: DerivedInputs::NONE,
-            targets: DerivedTargets::NONE,
-        });
         if catalogs {
             use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
-            if let Some(effect) = plan.effects.catalog.take() {
+            if let Some(effect) = self.catalog.take() {
                 let outcome = match effect {
                     CatalogEffect::ReadCatalog { token } => {
                         flat_store::load_routes(self.h.store, &mut self.h.app);
@@ -120,6 +101,30 @@ impl VisitHarness {
                 };
                 self.outcomes.catalog.try_put(outcome).unwrap();
             }
+        }
+        self.facts.note_store_revision(StoreRevision {
+            store: StoreIdentity::from_bytes(self.h.store.store_id().0),
+            revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
+        });
+        let mut plan = self.h.app.run_pass(PassInputs {
+            now: PassClock { ride: obc_ports::RideClock(self.now), ui: obc_ports::InputClock(self.now) },
+            gestures: &[],
+            sensors: obc_ports::Sensors::new(position),
+            route: None,
+            support: PlatformSupport {
+                detour: true,
+                settings_persistence: false,
+                dfu: false,
+                bonding: false,
+                storage_space_report: false,
+            },
+            outcomes: &mut self.outcomes,
+            facts: &mut self.facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
+        if catalogs {
+            self.catalog = plan.effects.catalog.take();
         }
         if let Some(effect) = plan.effects.navigator.take() {
             if matches!(effect, Effect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
