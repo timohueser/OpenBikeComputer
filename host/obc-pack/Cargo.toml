@@ -5,6 +5,9 @@ edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
 description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 
+[features]
+external-fixtures = []
+
 [dependencies]
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { path = "../../firmware/obc-formats" }
@@ -78,6 +81,7 @@ percent-encoding = "2"
 sha1 = "0.10.6"
 
 [dev-dependencies]
+obc-fixtures = { path = "../obc-fixtures" }
 # The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
 obcm-testkit = { path = "../obcm-testkit" }
 # Validate generated manifests against the checked-in JSON Schema the hosted site

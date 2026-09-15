@@ -1,29 +1,20 @@
-//! `hours.rs` — device-side view over a hours-pool blob (spec §7.5, epic #439 P3
-//! #443): decode a pooled 29-byte weekly schedule, select today's intervals, and
-//! answer *open now* — a trivial weekday lookup, the `opening_hours` grammar having
-//! already run at pack time (`obc-pack`'s `hours.rs`).
-//!
-//! This is the **read** counterpart to the packer's blob encoder. The
-//! [`Interval`]/[`WeeklySchedule`] algorithm types remain reader-side; both sides import the
-//! normative blob width/dimensions/flags from `obc-formats`.
-//!
-//! ## Blob layout (29 bytes, spec §7.5)
-//! `flags u8` + 7 days (`Mon` index 0 .. `Sun` index 6) × 2 slots × `(open_q u8,
-//! close_q u8)`. A time-of-day is quarter-hours from midnight, `0..=96` (`96` =
-//! 24:00). Per interval: unused slot `(0, 0)`; closed day = both slots `(0, 0)`;
-//! 24 h = slot 0 `(0, 96)`; overnight wrap = `close_q <= open_q` (both nonzero),
-//! open past midnight. `flags` bit 0 = seasonal, bit 1 = truncated (both baked but
-//! UI-ignored in v1).
-//!
-//! Everything here is a small **stack** value — no heap, no static. The whole
-//! decoded schedule is `1 + 7*2*2 = 29` bytes plus the flags byte, sitting on the
-//! caller's stack for the lifetime of the detail screen.
+//! Bounded weekly opening schedules and shared Open / Closed / Unknown evaluation.
+//! Overnight intervals belong to their start day and spill into the following day.
 
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_DAYS, POI_HOURS_SLOTS_PER_DAY};
 // The normative flag bits are owned by `obc-formats`; imported under the module-local `HOURS_FLAG_*`
 // name this decoder reads. Not re-exported — consumers reach the flags via `obc_formats::obcm`
 // (which is also where the seasonal bit is read from: the decoder only names the one it acts on).
 use obc_formats::obcm::POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED;
+
+/// Shared eligibility fact. Only `Closed` excludes a place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpeningStatus {
+    Open,
+    Closed,
+    #[default]
+    Unknown,
+}
 
 /// One open interval, quarter-hours from midnight (`0..=96`, `96` = 24:00). Mirrors
 /// the packer's `hours::Interval`; `close_q <= open_q` (both nonzero) is an overnight
@@ -81,6 +72,9 @@ impl WeeklySchedule {
         let mut i = 1;
         for day in &mut days {
             for slot in day.iter_mut() {
+                if blob[i] > 96 || blob[i + 1] > 96 {
+                    return None;
+                }
                 slot.open_q = blob[i];
                 slot.close_q = blob[i + 1];
                 i += 2;
@@ -89,8 +83,7 @@ impl WeeklySchedule {
         Some(WeeklySchedule { days, flags })
     }
 
-    /// The raw `flags` byte (spec §7.5): bit 0 seasonal, bit 1 truncated. Baked but
-    /// ignored by the v1 UI — exposed for a future season-aware pass.
+    /// The raw `flags` byte (spec §7.5): bit 0 seasonal, bit 1 truncated. Any flag makes current status unknown.
     #[inline]
     pub fn flags(&self) -> u8 {
         self.flags
@@ -127,44 +120,71 @@ impl WeeklySchedule {
         }
     }
 
-    /// True iff `minute_of_day` (`0..=1439`) falls in an open interval for `weekday`
-    /// (`0` = Monday .. `6` = Sunday). Out-of-range `weekday` ⇒ `false`. Each interval's
-    /// quarter-hours become minutes (`q * 15`); the semantics per §7.5:
-    ///
-    /// - **Normal** `[open, close)` — open when `open*15 <= minute < close*15`
-    ///   (half-open: open exactly at `open`, closed exactly at `close`).
-    /// - **24 h** `(0, 96)` — `close*15 == 1440`, so `minute < 1440` is always open.
-    /// - **Closed day** `(0, 0)` — `is_unused`, contributes nothing ⇒ never open.
-    /// - **Overnight wrap** `close_q <= open_q` (both nonzero) — the interval runs past
-    ///   midnight; open when `minute >= open*15` **or** `minute < close*15`. Evaluated on
-    ///   the interval's **start** weekday (the morning spill is part of the same start-day
-    ///   interval, not the next day's schedule — matching what `today_intervals` shows).
-    ///
-    /// `minute_of_day` is clamped to `0..=1439` so a caller passing `1440` (a raw 24:00)
-    /// still evaluates sanely.
-    pub fn is_open(&self, weekday: u8, minute_of_day: u16) -> bool {
-        let Some(day) = self.days.get(weekday as usize) else {
-            return false;
-        };
-        let minute = minute_of_day.min(MINUTES_PER_DAY - 1);
-        for iv in day {
-            if iv.is_unused() {
-                continue;
-            }
-            let open = (iv.open_q as u16) * 15;
-            let close = (iv.close_q as u16) * 15;
-            let hit = if close > open {
-                // Normal (incl. 24 h: open 0, close 1440) — half-open [open, close).
-                minute >= open && minute < close
-            } else {
-                // Overnight wrap (close <= open, both nonzero): open past midnight.
-                minute >= open || minute < close
-            };
-            if hit {
-                return true;
+    /// Exact ranges within this calendar day, including the previous day's overnight spillover.
+    /// At most one merged spillover plus the two source intervals can remain.
+    pub fn intervals_on_day(&self, weekday: u8) -> heapless::Vec<Interval, 3> {
+        let mut ranges = heapless::Vec::<Interval, 3>::new();
+        if weekday >= 7 {
+            return ranges;
+        }
+        let close_q = self
+            .today_intervals((weekday + 6) % 7)
+            .iter()
+            .filter(|iv| iv.close_q <= iv.open_q)
+            .map(|iv| iv.close_q)
+            .max()
+            .unwrap_or(0);
+        if close_q > 0 {
+            let _ = ranges.push(Interval { open_q: 0, close_q });
+        }
+        for iv in self.today_intervals(weekday) {
+            let close_q = if iv.close_q <= iv.open_q { 96 } else { iv.close_q };
+            if iv.open_q < close_q {
+                let _ = ranges.push(Interval { open_q: iv.open_q, close_q });
             }
         }
-        false
+        ranges.sort_unstable_by_key(|iv| iv.open_q);
+        let mut merged = heapless::Vec::<Interval, 3>::new();
+        for iv in ranges {
+            if let Some(last) = merged.last_mut().filter(|last| iv.open_q <= last.close_q) {
+                last.close_q = last.close_q.max(iv.close_q);
+            } else {
+                let _ = merged.push(iv);
+            }
+        }
+        merged
+    }
+
+    /// Current status from exact weekly hours and an authoritative local clock.
+    pub fn status(&self, local: Option<(u8, u16)>) -> OpeningStatus {
+        let Some((weekday, minute)) = local else { return OpeningStatus::Unknown };
+        if self.flags != 0 || weekday >= 7 || minute >= MINUTES_PER_DAY {
+            return OpeningStatus::Unknown;
+        }
+        if self.is_open(weekday, minute) {
+            OpeningStatus::Open
+        } else {
+            OpeningStatus::Closed
+        }
+    }
+
+    /// Evaluate intervals on their start day and overnight spillover from the previous day.
+    /// Opening is inclusive; closing is exclusive.
+    pub fn is_open(&self, weekday: u8, minute_of_day: u16) -> bool {
+        let Some(day) = self.days.get(weekday as usize) else { return false };
+        let minute = minute_of_day.min(MINUTES_PER_DAY - 1);
+        let today = day.iter().any(|iv| {
+            if iv.is_unused() {
+                return false;
+            }
+            let (open, close) = (u16::from(iv.open_q) * 15, u16::from(iv.close_q) * 15);
+            minute >= open && (close <= open || minute < close)
+        });
+        let previous = &self.days[(weekday as usize + 6) % 7];
+        today
+            || previous
+                .iter()
+                .any(|iv| !iv.is_unused() && iv.close_q <= iv.open_q && minute < u16::from(iv.close_q) * 15)
     }
 }
 
@@ -313,11 +333,28 @@ mod tests {
         let s = WeeklySchedule::decode(&blob(0, days)).unwrap();
         assert!(s.is_open(0, 1320), "open exactly at 22:00");
         assert!(s.is_open(0, 1439), "23:59 open");
-        assert!(s.is_open(0, 0), "00:00 open (wrap)");
-        assert!(s.is_open(0, 119), "01:59 open (wrap)");
+        assert!(!s.is_open(0, 0), "Monday morning precedes opening");
+        assert!(s.is_open(1, 0), "Tuesday spillover");
+        assert!(s.is_open(1, 119), "Tuesday 01:59 open");
+        assert!(!s.is_open(1, 120), "Tuesday 02:00 closed");
         assert!(!s.is_open(0, 120), "closed exactly at 02:00");
         assert!(!s.is_open(0, 720), "noon closed");
         assert!(!s.is_open(0, 1319), "21:59 closed");
+    }
+
+    #[test]
+    fn uncertain_hours_and_week_rollover() {
+        let mut days = [[(0u8, 0u8); 2]; 7];
+        days[6][0] = (88, 8);
+        let schedule = WeeklySchedule::decode(&blob(0, days)).unwrap();
+        assert_eq!(schedule.status(Some((0, 119))), OpeningStatus::Open);
+        assert_eq!(schedule.status(Some((0, 120))), OpeningStatus::Closed);
+        assert_eq!(schedule.status(None), OpeningStatus::Unknown);
+        for flag in [1, 2, 4, 128] {
+            let uncertain = WeeklySchedule::decode(&blob(flag, days)).unwrap();
+            assert_eq!(uncertain.status(Some((0, 119))), OpeningStatus::Unknown);
+            assert_eq!(uncertain.status(Some((0, 120))), OpeningStatus::Unknown);
+        }
     }
 
     #[test]

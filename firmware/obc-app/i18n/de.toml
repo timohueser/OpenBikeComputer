@@ -308,6 +308,7 @@ accommodation = "Unterkunft"
 resupply = "Einkauf"
 pharmacy = "Apotheke"
 bike_shop = "Fahrradladen"
+train = "Bahnhof"
 
 # --- POI category menu ---
 [poi_menu]
@@ -315,6 +316,8 @@ title = "POIS"
 
 # --- POI list screen ---
 [poi_list]
+unavailable = "Orte nicht verfügbar"
+coverage = "Außerhalb der Karte"
 no_position = "Keine Position"
 no_position_sub = "Noch kein GPS-Fix"
 no_pois = "Keine POIs"

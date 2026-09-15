@@ -1,26 +1,12 @@
-//! The POI **list** screen — the distance-sorted nearest-16 of one category, reached from the
-//! [category screen](super::PoiMenuScreen). Each row shows the POI name (or its subtype fallback
-//! label when unnamed), a live **bearing arrow** relative to the rider's heading, and the
-//! distance. `back` returns to the category list; selecting a POI is a no-op (open/navigate is a
-//! follow-up epic — no dead hint row advertises it, per the copy-tone rule).
-//!
-//! # The static snapshot
-//!
-//! The list is a **static snapshot** taken once on entry (locked on epic #115): membership, order
-//! and distances are frozen so rows never jump under the cursor and the SD isn't re-scanned per
-//! frame. The catch is that the [`Reader`](obc_reader::Reader) the query needs lives only in the
-//! **draw** context ([`Render::reader`]) — so the snapshot is taken **lazily on the first draw**
-//! that has both a `Reader` and a fix, into a single [`PoiScratch`] the [`App`](crate::App) owns
-//! (see the storage note on [`PoiScratch`]). Re-entering the screen re-queries: opening a POI list
-//! [invalidates](PoiScratch::invalidate) the scratch, so the next draw re-runs the query.
-//!
-//! The one live element is the bearing arrow: recomputed every draw/animate tick from the stored
-//! coordinates and the rider's current heading — pure trig, **zero SD**.
+//! Paged nearby places. Geometry, membership and order are frozen for each browsing generation.
+//! The shared query advances during prepare; current opening status refreshes without moving
+//! the selected identity. The App owns the one page buffer so screen-stack slots stay small.
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
 use obc_map_scene::cos_lat;
-use obc_reader::{Poi, PoiCategory, MAX_POI_RESULTS};
+use obc_reader::reader::places::{PlaceKey, PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+use obc_reader::{Poi, PoiCategory};
 use obc_render::{
     text::{Font, TextAlign},
     Surface,
@@ -37,36 +23,72 @@ use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
 /// Per-POI **nominal** row height — two lines (name above, bearing arrow + distance below) with
-/// margin to keep the distance clear of the row separator / selected-row fill; the nearest-16
-/// still page through the list widget. The drawn pitch stretches from this so the rows consume
+/// margin to keep the distance clear of the row separator / selected-row fill. Places
+/// page through the list widget. The drawn pitch stretches from this so the rows consume
 /// the whole viewport (owner review round 3: no dead band under the last row) — on the 320 px
 /// panel that's 68 px rows, four flush to the bottom margin.
 const ROW_H: i32 = 64;
 
-/// The [`App`](crate::App)-owned snapshot of one category's nearest-16. **One** buffer, shared by
-/// whatever POI-list screen is on top — never owned by the screen variant.
-///
-/// # Storage decision (issue #425)
-///
-/// A `heapless::Vec<Poi, 16>` is ~776 B. The [`Screen`](super::Screen) enum is a union sized to its
-/// largest variant (measured 40 B without this) held in a `Vec<Screen, MAX_DEPTH=10>` in `.bss`, so
-/// an inline snapshot would inflate **every** stack slot: 10 × ~784 B ≈ 7.7 KB resident. Held once in
-/// `App` it costs the buffer **once** (~800 B). Only one POI list is ever visible, and the
-/// static-snapshot contract already forbids two live snapshots, so the single buffer loses nothing.
+/// The App owns one bounded nearby page, outside the screen stack so each stack slot stays small.
 pub struct PoiScratch {
+    query: Option<PlaceQuery>,
+    pub(crate) detail_valid: bool,
+    pub(crate) detail_schedule: Option<obc_reader::WeeklySchedule>,
+    clock_key: Option<(bool, i16)>,
+    local: Option<(u8, u16)>,
+    recheck: bool,
+    page: Option<(PlaceKey, bool)>,
+    status: QueryProgress,
+    generation: u32,
     /// The category the current snapshot is for once a query has run — `Some` even when the result
     /// is empty (so the screen can tell "queried, empty category" from "not queried yet"). `None`
     /// on a fresh/invalidated scratch.
     taken_for: Option<PoiCategory>,
-    /// The nearest-16 for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
+    /// The current page for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
     /// filled; the query owns the ordering.
-    pois: heapless::Vec<Poi, MAX_POI_RESULTS>,
+    pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
 }
 
 impl PoiScratch {
     /// An empty scratch — no snapshot taken yet.
     pub const fn new() -> Self {
-        PoiScratch { taken_for: None, pois: heapless::Vec::new() }
+        PoiScratch {
+            taken_for: None,
+            pois: heapless::Vec::new(),
+            query: None,
+            detail_valid: false,
+            detail_schedule: None,
+            clock_key: None,
+            local: None,
+            recheck: false,
+            page: None,
+            generation: 0,
+            status: QueryProgress::Unavailable,
+        }
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if let Some(query) = &mut self.query {
+            query.cancel();
+        }
+        self.status = QueryProgress::Unavailable;
+        self.detail_valid = false;
+    }
+
+    pub(crate) fn clock_changed(&mut self, local: Option<(u8, u16)>, offset: i16) -> bool {
+        let authority = (local.is_some(), offset);
+        if self.clock_key.is_some_and(|key| key != authority) {
+            if let Some(query) = &mut self.query {
+                query.cancel();
+            }
+            self.status = QueryProgress::Unavailable;
+            self.detail_valid = false;
+        }
+        let changed = self.local != local;
+        self.recheck |= changed;
+        self.local = local;
+        self.clock_key = Some(authority);
+        changed
     }
 
     /// Drop any snapshot so the next POI-list draw re-queries. Called when a POI list screen opens,
@@ -74,6 +96,11 @@ impl PoiScratch {
     pub fn invalidate(&mut self) {
         self.taken_for = None;
         self.pois.clear();
+        self.query = None;
+        self.recheck = false;
+        self.page = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.status = QueryProgress::Unavailable;
     }
 
     /// Whether a query for `category` has already run (a snapshot is present — possibly empty).
@@ -94,7 +121,13 @@ impl PoiScratch {
     /// detail screen — the one place `handle` reaches the draw-taken snapshot (the query itself still
     /// only runs at draw).
     pub(crate) fn get(&self, index: usize) -> Option<&Poi> {
-        self.pois.get(index)
+        self.pois
+            .get(index)
+            .filter(|hit| {
+                hit.poi.opening != obc_reader::hours::OpeningStatus::Closed
+                    && matches!(self.status, QueryProgress::Ready { .. })
+            })
+            .map(|hit| &hit.poi)
     }
 }
 
@@ -110,6 +143,7 @@ impl Default for PoiScratch {
 pub struct PoiListScreen {
     category: PoiCategory,
     selected: usize,
+    page: Option<(PlaceKey, bool)>,
 }
 
 impl PoiListScreen {
@@ -117,13 +151,17 @@ impl PoiListScreen {
     /// [invalidates](PoiScratch::invalidate) the App scratch on this transition, so the first draw
     /// re-queries even when re-entering the same category.
     pub fn new(category: PoiCategory) -> Self {
-        PoiListScreen { category, selected: 0 }
+        PoiListScreen { category, selected: 0, page: None }
     }
 
-    /// The category this list browses — read by the host reader-build seam
-    /// ([`App::base_needs_reader`](crate::App::base_needs_reader)) to check the scratch.
-    pub(crate) fn category(&self) -> PoiCategory {
-        self.category
+    pub(crate) fn pending(&self, scratch: &PoiScratch) -> bool {
+        if scratch.recheck {
+            return true;
+        }
+        if scratch.query.is_some() && matches!(scratch.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
+            return false;
+        }
+        !scratch.holds(self.category) || self.page != scratch.page
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -136,15 +174,53 @@ impl PoiListScreen {
             // the snapshot lands (first draw hasn't run / no fix yet) the list is empty and a
             // step is a no-op.
             Gesture::Step(n) => {
-                let len = if cx.poi_scratch.holds(self.category) { cx.poi_scratch.len() } else { 0 };
-                self.selected = self.selected.min(len.saturating_sub(1));
-                list::on_step(&mut self.selected, n, len)
+                let scratch = cx.poi_scratch;
+                let QueryProgress::Ready { more, .. } = scratch.status else { return Transition::None };
+                if !scratch.holds(self.category) || self.page != scratch.page || n == 0 {
+                    return Transition::None;
+                }
+                let visible: heapless::Vec<usize, PLACE_PAGE_SIZE> = scratch
+                    .pois
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed)
+                    .map(|(i, _)| i)
+                    .collect();
+                let index = visible
+                    .iter()
+                    .position(|i| *i == self.selected)
+                    .map(|i| i as i64)
+                    .unwrap_or_else(|| visible.partition_point(|i| *i < self.selected) as i64 - i64::from(n > 0));
+                let target = index + i64::from(n);
+                let backwards = n < 0;
+                let crossed = visible.is_empty() || target < 0 || target >= visible.len() as i64;
+                let reverse_page = scratch.page.is_some_and(|(_, reverse)| reverse);
+                let can_page = if backwards {
+                    if reverse_page {
+                        more
+                    } else {
+                        scratch.page.is_some()
+                    }
+                } else {
+                    reverse_page || more
+                };
+                if crossed && can_page {
+                    let boundary = if backwards { scratch.pois.first() } else { scratch.pois.last() };
+                    if let (Some(query), Some(hit)) = (scratch.query.as_ref(), boundary) {
+                        self.page = Some((query.key(hit), backwards));
+                        self.selected = usize::MAX;
+                        return Transition::None;
+                    }
+                }
+                if !visible.is_empty() {
+                    self.selected = visible[target.rem_euclid(visible.len() as i64) as usize];
+                }
+                Transition::None
             }
             // Open the detail screen for the highlighted POI (epic #439 P4 #444). The snapshot is
-            // taken at draw, so it lives in the App-owned scratch `cx` carries read-only; clamp the
-            // selection to the real length (a step can wrap past a short list). An empty scratch
+            // taken at draw, so it lives in the App-owned scratch `cx` carries read-only. An empty scratch
             // (never drawn / no fix) ⇒ `get` is `None` ⇒ nothing to open, stay put.
-            Gesture::Press => match cx.poi_scratch.get(self.selected.min(cx.poi_scratch.len().saturating_sub(1))) {
+            Gesture::Press => match cx.poi_scratch.get(self.selected) {
                 Some(poi) => Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(poi.clone()))),
                 None => Transition::None,
             },
@@ -158,12 +234,19 @@ impl PoiListScreen {
         // it reads the frozen scratch read-only. Before `prepare` has landed a snapshot (no fix /
         // no reader yet) the scratch simply doesn't hold this category and the empty state covers it.
         let (w, h) = (rx.w, rx.h);
-        let queried = rx.poi_scratch.holds(self.category);
-        let pois: &[Poi] = if queried { &rx.poi_scratch.pois } else { &[] };
-        let total = pois.len();
+        let queried =
+            rx.poi_scratch.holds(self.category) && matches!(rx.poi_scratch.status, QueryProgress::Ready { .. });
+        let pois: &[obc_reader::CorridorPoi] = if queried { &rx.poi_scratch.pois } else { &[] };
+        let visible: heapless::Vec<usize, PLACE_PAGE_SIZE> = pois
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| *i == self.selected || p.poi.opening != obc_reader::hours::OpeningStatus::Closed)
+            .map(|(i, _)| i)
+            .collect();
+        let total = visible.len();
 
         let geo = ListGeometry::filling_below_title(w, h, ROW_H, 6, 14, Separators::All);
-        let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
+        let pos = visible.iter().position(|i| *i == self.selected).map_or(0, |i| i + 1);
         let title = rx.t(super::poi_menu::category_msg(self.category));
         list::list_frame(cv, w, h, title, pos, total, geo.visible);
 
@@ -173,6 +256,11 @@ impl PoiListScreen {
             // query (no fix yet, not queried) draw nothing — a transient one-frame state.
             if rx.state.user_fix.is_none() {
                 empty_state(cv, w, h, rx.t(Msg::PoiListNoPosition), rx.t(Msg::PoiListNoPositionSub));
+            } else if matches!(rx.poi_scratch.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
+                empty_state(cv, w, h, rx.t(Msg::PoiListUnavailable), "");
+            } else if queried && matches!(rx.poi_scratch.status, QueryProgress::Ready { coverage_complete: false, .. })
+            {
+                empty_state(cv, w, h, rx.t(Msg::PoiListNoPois), rx.t(Msg::PoiListCoverage));
             } else if queried {
                 // Body title fits ~16 chars on the 240 px panel — keep it short; the hint carries
                 // the "in this map" scope the epic's wording wants.
@@ -187,10 +275,19 @@ impl PoiListScreen {
         let fix = rx.state.user_fix; // present here (a snapshot exists ⇒ there was a fix)
         let units = rx.settings.units;
 
-        let sel = self.selected.min(total - 1);
+        let sel = visible.iter().position(|i| *i == self.selected).unwrap_or(0);
         let first = list::window_start(sel, geo.visible, total) as i32;
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
-            draw_poi_row(cv, &pois[row.index], row.area, w, fix, heading, units);
+            draw_poi_row(
+                cv,
+                &pois[visible[row.index]].poi,
+                row.area,
+                w,
+                fix,
+                heading,
+                units,
+                rx.t(Msg::PoiDetailClosed),
+            );
         });
     }
 
@@ -204,16 +301,76 @@ impl PoiListScreen {
     /// [`draw`](Self::draw) then reads the frozen snapshot. On a host that skips building the
     /// `Reader` on a non-map frame, [`base_needs_reader`](crate::App::base_needs_reader) keeps the
     /// `Reader` built and passed here until the snapshot lands.
-    pub(crate) fn prepare(&self, px: &mut super::Prepare) {
-        if px.poi_scratch.holds(self.category) {
-            return; // already queried this category
+    pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
+        if !self.pending(px.poi_scratch) {
+            return;
         }
-        let (Some(reader), Some(fix)) = (px.reader, px.user_fix) else {
-            return; // no map or no fix yet — retry next prepare (the empty state covers "no fix ever")
-        };
-        // `nearest_pois` takes `pos` as (lon, lat) µdeg — pass the fix in that order.
-        let _ = reader.nearest_pois(self.category, (fix.lon, fix.lat), &mut px.poi_scratch.pois);
-        px.poi_scratch.taken_for = Some(self.category);
+        let (Some(reader), Some(fix)) = (px.reader, px.user_fix) else { return };
+        let scratch = &mut px.poi_scratch;
+        if scratch.recheck {
+            if let Err(error) = reader.refresh_place_hours(&mut scratch.pois, px.place_local) {
+                scratch.status = QueryProgress::Failed(error);
+                scratch.pois.clear();
+                scratch.recheck = false;
+                return;
+            }
+            scratch.recheck = false;
+            if scratch.holds(self.category) && self.page == scratch.page {
+                return;
+            }
+        }
+        if scratch.query.is_some() && matches!(scratch.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
+            return;
+        }
+        if scratch.query.is_none() {
+            self.selected = usize::MAX;
+            scratch.query = Some(PlaceQuery::new(
+                scratch.generation,
+                obc_reader::PoiCategorySet::only(self.category),
+                PlaceWindow::Nearby { position: (fix.lon, fix.lat), radius_m: 50_000 },
+                px.place_local,
+            ));
+            scratch.status = QueryProgress::Pending;
+        }
+        if self.page != scratch.page {
+            if let Some((key, backwards)) = self.page {
+                if let Some(query) = &mut scratch.query {
+                    if backwards {
+                        query.previous_page(key);
+                    } else {
+                        query.next_page(key);
+                    }
+                    scratch.pois.clear();
+                    scratch.taken_for = None;
+                }
+            }
+            scratch.page = self.page;
+        }
+        let query = scratch.query.as_mut().expect("query initialized");
+        for _ in 0..64 {
+            scratch.status = query.step(reader, None, scratch.generation, &mut scratch.pois);
+            if scratch.status != QueryProgress::Pending {
+                if let Err(error) = reader.refresh_place_hours(&mut scratch.pois, px.place_local) {
+                    scratch.status = QueryProgress::Failed(error);
+                    scratch.pois.clear();
+                }
+                scratch.taken_for = Some(self.category);
+                if self.selected == usize::MAX {
+                    let mut visible = scratch
+                        .pois
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed);
+                    self.selected = if scratch.page.is_some_and(|(_, reverse)| reverse) {
+                        visible.next_back()
+                    } else {
+                        visible.next()
+                    }
+                    .map_or(usize::MAX, |(i, _)| i);
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -221,6 +378,7 @@ impl PoiListScreen {
 /// prominent Body type across the full width; the live bearing arrow + the distance below it, in
 /// muted Label type. Giving the name its own line is what lets a real POI name fit instead of a
 /// truncated stub. `fix`/`heading` drive the live arrow; `units` scales the distance.
+#[allow(clippy::too_many_arguments)]
 fn draw_poi_row(
     cv: &mut impl Surface,
     poi: &Poi,
@@ -229,6 +387,7 @@ fn draw_poi_row(
     fix: Option<Fix>,
     heading: Option<f32>,
     units: Units,
+    closed: &str,
 ) {
     use palette::*;
     let x = area.top_left.x + 8;
@@ -243,6 +402,10 @@ fn draw_poi_row(
 
     // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
     let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
+    if poi.opening == obc_reader::hours::OpeningStatus::Closed {
+        cv.text(closed, Point::new(x, line2_top), Font::Label, TextAlign::Left, WARNING);
+        return;
+    }
     let mut dist: heapless::String<12> = heapless::String::new();
     write_distance_coarse(&mut dist, "", poi.distance_m, units);
     let mut text_x = x;
@@ -345,14 +508,21 @@ mod tests {
     fn scratch_with(n: usize) -> PoiScratch {
         let mut scratch = PoiScratch::new();
         scratch.taken_for = Some(PoiCategory::Water);
+        scratch.status = QueryProgress::Ready { more: false, coverage_complete: true };
         for i in 0..n {
-            let _ = scratch.pois.push(Poi {
-                lat: 43_000_000 + i as i32,
-                lon: 7_000_000,
-                subtype: 1,
-                name: heapless::String::new(),
-                hours_ref: 0xFFFF,
-                distance_m: i as u32,
+            let _ = scratch.pois.push(obc_reader::CorridorPoi {
+                dist_along_m: 0,
+                offset_m: 0,
+                poi: Poi {
+                    opening: Default::default(),
+                    metadata: Default::default(),
+                    lat: 43_000_000 + i as i32,
+                    lon: 7_000_000,
+                    subtype: 1,
+                    name: heapless::String::new(),
+                    hours_ref: 0xFFFF,
+                    distance_m: i as u32,
+                },
             });
         }
         scratch
@@ -366,7 +536,96 @@ mod tests {
         scr.handle(Gesture::Step(n), &mut cx);
     }
 
-    /// The step wraps over the **real** snapshot count, not the 16-record cap: on a 5-result list
+    #[test]
+    fn paging_uses_visible_boundaries_and_does_not_revive_cancelled_work() {
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obcm_testkit::{build_poi_map, PoiSpec};
+        let records = (0..40)
+            .map(|i| PoiSpec {
+                lat: 43_500_000 + i,
+                lon: 7_500_000,
+                subtype: 1,
+                name: std::format!("P{i}"),
+                hours_ref: 0xffff,
+            })
+            .collect();
+        let bytes = build_poi_map((7_000_000, 43_000_000, 8_000_000, 44_000_000), 512, &[(1, records)]);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut scratch = PoiScratch::new();
+        let mut screen = PoiListScreen::new(PoiCategory::Water);
+        let finish = |screen: &mut PoiListScreen, scratch: &mut PoiScratch| {
+            for _ in 0..100 {
+                screen.prepare(&mut super::super::Prepare {
+                    reader: Some(&reader),
+                    route: None,
+                    user_fix: Some(Fix::at(43_500_000, 7_500_000)),
+                    poi_scratch: scratch,
+                    active_route: None,
+                    progress_m: 0,
+                    route_total_m: 0,
+                    detour_preview: &[],
+                    place_local: None,
+                });
+                if !screen.pending(scratch) {
+                    return;
+                }
+            }
+            panic!("bounded query did not finish");
+        };
+        finish(&mut screen, &mut scratch);
+        let first_boundary = scratch.query.as_ref().unwrap().key(scratch.pois.last().unwrap());
+        scratch.pois[PLACE_PAGE_SIZE - 1].poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        screen.selected = PLACE_PAGE_SIZE - 2;
+        step(&mut screen, &scratch, 1);
+        assert_eq!(screen.page, Some((first_boundary, false)), "closed final row must not trap the page");
+        finish(&mut screen, &mut scratch);
+        assert!(scratch.query.as_ref().unwrap().key(&scratch.pois[0]) > first_boundary);
+        screen.selected = 0;
+        step(&mut screen, &scratch, -1);
+        finish(&mut screen, &mut scratch);
+        assert!(matches!(scratch.status, QueryProgress::Ready { more: false, .. }));
+        let first_page = screen.page;
+        screen.selected = 0;
+        step(&mut screen, &scratch, -1);
+        assert_eq!(screen.page, first_page, "a reverse first page has no preceding page");
+        assert_eq!(screen.selected, PLACE_PAGE_SIZE - 1);
+        for hit in &mut scratch.pois {
+            hit.poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        }
+        step(&mut screen, &scratch, 1);
+        finish(&mut screen, &mut scratch);
+        assert!(
+            scratch.query.as_ref().unwrap().key(&scratch.pois[0]) > first_boundary,
+            "an entirely hidden page still has immutable continuation boundaries"
+        );
+        scratch.clock_changed(None, 0);
+        scratch.clock_changed(Some((0, 600)), 60);
+        let cancelled_page = screen.page;
+        screen.selected = 15;
+        step(&mut screen, &scratch, 1);
+        assert_eq!(screen.page, cancelled_page);
+        finish(&mut screen, &mut scratch);
+        assert_eq!(scratch.status, QueryProgress::Unavailable);
+        assert_eq!(scratch.query.as_ref().unwrap().progress(), QueryProgress::Unavailable);
+    }
+
+    #[test]
+    fn closed_status_preserves_selection_and_refuses_activation() {
+        let mut scratch = scratch_with(3);
+        let mut screen = PoiListScreen::new(PoiCategory::Water);
+        screen.selected = 1;
+        scratch.pois[0].poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        scratch.pois[1].poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        assert_eq!(screen.selected, 1);
+        assert!(scratch.get(screen.selected).is_none());
+        step(&mut screen, &scratch, 1);
+        assert_eq!(screen.selected, 2, "turning moves to the next eligible identity");
+    }
+
+    /// The step wraps over the **real** snapshot count, not the page capacity: on a 5-result list
     /// every step moves exactly one real row and the wrap is immediate at both ends — no dead
     /// steps on phantom rows past the last item (the pre-#678 bug the owner hit: the cursor
     /// walked the cap's empty slots and looked stuck on the last row).

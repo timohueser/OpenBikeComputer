@@ -67,6 +67,10 @@ A drift on any side fails that side's tests — the files are the contract.
 | `terrain-shard.obcd` | OBCT container ([`OBCT_Spec.md`](../OBCT_Spec.md) §4) — the filename says "shard", a role that retires with `OBCA_Spec.md` §5; the **bytes are unaffected**, since an assembly's raster is the same container wherever it is carried, and the file keeps its name | a 2 × 2 cell rectangle at ≈ 46.97°N / 7.98°E over a **plane** (`100 + 3·di + 5·dj` m), with the far cell **absent** (the `0` directory sentinel) and one `NODATA` sample. Posting is the v1 `2^9`; the cell is `2^14` — deliberately not the v1 `2^19`, because a v1 cell is 2 MiB of raster and the point of both being header data is that a small one is equally legal. A plane is an *oracle*: bilinear interpolation over one has a closed form, so a second implementation checks itself against arithmetic rather than a reference table, and the differing coefficients (3 vs 5) catch a transposed lat/lon |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
 
+The `place-train-v15.bin` record pins the OBCM v15 service metadata: Train subtype 20,
+source identity, explicit approach node and coordinate, and profile mask. Its 64 bytes come
+from a separate spec builder and pass through the production metadata decoder.
+
 ## Regenerating
 
 The builders live in `host/obc-vectors` (the route vectors go through the real

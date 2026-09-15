@@ -2836,6 +2836,7 @@ dependencies = [
  "indexmap",
  "obc-dem",
  "obc-elevation",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obc-reader",

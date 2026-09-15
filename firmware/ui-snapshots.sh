@@ -172,10 +172,11 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
-# The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
-# pill wears its warning-red CLOSED face on the Today line.
-"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
-    --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
+# Select Carrefour while open, then advance the trusted clock past its 21:00 closing time.
+# Closed places are excluded from a new nearby query; an already-open detail must update in place.
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
+    --clock-after-script "2025-01-06T23:00" --script "B d d w p d d d p f p f" \
+    --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
 # The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
 # Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
@@ -185,15 +186,16 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
     --script "B d d w p d d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
 # POI create-route flow (epic #116, R4). The `f` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
+# The detail needs a prepared frame (`f`) before its activation can validate opening hours.
 # The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
 # the name): detail of a resupply POI ~600 m away → press.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
+    --script "B d d w p d d d p f p f p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
 # The confirm card's own context sheet (#1515 D4d) — the **only** home the routing profile has
 # since its settings screen was deleted. `C` is the Down+Back squeeze over the card above: one row,
 # `Bike type`, on the 68 px sheet the card recesses under. Then its nested editor, staged on Gravel
 # with the committed tick still under Road's notch — the mark the grammar promises while browsing.
-NAVCONFIRM="B d d w p d d d p f p p"
+NAVCONFIRM="B d d w p d d d p f p f p"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$NAVCONFIRM C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
@@ -203,12 +205,12 @@ NAVCONFIRM="B d d w p d d d p f p p"
 # decimated route-shape preview polyline in the middle): confirm → Create route → `f` runs the
 # router; the answer swaps in the overview and hands the app the ≤64-point preview.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p f" --expect-screen RouteOverview --png "$OUT/nav-overview.png"
+    --script "B d d w p d d d p f p f p p f" --expect-screen RouteOverview --png "$OUT/nav-overview.png"
 # The planning screen (#499): accepting the confirm swaps to the spinning-needle wait while the
 # host steps the resumable planner. `--hold nav` consumes the recorded request without starting it,
 # so the screen stays up for the snapshot (needle at its deterministic initial angle).
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p" --hold nav --expect-screen NavPlanning --png "$OUT/nav-planning.png"
+    --script "B d d w p d d d p f p f p p" --hold nav --expect-screen NavPlanning --png "$OUT/nav-planning.png"
 # The two locked failure tiers. The range tier ("Too far to route here.") = the router's fixed
 # table exhausting — with no distance cap that IS the device's range limit — which the small
 # fixture graphs can't reach (grimsel plans even ~25 km routes inside the 1536-node table), so
@@ -216,18 +218,18 @@ NAVCONFIRM="B d d w p d d d p f p p"
 # pinning the exhausted→range-tier mapping. The generic tier ("Couldn't find a route.") stays a
 # real plan: a mountain fix with no routable road within the 100 m acceptance envelope.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p" --inject nav-fail=exhausted --expect-screen NavFail --png "$OUT/nav-toofar.png"
+    --script "B d d w p d d d p f p f p p" --inject nav-fail=exhausted --expect-screen NavFail --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
-    --script "B d d w p p f p p p f" --expect-screen NavFail --png "$OUT/nav-nopath.png"
+    --script "B d d w p p f p f p p f" --expect-screen NavFail --png "$OUT/nav-nopath.png"
 
 # The routed-detour flow (#882) on the dense monaco graph, where a corridor detour genuinely has
-# side-street alternatives. The shared prefix plans a ~1.6 km POI route (7th Resupply hit), accepts
+# side-street alternatives. The shared prefix plans a ~1.1 km POI route (7th hit on the second Resupply page), accepts
 # it from the overview (which starts the ride), then `T` runs one route-aware tick — the GUI ticks
 # every frame, but the headless script path doesn't, and the Detour chooser reads the tick-built
 # `route_total_m`. The chooser opens off the ride context sheet (`C d p`); the flow then walks
 # plan → preview (+cost line) → commit — the commit splices the prefix's planned route into a
 # fresh card object and lands back on the riding map.
-DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
+DETOUR_PRE="B d d w p d d d p f d d d d d d d d f d d d d d d p f p p f p T"
 # (a0) The map context with **every row live** — the Monaco graph, a loaded route and an on-route
 # rider are exactly what the Detour row needs, so this is the arrangement `map-context.png` cannot
 # show on the graph-less Grimsel fixture.
@@ -460,8 +462,8 @@ import sys
 
 source, output = map(Path, sys.argv[1:])
 map_bytes = bytearray(source.read_bytes())
-# OBCM §1.1/§1.3: v14 header, 16-byte units, terrain offset/length at bytes 41/45.
-assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0e" and map_bytes[40] == 4
+# OBCM §1.1/§1.3: v15 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0f" and map_bytes[40] == 4
 terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
 assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
 if not terrain_offset:
@@ -481,7 +483,7 @@ PYTERRAIN
 # the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
 # Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
 # the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
-ELEVPLAN="B d d w p d d p f d d d p p p f"
+ELEVPLAN="B d d w p d d p f d d d p f p p f"
 "$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
 # (a) The route list row for that saved plan: `6 km  ▲396 m` — the climb group is read straight off
@@ -567,12 +569,11 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
     --expect-screen ContextDrawer --png "$OUT/up-ahead-sources-editor.png"
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE d d d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
-# (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
-# ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
+    --script "$UPBASE d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
+# (e) No-route and outside-map states. The plain vector route is outside Monaco;
+# the coverage guard takes precedence over map-place filters.
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-outside-map.png"
 # (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
 # Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
 # presses into its editor, stages `n` steps round the Both → Waypoints → Map POIs ring, commits and
@@ -588,7 +589,6 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPSCOPE 1) $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
 # The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
 # Auto climb panel would take the base screen on this line, so the script turns it Off first
 # (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics

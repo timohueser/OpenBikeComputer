@@ -303,6 +303,7 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
         app.apply_gesture(Gesture::Press); // → the POI list
         render_120(&mut app, &bytes); // the lazy POI snapshot fills on a render
         app.apply_gesture(Gesture::Press); // → the detail
+        render_120(&mut app, &bytes); // resolve current opening hours before enabling the action
         app.apply_gesture(Gesture::Press); // → the confirm card
         assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the POI detail opens the confirm");
 

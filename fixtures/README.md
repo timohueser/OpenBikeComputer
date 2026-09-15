@@ -65,6 +65,15 @@ Generated design-review screenshots belong in PRs or project documentation, not 
 
 ## Package provenance
 
+- `sim-grimsel`: an **OBCM v15** file packed from the pinned `assistant-osm`
+  Switzerland snapshot dated 2026-09-13, on the canonical fixture bbox; its OBCT terrain is derived from Copernicus GLO-30 tile
+  `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
+  The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
+  `tracked_sources` originals. The routes use OBCR v3.
+- `sim-monaco`: an **OBCM v15** file from the pinned `assistant-osm` Monaco
+  snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
+  project-authored up-ahead GPX.
+
 ### Revision log: repacked at OBCM v14 (FS7.5b, #1420)
 
 `sim-grimsel` and `sim-monaco` moved to a new immutable revision because a v14

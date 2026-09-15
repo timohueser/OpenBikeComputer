@@ -19,7 +19,7 @@
 //! — no full-route re-read per snapshot.
 
 use crate::reader::Poi;
-use obc_formats::obcm::{PoiCategory, POI_CATEGORY_COUNT};
+use obc_formats::obcm::PoiCategory;
 #[cfg(test)]
 use obc_map_scene::ground_dist_m_cl;
 use obc_map_scene::{cos_lat, delta_m, BBox, M_PER_DEG};
@@ -47,7 +47,15 @@ impl PoiCategorySet {
     /// No categories — the query returns nothing.
     pub const EMPTY: PoiCategorySet = PoiCategorySet(0);
     /// Every §7.4 category ("Everything").
-    pub const ALL: PoiCategorySet = PoiCategorySet(((1u16 << POI_CATEGORY_COUNT) - 1) as u8);
+    pub const ALL: PoiCategorySet = {
+        let mut set = Self::EMPTY;
+        let mut i = 0;
+        while i < PoiCategory::ALL.len() {
+            set = set.with(PoiCategory::ALL[i]);
+            i += 1;
+        }
+        set
+    };
 
     /// The single-category set.
     #[inline]
@@ -98,7 +106,8 @@ impl PoiCategorySet {
 /// are filled by nearer entries.
 ///
 /// Every method must be cheap off the resident chunk index except [`visit_chunk_points`], which is
-/// the one that may touch the card — the query calls it at most once per chunk it actually needs.
+/// the one that may touch the card. Each query step reads at most one route chunk; a pass that
+/// crosses a seam can revisit chunks across successive steps.
 ///
 /// [`visit_chunk_points`]: RoutePath::visit_chunk_points
 pub trait RoutePath {
@@ -113,8 +122,8 @@ pub trait RoutePath {
     fn chunk_bbox(&self, k: usize) -> BBox;
 
     /// Decode chunk `k` and hand its `(lon, lat)` microdegree points to `visit` **once**, in route
-    /// order. A chunk that fails to decode simply doesn't call `visit` (the corridor loses that
-    /// stretch, exactly like the map overlay loses a stroke). The slice is borrowed from the
+    /// order. A chunk that fails to decode does not call `visit`; the place query reports failure.
+    /// The slice is borrowed from the
     /// implementor's own scratch and must not outlive the call.
     // The `&mut dyn FnMut(&[…])` spelling *is* the seam (object-safe, alloc-free); a type alias
     // would only hide what implementors must write anyway — same call as `RouteOverlaySource`.
@@ -342,7 +351,7 @@ mod tests {
     /// The category set round-trips its members and "Everything" holds all six.
     #[test]
     fn category_set_membership() {
-        assert_eq!(PoiCategorySet::ALL.len(), 6);
+        assert_eq!(PoiCategorySet::ALL.len(), 7);
         assert!(PoiCategory::ALL.iter().all(|c| PoiCategorySet::ALL.contains(*c)));
         assert!(PoiCategorySet::EMPTY.is_empty());
         let only = PoiCategorySet::only(PoiCategory::Water);

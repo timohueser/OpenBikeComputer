@@ -188,6 +188,7 @@ impl DateTimeScreen {
 /// Apply a stepper step to the UTC offset (live into [`Settings`], clamped to its range).
 fn step_offset(s: &mut Settings, n: i32) {
     let v = s.utc_offset_min as i32 + n * UTC_OFFSET_STEP as i32;
+    s.local_offset_known = true;
     s.utc_offset_min = v.clamp(UTC_OFFSET_MIN as i32, UTC_OFFSET_MAX as i32) as i16;
 }
 
