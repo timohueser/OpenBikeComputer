@@ -502,9 +502,9 @@ UPBASE="p p p p T Q d p d p f p f f f f f f f f"
 # commits, then closes the sheet — so the list comes back filtered. Every `p` that starts a page
 # slide is followed by `w`, because the sheet owns its input while a slide runs.
 UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f f f f f f f f"; }
-# (b) The same list filtered to Water, with authored and mapped sources retained.
+# (b) Water from authored and mapped sources. Finish the page load after advancing the list.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE $(UPFILTER 1) d d d d d d d d d" --expect-screen WhatsNext --png "$OUT/up-ahead-water.png"
+    --script "$UPBASE $(UPFILTER 1) d d d d d d d d d f f f f f f f f" --expect-screen WhatsNext --png "$OUT/up-ahead-water.png"
 # (c1) The context sheet itself: two value rows, Filter and Sources, each a door into its editor.
 # This frame replaces the Hold picker's — the filter is a sheet row now, not a mode on the list.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE C" \
@@ -579,10 +579,10 @@ U5CLIMBOFF="B u p p d d p b b b"
 # route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p b" --expect-screen Statistics --png "$OUT/statistics-routeless.png"
 # The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride context's Routes row
-# (`C d d d` — the fourth row down) and press, then pick the *other* vector route (`d p`). Choosing
+# (`C d d` — the third row down) and press, then pick the *other* vector route (`d p`). Choosing
 # a route while a ride is live raises the Swap / Finish & new / Cancel card instead of opening the
 # overview.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap.png"
 # Inspect mode: a thin rounded amber/ink frame follows the panel corners across Route, Free, and
 # Zoom; only the active action's edge cues and the bottom-left scale bar join it. The clock and
 # redundant labels stay out. A final `w` lets the entry hold's edge bulge retract before capture.
@@ -708,7 +708,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --inject upload=0 --expect-screen RouteReceived --png "$OUT/route-received-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject upload=1 \
         --expect-screen RouteSwap --png "$OUT/routeswap-received-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p C d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
     "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
