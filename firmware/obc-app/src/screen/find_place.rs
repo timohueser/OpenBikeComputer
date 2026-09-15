@@ -303,7 +303,7 @@ impl VisitReviewScreen {
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]
 }
-fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32) -> Viewport {
+pub(super) fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32) -> Viewport {
     let lat = min.1 + (max.1 - min.1) / 2;
     let aspect = obc_map_scene::cos_lat(lat);
     let zoom = ((w - 48) as f32 / ((max.0 - min.0).max(200) as f32 * aspect))

@@ -292,7 +292,7 @@ pub fn install(
     app.set_settings(settings);
     app.enable_assistant_demo(fixture);
     app.state.assistant_demo.as_mut().unwrap().easier = Some(alternatives);
-    app.set_assistant_candidates(seed.scenario.candidates());
+    app.set_assistant_demo_candidates(seed.scenario.candidates());
     if !app.show_assistant_demo(seed.stage, seed.option) {
         return Err("that stage or option is unavailable in this candidate set".into());
     }

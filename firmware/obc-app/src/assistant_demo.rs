@@ -168,7 +168,7 @@ impl App {
     }
 
     /// Supply a candidate set, then return to its comparison without starting a new recording.
-    pub fn set_assistant_candidates(&mut self, available: &[usize]) {
+    pub fn set_assistant_demo_candidates(&mut self, available: &[usize]) {
         let Some(mut demo) = self.state.assistant_demo else { return };
         demo.candidates = candidates::select(demo.fixture.stops, available.iter().copied());
         self.state.assistant_demo = Some(demo);
@@ -329,7 +329,7 @@ mod tests {
         for (selected, expected) in [1, 2, 1].into_iter().enumerate() {
             let mut app = app();
             app.state.assistant_demo.as_mut().unwrap().easier = Some(&ROUTES);
-            app.set_assistant_candidates(&[]);
+            app.set_assistant_demo_candidates(&[]);
             assert!(app.show_assistant_demo(Stage::Easier, selected));
             let session = app.recorder.session();
             app.apply_gesture(Gesture::Press);
@@ -518,13 +518,13 @@ mod tests {
             assert!(app.recorder.recording());
         }
         assert!(!app.show_assistant_demo(Stage::Preview, 4));
-        app.set_assistant_candidates(&[]);
+        app.set_assistant_demo_candidates(&[]);
         app.apply_gesture(Gesture::Step(1));
         app.apply_gesture(Gesture::Press);
         assert_eq!(app.active_route_index(), Some(0));
         assert_eq!(app.state.assistant_demo.unwrap().candidates.len, 0);
         assert!(!app.show_assistant_demo(Stage::ToStop, 0));
-        app.set_assistant_candidates(&[3, 2, 1, 0]);
+        app.set_assistant_demo_candidates(&[3, 2, 1, 0]);
         assert!(app.show_assistant_demo(Stage::Choices, 3));
         app.apply_gesture(Gesture::Press);
         app.apply_gesture(Gesture::Press);

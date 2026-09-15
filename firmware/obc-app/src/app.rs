@@ -2736,6 +2736,7 @@ impl App {
         let App { state, activity, settings, catalogs, nav_profiles, recorder, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
             find: &mut ui.find,
+            landmarks: &mut ui.landmarks,
             place_local,
             state,
             activity,
@@ -2842,7 +2843,14 @@ impl App {
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
         let place_local = self.place_local_time();
         if self.ui.stack.iter().any(|screen| {
-            matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::FindPlace(_) | Screen::VisitReview(_))
+            matches!(
+                screen,
+                Screen::PoiList(_)
+                    | Screen::PoiDetail(_)
+                    | Screen::FindPlace(_)
+                    | Screen::VisitReview(_)
+                    | Screen::Landmarks(_)
+            )
         }) && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
         {
             self.ui.map_dirty = true;
@@ -2859,6 +2867,7 @@ impl App {
                     | Screen::PoiDetail(_)
                     | Screen::FindPlace(_)
                     | Screen::VisitReview(_)
+                    | Screen::Landmarks(_)
                     | Screen::UpAhead(_)
             )
         }) {
@@ -2903,7 +2912,7 @@ impl App {
             now_ms, self.ui.now_ms,
             "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
         );
-        if self.photo_pending() {
+        if self.photo_pending() || self.landmarks_pending() {
             Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
         } else {
             self.ui.next_wake_ms
@@ -3069,6 +3078,7 @@ impl App {
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
         self.prepare_find(core_reader, route);
+        self.prepare_landmarks(core_reader);
         // Route-relative pan steps are recorded by gesture handling as a cumulative-distance
         // cursor because `Ctx` deliberately owns no streamed reader. Resolve that cursor here,
         // once per dirty step, before `Render` borrows state read-only for the draw pass.
@@ -3160,6 +3170,7 @@ impl App {
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
             find: &ui.find,
+            landmarks: &ui.landmarks,
             peak_view,
             scratch,
 

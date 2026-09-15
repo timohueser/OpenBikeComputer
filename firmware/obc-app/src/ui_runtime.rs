@@ -126,6 +126,7 @@ pub(crate) struct UiRuntime {
     /// when a POI list opens, so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
     pub(crate) find: crate::find_place::FindState,
+    pub(crate) landmarks: crate::landmarks::Landmarks,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
     /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
@@ -180,6 +181,7 @@ impl UiRuntime {
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
             find: crate::find_place::FindState::new(),
+            landmarks: crate::landmarks::Landmarks::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
             cards: CardScheduler::new(),
@@ -328,7 +330,7 @@ impl UiRuntime {
             ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
             // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
             ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending()),
-            ReaderNeed::Photo => true,
+            ReaderNeed::Photo | ReaderNeed::Landmarks => true,
             ReaderNeed::Never => false,
         }
     }
@@ -772,6 +774,7 @@ impl UiRuntime {
             hold_cancel_pending,
             poi_scratch,
             find,
+            landmarks,
             corridor_scratch,
             next_ahead,
             cards,
@@ -791,6 +794,7 @@ impl UiRuntime {
         assert!(*idle_return_timing, "idle time accumulates from the first pass");
         assert!(hold_progress_override.is_none() && !*hold_cancel_pending, "no hold charging or cancelled");
         assert_eq!(find.state, crate::find_place::State::Idle);
+        assert_eq!(landmarks.status, crate::landmarks::Status::Idle);
         assert_eq!(poi_scratch.len(), 0, "the POI snapshot is empty");
         assert!(corridor_scratch.armed().is_none() && corridor_scratch.is_empty(), "the corridor is disarmed");
         assert!(next_ahead.request().is_none(), "the next-ahead cache asks for nothing");
