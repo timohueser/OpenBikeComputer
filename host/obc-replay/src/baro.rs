@@ -31,7 +31,7 @@ pub struct BaroSensor {
     /// `fed_t - emitted_t >= SAMPLE_INTERVAL_S`.
     emitted_t: f64,
     due: bool,
-    /// Synthetic **weather drift** (m of apparent altitude per hour of playback time), added to
+    /// Synthetic **air pressure drift** (m of apparent altitude per hour of playback time), added to
     /// every fed elevation — see [`set_drift`](BaroSensor::set_drift). `0.0` = today's behaviour.
     drift_m_per_h: f32,
 }
@@ -41,13 +41,13 @@ impl BaroSensor {
         BaroSensor { current: None, fed_t: 0.0, emitted_t: f64::NEG_INFINITY, due: false, drift_m_per_h: 0.0 }
     }
 
-    /// Inject a synthetic **barometric weather drift**: the emitted altitude walks away from the
+    /// Inject a synthetic **barometric air pressure drift**: the emitted altitude walks away from the
     /// track's true elevation by `m_per_h` metres per hour of playback time (negative = pressure
     /// rising, the sensor under-reading).
     ///
     /// This is the simulator's stand-in for the one error the device's altimeter genuinely has and
     /// a GPX replay otherwise cannot show: `bmp581.rs` hard-codes sea-level `P0`, so a passing front
-    /// moves every reading together. Real weather is on the order of 1 hPa/h ≈ 8 m/h; the map-
+    /// moves every reading together. Real air pressure is on the order of 1 hPa/h ≈ 8 m/h; the map-
     /// referenced altimeter (epic #1068, EL8) exists to cancel exactly this, so this knob is how
     /// its cancellation is demonstrated and regression-tested. `0.0` restores the plain replay.
     pub fn set_drift(&mut self, m_per_h: f32) {

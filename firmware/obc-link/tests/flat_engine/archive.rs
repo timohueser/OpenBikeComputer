@@ -114,7 +114,7 @@ fn busy_and_unreadable_metadata_never_acknowledge_a_receipt() {
     let mut device = boot(&disk);
     let (id, rev) = device.seed(ObjectKind::Ride, b"ride", "ride");
     let receipt = receipt(2, id, rev, b"ride");
-    device.control(&client::put(1, 0, 0, b"route", ROUTE, false, "route"));
+    device.control(&client::put(1, 0, 0, b"route", ROUTE, "route"));
     let busy = Answer::of(device.control(&receipt).answer());
     expect_error(&busy, ErrorCode::Busy, detail::busy::TRANSFER);
     device.link_lost();

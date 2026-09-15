@@ -98,9 +98,7 @@ public struct MockTransport: DeviceTransport {
         // 30-minute default — the exact regression the wire rule exists to prevent, and one no
         // test could catch against a mock that simply overwrote.
         var stored = config
-        if try config.weatherRefreshToApply() == nil {
-            stored.weatherRefreshRaw = control.fixtures.config.weatherRefreshRaw
-        }
+
         control.setConfig(stored)
     }
 
@@ -223,12 +221,6 @@ public struct MockTransport: DeviceTransport {
         // is the observable effect (the mock models no device-side bond slot).
         try await preludeThrowing()
         control.recordForgetBond()
-    }
-
-    /// The standing weather watch (WX13). No radio here, so the mock records the intent — which is
-    /// the whole of the observable effect for a transport that never scans.
-    public func setWeatherWatch(_ enabled: Bool) {
-        control.recordWeatherWatch(enabled)
     }
 
     // MARK: Shared op prelude

@@ -45,7 +45,7 @@ card. Input files stay unchanged. The final reader releases the temporary card.
 On Unix, create a persistent card explicitly, then reopen it without importing the files again:
 
 ```sh
-target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/ --weather forecast.obcw
+target/release/obc-sim freiburg.obcm --create-card ride.obc --routes-dir routes/
 target/release/obc-sim --card ride.obc
 target/release/obc-sim --import next-stage.gpx --card ride.obc
 ```
@@ -56,18 +56,18 @@ startup completes the catalog commit and lists the saved ride instead. Failed re
 can show a damaged-ride card; failed durability confirmation or terminal settlement stops startup.
 Close all readers and reopen after an uncertain card write. Startup never resets or migrates a card.
 
-
 Creation refuses an existing path and exits after importing. If an import fails, it reports failure
 and leaves the partial card for inspection. Reopening never initializes or resets the file. It
-requires exactly one readable map, complete route and trip catalogs, and valid installed weather
-when present. The last reader keeps the card's exclusive file lock, even after the session closes.
-Persistent cards are not supported on Windows; ordinary temporary sessions remain available.
+requires exactly one readable map and complete route and trip catalogs. The last reader keeps the
+card's exclusive file lock, even after the session closes. Persistent cards are not supported on
+Windows; ordinary temporary sessions remain available.
 
 A reopened map is labelled **Card map**. Planning and map-referenced altitude sample the terrain
 inside that retained map object in both import and reopen sessions. They do not read an external
 `.obcd` sidecar. Missing terrain leaves elevations unavailable; invalid or unreadable terrain
 reports a diagnostic and keeps the map usable. Peak View keeps its separate bounded terrain cache.
 
+- `--no-card` simulates an absent storage card.
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
 - `--png PATH` renders one device-gamut frame and exits. This is the screenshot-test interface.
@@ -176,29 +176,6 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   `normal`, `same`, and `first`; errors are `notfound`, `unreadable`, `damaged`, `toolarge`,
   `fragmented`, and `untrusted`; failure reasons are `notstarted` and `reverted`.
 - `--freeze` engages the production recalculation freeze for an over-map banner snapshot.
-
-## Weather
-
-These are independent product controls, not part of the simulator-fixture consolidation:
-
-- `--weather FILE.obcw|demo[:SCENARIO]|live` imports weather from a file, deterministic demo, or live service
-  into the session card. `--card` without this flag reopens the installed bundle. No folder data is
-  migrated. A failed import leaves the prior committed data available; an uncertain commit requires
-  closing the session and reopening the card. Reader-slot pressure after a successful commit retries
-  reader acquisition without importing again.
-  Demo scenarios are `scattered` (the default), `drizzle`, `frontal`, `storm`, `dry`, `incoming`,
-  `stormahead`, `rainahead`, `gusty`, and `hourly`.
-- `--weather-now UNIX` overrides the freshness instant.
-- `--weather-refreshing` shows the non-blocking updating cue.
-- `--weather-alert rain[:MIN]|storm[:MIN]|gust[:MIN]` displays an alert card.
-- `--weather-decide` runs the production route-projected alert decision for the final frame.
-- `--weather-service URL` changes the live service origin.
-- `--weather-radius-km KM` changes the live corridor radius.
-- `--weather-offline` forces the live client offline.
-- `--weather-fault corrupt-request=N|truncate-request=N|fail-from=N:CODE|latency=MS` applies one
-  typed live-client fault. Repeat the option to compose independent faults, matching the former
-  independent flags.
-- `--no-card` simulates no writable companion storage, suppressing weather requests.
 
 ## Help
 
