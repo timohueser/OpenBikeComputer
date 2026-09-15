@@ -547,6 +547,67 @@ mod tests {
         app.navigator.reconcile_visit(route);
     }
     #[test]
+    fn accepted_visit_reopens_from_assistant_without_a_second_acceptance() {
+        use crate::{input::Chord, screen::Screen, Gesture};
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = app();
+        app.set_routes_with_ids(&[route.summary()], &[8]);
+        app.navigator.following.active_route = Some(0);
+        let checkpoint = app.assistant_checkpoint();
+        let session = app.ride_session();
+        assert!(app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press); // Explore another question first.
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        app.prepare_find(None, Some(&route));
+        assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted));
+        assert_eq!(app.ui.find.review, ReviewStatus::Accepted);
+        assert_eq!(app.ui.find.review_costs.unwrap().arrival_m, 111);
+        assert_eq!(app.derived_needs().nav_preview.unwrap().route, 8);
+        // A new question above the read-only view owns preparation and geometry.
+        assert!(app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.prepare_find(None, Some(&route));
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        assert_ne!(app.find_place_state(), crate::find_place::State::Start);
+        assert!(app.derived_needs().nav_preview.is_none());
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        assert_eq!(app.assistant_checkpoint(), checkpoint);
+        assert_eq!(app.ride_session(), session);
+        assert!(app.navigator.review.change.is_none());
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        app.navigator.following.active_route = None;
+        app.prepare_find(None, None);
+        assert!(matches!(app.ui.find.review, ReviewStatus::Failed(_)));
+        assert!(app.ui.find.review_costs.is_none());
+        assert!(app.derived_needs().nav_preview.is_none());
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
+        app.apply_gesture(Gesture::Back);
+        assert_eq!(app.assistant_checkpoint(), checkpoint);
+        app.navigator.following.active_route = Some(0);
+        assert!(app.current_visit_index().is_some());
+        app.on_route_uploaded(8, true, None);
+        assert!(app.current_visit_index().is_none());
+        assert_eq!(app.assistant_checkpoint(), checkpoint);
+        assert!(app.navigator.review.change.is_none());
+    }
+
+    #[test]
     fn phase_ack_replays_latest_fix_without_acceptance_or_dwell_arrival() {
         let bytes = route();
         let source = SliceSource(&bytes.0);

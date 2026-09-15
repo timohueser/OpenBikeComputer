@@ -2,7 +2,7 @@
 //!
 //! A stat tile is a glance, not a browse: the six [`NextWater`](crate::StatField)-style fields each
 //! answer one question — *how far to the next water / campsite / … on my route?* — from the same two
-//! sources the [Up-ahead timeline](crate::screen::UpAheadScreen) merges. The **waypoint** half is
+//! sources the [Up-ahead timeline](crate::screen::WhatsNextScreen) merges. The **waypoint** half is
 //! resident RAM and needs no cache at all (the tile walks the table every draw, ~32 entries, zero
 //! I/O). The **map-POI** half is an SD query, and this is the piece that keeps it off the frame
 //! path.

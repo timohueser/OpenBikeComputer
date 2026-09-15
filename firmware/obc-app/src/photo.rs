@@ -77,6 +77,7 @@ impl Runtime {
         reader: Option<&Reader<'_>>,
         target: &mut D,
         color: F,
+        language: crate::settings::Language,
     ) where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
@@ -90,7 +91,7 @@ impl Runtime {
             if page.status == Status::Unavailable {
                 clear(target, &color);
             }
-            page.draw_status(target, &color);
+            page.draw_status(target, &color, language);
             return;
         }
         if page.status == Status::Fresh || self.selection != Some(page.selection) || self.revision != page.revision {
@@ -143,7 +144,7 @@ impl Runtime {
         if page.status != Status::Pending {
             self.cancel();
         }
-        page.draw_status(target, &color);
+        page.draw_status(target, &color, language);
     }
 }
 

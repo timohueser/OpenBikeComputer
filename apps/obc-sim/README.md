@@ -128,191 +128,37 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ## Ride and storage fixtures
 
-### Ride Assistant interaction study
+### Ride Assistant
 
-Run the Ride Assistant prototype on any loaded map:
+Open the top drawer with **Up + Select** (Left arrow + Enter), choose **Assistant**, and select
+**Find a place**, **What's next**, **Easier route**, or **Landmarks**. The same Assistant menu is
+available from the main menu and map context. Bluetooth remains under **Settings → Connections → Phone**.
+The normal detour command remains in the map context. The three grey questions are inactive.
 
-```sh
-cargo build -p obc-sim --release
-target/release/obc-sim path/to/area.obcm --assistant-demo
-```
+Use an installed OBCM v16 map and an explicit simulator position, or play a captured GPS track.
+Find lists all place categories. More places opens the complete bounded result list. What's next
+uses the accepted route; **Explore ahead** includes authored waypoints and map places. Its
+**Down + Back** drawer retains category and source filters. Authored waypoint details do not add
+another stop. Easier route compares real planner results and offers a preview before acceptance.
 
-This opt-in study uses the device's 240×320 layout, fonts, map renderer, buttons, and recording
-system. It starts a ride on a temporary card. By default, it creates a synthetic local route
-inside the loaded map. `--center LON,LAT` places that study in another part of the map, using
-microdegrees. A coastal map can have its centre at sea; choose an inland centre or a GPX.
-`--assistant-route PATH.gpx` uses a supplied GPX instead. All GPX points must be
-inside the loaded map. Missing elevations use zero in the study.
+Landmarks reads the installed source text, article language, optional image and full attribution.
+Up/Down pages through text and the photo. **Down + Back → Sources** opens article and image
+credits; Back restores the selected site and reading page. Missing mapped access leaves a site
+information-only. Opening hours and the selected bike profile govern Visit. The shared Visit
+preview plans the actual connection before acceptance. Browsing does not start recording.
 
-The shops and their access paths are fictional. Prepared route legs supply distance and climbing.
-This is an English, metric UI study. It does not search real POIs, calculate access routes, or
-detect arrival from GPS. Synthetic paths can cross terrain that is not rideable. The study sets
-Climb mode to Manual so a climb does not interrupt the comparison.
-
-Open the top drawer with Up + Select (Left arrow + Enter). Step once to **Ride Assistant**,
-then select **Find a place → Shop**. Up/Down (Left/Right arrow) moves through up to four results.
-All result markers stay on the map; the card below shows the selected shop, distance to reach
-it, climbing, and extra distance. Select previews the full visit. **Add stop** accepts the shop
-and its return to the original route. A–D identify results during comparison. After selection,
-the shop uses the existing basket icon. What's next, Landmarks, and Easier route are also active. Next town is removed. The other questions and place
-categories are grey placeholders.
-
-### Easier route study
-
-Select **Easier route** in Ride Assistant, or use `--assistant-stage easier`.
-Up/Down browses Less climbing, Smoother surface, and Shorter ride. The real map stays at a
-fixed scale while the blue candidate changes beside the magenta active route. The start and
-finish use symbols. The card shows a large saving with a small pictogram.
-
-Select opens the current/new cost table, with the saving above it. Back preserves selection.
-**Use this route** activates the prepared alternative and returns to the map. The recording
-continues. The accepted alternative supplies the baseline if the rider opens the comparison
-again. Route alternatives are unavailable during a place visit in this mock.
-
-Use `--assistant-stage easier-review` for the table. `--assistant-option 1`, `2`, or `3` chooses
-the initial goal in either stage, independently of the shop scenario, including empty results.
-
-These routes share the original start and finish, but their intermediate geometry and costs
-are synthetic. They are drawn over real map data; they do not follow a computed road network.
-The costs are the wireframe's illustrative figures, not measurements of these paths. There is
-no ETA model, surface analysis, automatic alternative search, or required-stop preservation yet.
-After a mock place visit, the prepared return leg still follows the original fixture; production
-must calculate that leg for the accepted route. See the [reviewed design and captures](../../docs/assets/ride-assistant/easier-route/README.md).
-
-### Landmarks study
-
-Select **Landmarks** in Ride Assistant, or start with `--assistant-stage landmarks`.
-Up/Down selects one of four nearby landmarks. All markers remain on the map. The selected
-card shows the name, kind, and straight-line distance from the rider. Select opens the text.
-Up/Down changes the page; Back restores the selected marker. **Visit** opens the same
-preview as Find a place, with route distance, climbing, and the extra cost including return.
-**Add stop** accepts that visit. Reading another place does not change the accepted route.
-
-Aare Gorge, Reichenbach Falls, Gelmerbahn, and Dunlough Castle have short text adapted from Wikipedia.
-Down + Back opens the bottom drawer. **Sources** opens the text attribution, licence URL, and
-article URLs for the study, plus each photo's credit, source, and licence. Back restores the
-reading page and selection. Aare Gorge, Reichenbach Falls, and Dunlough Castle each have a
-216 × 240 ordered-dither photo page. Up from the first text page opens the photo. See the
-[captures and article attribution](../../docs/assets/ride-assistant/landmarks-study/README.md).
-The article facts are real, but landmark positions and access paths are synthetic. They fit
-inside the loaded map and do not describe actual access to those landmarks. All four have
-unknown opening hours. Known-closed landmarks are excluded; places with unknown hours remain
-in the results.
-
-This study has four results. It does not define the production result limit, search radius,
-or ranking policy. Text is curated to fit two readable pages. There is no Wikipedia fetch,
-landmark map format, JPEG decoder, or live route calculation in the device prototype. The
-photos use fixed RGB222 assets shared with the [board photo demo](../../firmware/obc-fw-nrf54l/README.md#landmark-photo-demo).
-
-### Random glacier and pass samples
-
-`--assistant-landmarks glaciers` or `--assistant-landmarks passes` opens three fixed random
-Swiss examples in the same landmark view. Both sets keep the same mock route/visit behavior.
-Selection is reproducible and does not require English text or an image. Missing images stay
-missing. The German-only Gutzgletscher text is translated for this preview. Sources use the
-actual article language. The data is compiled into the simulator; there is no live fetch.
-
-See [sample selection, sources, and captures](../../docs/assets/ride-assistant/glacier-pass-study/README.md).
-
-### What's next study
-
-Select **What's next** beside Find a place, or start with `--assistant-stage whats-next`.
-Up selects the next 5 km; Down selects the next 10 km. Select **Explore ahead** to browse the
-entries for that range. Up/Down selects a row, Select opens its facts, and Back restores the row.
-Down + Back opens the existing category/source drawer. Return to the brief to change the range.
-Filters apply only to the list. A fresh entry resets the category and keeps the source preference.
-
-This screen uses a fixed fictional 10 km route, independent of the loaded map, GPX, and accepted
-visit. It is an information-design fixture, not a summary of current navigation. It has a 3 km
-climb, water, shops, two custom waypoints, and a campsite. The title, ascent, descent, colored
-profile, and list share the selected interval. The next waypoint can be beyond that interval;
-its name is supplied by the fixture and does not imply a stop type. Profile colors use the
-Climb screen's grade bands. There are no profile endpoint labels or waypoint explanation lines.
-
-The list includes more than four entries and excludes a known-closed shop. Open places and places
-with unknown hours remain available. Place details show the supplied opening status and lateral
-offset. They do not offer an unmeasured visit. The separate Find a place study retains its existing
-visit preview. Climb-only filtering, live route facts, missing-data scenarios, categorized waypoint
-fixtures, menu consolidation, and the shared visit flow remain production work.
-
-Start directly on the list with `--assistant-stage explore-ahead`. During an accepted visit, the
-visit page has an **Assistant** action that returns to the questions without changing navigation.
-
-The provisional selection rules are:
-
-- Keep distinct shops with at most 400 m extra distance for the complete visit, ordered by distance
-  to reach them, then climbing.
-- Include a detour when it reaches a shop at least 500 m sooner than the first shop on the way,
-  or saves at least 50 m of climbing at no greater distance. Reject it if a shop on the way is both
-  no farther and no harder to reach.
-- Show up to four results, with room for at least one useful detour when one exists. If no shop is
-  on the way, show the nearest available detours. Repeated candidate identities appear once.
-- Do not fill empty slots. With no candidates, show **No shops found**.
-
-These are study thresholds. They are not a production POI ranking policy. The study excludes candidates explicitly marked closed now and keeps unknown hours. The visit
-fixtures have unknown hours; they do not read live map schedules. Surface, duplicate map records,
-search coverage, and a maximum detour budget are not yet part of the selection. Distance and climbing remain separate; there is no combined effort score.
-
-Adding a stop opens the ordinary navigation map. Select still pauses, Back still opens Statistics,
-and Up/Down still zoom. The same ride remains open. Use **Arrive at place** in the simulator's
-Controls panel to simulate arrival. This activates the prepared return leg and shows an
-informational arrival card. Guidance is active before you dismiss the card. Use **Rejoin original
-route** to simulate rejoining; the original route resumes automatically. These Controls buttons
-supply location events, not new device buttons or route confirmations.
-
-| Ride stage | Navigation | Ride Assistant |
-| --- | --- | --- |
-| Going to the shop | Follow the selected path to the shop. | Show the visit, or remove the stop. |
-| At the shop | The accepted return leg is active. Stop as long as needed, then ride on. | The arrival card says **Guidance continues**. |
-| Returning to the route | Follow the prepared return leg. | Show **Back to route**, with no confirmation required. |
-| Back on the original route | Resume the original route. | Show the question list again. |
-
-Select **Dismiss** or press Back to close the arrival card. Both leave navigation and recording
-unchanged. Rejoining also clears an ignored card. Before arrival, **Skip stop → Remove stop**
-restores the original route at the current position. It does not calculate a path back.
-
-The Controls panel has a candidate-set selector, a result selector, and **Jump to stage**.
-Changing a candidate set returns to comparison. Changing the result also opens comparison.
-Stage jumps keep the same recording. Route fixtures are loaded once per simulator launch.
-
-The same presets work in the GUI and headless mode:
-
-| Flag | Values |
-| --- | --- |
-| `--assistant-scenario` | `four` (default), `two-along`, `useful-detour`, `worse-detour`, `four-along`, `detours-only`, `one`, `empty` |
-| `--assistant-stage` | `map` (default), `questions`, `whats-next`, `explore-ahead`, `landmarks`, `easier`, `easier-review`, `categories`, `choices`, `preview`, `to-stop`, `visit`, `arrival`, `returning`, `rejoined`, `remove-stop` |
-| `--assistant-option` | Result number `1`–`4`, default `1`; Easier route uses `1`–`3` independently of shops. |
-
-Scenario names describe the supplied candidate sets. The selection rules still apply: a small map
-or a different GPX can change which detours qualify. Each launch prints the available and suggested
-counts and each result's costs. With no results, stages that need a shop are unavailable.
-
-All `--assistant-*` flags enable the study. It replaces the drawer's Bluetooth shortcut; Bluetooth
-settings remain in Settings. Without these flags, the Assistant is absent. The study cannot be
-combined with `--card`, `--create-card`, `--no-card`, or `--gpx`. Do not change route catalogs during a study.
-
-For example, compare four options on the supplied Grimsel route:
+For a named capture through normal physical-button gestures:
 
 ```sh
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm \
-  --assistant-route fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx \
-  --assistant-stage choices --assistant-scenario four
+cargo build -p obc-sim --bin obc-sim --locked
+target/debug/obc-sim --card west-cork.obc --center -9829419,51482665 --heading 0 \
+  --script 'Q d p d d d d d p f p f' --expect-screen Landmarks --png landmark-text.png
 ```
 
-Use any other map for a local study. In a headless script, `A` simulates arrival, then rejoining.
-No device button press is needed between those events:
-
-```sh
-target/release/obc-sim path/to/area.obcm --assistant-stage choices \
-  --assistant-scenario worse-detour --expect-screen Assistant --png shops.png
-target/release/obc-sim path/to/area.obcm --assistant-stage preview \
-  --script "p f A" --expect-screen Assistant --png shop-arrival.png
-target/release/obc-sim path/to/area.obcm --assistant-stage to-stop \
-  --script "A A" --expect-screen Map --png shop-rejoined.png
-```
-
-Physical-device execution, real POI data, automatic arrival detection, and the remaining Assistant
-questions are outside this prototype.
+The explicit center is a simulated GPS fix. Use `--lang en|de|fr|es` for UI copy; article language
+comes from the installed source. Metric/imperial follows the normal Units setting. A map without
+landmark content or a route without coverage shows its unavailable state. There are no study
+fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls in this path.
 
 ### Storage inputs
 
@@ -357,6 +203,10 @@ questions are outside this prototype.
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
   Up+Select chord that opens the universal quick drawer, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
+  With `--gpx`, `T` samples the actual track position selected by `--at` through the normal location
+  input and active-route matcher. Use it after starting a route and before opening a route action.
+  It keeps the interaction clock and the pre-replay ride epoch; the full GPX replay still follows
+  the script.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
 - `--hold nav|detour` consumes exactly one planner request without starting it, preserving its
   spinner snapshot.
@@ -382,12 +232,9 @@ The committed snapshot sweep is [`firmware/ui-snapshots.sh`](../../firmware/ui-s
 changing command spelling or fixture ownership, compare the surviving `--png` outputs byte for
 byte; delete a scenario only when its capability was intentionally removed.
 
-### Production Landmarks validation
+### Ride Assistant validation
 
-The temporary headless script token `L` opens the production Landmarks screen. It reads the
-installed map and uses the ordinary Reader, photo preparation, place detail and Visit planner.
-It does not install the Assistant study or start recording. Use `--center LON,LAT --heading 0`
-for an explicit simulated GPS fix, then `L f p f` to open the first source text page.
-`u` opens its optional photo; `C p f` opens Sources. This entry is for bounded implementation
-checks. Remove `L` when the ordinary Assistant menu is connected; release acceptance must use
-that menu. See the [recorded evidence](../../docs/assets/ride-assistant/implementation/ra10-evidence/README.md).
+Use the ordinary drawer entry shown above. The RA10 [source and card evidence](../../docs/assets/ride-assistant/implementation/ra10-evidence/README.md)
+records the real West Cork and Grimsel data. The temporary `L` entry has been removed.
+Final integrated acceptance includes the ordinary journey while recording; hardware acceptance
+remains a separate device check.
