@@ -176,7 +176,12 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
 
 - `--boot` starts a headless render at the real power-on Home state rather than Map.
 - `--battery PCT` sets the initial battery charge (0–100).
-- `--clock YYYY-MM-DDTHH:MM` pins the UTC wall-clock anchor.
+- `--clock YYYY-MM-DDTHH:MM` supplies trusted UTC time and an explicit local offset of `+00:00`
+  before the headless script. It uses the same clock entry as a phone time update. Without an
+  explicit time, the boot clock stays untrusted and current opening status is unknown.
+- `--clock-after-script YYYY-MM-DDTHH:MM` supplies another trusted UTC time with offset `+00:00`
+  after the button script and before the final settle and render. Use it to observe an open detail
+  after its place closes. It changes wall-clock time; it does not advance ride duration.
 - `--route-cleanup` opens the storage-full cleanup dialog. Combine with `--clock` to preview the age picker; without it the dialog shows the unknown-date guidance.
 - `--lang en|de|fr|es` chooses the headless UI language.
 - `--stat-fields LIST` replaces the Statistics grid with comma-separated field ids.
