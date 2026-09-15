@@ -137,14 +137,14 @@ summary = "Real-data motion for Ride Assistant: monaco-dense; accept navigation 
 packages = ["sim-monaco", "assistant-replays"]
 map = "sim-monaco:monaco.obcm"
 gpx = "assistant-replays:replays/monaco-dense.gpx"
-args = ["--clock", "2026-09-14T10:00"]
+args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "120"]
 
 [scenarios.assistant-dunlough-access]
 summary = "Real-data motion for Ride Assistant: dunlough-access; accept navigation in the app"
 packages = ["sim-assistant-west-cork"]
 map = "sim-assistant-west-cork:west-cork.obcm"
 gpx = "sim-assistant-west-cork:replays/dunlough-access.gpx"
-args = ["--clock", "2026-09-14T10:00"]
+args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "60"]
 
 [profiles.assistant]
 summary = "Initial Ride Assistant maps and motion; production Assistant integration is pending"
