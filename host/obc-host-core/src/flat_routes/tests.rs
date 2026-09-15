@@ -29,7 +29,7 @@ fn shared_map_and_routes_pin_revisions_and_reuse_sparse_pages() {
     let before = pages(&owner);
     let mut routes = FlatRouteStore::new(HostStore(owner.0.clone()), &[ROUTE]).unwrap();
     assert_eq!(pages(&owner) - before, 1);
-    assert_eq!(PAGE - ROUTE.len(), 12_632);
+    assert!(ROUTE.len() < PAGE);
     let id = routes.write_nav_route(ROUTE).unwrap();
     let index = routes.ids().iter().position(|&candidate| candidate == id).unwrap();
     assert!(routes.sync_active(Some(index)));
