@@ -99,6 +99,8 @@ matching position remains unavailable. Move to a clear part of the route and ret
 guidance only after the saved change is confirmed. A refused save leaves Resume available.
 It does not start recording. Back leaves navigation inactive. Open the
 Assistant context drawer to reach the Resume card again. Ordinary routes do not resume on their own.
+The recording recovery card makes a separate decision. Continue or Discard there keeps the saved
+Assistant journey. Guidance stays inactive until you select Resume route.
 
 ## Easier route
 
