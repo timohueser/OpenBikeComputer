@@ -513,6 +513,7 @@ impl crate::App {
         let retained = self.ui.find.results.get(selected).map(|index| self.ui.find.retained[*index as usize]);
         let error = match retained.zip(self.ui.find.context).filter(|(retained, _)| retained.object != 0) {
             Some((retained, mut context)) => {
+                context.required_anchors_m[1] = retained.rejoin_m;
                 context.required_anchors_m[2] = retained.rejoin_m;
                 if self
                     .current_review_origin()
