@@ -50,6 +50,59 @@ integration remain separate work.
 | `final_report.py` | Final accuracy, range coverage, history groups, and resource report |
 | `long_data.py`, `long_replay.py`, `long_report.py` | GoldenCheetah long-ride input checks, chronological replay, and history comparison |
 | `endurance.py`, `endurance_report.py` | Exploratory one-coefficient gradient, sustained-climb, and duration comparisons |
+| `komoot_data.py`, `komoot_protocol.py` | Private GPX preparation, gap audit, and frozen chronological evaluation plan |
+
+## Private Komoot preparation
+
+The Komoot workflow uses a local export of the rider's own completed activities. Raw GPX,
+activity metadata, prepared arrays, and the frozen cohort remain private. The download
+manifest must contain matching `rides` and `files` lists, one unique numeric activity ID per
+file, original source sport labels, UTC activity dates, durations in seconds, and SHA-256
+hashes. Optional `pause_events` contain millisecond offsets from the activity start.
+
+```sh
+python3 host/ride-time-prototype/komoot_data.py
+python3 host/ride-time-prototype/komoot_protocol.py freeze
+python3 host/ride-time-prototype/komoot_protocol.py verify
+```
+
+Use `--source PATH` and `--output PATH` for other directories. The default source is
+`~/.cache/openbikecomputer/ride-time/komoot`; output is `.artifacts/ride-time-komoot`.
+Preparation refuses a nonempty output directory. Freeze refuses to replace a protocol.
+Verification checks the original estimator, source manifest, adapter, plan, and prepared data.
+
+The adapter subtracts the union of explicit pause events. It preserves positive-distance
+pushing without a minimum speed. Unexplained active gaps over 30 seconds, track breaks,
+speed spikes, and invalid gradients do not become pace observations. Zero-displacement
+intervals are a stop proxy. GPS drift and brief hidden stops can remain in observed motion.
+The trailing 200 m grade restarts at discontinuities. Overlapping recordings are removed,
+with finer sampling preferred; similar commutes on separate dates remain separate rides.
+
+There are two eligibility flags:
+
+- `point_eligible`: no unknown intervals or profile flags, at least 5 observed moving minutes
+  and 1 km, and observed duration within the greater of 120 seconds or 5% of Komoot's
+  moving total. This is a strict motion proxy, not independently verified ground truth.
+- `proxy_eligible`: the same duration/minimum-length checks, with at least 99% of recorded
+  GPS chord distance retained. Unknown intervals can remain. This supports a conditional
+  comparison over accepted moving sections, not an exact full-ride ETA claim.
+
+Each NPZ stores `raw` rows of accepted distance (km), observed time (minutes), and gradient.
+Other arrays retain elapsed time, explicit pause time, unknown time, recorded chord distance,
+and reset/learning masks. Do not pass these files directly to the old long-ride block builder:
+it does not enforce the new masks. Source-summary agreement never redistributes missing time.
+
+The frozen plan reserves rides starting on or after 2024-01-01 UTC for evaluation. Earlier
+rides supply personal history; a ride crossing the boundary supplies neither group. Later
+completed evaluation rides may teach subsequent rides, as they would on a device. Shared
+parameters must remain fixed. The planned comparison is the current scalar baseline against
+the existing single uphill coefficient, with paired history budgets from 0 to 1000 km.
+
+This stage prepares data and freezes the analysis plan. It produces no ETA predictions.
+The Komoot replay runner must be implemented and its sources/tests locked in a separate
+write-once execution manifest before the first comparison. Report excluded distance/time,
+source-summary disagreement, duration and bike support, and the conditional nature of the
+outcomes with every accuracy result. A single rider cannot establish population accuracy.
 
 ## Small long-ride corrections
 
