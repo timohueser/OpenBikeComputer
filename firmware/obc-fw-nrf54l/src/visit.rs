@@ -261,7 +261,9 @@ impl Executor {
         if !matches!(self.phase, Phase::Empty) || guard.is_some() {
             return self.fail(NavigatorError::Workspace);
         }
-        let context = app.assistant_review_context()?;
+        let Some(context) = app.assistant_review_context() else {
+            return self.fail(NavigatorError::SourceChanged);
+        };
         let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
         if app.requested_assistant_restore() != Some(source)
             || source.store != store.store_id().0
