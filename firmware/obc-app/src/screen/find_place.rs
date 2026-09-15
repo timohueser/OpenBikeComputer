@@ -49,14 +49,14 @@ impl FindPlaceScreen {
                 Gesture::Press if self.selected == len => {
                     cx.find.action = Action::More;
                 }
-                Gesture::Press if cx.find.state == State::Ready => {
-                    if cx
-                        .find
-                        .selected(self.selected, cx.poi_scratch, cx.corridor)
-                        .is_some_and(|p| p.opening != obc_reader::hours::OpeningStatus::Closed)
-                    {
-                        cx.find.action = Action::Preview(self.selected as u8);
-                    }
+                Gesture::Press
+                    if cx.find.state == State::Ready
+                        && cx
+                            .find
+                            .selected(self.selected, cx.poi_scratch, cx.corridor)
+                            .is_some_and(|p| p.opening != obc_reader::hours::OpeningStatus::Closed) =>
+                {
+                    cx.find.action = Action::Preview(self.selected as u8);
                 }
                 _ => {}
             }
