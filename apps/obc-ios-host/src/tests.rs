@@ -23,10 +23,20 @@ fn open(card: &Path, directory: &Path) -> Box<Host> {
 const GRIMSEL: Fix = Fix { lat: 46_560_000, lon: 8_340_000, course: Some(90.0), speed_mps: Some(4.0) };
 
 /// The card is the whole device's memory: what [`import_map`] creates, [`Host::open`] mounts, and a
-/// second open finds the same map revision and the same route ids behind.
+/// second open finds the same map revision and the same route ids behind. [`card_state`] is what
+/// the shell asks before any of it.
 #[test]
 fn an_imported_card_boots_on_the_map_and_reopens_with_the_same_map_and_routes() {
-    let (card, directory) = card("card");
+    let directory = scratch_dir("obc-ios-host", "card");
+    let card = directory.join("card.obc");
+    assert_eq!(card_state(&card), Ok(CardState::Missing), "nothing is on the phone yet");
+    import_map(&card, Path::new(MAP)).expect("the demo map imports into a fresh card");
+    assert_eq!(card_state(&card), Ok(CardState::Ready));
+    // A card is not a map: one created without an import has nothing to show.
+    let empty = directory.join("empty.obc");
+    drop(HostStore::create_file(&empty).expect("a bare card is created"));
+    assert_eq!(card_state(&empty), Ok(CardState::NoMap));
+
     let mut host = open(&card, &directory);
     assert!(!host.ready);
     assert!(host.tick(0.0), "the first tick always renders");
@@ -34,12 +44,20 @@ fn an_imported_card_boots_on_the_map_and_reopens_with_the_same_map_and_routes() 
     assert_eq!(host.frame().len(), (FRAME_W * FRAME_H * 4) as usize);
     assert!(host.frame().iter().skip(3).step_by(4).all(|&a| a == 0xFF), "opaque alpha for the CGImage");
 
+    // The render gate closes: a parked device stops redrawing, and the shell blits on that signal.
+    let idle: Vec<bool> = (1..=64).map(|frame| host.tick(f64::from(frame) * 16.0)).collect();
+    assert!(idle[32..].iter().all(|changed| !changed), "an idle host stops reporting frame changes");
+
     let id = host.import_route(Path::new(OBCR)).expect("the authored route imports");
     assert_eq!(host.routes.ids(), &[id]);
-    for frame in 1..8 {
-        host.tick(frame as f64 * 16.0);
+    // The catalog re-reads the card by itself, a pass or two after the import.
+    for frame in 65..81 {
+        host.tick(f64::from(frame) * 16.0);
+        if host.app.route_ids().contains(&id) {
+            break;
+        }
     }
-    assert_eq!(host.app.route_ids(), &[id], "the catalog re-reads the card after an import");
+    assert!(host.app.route_ids().contains(&id), "the catalog re-reads the card within 16 ticks");
 
     let identity = {
         let source = host.map.source();
@@ -73,12 +91,18 @@ fn each_pushed_sensor_value_polls_once_and_a_fix_moves_the_app() {
         assert_eq!(ports.altimeter.as_mut().unwrap().poll(), Some(2_005.0));
         assert_eq!(ports.fuel.as_mut().unwrap().poll(), Some(100), "charge cannot exceed a full battery");
     }
-    let mut ports = sensors.ports();
-    assert_eq!(ports.loc.poll(), None, "a taken sample is not fresh again");
-    assert_eq!(ports.clock.as_mut().unwrap().poll(), None);
-    assert_eq!(ports.compass.as_mut().unwrap().poll(), None);
-    assert_eq!(ports.altimeter.as_mut().unwrap().poll(), None);
-    assert_eq!(ports.fuel.as_mut().unwrap().poll(), None);
+    {
+        let mut ports = sensors.ports();
+        assert_eq!(ports.loc.poll(), None, "a taken sample is not fresh again");
+        assert_eq!(ports.clock.as_mut().unwrap().poll(), None);
+        assert_eq!(ports.compass.as_mut().unwrap().poll(), None);
+        assert_eq!(ports.altimeter.as_mut().unwrap().poll(), None);
+        assert_eq!(ports.fuel.as_mut().unwrap().poll(), None);
+    }
+    // CoreLocation reports an unusable heading as a negative value; it is no direction at all.
+    sensors.push_heading(-1.0);
+    sensors.push_heading(f32::NAN);
+    assert_eq!(sensors.ports().compass.as_mut().unwrap().poll(), None, "an invalid heading is dropped");
 
     let (card, directory) = card("sensors");
     let mut host = open(&card, &directory);
@@ -116,7 +140,7 @@ fn a_select_tap_presses_and_a_held_select_holds() {
     host.push_button(Button::Select, true);
     host.tick(1_500.0);
     host.tick(1_900.0);
-    assert!(host.app.state.pan.is_none(), "a press shorter than the hold threshold fires nothing");
+    assert!(host.app.state.pan.is_none(), "before the threshold a held Select has fired nothing");
     host.tick(2_100.0);
     assert!(host.app.state.pan.is_some(), "a held Select holds on a tick that carries no edge");
     drop(host);

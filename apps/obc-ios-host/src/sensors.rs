@@ -10,7 +10,7 @@ use obc_ports::{
 };
 
 /// One sensor value waiting for its poll.
-pub struct Mailbox<T>(Option<T>);
+struct Mailbox<T>(Option<T>);
 
 impl<T> Default for Mailbox<T> {
     fn default() -> Self {
@@ -83,8 +83,13 @@ impl PhoneSensors {
         }
     }
 
-    /// `CLHeading.trueHeading`, in degrees clockwise from north.
+    /// `CLHeading.trueHeading`, in degrees clockwise from north. CoreLocation reports an invalid
+    /// heading as a negative value, which is the absence of a direction rather than one: dropping
+    /// it leaves the app on its last real heading instead of turning -1 into a confident 359°.
     pub fn push_heading(&mut self, degrees: f32) {
+        if !degrees.is_finite() || degrees < 0.0 {
+            return;
+        }
         self.heading.push(degrees.rem_euclid(360.0));
     }
 
