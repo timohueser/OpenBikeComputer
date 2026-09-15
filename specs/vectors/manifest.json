@@ -57,7 +57,7 @@
       "waypoints": []
     },
     "terrain-shard.obcd": {
-      "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) — 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
+      "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) \u2014 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
       "byte_len": 6192,
       "version": 1,
       "posting_log2": 9,
@@ -91,24 +91,24 @@
           "lat_udeg": 46974208,
           "lon_udeg": 7980672,
           "height_m": 124,
-          "note": "spec 5.6 — bilinear inside one tile (di 2.5, dj 3.25)"
+          "note": "spec 5.6 \u2014 bilinear inside one tile (di 2.5, dj 3.25)"
         },
         {
           "lat_udeg": 46989056,
           "lon_udeg": 7980544,
           "height_m": 210,
-          "note": "half a posting below the cell seam — the upper corners come from the next cell (di 31.5, dj 3)"
+          "note": "half a posting below the cell seam \u2014 the upper corners come from the next cell (di 31.5, dj 3)"
         },
         {
           "lat_udeg": 46973952,
           "lon_udeg": 8011520,
           "height_m": 421,
-          "note": "half a posting past the east coverage edge — clamped to the last covered sample, not extrapolated to 424"
+          "note": "half a posting past the east coverage edge \u2014 clamped to the last covered sample, not extrapolated to 424"
         }
       ]
     },
     "track-log.obct": {
-      "format": "sample-codec vector — five complete 20-byte records, not a ride object",
+      "format": "sample-codec vector \u2014 five complete 20-byte records, not a ride object",
       "byte_len": 100,
       "record_len": 20,
       "whole_records": 5,
@@ -237,7 +237,7 @@
       "units": "metric (0)"
     },
     "transfer-upload-start.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 1,
       "type": 1,
       "object_id": 65535,
@@ -245,7 +245,7 @@
       "crc32": "0x1BFB6E3C"
     },
     "transfer-download-request.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 2,
       "type": 7,
       "object_id": 0,
@@ -253,7 +253,7 @@
       "crc32": "0x0"
     },
     "transfer-abort.bin": {
-      "format": "transferControl (spec 4.2) — 12 bytes, protocol v2",
+      "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
       "op": 3,
       "type": 1,
       "object_id": 65535,
@@ -306,16 +306,8 @@
       "utc_iso": "2026-07-09T12:00:00Z",
       "offset_min": 120
     },
-    "command-set-route-retention.bin": {
-      "format": "setRouteRetention command (spec 4.4, cmd 6, epic #638 S4)",
-      "byte_len": 4,
-      "cmd": 6,
-      "object_id": 7,
-      "retention": 3,
-      "retention_meaning": "2 weeks"
-    },
     "update-container-v1.bin": {
-      "format": "OBCU update container (spec 1), unsigned/v1 — fwImage payload (spec 7.6)",
+      "format": "OBCU update container (spec 1), unsigned/v1 \u2014 fwImage payload (spec 7.6)",
       "byte_len": 192,
       "header_len": 64,
       "image_len": 128,
@@ -327,7 +319,7 @@
       "object_id": 0
     },
     "update-container-v2.bin": {
-      "format": "OBCU update container (spec 1), Ed25519-signed/v2 — same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
+      "format": "OBCU update container (spec 1), Ed25519-signed/v2 \u2014 same header table and same 128-byte image as v1, with the scheme marker in v1's reserved bytes 48..52 and a 64-byte signature trailer",
       "byte_len": 256,
       "header_len": 64,
       "image_len": 128,
@@ -345,10 +337,10 @@
       "object_id": 0
     },
     "route-list.bin": {
-      "format": "routeList object (spec 7.4) — 6-byte v2 header + 84-byte entries (76-byte v2 core + auto-expiry tail: expires_at u32 · retention u8 · reserved u8[3], epic #638 S4)",
-      "byte_len": 258,
+      "format": "routeList object (spec 7.4), 6-byte header and 76-byte entries",
+      "byte_len": 234,
       "version": 2,
-      "entry_len": 84,
+      "entry_len": 76,
       "count": 3,
       "entries": [
         {
@@ -359,10 +351,7 @@
           "point_count": 9,
           "waypoint_count": 2,
           "name": "Vector Loop",
-          "crc32": "0x1BFB6E3C",
-          "expires_at": 1784808000,
-          "retention": 3,
-          "retention_state": "live countdown (2 weeks)"
+          "crc32": "0x1BFB6E3C"
         },
         {
           "object_id": 8,
@@ -372,10 +361,7 @@
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
-          "expires_at": 0,
-          "retention": 1,
-          "retention_state": "clock not yet started (last_used == 0)"
+          "crc32": "0x1557AE0B"
         },
         {
           "object_id": 9,
@@ -385,39 +371,37 @@
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
-          "expires_at": 0,
-          "retention": 0,
-          "retention_state": "never (synthetic entry — no .obcr file)"
+          "crc32": "0x1557AE0B"
         }
       ],
-      "total": 3
+      "total": 3,
+      "crc32": "0x658EAB5E"
     },
     "version-read.bin": {
-      "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32 · obcm_version u8",
+      "format": "protocolVersion read (spec 1) \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8",
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": 15
     },
     "version-read-noobcm.bin": {
-      "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
+      "format": "protocolVersion read (spec 1), pre-#911 \u2014 version u16 \u00b7 store_epoch u32",
       "byte_len": 6,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": null,
-      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 — obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
+      "_note": "A firmware that predates the obcm_version byte. Decoders take the absent field as unknown (null/nil/None), never as 0 \u2014 obcm_version 0 would read as 'supports OBCM v0' and refuse every real map."
     },
     "version-read-nostore.bin": {
-      "format": "protocolVersion read (spec 1), no mounted store — version u16 only",
+      "format": "protocolVersion read (spec 1), no mounted store \u2014 version u16 only",
       "byte_len": 2,
       "version": 2,
       "store_epoch": null,
       "obcm_version": null,
-      "_note": "No card ⇒ no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
+      "_note": "No card \u21d2 no era to name, and the fields are positional, so there is no room for the obcm byte after an epoch that is not there. A reader must fail its ack closed rather than read epoch 0, which is a legal era."
     },
     "status-download-announce.bin": {
-      "format": "status msg 4 downloadAnnounce (spec 4.3) — msg byte + 12-byte descriptor",
+      "format": "status msg 4 downloadAnnounce (spec 4.3) \u2014 msg byte + 12-byte descriptor",
       "byte_len": 13,
       "msg": 4,
       "op": 2,
@@ -427,7 +411,7 @@
       "crc32": "0x1BFB6E3C"
     },
     "trip-v2.bin": {
-      "format": "trip object v2 (spec 7.7) — 56-byte header + 8 bytes/stage, references flat ObjectIds",
+      "format": "trip object v2 (spec 7.7) \u2014 56-byte header + 8 bytes/stage, references flat ObjectIds",
       "byte_len": 80,
       "version": 2,
       "name": "Alpen Traverse",
@@ -447,7 +431,7 @@
       "crc32": "0x5B1C1606"
     },
     "trip-list.bin": {
-      "format": "tripList object (spec 7.4) — 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
+      "format": "tripList object (spec 7.4) \u2014 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
       "byte_len": 82,
       "version": 2,
       "entry_len": 76,

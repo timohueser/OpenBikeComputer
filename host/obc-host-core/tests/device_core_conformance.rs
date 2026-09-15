@@ -1,40 +1,6 @@
-//! DC7 — the DeviceCore Phase 1 conformance gate (#1440, epic #1433 §13).
-//!
-//! Every DC1 scenario, run through every runner, compared on what the rider can see:
-//!
-//! | Runner | Frame | Executor |
-//! |---|---|---|
-//! | `core-immediate` | [`App::run_pass`] | typed effects in, typed outcomes back, same call |
-//! | `core-delayed` | the same | the same, on a scripted delay |
-//!
-//! The comparison is **rider-visible state**, not command sequences. `core-immediate` is the
-//! baseline and `core-delayed` is what proves behaviour is independent of answer cadence — the
-//! property most likely to regress, and the one the delayed runner exists for.
-//!
-//! ## A difference is a failure, not a row
-//!
-//! There is no disposition table and no way to record a difference and move on: the runners must
-//! reach the same rider-visible state, and [`every_scenario_agrees_in_every_runner`] failing is what
-//! a difference looks like. Beside it, three coverage gates say the corpus is still reaching what it
-//! claims to — every DC1 behaviour row is claimed by a scenario, every bulk feeder is exercised by a
-//! real call, and each upload in a burst reaches the rider.
-//!
-//! ## Two production defects came out of this gate
-//!
-//! **The rider's ride close was destroyed.** The pass took the finish one-shot at stage 4 and
-//! dropped it at stage 7, where Recorder had no machine to act on it — so the ride was never
-//! finalized and no executor was told. The connection was deleted rather than the loss documented:
-//! it provisioned for a lifecycle nobody owned. #1398 brought it back with the domain that needs
-//! it, and the rider now names the close to `Ctx::recorder`.
-//!
-//! **A decided sidecar stamp must be mirrored into the resident view.** Retention re-derives its
-//! candidates from that view — the eager ride stamp on every trusted tick — so an unmirrored stamp
-//! is rediscovered and re-issued on every later pass.
-//! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins the ride arm.
-//!
 mod device_core_corpus;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use obc_app::ble::BondEffect;
 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
@@ -49,10 +15,9 @@ use obc_app::device_core::{
 use obc_app::dfu::{DfuEffect, DfuOutcome};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
-use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
-use obc_app::{App, AppState, Gesture, RecorderIntent, RideRetentionRecord, WarningFlags};
+use obc_app::{App, AppState, Gesture, RecorderIntent, WarningFlags};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
     ALL_FEEDER_KINDS,
@@ -148,24 +113,16 @@ type TraceResult = Result<Trace<VisibleState>, obc_host_core::trace::TraceRunErr
 const SETTLE_PASSES: usize = 6;
 
 /// A platform that implements everything, so no capability hides a path the matrix means to run.
-const EVERYTHING: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-
-    bonding: true,
-    storage_space_report: true,
-    // The folder stores keep the retention sidecars beside their objects.
-    retention_metadata: true,
-};
+const EVERYTHING: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// The rider-visible projection every runner must agree on.
 ///
-/// `retention_delete_attempts` is dropped: it counts every removal the executor was handed,
+/// `delete_attempts` is dropped: it counts every removal the executor was handed,
 /// including one for an object that already left the store — a store-side figure, and not something
 /// a rider can see.
 fn rider_visible(mut state: VisibleState) -> VisibleState {
-    state.retention_delete_attempts = 0;
+    state.delete_attempts = 0;
     state
 }
 
@@ -198,7 +155,6 @@ enum Done {
         outcome: CatalogOutcome,
         refeed: Refeed,
     },
-    Retention(RetentionOutcome),
     /// A typed answer for one of the four domains #1397 S2 gave a machine.
     Navigator(NavigatorOutcome),
     Settings(SettingsOutcome),
@@ -230,7 +186,6 @@ struct CoreHarness {
     ride_feeds: usize,
     /// Every settings revision the executor was asked to write, in order.
     settings_writes: Vec<u16>,
-    metadata: BTreeMap<u64, RouteRetentionMeta>,
 }
 
 impl CoreHarness {
@@ -243,7 +198,6 @@ impl CoreHarness {
             served: BTreeSet::new(),
             ride_feeds: 0,
             settings_writes: Vec::new(),
-            metadata: BTreeMap::new(),
         }
     }
 
@@ -302,10 +256,6 @@ impl CoreHarness {
         if let Some(effect) = effects.catalog.take() {
             self.served.insert("catalog");
             done.push(self.serve_catalog(effect));
-        }
-        if let Some(effect) = effects.retention.take() {
-            self.served.insert("retention");
-            done.push(Done::Retention(self.serve_retention(effect)));
         }
         if let Some(effect) = effects.recorder.take() {
             self.served.insert("recorder");
@@ -448,10 +398,11 @@ impl CoreHarness {
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
         use obc_app::catalog_state::CatalogObjectKind;
         let kind = match effect {
-            CatalogEffect::RemoveObject { kind, .. } | CatalogEffect::ExpireObject { kind, .. } => Some(kind),
-            CatalogEffect::ReadCatalog { .. } => None,
+            CatalogEffect::RemoveObject { kind, .. } => Some(kind),
+            CatalogEffect::ReadCatalog { .. } | CatalogEffect::CleanupRoute { .. } => None,
         };
         match effect {
+            CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
             CatalogEffect::ReadCatalog { token } => {
                 // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
                 // a refresh re-feeds exactly what the store now holds, and the outcome reports only
@@ -468,17 +419,14 @@ impl CoreHarness {
                 }
             }
             // The domain's family is preserved through removal; it also orders the later reload.
-            CatalogEffect::RemoveObject { token, object, .. } | CatalogEffect::ExpireObject { token, object, .. } => {
+            CatalogEffect::RemoveObject { token, object, .. } => {
                 // Counted before the probe, so a removal for an object that already left the store
                 // counts too — that is exactly the event #1548 removes.
-                self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
+                self.state.delete_attempts = self.state.delete_attempts.saturating_add(1);
                 if let Some(index) =
                     self.state.route_ids.iter().position(|&id| id == object && kind == Some(CatalogObjectKind::Route))
                 {
                     if std::mem::take(&mut self.state.route_delete_fail_once) {
-                        // The store refused the removal. Not `existed: false` — the object is still
-                        // there, which is what makes retention re-queue its candidate, and what
-                        // makes this the one removal that orders no re-read.
                         return Done::Catalog {
                             outcome: CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                             refeed: Refeed::None,
@@ -512,23 +460,6 @@ impl CoreHarness {
             }
         }
     }
-
-    /// Commit to the fake store. Resident metadata changes only when a catalog read delivers it.
-    fn serve_retention(&mut self, effect: RetentionEffect) -> RetentionOutcome {
-        match effect {
-            RetentionEffect::WriteRouteMetadata { token, id, meta, .. } => {
-                self.metadata.insert(id, meta);
-                RetentionOutcome::RouteMetadataWritten { token, id }
-            }
-            RetentionEffect::WriteRideMetadata { token, id, synced_at, .. } => {
-                for ride in self.state.rides.iter_mut().filter(|ride| ride.id == id) {
-                    ride.summary.synced_at_utc = synced_at;
-                }
-                RetentionOutcome::RideMetadataWritten { token, id }
-            }
-        }
-    }
-
     /// The corpus's answers that are scripted at the **action** rather than at the request,
     /// delivered once per pass exactly as `CorpusState::run_pass` delivers them — so all three
     /// frames answer the same script.
@@ -610,15 +541,6 @@ impl CoreHarness {
         }
         self.state.app.begin_catalog_refresh();
         self.state.feed_routes("core.routes", trace);
-        let metas: Vec<_> = self
-            .state
-            .app
-            .route_ids()
-            .iter()
-            .zip(self.state.app.route_metas())
-            .map(|(id, old)| self.metadata.get(id).copied().unwrap_or(*old))
-            .collect();
-        self.state.app.set_route_meta(&metas);
         self.state.feed_trips("core.trips", trace);
         self.ride_feeds += 1;
         self.state.feed_rides("core.rides", trace);
@@ -630,7 +552,7 @@ impl TraceHarness<Action> for CoreHarness {
     type Outcome = Done;
 
     fn snapshot(&self) -> Self::State {
-        visible_state(&self.state.app, self.state.settings_revision, self.state.retention_delete_attempts)
+        visible_state(&self.state.app, self.state.settings_revision, self.state.delete_attempts)
     }
 
     fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<Self::State>) {
@@ -653,9 +575,6 @@ impl TraceHarness<Action> for CoreHarness {
             Done::Catalog { outcome, refeed } => {
                 self.refeed(refeed, trace);
                 let _ = self.state.outcomes.catalog.try_put(outcome);
-            }
-            Done::Retention(outcome) => {
-                let _ = self.state.outcomes.retention.try_put(outcome);
             }
             Done::Navigator(outcome) => {
                 let _ = self.state.outcomes.navigator.try_put(outcome);
@@ -708,13 +627,6 @@ impl TraceHarness<Action> for CoreHarness {
 
 // ==================== the matrix ====================
 
-/// Every applicable DC1 scenario, through every runner.
-///
-/// The gate: every runner reaches the same rider-visible terminal state. There is no disposition
-/// table any more and no way to record a difference and move on — the last three approved cells were
-/// the compatibility executor's (a namespace-free `RemoveObject` the adapter could not express, and
-/// the retention expiry that stayed in flight behind it), and both sides of that comparison retired
-/// with the adapter.
 #[test]
 fn every_scenario_agrees_in_every_runner() {
     let mut compared = 0usize;
@@ -826,7 +738,7 @@ struct MandatoryTrace {
 /// All sixteen. The binding is checked rather than written down: the test below looks each name up
 /// in this file's own source as a real `#[test]`, so a renamed, deleted or un-attributed trace fails
 /// the gate instead of quietly leaving a row of the issue uncovered.
-const MANDATORY_TRACES: [MandatoryTrace; 16] = [
+const MANDATORY_TRACES: [MandatoryTrace; 14] = [
     MandatoryTrace {
         row: "outcome after cancellation",
         test: "an_outcome_after_cancellation_changes_nothing",
@@ -888,18 +800,8 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
         substitution: None,
     },
     MandatoryTrace {
-        row: "Navigator activation with next-pass Retention delivery",
-        test: "an_activation_reaches_retention_on_the_next_pass",
-        substitution: None,
-    },
-    MandatoryTrace {
         row: "full effect slot and full outcome slot",
         test: "a_full_slot_preserves_work_on_both_sides_of_the_seam",
-        substitution: None,
-    },
-    MandatoryTrace {
-        row: "deferred slot which forces a pass before sleep",
-        test: "a_deferred_value_forces_a_pass_before_sleep",
         substitution: None,
     },
     MandatoryTrace {
@@ -959,30 +861,6 @@ fn recording_harness() -> CoreHarness {
     }
     harness
 }
-
-/// Three routes under a trusted clock, `expired` of them long past their deadline, so the retention
-/// sweep decides to expire them and the catalog turns each into one bounded removal. This is the one
-/// path that reaches `CatalogEffect` from a public app surface, which is why the catalog traces
-/// below are written on it rather than on the rider's hold-to-delete.
-fn expiring(expired: usize) -> CoreHarness {
-    let mut harness = typed();
-    harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let now = harness.state.app.wall_unix_now();
-    let old = now.saturating_sub(30 * 24 * 3600);
-    let meta: Vec<_> = (0..3)
-        .map(|index| {
-            if index < expired {
-                RouteRetentionMeta::new(Retention::Week1, old)
-            } else {
-                RouteRetentionMeta::new(Retention::Never, 0)
-            }
-        })
-        .collect();
-    harness.app().set_route_meta(&meta);
-    harness.app().force_retention_sweep();
-    harness
-}
-
 impl CoreHarness {
     /// Apply one corpus action outside the scenario runner.
     fn apply(&mut self, action: Action) {
@@ -1009,14 +887,12 @@ impl CoreHarness {
         panic!("no catalog effect within eight passes")
     }
 
-    /// The next catalog **removal**, answering the re-reads the domain orders on the way. A delete
-    /// costs one read now (#1541), and it is that read which retires retention's candidate — so a
-    /// trace about *removals* has to serve them rather than step over them.
     fn next_removal(&mut self) -> CatalogEffect {
         for _ in 0..4 {
             let effect = self.next_catalog_effect();
             match effect {
-                CatalogEffect::RemoveObject { .. } | CatalogEffect::ExpireObject { .. } => return effect,
+                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::RemoveObject { .. } => return effect,
                 CatalogEffect::ReadCatalog { .. } => {
                     self.answer_catalog(effect);
                 }
@@ -1031,7 +907,7 @@ impl CoreHarness {
 /// one terminal event every operation ends with.
 #[test]
 fn an_outcome_after_cancellation_changes_nothing() {
-    let mut harness = expiring(1);
+    let mut harness = deleting(false);
     let effect = harness.next_catalog_effect();
     let outcome = harness.answer_catalog(effect);
     // The completed removal orders a re-read; answering it leaves the domain free again.
@@ -1072,7 +948,7 @@ fn an_outcome_after_cancellation_changes_nothing() {
 /// belongs to the finished one changes nothing about the live one.
 #[test]
 fn an_outcome_after_a_replacement_request_changes_nothing() {
-    let mut harness = expiring(2);
+    let mut harness = deleting(true);
     let first = harness.next_removal();
     harness.answer_catalog(first);
     let second = harness.next_removal();
@@ -1100,7 +976,7 @@ fn an_outcome_after_a_replacement_request_changes_nothing() {
 /// domain's owed refresh, so there is a real catalog refresh for a real store change to race.
 #[test]
 fn a_store_change_during_a_catalog_operation_is_not_lost() {
-    let mut harness = expiring(1);
+    let mut harness = deleting(false);
     let effect = harness.next_catalog_effect();
 
     // The store moves underneath us while that removal is unanswered.
@@ -1163,12 +1039,13 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     assert!(streaming.catalog.mutate, "but the store is still writable — this is admission, not a fault");
 
     // The pass sees the transfer and starts nothing; it also fails nothing.
-    let mut fixture = expiring(0);
+    let mut fixture = typed();
+    fixture.app().stamp_clock_ble(1_720_000_000, 60);
     fixture.state.facts.note_transfer(TransferState::Active);
     let mut plan = fixture.pass();
     assert!(plan.effects.navigator.is_empty(), "no plan is started while the transfer holds the store");
     assert!(plan.effects.dfu.is_empty(), "nor an install");
-    assert!(plan.effects.catalog.is_empty() && plan.effects.retention.is_empty(), "nor a store operation");
+    assert!(plan.effects.catalog.is_empty(), "nor a store operation");
     // The settings write is not heavy and is not withdrawn: the trusted-clock stamp this fixture
     // makes is a rider edit like any other, and a transfer holding the *store* has nothing to say
     // about a settings revision. That distinction is what `Capabilities` is for — asserted, not
@@ -1576,32 +1453,6 @@ fn a_read_the_store_could_not_answer_is_re_offered_until_it_lands() {
         );
     }
 }
-
-/// **An expiry the store already removed is never dispatched again** (#1548,
-/// `Requirement::RetentionCandidateRetiredByVerdict`). The scenario refuses the first removal, lets
-/// the candidate retry, and then sleeps past the delete backstop while the re-read that removal
-/// ordered has not re-fed the catalogs. Two removals reach the store — the refused one and the
-/// retry — and the sleep adds none: what retires the candidate is the catalog's verdict, in the pass
-/// its answer lands, and not the object disappearing from a later read.
-#[test]
-fn an_expiry_the_store_removed_is_never_dispatched_again() {
-    for runner in Runner::ALL {
-        let settled = runner.run(named("retention.expiry-retry-and-trusted-clock")).settled;
-        assert_eq!(
-            settled.retention_delete_attempts,
-            2,
-            "{}: one refused removal and one retry — a slow re-read must not add a third",
-            runner.name()
-        );
-        assert!(
-            !settled.route_names.iter().any(|name| name == "Alpha"),
-            "{}: and the expired route did leave: {:?}",
-            runner.name(),
-            settled.route_names
-        );
-    }
-}
-
 /// **A capability changes after a new map mounts**, and **a device without the detour capability**.
 ///
 /// A capability is a level recomputed from what the image implements and what is true now. A missing
@@ -1688,42 +1539,13 @@ fn deleting_the_active_route_drops_it_in_the_same_pass() {
     );
     assert_eq!(harness.state.app.active_route_index(), None, "and Navigator heard about it in that pass");
 }
-
-/// **Navigator activation, with next-pass Retention delivery.** Navigator runs after retention, so
-/// the activation waits one pass — and the wait is bounded by the immediate wake, not by input.
-#[test]
-fn an_activation_reaches_retention_on_the_next_pass() {
-    let mut harness = typed();
-    harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let now = harness.state.app.wall_unix_now();
-    // A fresh `last_used`, so the hourly sweep has nothing of its own to say and the only stamp in
-    // this trace is the activation's.
-    harness.app().set_route_meta(&[
-        RouteRetentionMeta::new(Retention::Week1, now),
-        RouteRetentionMeta::new(Retention::Never, 0),
-        RouteRetentionMeta::new(Retention::Never, 0),
-    ]);
-    harness.app().activate_route(0);
-
-    let mut plan = harness.pass();
-    assert!(plan.immediate, "Navigator runs after retention, so the activation is deposited, not delivered");
-    assert!(
-        matches!(plan.effects.retention.take(), Some(RetentionEffect::WriteRouteMetadata { id: 10, .. })),
-        "the active route's use stamp goes out"
-    );
-
-    let plan = harness.pass();
-    assert!(!plan.immediate, "retention consumed it on the next pass, and nothing is left waiting");
-    assert!(plan.effects.retention.is_empty(), "the delivery is idempotent — no second sidecar write");
-}
-
 /// **A full effect slot and a full outcome slot.** Both preserve the value already there, and a
 /// refused one comes back to its owner rather than being dropped.
 #[test]
 fn a_full_slot_preserves_work_on_both_sides_of_the_seam() {
     // The effect side: two objects expire together, the domain admits one, and the other is not
     // queued in the slot — it stays with its producer and goes out once the answer frees the domain.
-    let mut harness = expiring(2);
+    let mut harness = deleting(true);
     let first = harness.next_catalog_effect();
     let plan = harness.pass();
     assert!(plan.effects.catalog.is_empty(), "one catalog operation in flight at a time");
@@ -1741,28 +1563,6 @@ fn a_full_slot_preserves_work_on_both_sides_of_the_seam() {
     assert_eq!(refused.rejected, intruder, "and hands the value back to its owner");
     assert_eq!(outcomes.catalog.take(), Some(held), "the first answer is what the domain gets");
 }
-
-/// **A deferred slot forces a pass before sleep.** Work that is already decided must not sit until
-/// the next rider input.
-///
-/// Written on the route activation, which is the deferred producer the wiring actually has:
-/// Navigator runs after retention, so an activation cannot reach backwards and waits a pass.
-#[test]
-fn a_deferred_value_forces_a_pass_before_sleep() {
-    let mut harness = typed();
-    harness.app().activate_route(0);
-
-    let plan = harness.pass();
-    assert!(plan.immediate && plan.next_wake_ms == Some(0), "the runtime comes straight back");
-
-    let plan = harness.pass();
-    assert!(!plan.immediate && plan.next_wake_ms != Some(0), "consumed, and nothing is left to hurry for");
-
-    harness.app().activate_route(1);
-    let plan = harness.pass();
-    assert!(plan.immediate, "a second activation is deposited just the same");
-}
-
 /// **A stale derived input after a subject change** — the corrected defect of this gate.
 ///
 /// The legacy feeders carry no subject, so a delayed fill for the ride the rider *was* looking at
@@ -1821,7 +1621,7 @@ fn blank_state() -> VisibleState {
 /// in the pass it was raised in, and several producers coalesce onto one card.
 #[test]
 fn a_fact_raised_this_pass_reaches_the_rider_in_it() {
-    let mut harness = expiring(0);
+    let mut harness = typed();
     harness.state.facts.raise_warnings(WarningFlags::NO_GPS);
     harness.state.facts.raise_warnings(WarningFlags::MAP_SLOW);
     harness.pass();
@@ -1831,82 +1631,6 @@ fn a_fact_raised_this_pass_reaches_the_rider_in_it() {
         "both notices reached one card"
     );
 }
-
-/// A failed sidecar write re-queues its candidate — the retry the legacy protocol cannot express at
-/// all, because a fire-and-forget legacy stamp never acknowledged one.
-#[test]
-fn a_failed_retention_write_is_retried() {
-    let mut harness = typed();
-    harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let now = harness.state.app.wall_unix_now();
-    harness.app().set_route_meta(&[
-        RouteRetentionMeta::new(Retention::Week1, now),
-        RouteRetentionMeta::new(Retention::Never, 0),
-        RouteRetentionMeta::new(Retention::Never, 0),
-    ]);
-    harness.pass();
-    harness.app().activate_route(0);
-
-    let mut effect = None;
-    for _ in 0..8 {
-        let mut plan = harness.pass();
-        if let Some(found) = plan.effects.retention.take() {
-            effect = Some(found);
-            break;
-        }
-    }
-    let effect = effect.expect("the activation's use stamp goes out");
-    let _ = harness
-        .state
-        .outcomes
-        .retention
-        .try_put(RetentionOutcome::Failed { token: effect.token(), error: RetentionError::WriteFailed });
-
-    assert!(harness.pass().effects.retention.is_empty(), "a failure does not retry every pass");
-    harness.clock_ms += 30_000;
-    let mut retried = false;
-    for _ in 0..16 {
-        let mut plan = harness.pass();
-        if plan.effects.retention.take().is_some() {
-            retried = true;
-            break;
-        }
-    }
-    assert!(retried, "a failed write keeps its candidate and offers it again");
-}
-
-/// A committed stamp reaches the resident inventory through catalog reload and is not rediscovered.
-#[test]
-fn a_stamp_that_was_answered_is_not_enqueued_again() {
-    let mut harness = typed();
-    harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let id = harness.state.rides[0].id;
-    harness.app().set_ride_retention_inventory(&[RideRetentionRecord { id, synced: true, synced_at_utc: 0 }]);
-    harness.app().force_retention_sweep();
-
-    let mut effect = None;
-    for _ in 0..8 {
-        let mut plan = harness.pass();
-        if let Some(found) = plan.effects.retention.take() {
-            effect = Some(found);
-            break;
-        }
-        harness.serve(plan, &mut recorder());
-    }
-    let effect = effect.expect("an acked ride with no synced_at stamp gets one");
-    let outcome = harness.serve_retention(effect);
-    harness.deliver(Done::Retention(outcome), &mut recorder());
-
-    for step in 0..8 {
-        let mut plan = harness.pass();
-        assert!(
-            plan.effects.retention.take().is_none(),
-            "the answered stamp came back on settle pass {step} — an endless sidecar write"
-        );
-        harness.serve(plan, &mut recorder());
-    }
-}
-
 /// The conformance replay's wake profile and pass cost — #1440's last two resource rows.
 ///
 /// The wake counts are deterministic, so they are asserted: a pass that starts polling, or a
@@ -1961,7 +1685,7 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 }
 
 /// The wake counts for the complete scenario table.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (208, 7, 137, 64);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (190, 0, 125, 65);
 
 // ==================== the resource gate ====================
 
@@ -1983,7 +1707,6 @@ fn the_pass_protocol_stays_within_its_budget() {
     // show up as first.
     let largest_effect = [
         size_of::<CatalogEffect>(),
-        size_of::<RetentionEffect>(),
         size_of::<RecorderEffect>(),
         size_of::<NavigatorEffect>(),
         size_of::<SettingsEffect>(),
@@ -1995,4 +1718,10 @@ fn the_pass_protocol_stays_within_its_budget() {
     .max()
     .unwrap();
     assert!(largest_effect <= 96, "the planner request is the largest effect: {largest_effect}");
+}
+
+fn deleting(cascade: bool) -> CoreHarness {
+    let mut harness = typed();
+    harness.apply(if cascade { Action::CascadeDeleteTrip } else { Action::DeleteRoute });
+    harness
 }

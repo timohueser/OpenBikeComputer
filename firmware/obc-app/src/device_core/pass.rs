@@ -2,9 +2,7 @@ use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
 use crate::catalog_state::CatalogIntent;
-use crate::device_core::connections::{
-    ActiveRouteRemoved, CatalogIdentityChanged, CatalogRemoval, RideFinalized, RouteActivated,
-};
+use crate::device_core::connections::{ActiveRouteRemoved, RideFinalized};
 use crate::dirty::Dirty;
 use crate::input::Gesture;
 use crate::App;
@@ -12,8 +10,8 @@ use crate::App;
 use super::connections::Connections;
 use super::derived::{DerivedInputs, DerivedNeeds, DerivedTargets};
 use super::{
-    Capabilities, DeviceFacts, EffectSlots, ExternalFacts, OutcomeSlots, PlatformSupport, Revision, SlotFull,
-    StoreRevision, TransferState, UpdateResult,
+    Capabilities, DeviceFacts, EffectSlots, ExternalFacts, OutcomeSlots, PlatformSupport, SlotFull, StoreRevision,
+    TransferState, UpdateResult,
 };
 
 /// The thirteen stages, in the order [`App::run_pass`] runs them. Each runs exactly once, and each
@@ -28,9 +26,6 @@ pub enum PassStage {
     Input,
     /// Advance `UiRuntime` and collect the typed intents it produced.
     Ui,
-    /// Advance `RetentionMachine`.
-    Retention,
-    /// Advance `CatalogMachine`.
     Catalog,
     /// Advance `Recorder`.
     Recorder,
@@ -52,12 +47,11 @@ pub enum PassStage {
 impl PassStage {
     /// The fixed order, as one value — what the order test compares against, and the only place the
     /// sequence is written down besides [`App::run_pass`] itself.
-    pub const ORDER: [PassStage; 13] = [
+    pub const ORDER: [PassStage; 12] = [
         PassStage::Outcomes,
         PassStage::Facts,
         PassStage::Input,
         PassStage::Ui,
-        PassStage::Retention,
         PassStage::Catalog,
         PassStage::Recorder,
         PassStage::Navigator,
@@ -183,9 +177,6 @@ pub(crate) struct PassState {
     pub(crate) connections: Connections,
     /// The newest store revision seen — the level stage 2 detects a commit against.
     store: Option<StoreRevision>,
-    /// The store revision the catalog last announced to retention, so one commit is announced once.
-    announced: Option<Revision>,
-    /// The newest link state seen, so an unchanged level does not re-run the link's card sweep.
     link: Option<crate::ble::BleStatus>,
     /// The active route's durable identity as of the last pass — Navigator's activation edge.
     active_route: Option<crate::CatalogObjectId>,
@@ -207,7 +198,6 @@ impl PassState {
         PassState {
             connections: Connections::new(),
             store: None,
-            announced: None,
             link: None,
             active_route: None,
             capabilities: Capabilities::NONE,
@@ -278,7 +268,6 @@ impl App {
         let key_before = self.render_key();
         // The previous pass's later-to-earlier deposits become visible here — before any new
         // outcome, fact or gesture, so an earlier component acts on them ahead of new user input.
-        self.pass.connections.promote_deferred();
 
         self.stage_outcomes(outcomes, now.ui.0);
         self.stage_facts(facts, derived, targets);
@@ -286,7 +275,6 @@ impl App {
         self.stage_ui(now);
 
         let mut effects = EffectSlots::new();
-        self.stage_retention(&mut effects, support);
         self.stage_catalog(&mut effects);
         self.stage_recorder(&mut effects);
         self.stage_navigator(&mut effects);
@@ -314,6 +302,14 @@ impl App {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
             if self.catalogs.accepts(outcome) {
+                if self.catalogs.cleanup_running() {
+                    for screen in self.ui.stack.iter_mut() {
+                        if let crate::screen::Screen::RouteCleanup(screen) = screen {
+                            screen.progress(outcome);
+                        }
+                    }
+                    self.ui.map_dirty = true;
+                }
                 match outcome {
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unreadable,
@@ -322,36 +318,11 @@ impl App {
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unsupported,
                         ..
-                    } => self.retention.reject_expiry(),
+                    } => {}
                     _ => {}
                 }
             }
-            // The catalog's verdict on a removal is retention's: the expiry candidate for an object
-            // the store no longer holds is retired at stage 5 of this pass, rather than surviving
-            // until the re-read the removal ordered lands (#1548).
-            if let Some(object) = self.catalogs.apply_outcome(outcome) {
-                let _ = self.pass.connections.catalog_removal.try_put(CatalogRemoval { object });
-            }
-        }
-        if let Some(outcome) = outcomes.retention.take() {
-            if self.retention.apply_outcome(outcome) {
-                use crate::retention::{RetentionError, RetentionOutcome};
-                match outcome {
-                    RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. } => {
-                        self.catalogs.loaded_scope = None;
-                        self.catalogs.remount_required = true;
-                    }
-                    RetentionOutcome::Failed { error: RetentionError::Unsupported, .. } => {}
-                    RetentionOutcome::Failed { error: RetentionError::WriteFailed | RetentionError::Busy, .. }
-                    | RetentionOutcome::Cancelled { .. } => {
-                        self.retention.defer_write(now_ms);
-                    }
-                    _ => {
-                        self.catalogs.loaded_scope = None;
-                        self.catalogs.note_store_moved();
-                    }
-                }
-            }
+            self.catalogs.apply_outcome(outcome);
         }
         if let Some(outcome) = outcomes.recorder.take() {
             // Recorder's verdict on the close. A committed ride tells the catalog at stage 6 of this
@@ -411,14 +382,16 @@ impl App {
         if let Some(store) = facts.store_revision() {
             if self.pass.store != Some(store) {
                 if self.pass.store.is_none_or(|old| old.store != store.store) {
-                    self.retention.reset_store();
                     if self.pass.store.is_some() {
                         self.catalogs.change_store();
+                        for screen in self.ui.stack.iter_mut() {
+                            if let crate::screen::Screen::RouteCleanup(screen) = screen {
+                                screen.cancel();
+                            }
+                        }
                     }
                     self.catalogs.remount_required = false;
-                    let _ = self.pass.connections.catalog_removal.take();
                     self.catalogs.loaded_scope = self.catalogs.loaded_scope.filter(|scope| scope.store == store.store);
-                    let _ = self.pass.connections.expiry.take();
                 }
                 self.pass.store = Some(store);
                 // The fact says the store moved; it does not order a re-read. The **domain** owes
@@ -506,96 +479,20 @@ impl App {
             } else {
                 // The trip delete already *is* a durable id — the confirm dialog holds the folder's
                 // identity rather than a menu row — so there is nothing to resolve here.
-                self.activity.take_trip_delete().map(|id| CatalogIntent::DeleteTrip { id })
+                self.activity
+                    .take_trip_delete()
+                    .map(|id| CatalogIntent::DeleteTrip { id })
+                    .or_else(|| self.activity.cleanup_routes.take())
             };
             if let Some(intent) = intent {
                 let _ = self.pass.connections.ui_catalog.try_put(intent);
             }
         }
     }
-
-    /// Retention decisions use only the catalog snapshot that completed its metadata read.
-    fn stage_retention(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
-        self.pass.record(PassStage::Retention);
-        if let Some(removal) = self.pass.connections.catalog_removal.take() {
-            self.retention.note_object_removed(removal.object);
-            // The expiry slot can still hold an intent the catalog had no room for last pass. It is
-            // a copy of a candidate the verdict has just retired, so admitting it would be a second
-            // removal for an object already gone — the rider deleting a route the sweep had queued
-            // is exactly that race. Anything about another object still waits its turn.
-            if let Some(parked) = self.pass.connections.expiry.take() {
-                let stale = matches!(
-                    parked,
-                    CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } | CatalogIntent::ExpireObject { id, .. } if id == removal.object
-                );
-                if !stale {
-                    let _ = self.pass.connections.expiry.try_put(parked);
-                }
-            }
-        }
-        if let Some(activated) = self.pass.connections.route_activated.take() {
-            self.with_retention(|retention, view| retention.note_route_activated(activated.route, view));
-        }
-        if self.pass.connections.catalog_identity.take().is_some() {
-            self.retention.note_catalog_changed();
-        }
-        let Some(scope) = self.catalogs.loaded_scope.filter(|scope| Some(*scope) == self.pass.store) else { return };
-        if !support.retention_metadata {
-            return;
-        }
-        self.retention_tick();
-        if self.pass.connections.expiry.is_empty() {
-            if let Some(intent) = self.with_retention(|retention, view| retention.next_expiry(view)) {
-                use crate::catalog_state::CatalogObjectKind;
-                let (id, kind) = match intent {
-                    CatalogIntent::DeleteRoute { id } => (id, CatalogObjectKind::Route),
-                    CatalogIntent::DeleteRide { id } => (id, CatalogObjectKind::Ride),
-                    _ => unreachable!("retention expires routes and rides only"),
-                };
-                let _ = self.pass.connections.expiry.try_put(CatalogIntent::ExpireObject { id, kind, scope });
-            }
-        }
-
-        if effects.retention.is_empty() {
-            if let Some(mut effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
-                effect.bind(scope);
-                let _ = effects.retention.try_put(effect);
-            }
-        }
-    }
-
     /// Invalidates admission before any catalog feeder mutates the resident projection.
     pub fn begin_catalog_refresh(&mut self) {
         self.catalogs.loaded_scope = None;
     }
-
-    /// The existing retention owner rechecks volatile policy before the executor queues expiry.
-    pub fn retention_expiry_due(
-        &mut self,
-        id: crate::CatalogObjectId,
-        kind: crate::catalog_state::CatalogObjectKind,
-        scope: super::StoreRevision,
-    ) -> bool {
-        self.catalogs.loaded_scope == Some(scope)
-            && self.pass.store == Some(scope)
-            && self.with_retention(|retention, view| retention.object_due(id, kind, view))
-    }
-
-    /// Stage 6 — advance `CatalogMachine`.
-    ///
-    /// The rider's own request outranks an expiry, and both outrank the store's own re-read, exactly
-    /// as the legacy drain has it: a hold-to-delete is something someone is watching happen. Only
-    /// the two deletions are *admitted* here — the re-read is owed inside `CatalogMachine` and taken
-    /// by [`next_effect`](crate::catalog_state::CatalogState::next_effect_at) when nothing else is
-    /// pending, which is that same priority without a second copy of the refresh to lose or double.
-    ///
-    /// An admitted deletion of the **followed** route reaches Navigator in this pass — the rider is
-    /// not left being guided along a route the device has decided to remove — and a store commit is
-    /// announced to retention for the next one.
-    ///
-    /// Recorder's committed ride arrives first, and it orders nothing of its own: it arms the same
-    /// owed bit a removal and a store commit arm, so a save that also moved the store revision costs
-    /// one read rather than two.
     fn stage_catalog(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Catalog);
         if self.pass.connections.ride_finalized.take().is_some() {
@@ -607,17 +504,6 @@ impl App {
         if let Some(intent) = self.pass.connections.ui_catalog.take() {
             if let Err(full) = self.admit_catalog_intent(intent) {
                 let _ = self.pass.connections.ui_catalog.try_put(full.rejected);
-            }
-        }
-        if let Some(intent) = self.pass.connections.expiry.take() {
-            if let Err(full) = self.admit_catalog_intent(intent) {
-                let _ = self.pass.connections.expiry.try_put(full.rejected);
-            }
-        }
-        if let Some(store) = self.pass.store {
-            if self.pass.announced != Some(store.revision) {
-                self.pass.announced = Some(store.revision);
-                self.pass.connections.catalog_identity.defer(CatalogIdentityChanged { revision: store.revision });
             }
         }
         if let Some(effect) = self.catalogs.next_effect_at(self.ui.now_ms) {
@@ -660,15 +546,6 @@ impl App {
         }
     }
 
-    /// Recorder's session edge — run wherever the rider's Start can have arrived, and idempotent
-    /// when none has.
-    ///
-    /// Two call sites, each with its own reason. Stage 3 runs it **before** the world is applied,
-    /// because a host that asked for a ride between two passes must have it open before this pass
-    /// integrates a fix into it. [`apply_gesture`](App::apply_gesture) runs it after each gesture,
-    /// because a pass applies a **batch**: without it the second gesture of a batch would still read
-    /// "not recording" after the first one started the ride. One implementation, two call sites —
-    /// the shape `advance_inputs` and `retention_tick` already use.
     pub(crate) fn advance_recorder_session(&mut self) {
         match self.recorder.advance(self.pass.capabilities.recorder) {
             crate::recorder::RecorderAdvance::Opened(start) => self.begin_ride_session(start),
@@ -723,16 +600,6 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// Stage 8 — advance `Navigator`.
-    ///
-    /// Consumes the catalog's [`ActiveRouteRemoved`] in the same pass it was sent, and reports an
-    /// activation to retention in the next one — an active route must not expire underneath the ride
-    /// it is guiding. Then hands the executor at most one planning operation.
-    ///
-    /// There is no `UiRuntime` → `Navigator` connection to drain: a planning screen names its
-    /// request to Navigator as it happens (`Ctx::navigator`), so the rider's plan is already with
-    /// its owner before stage 1 of this pass — earlier than a slot could deliver it, and in the one
-    /// place that also serves a seam running between two passes.
     fn stage_navigator(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Navigator);
         if let Some(removed) = self.pass.connections.active_route_removed.take() {
@@ -747,9 +614,6 @@ impl App {
         let active = self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx));
         if active != self.pass.active_route {
             self.pass.active_route = active;
-            if let Some(route) = active {
-                self.pass.connections.route_activated.defer(RouteActivated { route });
-            }
         }
         if effects.navigator.is_empty() {
             if let Some(effect) = self.navigator.next_effect(&mut self.mode) {
@@ -849,7 +713,7 @@ impl App {
     fn stage_plan(&mut self, now: PassClock, effects: EffectSlots) -> PassPlan {
         self.pass.record(PassStage::Plan);
         let render = self.take_dirty();
-        let immediate = self.pass.connections.has_deferred();
+        let immediate = false;
         let next_wake_ms = if immediate { Some(0) } else { self.ms_until_next_wake(now.ui.0) };
         PassPlan {
             render,
@@ -868,7 +732,8 @@ impl App {
     /// and ride recording, without driving a whole frame for it.
     #[cfg(test)]
     pub(crate) fn test_mount_store(&mut self) {
-        self.pass.store = Some(StoreRevision { store: super::StoreIdentity::new(1), revision: Revision::new(1) });
+        self.pass.store =
+            Some(StoreRevision { store: super::StoreIdentity::new(1), revision: crate::device_core::Revision::new(1) });
         self.catalogs.loaded_scope = self.pass.store;
         self.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
     }
@@ -909,9 +774,8 @@ mod tests {
     use crate::activity::Mode;
     use crate::app::AppState;
     use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
+    use crate::device_core::Revision;
     use crate::device_core::{StoreIdentity, TokenSource};
-    use crate::retention::SweepKind;
-    use crate::retention::{Retention, RouteRetentionMeta};
     use crate::route::RouteSummary;
     use crate::screen::WarningFlags;
 
@@ -972,7 +836,6 @@ mod tests {
 
         bonding: true,
         storage_space_report: true,
-        retention_metadata: true,
     };
 
     #[allow(clippy::too_many_arguments)]
@@ -1001,12 +864,11 @@ mod tests {
         })
     }
 
-    /// One quiet pass on a platform with no durable retention metadata — the board.
     fn quiet_without_metadata(app: &mut App, ms: u32) -> PassPlan {
         let mut facts = ExternalFacts::NONE;
         pass_supported(
             app,
-            PlatformSupport { retention_metadata: false, ..EVERYTHING },
+            PlatformSupport { ..EVERYTHING },
             PassClock { ride: RideClock(ms), ui: InputClock(ms) },
             &[],
             &mut OutcomeSlots::new(),
@@ -1039,7 +901,7 @@ mod tests {
         let mut facts = ExternalFacts::NONE;
         pass_supported(
             &mut app,
-            PlatformSupport { retention_metadata: false, ..EVERYTHING },
+            PlatformSupport { ..EVERYTHING },
             PassClock { ride: RideClock(2_000), ui: InputClock(2_000) },
             &[Gesture::Press],
             &mut OutcomeSlots::new(),
@@ -1090,11 +952,6 @@ mod tests {
             synced_at_utc: 0,
         }
     }
-
-    fn expiring(retention: Retention, last_used_utc: u32) -> RouteRetentionMeta {
-        RouteRetentionMeta::new(retention, last_used_utc)
-    }
-
     /// A store fact at `revision`, the level a commit reports.
     fn committed(revision: u64) -> ExternalFacts {
         let mut facts = ExternalFacts::NONE;
@@ -1149,21 +1006,6 @@ mod tests {
         );
         assert!(app.pass.connections.ui_catalog.is_empty(), "the intent was consumed, not queued");
     }
-
-    /// Retention's expiry is the *same* intent a rider's delete is, delivered in the same pass —
-    /// an auto-expired object leaves by exactly the path a deleted one does.
-    #[test]
-    fn a_retention_expiry_reaches_the_catalog_in_the_same_pass() {
-        let (mut app, now) = expiring_app();
-        let plan = quiet(&mut app, now);
-
-        let mut effects = plan.effects;
-        assert!(
-            matches!(effects.catalog.take(), Some(CatalogEffect::ExpireObject { object: 22, .. })),
-            "the expired route left as a catalog removal in the pass retention decided it"
-        );
-    }
-
     /// Deleting the route being followed reaches Navigator in the same pass: the rider is not left
     /// being guided along a route the device has decided to remove.
     #[test]
@@ -1189,113 +1031,13 @@ mod tests {
         facts.raise_warnings(WarningFlags::MAP_SLOW);
 
         pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
-        assert!(app.pass.connections.faults.is_empty(), "delivered, not left pending");
+        assert!(app.pass.connections.faults.take().is_empty(), "delivered, not left pending");
         assert!(
             matches!(app.top_screen(), crate::Screen::Warning(w) if w.flags().contains(WarningFlags::NO_GPS)
                 && w.flags().contains(WarningFlags::MAP_SLOW)),
             "both notices reached one card"
         );
     }
-
-    // ==================== later → earlier, in the next pass ====================
-
-    /// Navigator runs after retention, so an activation cannot reach it in the same pass. It waits
-    /// in a deferred slot and lands *before any new input* on the next one.
-    #[test]
-    fn an_activation_reaches_retention_on_the_next_pass() {
-        let mut app = navigating();
-        trust_clock(&mut app);
-        // A fresh `last_used` so the hourly sweep has nothing of its own to say: the only stamp in
-        // this test is the activation's.
-        let now = app.wall_unix_now();
-        app.set_route_meta(&[expiring(Retention::Week1, now), expiring(Retention::Never, 0)]);
-
-        let plan = quiet(&mut app, 10);
-        assert!(
-            app.pass.connections.route_activated.is_pending(),
-            "the activation is deposited, not delivered — retention already ran"
-        );
-        // The stamp itself is retention's own, from the view it reads every advance, so it is
-        // already out; the connection delivers the same fact by the same rule one pass later.
-        let mut effects = plan.effects;
-        assert!(
-            matches!(
-                effects.retention.take(),
-                Some(crate::retention::RetentionEffect::WriteRouteMetadata { id: 11, .. })
-            ),
-            "the active route's use stamp goes out"
-        );
-
-        let plan = quiet(&mut app, 20);
-        assert!(!app.pass.connections.route_activated.is_pending(), "consumed by retention's stage");
-        assert!(!plan.immediate, "and nothing is left waiting");
-        assert!(plan.effects.retention.is_empty(), "the delivery is idempotent — no second sidecar write");
-        assert!(!app.retention.has(SweepKind::StampRoute), "and no second candidate either");
-    }
-
-    #[test]
-    fn unsupported_metadata_never_mirrors_or_authorizes_expiry() {
-        let (mut app, _) = expiring_app();
-        let before = app.route_metas().to_vec();
-        for ms in [10, 20, 30, 3_600_010] {
-            let plan = quiet_without_metadata(&mut app, ms);
-            assert!(plan.effects.retention.is_empty());
-            assert!(plan.effects.catalog.is_empty());
-            assert_eq!(app.route_metas(), before);
-        }
-    }
-
-    /// The delivered id is a pass old, so the domain re-derives the rule rather than trusting it:
-    /// a route with no expiry clock is never stamped, and an untrusted clock queues nothing at all.
-    ///
-    /// Both are retention's own invariants, and a delivery that reached past them would write a
-    /// sidecar for a countdown that does not exist — or put a candidate in the bounded queue on a
-    /// boot where "nothing runs" is the whole safety core.
-    #[test]
-    fn an_activation_stamps_only_a_route_that_can_expire_under_a_trusted_clock() {
-        let mut never = navigating();
-        never.set_route_meta(&[expiring(Retention::Never, 0), expiring(Retention::Never, 0)]);
-        trust_clock(&mut never);
-        quiet(&mut never, 10); // stage 8 defers the activation
-        let plan = quiet(&mut never, 20); // …and this is the pass that delivers it
-        assert!(plan.effects.retention.is_empty(), "a route with no expiry clock has no `last_used` to write");
-        assert!(!never.retention.has(SweepKind::StampRoute), "and no candidate is queued for one");
-
-        let mut untrusted = navigating();
-        untrusted.set_route_meta(&[expiring(Retention::Week1, 0), expiring(Retention::Never, 0)]);
-        quiet(&mut untrusted, 10);
-        let plan = quiet(&mut untrusted, 20);
-        assert!(
-            plan.effects.retention.is_empty() && !untrusted.retention.has(SweepKind::StampRoute),
-            "no trusted clock this boot: no stamp, no sweep, no candidate"
-        );
-    }
-
-    /// A deferred value in flight makes the pass ask for another one **before sleep**: the work is
-    /// already decided, and parking on it would leave it sitting until the next rider input.
-    ///
-    /// Written on the activation, which is the deferred producer this wiring actually has: Navigator
-    /// runs after retention, so an activation cannot reach backwards and waits a pass.
-    #[test]
-    fn a_deferred_value_forces_another_pass_before_sleep() {
-        let mut app = navigating(); // route 0 is active before the first pass
-        app.activity.mode = Mode::Riding;
-
-        let plan = quiet(&mut app, 10);
-        assert!(app.pass.connections.route_activated.is_pending(), "the activation waits for retention");
-        assert!(plan.immediate && plan.next_wake_ms == Some(0), "so the runtime comes straight back");
-
-        // The next pass consumes it before anything else, and then there is nothing to hurry for.
-        let plan = quiet(&mut app, 20);
-        assert!(!app.pass.connections.route_activated.is_pending());
-        assert!(!plan.immediate && plan.next_wake_ms != Some(0));
-
-        // A second activation right behind the first is deposited just the same.
-        app.activate_route(1);
-        let plan = quiet(&mut app, 30);
-        assert!(app.pass.connections.route_activated.is_pending() && plan.immediate);
-    }
-
     /// The rider's Save becomes a `Finalize` effect in the **same** pass that applied the gesture.
     ///
     /// Routed through a stage-4 slot instead, the close would wait a pass — reinstating the wake gap
@@ -1360,7 +1102,10 @@ mod tests {
         // The card mounts. The request the rider already made is still theirs, and it opens the ride
         // — nothing was destroyed by a device that could not serve it yet.
         let mut facts = ExternalFacts::NONE;
-        facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+        facts.note_store_revision(StoreRevision {
+            store: StoreIdentity::new(1),
+            revision: crate::device_core::Revision::new(1),
+        });
         pass_with(&mut app, 40, &[], &mut OutcomeSlots::new(), &mut facts);
         quiet(&mut app, 50);
         assert!(app.recording(), "the kept request opened the ride the rider asked for");
@@ -1436,66 +1181,14 @@ mod tests {
         let restored = crate::RideContinuation { ridden_m: 12_345.0, moving_s: 2_700.0, ..Default::default() };
         assert!(app.offer_recovered_ride(restored));
         // The card's Continue: a session that keeps what the journal restored.
-        app.pass.store = Some(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+        app.pass.store =
+            Some(StoreRevision { store: StoreIdentity::new(1), revision: crate::device_core::Revision::new(1) });
         app.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
         app.recorder.continue_recovered();
         app.advance_recorder_session();
         assert!(app.recording());
         assert_eq!(app.recorder.continuation(), restored, "recovery must not zero the ride it just restored");
     }
-
-    /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
-    /// one, and the refused one goes **back into the slot it came from** rather than being dropped —
-    /// so a busy pass costs a delay, never a delete.
-    #[test]
-    fn a_refused_intent_goes_back_to_its_producer_and_lands_later() {
-        let (mut app, ms) = expiring_app();
-        app.activity.request_route_delete(0); // the rider deletes one route in the pass an expiry fires
-
-        let plan = quiet(&mut app, ms);
-        let mut effects = plan.effects;
-        let first = effects.catalog.take().expect("the rider's delete outranks the expiry");
-        assert!(matches!(first, CatalogEffect::RemoveObject { object: 11, .. }));
-        assert!(!app.pass.connections.expiry.is_empty(), "the refused expiry is back with its producer");
-
-        // Next pass: the catalog admits it, but its one operation is still in flight.
-        let plan = quiet(&mut app, ms + 10);
-        assert!(app.pass.connections.expiry.is_empty(), "delivered on the pass after the refusal");
-        assert!(plan.effects.catalog.is_empty(), "one catalog operation at a time");
-
-        // The answer frees the domain, and the expiry that waited two passes goes out unchanged.
-        let mut outcomes = OutcomeSlots::new();
-        outcomes
-            .catalog
-            .try_put(CatalogOutcome::ObjectRemoved { token: first.token(), object: 11, existed: true })
-            .unwrap();
-        let mut none = ExternalFacts::NONE;
-        let plan = pass_with(&mut app, ms + 20, &[], &mut outcomes, &mut none);
-        let mut effects = plan.effects;
-        assert!(
-            matches!(effects.catalog.take(), Some(CatalogEffect::ExpireObject { object: 22, .. })),
-            "nothing was lost to the busy pass"
-        );
-    }
-
-    /// A store commit is announced to retention once, from the stage that owns the catalog — and
-    /// because the catalog runs *after* retention, next pass.
-    #[test]
-    fn a_catalog_identity_change_reaches_retention_on_the_next_pass() {
-        let mut app = navigating();
-        let mut facts = committed(4);
-        pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
-        assert!(app.pass.connections.catalog_identity.is_pending());
-
-        quiet(&mut app, 20);
-        assert!(!app.pass.connections.catalog_identity.is_pending(), "retention consumed it");
-
-        // The same revision is not announced twice.
-        let mut same = committed(4);
-        pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut same);
-        assert!(!app.pass.connections.catalog_identity.is_pending(), "one commit, one announcement");
-    }
-
     /// A store commit arms the domain's owed refresh, not a rescan cue: the fact reports that
     /// the store moved, `CatalogState::note_store_moved` arms the one bit that orders the
     /// re-read, and one commit orders exactly one.
@@ -1906,69 +1599,5 @@ mod tests {
         assert!(pass.overlay_repaint(bulge), "…every frame it is live");
         assert!(pass.overlay_repaint(quiet), "the trailing clear frame");
         assert!(!pass.overlay_repaint(quiet), "and then quiet");
-    }
-
-    // ---- helpers that need a trusted clock ----
-
-    fn trust_clock(app: &mut App) {
-        app.stamp_clock_ble(1_700_000_000, 0);
-    }
-
-    /// An app whose second route is long expired under a trusted clock, with the first one active.
-    fn expiring_app() -> (App, u32) {
-        let mut app = navigating();
-        trust_clock(&mut app);
-        let now = app.wall_unix_now();
-        app.set_route_meta(&[
-            RouteRetentionMeta::new(Retention::Never, 0),
-            RouteRetentionMeta::new(Retention::Week1, now.saturating_sub(30 * 24 * 3600)),
-        ]);
-        app.force_retention_sweep();
-        (app, 10)
-    }
-    #[test]
-    fn durable_ride_overlay_covers_the_full_inventory_and_expiry_rechecks_live_policy() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let entries: std::vec::Vec<_> =
-            (1..=crate::UI_RIDES_CAP as u64).map(|id| crate::RideEntry { id, summary: ride_summary() }).collect();
-        let records: std::vec::Vec<_> = (1..=crate::MAX_RIDES as u64)
-            .map(|id| crate::RideRetentionRecord { id, synced: false, synced_at_utc: 0 })
-            .collect();
-        app.set_rides(&entries);
-        app.set_ride_retention_inventory(&records);
-        app.set_ride_archive_proof(1, 0);
-        app.set_ride_archive_proof(128, 1_600_000_000);
-        app.set_ride_archive_proof(129, 1_600_000_000);
-        assert!(app.rides()[0].summary.synced);
-        assert_eq!(app.catalogs.ride_records().len(), 128);
-        assert!(app.catalogs.ride_records()[127].synced);
-        app.test_mount_store();
-        let scope = app.pass.store.unwrap();
-        assert!(
-            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
-            "unknown clock protects even a nonzero proof"
-        );
-        trust_clock(&mut app);
-        assert!(
-            !app.retention_expiry_due(1, crate::catalog_state::CatalogObjectKind::Ride, scope),
-            "zero stamp starts a clock, never expires"
-        );
-        assert!(
-            !app.retention_expiry_due(2, crate::catalog_state::CatalogObjectKind::Ride, scope),
-            "unsynced is protected"
-        );
-        assert!(app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope));
-        app.test_start_ride();
-        assert!(
-            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
-            "recording blocks expiry"
-        );
-        app.test_end_ride();
-        assert!(app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope));
-        app.begin_catalog_refresh();
-        assert!(
-            !app.retention_expiry_due(128, crate::catalog_state::CatalogObjectKind::Ride, scope),
-            "partial refresh has no authority"
-        );
     }
 }
