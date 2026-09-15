@@ -2022,7 +2022,7 @@ impl App {
                     let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
                         screen::Transition::Push(assistant)
                     } else {
-                        screen::Transition::Replace(assistant)
+                        screen::Transition::Root(assistant)
                     };
                     screen::apply(&mut self.ui.stack, transition);
                 }
@@ -3814,6 +3814,22 @@ mod tests {
     /// One pass with nothing on any port — the quiet frame.
     fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
         pass_ports(app, now_ms, None, None)
+    }
+
+    #[test]
+    fn assistant_shortcut_at_full_stack_leaves_room_for_its_actions() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        while app.ui.stack.len() < app.ui.stack.capacity() {
+            screen::apply(&mut app.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
+        }
+        assert!(app.apply_chord(Chord::Assistant));
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
     }
 
     /// The frozen base, through a **real pass**: a fresh fix under an open drawer moves the camera
