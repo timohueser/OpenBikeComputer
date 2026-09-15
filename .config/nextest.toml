@@ -1,2 +1,5 @@
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.fixtures.junit]
+path = "junit.xml"

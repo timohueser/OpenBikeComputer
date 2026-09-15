@@ -545,7 +545,12 @@ class LocalInterfaceTests(unittest.TestCase):
         self.routes[suite["id"]] = []
         plan = registry.select_by_level(self.inventory, self.routes, "fixtures", "map")
         self.assertFalse(plan.errors)
-        self.assertEqual(registry.run_plan(plan, self.root), 0)
+        self.assertFalse(plan.selected)
+        arguments = registry.build_parser().parse_args(["--root", str(self.root), "run", "--scheduled", "manual", "--surface", "map"])
+        with patch.object(registry, "load_inventory", return_value=self.inventory), \
+             patch.object(registry, "build_cargo_graph", return_value=registry.CargoGraph({}, {})), \
+             patch.object(registry, "suite_workflow_jobs", return_value=self.routes):
+            self.assertEqual(registry.command_run(arguments), 0)
         self.assertEqual(self.marker.read_text(), "fixture.map\n")
 
     def test_platform_restricted_suite_is_skipped_not_passed(self) -> None:
@@ -730,6 +735,16 @@ class CiRoutingTests(unittest.TestCase):
         )
         self.assertEqual(registry.gate_claims(suites, graph)["test"], {"ci.policy", "rust.core"})
 
+    def test_fast_workspace_gate_does_not_claim_fixture_or_manual_execution(self):
+        fast = {**self.suites[0], "level": "unit", "pull_request": "affected"}
+        fixtures = {**fast, "id": "fixtures.core", "level": "fixture"}
+        manual = {**fast, "id": "manual.core", "pull_request": "never"}
+        gate = {**self.suites[1], "command": "obc check test", "ownership": [{"kind": "workflow", "pattern":
+            'cargo nextest run --workspace --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"'}]}
+        graph = registry.CargoGraph({"core": registry.CargoPackage("core", "crates/core", "crates/core/Cargo.toml", frozenset(), True)},
+                                    {"core": frozenset()})
+        self.assertEqual(registry.gate_claims([fast, fixtures, manual, gate], graph)["test"], {"ci.policy", "rust.core"})
+
 class ShippedRoutingTests(unittest.TestCase):
     """The shipped registry's own routing, so a real change class cannot drift silently."""
 
@@ -840,6 +855,23 @@ class ShippedRoutingTests(unittest.TestCase):
                 jobs = self.jobs_for(*paths) - self.unconditional
                 self.assertEqual(sorted(jobs), expected)
 
+    def test_snapshot_sweep_requires_its_own_rendering_inputs(self):
+        for path, selected in [("testing/coverage-policy.toml", False), (".github/workflows/ci.yml", False),
+                               ("firmware/obc-render/src/stroke.rs", True), ("firmware/ui-snapshots.sha256", True),
+                               ("firmware/obc-app/i18n/en.toml", True), ("firmware/obc-app/assets/landmark.bin", True),
+                               ("firmware/obc-render/fonts/terminus/font.bdf", True)]:
+            plan = registry.select_suites(self.inventory, [path], self.graph, self.routes,
+                                          unconditional=self.unconditional)
+            actual = next(item.selected for item in plan.suites if item.suite["id"] == "ci.ui-snapshots")
+            self.assertEqual(actual, selected, path)
+
+    def test_shipped_fast_gate_never_claims_fixture_live_or_manual_suites(self):
+        claims = registry.gate_claims(self.inventory.suites, self.graph)["test"]
+        by_id = {suite["id"]: suite for suite in self.inventory.suites}
+        self.assertIn("rust.obc-route", claims)
+        self.assertFalse({id for id in claims if by_id[id]["level"] in {"fixture", "live", "hardware"}
+                          or by_id[id]["scheduled"] == "manual"})
+
 class ExceptionIssueStateTests(unittest.TestCase):
     def suite(self, reference: str, field: str = "quarantine", name: str = "demo") -> dict:
         return {"id": name, field: {"reason": "Pending repair", "issue": reference}}
@@ -914,3 +946,49 @@ class ExceptionIssueStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CargoCadenceTests(unittest.TestCase):
+    def test_whole_target_owners_partition_fast_fixture_and_manual_work(self):
+        root = Path('.')
+        units = [registry.Discovered('rust-target', f'demo:{target}', '', f'Cargo.toml:{kind}')
+                 for target, kind in [('demo', 'lib'), ('captured', 'test'), ('network', 'test'), ('writer', 'example')]]
+        fast = {'kind': 'rust-package', 'name': 'demo', 'exclude_targets': ['captured', 'network', 'writer']}
+        self.assertEqual([unit.name for unit in units if registry.ownership_matches(root, fast, unit)], ['demo:demo'])
+        suites, matches = [], {}
+        for name, level, cadence, target in [('fast', 'unit', 'affected', 'demo'), ('fixture', 'fixture', 'affected', 'captured'),
+                                              ('live', 'live', 'never', 'network'), ('writer', 'contract', 'never', 'writer')]:
+            suites.append({'id': name, 'level': level, 'pull_request': cadence})
+            owner = {'kind': 'rust-package', 'name': 'demo', 'targets': [target]}
+            matches[name] = [unit for unit in units if registry.ownership_matches(root, owner, unit)]
+        inventory = registry.Inventory(suites, [], units, matches)
+        self.assertEqual(registry.cargo_filter(inventory, 'fast'), '(package(=demo) & binary(=demo))')
+        self.assertEqual(registry.cargo_filter(inventory, 'fixtures'), '(package(=demo) & binary(=captured))')
+        with self.assertRaisesRegex(registry.RegistryError, 'no Rust binaries'):
+            registry.cargo_filter(registry.Inventory([], [], [], {}), 'fixtures')
+
+    def test_step_condition_does_not_replace_job_selection_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / '.github/workflows/ci.yml'
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("jobs:\n  test:\n    runs-on: ubuntu-latest\n    needs: selection\n"
+                                "    if: contains(fromJSON(needs.selection.outputs.jobs), 'test')\n"
+                                "    steps:\n      - name: optional suite\n"
+                                "        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')\n"
+                                "        run: echo run\n")
+            self.assertEqual(registry.workflow_jobs(root)['test'].gates_on, 'test')
+
+    def test_level_selection_never_runs_manual_fixture_writers(self):
+        suites = [{'id': name, 'level': 'contract', 'surface': 'support', 'scheduled': cadence,
+                   'pull_request': 'never' if cadence == 'manual' else 'affected', 'command': 'false'}
+                  for name, cadence in [('required', 'none'), ('writer', 'manual')]]
+        inventory = registry.Inventory(suites, [], [], {})
+        plan = registry.select_by_level(inventory, {'required': ['test']}, 'contract', 'support')
+        self.assertEqual([item.suite['id'] for item in plan.selected], ['required'])
+
+    def test_xcuitest_file_owners_do_not_overlap(self):
+        unit = registry.Discovered('xcuitest', 'WebsiteScreenshotTests', 'ios/WebsiteScreenshotTests.swift')
+        owner = {'kind': 'path', 'source': 'xcuitest', 'pattern': 'ios/*.swift', 'exclude': [unit.path]}
+        self.assertFalse(registry.ownership_matches(Path('.'), owner, unit))
+        self.assertTrue(registry.ownership_matches(Path('.'), {**owner, 'exclude': []}, unit))

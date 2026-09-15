@@ -14,7 +14,7 @@ use obc_vectors::{
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(dir().join(name)).unwrap_or_else(|e| {
-        panic!("fixture {name} unreadable ({e}) — run `cargo test -p obc-vectors regenerate -- --ignored`")
+        panic!("fixture {name} unreadable ({e}) — run `cargo run -p obc-vectors --example regenerate --locked`")
     })
 }
 
@@ -407,16 +407,4 @@ fn terrain_vector_samples_through_the_production_reader() {
     assert_eq!(reader.sample(&mut cache, lat(vi), lon(vj)), None);
     assert_eq!(reader.sample(&mut cache, lat(vi - 1) + 1, lon(vj - 1) + 1), None, "no partial interpolation");
     assert_eq!(reader.sample(&mut cache, lat(vi + 2), lon(vj + 2)), Some(terrain_height(vi + 2, vj + 2)));
-}
-
-/// Rewrite every fixture from the builders. Run only after a deliberate spec change:
-/// `cargo test -p obc-vectors regenerate -- --ignored` — then hand the diff to the
-/// app side (its Swift tests pin the same files).
-#[test]
-#[ignore]
-fn regenerate() {
-    std::fs::create_dir_all(dir()).unwrap();
-    for (name, bytes) in all() {
-        std::fs::write(dir().join(name), bytes).unwrap();
-    }
 }

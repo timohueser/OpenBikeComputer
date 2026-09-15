@@ -542,8 +542,10 @@ test *args:
     case "$mode" in
       full)
         shift
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)" "$@"
         fixture_env
-        _run cargo test --workspace --all-features --locked "$@"
+        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)" "$@"
+        _run cargo test --workspace --all-features --locked --doc
         ;;
       affected)
         shift
@@ -652,11 +654,8 @@ check *args:
     if want test; then
       rm -rf .artifacts/python/repository-tools
       step "fixture registry unit tests" python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
-      step "external fixtures (sync test profile)" python3 "$OBC_TOOLS/fixtures.py" sync test
-      export OBC_FIXTURE_ROOT
-      OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-      export OBC_REQUIRE_FIXTURES=1
-      step "test (workspace, all features)" cargo test --workspace --all-features --locked
+      step "test (fast hermetic binaries)" cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+      step "doctests (workspace)" cargo test --workspace --all-features --locked --doc
       step "bench golden gate (pixels + read counters)" cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
     fi
     want device && step "device build (obc-app @ thumbv8m)" \

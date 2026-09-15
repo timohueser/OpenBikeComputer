@@ -18,7 +18,7 @@
 //! Regenerate after a deliberate spec change with:
 //!
 //! ```text
-//! cargo test -p obc-link flat_regenerate -- --ignored
+//! cargo run -p obc-link --features std --example flat_vectors --locked
 //! ```
 
 use std::format;
