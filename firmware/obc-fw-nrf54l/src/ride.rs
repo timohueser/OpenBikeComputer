@@ -1597,14 +1597,8 @@ pub(crate) async fn run_app(
                             });
                     let result = if !sources_current {
                         Some(Err(obc_app::metadata::MetadataError::Stale))
-                    } else if clear_scope_moved {
-                        RideExec::deliver(
-                            &mut exec.outcomes.metadata,
-                            MetadataOutcome::Cancelled { token },
-                            "metadata",
-                        );
-                        None
-                    } else if !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
+                    } else if clear_scope_moved
+                        || !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
                         || !app.assistant_checkpoint_submission(token)
                     {
                         RideExec::deliver(
