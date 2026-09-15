@@ -76,6 +76,7 @@ pub enum NavigatorIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerWork {
     AssistantRoute(NavRequest),
+    RestoreReview(obc_formats::obcr::RouteSourceKey),
     /// A full route plan from a fix to a goal.
     Route(NavRequest),
     /// A detour around the span ahead of the rider.
@@ -505,7 +506,9 @@ impl NavigatorMachine {
                     return None;
                 }
                 let request = self.route_request.take()?;
-                if self.review.status == ReviewStatus::Planning {
+                if let Some(source) = self.review.restore {
+                    PlannerWork::RestoreReview(source)
+                } else if self.review.status == ReviewStatus::Planning {
                     PlannerWork::AssistantRoute(request)
                 } else {
                     PlannerWork::Route(request)
@@ -546,7 +549,8 @@ impl NavigatorMachine {
                     && (*progress == PlannerProgress::Searching || self.live == Some(PlanFamily::Route))
             }
             NavigatorOutcome::ReviewReady { .. } => {
-                self.phase == OperationPhase::Committing
+                (self.phase == OperationPhase::Committing
+                    || self.phase == OperationPhase::Acquiring && self.review.restore.is_some())
                     && self.live == Some(PlanFamily::Route)
                     && self.review.context.is_some()
             }

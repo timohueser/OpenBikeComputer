@@ -67,6 +67,19 @@ impl Costs {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct RetainedReview {
+    object: u64,
+    revision: u64,
+    rejoin_m: u32,
+}
+impl RetainedReview {
+    const NONE: Self = Self { object: 0, revision: 0, rejoin_m: 0 };
+    fn source(self, map: RouteSourceKey) -> RouteSourceKey {
+        RouteSourceKey { object: self.object, revision: self.revision, ..map }
+    }
+}
+
 pub struct FindState {
     pub state: State,
     pub(crate) action: Action,
@@ -76,6 +89,7 @@ pub struct FindState {
     pub origin: (i32, i32),
     pub results: heapless::Vec<u8, RESULT_LIMIT>,
     costs: [Option<Costs>; PLAN_LIMIT],
+    retained: [RetainedReview; PLAN_LIMIT],
     next: u8,
     context: Option<ReviewContext>,
     route: Option<u64>,
@@ -101,6 +115,7 @@ impl FindState {
             origin: (0, 0),
             results: heapless::Vec::new(),
             costs: [None; PLAN_LIMIT],
+            retained: [RetainedReview::NONE; PLAN_LIMIT],
             next: 0,
             context: None,
             route: None,
@@ -241,6 +256,21 @@ impl crate::App {
     pub fn find_place_result_count(&self) -> usize {
         self.ui.find.results.len()
     }
+    pub fn retains_find_review(&self, source: RouteSourceKey) -> bool {
+        self.ui.find.map.is_some_and(|map| {
+            self.ui.find.retained.iter().any(|retained| retained.object != 0 && retained.source(map) == source)
+        })
+    }
+    pub(crate) fn find_review_removed(&mut self, source: RouteSourceKey) {
+        if let Some(map) = self.ui.find.map {
+            for retained in &mut self.ui.find.retained {
+                if retained.source(map) == source {
+                    *retained = RetainedReview::NONE;
+                }
+            }
+        }
+    }
+
     pub(crate) fn handle_find_action(&mut self) {
         if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
