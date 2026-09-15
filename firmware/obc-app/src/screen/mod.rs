@@ -111,12 +111,14 @@ pub use settings::{
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub(crate) use up_ahead::poi_row_name;
+mod whats_next;
 pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 /// The one exception to the vocabulary's import rule: the wait spinner's dirty disc is part of the
 /// host-facing repaint contract (`ScreenTick::region`), so it is re-exported for the integration
 /// tests that pin it. In-crate callers still import `vocab::spinner`.
 pub use vocab::spinner::needle_region;
 pub use warning::{WarningFlags, WarningScreen};
+pub use whats_next::WhatsNextScreen;
 
 /// Maximum overlay depth. The deepest normal path is seven screens
 /// (`Home → Map → Menu → Settings → Ride → Fields → Add field`); keep the rest of the slots
@@ -220,6 +222,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 pub struct Ctx<'a> {
     pub find: &'a mut crate::find_place::FindState,
     pub landmarks: &'a mut crate::landmarks::Landmarks,
+    pub ahead: &'a mut crate::whats_next::AheadState,
     pub place_local: Option<(u8, u16)>,
     pub state: &'a mut AppState,
     pub activity: &'a mut Activity,
@@ -304,6 +307,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     Ctx {
         find: Box::leak(Box::new(crate::find_place::FindState::new())),
         landmarks: Box::leak(Box::new(crate::landmarks::Landmarks::new())),
+        ahead: Box::leak(Box::new(crate::whats_next::AheadState::new())),
         place_local: None,
         state,
         activity,
@@ -346,6 +350,7 @@ pub struct ActiveClimb<'a> {
 pub struct Render<'a> {
     pub find: &'a crate::find_place::FindState,
     pub landmarks: &'a crate::landmarks::Landmarks,
+    pub ahead: &'a crate::whats_next::AheadState,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
@@ -1050,6 +1055,7 @@ screens! {
     DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
+    WhatsNext(WhatsNextScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     FindPlace(FindPlaceScreen) => Caps::map(),
     VisitReview(VisitReviewScreen) => Caps::map(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
@@ -1265,7 +1271,7 @@ impl Screen {
             // change because the rider switched which readout they are looking at.
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
-            Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::UpAhead(_) | Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
             Screen::Landmarks(_) => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),

@@ -394,6 +394,7 @@ mod tests {
                 ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),
+                ("WhatsNext", RenderKeyKind::UpAhead),
                 ("FindPlace", RenderKeyKind::Map),
                 ("VisitReview", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),

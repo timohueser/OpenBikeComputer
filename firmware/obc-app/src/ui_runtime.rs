@@ -127,6 +127,7 @@ pub(crate) struct UiRuntime {
     pub(crate) poi_scratch: screen::PoiScratch,
     pub(crate) find: crate::find_place::FindState,
     pub(crate) landmarks: crate::landmarks::Landmarks,
+    pub(crate) ahead: crate::whats_next::AheadState,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
     /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
@@ -182,6 +183,7 @@ impl UiRuntime {
             poi_scratch: PoiScratch::new(),
             find: crate::find_place::FindState::new(),
             landmarks: crate::landmarks::Landmarks::new(),
+            ahead: crate::whats_next::AheadState::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
             cards: CardScheduler::new(),
@@ -355,7 +357,7 @@ impl UiRuntime {
         // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
         // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
         // than inside one screen's `prepare`. A no-op unless a screen armed it.
-        if !self.find.owns_pages() {
+        if !self.find.owns_pages() && !self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
             self.corridor_scratch.prepare(reader, route, place_local);
         }
         // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
@@ -428,6 +430,14 @@ impl UiRuntime {
     /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
     /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
     pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope, fresh_open: bool) {
+        if self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            if let Some(key) = self.ahead.request(scope) {
+                self.corridor_scratch.arm(key);
+            } else {
+                self.corridor_scratch.disarm();
+            }
+            return;
+        }
         if self.find.owns_pages() {
             return;
         }
@@ -775,12 +785,14 @@ impl UiRuntime {
             poi_scratch,
             find,
             landmarks,
+            ahead,
             corridor_scratch,
             next_ahead,
             cards,
             sensor_status,
             sensor_scan_hits,
         } = self;
+        assert!(ahead.window.is_none());
         assert_eq!(stack.len(), 1, "Home is the only screen");
         assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
