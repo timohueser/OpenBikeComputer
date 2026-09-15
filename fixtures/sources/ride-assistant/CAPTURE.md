@@ -1,7 +1,8 @@
 # Capture geographic landmark sources
 
-This is a one-shot acquisition command. It uses the existing fixture package store. The
-`obc-bake landmarks` compiler selects sites and builds content without network access.
+This is a one-shot acquisition command. It writes country-scale raw sources to a local
+map-baker source directory. Do not publish that directory to the dev fixture or production maps
+bucket. The `obc-bake landmarks` compiler selects sites and builds content without network access.
 Acquisition does not use P17 country claims, a curated list, or the demonstration prose.
 
 Build the compiler and acquire the pinned country boundary first. Run from the repository root:
@@ -9,11 +10,12 @@ Build the compiler and acquire the pinned country boundary first. Run from the r
 ```sh
 cargo build -p obc-bake --locked
 tools/obc fixtures sync assistant-osm
+OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$HOME/.cache/openbikecomputer/bake/landmarks/switzerland}"
 python3 tools/landmark_capture.py \
   --boundary "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-osm/switzerland-boundary.geojson" \
   --policy host/obc-pack/src/landmarks/policy.json \
   --select-with target/debug/obc-bake \
-  --out .artifacts/switzerland-wiki
+  --out "$OBC_LANDMARK_CAPTURE"
 ```
 
 Use the same arguments and output directory to resume. Completed requests are reused only
@@ -46,12 +48,12 @@ metadata is kept before JPEG/PNG original bytes are downloaded. The limit is 32 
 response. Unsupported formats, absent sitelinks, absent images and request failures have
 different outcomes. The offline compiler makes the final text, image and attribution decisions.
 
-`manifest.json` uses the same schema 1 interface as `assistant-wiki`. Successful response bytes
-have source URLs, retrieval timestamps, byte counts and SHA-256 digests. Raw responses are in
+`manifest.json` uses the same schema 1 interface as the small `assistant-wiki` fixture. Successful
+responses have source URLs, retrieval timestamps, byte counts and SHA-256 digests. Raw responses are in
 `queries/`, `entities/`, `classes/`, `articles/` and `images/`. The manifest also contains the
 request outcomes, coverage, and per-place article/image outcomes. The boundary, policy, recipe,
-candidate union and production selection result remain in the package. A source package is a
-capture interval, not an assertion that all upstream pages changed at one instant.
+candidate union and production selection result remain in the capture directory. Its timestamps
+describe a capture interval; upstream pages can change during that interval.
 
 An incomplete acquisition exits with status 2 and keeps usable captured bytes. A recovered
 query failure remains in the request history; it does not make a successful equivalent query
@@ -63,39 +65,44 @@ from OSM approach joins and final compressed map counts.
 Compile twice into empty directories to check offline reproducibility:
 
 ```sh
-target/debug/obc-bake landmarks --snapshot .artifacts/switzerland-wiki/manifest.json \
-  --boundary .artifacts/switzerland-wiki/boundary.geojson --language en --out .artifacts/content-a
-target/debug/obc-bake landmarks --snapshot .artifacts/switzerland-wiki/manifest.json \
-  --boundary .artifacts/switzerland-wiki/boundary.geojson --language en --out .artifacts/content-b
+target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --language en --out .artifacts/content-a
+target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --language en --out .artifacts/content-b
 diff -r .artifacts/content-a .artifacts/content-b
 ```
 
-Publish only through the [fixture package workflow](../../README.md#adding-or-replacing-data):
-pack the capture directory, register its immutable hash and byte count, publish it, then sync
-and verify from an empty cache. Do not put captures in the production maps bucket. Use an
-explicit fixture profile for the full-country source package; it is too large for routine tests.
+Keep the capture locally while the country build and validation need it. Keep source hashes,
+the recipe, compiler identity and measured counts in Git. Remove the local raw capture when that
+work is complete unless an active reproducibility need requires it. A fresh acquisition observes
+new upstream data; it cannot reproduce an old capture from its hashes alone.
 
-## Pinned Switzerland capture
+Use the [fixture package workflow](../../README.md#adding-or-replacing-data) only for small,
+representative source cases and regional simulator maps. Country captures are not dev fixtures,
+even in an explicit profile. The map pipeline stores compiled landmark content in ordinary maps;
+the map publisher distributes those maps. No raw country archive is needed by a simulator or device.
 
-The `assistant-country` profile contains `assistant-wiki-switzerland`. It is separate from the
-four-site `assistant-wiki` review package and routine fixture tests. Its 5,348,363,006-byte archive
-has SHA-256 `1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8`.
+## Recorded Switzerland recount
+
+The [recorded recount](switzerland-recount.json) identifies one country capture by source manifest,
+boundary and archive hashes. It is measurement evidence, not a downloadable fixture contract.
 The source interval is 2026-09-14 22:15 UTC through 2026-09-15 05:23 UTC. All 24 category queries
 completed, and all 6,221 candidate entities and their class closure were captured. There are no
-unresolved requests or missing classes. The package retains 17 earlier failed-attempt records.
+unresolved requests or missing classes. The capture retains 17 earlier failed-attempt records.
 
-Run an explicit country recount with the optimized compiler:
+Run a country recount with the optimized compiler after acquisition. Set `OBC_LANDMARK_CAPTURE`
+to the retained capture directory to repeat the recorded run, or to a fresh capture for new counts:
 
 ```sh
 cargo build -p obc-bake --release --locked
-tools/obc fixtures sync assistant-country
+OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$HOME/.cache/openbikecomputer/bake/landmarks/switzerland}"
 target/release/obc-bake landmarks \
-  --snapshot "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki-switzerland/manifest.json" \
-  --boundary "$HOME/.cache/openbikecomputer/fixtures/by-id/assistant-wiki-switzerland/boundary.geojson" \
+  --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
+  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" \
   --language en --out .artifacts/switzerland-content
 ```
 
-Use a fresh output directory for each pass. The source package supplies 3,013 exact-revision
+Use a fresh output directory for each pass. The recorded capture supplies 3,013 exact-revision
 article captures and 1,481 unique original images. These acquisition counts are not usable-content
 counts: the compiler applies text, license and attribution limits after capture.
 
@@ -118,8 +125,7 @@ was changed to produce these cases.
 
 Two compiler passes ran with network access denied by macOS `sandbox-exec`. All 1,120 output files
 were byte-identical. Their total size is 66,835,644 bytes, including the 8,826,684-byte internal
-content manifest. The fixture publisher checked the complete public archive; an empty fixture
-cache then downloaded, extracted and verified the package with the normal fixture commands.
+content manifest. These measurements apply to the recorded source and compiler hashes.
 
 The mapped-approach count and final compressed map, index and Sources storage are RA09/RA13
 outputs. They remain unset in this source recount. Physical SD latency and stack high-water

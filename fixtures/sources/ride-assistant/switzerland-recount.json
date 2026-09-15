@@ -2,7 +2,7 @@
   "schema": 1,
   "country": "Switzerland",
   "capture": {
-    "package": "assistant-wiki-switzerland",
+    "distribution": "Local map-baker source capture; not a registered development fixture",
     "archive_sha256": "1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8",
     "archive_bytes": 5348363006,
     "source_manifest_sha256": "ec07a5a76f603f10784ae9391caffd9e6ae9f0513ff85e50ececc1f059a491e4",
@@ -196,8 +196,6 @@
     "Physical SD latency and stack high-water acceptance remain pending; no device is connected."
   ],
   "validation": {
-    "fixture_publish": "Passed immutable upload and full public SHA-256/byte verification.",
-    "clean_cache": "Passed sync and verify of assistant-country from a nonexistent OBC_FIXTURE_CACHE directory.",
     "offline_reproducibility": {
       "network_access": "denied by macOS sandbox-exec in both compiler processes",
       "all_output_bytes_identical": true,

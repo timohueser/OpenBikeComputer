@@ -31,8 +31,6 @@ use crate::CatalogObjectId;
 
 /// Catalog revisions, refresh, deletion, and the trip cascade.
 pub enum CatalogTag {}
-/// Route-use and ride-sync stamps, and expiry metadata writes.
-pub enum RetentionTag {}
 /// Ride samples, checkpoints, finalize and discard.
 pub enum RecorderTag {}
 /// Route planning, detour planning, preview and commit.
@@ -182,12 +180,6 @@ pub struct PlatformSupport {
     pub bonding: bool,
     /// Free space on the storage medium can be measured.
     pub storage_space_report: bool,
-    /// A durable place to keep per-object retention metadata exists — the route-use stamp and the
-    /// ride-sync stamp.
-    ///
-    /// True only for a checked durable executor. Unsupported repository families refuse their
-    /// writes explicitly; a success must come from storage and trigger a fresh catalog read.
-    pub retention_metadata: bool,
 }
 
 /// The live facts capabilities depend on — mounted data and heavy-operation admission.
@@ -215,13 +207,6 @@ pub struct DeviceFacts {
     pub nav_graph: bool,
 
     pub link_connected: bool,
-    /// A ride is being recorded. Arming an install ends in a reboot, which would lose the live ride
-    /// — the shipping refusal in [`DfuInstallError`](crate::dfu::DfuInstallError) and the remote-DFU
-    /// door in [`App::open_remote_dfu_check`](crate::App::open_remote_dfu_check).
-    ///
-    /// `RetentionMachine` also defers its expiry deletes while a ride records (together with the
-    /// trusted-clock gate). That stays a domain policy rather than a capability: the device *can*
-    /// delete, it simply waits — and a dimmed menu entry would be the wrong way to say so.
     pub ride_recording: bool,
     /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s verdict on heavy work — a transfer
     /// holding the store, or a planner run holding the nav arm. This field carries the verdict, not
@@ -832,7 +817,6 @@ mod tests {
 
             bonding: true,
             storage_space_report: true,
-            retention_metadata: true,
         }
     }
 
