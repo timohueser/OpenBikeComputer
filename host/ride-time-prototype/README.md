@@ -55,6 +55,8 @@ integration remain separate work.
 | `komoot_explore.py`, `komoot_explore_report.py` | Private speed distributions, matched-gradient changes within rides, and two controlled live-pace probes |
 | `komoot_misses.py`, `komoot_misses_report.py` | Remaining-error decomposition, fixed-distance horizons, and private case figures |
 | `komoot_motion.py`, `komoot_motion_sensitivity.py` | Geometry-only stationary candidates and a separate motion-proxy sensitivity |
+| `motion_filter.py`, `motion_review.py` | Delayed motion proxy and separate visual trace review |
+| `motion_replay.py`, `motion_report.py` | Synthetic progress limits, chronological replay on a revised moving clock, and private report |
 
 ## Private Komoot preparation
 
@@ -166,6 +168,40 @@ an alternate outcome with candidate time removed. It keeps the original forecast
 cohort, and remaining route costs. Future spans cannot change past observations. Results
 under this changed motion proxy are not validated moving-time accuracy. Preserve pushing
 when designing a real motion detector; do not replace it with a minimum-speed threshold.
+
+For the separate motion review and chronological replay:
+
+```sh
+python3 host/ride-time-prototype/motion_review.py select
+python3 host/ride-time-prototype/motion_review.py render
+# Review the trace sheets and save labels.json before scoring.
+python3 host/ride-time-prototype/motion_review.py score
+python3 host/ride-time-prototype/motion_replay.py
+python3 host/ride-time-prototype/motion_report.py
+```
+
+Review output is `.artifacts/ride-time-motion-review`; replay output is
+`.artifacts/ride-time-motion-replay`. Selection and replay refuse existing plans. Labels map
+each displayed case ID to `stationary-like`, `progress`, or `uncertain`. The deterministic
+sample uses distinct rides for development and validation. Judge any visible movement in
+the central span as progress, including approach, departure, and coherent loops. Geometry
+labels are not independently verified motion states. Report uncertain exclusions separately.
+
+The filter waits for a complete two-minute span. It requires both a confined trace and
+little progress between smoothed position centres. The replay commits observations only at
+span completion, rebuilds the moving clock, and learns separate original/filtered histories
+after completed rides. Comparators share the same new forecast positions. Future motion
+labels affect outcomes only; remaining route costs and gradient defaults stay unchanged.
+Both policies use the same span-boundary block flushes, which differ from the earlier
+pointwise replay. Do not compare their checkpoints as identical physical targets.
+
+The synthetic grid reports false exclusions of very slow progress and missed stationary
+noise. This filter remains an experimental motion proxy. Do not claim that it preserves all
+pushing, produces ground truth, or has demonstrated device memory use. For independent
+validation, capture a short new recording with timed labels for stops, straight pushing,
+and tight turns. Keep receiver speed alongside position when available. Old trip memories
+are not required. The current firmware recorder's moving-time cutoff is a separate policy;
+do not silently reuse it as the ETA motion definition.
 
 ## Small long-ride corrections
 
