@@ -222,7 +222,7 @@ DETOUR_FIX=(--gpx "$MONACO_FIXTURES/tracks/monaco-upahead.gpx" --at 60)
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" "${DETOUR_FIX[@]}" \
     --script "$DETOUR_PRE C d p w p" --inject detour-fail=exhausted --expect-screen NavFail --png "$OUT/detour-fail.png"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" "${DETOUR_FIX[@]}" \
-    --script "$DETOUR_PRE C d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
+    --script "$DETOUR_PRE C d p d d p f p f T" --expect-screen Climb --png "$OUT/detour-committed.png"
 # --- Settings ------------------------------------------------------------------------------------
 # System — so every settings screen sits two levels down. The shape of every script below is:
 #   B u p        open the Menu, one Up step to the Settings station, press -> the Settings list

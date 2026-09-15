@@ -26,3 +26,10 @@ Validation: the complete firmware Python suite (86 tests), one-home guard, suite
 syntax and diff checks pass. No local snapshot sweep, shipping image, base rebuild or device test
 ran for this correction. Public conceptual behavior is unchanged by these test and measurement
 corrections. Hardware acceptance remains pending.
+
+The real Monaco Detour commit selects the normal Climb guidance screen after its final location
+poll. The former Map expectation stopped CI before the rest of the sweep. The named capture now
+expects Climb: the planner reports a 1,333 m connector, +533 m versus the replaced span, and a
+successful spliced route publication. The frame shows the accepted route's climb profile. Its
+hash was checked visually; the complete firmware Python suite and registry pass again. This is
+one named capture, not a repeated snapshot sweep.

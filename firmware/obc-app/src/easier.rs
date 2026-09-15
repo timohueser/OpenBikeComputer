@@ -193,7 +193,10 @@ impl App {
         {
             self.easier.phase = Phase::Idle;
             if matches!(self.ui.stack.last(), Some(crate::screen::Screen::Easier(_))) {
-                self.ui.stack.pop();
+                crate::screen::apply(
+                    &mut self.ui.stack,
+                    crate::screen::Transition::Root(crate::screen::Screen::Map(crate::screen::MapScreen::new())),
+                );
             }
             self.ui.map_dirty = true;
             return;

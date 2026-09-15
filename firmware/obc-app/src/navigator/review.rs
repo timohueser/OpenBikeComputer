@@ -798,6 +798,7 @@ mod tests {
             app.easier.context = Some(easier);
             app.easier.phase = Phase::Ready;
             app.easier.review = true;
+            assert!(app.ui.stack.push(crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new())).is_ok());
             assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
             if recovery.is_some() {
                 app.navigator.accept_review(origin(), 0);
@@ -832,6 +833,8 @@ mod tests {
                     assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                     app.advance_easier();
                     assert!(app.easier.phase == Phase::Idle);
+                    assert!(matches!(app.top_screen(), crate::screen::Screen::Map(_)));
+                    assert!(!app.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::Assistant(_))));
                 } else {
                     assert_eq!(after, None);
                     assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
