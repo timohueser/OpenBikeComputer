@@ -30,8 +30,16 @@ Local artifacts are under the landmark-map worktree's
 `.artifacts/ra13-west-cork/`: source, DEM, region recipe, baker tree, native terrain,
 assembler input manifests, and `assembled/west-cork.obcm`. Source, compile, bake,
 and assembly steps used `sandbox-exec` with network access denied. No source
-archive was published. Production flat-card and final Landmarks/Visit simulator
-journeys remain to run after RA10/RA12 integration.
+archive was published. The normal simulator imported the assembled map to a persistent flat card,
+reopened it, and rendered the Dunlough area offline at 240 × 320. The card uses
+map object 1, revision 1. The captured map frame is in the photo-phase worktree
+at `.artifacts/ra13-west-cork/card-map.png`. This validates card import, reload,
+and map rendering; final Landmarks/Visit interaction remains RA10/RA12 work.
+
+The assembled landmark directory contains Dunlough Castle Q5315471 with two
+text pages, an 8,096-byte compressed photo, 5,874 bytes of photo attribution,
+and explicit OSM approach metadata for all four profiles. It is source-derived
+content, not the study fixture.
 
 ## Grimsel and current mainline
 
