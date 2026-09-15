@@ -1765,6 +1765,15 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }
+        if args.script.as_deref().is_some_and(|script| script.contains('L')) {
+            eprintln!(
+                "landmarks {:?}: {} rows, selected {:?}; visit {:?}",
+                app.landmarks_status(),
+                app.landmark_count(),
+                app.landmark_qid(),
+                app.assistant_review_status()
+            );
+        }
         eprintln!("wrote {path}");
         return;
     }

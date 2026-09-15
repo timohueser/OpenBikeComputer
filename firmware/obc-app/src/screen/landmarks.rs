@@ -59,7 +59,9 @@ impl LandmarksScreen {
                     state.reading = true;
                     state.page = 0;
                 } else if let Some(poi) = detail(state) {
-                    return Transition::Push(Screen::PoiDetail(super::PoiDetailScreen::new(poi)));
+                    return Transition::Push(Screen::PoiDetail(
+                        super::PoiDetailScreen::new(poi).landmark(state.record.unwrap().category),
+                    ));
                 }
             }
             _ => {}
@@ -95,7 +97,7 @@ impl LandmarksScreen {
         cv.fill(rect(0, 208, 240, 112), PARCHMENT);
         cv.round(rect(6, 210, 228, 104), 6, AMBER);
         let state = rx.landmarks;
-        if state.selected >= state.rows.len() && state.ready() {
+        if state.selected >= state.rows.len() && state.status == Status::Ready {
             cv.text(
                 if state.more && state.selected == state.rows.len() { "More landmarks" } else { "Refresh" },
                 Point::new(12, 238),
@@ -238,7 +240,7 @@ fn header(cv: &mut impl Surface, title: &str) {
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]
 }
-fn kind(category: u8) -> &'static str {
+pub(super) fn kind(category: u8) -> &'static str {
     match category {
         1 => "Natural site",
         2 => "Castle / ruin",

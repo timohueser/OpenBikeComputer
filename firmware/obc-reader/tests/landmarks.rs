@@ -63,7 +63,7 @@ fn pages_reach_every_colocated_identity_with_one_record_read_per_step() {
     let mut seen = std::vec::Vec::new();
     loop {
         let mut query = LandmarkQuery::new(directory, 42, (8_000_000, 46_000_000), 10_000, after);
-        let mut output = Vec::new();
+        let mut output = Vec::<LandmarkHit, PAGE_SIZE>::new();
         let more = loop {
             let before = source.reads.get();
             let progress = query.step(&source, directory, 42, &mut output);
@@ -76,8 +76,11 @@ fn pages_reach_every_colocated_identity_with_one_record_read_per_step() {
         };
         let mut name = [0; MAX_NAME_BYTES as usize];
         for hit in &output {
-            assert_eq!(directory.name(&source, &hit.record, &mut name).unwrap(), "Site");
-            seen.push(hit.record.qid);
+            assert_eq!(
+                directory.name(&source, &directory.record(&source, hit.index).unwrap(), &mut name).unwrap(),
+                "Site"
+            );
+            seen.push(hit.key.qid);
         }
         if !more {
             break;
@@ -95,7 +98,7 @@ fn source_failure_and_generation_change_clear_partial_results() {
     for cancel in [false, true] {
         source.fail.set(false);
         let mut query = LandmarkQuery::new(directory, 42, (8_000_000, 46_000_000), 10_000, None);
-        let mut output = Vec::new();
+        let mut output = Vec::<LandmarkHit, PAGE_SIZE>::new();
         while output.is_empty() {
             assert_eq!(query.step(&source, directory, 42, &mut output), QueryProgress::Pending);
         }
@@ -123,7 +126,10 @@ fn malformed_record_fails_query_but_bad_photo_reference_is_selected_item_error()
     bytes[SECTION_HEADER_LEN + 16] = 255;
     let source = SliceSource(&bytes);
     let mut query = LandmarkQuery::new(directory, 42, (8_000_000, 46_000_000), 10_000, None);
-    assert_eq!(query.step(&source, directory, 42, &mut Vec::new()), QueryProgress::Failed(Error::BadOffset));
+    assert_eq!(
+        query.step(&source, directory, 42, &mut Vec::<LandmarkHit, PAGE_SIZE>::new()),
+        QueryProgress::Failed(Error::BadOffset)
+    );
 }
 
 #[test]
