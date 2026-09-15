@@ -134,7 +134,7 @@ def main():
             if (origin.scheme, origin.netloc) != ("tauri", "localhost"):
                 raise AssertionError(f"Expected embedded custom-protocol frontend, got {result['url']}")
             search.send_keys("Switzerland")
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Add Switzerland (994 B)"]'))).click()
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[aria-label="Add Switzerland (1010 B)"]'))).click()
             wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, '[aria-label="Switzerland is already in the map"]')))
             wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, '.parts .price'), "994 B"))
             if browser.find_elements(By.CSS_SELECTOR, '.catalog-error, .ledger .error, .parts .retry'):
