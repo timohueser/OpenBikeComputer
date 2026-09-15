@@ -1,4 +1,4 @@
-use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogObjectKind, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -6,9 +6,9 @@ use obc_app::device_core::{
     PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
+use obc_app::metadata::{MetadataEffect, MetadataOutcome};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlanFamily, PlannerProgress, PlannerWork};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
-use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
 
 use obc_app::{App, Gesture};
@@ -18,24 +18,14 @@ use crate::nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan
 use crate::trace::{DataKey, FeederCall, FeederKind, NoTrace, TraceSink};
 use crate::{ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog};
 
-/// Feed the app the route catalog **with** its retention metas (epic #638, S3) — the shared re-feed
-/// after a scan/delete so the auto-expiry sweep always reads device-truth retention alongside the
-/// summaries. A retention-less repository returns empty metas → every route reads `Never`.
-///
-/// Bulk enters neither protocol: the executor fills the resident catalogs through the feeders they
-/// always used, and the *outcome* reports only that the operation is over.
 pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
-    let metas = routes.retention_metas();
-    app.set_routes_with_meta(routes.catalog(), routes.ids(), &metas);
+    app.set_routes_with_ids(routes.catalog(), routes.ids());
+    app.set_unaccepted_routes(routes.unaccepted_routes());
     trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), routes.catalog().len()));
-    trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
 }
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
     app.set_rides(rides.catalog());
-    if let Some(records) = rides.retention_inventory() {
-        app.set_ride_retention_inventory(records);
-    }
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
@@ -77,7 +67,7 @@ pub enum InflightPlan {
 /// Sources admitted together; the reader is always made by the leased FlatMap.
 struct PlanSources {
     map: crate::flat_store::ObjectSource,
-    map_fingerprint: obc_formats::retention::PayloadFingerprint,
+    map_fingerprint: obc_formats::assistant::PayloadFingerprint,
     original: Option<(crate::RouteLease, Box<obc_route::RouteIndex>)>,
 }
 impl PlanSources {
@@ -196,8 +186,6 @@ pub trait HostPlatform {
 /// A host with no platform work of its own.
 impl HostPlatform for () {}
 
-/// Legacy folder repositories use a session-local fallback. FlatRouteStore supplies the complete
-/// physical card scope and is the only repository that admits durable retention work.
 const REPOSITORY_STORE: StoreIdentity = StoreIdentity::new(1);
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
@@ -403,44 +391,40 @@ impl HostLoop {
                 }
             }
         }
-        if let Some(effect) = plan.effects.retention.take() {
-            if let RetentionEffect::WriteCheckpoint { token, scope } = effect {
-                let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
-                    && app.assistant_preview().is_none();
-                let current_map = map.source();
-                let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
-                let current = scope.is_some_and(|scope| app.assistant_store_matches(scope.store))
-                    && (clearing
-                        || (!resume
-                            || (current_map.is_current()
-                                && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
-                                    store: current_map.store_id().0,
-                                    object: current_map.id().0,
-                                    revision: current_map.revision().0,
-                                })))
-                            && app.assistant_review_context().is_none_or(|context| {
-                                self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
-                                    && context.profile == app.settings().bike_profile_idx
-                                    && context.map
-                                        == (obc_formats::obcr::RouteSourceKey {
-                                            store: current_map.store_id().0,
-                                            object: current_map.id().0,
-                                            revision: current_map.revision().0,
-                                        })
-                            }));
-                if !current || !app.assistant_checkpoint_submission(token) {
-                    plan.effects.retention.take();
-                    let outcome = if current {
-                        RetentionOutcome::Cancelled { token }
-                    } else {
-                        RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Stale }
-                    };
-                    deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
+        if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
+            let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
+                && app.assistant_preview().is_none();
+            let current_map = map.source();
+            let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
+            let current = scope.is_some_and(|scope| app.assistant_store_matches(scope.store))
+                && (clearing
+                    || (!resume
+                        || (current_map.is_current()
+                            && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
+                                store: current_map.store_id().0,
+                                object: current_map.id().0,
+                                revision: current_map.revision().0,
+                            })))
+                        && app.assistant_review_context().is_none_or(|context| {
+                            self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
+                                && context.profile == app.settings().bike_profile_idx
+                                && context.map
+                                    == (obc_formats::obcr::RouteSourceKey {
+                                        store: current_map.store_id().0,
+                                        object: current_map.id().0,
+                                        revision: current_map.revision().0,
+                                    })
+                        }));
+            if !current || !app.assistant_checkpoint_submission(token) {
+                plan.effects.metadata.take();
+                let outcome = if current {
+                    MetadataOutcome::Cancelled { token }
                 } else {
-                    let _ = plan.effects.retention.try_put(effect);
-                }
+                    MetadataOutcome::Failed { token, error: obc_app::metadata::MetadataError::Stale }
+                };
+                deliver(&mut self.inbox.outcomes.metadata, outcome, "metadata");
             } else {
-                let _ = plan.effects.retention.try_put(effect);
+                let _ = plan.effects.metadata.try_put(effect);
             }
         }
         self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
@@ -471,23 +455,20 @@ impl HostLoop {
         tracks: &mut dyn TrackRepository,
         platform: &mut dyn HostPlatform,
     ) {
+        routes.set_route_clock(app.clock_trusted().then(|| app.wall_unix_now()));
         if let Some(effect) = plan.effects.catalog.take() {
             let outcome = self.serve_catalog(app, effect, routes, rides, trips);
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
-        if let Some(effect) = plan.effects.retention.take() {
-            let outcome = if let RetentionEffect::WriteCheckpoint { token, scope } = effect {
-                match scope.zip(app.assistant_checkpoint_payload(token)) {
-                    Some((scope, change)) => match routes.write_checkpoint(scope, change) {
-                        Ok(()) => RetentionOutcome::CheckpointWritten { token },
-                        Err(error) => RetentionOutcome::Failed { token, error },
-                    },
-                    None => RetentionOutcome::Cancelled { token },
-                }
-            } else {
-                serve_retention(effect, routes, rides)
+        if let Some(MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
+            let outcome = match scope.zip(app.assistant_checkpoint_payload(token)) {
+                Some((scope, change)) => match routes.write_checkpoint(scope, change) {
+                    Ok(()) => MetadataOutcome::CheckpointWritten { token },
+                    Err(error) => MetadataOutcome::Failed { token, error },
+                },
+                None => MetadataOutcome::Cancelled { token },
             };
-            deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
+            deliver(&mut self.inbox.outcomes.metadata, outcome, "metadata");
         }
         if let Some(effect) = plan.effects.recorder.take() {
             let opened = app.recorder.object_owed(self.opened_session).is_none();
@@ -552,6 +533,14 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
     ) -> CatalogOutcome {
         match effect {
+            CatalogEffect::CleanupRoute { token, before_utc, store } => {
+                let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                match routes.cleanup_route(before_utc, store, active) {
+                    Ok(Some(object)) => CatalogOutcome::ObjectRemoved { token, object, existed: true },
+                    Ok(None) => CatalogOutcome::CleanupFinished { token },
+                    Err(error) => CatalogOutcome::Failed { token, error },
+                }
+            }
             CatalogEffect::ReadCatalog { token } => {
                 app.begin_catalog_refresh();
                 let scope = match routes.refresh_metadata() {
@@ -559,7 +548,7 @@ impl HostLoop {
                     Err(error) => {
                         return CatalogOutcome::Failed {
                             token,
-                            error: if error == obc_app::retention::RetentionError::RemountRequired {
+                            error: if error == obc_app::metadata::MetadataError::RemountRequired {
                                 CatalogError::RemountRequired
                             } else {
                                 CatalogError::Unreadable
@@ -586,20 +575,6 @@ impl HostLoop {
                 trips.refeed(app);
                 feed_rides(app, rides, &mut NoTrace);
                 CatalogOutcome::CatalogRead { token, scope }
-            }
-            CatalogEffect::ExpireObject { token, object, kind, scope } => {
-                if !app.retention_expiry_due(object, kind, scope) {
-                    return CatalogOutcome::Failed { token, error: CatalogError::Stale };
-                }
-                let result = match kind {
-                    CatalogObjectKind::Route => routes.expire_route(object, scope),
-                    CatalogObjectKind::Ride => rides.expire_ride(object, scope),
-                    CatalogObjectKind::Trip => Err(CatalogError::Unsupported),
-                };
-                match result {
-                    Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
-                    Err(error) => CatalogOutcome::Failed { token, error },
-                }
             }
             CatalogEffect::RemoveObject { token, object, kind } => {
                 remove_object(token, object, kind, routes, rides, trips)
@@ -1009,42 +984,13 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
 }
 
 /// Report only the repository's typed persistence result.
-fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> CatalogError {
-    if error == obc_app::retention::RetentionError::RemountRequired {
+fn catalog_metadata_error(error: obc_app::metadata::MetadataError) -> CatalogError {
+    if error == obc_app::metadata::MetadataError::RemountRequired {
         CatalogError::RemountRequired
     } else {
         CatalogError::Unreadable
     }
 }
-
-fn serve_retention(
-    effect: RetentionEffect,
-    routes: &mut dyn RouteRepository,
-    rides: &mut dyn RideRepository,
-) -> RetentionOutcome {
-    let token = effect.token();
-    let result = match effect {
-        RetentionEffect::WriteCheckpoint { .. } | RetentionEffect::WriteRouteMetadata { .. } => {
-            routes.write_metadata(effect)
-        }
-        RetentionEffect::WriteRideMetadata { .. } => rides.write_metadata(effect),
-    };
-    match (effect, result) {
-        (RetentionEffect::WriteCheckpoint { .. }, Ok(())) => RetentionOutcome::CheckpointWritten { token },
-        (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
-            RetentionOutcome::RouteMetadataWritten { token, id }
-        }
-        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => RetentionOutcome::RideMetadataWritten { token, id },
-        (_, Err(error)) => RetentionOutcome::Failed { token, error },
-    }
-}
-
-/// One recording operation, beside [`serve_retention`].
-///
-/// **Nothing is re-fed here.** A committed ride is a store change, and the re-read it implies is
-/// `CatalogMachine`'s to order — Recorder tells it through the `RideFinalized` connection, so one
-/// saved ride is one catalog read (#1541's rule, applied to the last producer that kept its own copy
-/// of it).
 fn serve_recorder(
     app: &App,
     effect: RecorderEffect,
@@ -1396,15 +1342,15 @@ mod tests {
                 );
                 let mut failed = false;
                 if fail_checkpoint {
-                    if let Some(RetentionEffect::WriteCheckpoint { token, .. }) = plan.effects.retention.take() {
+                    if let Some(MetadataEffect::WriteCheckpoint { token, .. }) = plan.effects.metadata.take() {
                         assert!(app.assistant_checkpoint_submission(token));
                         assert!(host
                             .inbox
                             .outcomes
-                            .retention
-                            .try_put(RetentionOutcome::Failed {
+                            .metadata
+                            .try_put(MetadataOutcome::Failed {
                                 token,
-                                error: obc_app::retention::RetentionError::RemountRequired
+                                error: obc_app::metadata::MetadataError::RemountRequired
                             })
                             .is_ok());
                         failed = true;
@@ -1640,7 +1586,6 @@ mod tests {
 
         bonding: true,
         storage_space_report: true,
-        retention_metadata: true,
     };
 
     /// One scripted fix, taken once — the pass's location port.
@@ -1899,10 +1844,6 @@ mod tests {
 
 #[cfg(test)]
 mod planner_tests;
-
-#[cfg(test)]
-#[path = "dispatch_ride_retention_tests.rs"]
-mod ride_retention_tests;
 
 #[cfg(test)]
 mod find_tests;

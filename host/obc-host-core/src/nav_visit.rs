@@ -178,7 +178,12 @@ impl VisitPlan {
             Stage::Append => {
                 let source = SliceSource(self.leg.as_ref().ok_or(NavigatorError::Workspace)?.bytes());
                 let leg = RouteReader::new(self.index.as_ref().ok_or(NavigatorError::Workspace)?, &source);
-                if self.builder.append_leg_step(&leg, &mut self.output).map_err(|_| NavigatorError::Unavailable)? {
+                let appended = self.builder.append_leg_step(&leg, &mut self.output);
+                if appended.is_err() && self.variant == Variant::Forward && self.builder.rejected_geometry() {
+                    self.rebuild(self.context.progress_m, Variant::Rebuild)?;
+                    return Ok(None);
+                }
+                if appended.map_err(|_| NavigatorError::Unavailable)? {
                     self.leg = None;
                     self.index = None;
                     if self.returning {
@@ -191,9 +196,12 @@ impl VisitPlan {
                 }
             }
             Stage::Finish => {
-                if let Some(stats) =
-                    self.builder.finish_step(original, &mut self.output).map_err(|_| NavigatorError::Unavailable)?
-                {
+                let finished = self.builder.finish_step(original, &mut self.output);
+                if finished.is_err() && self.variant == Variant::Forward && self.builder.rejected_geometry() {
+                    self.rebuild(self.context.progress_m, Variant::Rebuild)?;
+                    return Ok(None);
+                }
+                if let Some(stats) = finished.map_err(|_| NavigatorError::Unavailable)? {
                     match self.variant {
                         Variant::OutAndBack if self.choice.forward_m.is_some() => {
                             self.choice.remember_out_and_back(stats.total_distance_m);

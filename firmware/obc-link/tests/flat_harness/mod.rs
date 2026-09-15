@@ -314,6 +314,7 @@ impl<D: BlockDevice> Device<D> {
         let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the seed allocates");
         Store::write(&self.store, &mut allocation, bytes).expect("the seed writes");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: seam_kind(kind),
@@ -332,6 +333,7 @@ impl<D: BlockDevice> Device<D> {
         let id = FlatStore::next_object_id(&self.store);
         let allocation = Store::allocate(&self.store, reserve).expect("the ride reserves");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: obc_storage::flat::ObjectKind::Ride,
@@ -362,6 +364,7 @@ impl<D: BlockDevice> Device<D> {
         )
         .expect("the final ride bytes journal");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(id),
             revision: Revision(revision),
             kind: obc_storage::flat::ObjectKind::Ride,

@@ -96,6 +96,7 @@ impl Entry {
         put_u64(&mut out, 16, self.meta.revision.0);
         put_u64(&mut out, 24, self.meta.payload_len);
         put_u32(&mut out, 32, self.meta.payload_crc);
+        put_u32(&mut out, 36, self.meta.added_at_utc);
         put_bytes(&mut out, 40, &self.ranges.encode());
         put_bytes(&mut out, 72, self.meta.name.padded());
         out
@@ -108,7 +109,7 @@ impl Entry {
         if bytes.len() < ENTRY_STRIDE {
             return Err(err(Reason::Length));
         }
-        if !is_zero(bytes, 6, 2) || !is_zero(bytes, 36, 4) || !is_zero(bytes, 120, 8) {
+        if !is_zero(bytes, 6, 2) || !is_zero(bytes, 120, 8) {
             return Err(err(Reason::Reserved));
         }
         let kind = ObjectKind::decode(u16_at(bytes, 0))?;
@@ -122,6 +123,7 @@ impl Entry {
         let name = DisplayName::decode(bytes[5], &bytes[72..72 + NAME_CAPACITY])?;
         Ok(Entry {
             meta: EntryMeta {
+                added_at_utc: u32_at(bytes, 36),
                 id: ObjectId(id),
                 revision: Revision(revision),
                 kind,
@@ -138,6 +140,11 @@ impl Entry {
     /// forbids. What an extent is worth is the card's, so the covering rule takes its geometry.
     fn check(&self, geometry: Geometry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
+        if self.meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+            && (self.meta.kind != ObjectKind::Route || self.meta.flags.holds_slack())
+        {
+            return Err(err(Reason::UnknownEnum));
+        }
         let needed = geometry.extents_for(self.meta.payload_len);
         let owned = self.ranges.extents() as u64;
         if owned < needed || (owned > needed && !self.meta.flags.holds_slack()) {
@@ -302,6 +309,7 @@ mod tests {
         ranges.push(first, count).unwrap();
         Entry {
             meta: EntryMeta {
+                added_at_utc: 0,
                 id: ObjectId(id),
                 revision: Revision(revision),
                 kind: ObjectKind::Route,

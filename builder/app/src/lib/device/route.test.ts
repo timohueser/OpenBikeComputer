@@ -30,7 +30,7 @@ describe("decodeRouteHeader", () => {
     it("reads the vector's header exactly as the manifest records it", () => {
         const header = decodeRouteHeader(vector("route-waypoints.obcr"));
         expect(header).toMatchObject({
-            version: 3,
+            version: 4,
             name: "Vector Loop",
             pointCount: 9,
             distanceM: 2207,
@@ -50,6 +50,10 @@ describe("decodeRouteHeader", () => {
     it("refuses something that is not a route", () => {
         expect(() => decodeRouteHeader(vector("update-container-v1.bin"))).toThrow(RouteError);
         expect(() => decodeRouteHeader(new Uint8Array(20))).toThrow(RouteError);
+        expect(() => decodeRouteHeader(vector("route-plain.obcr").subarray(0, 159))).toThrow(RouteError);
+        const obsolete = vector("route-plain.obcr");
+        obsolete[4] = 3;
+        expect(() => decodeRouteHeader(obsolete)).toThrow(RouteError);
     });
 });
 

@@ -1,7 +1,7 @@
 //! Visit requests and phase progress stay in Navigator. Geometry is accepted once.
 use super::{review::AfterCheckpoint, NavigatorMachine, ReviewContext, ReviewPurpose, ReviewStatus};
+use obc_formats::assistant::JourneyPhase;
 use obc_formats::obcm::PoiMetadata;
-use obc_formats::retention::JourneyPhase;
 use obc_route::visit::VisitTarget;
 use obc_route::RouteReader;
 
@@ -24,6 +24,7 @@ const LEAVE_STOP_M: u32 = 15;
 pub(super) struct VisitState {
     target: Option<(PoiMetadata, (i32, i32))>,
     latest_fix: Option<(i32, i32)>,
+    departure_fix: Option<(i32, i32)>,
     phase: Option<JourneyPhase>,
     departed: bool,
     arrival: bool,
@@ -42,6 +43,7 @@ impl VisitState {
         Self {
             target: None,
             latest_fix: None,
+            departure_fix: None,
             phase: None,
             departed: false,
             arrival: false,
@@ -109,16 +111,21 @@ impl NavigatorMachine {
             return;
         }
         let at_stop = obc_map_scene::ground_dist_m(fix, (descriptor.target_lon, descriptor.target_lat));
-        if current.phase == JourneyPhase::Outbound
-            && progress >= entry.saturating_add(DEPARTURE_M)
-            && at_stop > ARRIVAL_M as f32 * 2.0
-        {
-            self.visit.departed = true;
+        let departure_m = DEPARTURE_M.min(stop.saturating_sub(entry) / 2).max(1);
+        let leave_m = LEAVE_STOP_M.min(rejoin.saturating_sub(stop) / 2).max(1);
+        let return_arrival_m = ARRIVAL_M.min(rejoin.saturating_sub(stop) / 2).max(1);
+        if current.phase == JourneyPhase::Outbound {
+            let first = *self.visit.departure_fix.get_or_insert(fix);
+            if progress >= entry.saturating_add(departure_m)
+                && obc_map_scene::ground_dist_m(first, fix) >= departure_m as f32
+            {
+                self.visit.departed = true;
+            }
         }
         self.review.latest_origin = Some(super::ReviewOrigin {
             fix,
             progress_m: progress,
-            occurrence: current.occurrence,
+            occurrence: self.route_match.occurrence(),
             lateral_m: self.following.dist_to_route_m,
             trustworthy: true,
         });
@@ -135,15 +142,15 @@ impl NavigatorMachine {
                 next.upper_m = rejoin;
                 next.progress_m = stop;
             }
-            JourneyPhase::AtStop if progress >= stop.saturating_add(LEAVE_STOP_M) && at_stop >= LEAVE_STOP_M as f32 => {
+            JourneyPhase::AtStop if progress >= stop.saturating_add(leave_m) && at_stop >= leave_m as f32 => {
                 next.phase = JourneyPhase::Returning;
                 next.progress_m = progress;
             }
-            JourneyPhase::Returning if progress >= rejoin.saturating_sub(ARRIVAL_M) => {
+            JourneyPhase::Returning if progress >= rejoin.saturating_sub(return_arrival_m) => {
                 let Some(at) = route.position_at(rejoin) else {
                     return;
                 };
-                if obc_map_scene::ground_dist_m(fix, (at.lon, at.lat)) > ARRIVAL_M as f32 {
+                if obc_map_scene::ground_dist_m(fix, (at.lon, at.lat)) > return_arrival_m as f32 {
                     return;
                 }
                 next.phase = JourneyPhase::Following;
@@ -154,6 +161,10 @@ impl NavigatorMachine {
             }
             _ => return,
         }
+        let Some(occurrence) = self.route_match.occurrence_at(route, next.progress_m) else {
+            return;
+        };
+        next.occurrence = occurrence;
         next.lon = fix.0;
         next.lat = fix.1;
         if next.valid() {
@@ -170,7 +181,7 @@ impl crate::App {
     pub fn set_assistant_preview_shape(
         &mut self,
         token: crate::device_core::OperationToken<crate::device_core::NavigatorTag>,
-        source: obc_formats::retention::PayloadFingerprint,
+        source: obc_formats::assistant::PayloadFingerprint,
         points: &[(i32, i32)],
     ) -> bool {
         if !self.navigator.accepts(&super::NavigatorOutcome::ReviewReady { token })
@@ -270,7 +281,7 @@ impl crate::App {
     pub fn bind_visit_sources(
         &mut self,
         scope: crate::device_core::StoreRevision,
-        original: Option<obc_formats::retention::PayloadFingerprint>,
+        original: Option<obc_formats::assistant::PayloadFingerprint>,
         avoidance: bool,
     ) -> bool {
         if !self.navigator.visit.needs_bind {
@@ -424,11 +435,11 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_core::{RetentionTag, TokenSource};
-    use crate::retention::RetentionOutcome;
+    use crate::device_core::{MetadataTag, TokenSource};
+    use crate::metadata::MetadataOutcome;
+    use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
     use obc_formats::io::{ByteSink, Error, SliceSource};
     use obc_formats::obcr::{RouteSourceKey, VisitDescriptor};
-    use obc_formats::retention::{NavigatorCheckpoint, PayloadFingerprint};
 
     #[derive(Default)]
     struct Sink(std::vec::Vec<u8>);
@@ -443,17 +454,20 @@ mod tests {
         }
     }
     fn route() -> Sink {
-        let mut sink = Sink::default();
         let gpx = b"<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"0.001\"/><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0.002\" lat=\"0\"/></trkseg></trk></gpx>";
+        visit_route(gpx, [0, 111, 222], 1000)
+    }
+    fn visit_route(gpx: &[u8], anchors: [u32; 3], target_lat: i32) -> Sink {
+        let mut sink = Sink::default();
         obc_route::gpx_to_obcr(&SliceSource(gpx), "Visit", &mut sink).unwrap();
         let descriptor = VisitDescriptor {
             original: RouteSourceKey { store: [1; 16], object: 7, revision: 1 },
             original_anchors_m: [0; 3],
-            accepted_anchors_m: [0, 111, 222],
+            accepted_anchors_m: anchors,
             target_id: 99,
             target_kind: 1,
             target_lon: 0,
-            target_lat: 1000,
+            target_lat,
         };
         let offset = sink.0.len() as u32;
         sink.write(&descriptor.encode().unwrap()).unwrap();
@@ -484,11 +498,11 @@ mod tests {
     fn fix(app: &mut crate::App, route: &RouteReader, lon: i32, lat: i32) {
         app.navigator.match_fix(obc_ports::Fix::at(lat, lon), route);
     }
-    fn ack(app: &mut crate::App, tokens: &mut TokenSource<RetentionTag>, route: &RouteReader) {
+    fn ack(app: &mut crate::App, tokens: &mut TokenSource<MetadataTag>, route: &RouteReader) {
         let token = tokens.issue();
         app.navigator.checkpoint_issued(token);
         assert!(app.assistant_checkpoint_submission(token));
-        app.assistant_checkpoint_answer(RetentionOutcome::CheckpointWritten { token });
+        app.assistant_checkpoint_answer(MetadataOutcome::CheckpointWritten { token });
         app.navigator.reconcile_visit(route);
     }
     #[test]
@@ -525,6 +539,80 @@ mod tests {
         assert!(app.assistant_checkpoint().unwrap().original.is_none());
         assert!(app.navigator.review.change.is_none());
     }
+
+    #[test]
+    fn short_legs_require_movement_and_cross_durable_phase_acks() {
+        let bytes=visit_route(b"<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"0.00027\"/><trkpt lon=\"0\" lat=\"0.00018\"/><trkpt lon=\"0.002\" lat=\"0.00018\"/></trkseg></trk></gpx>",[0,30,40],270);
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut stationary = app();
+        stationary.navigator.review.checkpoint.as_mut().unwrap().upper_m = 30;
+        for _ in 0..3 {
+            fix(&mut stationary, &route, 0, 270);
+        }
+        assert!(stationary.navigator.review.change.is_none());
+        let mut moving = app();
+        moving.navigator.review.checkpoint.as_mut().unwrap().upper_m = 30;
+        let mut tokens = TokenSource::new();
+        for lat in [0, 90, 180, 270] {
+            fix(&mut moving, &route, 0, lat);
+        }
+        assert_eq!(moving.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::AtStop);
+        ack(&mut moving, &mut tokens, &route);
+        for _ in 0..3 {
+            fix(&mut moving, &route, 0, 270);
+        }
+        assert!(moving.navigator.review.change.is_none());
+        fix(&mut moving, &route, 0, 215);
+        assert_eq!(moving.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::Returning);
+        ack(&mut moving, &mut tokens, &route);
+        fix(&mut moving, &route, 0, 180);
+        if moving.assistant_checkpoint().unwrap().phase != JourneyPhase::Following {
+            ack(&mut moving, &mut tokens, &route);
+        }
+        assert_eq!(moving.assistant_checkpoint().unwrap().phase, JourneyPhase::Following);
+    }
+
+    #[test]
+    fn phase_checkpoint_resumes_at_its_nonzero_repeated_coordinate_occurrence() {
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = app();
+        let mut tokens = TokenSource::new();
+        for lat in [0, 300, 600, 1000] {
+            fix(&mut app, &route, 0, lat);
+        }
+        assert_eq!(app.latest_assistant_origin().unwrap().occurrence, app.navigator.route_match.occurrence());
+        ack(&mut app, &mut tokens, &route);
+        fix(&mut app, &route, 0, 700);
+        ack(&mut app, &mut tokens, &route);
+        for lat in [400, 0] {
+            fix(&mut app, &route, 0, lat);
+        }
+        ack(&mut app, &mut tokens, &route);
+        let checkpoint = app.assistant_checkpoint().unwrap();
+        assert!(checkpoint.occurrence > 0);
+        let mut matched = obc_route::RouteMatch::new();
+        matched.set_progress_floor(&route, checkpoint.lower_m);
+        let position = route.position_at(checkpoint.progress_m).unwrap();
+        let m = matched.update_to(position.lon, position.lat, &route, checkpoint.upper_m);
+        assert_eq!(matched.occurrence(), checkpoint.occurrence);
+        let mut resumed = NavigatorMachine::new();
+        resumed.offer_checkpoint(crate::device_core::StoreIdentity::from_bytes([1; 16]), Some(checkpoint));
+        resumed.resume_review(super::super::ReviewOrigin {
+            fix: (position.lon, position.lat),
+            progress_m: m.progress_m,
+            occurrence: matched.occurrence(),
+            lateral_m: 0,
+            trustworthy: true,
+        });
+        assert_eq!(resumed.review.status, ReviewStatus::Saving);
+        assert_eq!(resumed.review.change, Some(Some(checkpoint)));
+    }
+
     #[test]
     fn parallel_pass_and_recovered_stop_do_not_show_arrival() {
         let bytes = route();

@@ -55,6 +55,7 @@ fn put(
     let (id, revision) =
         previous.map(|(id, revision)| (id, Revision(revision.0 + 1))).unwrap_or((store.next_object_id(), Revision(1)));
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision,
         kind,
@@ -112,10 +113,13 @@ fn map_bytes() -> Vec<u8> {
 }
 impl Harness {
     fn new() -> Self {
+        Self::with_route(&route())
+    }
+    fn with_route(route: &[u8]) -> Self {
         let media = Box::leak(Box::new(obc_storage::flat::sim::SparseDisk::blank(2_000_000, 7)));
         let disk = Box::leak(Box::new(obc_storage::flat::sim::FaultOnce::new(&*media)));
         let store = Box::leak(Box::new(FlatStore::initialize(&*disk, StoreId([0x54; 16])).unwrap()));
-        let id = put(store, ObjectKind::Route, &route(), None);
+        let id = put(store, ObjectKind::Route, route, None);
         let map_id = put(store, ObjectKind::MapShard, &map_bytes(), None);
         let original = store.source(id, None).unwrap();
         let map = store.source(map_id, None).unwrap();

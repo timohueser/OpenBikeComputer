@@ -83,14 +83,14 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         stages = [
             "app.begin_catalog_refresh()",
             "Request::ReconcileMetadata",
-            "let start = crate::flat_store::retention_scope(flat)",
+            "let start = crate::flat_store::catalog_scope(flat)",
             "load_routes(flat, app)",
             "load_trips(flat, app)",
             "load_rides(flat, app)",
             "if !routes_loaded || !trips_loaded || !rides_loaded",
             "return Err(CatalogError::Unreadable)",
-            "load_retention(flat, app).map_err(catalog_metadata_error)?",
-            "if start != crate::flat_store::retention_scope(flat)",
+            "load_metadata(flat, app).map_err(catalog_metadata_error)?",
+            "if start != crate::flat_store::catalog_scope(flat)",
             "return Err(CatalogError::Stale)",
             "Ok(start)",
         ]
@@ -98,7 +98,7 @@ class Fs7BoardCompositionTests(unittest.TestCase):
             self.assertLess(
                 rescan.index(previous),
                 rescan.index(following),
-                "policy scope requires a complete catalog and metadata load at one stable identity",
+                "catalog scope requires a complete catalog and metadata load at one stable identity",
             )
 
         # The executor returns the captured scope or the actual failure. Retry remains owned by

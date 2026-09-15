@@ -64,7 +64,7 @@ public struct UpdateCheckRecord: Equatable, Sendable, Codable {
 }
 
 /// Persistence seam for the check — the cached answer plus the pre-release opt-in. Beside
-/// ``BondStore`` and ``RetentionDefaultsStore``: phone-local preferences, never on the wire.
+/// ``BondStore``: phone-local preferences, never on the wire.
 public protocol UpdateCheckStore: Sendable {
     func loadCheck() -> UpdateCheckRecord?
     func saveCheck(_ record: UpdateCheckRecord)
@@ -73,7 +73,7 @@ public protocol UpdateCheckStore: Sendable {
     func saveIncludePrereleases(_ include: Bool)
 }
 
-/// The real store: two keys in `UserDefaults`, mirroring ``UserDefaultsRetentionDefaultsStore``.
+/// The persistent store uses two keys in `UserDefaults`.
 /// `@unchecked`: `UserDefaults` is documented thread-safe but the SDK doesn't annotate it
 /// `Sendable`.
 public struct UserDefaultsUpdateCheckStore: UpdateCheckStore, @unchecked Sendable {
@@ -105,7 +105,7 @@ public struct UserDefaultsUpdateCheckStore: UpdateCheckStore, @unchecked Sendabl
 }
 
 /// An in-memory store — the default for previews/tests, so no run leaks its cached answer into
-/// the next (the same reason ``InMemoryRetentionDefaultsStore`` exists).
+/// the next.
 public final class InMemoryUpdateCheckStore: UpdateCheckStore, @unchecked Sendable {
     private let lock = NSLock()
     private var record: UpdateCheckRecord?

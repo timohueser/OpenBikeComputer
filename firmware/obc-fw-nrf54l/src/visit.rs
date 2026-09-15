@@ -48,6 +48,7 @@ enum After {
     Flush(Work, Done),
     Seal,
     DropLeg,
+    RestartLeg,
     Restart,
     CancelA,
     CancelB,
@@ -352,6 +353,12 @@ impl Executor {
                     };
                     let done = match result {
                         Ok(done) => done,
+                        Err(_) if self.variant == Variant::Forward && builder.rejected_geometry() => {
+                            self.variant = Variant::Rebuild;
+                            self.rejoin = self.choice.departure_m;
+                            self.phase = Phase::Restart;
+                            return None;
+                        }
                         Err(_) => return self.fail(NavigatorError::Unavailable),
                     };
                     (done, sink.appended, sink.patch_len)
@@ -519,6 +526,9 @@ impl Executor {
                     return self.ready(Work::Append);
                 }
             }
+            (After::RestartLeg, Ok(Outcome::Done)) => {
+                self.phase = if releasing { Phase::Stopped } else { Phase::Restart };
+            }
             (After::DropLeg, Ok(Outcome::Done)) => {
                 if !releasing {
                     if self.returning {
@@ -634,7 +644,10 @@ impl Executor {
         }
         if let Some(sealed) = self.leg.take().or_else(|| guard.visit_take_sealed()) {
             match writer.try_call_owned(Request::ReleaseSealed { sealed }, reply) {
-                Ok(t) => self.phase = Phase::Await(t, After::DropLeg),
+                Ok(t) => {
+                    self.phase =
+                        Phase::Await(t, if self.release.is_some() { After::DropLeg } else { After::RestartLeg })
+                }
                 Err(Request::ReleaseSealed { sealed }) => self.leg = Some(sealed),
                 _ => unreachable!(),
             }

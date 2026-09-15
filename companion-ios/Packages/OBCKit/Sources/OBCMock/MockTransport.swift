@@ -163,18 +163,6 @@ public struct MockTransport: DeviceTransport {
         try await preludeThrowing()
         return control.recordSetClock(sample)
     }
-
-    public func setRouteRetention(
-        _ id: DeviceObjectID, _ retention: Retention
-    ) async throws -> RetentionWriteOutcome {
-        // `setRouteRetention` (spec §4.4 cmd 6, epic #638). Validates like the
-        // firmware: `unsupported` on the old-firmware knob, `notFound` for an id
-        // the device doesn't hold, else applies the level (recording it so the
-        // next `listRoutes()` reflects the fresh `expires_at`).
-        try await preludeThrowing()
-        return control.applyRouteRetention(id, retention)
-    }
-
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         // A device object id, exactly like the real transport ("download the
         // route object"). Library-saved routes answer E2 from their own record
