@@ -106,3 +106,30 @@ image and a card with the pinned map, ordinary original route and a candidate. O
 6. Exercise full source holds and transfer contention. Confirm refusal releases scratch and retries
    do not exceed five handles or two reservations.
 7. Measure stack high water and resident limits with the normal board acceptance procedure.
+
+## Independent review delta
+
+Commit `f60d9de0` addresses the four lifecycle review findings as one code batch.
+
+- Board terminal cleanup closes the retained original before release acknowledgment. A valid
+  preview or an unresolved publication retains it. The production cleanup helper is included
+  directly in the board adapter suite and exercised over repeated acquire/retain/release cycles.
+- A complete checkpoint read after same-card remount now resolves the old or proposed head in
+  the existing App. Only then does RetentionMachine leave its parked state. Cancel queued while
+  uncertain remains pending; a recovered accepted candidate is cleared before retirement. Host
+  source leases refresh against the new mount before preview retry.
+- Board and host admission use the same exact-original predicate and read the persisted avoidance
+  flag. Both reject an omitted active original or an original with unresolved avoidance.
+- Acceptance clears the preview-only index. The actual host test now continues through checkpoint
+  clear, stop and ordinary selection of the accepted route.
+
+Delta validation: `./tools/obc test -p obc-app --lib` passes 1,004 tests;
+`./tools/obc test -p obc-host-core --lib --test board_detour --test device_core_conformance`
+passes 65, 7 and 36 tests. `cargo clippy -p obc-app -p obc-host-core --all-targets -- -D warnings`,
+the board `cargo check --release`, `./tools/obc suites check`, and documentation links pass.
+The same live App test covers recovered prior/new checkpoint heads with and without queued cancel,
+including the durable clear acknowledgment. No resource build or snapshot sweep was repeated.
+
+The independently reviewed parent `bd0da43f` is merged after this batch. It includes the 1,792-byte
+profile memory reclaim without zoom or layout changes. The earlier census in this note predates
+that reclaim. The orchestrator owns the final integrated resource measurement and acceptance.
