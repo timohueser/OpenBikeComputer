@@ -120,6 +120,41 @@ impl WeeklySchedule {
         }
     }
 
+    /// Exact ranges within this calendar day, including the previous day's overnight spillover.
+    /// At most one merged spillover plus the two source intervals can remain.
+    pub fn intervals_on_day(&self, weekday: u8) -> heapless::Vec<Interval, 3> {
+        let mut ranges = heapless::Vec::<Interval, 3>::new();
+        if weekday >= 7 {
+            return ranges;
+        }
+        let close_q = self
+            .today_intervals((weekday + 6) % 7)
+            .iter()
+            .filter(|iv| iv.close_q <= iv.open_q)
+            .map(|iv| iv.close_q)
+            .max()
+            .unwrap_or(0);
+        if close_q > 0 {
+            let _ = ranges.push(Interval { open_q: 0, close_q });
+        }
+        for iv in self.today_intervals(weekday) {
+            let close_q = if iv.close_q <= iv.open_q { 96 } else { iv.close_q };
+            if iv.open_q < close_q {
+                let _ = ranges.push(Interval { open_q: iv.open_q, close_q });
+            }
+        }
+        ranges.sort_unstable_by_key(|iv| iv.open_q);
+        let mut merged = heapless::Vec::<Interval, 3>::new();
+        for iv in ranges {
+            if let Some(last) = merged.last_mut().filter(|last| iv.open_q <= last.close_q) {
+                last.close_q = last.close_q.max(iv.close_q);
+            } else {
+                let _ = merged.push(iv);
+            }
+        }
+        merged
+    }
+
     /// Current status from exact weekly hours and an authoritative local clock.
     pub fn status(&self, local: Option<(u8, u16)>) -> OpeningStatus {
         let Some((weekday, minute)) = local else { return OpeningStatus::Unknown };

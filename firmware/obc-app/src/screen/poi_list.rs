@@ -100,10 +100,6 @@ impl PoiScratch {
         changed
     }
 
-    pub(crate) fn recheck_pending(&self) -> bool {
-        self.recheck
-    }
-
     /// Drop any snapshot so the next POI-list draw re-queries. Called when a POI list screen opens,
     /// so re-entering a category always takes a fresh snapshot at the current fix.
     pub fn invalidate(&mut self) {
@@ -168,7 +164,13 @@ impl PoiListScreen {
     }
 
     pub(crate) fn pending(&self, scratch: &PoiScratch) -> bool {
-        !scratch.holds(self.category) || self.page != scratch.page || scratch.recheck
+        if scratch.recheck {
+            return true;
+        }
+        if scratch.query.is_some() && matches!(scratch.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
+            return false;
+        }
+        !scratch.holds(self.category) || self.page != scratch.page
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -181,48 +183,53 @@ impl PoiListScreen {
             // the snapshot lands (first draw hasn't run / no fix yet) the list is empty and a
             // step is a no-op.
             Gesture::Step(n) => {
-                let len = if cx.poi_scratch.holds(self.category) { cx.poi_scratch.len() } else { 0 };
-                if len == 0 {
+                let scratch = cx.poi_scratch;
+                let QueryProgress::Ready { more, .. } = scratch.status else { return Transition::None };
+                if !scratch.holds(self.category) || self.page != scratch.page || n == 0 {
                     return Transition::None;
                 }
-                if len != 0
-                    && ((n > 0 && self.selected + 1 == len) || (n < 0 && self.selected == 0 && self.page.is_some()))
-                {
-                    let backwards = n < 0;
-                    let scratch = cx.poi_scratch;
-                    let more = matches!(scratch.status, QueryProgress::Ready { more: true, .. })
-                        || scratch.page.is_some_and(|(_, backwards)| backwards);
-                    if backwards || more {
-                        if let (Some(query), Some(hit)) =
-                            (scratch.query.as_ref(), scratch.pois.get(if backwards { 0 } else { len - 1 }))
-                        {
-                            self.page = Some((query.key(hit), backwards));
-                            self.selected = 0;
-                            return Transition::None;
-                        }
-                    }
-                }
-                self.selected = self.selected.min(len.saturating_sub(1));
-                let visible: heapless::Vec<usize, MAX_POI_RESULTS> = cx
-                    .poi_scratch
+                let visible: heapless::Vec<usize, MAX_POI_RESULTS> = scratch
                     .pois
                     .iter()
                     .enumerate()
                     .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed)
                     .map(|(i, _)| i)
                     .collect();
-                let mut index = visible.iter().position(|i| *i == self.selected).unwrap_or(0);
-                let transition = list::on_step(&mut index, n, visible.len());
-                if let Some(selected) = visible.get(index) {
-                    self.selected = *selected;
+                let index = visible
+                    .iter()
+                    .position(|i| *i == self.selected)
+                    .map(|i| i as i64)
+                    .unwrap_or_else(|| visible.partition_point(|i| *i < self.selected) as i64 - i64::from(n > 0));
+                let target = index + i64::from(n);
+                let backwards = n < 0;
+                let crossed = visible.is_empty() || target < 0 || target >= visible.len() as i64;
+                let reverse_page = scratch.page.is_some_and(|(_, reverse)| reverse);
+                let can_page = if backwards {
+                    if reverse_page {
+                        more
+                    } else {
+                        scratch.page.is_some()
+                    }
+                } else {
+                    reverse_page || more
+                };
+                if crossed && can_page {
+                    let boundary = if backwards { scratch.pois.first() } else { scratch.pois.last() };
+                    if let (Some(query), Some(hit)) = (scratch.query.as_ref(), boundary) {
+                        self.page = Some((query.key(hit), backwards));
+                        self.selected = usize::MAX;
+                        return Transition::None;
+                    }
                 }
-                transition
+                if !visible.is_empty() {
+                    self.selected = visible[target.rem_euclid(visible.len() as i64) as usize];
+                }
+                Transition::None
             }
             // Open the detail screen for the highlighted POI (epic #439 P4 #444). The snapshot is
-            // taken at draw, so it lives in the App-owned scratch `cx` carries read-only; clamp the
-            // selection to the real length (a step can wrap past a short list). An empty scratch
+            // taken at draw, so it lives in the App-owned scratch `cx` carries read-only. An empty scratch
             // (never drawn / no fix) ⇒ `get` is `None` ⇒ nothing to open, stay put.
-            Gesture::Press => match cx.poi_scratch.get(self.selected.min(cx.poi_scratch.len().saturating_sub(1))) {
+            Gesture::Press => match cx.poi_scratch.get(self.selected) {
                 Some(poi) => Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(poi.clone()))),
                 None => Transition::None,
             },
@@ -248,7 +255,7 @@ impl PoiListScreen {
         let total = visible.len();
 
         let geo = ListGeometry::filling_below_title(w, h, ROW_H, 6, 14, Separators::All);
-        let pos = if total == 0 { 0 } else { self.selected.min(total - 1) + 1 };
+        let pos = visible.iter().position(|i| *i == self.selected).map_or(0, |i| i + 1);
         let title = rx.t(super::poi_menu::category_msg(self.category));
         list::list_frame(cv, w, h, title, pos, total, geo.visible);
 
@@ -303,7 +310,7 @@ impl PoiListScreen {
     /// [`draw`](Self::draw) then reads the frozen snapshot. On a host that skips building the
     /// `Reader` on a non-map frame, [`base_needs_reader`](crate::App::base_needs_reader) keeps the
     /// `Reader` built and passed here until the snapshot lands.
-    pub(crate) fn prepare(&self, px: &mut super::Prepare) {
+    pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
         if !self.pending(px.poi_scratch) {
             return;
         }
@@ -321,7 +328,11 @@ impl PoiListScreen {
                 return;
             }
         }
+        if scratch.query.is_some() && matches!(scratch.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
+            return;
+        }
         if scratch.query.is_none() {
+            self.selected = usize::MAX;
             scratch.query = Some(PlaceQuery::new(
                 scratch.generation,
                 obc_reader::PoiCategorySet::only(self.category),
@@ -353,6 +364,19 @@ impl PoiListScreen {
                     scratch.pois.clear();
                 }
                 scratch.taken_for = Some(self.category);
+                if self.selected == usize::MAX {
+                    let mut visible = scratch
+                        .pois
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, hit)| hit.poi.opening != obc_reader::hours::OpeningStatus::Closed);
+                    self.selected = if scratch.page.is_some_and(|(_, reverse)| reverse) {
+                        visible.next_back()
+                    } else {
+                        visible.next()
+                    }
+                    .map_or(usize::MAX, |(i, _)| i);
+                }
                 break;
             }
         }
@@ -519,6 +543,82 @@ mod tests {
         let mut settings = Settings::default();
         let mut cx = Ctx { poi_scratch: scratch, ..test_ctx(&mut st, &mut act, &mut settings) };
         scr.handle(Gesture::Step(n), &mut cx);
+    }
+
+    #[test]
+    fn paging_uses_visible_boundaries_and_does_not_revive_cancelled_work() {
+        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obcm_testkit::{build_poi_map, PoiSpec};
+        let records = (0..40)
+            .map(|i| PoiSpec {
+                lat: 43_500_000 + i,
+                lon: 7_500_000,
+                subtype: 1,
+                name: std::format!("P{i}"),
+                hours_ref: 0xffff,
+            })
+            .collect();
+        let bytes = build_poi_map((7_000_000, 43_000_000, 8_000_000, 44_000_000), 512, &[(1, records)]);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut scratch = PoiScratch::new();
+        let mut screen = PoiListScreen::new(PoiCategory::Water);
+        let finish = |screen: &mut PoiListScreen, scratch: &mut PoiScratch| {
+            for _ in 0..100 {
+                screen.prepare(&mut super::super::Prepare {
+                    reader: Some(&reader),
+                    route: None,
+                    user_fix: Some(Fix::at(43_500_000, 7_500_000)),
+                    poi_scratch: scratch,
+                    active_route: None,
+                    progress_m: 0,
+                    route_total_m: 0,
+                    detour_preview: &[],
+                    place_local: None,
+                });
+                if !screen.pending(scratch) {
+                    return;
+                }
+            }
+            panic!("bounded query did not finish");
+        };
+        finish(&mut screen, &mut scratch);
+        let first_boundary = scratch.query.as_ref().unwrap().key(scratch.pois.last().unwrap());
+        scratch.pois[15].poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        screen.selected = 14;
+        step(&mut screen, &scratch, 1);
+        assert_eq!(screen.page, Some((first_boundary, false)), "closed final row must not trap the page");
+        finish(&mut screen, &mut scratch);
+        assert!(scratch.query.as_ref().unwrap().key(&scratch.pois[0]) > first_boundary);
+        screen.selected = 0;
+        step(&mut screen, &scratch, -1);
+        finish(&mut screen, &mut scratch);
+        assert!(matches!(scratch.status, QueryProgress::Ready { more: false, .. }));
+        let first_page = screen.page;
+        screen.selected = 0;
+        step(&mut screen, &scratch, -1);
+        assert_eq!(screen.page, first_page, "a reverse first page has no preceding page");
+        assert_eq!(screen.selected, 15);
+        for hit in &mut scratch.pois {
+            hit.poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        }
+        step(&mut screen, &scratch, 1);
+        finish(&mut screen, &mut scratch);
+        assert!(
+            scratch.query.as_ref().unwrap().key(&scratch.pois[0]) > first_boundary,
+            "an entirely hidden page still has immutable continuation boundaries"
+        );
+        scratch.clock_changed(None, 0);
+        scratch.clock_changed(Some((0, 600)), 60);
+        let cancelled_page = screen.page;
+        screen.selected = 15;
+        step(&mut screen, &scratch, 1);
+        assert_eq!(screen.page, cancelled_page);
+        finish(&mut screen, &mut scratch);
+        assert_eq!(scratch.status, QueryProgress::Unavailable);
+        assert_eq!(scratch.query.as_ref().unwrap().progress(), QueryProgress::Unavailable);
     }
 
     #[test]
