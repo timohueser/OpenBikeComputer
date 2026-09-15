@@ -151,6 +151,7 @@ pub(super) enum AfterCheckpoint {
 pub(super) struct ReviewState {
     pub store: Option<StoreIdentity>,
     pub context: Option<ReviewContext>,
+    pub restore: Option<RouteSourceKey>,
     pub preview: Option<ReviewedRoute>,
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
@@ -169,6 +170,7 @@ impl ReviewState {
         Self {
             store: None,
             context: None,
+            restore: None,
             preview: None,
             preview_index: None,
             unaccepted: 0,
@@ -206,6 +208,7 @@ impl NavigatorMachine {
         }
         self.review.store = Some(context.store);
         self.review.context = Some(context);
+        self.review.restore = None;
         self.review.status = ReviewStatus::Planning;
         self.route_request = Some(request);
         self.route = PlanPhase::Requested;
@@ -369,6 +372,7 @@ impl NavigatorMachine {
         self.review.preview = None;
         self.review.preview_index = None;
         self.review.context = None;
+        self.review.restore = None;
     }
 
     pub(super) fn prepare_ordinary_route(&mut self) -> bool {
@@ -676,6 +680,22 @@ impl crate::App {
     pub fn assistant_review_context(&self) -> Option<ReviewContext> {
         self.navigator.review.context
     }
+    pub fn requested_assistant_restore(&self) -> Option<RouteSourceKey> {
+        self.navigator.review.restore
+    }
+    pub fn restore_visit(
+        &mut self,
+        target: obc_route::visit::VisitTarget,
+        context: ReviewContext,
+        source: RouteSourceKey,
+    ) -> bool {
+        if !self.plan_visit(target, context) {
+            return false;
+        }
+        self.navigator.review.context = Some(context);
+        self.navigator.review.restore = Some(source);
+        true
+    }
     pub fn assistant_preview(&self) -> Option<ReviewedRoute> {
         self.navigator.review.preview
     }
@@ -694,8 +714,12 @@ impl crate::App {
                 self.note_resume_save_refusal();
             }
         } else {
-            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
+            let first = !self.navigator.review.recovery_seen;
+            let offer = first && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            if first && self.navigator.review.recovery_seen {
+                self.catalogs.note_store_moved();
+            }
             self.ui.find.resume_offer |= offer;
             self.ui.map_dirty |= offer;
         }

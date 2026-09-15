@@ -67,6 +67,19 @@ impl Costs {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct RetainedReview {
+    object: u64,
+    revision: u64,
+    rejoin_m: u32,
+}
+impl RetainedReview {
+    const NONE: Self = Self { object: 0, revision: 0, rejoin_m: 0 };
+    fn source(self, store: crate::device_core::StoreIdentity) -> RouteSourceKey {
+        RouteSourceKey { store: store.bytes(), object: self.object, revision: self.revision }
+    }
+}
+
 pub struct FindState {
     pub state: State,
     pub(crate) action: Action,
@@ -76,6 +89,8 @@ pub struct FindState {
     pub origin: (i32, i32),
     pub results: heapless::Vec<u8, RESULT_LIMIT>,
     costs: [Option<Costs>; PLAN_LIMIT],
+    retained: [RetainedReview; PLAN_LIMIT],
+    retained_store: Option<crate::device_core::StoreIdentity>,
     next: u8,
     context: Option<ReviewContext>,
     route: Option<u64>,
@@ -101,6 +116,8 @@ impl FindState {
             origin: (0, 0),
             results: heapless::Vec::new(),
             costs: [None; PLAN_LIMIT],
+            retained: [RetainedReview::NONE; PLAN_LIMIT],
+            retained_store: None,
             next: 0,
             context: None,
             route: None,
@@ -241,6 +258,91 @@ impl crate::App {
     pub fn find_place_result_count(&self) -> usize {
         self.ui.find.results.len()
     }
+    pub fn retains_find_review(&self, source: RouteSourceKey) -> bool {
+        self.ui.find.retained_store.is_some_and(|store| {
+            self.ui.find.retained.iter().any(|retained| retained.object != 0 && retained.source(store) == source)
+        })
+    }
+    pub(crate) fn find_review_removed(&mut self, source: RouteSourceKey) {
+        if let Some(store) = self.ui.find.retained_store {
+            for retained in &mut self.ui.find.retained {
+                if retained.source(store) == source {
+                    *retained = RetainedReview::NONE;
+                }
+            }
+            if self.ui.find.retained.iter().all(|retained| retained.object == 0) {
+                self.ui.find.retained_store = None;
+            }
+        }
+    }
+    /// A recovered, idle session can reclaim unaccepted candidates found by the catalog reader.
+    pub fn can_reconcile_reviews(&self) -> bool {
+        matches!(self.ui.find.state, State::Idle | State::Start)
+            && !self.ui.find.selected_review
+            && self.assistant_planner_released()
+            && !self.assistant_needs_recovery()
+            && matches!(
+                self.assistant_review_status(),
+                ReviewStatus::Idle | ReviewStatus::ResumeAvailable | ReviewStatus::Accepted
+            )
+            && self.ui.find.retained.iter().any(|retained| retained.object == 0)
+    }
+    /// The feeder supplies only validated, unaccepted Assistant candidates from this card.
+    pub fn reconcile_review_candidate(&mut self, source: RouteSourceKey) {
+        let store = crate::device_core::StoreIdentity::from_bytes(source.store);
+        if !self.can_reconcile_reviews()
+            || !self.assistant_store_matches(store)
+            || self.ui.find.retained_store.is_some_and(|retained_store| retained_store != store)
+            || self.retains_find_review(source)
+            || self.active_route_index().and_then(|index| self.route_ids().get(index)).copied() == Some(source.object)
+            || self.assistant_checkpoint().is_some_and(|checkpoint| {
+                [Some(checkpoint.route), checkpoint.original]
+                    .into_iter()
+                    .flatten()
+                    .any(|protected| protected.object == source.object && protected.revision == source.revision)
+            })
+        {
+            return;
+        }
+        if let Some(retained) = self.ui.find.retained.iter_mut().find(|retained| retained.object == 0) {
+            *retained = RetainedReview { object: source.object, revision: source.revision, rejoin_m: 0 };
+            self.ui.find.retained_store = Some(store);
+            self.ui.map_dirty = true;
+            self.ui.next_wake_ms = Some(1);
+        }
+    }
+
+    fn cleanup_find_reviews(&mut self) {
+        let Some(store) = self.ui.find.retained_store else { return };
+        let accepted = self.assistant_checkpoint().filter(|_| {
+            self.assistant_review_status() == ReviewStatus::Accepted && self.assistant_store_matches(store)
+        });
+        if let Some(checkpoint) = accepted {
+            self.find_review_removed(RouteSourceKey {
+                store: store.bytes(),
+                object: checkpoint.route.object,
+                revision: checkpoint.route.revision,
+            });
+        }
+        if self.ui.find.selected_review
+            || matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
+            || matches!(self.ui.find.state, State::Querying | State::Planning | State::Releasing)
+            || !self.catalogs.can_admit_intent()
+        {
+            return;
+        }
+        let keep_choices = self.ui.find.state == State::Ready
+            && self.ui.stack.iter().any(|screen| matches!(screen, Screen::FindPlace(screen) if screen.choices()));
+        if let Some(retained) = self.ui.find.retained.iter().enumerate().find_map(|(index, retained)| {
+            (retained.object != 0 && !(keep_choices && self.ui.find.results.contains(&(index as u8))))
+                .then_some(*retained)
+        }) {
+            let _ = self
+                .catalogs
+                .admit_intent(crate::catalog_state::CatalogIntent::RemoveReview { source: retained.source(store) });
+            self.ui.next_wake_ms = Some(1);
+        }
+    }
     pub(crate) fn handle_find_action(&mut self) {
         if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
@@ -368,6 +470,10 @@ impl crate::App {
         }
     }
     fn preview_find_result(&mut self, reader: &Reader, selected: usize) {
+        if !self.catalogs.can_admit_intent() {
+            self.ui.next_wake_ms = Some(1);
+            return;
+        }
         self.ui.find.action = Action::None;
         if self.ui.find.state != State::Ready
             || !matches!(self.ui.stack.last(), Some(Screen::FindPlace(screen)) if screen.choices())
@@ -404,8 +510,27 @@ impl crate::App {
         } else {
             poi.name.as_str()
         };
-        let error =
-            self.request_visit(VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) }, name).err();
+        let retained = self.ui.find.results.get(selected).map(|index| self.ui.find.retained[*index as usize]);
+        let error = match retained.zip(self.ui.find.context).filter(|(retained, _)| retained.object != 0) {
+            Some((retained, mut context)) => {
+                context.required_anchors_m[2] = retained.rejoin_m;
+                if self
+                    .current_review_origin()
+                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+                {
+                    Some(crate::navigator::VisitUnavailable::Unmatched)
+                } else if self.restore_visit(
+                    VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) },
+                    context,
+                    retained.source(context.store),
+                ) {
+                    None
+                } else {
+                    Some(crate::navigator::VisitUnavailable::Busy)
+                }
+            }
+            None => Some(crate::navigator::VisitUnavailable::SourceChanged),
+        };
         self.ui.find.selected_review = true;
         self.ui.find.review_costs = None;
         self.ui.find.review = self.assistant_review_status();
@@ -439,6 +564,7 @@ impl crate::App {
             }
         }
         self.handle_find_exit();
+        self.cleanup_find_reviews();
         self.ui.find.review = self.assistant_review_status();
         if self.assistant_review_status() == ReviewStatus::Accepted && self.active_visit() {
             if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
@@ -499,7 +625,10 @@ impl crate::App {
             return;
         }
         if self.ui.find.state == State::Start {
-            if !self.assistant_planner_released() {
+            if self.ui.find.retained.iter().any(|retained| retained.object != 0)
+                || !self.assistant_planner_released()
+                || !self.catalogs.can_admit_intent()
+            {
                 return;
             }
             let Some(fix) = self.fresh_position() else {
@@ -632,6 +761,14 @@ impl crate::App {
                 self.ui.find.context = Some(context);
             }
             self.ui.find.costs[self.ui.find.next as usize] = self.measured_place_costs();
+            if let (Some(preview), Some(context)) = (self.assistant_preview(), self.assistant_review_context()) {
+                self.ui.find.retained_store = Some(context.store);
+                self.ui.find.retained[self.ui.find.next as usize] = RetainedReview {
+                    object: preview.source.object,
+                    revision: preview.source.revision,
+                    rejoin_m: context.required_anchors_m[2],
+                };
+            }
             self.cancel_assistant();
             self.ui.find.state = State::Releasing;
             return;

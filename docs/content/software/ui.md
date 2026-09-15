@@ -470,14 +470,15 @@ Delete actions exist on specific detail or confirmation rows. A hold elsewhere d
 
 The delete footer is a guarded row. The action runs only after a complete hold on that row.
 
-## Where's the next...
+## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
 within 300 m of its line. It takes the first eight eligible places from each source, alternates
 sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
 
-The shared Visit planner measures at most 16 distinct candidates, one at a time. Each candidate is
-released before the next plan starts. Planning a suggestion does not activate a route or change the
+The shared Visit planner measures at most 16 distinct candidates, one at a time. It stores each
+measured route on the card and releases the planner before the next plan starts. The Finding
+indicator stays visible through the complete batch. Planning a suggestion does not activate a route or change the
 recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
@@ -488,11 +489,17 @@ direct destination and has no return cost. Membership, order, map bounds, and co
 until the category is reopened. These bounded results do not establish a global nearest place.
 **More places** opens the full paged category browser. It plans only the place selected for review.
 
-Selecting a Find suggestion opens Visit review directly. More places retains the place detail page.
-Both paths use the shared Visit planner. Ordinary service places without an explicit OSM approach
+Selecting a Find suggestion opens Visit review directly and loads its stored route without another
+route calculation. Back and reselect reuse the same route while its inputs remain valid. Leaving
+the category removes unused routes. Restart removes abandoned previews while preserving accepted
+checkpoint routes. More places retains the place detail page and plans the
+selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach
 use normal coordinate destination routing. The review binds the exact map revision and actual
-route endpoint. A gap of more than 100 m from an explicit approach to the place appears in the
-preview. A known-closed place, a changed source, or a stale origin prevents acceptance. Missing elevation remains unknown. Acceptance
+route endpoint. The preview draws the rider and destination pin above the route. When an explicit
+approach is more than 100 m from the place's map coordinate, a dotted line connects the route end
+to the pin. The caption gives this direct distance. The pin can mark the center of a feature;
+the line does not describe a walking path. A known-closed place, a changed source, or a stale origin
+prevents acceptance. Missing elevation remains unknown. Acceptance
 uses the shared durable Visit transaction; browsing and cancellation leave the active route intact.
 
 Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),
@@ -600,7 +607,7 @@ Page membership and order stay fixed while the list is open. Current opening sta
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Review visit bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Preview route bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
   <defs>
     <marker id="aPD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -624,7 +631,7 @@ Page membership and order stay fixed while the list is open. Current opening sta
   <text class="d-sub" x="68" y="203" text-anchor="middle" style="fill:#fff;font-size:12px">OPEN</text>
   <!-- footer action bar -->
   <rect x="38" y="214" width="204" height="16" rx="5" style="fill:#e3a52b" />
-  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Review visit</text>
+  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Preview route</text>
 
   <!-- the three heading states -->
   <text class="d-tag" x="292" y="60">the hours heading — three states</text>

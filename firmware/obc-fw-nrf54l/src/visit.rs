@@ -92,7 +92,7 @@ pub(crate) struct Executor {
     rejoin: u32,
     return_to: (i32, i32),
     returning: bool,
-    published: Option<ObjectId>,
+    published: Option<(ObjectId, Revision)>,
     uncertain: bool,
 }
 impl Executor {
@@ -125,6 +125,7 @@ impl Executor {
                     | NavigatorEffect::CommitRoute { .. }
                     | NavigatorEffect::Release { family: PlanFamily::Route, .. }
             ))
+            || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(_), .. })
             || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
                 && app.assistant_review_context().is_some_and(|c| {
                     matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
@@ -166,6 +167,9 @@ impl Executor {
                 self.token = Some(token);
                 self.release = Some(retain_result);
                 None
+            }
+            NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(source), .. } => {
+                self.restore(source, token, app, store, guard)
             }
             NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => {
                 self.token = Some(token);
@@ -244,6 +248,94 @@ impl Executor {
             _ => Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace }),
         }
     }
+    #[inline(never)]
+    fn restore(
+        &mut self,
+        source: obc_formats::obcr::RouteSourceKey,
+        token: OperationToken<NavigatorTag>,
+        app: &mut App,
+        store: &'static FlatStore<FlatCard>,
+        guard: &mut Option<NavGuard>,
+    ) -> Option<NavigatorOutcome> {
+        self.token = Some(token);
+        if !matches!(self.phase, Phase::Empty) || guard.is_some() {
+            return self.fail(NavigatorError::Workspace);
+        }
+        let Some(context) = app.assistant_review_context() else {
+            return self.fail(NavigatorError::SourceChanged);
+        };
+        let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+        if app.requested_assistant_restore() != Some(source)
+            || source.store != store.store_id().0
+            || context.store.bytes() != source.store
+            || context.map != crate::flat_store::planner_map_key(store)
+            || !crate::flat_store::planner_map_current()
+            || app
+                .current_review_origin()
+                .is_none_or(|origin| !context.accepts_origin(app.settings().bike_profile_idx, origin))
+            || !crate::assistant::original_allowed(store, context, active)
+        {
+            return self.fail(NavigatorError::SourceChanged);
+        }
+        let Some(fingerprint) = crate::flat_store::route_fingerprint(store, source.object)
+            .filter(|fingerprint| fingerprint.revision == source.revision)
+        else {
+            return self.fail(NavigatorError::SourceChanged);
+        };
+        if let Some(original) = context.original {
+            self.original = match crate::flat_store::planner_original(store, ObjectId(original.object)) {
+                Ok(source) => Some(source),
+                Err(_) => return self.fail(NavigatorError::SourceChanged),
+            };
+        }
+        let Some(quiesced) = app.nav_arena_precondition() else { return self.fail(NavigatorError::Workspace) };
+        *guard = match crate::arena::claim_nav(quiesced) {
+            Ok(g) => Some(g),
+            Err(_) => return self.fail(NavigatorError::Workspace),
+        };
+        let g = guard.as_mut()?;
+        g.begin_sources();
+        self.published = Some((ObjectId(source.object), Revision(source.revision)));
+        self.phase = Phase::Stopped;
+        crate::flat_store::load_routes(store, app);
+        let restored = store.with_source(ObjectId(source.object), Some(Revision(source.revision)), |bytes| {
+            let target = app.assistant_visit_target().ok_or(NavigatorError::Unavailable)?;
+            if context.purpose == ReviewPurpose::Destination {
+                target.validate_destination(bytes, context.profile).map_err(|_| NavigatorError::SourceChanged)?;
+            } else if context.purpose == ReviewPurpose::Visit {
+                let descriptor = obc_route::RouteObjectInfo::read(bytes)
+                    .map_err(|_| NavigatorError::SourceChanged)?
+                    .visit
+                    .ok_or(NavigatorError::SourceChanged)?;
+                if descriptor.target_kind != (target.metadata.source.0 >> 62) as u8
+                    || descriptor.target_id != target.metadata.source.0 & ((1 << 62) - 1)
+                {
+                    return Err(NavigatorError::SourceChanged);
+                }
+            } else {
+                return Err(NavigatorError::Unavailable);
+            }
+            let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, bytes, context)?;
+            let shape = crate::assistant::preview_shape(g.sources().1, bytes).map_err(|_| NavigatorError::Store)?;
+            Ok::<_, NavigatorError>((preview, shape))
+        });
+        let outcome = match restored {
+            Ok(Ok((preview, shape))) => {
+                let outcome = app.assistant_preview_outcome(token, preview);
+                if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                    && !app.set_assistant_preview_shape(token, preview.source, &shape)
+                {
+                    NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                } else {
+                    outcome
+                }
+            }
+            _ => NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
+        };
+        self.token = None;
+        Some(outcome)
+    }
+
     #[inline(never)]
     fn begin_variant(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
@@ -612,7 +704,7 @@ impl Executor {
             }
             (After::Publish, Ok(Outcome::Published(id))) => {
                 self.a = None;
-                self.published = Some(id);
+                self.published = Some((id, Revision(1)));
                 self.phase = Phase::Stopped;
                 if !releasing {
                     crate::flat_store::load_routes(store, app);
@@ -722,6 +814,13 @@ impl Executor {
             return None;
         }
         let retain = self.release.unwrap_or(false);
+        let find_owned = self.published.is_some_and(|(id, revision)| {
+            app.retains_find_review(obc_formats::obcr::RouteSourceKey {
+                store: store.store_id().0,
+                object: id.0,
+                revision: revision.0,
+            })
+        });
         let keep = self.uncertain || retain && app.assistant_preview().is_some();
         if !keep {
             if let Some(source) = self.original.take() {
@@ -733,11 +832,14 @@ impl Executor {
                 return None;
             }
         }
-        if let Some(id) = self.published.filter(|_| !retain && !self.uncertain) {
-            if let Ok(t) = writer.try_call(Request::RemoveComputedRoute { id, revision: Revision(1) }, reply) {
+        if let Some((id, revision)) = self.published.filter(|_| !retain && !find_owned && !self.uncertain) {
+            if let Ok(t) = writer.try_call(Request::RemoveComputedRoute { id, revision }, reply) {
                 self.phase = Phase::Await(t, After::Remove);
             }
             return None;
+        }
+        if !keep && find_owned {
+            self.published = None;
         }
         *guard = None;
         self.release = None;
