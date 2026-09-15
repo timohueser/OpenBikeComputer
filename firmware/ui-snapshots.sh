@@ -68,6 +68,7 @@ mkdir -p "$OUT"
 TRACKS="$(mktemp -d)"
 # An empty import directory for create-route sessions. Generated routes stay on each session's card.
 NAVDIR="$(mktemp -d)"
+JOURNEYDIR="$(mktemp -d)"
 # A routes dir with a trip folder (epic #526, TR3): the two specs/vectors routes + the sim crate's
 # grimsel-climb, named so their sorted-scan ids are 0/1/2, plus the committed `TP1.OBT` ("Alpen
 # Traverse", stages [0, 1, 99]) — so the top level shows one folder grouping ids 0+1 (its two vector
@@ -83,7 +84,7 @@ PLAINROUTE="$(mktemp -d)"
 # device-planned route, whose points are all zero-elevation until EL7 fills them from terrain.)
 ETAROUTE="$(mktemp -d)"
 ETAFLAT="$(mktemp -d)"
-trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$JOURNEYDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
@@ -204,6 +205,12 @@ LANDMARKS="Q d p d d d d d p f"
     --expect-screen VisitReview --png "$OUT/visit-preview.png"
 "$SIM" "$CORK" --boot --heading 0 --center -9825560,51485575 --script "$LANDMARKS p p f p f p f" \
     --expect-screen Map --png "$OUT/visit-accepted.png"
+# Persist a real Cork destination, then reopen its checkpoint through normal Resume controls.
+"$SIM" "$CORK" --routes-dir "$NAVDIR" --create-card "$JOURNEYDIR/card.obc"
+"$SIM" --card "$JOURNEYDIR/card.obc" --boot --heading 0 --center -9825560,51485575 \
+    --script "$LANDMARKS p p f p f p f" --expect-screen Map --png "$JOURNEYDIR/accepted.png"
+"$SIM" --card "$JOURNEYDIR/card.obc" --boot --heading 0 --center -9825560,51485575 \
+    --script "f" --expect-screen Journey --png "$OUT/journey-resume.png"
 "$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "Q d p p p f" \
     --expect-screen FindPlace --png "$OUT/find-place.png"
 
@@ -415,7 +422,7 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p d p p b" --gpx "$WPTGPX" --at 233 --expect-screen Statistics --png "$OUT/stats-wpt.png"
 # The EL7 sweep below plans a route on the device and rides it; its own dir.
 ELEVDIR="$(mktemp -d)"
-trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$JOURNEYDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
 # --- Terrain-filled device-planned route -------------------------------------------------------
 # The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
@@ -491,7 +498,7 @@ PYTERRAIN
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
 UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
-UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$JOURNEYDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T Q d p d p f p f f f f f f f f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
