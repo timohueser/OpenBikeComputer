@@ -140,6 +140,44 @@ fn disconnected_return_is_not_joined_with_a_straight_segment() {
 }
 
 #[test]
+fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
+    let end = (8_337_028, 46_576_671);
+    let stop = (end.0, end.1 + 1000);
+    let outbound = route(vec![(end.0, end.1, 10), (stop.0, stop.1, 10)], &[], 111);
+    let returning = route(vec![(stop.0, stop.1, 10), (end.0, end.1, 10)], &[], 111);
+    for (head, accepted) in [((8_337_021, 46_576_670), true), ((8_337_008, 46_576_670), false)] {
+        let original = route(vec![(head.0, head.1, 10), (head.0 + 2000, head.1, 10)], &[], 153);
+        let source = SliceSource(&original);
+        let index = RouteIndex::read(&source).unwrap();
+        let reader = RouteReader::new(&index, &source);
+        let mut builder = VisitBuilder::new(key(1), key(2), 0, 0, SourceId::osm(1, 2), stop).unwrap();
+        let mut sink = VecSink::default();
+        builder.begin(&mut sink).unwrap();
+        append(&mut builder, &outbound, &mut sink);
+        append(&mut builder, &returning, &mut sink);
+        let first = builder.finish_step(&reader, &mut sink);
+        if !accepted {
+            assert_eq!(first, Err(obc_formats::io::Error::BadOffset));
+            assert!(builder.rejected_geometry());
+            continue;
+        }
+        assert!(first.unwrap().is_none());
+        while builder.finish_step(&reader, &mut sink).unwrap().is_none() {}
+        let emitted = SliceSource(&sink.buf);
+        let index = RouteIndex::read(&emitted).unwrap();
+        let reader = RouteReader::new(&index, &emitted);
+        let points = reader.preview_polyline::<8>();
+        assert_eq!(points.as_slice(), &[end, stop, end, (head.0 + 2000, head.1)]);
+        let visit = reader.visit_descriptor().unwrap().unwrap();
+        assert_eq!(visit.original_anchors_m, [0; 3]);
+        assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
+        let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+        assert!(costs.arrival_elevation_complete);
+        assert!(!costs.complete_elevation);
+    }
+}
+
+#[test]
 fn cancellation_connector_keeps_tail_and_removes_visit() {
     let original = route(vec![(0, 0, 10), (2000, 0, 30)], &[(150, 1400, 100, 20, 1, 4, 11, b"Tail")], 222);
     let source = SliceSource(&original);
