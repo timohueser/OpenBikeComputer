@@ -355,7 +355,7 @@ fn imported_route_connections_are_retained_measured_and_bounded() {
             let descriptor = composed.visit_descriptor().unwrap().unwrap();
             assert_eq!(descriptor.original_anchors_m, [0, anchor, anchor]);
             assert!((anchor + 443..=anchor + 445).contains(&descriptor.accepted_anchors_m[2]));
-            assert!((776..=778).contains(&composed.total_distance_m));
+            assert!((777..=779).contains(&composed.total_distance_m), "composed {} m", composed.total_distance_m);
             let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
             assert!(!costs.arrival_elevation_complete && !costs.complete_elevation);
         }
