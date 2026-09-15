@@ -43,6 +43,8 @@ struct DevSheet: View {
                         controller.resetCard()
                         dismiss()
                     }
+                    // The detached copy is writing this card.
+                    .disabled(controller.isImporting)
                 }
             }
             .navigationTitle("Developer")
@@ -74,6 +76,8 @@ struct DevSheet: View {
                 controller.delete(file)
                 reload()
             }
+            // The detached copy may be reading this file.
+            .disabled(controller.isImporting)
         }
     }
 

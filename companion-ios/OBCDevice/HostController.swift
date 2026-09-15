@@ -38,6 +38,8 @@ final class HostController {
     let canvas = UIImageView()
 
     private var host: OpaquePointer?
+    /// The interned name behind `screen`, as the host handed it over.
+    private var screenName: UnsafePointer<CChar>?
     private var link: CADisplayLink?
     private var isActive = true
     private var epoch = CACurrentMediaTime()
@@ -102,6 +104,8 @@ final class HostController {
         if let host { obc_ios_close(host) }
         host = nil
         canvas.image = nil
+        screen = ""
+        screenName = nil
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
@@ -114,9 +118,22 @@ final class HostController {
     /// Delete the card. The next import creates a new one; nothing is imported automatically here,
     /// or a reset would silently undo itself.
     func resetCard() {
+        // A map import is writing this card from another thread.
+        guard !isImporting else { return }
         close()
-        try? FileManager.default.removeItem(at: card)
-        screen = ""
+        let card = card
+        guard FileManager.default.fileExists(atPath: card.path) else {
+            state = .needsMap
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: card)
+        } catch {
+            // The card is still there and the host is now closed. Say so, rather than offer an
+            // import screen over a card that was never reset.
+            state = .failed("Could not reset the card: \(error.localizedDescription)")
+            return
+        }
         state = .needsMap
     }
 
@@ -152,9 +169,12 @@ final class HostController {
         if obc_ios_tick(host, (CACurrentMediaTime() - epoch) * 1000) {
             canvas.image = frameImage(host)
         }
-        if let raw = obc_ios_screen(host) {
-            let name = String(cString: raw)
-            if name != screen { screen = name }
+        // The host interns the screen names, so the pointer alone says whether it changed. Building
+        // a String every frame would allocate 60 times a second to answer "still the Map".
+        let raw = obc_ios_screen(host)
+        if raw != screenName {
+            screenName = raw
+            screen = raw.map { String(cString: $0) } ?? ""
         }
     }
 
@@ -184,8 +204,9 @@ final class HostController {
 
     /// What is in Documents for the host to take, by name. The exports directory is not one.
     func inbox() -> [URL] {
+        // Hidden files are skipped so a half-copied file staged by `copy` never looks importable.
         let files = (try? FileManager.default.contentsOfDirectory(
-            at: documents, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            at: documents, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         return files
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == false }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
@@ -217,19 +238,30 @@ final class HostController {
     }
 
     /// Put `url` in Documents under security-scoped access. A file that is already there — Files
-    /// opens ours in place — is taken as it is.
+    /// opens ours in place — is taken as it is: the symlinks have to be resolved first, or the
+    /// `/private` prefix makes one file look like two.
     private nonisolated static func copy(_ url: URL, into documents: URL) -> URL? {
+        let files = FileManager.default
         let destination = documents.appending(path: url.lastPathComponent)
-        guard url.standardizedFileURL != destination.standardizedFileURL else { return destination }
+        guard url.resolvingSymlinksInPath() != destination.resolvingSymlinksInPath() else {
+            return destination
+        }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        try? FileManager.default.removeItem(at: destination)
+        // Stage, then replace. A copy straight over the destination would delete a working map
+        // before it knows the new one arrives whole.
+        let staged = documents.appending(path: ".incoming-\(UUID().uuidString)")
         do {
-            try FileManager.default.copyItem(at: url, to: destination)
+            try files.copyItem(at: url, to: staged)
+            guard files.fileExists(atPath: destination.path) else {
+                try files.moveItem(at: staged, to: destination)
+                return destination
+            }
+            return try files.replaceItemAt(destination, withItemAt: staged) ?? destination
         } catch {
+            try? files.removeItem(at: staged)
             return nil
         }
-        return destination
     }
 
     /// Import one route into the open card.
@@ -247,6 +279,9 @@ final class HostController {
     func useAsMap(_ url: URL) {
         guard !isImporting else { return }
         offeredMap = nil
+        // The import screen goes up before the host goes down, or the copy runs behind a dead
+        // panel and four pads that answer nothing.
+        state = .needsMap
         close()
         isImporting = true
         let card = card.path
@@ -267,8 +302,15 @@ final class HostController {
         }
     }
 
+    /// Delete a dropped file. Never during a map import: the file being copied onto the card may
+    /// be this one.
     func delete(_ url: URL) {
-        try? FileManager.default.removeItem(at: url)
+        guard !isImporting else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            notice = "Could not delete \(url.lastPathComponent): \(error.localizedDescription)"
+        }
     }
 
     /// The single map in Documents, when that is what is there.
