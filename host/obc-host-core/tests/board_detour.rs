@@ -1,6 +1,10 @@
 //! Actual board detour executor over real card bytes, with deterministic ticket delivery.
 extern crate self as defmt;
 #[macro_export]
+macro_rules! info {
+    ($format:literal $(, $arg:expr)* $(,)?) => {{ let _ = ($($arg,)*); }};
+}
+#[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {{
         $crate::unexpected_compensation_refusal()
@@ -104,7 +108,19 @@ fn map_bytes() -> Vec<u8> {
         &[],
         0,
         bbox,
-        &[],
+        &[obc_pack::poi::Poi {
+            metadata: obc_formats::obcm::PoiMetadata { source: obc_formats::obcm::SourceId::osm(1, 3), approach: None },
+            access_nodes: vec![],
+            wikidata: None,
+            wikipedia: None,
+            subtype: 1,
+            lon_udeg: 500_000,
+            lat_udeg: 510_000,
+            name: Some("Water".into()),
+            from_node: true,
+            hours: None,
+            elevation_m: None,
+        }],
         &NavGraph { nodes, edges },
         &profiles,
         &mut obc_elevation::NullElevation,

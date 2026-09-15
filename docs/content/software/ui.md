@@ -473,15 +473,29 @@ The delete footer is a guarded row. The action runs only after a complete hold o
 ## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
-within 300 m of its line. It takes the first eight eligible places from each source, alternates
-sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
+within 300 m of its line. It takes four eligible nearby places and four from the corridor page,
+alternates sources, and removes duplicate OSM identities. The corridor selection estimates arrival
+using the same route occurrence as Visit and the straight distance from that point to the place.
+This avoids a later pass being treated as an early stop on an overlapping route. Known-closed
+places are excluded before these limits. The shared corridor page keeps its route order.
 
-The shared Visit planner measures at most 16 distinct candidates, one at a time. It stores each
+The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
 measured route on the card and releases the planner before the next plan starts. The Finding
-indicator stays visible through the complete batch. Planning a suggestion does not activate a route or change the
-recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
+indicator stays visible through the complete batch. Its small compass turns by one third of a revolution once per
+second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
+
+With an accepted route, a visit follows that route to the point nearest the place's access coordinate
+within the next 20 km. Equal whole-metre distances use the first forward occurrence. Two
+directed route searches connect that point to the place and back. The original route before and
+after the excursion, including its waypoints and loops, stays in the visit. A place on the route
+can have no return leg distance; guidance continues after the rider leaves the stop.
+
+An imported route can differ from the road graph. At departure and return, a connection within
+the normal 100 m snap limit retains both coordinates and counts toward the visit distance.
+Its surface and elevation are unknown. A larger gap refuses the visit. The preview fits the path
+through the place and back to the original route; the stored journey retains the full continuation.
 
 The card shows route distance and ascent to arrival. Added costs compare the complete visit,
 including its return, with the remaining accepted route. With no accepted route, the review is a

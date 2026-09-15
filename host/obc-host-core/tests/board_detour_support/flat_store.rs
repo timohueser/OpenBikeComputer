@@ -5,6 +5,11 @@ pub type FlatCard = &'static obc_storage::flat::sim::FaultOnce<&'static obc_stor
 type Answer = Result<Outcome, StoreError>;
 #[derive(Default)]
 pub struct Reply(RefCell<Option<(Ticket, Answer)>>);
+impl Reply {
+    pub fn signaled(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +172,7 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
 }
 type MountedSources = (&'static FlatStore<FlatCard>, ObjectId, Revision, ObjectId, Revision);
 thread_local! {
+    static FINGERPRINT_READS: Cell<u32> = const { Cell::new(0) };
     static SOURCES: RefCell<Option<MountedSources>> = const { RefCell::new(None) };
 }
 pub fn mount_sources(
@@ -211,7 +217,11 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     app.set_routes_with_ids(&summaries, &ids);
 }
 
+pub fn fingerprint_reads() -> u32 {
+    FINGERPRINT_READS.get()
+}
 pub fn route_fingerprint(store: &FlatStore<FlatCard>, id: u64) -> Option<obc_formats::assistant::PayloadFingerprint> {
+    FINGERPRINT_READS.set(FINGERPRINT_READS.get() + 1);
     store.entries().find(|e| e.id.0 == id).map(metadata::fingerprint)
 }
 pub fn planner_map_key(store: &FlatStore<FlatCard>) -> obc_formats::obcr::RouteSourceKey {

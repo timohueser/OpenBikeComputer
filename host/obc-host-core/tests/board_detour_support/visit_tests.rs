@@ -14,6 +14,7 @@ struct VisitHarness {
     outcomes: OutcomeSlots,
     facts: ExternalFacts,
     now: u32,
+    catalog: Option<obc_app::catalog_state::CatalogEffect>,
 }
 impl VisitHarness {
     fn new() -> Self {
@@ -33,6 +34,7 @@ impl VisitHarness {
             outcomes: OutcomeSlots::default(),
             facts: ExternalFacts::NONE,
             now: 0,
+            catalog: None,
         };
         this.pass();
         let map = flat_store::planner_map_key(this.h.store);
@@ -66,17 +68,51 @@ impl VisitHarness {
         this
     }
     fn pass(&mut self) {
+        self.pass_with(&mut NoFix, false);
+    }
+    fn pass_with(&mut self, position: &mut dyn obc_ports::LocationSource, catalogs: bool) {
         self.now += 1;
         self.visit.accepted(&self.h.app, self.h.store);
+        if catalogs {
+            use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
+            if let Some(effect) = self.catalog.take() {
+                let outcome = match effect {
+                    CatalogEffect::ReadCatalog { token } => {
+                        flat_store::load_routes(self.h.store, &mut self.h.app);
+                        CatalogOutcome::CatalogRead {
+                            token,
+                            scope: Some(StoreRevision {
+                                store: StoreIdentity::from_bytes(self.h.store.store_id().0),
+                                revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
+                            }),
+                        }
+                    }
+                    CatalogEffect::RemoveReview { token, source } => {
+                        self.h
+                            .store
+                            .commit(&[Mutation::Remove {
+                                id: ObjectId(source.object),
+                                revision: Revision(source.revision),
+                            }])
+                            .unwrap();
+                        CatalogOutcome::ReviewRemoved { token, source }
+                    }
+                    _ => panic!("unexpected Find catalog effect"),
+                };
+                self.outcomes.catalog.try_put(outcome).unwrap();
+            }
+        }
         self.facts.note_store_revision(StoreRevision {
             store: StoreIdentity::from_bytes(self.h.store.store_id().0),
             revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
         });
+        let index = catalogs.then(|| obc_route::RouteIndex::read(self.h.original.as_ref().unwrap()).unwrap());
+        let route = index.as_ref().map(|index| obc_route::RouteReader::new(index, self.h.original.as_ref().unwrap()));
         let mut plan = self.h.app.run_pass(PassInputs {
             now: PassClock { ride: obc_ports::RideClock(self.now), ui: obc_ports::InputClock(self.now) },
             gestures: &[],
-            sensors: obc_ports::Sensors::new(&mut NoFix),
-            route: None,
+            sensors: obc_ports::Sensors::new(position),
+            route: route.as_ref(),
             support: PlatformSupport {
                 detour: true,
                 settings_persistence: false,
@@ -89,7 +125,21 @@ impl VisitHarness {
             derived: DerivedInputs::NONE,
             targets: DerivedTargets::NONE,
         });
+        if let Some(effect) = plan.effects.catalog.take() {
+            assert!(self.catalog.replace(effect).is_none());
+        }
         if let Some(effect) = plan.effects.navigator.take() {
+            if matches!(effect, Effect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
+                let id = self.h.app.active_route_index().map(|i| self.h.app.route_ids()[i]);
+                assert!(self.h.app.bind_visit_sources(
+                    StoreRevision {
+                        store: StoreIdentity::from_bytes(self.h.store.store_id().0),
+                        revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
+                    },
+                    id.and_then(|id| flat_store::route_fingerprint(self.h.store, id)),
+                    false,
+                ));
+            }
             assert!(self.visit.accepts(&effect, &self.h.app), "{effect:?}");
             if let Some(answer) = self.visit.accept(effect, &mut self.h.app, self.h.store, &mut self.h.guard) {
                 self.outcomes.navigator.try_put(answer).unwrap();
@@ -238,16 +288,101 @@ fn visit_cancellation_drains_owned_tickets_before_releasing_arena() {
     for kind in [Kind::Allocate, Kind::Write, Kind::Seal, Kind::ReleaseSealed, Kind::Publish] {
         let mut h = VisitHarness::new();
         h.until_ticket(kind);
+        assert!(!h.visit.immediate(h.h.reply, true));
         h.h.app.cancel_assistant();
         for _ in 0..3 {
             h.pass();
             assert!(h.h.guard.is_some());
             assert_eq!(h.h.writer.pending(), Some(kind));
+            assert!(!h.visit.immediate(h.h.reply, true));
         }
+        h.h.writer.complete();
+        assert!(h.visit.immediate(h.h.reply, false));
         h.settle(ReviewStatus::Idle);
         h.h.assert_clean();
         assert_eq!(h.h.store.entries().count(), 2);
     }
+}
+
+#[test]
+fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding() {
+    struct Position;
+    impl obc_ports::LocationSource for Position {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            Some(obc_ports::Fix::at(500_000, 500_000))
+        }
+    }
+    let mut h = VisitHarness::new();
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
+    h.h.app.open_find_place();
+    h.h.app.apply_gesture(obc_app::Gesture::Press);
+    let mut unbound_preview = false;
+    for _ in 0..2000 {
+        if h.h.writer.pending().is_some() {
+            h.h.writer.complete();
+        }
+        h.pass_with(&mut Position, true);
+        if let Some(preview) = h.h.app.assistant_preview() {
+            if !h.h.app.route_ids().contains(&preview.source.object) {
+                unbound_preview = true;
+                assert!(h.h.app.assistant_preview_shape().is_empty());
+            }
+        }
+        if h.h.guard.is_none() {
+            let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
+            let source = h.h.original.as_ref().unwrap();
+            let index = obc_route::RouteIndex::read(source).unwrap();
+            let route = obc_route::RouteReader::new(&index, source);
+            h.h.app.prepare_find(Some(&reader), Some(&route));
+        }
+        if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
+            break;
+        }
+    }
+    assert!(
+        unbound_preview,
+        "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
+        h.h.app.find_place_state(),
+        h.h.app.assistant_review_status(),
+        h.h.app.find_place_result_count(),
+        h.h.app.route_ids()
+    );
+    assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
+    assert_eq!(h.h.app.find_place_result_count(), 1);
+    h.h.app.apply_gesture(obc_app::Gesture::Back);
+    for _ in 0..20 {
+        h.pass_with(&mut Position, true);
+        h.h.app.prepare_find(None, None);
+    }
+    assert_eq!(h.h.store.entries().count(), 2);
+    h.h.assert_clean();
+}
+
+#[test]
+fn visit_reuses_validation_until_catalog_changes_without_spinning_on_a_full_writer() {
+    let mut h = VisitHarness::new();
+    h.h.writer.transport().full.set(true);
+    h.pass();
+    assert!(h.h.guard.is_some());
+    let reads = flat_store::fingerprint_reads();
+    for _ in 0..3 {
+        h.pass();
+        assert!(!h.visit.immediate(h.h.reply, true));
+        assert_eq!(flat_store::fingerprint_reads(), reads);
+    }
+    let unrelated = put(h.h.store, ObjectKind::Route, &route(), None);
+    h.h.free = h.h.store.free_extents();
+    h.pass();
+    assert_eq!(flat_store::fingerprint_reads(), reads + 1);
+    h.pass();
+    assert_eq!(flat_store::fingerprint_reads(), reads + 1);
+    h.h.writer.transport().full.set(false);
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    assert_eq!(h.h.store.current_revision(unrelated), Ok(Some(Revision(1))));
+    h.h.assert_clean();
 }
 
 #[test]
@@ -330,7 +465,7 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
 }
 
 #[test]
-fn rejected_forward_tail_rebuilds_proven_out_and_back() {
+fn near_place_anchor_retains_prefix_and_uses_only_two_legs() {
     let gpx=b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.5001\" lat=\"0.510\"/><trkpt lon=\"0.530\" lat=\"0.510\"/></trkseg></trk></gpx>";
     let mut sink = obc_host_core::VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(gpx), "Original", &mut sink).unwrap();
@@ -341,8 +476,11 @@ fn rejected_forward_tail_rebuilds_proven_out_and_back() {
         h.h.store
             .with_source(ObjectId(preview.source.object), None, |s| obc_route::RouteObjectInfo::read(s).unwrap())
             .unwrap();
-    assert_eq!(info.visit.unwrap().original_anchors_m, [0; 3]);
-    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 6);
+    let anchors = info.visit.unwrap().original_anchors_m;
+    assert_eq!(anchors[0], 0);
+    assert!((1110..=1115).contains(&anchors[1]));
+    assert_eq!(anchors[1], anchors[2]);
+    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 2);
     h.h.app.cancel_assistant();
     h.settle(ReviewStatus::Idle);
     h.h.assert_clean();

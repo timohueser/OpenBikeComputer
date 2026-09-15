@@ -54,9 +54,19 @@ impl ActiveRouteSession {
 /// every frame-stepped host shares. `nav_preview_missing` is false again the moment the copy lands,
 /// so this is a per-frame no-op otherwise.
 pub fn fill_nav_preview(app: &mut App, route: Option<&RouteReader>) {
-    if app.nav_preview_missing() {
-        if let Some(r) = route {
-            app.set_nav_preview(&r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>());
-        }
+    if let Some(key) = app.derived_needs().nav_preview {
+        let points = route.and_then(|r| {
+            if key.assistant {
+                r.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>().ok()
+            } else {
+                Some(r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
+            }
+        });
+        use obc_app::device_core::{DerivedInput, DerivedInputs, DerivedTargets};
+        let input = if points.is_some() { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
+        app.apply_derived(
+            DerivedInputs::nav_preview(input),
+            DerivedTargets { nav_preview: points.as_deref().unwrap_or(&[]), ..DerivedTargets::NONE },
+        );
     }
 }

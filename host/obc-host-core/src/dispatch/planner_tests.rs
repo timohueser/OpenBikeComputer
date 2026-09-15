@@ -332,21 +332,26 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
         }
         panic!("bounded visit did not complete")
     };
-    // This forward point lies beside the graph: snapping succeeds, but tail composition must refuse it.
+    // A nearby imported anchor keeps its measured connection and the original continuation.
     let mut offset = crate::VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.520\" lat=\"0.5001\"/><trkpt lon=\"0.530\" lat=\"0.5001\"/></trkseg></trk></gpx>"),"Offset tail",&mut offset).unwrap();
     let offset_source = SliceSource(offset.bytes());
     let offset_index = obc_route::RouteIndex::read(&offset_source).unwrap();
     let offset_route = obc_route::RouteReader::new(&offset_index, &offset_source);
     let mut fallback = crate::nav_visit::VisitPlan::start(context, Some(target), &offset_route).unwrap();
-    run(&mut fallback, &offset_route);
-    assert_eq!(fallback.searches(), 6);
-    assert_eq!(fallback.original_anchors(), [0; 3]);
-    let retained = obc_route::RouteObjectInfo::read(&SliceSource(fallback.bytes())).unwrap();
-    assert_eq!(retained.visit.unwrap().original_anchors_m, [0; 3]);
+    let offset_stats = run(&mut fallback, &offset_route);
+    assert_eq!(fallback.searches(), 2);
+    assert!(offset_stats.total_distance_m > offset_route.total_distance_m);
+    let offset_visit = SliceSource(fallback.bytes());
+    let offset_index = obc_route::RouteIndex::read(&offset_visit).unwrap();
+    let offset_reader = obc_route::RouteReader::new(&offset_index, &offset_visit);
+    assert_eq!(offset_reader.preview_polyline::<64>().last(), Some(&(530_000, 500_100)));
+    let stop = offset_reader.visit_descriptor().unwrap().unwrap().accepted_anchors_m[1];
+    assert!(!VisitCosts::read(&offset_visit, [0, stop]).unwrap().complete_elevation);
     let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
     let stats = run(&mut visit, &original);
-    assert!(matches!(visit.searches(), 4 | 6));
+    assert_eq!(visit.searches(), 2);
+    assert_eq!(visit.original_anchors()[1], visit.original_anchors()[2]);
     let source = SliceSource(visit.bytes());
     let index = obc_route::RouteIndex::read(&source).unwrap();
     let route = obc_route::RouteReader::new(&index, &source);
@@ -355,6 +360,25 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     assert!(!costs.complete_elevation && !costs.arrival_elevation_complete);
     assert_eq!(route.total_distance_m, stats.total_distance_m);
     assert!(stats.total_distance_m > original.total_distance_m);
+    let here = VisitTarget {
+        display: context.origin,
+        metadata: PoiMetadata {
+            approach: Some(PoiApproach {
+                source: SourceId::osm(1, 100),
+                lon: context.origin.0,
+                lat: context.origin.1,
+                profile_mask: 1,
+            }),
+            ..target.metadata
+        },
+        ..target
+    };
+    let mut no_travel = crate::nav_visit::VisitPlan::start(context, Some(here), &original).unwrap();
+    let here_stats = run(&mut no_travel, &original);
+    assert_eq!(no_travel.searches(), 2);
+    let here_info = obc_route::RouteObjectInfo::read(&SliceSource(no_travel.bytes())).unwrap();
+    assert_eq!(here_info.visit.unwrap().accepted_anchors_m, [0; 3]);
+    assert_eq!(here_stats.total_distance_m, original.total_distance_m);
     let rejoin = descriptor.accepted_anchors_m[2];
     let returning = ReviewContext {
         purpose: ReviewPurpose::ReturnToRoute,

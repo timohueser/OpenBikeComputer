@@ -13,7 +13,7 @@ use obc_route::{visit::VisitTarget, RouteReader};
 
 pub const NEARBY_M: u32 = 10_000;
 pub const FORWARD_M: u32 = 20_000;
-pub const SOURCE_LIMIT: usize = 8;
+pub const SOURCE_LIMIT: usize = 4;
 pub const PLAN_LIMIT: usize = SOURCE_LIMIT * 2;
 pub const RESULT_LIMIT: usize = 4;
 pub const ON_WAY_M: u32 = 400;
@@ -89,6 +89,7 @@ pub struct FindState {
     pub origin: (i32, i32),
     pub results: heapless::Vec<u8, RESULT_LIMIT>,
     costs: [Option<Costs>; PLAN_LIMIT],
+    corridor_candidates: [u8; SOURCE_LIMIT],
     retained: [RetainedReview; PLAN_LIMIT],
     retained_store: Option<crate::device_core::StoreIdentity>,
     next: u8,
@@ -116,6 +117,7 @@ impl FindState {
             origin: (0, 0),
             results: heapless::Vec::new(),
             costs: [None; PLAN_LIMIT],
+            corridor_candidates: [0, 1, 2, 3],
             retained: [RetainedReview::NONE; PLAN_LIMIT],
             retained_store: None,
             next: 0,
@@ -146,7 +148,8 @@ impl FindState {
         corridor: &'a [obc_reader::CorridorPoi],
     ) -> Option<&'a Poi> {
         let i = id as usize / 2;
-        if id.is_multiple_of(2) { nearby.pois.get(i) } else { corridor.get(i) }.map(|hit| &hit.poi)
+        if id.is_multiple_of(2) { nearby.pois.get(i) } else { corridor.get(*self.corridor_candidates.get(i)? as usize) }
+            .map(|hit| &hit.poi)
     }
     pub fn selected<'a>(
         &self,
@@ -513,6 +516,7 @@ impl crate::App {
         let retained = self.ui.find.results.get(selected).map(|index| self.ui.find.retained[*index as usize]);
         let error = match retained.zip(self.ui.find.context).filter(|(retained, _)| retained.object != 0) {
             Some((retained, mut context)) => {
+                context.required_anchors_m[1] = retained.rejoin_m;
                 context.required_anchors_m[2] = retained.rejoin_m;
                 if self
                     .current_review_origin()
@@ -539,7 +543,8 @@ impl crate::App {
         crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
         self.ui.map_dirty = true;
     }
-    pub(crate) fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
+    /// Advance place queries and candidate ownership while streamed readers are available.
+    pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
         if let Action::Preview(selected) = self.ui.find.action {
             if let Some(reader) = reader {
@@ -722,6 +727,16 @@ impl crate::App {
                     self.ui.find.state = State::Empty;
                     return;
                 }
+                if let (Some(route), Some(key), Some(map)) = (route, self.ui.corridor_scratch.armed(), self.ui.find.map)
+                {
+                    self.ui.find.corridor_candidates = corridor_candidates(
+                        route,
+                        self.ui.corridor_scratch.entries(),
+                        key.anchor_m,
+                        map,
+                        self.ui.find.profile,
+                    );
+                }
                 self.ui.find.state = State::Planning;
             } else {
                 self.ui.map_dirty = true;
@@ -862,6 +877,36 @@ impl crate::App {
     }
 }
 
+/// Rank the completed Find page by the same future occurrence the visit planner will use.
+/// Keys are read once; the shared corridor page keeps its chronological order.
+fn corridor_candidates(
+    route: &RouteReader,
+    places: &[obc_reader::CorridorPoi],
+    progress_m: u32,
+    map: RouteSourceKey,
+    profile: u8,
+) -> [u8; SOURCE_LIMIT] {
+    let mut ranked = [(u32::MAX, u8::MAX); obc_reader::reader::places::PLACE_PAGE_SIZE];
+    for (i, place) in places.iter().take(ranked.len()).enumerate() {
+        let poi = &place.poi;
+        let target = VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) };
+        let estimate = target.approach(map, profile).and_then(|point| {
+            let anchor = obc_route::visit::visit_anchor(route, progress_m, point).ok()?;
+            let at = route.position_at(anchor)?;
+            Some(
+                anchor
+                    .saturating_sub(progress_m)
+                    .saturating_add(obc_map_scene::ground_dist_m((at.lon, at.lat), point) as u32),
+            )
+        });
+        if let Some(estimate) = estimate {
+            ranked[i] = (estimate, i as u8);
+        }
+    }
+    ranked.sort_unstable();
+    core::array::from_fn(|i| ranked[i].1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,6 +923,55 @@ mod tests {
             self.0[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
             Ok(())
         }
+    }
+
+    #[test]
+    fn find_shortlist_uses_visit_occurrence_without_reordering_corridor() {
+        use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+        let mut sink = Sink(std::vec::Vec::new());
+        obc_route::gpx_to_obcr(
+            &SliceSource(
+                br#"<gpx><trk><trkseg>
+                <trkpt lon="0" lat="0"/><trkpt lon="0.01" lat="0"/>
+                <trkpt lon="0.01" lat="0.01"/><trkpt lon="0" lat="0.01"/>
+                <trkpt lon="0" lat="0.001"/><trkpt lon="0.01" lat="0.001"/>
+                </trkseg></trk></gpx>"#,
+            ),
+            "Loop",
+            &mut sink,
+        )
+        .unwrap();
+        let source = SliceSource(&sink.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
+        let points = [(4000, 1000), (6000, 0), (8000, 0), (10_000, 2000), (10_000, 4000)];
+        let mut places: std::vec::Vec<_> = points
+            .into_iter()
+            .enumerate()
+            .map(|(i, (lon, lat))| obc_reader::CorridorPoi {
+                poi: Poi {
+                    opening: OpeningStatus::Unknown,
+                    metadata: PoiMetadata { source: SourceId::osm(1, i as u64 + 1), approach: None },
+                    lat,
+                    lon,
+                    subtype: 1,
+                    name: Default::default(),
+                    hours_ref: 0,
+                    distance_m: i as u32,
+                },
+                dist_along_m: i as u32,
+                offset_m: 0,
+            })
+            .collect();
+        // The first corridor hit is near the outbound pass, but the planner visits it on the return.
+        assert!(obc_route::visit::visit_anchor(&route, 0, points[0]).unwrap() > 4000);
+        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [1, 2, 3, 4]);
+        assert_eq!(places.iter().map(|p| p.dist_along_m).collect::<std::vec::Vec<_>>(), [0, 1, 2, 3, 4]);
+        places[1].poi.metadata.approach =
+            Some(PoiApproach { source: SourceId::osm(1, 10), lon: 6000, lat: 0, profile_mask: 2 });
+        assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [2, 3, 4, 0]);
+        assert_eq!(corridor_candidates(&route, &places, route.total_distance_m + 1, map, 0), [u8::MAX; 4]);
     }
 
     fn hours_map() -> std::vec::Vec<u8> {

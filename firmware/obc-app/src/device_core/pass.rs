@@ -133,7 +133,7 @@ pub struct PassPlan {
     pub immediate: bool,
 }
 
-/// The **overlay plane's** two levels, as one value (#1447).
+/// The overlay plane's live content and animation phase.
 ///
 /// The overlay is the cheap transient layer: the hold bulge and the planning banner. Its
 /// repaint rule is not the map's — it is two rules over two levels, which used to be three separate
@@ -142,22 +142,18 @@ pub struct PassPlan {
 ///
 /// - The **bulge** repaints while it is live, plus exactly one trailing frame after it goes quiet,
 ///   so the last bulge is cleared off the layer rather than left painted over an unchanged map.
-/// - The **banner** repaints when the freeze's *engaged* level flips, either way. It is a level and
-///   not the search's own start edge: a plan begun under the opaque planning spinner engages
-///   nothing, and the pass that puts a map base back under a still-running search raises no search
-///   edge at all. Keyed on the start edge, the banner would be spent on a chrome frame and the
-///   rider would then look at a frozen screen with no explanation.
+/// - The banner repaints when it appears, disappears, or advances its activity phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OverlayKey {
     /// The hold bulge is charging, popping or retracting.
     pub(crate) hold: bool,
-    /// A complete request still has work to finish and displays its planning banner.
-    pub(crate) banner: bool,
+    /// Zero when absent, otherwise the banner's current activity phase.
+    pub(crate) banner: u8,
 }
 
 impl OverlayKey {
     /// The boot level: nothing charging, nothing frozen.
-    const QUIET: OverlayKey = OverlayKey { hold: false, banner: false };
+    const QUIET: OverlayKey = OverlayKey { hold: false, banner: 0 };
 
     /// Whether the overlay plane must be repainted, given the level at the previous drain.
     fn dirty_against(self, previous: OverlayKey) -> bool {
@@ -1615,22 +1611,24 @@ mod tests {
     #[test]
     fn the_overlay_key_repaints_on_the_engaged_level_and_the_bulge_trailing_edge() {
         let mut pass = PassState::new();
-        let quiet = OverlayKey { hold: false, banner: false };
+        let quiet = OverlayKey { hold: false, banner: 0 };
         assert!(!pass.overlay_repaint(quiet), "at rest there is nothing to repaint");
 
         // A search under the opaque spinner: a chrome base, so nothing is engaged.
-        assert!(!pass.overlay_repaint(OverlayKey { hold: false, banner: false }));
+        assert!(!pass.overlay_repaint(OverlayKey { hold: false, banner: 0 }));
         // The spinner goes and a map base is back — no search edge, but *this* is the freeze.
-        assert!(pass.overlay_repaint(OverlayKey { hold: false, banner: true }), "the banner appears");
+        assert!(pass.overlay_repaint(OverlayKey { hold: false, banner: 1 }), "the banner appears");
         assert!(
-            !pass.overlay_repaint(OverlayKey { hold: false, banner: true }),
+            !pass.overlay_repaint(OverlayKey { hold: false, banner: 1 }),
             "a level, so one repaint — not one per ride-loop pass"
         );
+        assert!(pass.overlay_repaint(OverlayKey { hold: false, banner: 2 }), "activity advances");
+        assert!(!pass.overlay_repaint(OverlayKey { hold: false, banner: 2 }), "activity is throttled");
         assert!(pass.overlay_repaint(quiet), "and one more to take the banner off");
         assert!(!pass.overlay_repaint(quiet));
 
         // The bulge: live while it animates, plus exactly one trailing frame to clear it.
-        let bulge = OverlayKey { hold: true, banner: false };
+        let bulge = OverlayKey { hold: true, banner: 0 };
         assert!(pass.overlay_repaint(bulge), "a charging bulge paints");
         assert!(pass.overlay_repaint(bulge), "…every frame it is live");
         assert!(pass.overlay_repaint(quiet), "the trailing clear frame");

@@ -985,7 +985,8 @@ impl App {
         self.mode.frozen(self.ui.base_draws_map())
     }
 
-    fn find_preparing(&self) -> bool {
+    /// Whether the visible place choices are still being prepared.
+    pub fn find_preparing(&self) -> bool {
         use crate::find_place::{Action, State};
         matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
             && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))
@@ -1006,6 +1007,14 @@ impl App {
             })
         } else {
             None
+        }
+    }
+
+    fn planning_banner_phase(&self) -> u8 {
+        if self.planning_banner().is_some() {
+            1 + (self.ui.now_ms / 1_000 % 3) as u8
+        } else {
+            0
         }
     }
 
@@ -1152,9 +1161,13 @@ impl App {
     /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
     /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
     /// matcher progress + profile dropped), a menu selection clamps near its old position, a
-    /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
-    /// a store change is a repaint-worthy host event (the open menu refreshes in place).
+    /// preview/swap subject turns into its screen's own missing-route path. Changed summaries or
+    /// identities dirty the map once. A replacing upload separately invalidates geometry-derived state.
     pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[crate::CatalogObjectId]) {
+        let len = summaries.len().min(ids.len()).min(crate::MAX_ROUTES);
+        if self.catalogs.routes() == &summaries[..len] && self.catalogs.route_ids() == &ids[..len] {
+            return;
+        }
         // The catalog + trip replacement (and the id ↔ summary pairing) is `CatalogState`'s; the
         // old-id snapshot it returns drives the remap of everything held *outside* it.
         let old_ids = self.catalogs.replace_routes(summaries, ids);
@@ -1167,7 +1180,10 @@ impl App {
     }
 
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
-        self.navigator.set_unaccepted_routes(mask);
+        if self.navigator.unaccepted_routes() != mask {
+            self.navigator.set_unaccepted_routes(mask);
+            self.ui.map_dirty = true;
+        }
     }
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
@@ -1249,6 +1265,14 @@ impl App {
     /// resolve; a later [`set_routes_with_ids`](App::set_routes_with_ids) re-resolves them in place.
     /// Dirties the map so an open (TR3) menu repaints.
     pub fn set_trips(&mut self, trips: &[crate::trip::TripInput]) {
+        let trips = &trips[..trips.len().min(crate::trip::MAX_TRIPS)];
+        if self.catalogs.trips().len() == trips.len()
+            && self.catalogs.trips().iter().zip(trips).all(|(old, input)| {
+                *old == crate::trip::TripSummary::resolve(input, self.catalogs.routes(), self.catalogs.route_ids())
+            })
+        {
+            return;
+        }
         self.catalogs.set_trips(trips);
         self.ui.map_dirty = true;
     }
@@ -1271,6 +1295,10 @@ impl App {
     /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
     /// across the rescan and dirty the map once.
     pub fn set_rides(&mut self, entries: &[RideEntry]) {
+        let entries = &entries[..entries.len().min(crate::UI_RIDES_CAP)];
+        if self.catalogs.rides() == entries {
+            return;
+        }
         // Screen indices follow the durable identity through each rescan.
         // Derived track answers already carry that identity and need no remap.
         let old_ids = self.catalogs.replace_rides(entries);
@@ -1698,7 +1726,7 @@ impl App {
     /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
-        let Some(key) = self.catalogs.nav_preview_key(self.active_route_index()) else { return };
+        let Some(key) = self.derived_needs().nav_preview else { return };
         let input = DerivedInput::filled(key);
         self.apply_derived(
             DerivedInputs::nav_preview(input),
@@ -2749,6 +2777,10 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if self.planning_banner().is_some() {
+            let remaining = 1_000 - clock.0 % 1_000;
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
         if let Some(remaining) = self.ui.input.chord_remaining_ms(clock.0) {
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
         }
@@ -3088,7 +3120,7 @@ impl App {
         } else {
             navigation.active_route
         };
-        let nav_key = catalogs.nav_preview_key(preview_index);
+        let nav_key = catalogs.nav_preview_key(preview_index, assistant_preview.is_some());
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
@@ -3255,7 +3287,14 @@ impl App {
     {
         if let Some(message) = self.planning_banner() {
             let text = crate::i18n::t(message, self.settings.language);
-            crate::screen::vocab::chrome::recalculating_banner(target, &color_fn, w, h, text);
+            crate::screen::vocab::chrome::recalculating_banner(
+                target,
+                &color_fn,
+                w,
+                h,
+                text,
+                self.planning_banner_phase(),
+            );
         }
     }
 
@@ -3296,7 +3335,7 @@ impl App {
     pub fn take_dirty(&mut self) -> Dirty {
         let overlay = crate::device_core::pass::OverlayKey {
             hold: self.ui.input.overlay_active(),
-            banner: self.planning_banner().is_some(),
+            banner: self.planning_banner_phase(),
         };
         let overlay = self.pass.overlay_repaint(overlay);
         let mut dirty = self.ui.take_dirty();
@@ -3388,12 +3427,13 @@ impl App {
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level — is an overview up? — is the UI's; the data half is
         // the key's.
-        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
-            || self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
+        let assistant =
+            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
                 |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
             );
+        let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
-            .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
+            .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
             .flatten()
             .filter(|&key| !self.catalogs.nav_preview_answered(key));
         DerivedNeeds { ride_track, nav_preview }
@@ -5106,10 +5146,20 @@ mod tests {
             assert!(!app.take_dirty().overlay, "releasing a candidate does not clear the banner");
             assert_eq!(app.ms_until_next_wake(0), Some(1), "queued work cannot wait for another GPS fix");
         }
+        app.advance_animations(InputClock(999));
+        assert!(!app.take_dirty().overlay, "activity does not repaint before its deadline");
+        app.advance_animations(InputClock(1_000));
+        assert!(app.take_dirty().overlay, "activity repaints at one second");
+        assert!(!app.take_dirty().overlay, "activity never repaints twice in one phase");
+        app.advance_animations(InputClock(1_500));
+        assert!(!app.take_dirty().overlay);
+        assert_eq!(app.ui.next_wake_ms, Some(500));
         app.ui.find.state = State::Ready;
+        app.advance_animations(InputClock(1_500));
+        assert!(app.ui.next_wake_ms.is_none_or(|ms| ms > 1_000), "ready results stop the activity timer");
         assert!(app.planning_banner().is_none());
         assert!(app.take_dirty().overlay, "the completed batch clears its banner");
-        assert_ne!(app.ms_until_next_wake(0), Some(1), "a ready result does not poll");
+        assert_ne!(app.ms_until_next_wake(1_500), Some(1), "a ready result does not poll");
         app.ui.find.state = State::Planning;
         app.apply_gesture(Gesture::Back);
         assert!(app.planning_banner().is_none(), "leaving choices removes the banner");
@@ -6426,6 +6476,39 @@ mod tests {
 
         let _ = app.ui.stack.push(overview()); // …and comes back
         assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    #[test]
+    fn repeated_catalog_feeds_do_not_repaint_but_changed_content_does() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut routes = [summary("Col")];
+        let trips = [crate::trip::TripInput { id: 20, name: "Tour", stage_ids: &[10] }];
+        let mut rides = [RideEntry { id: 30, summary: ride_summary("Ride") }];
+        app.take_dirty();
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        app.set_trips(&trips);
+        assert!(app.take_dirty().map);
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_routes_with_ids(&routes, &[10]);
+        app.set_trips(&trips);
+        app.set_rides(&rides);
+        app.set_unaccepted_routes(0);
+        assert!(!app.take_dirty().map, "an identical catalog feed changes no pixels");
+        routes[0].climb_m += 1;
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        assert_eq!(app.trips()[0].climb_m, routes[0].climb_m);
+        rides[0].summary.synced = true;
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_unaccepted_routes(1);
+        assert!(app.take_dirty().map, "candidate visibility changes the route menu");
+        app.set_unaccepted_routes(1);
+        assert!(!app.take_dirty().map);
+        app.set_trips(&[]);
+        assert!(app.take_dirty().map);
     }
 
     /// The nav-preview twin of the staleness rule, over the one thing identity cannot catch: an

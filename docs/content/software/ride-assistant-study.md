@@ -83,6 +83,10 @@ its purpose becomes unclear inside a city. Town names on the map remain a separa
 
 ## Current visit and restart
 
+The visit preview shows the path from departure to the place and back to the original route in blue.
+Its camera fits this part of the journey. The remaining original route stays in the stored journey
+and appears in the ordinary route overview. A nearby stop does not zoom out to the journey finish.
+
 While a visit is active, open **Assistant → Down + Back → Current visit**. The detail shows the
 current leg. Select **Cancel visit** to leave the visit. Before departure, the original route returns
 after the card confirms the saved change. After departure, review the real connector and select

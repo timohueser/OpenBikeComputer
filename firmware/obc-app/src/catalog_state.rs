@@ -320,9 +320,9 @@ impl CatalogState {
 
     /// The derived **nav-preview** key for the route at catalog index `active_route` — the route
     /// twin of [`ride_track_key`](Self::ride_track_key).
-    pub(crate) fn nav_preview_key(&self, active_route: Option<usize>) -> Option<NavPreviewKey> {
+    pub(crate) fn nav_preview_key(&self, active_route: Option<usize>, assistant: bool) -> Option<NavPreviewKey> {
         let route = *self.route_ids.get(active_route?)?;
-        Some(NavPreviewKey { route, source: self.source_revision, view: self.nav_preview_view })
+        Some(NavPreviewKey { assistant, route, source: self.source_revision, view: self.nav_preview_view })
     }
 
     /// Whether the ride-track need for `key` is already answered — a recorded failure counts, so a
@@ -913,6 +913,23 @@ impl CatalogState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_and_whole_route_shapes_have_separate_keys() {
+        let mut catalogs = CatalogState::new();
+        catalogs.route_ids.push(10).unwrap();
+        let whole = catalogs.nav_preview_key(Some(0), false).unwrap();
+        let assistant = catalogs.nav_preview_key(Some(0), true).unwrap();
+        assert_ne!(whole, assistant);
+        assert!(catalogs.accept_nav_preview(Some(assistant), DerivedInput::filled(assistant), &[(1, 2)]));
+        assert_eq!(catalogs.nav_preview_for(Some(assistant)), &[(1, 2)]);
+        assert!(catalogs.nav_preview_for(Some(whole)).is_empty());
+        assert!(!catalogs.nav_preview_answered(whole));
+        assert!(!catalogs.accept_nav_preview(Some(whole), DerivedInput::filled(assistant), &[(3, 4)]));
+        assert!(catalogs.accept_nav_preview(Some(whole), DerivedInput::filled(whole), &[(5, 6)]));
+        assert!(catalogs.nav_preview_for(Some(assistant)).is_empty());
+        assert_eq!(core::mem::size_of::<Option<NavPreviewKey>>(), 32);
+    }
 
     #[test]
     fn cleanup_waits_for_an_unrelated_read_and_stops_on_its_own_failure() {

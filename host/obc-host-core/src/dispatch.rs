@@ -683,7 +683,11 @@ impl HostLoop {
                                     let src = obc_formats::io::SliceSource(bytes);
                                     if let Ok(index) = obc_route::RouteIndex::read(&src) {
                                         let reader = obc_route::RouteReader::new(&index, &src);
-                                        let points = reader.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                                        let points =
+                                            match reader.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>() {
+                                                Ok(points) => points,
+                                                Err(_) => return failed(NavigatorError::Unavailable),
+                                            };
                                         if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
                                             && !app.set_assistant_preview_shape(token, preview.source, &points)
                                         {
@@ -950,7 +954,12 @@ impl HostLoop {
             Err(error) => return failed(error),
         };
         let Ok(index) = obc_route::RouteIndex::read(&bytes) else { return failed(NavigatorError::Unavailable) };
-        let points = obc_route::RouteReader::new(&index, &bytes).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+        let points = match obc_route::RouteReader::new(&index, &bytes)
+            .assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
+        {
+            Ok(points) => points,
+            Err(_) => return failed(NavigatorError::Unavailable),
+        };
         self.publication =
             Some(crate::RoutePublication { store: Some(context.store), id: source.object, revision: source.revision });
         let outcome = app.assistant_preview_outcome(token, preview);
@@ -1076,8 +1085,13 @@ impl HostLoop {
             // overview would settle with no shape at all.
             session.sync(app, routes);
             let src = routes.active_source();
-            let pts = session.index().zip(src).map(|(index, s)| {
-                obc_route::RouteReader::new(index, s).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
+            let pts = session.index().zip(src).and_then(|(index, s)| {
+                let reader = obc_route::RouteReader::new(index, s);
+                if key.assistant {
+                    reader.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>().ok()
+                } else {
+                    Some(reader.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
+                }
             });
             // Answered either way, exactly as the ride-track arm above it is: a failure *is* an
             // answer (`derived.rs`'s "a dead file must cost one read, not one read per pass"), and
