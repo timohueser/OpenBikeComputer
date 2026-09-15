@@ -128,6 +128,18 @@ mod web {
         with_demo(|d| d.peak_ready())
     }
 
+    /// True only after Find has measured choices and released the trial planner.
+    #[wasm_bindgen]
+    pub fn obc_demo_find_ready() -> bool {
+        with_demo(|d| d.find_ready())
+    }
+
+    /// Shared immutable Visit review state; screen names alone cannot distinguish planning.
+    #[wasm_bindgen]
+    pub fn obc_demo_visit_status() -> String {
+        with_demo(|d| format!("{:?}", d.visit_status()))
+    }
+
     /// A queued reset is Pending until cleanup and baseline installation finish.
     #[wasm_bindgen]
     pub fn obc_demo_reset_status() -> String {
