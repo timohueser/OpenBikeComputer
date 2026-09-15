@@ -273,7 +273,10 @@ impl crate::App {
 
     fn cleanup_find_reviews(&mut self) {
         let Some(map) = self.ui.find.map else { return };
-        let accepted = self.assistant_checkpoint().filter(|_| self.assistant_review_status() == ReviewStatus::Accepted);
+        let accepted = self.assistant_checkpoint().filter(|_| {
+            self.assistant_review_status() == ReviewStatus::Accepted
+                && self.assistant_store_matches(crate::device_core::StoreIdentity::from_bytes(map.store))
+        });
         if let Some(checkpoint) = accepted {
             self.find_review_removed(RouteSourceKey {
                 store: map.store,
@@ -282,6 +285,7 @@ impl crate::App {
             });
         }
         if self.ui.find.selected_review
+            || matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
             || matches!(self.ui.find.state, State::Querying | State::Planning | State::Releasing)
             || !self.catalogs.can_admit_intent()
         {
@@ -293,7 +297,9 @@ impl crate::App {
             (retained.object != 0 && !(keep_choices && self.ui.find.results.contains(&(index as u8))))
                 .then_some(*retained)
         }) {
-            let _ = self.catalogs.admit_intent(crate::CatalogIntent::RemoveReview { source: retained.source(map) });
+            let _ = self
+                .catalogs
+                .admit_intent(crate::catalog_state::CatalogIntent::RemoveReview { source: retained.source(map) });
             self.ui.next_wake_ms = Some(1);
         }
     }
