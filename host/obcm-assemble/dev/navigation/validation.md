@@ -23,7 +23,10 @@ The first direct Clippy invocation could not find GEOS. Loading the existing
 The route runner completed all six cases in three cold-plan samples each and
 checked output repeatability. Native assembly completed three times with full
 verification and independent SHA-256 readback. The retained JSON contains every
-measurement. Browser validation is recorded with its own result artifact.
+measurement. The persistent-context Chromium worker completed one matched assembly
+with full verification and an independent output digest equal to native. The
+browser runner passed `node --check`. Its executable build and run commands are
+in the assembly README; `browser-baseline.json` retains its result and provenance.
 
 Deliberately omitted: full workspace acceptance, physical hardware runs, board
 resource builds, UI snapshot sweeps, wake-profile isolations, and country-scale
