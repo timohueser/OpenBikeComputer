@@ -21,6 +21,10 @@ const ARRIVAL_M: u32 = 10;
 const ARRIVAL_LATERAL_M: u32 = 5;
 const LEAVE_STOP_M: u32 = 15;
 
+fn departure_m(entry: u32, stop: u32) -> u32 {
+    DEPARTURE_M.min(stop.saturating_sub(entry) / 2).max(1)
+}
+
 pub(super) struct VisitState {
     target: Option<(PoiMetadata, (i32, i32))>,
     latest_fix: Option<(i32, i32)>,
@@ -70,14 +74,22 @@ impl NavigatorMachine {
         if self.review.status != ReviewStatus::Accepted || self.visit.phase == Some(c.phase) {
             return false;
         }
-        let recovering = self.visit.phase.is_none() && self.visit.target.is_none();
+        let previous = self.visit.phase;
+        let recovering = previous.is_none() && self.visit.target.is_none();
+        if recovering && c.phase == JourneyPhase::Outbound {
+            if let Ok(Some(descriptor)) = route.visit_descriptor() {
+                let [entry, stop, _] = descriptor.accepted_anchors_m;
+                self.visit.departure_fix = route.position_at(entry).map(|at| (at.lon, at.lat));
+                self.visit.departed |= c.progress_m >= entry.saturating_add(departure_m(entry, stop));
+            }
+        }
         self.visit.phase = Some(c.phase);
         self.visit.target = None;
         if c.phase == JourneyPhase::Following {
             self.visit.arrival = false;
             return true;
         }
-        if c.phase == JourneyPhase::AtStop && !recovering {
+        if c.phase == JourneyPhase::AtStop && previous == Some(JourneyPhase::Outbound) {
             self.visit.arrival = true;
         }
         if c.phase != JourneyPhase::Outbound {
@@ -89,6 +101,9 @@ impl NavigatorMachine {
             self.advance_visit((lon, lat), route);
         }
         true
+    }
+    pub(super) fn retry_visit_phase(&mut self) {
+        self.visit.phase = None;
     }
     pub(crate) fn visit_ceiling(&self) -> Option<u32> {
         self.review.checkpoint.filter(|c| c.phase != JourneyPhase::Following).map(|c| c.upper_m)
@@ -111,7 +126,7 @@ impl NavigatorMachine {
             return;
         }
         let at_stop = obc_map_scene::ground_dist_m(fix, (descriptor.target_lon, descriptor.target_lat));
-        let departure_m = DEPARTURE_M.min(stop.saturating_sub(entry) / 2).max(1);
+        let departure_m = departure_m(entry, stop);
         let leave_m = LEAVE_STOP_M.min(rejoin.saturating_sub(stop) / 2).max(1);
         let return_arrival_m = ARRIVAL_M.min(rejoin.saturating_sub(stop) / 2).max(1);
         if current.phase == JourneyPhase::Outbound {
@@ -719,6 +734,169 @@ mod tests {
             assert_eq!(next.occurrence, app.navigator.route_match.occurrence());
             assert!(app.active_route_index().is_none());
             assert!(!app.recording());
+        }
+    }
+    #[test]
+    fn outbound_resume_near_stop_keeps_proven_departure_and_completes_after_dwell() {
+        use crate::Gesture;
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for remaining in [5, 15] {
+            let checkpoint = app().assistant_checkpoint().unwrap();
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.set_routes_with_ids(&[route.summary()], &[8]);
+            app.offer_assistant_checkpoint(crate::device_core::StoreIdentity::from_bytes([1; 16]), Some(checkpoint));
+            let at = route.position_at(checkpoint.upper_m - remaining).unwrap();
+            live_fix(&mut app, None, at.lon, at.lat);
+            app.advance_animations(obc_ports::InputClock(0));
+            app.apply_gesture(Gesture::Press);
+            app.prepare_assistant_resume(Some(&route));
+            assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+            let mut tokens = TokenSource::new();
+            ack(&mut app, &mut tokens, &route);
+            assert!(app.navigator.visit.departed);
+            live_fix(&mut app, Some(&route), 0, 1000);
+            live_fix(&mut app, Some(&route), 0, 1000);
+            assert_eq!(app.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::AtStop);
+            ack(&mut app, &mut tokens, &route);
+            live_fix(&mut app, Some(&route), 0, 1000);
+            assert_eq!(app.assistant_checkpoint().unwrap().phase, JourneyPhase::AtStop);
+            live_fix(&mut app, Some(&route), 0, 700);
+            assert_eq!(app.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::Returning);
+            assert!(!app.recording());
+        }
+        let mut initial = app();
+        initial.navigator.visit.phase = None;
+        initial.navigator.visit.target = Some((PoiMetadata::default(), (0, 1000)));
+        initial.navigator.reconcile_visit(&route);
+        fix(&mut initial, &route, 0, 1000);
+        fix(&mut initial, &route, 0, 1000);
+        assert!(!initial.navigator.visit.departed);
+        assert!(initial.navigator.review.change.is_none(), "fresh stationary acceptance still needs movement");
+    }
+    #[test]
+    fn unpublished_phase_edits_keep_guidance_and_retry_latest_fix_without_another_sample() {
+        use crate::metadata::MetadataError;
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for uncertain in [false, true] {
+            let mut app = app();
+            let store = crate::device_core::StoreIdentity::from_bytes([1; 16]);
+            app.navigator.review.store = Some(store);
+            let mut tokens = TokenSource::new();
+            let recording = app.ride_session();
+            for (expected, fixes) in [
+                (JourneyPhase::AtStop, &[0, 300, 600, 900, 1000][..]),
+                (JourneyPhase::Returning, &[700][..]),
+                (JourneyPhase::Following, &[500, 200, 0][..]),
+            ] {
+                for &lat in fixes {
+                    fix(&mut app, &route, 0, lat);
+                }
+                let old = app.assistant_checkpoint();
+                let pending = app.navigator.review.change;
+                assert_eq!(pending.unwrap().unwrap().phase, expected);
+                let latest = app.navigator.visit.latest_fix;
+                let token = tokens.issue();
+                app.navigator.checkpoint_issued(token);
+                assert!(app.assistant_checkpoint_submission(token));
+                app.assistant_checkpoint_answer(MetadataOutcome::Failed {
+                    token,
+                    error: if uncertain { MetadataError::RemountRequired } else { MetadataError::Busy },
+                });
+                if uncertain {
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                    assert!(!app.navigator.reconcile_visit(&route));
+                    app.offer_assistant_checkpoint(store, old);
+                }
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                assert_eq!(app.assistant_checkpoint(), old);
+                assert_eq!(app.active_route_index(), Some(0));
+                assert_eq!(app.navigator.visit.latest_fix, latest);
+                assert!(app.navigator.review.change.is_none());
+                app.navigator.reconcile_visit(&route);
+                assert_eq!(app.navigator.review.change, pending, "retry reuses the latest trustworthy fix");
+                assert!(!app.visit_arrival_pending(), "retry cannot raise a dismissed card again");
+                ack(&mut app, &mut tokens, &route);
+                assert_eq!(app.assistant_checkpoint().unwrap().phase, expected);
+                app.dismiss_visit_arrival();
+                assert_eq!(app.ride_session(), recording);
+            }
+        }
+    }
+    #[test]
+    fn refused_restore_keeps_the_visit_and_refused_initial_resume_stays_inactive() {
+        use crate::{
+            device_core::{Revision, StoreIdentity, StoreRevision},
+            metadata::MetadataError,
+            screen::Screen,
+            Gesture,
+        };
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let store = StoreIdentity::from_bytes([1; 16]);
+        for (resume, uncertain) in [(false, false), (false, true), (true, false), (true, true)] {
+            let original = app().assistant_checkpoint();
+            let mut app = if resume { crate::App::new_idle(crate::AppState::new(0, 0, 1.0)) } else { app() };
+            app.set_routes_with_ids(&[route.summary(), route.summary()], &[8, 7]);
+            app.catalogs.loaded_scope = Some(StoreRevision { store, revision: Revision::new(1) });
+            app.bind_place_map(Some(RouteSourceKey { store: store.bytes(), object: 1, revision: 1 }));
+            let old = original;
+            app.navigator.review.store = Some(store);
+            if resume {
+                app.offer_assistant_checkpoint(store, old);
+                live_fix(&mut app, None, 0, 500);
+                app.advance_animations(obc_ports::InputClock(0));
+                app.apply_gesture(Gesture::Press);
+                app.prepare_assistant_resume(Some(&route));
+            } else {
+                app.navigator.following.active_route = Some(0);
+                live_fix(&mut app, Some(&route), 0, 0);
+                open_current(&mut app, &route);
+                app.apply_gesture(Gesture::Step(1));
+                app.apply_gesture(Gesture::Press);
+                app.prepare_find(None, Some(&route));
+            }
+            assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+            let mut tokens = TokenSource::new();
+            let token = tokens.issue();
+            app.navigator.checkpoint_issued(token);
+            assert!(app.assistant_checkpoint_submission(token));
+            let _ = app.take_dirty();
+            app.assistant_checkpoint_answer(MetadataOutcome::Failed {
+                token,
+                error: if uncertain { MetadataError::RemountRequired } else { MetadataError::WriteFailed },
+            });
+            if uncertain {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                app.offer_assistant_checkpoint(store, old);
+            }
+            assert!(app.take_dirty().map, "save refusal must repaint without another GPS sample");
+            assert_eq!(app.assistant_checkpoint(), old);
+            assert!(app.navigator.review.change.is_none());
+            assert!(!app.recording());
+            if resume {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::ResumeAvailable);
+                assert!(app.active_route_index().is_none());
+                assert!(matches!(app.top_screen(), Screen::Journey(s) if s.error.is_some()));
+                app.advance_animations(obc_ports::InputClock(0));
+                app.apply_gesture(Gesture::Press);
+                app.prepare_assistant_resume(Some(&route));
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+            } else {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                assert_eq!(app.active_route_index(), Some(0));
+                app.prepare_find(None, Some(&route));
+                assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted && s.error.is_some()));
+                app.apply_gesture(Gesture::Back);
+                assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted && s.error.is_none()));
+            }
         }
     }
     #[test]
