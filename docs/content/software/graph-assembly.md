@@ -9,6 +9,8 @@ copy: ai
 The assembler retains one navigation graph in one OBCM file.
 A bounded experiment did not establish the required speed improvement.
 The production reader, planner, format, and assembly algorithm are unchanged.
+Further optimization remains open. The retained experiments evaluate specific
+candidates; they do not establish an optimal graph layout or navigation algorithm.
 
 ## Current work
 
@@ -114,3 +116,19 @@ The source review identified additional work for such a design:
 These are design requirements, not measured proof that every cell-block layout is too
 complex or too slow. The current no-adopt decision applies to the tested cell-order
 alternative. A future cell-block experiment needs its own bounded design and evidence.
+
+## Follow-up: browser input reads
+
+A later comparison used the same shipping worker and pinned input with its existing
+read-block option. Reducing the block from 64 KiB to 4 KiB reduced median total
+assembly time from 19.278 to 10.853 seconds across three fixed pairs. All six
+outputs passed full validation and had the same independent digest. Logical input
+read bytes fell by 92.2%, while input call count increased. Verification alone
+became slower because the option also changes its read cache.
+
+This result identifies input caching as a smaller implementation opportunity.
+The production default remains unchanged. The Chromium profile used persistent
+OPFS on a memory-backed host filesystem; physical storage performance and other
+workloads remain unmeasured. The
+[follow-up record](https://github.com/timohueser/OpenBikeComputer/tree/develop/host/obcm-assemble/dev/followup)
+contains all samples, source identities, and limits.
