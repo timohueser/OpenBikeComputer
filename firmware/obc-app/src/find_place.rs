@@ -264,7 +264,8 @@ impl crate::App {
     pub(crate) fn activate_place_detail(&mut self) -> bool {
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
         let poi = detail.poi().clone();
-        if !self.ui.poi_scratch.detail_valid
+        if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
+            || !self.ui.poi_scratch.detail_valid
             || self
                 .ui
                 .poi_scratch
@@ -633,6 +634,23 @@ mod tests {
         });
         assert!(!app.ui.poi_scratch.detail_valid, "a successful hours read cannot restore old source identity");
         app.apply_gesture(crate::Gesture::Press);
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
+
+        // A retained detail can sit below the menu while another detail uses the shared cache.
+        app.apply_gesture(crate::Gesture::BackHold);
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(page[0].poi.clone()))).is_ok());
+        app.render_frame(None, &mut frame, &reader, None, 240.0, 320.0, |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+        });
+        assert!(app.ui.poi_scratch.detail_valid);
+        app.apply_gesture(crate::Gesture::Back);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(
+            matches!(app.top_screen(), Screen::PoiDetail(detail) if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged))
+        );
         assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
     }
 
