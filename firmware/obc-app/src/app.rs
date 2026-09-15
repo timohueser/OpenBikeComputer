@@ -1809,7 +1809,7 @@ impl App {
         }
         match outcome {
             NavigatorOutcome::ReviewReady { .. } => {
-                let Some(preview) = self.navigator.review.preview else { return };
+                let Some(preview) = self.assistant_preview() else { return };
                 let index = self.route_ids().iter().position(|&id| id == preview.source.object);
                 self.navigator.review_index(index);
                 self.navigator.reviewed(preview);
