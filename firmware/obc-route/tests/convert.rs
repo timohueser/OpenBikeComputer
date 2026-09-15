@@ -37,14 +37,16 @@ fn straight_track_stats_and_decimation() {
     assert_eq!(r.max_ele_m, 225);
 
     // Collinear → decimated to the two endpoints, one chunk.
-    assert_eq!(r.point_count, 2);
+    assert_eq!(r.point_count, 4);
     assert_eq!(r.chunks().len(), 1);
     let pts = decode(&r, 0);
     assert_eq!(
         pts,
         vec![
-            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 200 },
-            RoutePoint { lon: 7_809_000, lat: 48_000_000, ele: 215 },
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 200, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_803_000, lat: 48_000_000, ele: 210, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_806_000, lat: 48_000_000, ele: 225, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_809_000, lat: 48_000_000, ele: 215, surface: 0, elevation_incomplete: false },
         ]
     );
 }
@@ -67,7 +69,10 @@ fn corner_is_preserved() {
     assert_eq!(r.point_count, 3);
     let pts = decode(&r, 0);
     assert_eq!(pts.len(), 3);
-    assert_eq!(pts[1], RoutePoint { lon: 7_800_000, lat: 48_010_000, ele: 0 });
+    assert_eq!(
+        pts[1],
+        RoutePoint { lon: 7_800_000, lat: 48_010_000, ele: i16::MIN, surface: 0, elevation_incomplete: false }
+    );
 }
 
 #[test]
@@ -111,8 +116,8 @@ fn vertex_just_inside_epsilon_is_decimated() {
     assert_eq!(
         pts,
         vec![
-            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
-            RoutePoint { lon: 7_802_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_802_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
         ]
     );
 }
@@ -133,7 +138,10 @@ fn vertex_just_outside_epsilon_is_kept() {
     assert_eq!(r.point_count, 3, "a 1.5 m deviation exceeds tolerance → the bend vertex is kept");
     let pts = decode(&r, 0);
     // The kept middle vertex: lon 7_801_000, lat rounded from 48.0 + 1.5/111320 deg = 48_000_013.
-    assert_eq!(pts[1], RoutePoint { lon: 7_801_000, lat: 48_000_013, ele: 100 });
+    assert_eq!(
+        pts[1],
+        RoutePoint { lon: 7_801_000, lat: 48_000_013, ele: 100, surface: 0, elevation_incomplete: false }
+    );
 }
 
 /// A long collinear run keeps an intermediate vertex (`MAX_SPAN_M`=1200), which also bounds the
@@ -156,9 +164,9 @@ fn long_collinear_run_keeps_an_intermediate_vertex() {
     assert_eq!(
         pts,
         vec![
-            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
-            RoutePoint { lon: 7_830_000, lat: 48_000_000, ele: 100 },
-            RoutePoint { lon: 7_860_000, lat: 48_000_000, ele: 100 },
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_830_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_860_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
         ]
     );
 }
@@ -199,11 +207,11 @@ fn oversized_diagonal_span_splits_into_several() {
     assert_eq!(
         pts,
         vec![
-            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100 },
-            RoutePoint { lon: 7_822_500, lat: 48_022_500, ele: 125 },
-            RoutePoint { lon: 7_845_000, lat: 48_045_000, ele: 150 },
-            RoutePoint { lon: 7_867_500, lat: 48_067_500, ele: 175 },
-            RoutePoint { lon: 7_890_000, lat: 48_090_000, ele: 200 },
+            RoutePoint { lon: 7_800_000, lat: 48_000_000, ele: 100, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_822_500, lat: 48_022_500, ele: 125, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_845_000, lat: 48_045_000, ele: 150, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_867_500, lat: 48_067_500, ele: 175, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 7_890_000, lat: 48_090_000, ele: 200, surface: 0, elevation_incomplete: false },
         ]
     );
     // No stored (Δlon, Δlat) can overflow the int16 the reader decodes them as.
@@ -216,7 +224,7 @@ fn oversized_diagonal_span_splits_into_several() {
 /// A point missing `<ele>` carries the last known height. Points 1–2 climb 200→250 m and point 3
 /// omits `<ele>`: it must inherit 250 m (not reset to 0), so geometry and ascent stay sane.
 #[test]
-fn missing_elevation_carries_last_known() {
+fn missing_elevation_stays_unknown() {
     let dlat = 5.0 / 111_320.0; // zigzag north so all three vertices survive decimation
     let bytes = convert(
         "Partial Ele",
@@ -230,7 +238,7 @@ fn missing_elevation_carries_last_known() {
     assert_eq!((r.min_ele_m, r.max_ele_m), (200, 250), "min/max ignore the carried (not measured) point");
     assert_eq!(r.total_ascent_m, 50, "the 200→250 climb; the carried point adds no further ascent");
     let pts = decode(&r, 0);
-    assert_eq!(pts[2].ele, 250, "the <ele>-less third point carries the last known 250 m, not 0");
+    assert_eq!(pts[2].elevation(), None);
 }
 
 /// A route with no `<ele>` anywhere (bare planner GPX): `min_ele > max_ele` after the sweep, so
@@ -247,5 +255,5 @@ fn no_elevation_anywhere_yields_zero_range() {
     assert_eq!((r.total_ascent_m, r.total_descent_m), (0, 0));
     assert!(r.total_distance_m > 1000, "distance is still measured from positions, got {}", r.total_distance_m);
     let pts = decode(&r, 0);
-    assert!(pts.iter().all(|p| p.ele == 0), "every stored elevation is 0");
+    assert!(pts.iter().all(|p| p.elevation().is_none()));
 }

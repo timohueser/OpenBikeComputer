@@ -240,7 +240,7 @@ impl StatField {
             StatField::Grade => {
                 // Route-relative — `--` on a route-less ride (grade comes from the route profile).
                 let value = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => fmt::percent(grade_at(p, r.total_distance_m, live)),
+                    (Some(r), Some(p)) => grade_at(p, r.total_distance_m, live).map_or_else(fmt::dashes, fmt::percent),
                     _ => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileGrade, lang), ""), value, false)
@@ -441,23 +441,9 @@ fn cap(a: &str, b: &str) -> heapless::String<24> {
     s
 }
 
-/// The grade (%) at fractional position `frac`: rise over run across a small fixed window of the
-/// route around it, using each end's mid-band elevation (base level). Zero when the run is
-/// degenerate. Shared by the [`Grade`](StatField::Grade) field and the Statistics header readout.
-pub(crate) fn grade_at(profile: &obc_route::Profile, total_distance_m: u32, frac: f32) -> i32 {
-    // ±1.5 % of the route — a touch of smoothing.
-    const HALF: f32 = 0.015;
-    let lo = (frac - HALF).max(0.0);
-    let hi = (frac + HALF).min(1.0);
-    let mid = |t: f32| {
-        let (a, b) = profile.at(t);
-        (a as i32 + b as i32) / 2
-    };
-    let run_m = (hi - lo) * total_distance_m as f32;
-    if run_m < 1.0 {
-        return 0;
-    }
-    ((mid(hi) - mid(lo)) as f32 / run_m * 100.0) as i32
+/// Cached signed endpoint grade at the requested route position, absent over missing spans.
+pub(crate) fn grade_at(profile: &obc_route::Profile, _total_distance_m: u32, frac: f32) -> Option<i32> {
+    profile.grade_at(frac)
 }
 
 /// The ascent (m) still to climb between the rider's matched progress and the end of the route —

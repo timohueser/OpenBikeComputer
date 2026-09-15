@@ -51,7 +51,6 @@ pub struct LoadedMap {
 }
 
 impl LoadedMap {
-    #[cfg(test)]
     pub fn open(source: MapSource) -> Result<Self, LoadError> {
         let store = obc_host_core::flat_store::HostStore::temporary()
             .map_err(|error| LoadError::Import(source.path.clone(), MapError::from(error)))?;
@@ -70,6 +69,15 @@ impl LoadedMap {
     pub fn reopen(store: &obc_host_core::flat_store::HostStore) -> Result<Self, MapError> {
         let map = FlatMap::open_only_in(store)?;
         Ok(Self { name: "Card map".into(), map })
+    }
+
+    pub fn route_attribution_key(&self) -> obc_formats::obcr::RouteSourceKey {
+        let source = self.map_source();
+        obc_formats::obcr::RouteSourceKey {
+            store: source.store_id().0,
+            object: source.id().0,
+            revision: source.revision().0,
+        }
     }
 
     pub fn display_name(&self) -> &str {

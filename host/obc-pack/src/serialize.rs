@@ -1332,9 +1332,9 @@ fn densify_polyline(pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
 /// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. `length_m` **stays** in v9 (N3
 /// sums it at emit for the displayed distance — weighted `g` is no longer a distance). The polyline
 /// is already densified, so every delta fits.
-fn pack_edge_record(e: &WorkEdge, out: &mut Vec<u8>) {
+fn pack_edge_record(e: &WorkEdge, elevation_complete: bool, out: &mut Vec<u8>) {
     out.extend_from_slice(&e.cost_m.to_le_bytes());
-    out.extend_from_slice(&(e.polyline.len() as u16).to_le_bytes());
+    out.extend_from_slice(&((e.polyline.len() as u16) | if elevation_complete { 0x8000 } else { 0 }).to_le_bytes());
     out.push(e.kind);
     out.extend_from_slice(&e.polyline[0].1.to_le_bytes()); // anchor lat
     out.extend_from_slice(&e.polyline[0].0.to_le_bytes()); // anchor lon
@@ -1633,10 +1633,11 @@ pub fn serialize_nav_section(
     // Edge pool: records back-to-back in `edges` order, each pushed to the next chunk start if it
     // would straddle a boundary. Since v14 the wire `edge_id` is the packed `(chunk, ordinal)` pair
     // (§8.4), minted by [`EdgeIds`] from the byte the record lands on.
+    let edge_facts: Vec<_> = edges.iter().map(|e| crate::nav::integrate_edge_facts(&e.polyline, terrain)).collect();
     let mut pool: Vec<u8> = Vec::new();
     let mut edge_ids: Vec<u32> = Vec::with_capacity(edges.len());
     let mut ids = EdgeIds::default();
-    for e in &edges {
+    for (e, facts) in edges.iter().zip(&edge_facts) {
         let rec_len = NAV_EDGE_FIXED_LEN + (e.polyline.len() - 1) * 4;
         debug_assert!(rec_len <= NAV_CHUNK_SIZE, "split bounded every record to one chunk");
         let within = pool.len() % NAV_CHUNK_SIZE;
@@ -1644,7 +1645,7 @@ pub fn serialize_nav_section(
             pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), FILLER);
         }
         edge_ids.push(ids.mint(pool.len()));
-        pack_edge_record(e, &mut pool);
+        pack_edge_record(e, facts.2, &mut pool);
     }
     pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, FILLER);
     let edge_chunk_count = (pool.len() / NAV_CHUNK_SIZE) as u32;
@@ -1656,11 +1657,10 @@ pub fn serialize_nav_section(
     // Adjacency with inline neighbor coords, capped at NAV_MAX_DEGREE.
     let mut adj: Vec<Vec<WireNeighbor>> = (0..coords.len()).map(|_| Vec::new()).collect();
     let mut truncated = 0usize;
-    for (e, &edge_id) in edges.iter().zip(&edge_ids) {
+    for ((e, &edge_id), &(ascent_ab, ascent_ba, _)) in edges.iter().zip(&edge_ids).zip(&edge_facts) {
         // §8.3 v12: the two entries of an edge differ in exactly one field. `a→b` books the climb of
         // riding the polyline forwards, `b→a` the climb of riding it backwards (= the forward
         // descent). A self-loop writes the forward one and nothing else, matching its single entry.
-        let (ascent_ab, ascent_ba) = crate::nav::integrate_edge_ascent(&e.polyline, terrain);
         let mut push = |from: u32, to: u32, ascent_m: u16| {
             let list = &mut adj[from as usize];
             if list.len() >= NAV_MAX_DEGREE {

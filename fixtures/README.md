@@ -69,7 +69,8 @@ Generated design-review screenshots belong in PRs or project documentation, not 
   Switzerland snapshot dated 2026-09-13, on the canonical fixture bbox; its OBCT terrain is derived from Copernicus GLO-30 tile
   `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
   The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
-  `tracked_sources` originals. The routes use OBCR v3.
+  `tracked_sources` originals. The Grimsel route uses OBCR v4 with route facts. This package revision changes
+  only `routes/grimsel-climb.obcr` from the preceding v15 map package.
 - `sim-monaco`: an **OBCM v15** file from the pinned `assistant-osm` Monaco
   snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
   project-authored up-ahead GPX.

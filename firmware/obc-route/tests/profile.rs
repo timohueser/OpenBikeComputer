@@ -201,7 +201,7 @@ const NO_ELE: &str = r#"<?xml version="1.0"?>
 </trkseg></trk></gpx>"#;
 
 #[test]
-fn no_elevation_route_has_flat_zero_gap_free_band() {
+fn no_elevation_route_has_unknown_band() {
     let bytes = convert("Unmeasured", NO_ELE);
     let src = SliceSource(&bytes);
     let ridx = RouteIndex::read(&src).unwrap();
@@ -211,9 +211,9 @@ fn no_elevation_route_has_flat_zero_gap_free_band() {
 
     // The whole band is the flat 0 m fallback, with no sentinel (min > max) holes.
     assert_eq!((p.min_ele_m, p.max_ele_m), (0, 0));
-    assert_eq!(p.peak_ele_m(), 0);
+    assert_eq!(p.peak_ele_m(), i16::MIN);
     for (i, &(mn, mx)) in p.cols().iter().enumerate() {
-        assert_eq!((mn, mx), (0, 0), "column {i} should be the flat 0 m fallback");
+        assert!(mn > mx, "column {i} has no measured elevation");
     }
     // No climb anywhere, so "to climb" is 0 across the whole route.
     assert_eq!(p.ascent_to(0.0), 0);
@@ -265,4 +265,50 @@ fn sparkline_is_none_without_a_range() {
     use obc_route::elevation_sparkline;
     assert!(elevation_sparkline(&SliceSource(&convert("Towpath", FLAT))).is_none(), "flat → no band");
     assert!(elevation_sparkline(&SliceSource(&convert("Unmeasured", NO_ELE))).is_none(), "no <ele> → no band");
+}
+
+#[test]
+fn sparkline_refuses_incomplete_segments_and_unreadable_chunks() {
+    use common::{build_obcr, ChunkIn, RouteSpec};
+    use obc_formats::io::{ByteSource, Error};
+    let chunks = [
+        ChunkIn { points: vec![(0, 0, 10), (1000, 0, 20)], cum_distance_m: 0, cum_ascent_m: 0 },
+        ChunkIn { points: vec![(1000, 0, 20), (2000, 0, 30)], cum_distance_m: 111, cum_ascent_m: 10 },
+    ];
+    let (bytes, extents) =
+        build_obcr(&RouteSpec { chunks: &chunks, totals: (222, 20, 0), seam_shared: true, ..RouteSpec::default() });
+    assert!(obc_route::elevation_sparkline(&SliceSource(&bytes)).is_some());
+    let mut gap = bytes.clone();
+    gap[extents[1].start as usize + 6] = 8;
+    assert!(
+        obc_route::elevation_sparkline(&SliceSource(&gap)).is_none(),
+        "valid endpoints cannot fill an incomplete span"
+    );
+
+    struct Fault<'a> {
+        bytes: &'a [u8],
+        offset: u64,
+    }
+    impl ByteSource for Fault<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+            if offset == self.offset {
+                return Err(Error::Io);
+            }
+            SliceSource(self.bytes).read_at(offset, out)
+        }
+    }
+    let index_offset = u32::from_le_bytes(bytes[56..60].try_into().unwrap()) as u64;
+    for offset in [index_offset + obc_formats::obcr::CHUNK_META_LEN as u64, extents[1].start as u64] {
+        assert!(
+            obc_route::elevation_sparkline(&Fault { bytes: &bytes, offset }).is_none(),
+            "a failed later chunk must not be filled from the earlier chunk"
+        );
+    }
+    let mut malformed = bytes;
+    let count_at = index_offset as usize + obc_formats::obcr::CHUNK_META_LEN + 26;
+    malformed[count_at..count_at + 2].copy_from_slice(&0u16.to_le_bytes());
+    assert!(obc_route::elevation_sparkline(&SliceSource(&malformed)).is_none());
 }
