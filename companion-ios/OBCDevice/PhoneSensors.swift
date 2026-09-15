@@ -90,7 +90,9 @@ final class PhoneSensors: NSObject, CLLocationManagerDelegate {
             // A negative course or speed is CoreLocation saying it does not know.
             location.course >= 0 ? Float(location.course) : .nan,
             location.speed >= 0 ? Float(location.speed) : .nan,
-            UInt32(location.timestamp.timeIntervalSince1970))
+            // Clamped, not converted: a stamp outside the range is a fix the host reads as
+            // unstamped, never a trap.
+            UInt32(clamping: Int64(location.timestamp.timeIntervalSince1970)))
         if !hasBarometer, location.verticalAccuracy >= 0 {
             push(altitude: Float(location.altitude))
         }
