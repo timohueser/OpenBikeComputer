@@ -59,7 +59,7 @@ Whole suites, with follow-up runs only after changes or observed failures:
 - `cargo test -p obc-sim --bin obc-sim -p obc-app --lib` (app: 992 pass;
   the simulator terrain fixture needed its complete-coverage bit)
 - `cargo test -p obc-sim --bin obc-sim` after the fixture correction: 78 pass
-- Final changed transform suites: `cargo test -p obc-route --test detour --test transform`
+- Final transform correction: `cargo test -p obc-route --test transform --test detour --test convert --test facts` (45 pass)
 - `cargo test -p obc-vectors --test vectors -- --ignored` regenerated shared vectors
 - `cargo clippy -p obc-route -p obc-pack -p obcm-assemble --all-targets -- -D warnings`
 - `cargo clippy -p obc-route -p obc-app -p obc-sim --all-targets -- -D warnings`
@@ -79,6 +79,15 @@ with valid emitted endpoints, clipped intervals, chunk seams, repeated/parallel
 edge ambiguity, and malformed optional metadata. The decoded RoutePoint remains
 12 bytes. Grades use ordered endpoint samples; unknown profile spans remain empty.
 
+Transforms retain stored vertices and use the encoder's measured output distance for
+waypoint shifts. A dense route at Swiss coordinates checks head and tail anchors
+against the emitted geometry to the stored metre precision, including an exact
+route-end waypoint. Interpolation adds the rounded local coordinate delta to the
+integer anchor, so it does not round absolute coordinates through `f32`.
+A segment marked incomplete returns unknown elevation at an interior seek, clipped
+splice seam, or synthetic point. Its measured endpoints remain valid. The focused
+splice test checks this after output reload. These fixes add no transform state.
+
 No UI snapshot sweep, resource head build, hardware run, or full CI mirror was run
 here. The orchestrator owns the final rendering/resource gates and integrated
 adversarial review. Hardware acceptance remains pending; no connected device is
@@ -88,9 +97,6 @@ required for the independent integration and simulator work.
 
 - Independently review incoming segment ownership at chunk and splice boundaries,
   optional-section bounds, and conservative GPX attribution.
-- Check transformed waypoint anchors against the final retained geometry; existing
-  transform anchor calculations use input cumulative distance and seek from integer
-  chunk anchors, so precision across decimation and partial boundaries needs review.
 - Integrate RA02 and re-run only the affected conflict-resolution checks.
 - Implement RA04/RA05 descriptor-aware transforms and source binding through the
   reserved contract, then compare preview and committed facts from the same bytes.
