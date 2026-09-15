@@ -3,7 +3,7 @@ use super::{palette::*, Ctx, RenderFrame, Transition};
 use crate::{
     easier::{Phase, State},
     navigator::ReviewStatus,
-    Gesture,
+    Gesture, Msg,
 };
 use core::fmt::Write;
 use embedded_graphics::prelude::*;
@@ -14,7 +14,7 @@ use obc_render::{
     Canvas, Surface, Viewport,
 };
 use obc_route::easier::{Costs, Goal};
-const NAMES: [&str; 3] = ["Less climbing", "Smoother surface", "Shorter ride"];
+const NAMES: [Msg; 3] = [Msg::AssistantLessClimb, Msg::AssistantSmoother, Msg::AssistantShorter];
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct EasierScreen {
@@ -76,15 +76,15 @@ impl EasierScreen {
     {
         if let Some(next) = self.next.filter(|_| self.review) {
             cv.clear(PARCHMENT);
-            header(cv, NAMES[self.goal as usize], rx.w, None);
-            benefit(cv, self.current, next, self.goal as usize, rect(8, 46, rx.w - 16, 70), false);
-            cv.text("Current", Point::new(150, 129), Font::Label, TextAlign::Right, SUBTEXT);
-            cv.text("New", Point::new(226, 129), Font::Label, TextAlign::Right, SUBTEXT);
+            header(cv, rx.t(NAMES[self.goal as usize]), rx.w, None);
+            benefit(cv, self.current, next, self.goal as usize, rect(8, 46, rx.w - 16, 70), false, rx);
+            cv.text(rx.t(Msg::AssistantCurrent), Point::new(146, 129), Font::Label, TextAlign::Right, SUBTEXT);
+            cv.text(rx.t(Msg::AssistantNew), Point::new(236, 129), Font::Label, TextAlign::Right, SUBTEXT);
             cv.hline(12, 157, rx.w - 24, SUBTEXT);
             for (i, (name, old, new)) in [
-                ("Ride", self.current.distance_m, next.distance_m),
-                ("Climb", self.current.ascent_m, next.ascent_m),
-                ("Rough", self.current.rough_m, next.rough_m),
+                (rx.t(Msg::AssistantRide), self.current.distance_m, next.distance_m),
+                (rx.t(Msg::AssistantClimb), self.current.ascent_m, next.ascent_m),
+                (rx.t(Msg::AssistantRough), self.current.rough_m, next.rough_m),
             ]
             .iter()
             .enumerate()
@@ -93,18 +93,18 @@ impl EasierScreen {
                 cv.text(name, Point::new(12, y), Font::Body, TextAlign::Left, INK);
                 let known = i != 1 || self.current.elevation_complete;
                 let surface = i != 2 || (self.current.surface_attributed && self.current.unknown_m == 0);
-                let a = distance(*old, i == 1);
-                let b = distance(*new, i == 1);
+                let a = distance(*old, i == 1, rx.settings.units);
+                let b = distance(*new, i == 1, rx.settings.units);
                 cv.text(
-                    if known && surface { &a } else { "Unknown" },
-                    Point::new(150, y),
+                    if known && surface { &a } else { "--" },
+                    Point::new(146, y),
                     Font::Body,
                     TextAlign::Right,
                     INK,
                 );
                 cv.text(
-                    if i != 2 || next.unknown_m == 0 { &b } else { "Unknown" },
-                    Point::new(226, y),
+                    if i != 2 || next.unknown_m == 0 { &b } else { "--" },
+                    Point::new(236, y),
                     Font::Body,
                     TextAlign::Right,
                     INK,
@@ -113,7 +113,7 @@ impl EasierScreen {
                     cv.hline(12, y + 30, rx.w - 24, SUBTEXT);
                 }
             }
-            button(cv, if self.saving { "Saving…" } else { "Use this route" });
+            button(cv, if self.saving { rx.t(Msg::AssistantSaving) } else { rx.t(Msg::AssistantUseRoute) });
             return;
         }
         let vp = fit(self.bounds, rx.w, rx.h);
@@ -147,22 +147,22 @@ impl EasierScreen {
                 }
             }
         }
-        header(cv, "Easier route", rx.w, self.ready.then_some((self.ordinal, self.count)));
+        header(cv, rx.t(Msg::AssistantEasier), rx.w, self.ready.then_some((self.ordinal, self.count)));
         cv.fill(rect(0, 188, rx.w, rx.h - 188), PARCHMENT);
         if let Some(next) = self.next.filter(|_| self.ready) {
-            benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true);
-            button(cv, "Preview route");
+            benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true, rx);
+            button(cv, rx.t(Msg::AssistantPreviewRoute));
         } else {
             cv.text(
                 if self.unavailable {
                     match self.failure {
-                        Some(obc_route::NavError::Exhausted) => "Search limit reached",
-                        Some(obc_route::NavError::NoPath) => "No connecting route",
-                        None if !self.current.elevation_complete => "Comparison unavailable",
-                        None => "No useful route available",
+                        Some(obc_route::NavError::Exhausted) => rx.t(Msg::AssistantSearchLimit),
+                        Some(obc_route::NavError::NoPath) => rx.t(Msg::AssistantNoConnection),
+                        None if !self.current.elevation_complete => rx.t(Msg::AssistantNoComparison),
+                        None => rx.t(Msg::AssistantNoUsefulRoute),
                     }
                 } else {
-                    "Comparing routes…"
+                    rx.t(Msg::AssistantComparing)
                 },
                 Point::new(rx.w / 2, 223),
                 Font::Label,
@@ -198,14 +198,12 @@ fn fit(b: BBox, w: i32, h: i32) -> Viewport {
         zoom,
     )
 }
-fn distance(value: u32, ascent: bool) -> heapless::String<16> {
+fn distance(value: u32, ascent: bool, units: crate::settings::Units) -> heapless::String<16> {
     let mut text = heapless::String::new();
-    if ascent || value < 1000 {
-        let _ = write!(text, "{value}m");
-    } else if value.is_multiple_of(1000) {
-        let _ = write!(text, "{}km", value / 1000);
+    if ascent {
+        let _ = text.push_str(&super::vocab::fmt::elevation_short(Some(value), units));
     } else {
-        let _ = write!(text, "{}.{:01}km", value / 1000, value % 1000 / 100);
+        super::vocab::fmt::write_distance_coarse(&mut text, "", value, units);
     }
     text
 }
@@ -217,14 +215,15 @@ fn benefit(
     goal: usize,
     area: embedded_graphics::primitives::Rectangle,
     heading: bool,
+    rx: &super::Render,
 ) {
-    let title = heading.then_some(NAMES[goal]);
+    let title = heading.then(|| rx.t(NAMES[goal]));
     let (old, new, label) = match goal {
-        0 => (current.ascent_m, next.ascent_m, "ascent saved"),
-        1 => (current.rough_m, next.rough_m, "rough avoided"),
-        _ => (current.distance_m, next.distance_m, "distance saved"),
+        0 => (current.ascent_m, next.ascent_m, rx.t(Msg::AssistantAscentSaved)),
+        1 => (current.rough_m, next.rough_m, rx.t(Msg::AssistantRoughAvoided)),
+        _ => (current.distance_m, next.distance_m, rx.t(Msg::AssistantDistanceSaved)),
     };
-    let text = distance(Goal::ALL[goal].saving(current, next), goal == 0);
+    let text = distance(Goal::ALL[goal].saving(current, next), goal == 0, rx.settings.units);
     let center = area.top_left.x + area.size.width as i32 / 2;
     let label_height = Font::Label.cap_height() as i32;
     let number_height = Font::Display.cap_height() as i32;
@@ -240,7 +239,7 @@ fn benefit(
     let left = center - row_width / 2;
     cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, INK);
     cv.text_vcentered(
-        if new > old { "more than now" } else { label },
+        if new > old { rx.t(Msg::AssistantMoreThanNow) } else { label },
         center,
         (top + number_height + 8, label_height),
         Font::Label,

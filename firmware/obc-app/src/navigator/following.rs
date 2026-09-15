@@ -239,11 +239,6 @@ impl NavigatorMachine {
         &self.waypoints
     }
 
-    #[cfg(test)]
-    pub(crate) fn waypoints_mut(&mut self) -> &mut Waypoints {
-        &mut self.waypoints
-    }
-
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();

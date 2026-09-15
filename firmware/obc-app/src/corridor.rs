@@ -23,7 +23,7 @@ pub struct CorridorKey {
 /// decide which tables the list may walk and whether a corridor snapshot is wanted at all, so they
 /// travel as one value — the pair cannot be passed apart and cannot drift.
 ///
-/// Neither half lives on [`UpAheadScreen`](crate::screen::UpAheadScreen) any more (#1515 D4a): both
+/// Neither half lives on [`WhatsNextScreen`](crate::screen::WhatsNextScreen) any more (#1515 D4a): both
 /// are edited from the context sheet *above* that screen, so a copy frozen inside it would be a
 /// copy the rider's edit could not reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
