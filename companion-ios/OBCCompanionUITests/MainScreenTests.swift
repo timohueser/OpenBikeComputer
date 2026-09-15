@@ -37,6 +37,14 @@ final class MainScreenTests: XCTestCase {
         XCTAssertTrue(app.otherElements["main.screen"].waitForExistence(timeout: 10), "main missing")
     }
 
+    @MainActor
+    private func waitForSyncedRides(_ app: XCUIApplication) {
+        let line = app.descendants(matching: .any)["main.syncLine"].firstMatch
+        XCTAssertTrue(line.waitForExistence(timeout: 5), "sync progress line missing")
+        let completed = NSPredicate(format: "label CONTAINS 'Synced 4 new rides just now'")
+        wait(for: [expectation(for: completed, evaluatedWith: line)], timeout: 30)
+    }
+
     /// C1 → C2: compact rows with the per-tab stat lines.
     @MainActor
     func testPlannedAndTrackedTabsShowCompactRows() {
@@ -114,7 +122,8 @@ final class MainScreenTests: XCTestCase {
         // The selector row is on screen, so a still-revealed bar (right below
         // it) would be too — its absence means it re-hid.
         XCTAssertTrue(app.buttons["Planned"].isHittable, "did not make it back to the top")
-        XCTAssertFalse(search.exists, "search must re-hide once scrolled away")
+        let hidden = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: search)
+        wait(for: [hidden], timeout: 5)
         snap(app, "C1-search-rehidden")
     }
 
@@ -152,6 +161,7 @@ final class MainScreenTests: XCTestCase {
 
         // Sync pulls the rides in (library-first).
         app.buttons["topbar.sync"].tap()
+        waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
         XCTAssertTrue(card.waitForExistence(timeout: 30))
 
@@ -182,6 +192,7 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
         app.buttons["Tracked"].tap()
         app.buttons["topbar.sync"].tap()
+        waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
         XCTAssertTrue(card.waitForExistence(timeout: 30))
 
@@ -225,6 +236,7 @@ final class MainScreenTests: XCTestCase {
         waitForMain(app)
         app.buttons["Tracked"].tap()
         app.buttons["topbar.sync"].tap()
+        waitForSyncedRides(app)
         let card = app.buttons["main.card.ride-sunday-coffee-spin"]
         XCTAssertTrue(card.waitForExistence(timeout: 30))
 
