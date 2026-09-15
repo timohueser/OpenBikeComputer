@@ -51,6 +51,10 @@ and simulator scenarios have separate binaries. Live Copernicus tests and the ca
 places check run only through their explicit manual commands. Their ignored status prevents a
 broad Cargo command from contacting a live service or starting the manual captured-source check.
 
+Level commands omit manual suites. Run a manual suite through its declared command, or select
+its explicit cadence with `run --scheduled manual --surface NAME`. Captured Rust suite commands
+use the existing `obc test fixtures -p` wrapper to prepare inputs before they run locally.
+
 Vector and assembly writers are Cargo examples. They run only through the manual commands in
 `obc suites explain manual.obc-link`, `manual.obc-vectors` and `manual.obc-web-assemble`.
 `manual.obc-display` runs the row-hash timing probe. These commands can write fixtures or print
