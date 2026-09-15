@@ -211,6 +211,30 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertThrowsError(try RouteObjectCodec.decode(invalid))
     }
 
+    func testDensifyingIncompleteElevationKeepsOnlyTheMeasuredEndpoints() throws {
+        let points = [
+            RoutePoint(coordinate: Coordinate(latitude: 47, longitude: 8), elevationMeters: 100),
+            RoutePoint(coordinate: Coordinate(latitude: 47, longitude: 8.1), elevationMeters: 200, surface: 1, elevationIncomplete: true),
+        ]
+        let decoded = try RouteObjectCodec.decode(RouteObjectCodec.encode(points: points, waypoints: [], name: "Gap"))
+        XCTAssertGreaterThan(decoded.points.count, 2)
+        XCTAssertEqual(decoded.points.first?.elevationMeters, 100)
+        XCTAssertEqual(decoded.points.last?.elevationMeters, 200)
+        for point in decoded.points.dropFirst().dropLast() {
+            XCTAssertNil(point.elevationMeters, "a synthetic point is not a measured endpoint")
+        }
+        XCTAssertTrue(decoded.points.dropFirst().allSatisfy(\.elevationIncomplete))
+        XCTAssertEqual(decoded.totalAscentMeters, 0)
+    }
+
+    func testDescriptorEnvelopesMatchTheSharedOverlapContract() throws {
+        let valid = try RouteObjectCodec.decode(try fixture("route-visit.obcr"))
+        XCTAssertNotNil(valid.visitDescriptor)
+        for name in ["route-visit-waypoint-overlap.obcr", "route-visit-index-overlap.obcr"] {
+            XCTAssertThrowsError(try RouteObjectCodec.decode(try fixture(name)), name)
+        }
+    }
+
     func testEmptyGeometryEncodesToEmptyData() {
         XCTAssertTrue(RouteObjectCodec.encode(points: [], waypoints: [], name: "Nothing").isEmpty)
     }

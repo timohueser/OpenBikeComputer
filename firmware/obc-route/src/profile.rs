@@ -474,8 +474,8 @@ pub const SPARKLINE_BUCKETS: usize = 64;
 /// Build the received-route card's mini elevation sparkline by streaming the route **once**:
 /// bucket every point into one of [`SPARKLINE_BUCKETS`] distance columns (keeping each column's
 /// peak height), fill any column no point landed in from its neighbour, then min–max-normalize the
-/// columns to `u8`. Returns `None` when the route carries no usable elevation range (a computed
-/// route, or a dead-flat one) — the card then omits the band rather than drawing a fake flat line.
+/// columns to `u8`. Returns `None` for a flat range, incomplete elevation, or an unreadable
+/// chunk: this compact band cannot represent a gap.
 ///
 /// Column placement mirrors [`RouteReader::elevation_profile`] (re-anchor each chunk to its
 /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), accumulate per-segment distance from
@@ -504,15 +504,14 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
     let src_len = src.len();
     for k in 0..h.chunk_count {
         let off = h.index_offset + k * CHUNK_META_LEN as u32;
-        if src.read_at(off.into(), &mut meta_bytes).is_err() {
-            continue;
-        }
-        let Ok(m) = parse_chunk_meta(&meta_bytes, src_len) else { continue };
+        src.read_at(off.into(), &mut meta_bytes).ok()?;
+        let m = parse_chunk_meta(&meta_bytes, src_len).ok()?;
         let n = m.point_count as usize;
         buf.clear();
-        if n == 0 || decode_chunk_from(src, &m, n, &mut buf).is_err() {
-            continue;
+        if n == 0 {
+            return None;
         }
+        decode_chunk_from(src, &m, n, &mut buf).ok()?;
         let mut dist = m.cum_distance_m as f64;
         let mut prev: Option<(i32, i32)> = None;
         for p in &buf {
@@ -523,6 +522,9 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
             let b = ((dist / total) * last as f64) as usize;
             let b = b.min(last);
             p.elevation()?;
+            if p.elevation_incomplete {
+                return None;
+            }
             if p.ele > maxes[b] {
                 maxes[b] = p.ele;
             }

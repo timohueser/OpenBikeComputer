@@ -341,6 +341,17 @@ public enum RouteObjectCodec {
             waypointCount = Int(try reader.u16(at: 116))
         }
 
+        if descriptor != nil {
+            // Wire offsets/counts are at most UInt32. Widen before range arithmetic.
+            let start = UInt64(descriptorOffset)
+            let end = start + UInt64(descriptorLength)
+            for (offset, count, width) in [(indexOffset, chunkCount, chunkMetaLength), (waypointOffset, waypointCount, waypointLength)] {
+                let tableStart = UInt64(offset)
+                let tableEnd = tableStart + UInt64(count) * UInt64(width)
+                guard start >= tableEnd || tableStart >= end else { throw DeviceError.readFailed }
+            }
+        }
+
         // Chunk index → geometry. Each chunk's first point is its anchor (in the
         // ChunkMeta, not the body); the seam anchor of chunks after the first
         // duplicates the previous chunk's last point, so it isn't re-appended.
@@ -647,7 +658,7 @@ private extension RouteObjectCodec {
             }
             return Candidate(
                 lon: lerpI32(a.lon, b.lon), lat: lerpI32(a.lat, b.lat),
-                elevation: a.elevation == Int16.min || b.elevation == Int16.min ? Int16.min : Int16((Double(a.elevation) + (Double(b.elevation) - Double(a.elevation)) * t).rounded()),
+                elevation: a.elevation == Int16.min || b.elevation == Int16.min || b.surface & 8 != 0 ? Int16.min : Int16((Double(a.elevation) + (Double(b.elevation) - Double(a.elevation)) * t).rounded()),
                 surface: b.surface,
                 cumulativeDistance: lerpU32(a.cumulativeDistance, b.cumulativeDistance),
                 cumulativeAscent: lerpU32(a.cumulativeAscent, b.cumulativeAscent)

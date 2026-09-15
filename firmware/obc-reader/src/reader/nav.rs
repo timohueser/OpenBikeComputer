@@ -644,7 +644,13 @@ impl<'a> Reader<'a> {
                     return;
                 }
                 for nb in n.neighbors() {
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else { continue };
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, nb.edge_id, p) else {
+                        if require_unique {
+                            read_error = Some(IoError::Io);
+                            return;
+                        }
+                        continue;
+                    };
                     if candidate.distance_m <= max_distance_m
                         && best.is_some_and(|old| old.edge_id != candidate.edge_id)
                     {
@@ -689,7 +695,13 @@ impl<'a> Reader<'a> {
                     if lon < view.min_lon || lon > view.max_lon || lat < view.min_lat || lat > view.max_lat {
                         continue;
                     }
-                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else { continue };
+                    let Some(candidate) = self.project_nav_edge_cached(tiles, edge_id, p) else {
+                        if require_unique {
+                            read_error = Some(IoError::Io);
+                            return;
+                        }
+                        continue;
+                    };
                     if candidate.distance_m <= max_distance_m
                         && best.is_some_and(|old| old.edge_id != candidate.edge_id)
                     {
