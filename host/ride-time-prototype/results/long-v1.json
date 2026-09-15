@@ -1,0 +1,841 @@
+{
+  "audit": {
+    "source": "https://raw.githubusercontent.com/GoldenCheetah/OpenData/59a0062c5e79c7e9a6751a3fff972fdb0bdb3347/examples/033874ce-e20d-44ba-9cc9-125030b6662f.zip",
+    "source_sha256": "9f3b5a8667148a05203d9f3139422a5e1d9e40d4291124313b124289e10e409f",
+    "athlete_count": 1,
+    "source_summaries": 731,
+    "source_csvs": 660,
+    "exclusions": {
+      "no_original_gps_or_altitude": 183,
+      "ambiguous_metadata": 12,
+      "not_bike": 72,
+      "grade_above_50_percent": 66,
+      "speed_above_80": 61,
+      "recording_gap": 28,
+      "nonmonotonic": 4
+    },
+    "retained": 234,
+    "hours": {
+      "2": 26,
+      "4": 1,
+      "6": 1
+    },
+    "distance_km": 8776.60295,
+    "moving_minutes": 20315.014666666666,
+    "short_stop_minutes": 71.13433333333329
+  },
+  "run": {
+    "runtime_seconds": 33.57773525200173,
+    "paired_target_rides": 23,
+    "predictions_sha256": "09e7789043b44a9f85cbae65f91dbe7f24485c259bed5b6877d525ced2a08f6a"
+  },
+  "protocol_sha256": "6ec2f482ffbe69a2d8d38e6f5d533d7871d02bfe29f8ef3c87dd20fca8f2ad25",
+  "protocol": {
+    "created_at_utc": "2026-09-15T12:41:41.617942+00:00",
+    "source_scope": "One previously inspected example athlete; descriptive external pilot, not a population test.",
+    "primary": "Continuous chronological replay, empty state at first retained ride; all eligible history rides.",
+    "annual": "Separate reset at the first retained ride of each year; each ride once in this view.",
+    "paired": "Same >=120 minute rides with >=1000 km preceding eligible history; latest whole rides reaching each budget.",
+    "budgets_km": [
+      0,
+      50,
+      100,
+      200,
+      500,
+      1000
+    ],
+    "paired_overshoot": "Include the oldest ride in full; report actual distance; never split a training ride.",
+    "checkpoints_minutes": "Every 10 moving minutes; headline checkpoints 0, 10, 30, 60.",
+    "bike": "All rides use frozen other-bike prior because broad categories are unavailable.",
+    "motion": "Positive distance increments; internal zero-distance runs <=10 s included only in a fixed sensitivity.",
+    "adaptation": "Original Scalar, Live and Intervals unchanged; 20 m observation blocks, flushed at stops; 200 m trailing grade.",
+    "ranges": "Original FitRec references; earliest forecast per phase/duration group updates personal range after each ride.",
+    "censoring": "Reject whole rides with missing data, >30 s gaps, speed >80 km/h, grade >50%, nonmonotonic distance/time.",
+    "duplicate_policy": "GPS/altitude flags required; potential same-day duplicates within 5% distance and elapsed duration removed, prefer finer sampling; then remove overlaps.",
+    "uncertainty": "No rider-bootstrap interval from a single rider; repeated rides/resets are not independent users."
+  },
+  "years": [
+    "2008",
+    "2009",
+    "2010",
+    "2011",
+    "2012",
+    "2013",
+    "2014",
+    "2015",
+    "2016",
+    "2017"
+  ],
+  "modes": {
+    "continuous": {
+      "0": {
+        "n": 26,
+        "mape": 5.763008538387131,
+        "mae_minutes": 11.867746615299517,
+        "bias_minutes": -9.337116231721295,
+        "median_ape": 3.1821048275552335,
+        "p90_ape": 13.813813746220832,
+        "coverage": 92.3076923076923,
+        "above_upper": 7.6923076923076925,
+        "median_width_minutes": 55.63445518277409,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "10": {
+        "n": 26,
+        "mape": 6.041067158543253,
+        "mae_minutes": 13.895742411095856,
+        "bias_minutes": -9.428119002728742,
+        "median_ape": 3.6334556266428,
+        "p90_ape": 13.934018950575203,
+        "coverage": 84.61538461538461,
+        "above_upper": 11.538461538461538,
+        "median_width_minutes": 38.67053508074001,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.6017549098460595,
+        "mae_minutes": 10.351561475088126,
+        "bias_minutes": -7.3217579510420485,
+        "median_ape": 5.2305885123352835,
+        "p90_ape": 11.956515071874316,
+        "coverage": 92.3076923076923,
+        "above_upper": 7.6923076923076925,
+        "median_width_minutes": 32.43025423239651,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.5558131667308785,
+        "mae_minutes": 4.5776962935076275,
+        "bias_minutes": -0.3047287715235977,
+        "median_ape": 4.150177102340639,
+        "p90_ape": 8.36472062968117,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 24.29481338953885,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      }
+    },
+    "annual": {
+      "0": {
+        "n": 26,
+        "mape": 5.6560679973425945,
+        "mae_minutes": 11.722725644055679,
+        "bias_minutes": -7.546453730713197,
+        "median_ape": 3.6839212066057296,
+        "p90_ape": 13.807824121834242,
+        "coverage": 92.3076923076923,
+        "above_upper": 7.6923076923076925,
+        "median_width_minutes": 54.109122554455055,
+        "median_history_km": 1122.5926,
+        "min_history_km": 0.0,
+        "max_history_km": 3683.4016400000005
+      },
+      "10": {
+        "n": 26,
+        "mape": 5.838143136024776,
+        "mae_minutes": 13.66518394144666,
+        "bias_minutes": -9.00483176993546,
+        "median_ape": 3.539938709075743,
+        "p90_ape": 13.872439135631062,
+        "coverage": 84.61538461538461,
+        "above_upper": 11.538461538461538,
+        "median_width_minutes": 38.755431246495675,
+        "median_history_km": 1122.5926,
+        "min_history_km": 0.0,
+        "max_history_km": 3683.4016400000005
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.5806335966175995,
+        "mae_minutes": 10.330566210195588,
+        "bias_minutes": -7.299557216677433,
+        "median_ape": 5.152393910055052,
+        "p90_ape": 11.951480006450426,
+        "coverage": 92.3076923076923,
+        "above_upper": 7.6923076923076925,
+        "median_width_minutes": 32.39873620032225,
+        "median_history_km": 1122.5926,
+        "min_history_km": 0.0,
+        "max_history_km": 3683.4016400000005
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.556141373021971,
+        "mae_minutes": 4.577905121962683,
+        "bias_minutes": -0.30443976526627925,
+        "median_ape": 4.150107479013094,
+        "p90_ape": 8.364898794728761,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 24.4480304852736,
+        "median_history_km": 1122.5926,
+        "min_history_km": 0.0,
+        "max_history_km": 3683.4016400000005
+      }
+    },
+    "short_stops": {
+      "0": {
+        "n": 26,
+        "mape": 5.955564801619248,
+        "mae_minutes": 12.319087236713385,
+        "bias_minutes": -9.94662435013989,
+        "median_ape": 3.35779537003605,
+        "p90_ape": 14.379955001522598,
+        "coverage": 92.3076923076923,
+        "above_upper": 7.6923076923076925,
+        "median_width_minutes": 56.297100650786085,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "10": {
+        "n": 26,
+        "mape": 6.396405552559813,
+        "mae_minutes": 14.560729907328742,
+        "bias_minutes": -9.42365993444702,
+        "median_ape": 3.641508039605694,
+        "p90_ape": 14.922296714643373,
+        "coverage": 84.61538461538461,
+        "above_upper": 11.538461538461538,
+        "median_width_minutes": 39.24526932232797,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.7130854029752065,
+        "mae_minutes": 10.564458956828624,
+        "bias_minutes": -7.5843121599536065,
+        "median_ape": 5.405383985538406,
+        "p90_ape": 11.928096284206708,
+        "coverage": 88.46153846153845,
+        "above_upper": 11.538461538461538,
+        "median_width_minutes": 32.75336638938109,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.500418361788864,
+        "mae_minutes": 4.47660197266494,
+        "bias_minutes": -0.693875060929401,
+        "median_ape": 4.704022492524605,
+        "p90_ape": 9.008084010327053,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 24.452888062805776,
+        "median_history_km": 3861.4521400000003,
+        "min_history_km": 210.74599999999998,
+        "max_history_km": 8574.065949999998
+      }
+    }
+  },
+  "paired": {
+    "0": {
+      "0": {
+        "n": 23,
+        "mape": 13.158637784921623,
+        "mae_minutes": 20.123146207660966,
+        "bias_minutes": 16.40740025492069,
+        "median_ape": 12.599483957167418,
+        "p90_ape": 22.488057267326607,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 56.46028901706369,
+        "median_history_km": 0.0,
+        "min_history_km": 0.0,
+        "max_history_km": 0.0
+      },
+      "10": {
+        "n": 23,
+        "mape": 6.781446010116018,
+        "mae_minutes": 15.380530327107447,
+        "bias_minutes": -3.7240359694610006,
+        "median_ape": 4.034107669015883,
+        "p90_ape": 11.859905166124948,
+        "coverage": 86.95652173913044,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 39.12628023689318,
+        "median_history_km": 0.0,
+        "min_history_km": 0.0,
+        "max_history_km": 0.0
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.444615908138992,
+        "mae_minutes": 10.455215571656785,
+        "bias_minutes": -8.539943819358966,
+        "median_ape": 4.80493421470139,
+        "p90_ape": 11.792878959682433,
+        "coverage": 73.91304347826086,
+        "above_upper": 26.08695652173913,
+        "median_width_minutes": 31.80538255063057,
+        "median_history_km": 0.0,
+        "min_history_km": 0.0,
+        "max_history_km": 0.0
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.527282207181669,
+        "mae_minutes": 4.6650301117720785,
+        "bias_minutes": -0.17599315002144283,
+        "median_ape": 3.535638451208488,
+        "p90_ape": 8.372099018948543,
+        "coverage": 86.95652173913044,
+        "above_upper": 13.043478260869565,
+        "median_width_minutes": 22.627954747625388,
+        "median_history_km": 0.0,
+        "min_history_km": 0.0,
+        "max_history_km": 0.0
+      }
+    },
+    "50": {
+      "0": {
+        "n": 23,
+        "mape": 5.7905089802559635,
+        "mae_minutes": 12.032775128754649,
+        "bias_minutes": -4.42606729218039,
+        "median_ape": 4.008697293085385,
+        "p90_ape": 9.468015294526824,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 52.35448972592282,
+        "median_history_km": 75.342,
+        "min_history_km": 50.851,
+        "max_history_km": 96.425
+      },
+      "10": {
+        "n": 23,
+        "mape": 6.227728406309635,
+        "mae_minutes": 14.887544942868468,
+        "bias_minutes": -8.430989461838745,
+        "median_ape": 4.00401471341117,
+        "p90_ape": 12.492019844404329,
+        "coverage": 82.6086956521739,
+        "above_upper": 13.043478260869565,
+        "median_width_minutes": 38.292804418330135,
+        "median_history_km": 75.342,
+        "min_history_km": 50.851,
+        "max_history_km": 96.425
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.54072249600911,
+        "mae_minutes": 10.597283490197704,
+        "bias_minutes": -8.803670493006923,
+        "median_ape": 4.831284440546898,
+        "p90_ape": 11.929162207909801,
+        "coverage": 78.26086956521739,
+        "above_upper": 21.73913043478261,
+        "median_width_minutes": 32.14713537105695,
+        "median_history_km": 75.342,
+        "min_history_km": 50.851,
+        "max_history_km": 96.425
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.5272099341343965,
+        "mae_minutes": 4.664483303099683,
+        "bias_minutes": -0.17961465871039534,
+        "median_ape": 3.5328334837046644,
+        "p90_ape": 8.368542328344962,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 23.81248826404248,
+        "median_history_km": 75.342,
+        "min_history_km": 50.851,
+        "max_history_km": 96.425
+      }
+    },
+    "100": {
+      "0": {
+        "n": 23,
+        "mape": 5.179034861549242,
+        "mae_minutes": 11.266254877223789,
+        "bias_minutes": -5.877121096150211,
+        "median_ape": 3.5229325496088344,
+        "p90_ape": 10.66968146586001,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 52.313483395657315,
+        "median_history_km": 123.699,
+        "min_history_km": 101.41900000000001,
+        "max_history_km": 156.6447
+      },
+      "10": {
+        "n": 23,
+        "mape": 6.100294336181117,
+        "mae_minutes": 14.724417819051427,
+        "bias_minutes": -8.737603910376341,
+        "median_ape": 3.53382256881249,
+        "p90_ape": 12.942138665106457,
+        "coverage": 86.95652173913044,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 40.031012856203574,
+        "median_history_km": 123.699,
+        "min_history_km": 101.41900000000001,
+        "max_history_km": 156.6447
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.530650719743226,
+        "mae_minutes": 10.57921119785289,
+        "bias_minutes": -8.823052697343359,
+        "median_ape": 4.846341602918558,
+        "p90_ape": 11.966847250260892,
+        "coverage": 78.26086956521739,
+        "above_upper": 21.73913043478261,
+        "median_width_minutes": 33.2750386914026,
+        "median_history_km": 123.699,
+        "min_history_km": 101.41900000000001,
+        "max_history_km": 156.6447
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.527382107622523,
+        "mae_minutes": 4.664604056209115,
+        "bias_minutes": -0.1798796323730276,
+        "median_ape": 3.532592042133542,
+        "p90_ape": 8.36853749496021,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 24.229641375902247,
+        "median_history_km": 123.699,
+        "min_history_km": 101.41900000000001,
+        "max_history_km": 156.6447
+      }
+    },
+    "200": {
+      "0": {
+        "n": 23,
+        "mape": 4.990663104422689,
+        "mae_minutes": 11.077609331014699,
+        "bias_minutes": -7.037898518977904,
+        "median_ape": 3.5917653163780088,
+        "p90_ape": 9.628245732576438,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 51.97701374362451,
+        "median_history_km": 222.554,
+        "min_history_km": 200.246,
+        "max_history_km": 261.456
+      },
+      "10": {
+        "n": 23,
+        "mape": 5.97707549107981,
+        "mae_minutes": 14.605843291203126,
+        "bias_minutes": -9.028424345315226,
+        "median_ape": 3.7535992246949506,
+        "p90_ape": 12.85096378163913,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 40.798279250956256,
+        "median_history_km": 222.554,
+        "min_history_km": 200.246,
+        "max_history_km": 261.456
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.547396490602277,
+        "mae_minutes": 10.605306677604823,
+        "bias_minutes": -8.838872116519411,
+        "median_ape": 4.8594669068643865,
+        "p90_ape": 12.02087953852516,
+        "coverage": 78.26086956521739,
+        "above_upper": 21.73913043478261,
+        "median_width_minutes": 33.25948253882143,
+        "median_history_km": 222.554,
+        "min_history_km": 200.246,
+        "max_history_km": 261.456
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.527130901022973,
+        "mae_minutes": 4.664269637181152,
+        "bias_minutes": -0.18012324202447716,
+        "median_ape": 3.5329517941366393,
+        "p90_ape": 8.369251308400528,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 24.473507979174705,
+        "median_history_km": 222.554,
+        "min_history_km": 200.246,
+        "max_history_km": 261.456
+      }
+    },
+    "500": {
+      "0": {
+        "n": 23,
+        "mape": 5.026552270416275,
+        "mae_minutes": 11.704014273764617,
+        "bias_minutes": -8.584027370542856,
+        "median_ape": 2.3251218887934093,
+        "p90_ape": 10.41820274082583,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 53.780691062329154,
+        "median_history_km": 519.5814,
+        "min_history_km": 500.6204,
+        "max_history_km": 664.0254
+      },
+      "10": {
+        "n": 23,
+        "mape": 5.954564012015079,
+        "mae_minutes": 14.625247152297254,
+        "bias_minutes": -9.426092769255346,
+        "median_ape": 3.9450545615638775,
+        "p90_ape": 13.37310704572002,
+        "coverage": 86.95652173913044,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 37.462604641351774,
+        "median_history_km": 519.5814,
+        "min_history_km": 500.6204,
+        "max_history_km": 664.0254
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.553915124391513,
+        "mae_minutes": 10.619248200130114,
+        "bias_minutes": -8.862350529123384,
+        "median_ape": 4.846041007643228,
+        "p90_ape": 11.997814463759081,
+        "coverage": 78.26086956521739,
+        "above_upper": 21.73913043478261,
+        "median_width_minutes": 31.934551161940746,
+        "median_history_km": 519.5814,
+        "min_history_km": 500.6204,
+        "max_history_km": 664.0254
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.527256951007995,
+        "mae_minutes": 4.66424929798803,
+        "bias_minutes": -0.18046727974280594,
+        "median_ape": 3.532901075874448,
+        "p90_ape": 8.36940686207396,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 21.880872007555304,
+        "median_history_km": 519.5814,
+        "min_history_km": 500.6204,
+        "max_history_km": 664.0254
+      }
+    },
+    "1000": {
+      "0": {
+        "n": 23,
+        "mape": 5.276638437774471,
+        "mae_minutes": 11.974753317817079,
+        "bias_minutes": -8.790293617077797,
+        "median_ape": 3.0612662649550137,
+        "p90_ape": 13.142145314346088,
+        "coverage": 91.30434782608695,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 54.761835897571004,
+        "median_history_km": 1022.8522400000003,
+        "min_history_km": 1002.949,
+        "max_history_km": 1062.9018
+      },
+      "10": {
+        "n": 23,
+        "mape": 5.977981354941652,
+        "mae_minutes": 14.593452907753955,
+        "bias_minutes": -9.502949391389647,
+        "median_ape": 3.870761992930448,
+        "p90_ape": 13.985386867339372,
+        "coverage": 86.95652173913044,
+        "above_upper": 8.695652173913043,
+        "median_width_minutes": 41.50542662722441,
+        "median_history_km": 1022.8522400000003,
+        "min_history_km": 1002.949,
+        "max_history_km": 1062.9018
+      },
+      "30": {
+        "n": 23,
+        "mape": 6.563028756728075,
+        "mae_minutes": 10.62888313161159,
+        "bias_minutes": -8.865165467457194,
+        "median_ape": 4.863993883797719,
+        "p90_ape": 11.97518598100683,
+        "coverage": 95.65217391304348,
+        "above_upper": 4.3478260869565215,
+        "median_width_minutes": 34.03044251616825,
+        "median_history_km": 1022.8522400000003,
+        "min_history_km": 1002.949,
+        "max_history_km": 1062.9018
+      },
+      "60": {
+        "n": 23,
+        "mape": 4.527308780793214,
+        "mae_minutes": 4.664289050039876,
+        "bias_minutes": -0.18048787426767632,
+        "median_ape": 3.533060366013404,
+        "p90_ape": 8.369542666973176,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 25.607053487556037,
+        "median_history_km": 1022.8522400000003,
+        "min_history_km": 1002.949,
+        "max_history_km": 1062.9018
+      }
+    }
+  },
+  "annual_history": [
+    {
+      "lower_km": 0,
+      "upper_km": 50,
+      "metrics": {
+        "n": 1,
+        "mape": 5.749666903516437,
+        "mae_minutes": 7.254163076603049,
+        "bias_minutes": 7.254163076603049,
+        "median_ape": 5.749666903516437,
+        "p90_ape": 5.749666903516437,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 50.63139087887933,
+        "median_history_km": 0.0,
+        "min_history_km": 0.0,
+        "max_history_km": 0.0
+      }
+    },
+    {
+      "lower_km": 50,
+      "upper_km": 100,
+      "metrics": {
+        "n": 0
+      }
+    },
+    {
+      "lower_km": 100,
+      "upper_km": 200,
+      "metrics": {
+        "n": 1,
+        "mape": 5.257651622136094,
+        "mae_minutes": 6.446757164009014,
+        "bias_minutes": 6.446757164009014,
+        "median_ape": 5.257651622136094,
+        "p90_ape": 5.257651622136094,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 48.97781457896396,
+        "median_history_km": 175.8022,
+        "min_history_km": 175.8022,
+        "max_history_km": 175.8022
+      }
+    },
+    {
+      "lower_km": 200,
+      "upper_km": 500,
+      "metrics": {
+        "n": 3,
+        "mape": 2.544658969682359,
+        "mae_minutes": 3.427277434959701,
+        "bias_minutes": -1.4761094764745195,
+        "median_ape": 2.3555347587346946,
+        "p90_ape": 3.104733639352094,
+        "coverage": 100.0,
+        "above_upper": 0.0,
+        "median_width_minutes": 42.48629030371167,
+        "median_history_km": 422.7673999999999,
+        "min_history_km": 260.137,
+        "max_history_km": 477.5719999999999
+      }
+    },
+    {
+      "lower_km": 500,
+      "upper_km": 1000,
+      "metrics": {
+        "n": 6,
+        "mape": 7.004412180168602,
+        "mae_minutes": 9.58634343067151,
+        "bias_minutes": -4.6639170246326955,
+        "median_ape": 3.7427788661178623,
+        "p90_ape": 15.43608315479917,
+        "coverage": 83.33333333333334,
+        "above_upper": 16.666666666666664,
+        "median_width_minutes": 47.07288595590113,
+        "median_history_km": 725.92702,
+        "min_history_km": 545.7234000000001,
+        "max_history_km": 913.9577999999999
+      }
+    },
+    {
+      "lower_km": 1000,
+      "upper_km": null,
+      "metrics": {
+        "n": 15,
+        "mape": 5.7593332943464155,
+        "mae_minutes": 14.886003574395165,
+        "bias_minutes": -11.833125777462364,
+        "median_ape": 4.026001716837502,
+        "p90_ape": 13.970634923651431,
+        "coverage": 93.33333333333333,
+        "above_upper": 6.666666666666667,
+        "median_width_minutes": 55.62557657257838,
+        "median_history_km": 2079.29724,
+        "min_history_km": 1022.8522400000002,
+        "max_history_km": 3683.4016400000005
+      }
+    }
+  ],
+  "paired_change": {
+    "50": {
+      "mean_ape_change_pp": -7.36812880466566,
+      "improved_rides": 20,
+      "n": 23
+    },
+    "100": {
+      "mean_ape_change_pp": -7.979602923372382,
+      "improved_rides": 20,
+      "n": 23
+    },
+    "200": {
+      "mean_ape_change_pp": -8.167974680498935,
+      "improved_rides": 18,
+      "n": 23
+    },
+    "500": {
+      "mean_ape_change_pp": -8.132085514505347,
+      "improved_rides": 19,
+      "n": 23
+    },
+    "1000": {
+      "mean_ape_change_pp": -7.88199934714715,
+      "improved_rides": 19,
+      "n": 23
+    }
+  },
+  "longest": {
+    "moving_minutes": 587.5833333333333,
+    "distance_km": 175.692,
+    "checkpoints": [
+      {
+        "checkpoint": 0.0,
+        "at_minutes": 0.0,
+        "actual_minutes": 587.5833333333458,
+        "predicted_minutes": 460.59343681584136,
+        "low_minutes": 370.0635238871163,
+        "high_minutes": 552.0061070087389
+      },
+      {
+        "checkpoint": 10.0,
+        "at_minutes": 10.033333333333314,
+        "actual_minutes": 577.5500000000216,
+        "predicted_minutes": 380.8342574756321,
+        "low_minutes": 306.5000561574683,
+        "high_minutes": 425.99857697384164
+      },
+      {
+        "checkpoint": 30.0,
+        "at_minutes": 30.016666666666833,
+        "actual_minutes": 557.566666666697,
+        "predicted_minutes": 461.28195408503774,
+        "low_minutes": 371.24534375833366,
+        "high_minutes": 515.9868162241485
+      },
+      {
+        "checkpoint": 60.0,
+        "at_minutes": 60.016666666666865,
+        "actual_minutes": 527.5666666666965,
+        "predicted_minutes": 536.3130588888812,
+        "low_minutes": 431.63129219787595,
+        "high_minutes": 599.9160931938226
+      },
+      {
+        "checkpoint": 120.0,
+        "at_minutes": 120.01666666666654,
+        "actual_minutes": 467.56666666669855,
+        "predicted_minutes": 444.7152551574899,
+        "low_minutes": 357.91226236672014,
+        "high_minutes": 497.45542092617944
+      },
+      {
+        "checkpoint": 240.0,
+        "at_minutes": 240.08333333333994,
+        "actual_minutes": 347.5000000000042,
+        "predicted_minutes": 357.1662275287662,
+        "low_minutes": 287.4517369334153,
+        "high_minutes": 399.52368171633117
+      },
+      {
+        "checkpoint": 480.0,
+        "at_minutes": 480.00000000004695,
+        "actual_minutes": 107.5833333333342,
+        "predicted_minutes": 57.87465365024625,
+        "low_minutes": 46.578227262103695,
+        "high_minutes": 64.73818889424984
+      }
+    ]
+  },
+  "without_longest": {
+    "0": {
+      "n": 25,
+      "mape": 5.1290394411422895,
+      "mae_minutes": 7.262860619211321,
+      "bias_minutes": -4.63100502028997,
+      "median_ape": 3.14223036506028,
+      "p90_ape": 12.190802939603017,
+      "coverage": 96.0,
+      "above_upper": 4.0,
+      "median_width_minutes": 55.620028935889366,
+      "median_history_km": 3894.1476400000006,
+      "min_history_km": 210.74599999999998,
+      "max_history_km": 8574.065949999998
+    },
+    "10": {
+      "n": 25,
+      "mape": 4.920294521367488,
+      "mae_minutes": 6.582942406564116,
+      "bias_minutes": -1.9366140618623138,
+      "median_ape": 3.314524982464606,
+      "p90_ape": 10.382919822487418,
+      "coverage": 88.0,
+      "above_upper": 8.0,
+      "median_width_minutes": 38.05396771916058,
+      "median_history_km": 3894.1476400000006,
+      "min_history_km": 210.74599999999998,
+      "max_history_km": 8574.065949999998
+    },
+    "30": {
+      "n": 25,
+      "mape": 6.175075688544053,
+      "mae_minutes": 6.914235430825279,
+      "bias_minutes": -3.76323976581736,
+      "median_ape": 4.869534910904825,
+      "p90_ape": 11.5954397511563,
+      "coverage": 96.0,
+      "above_upper": 4.0,
+      "median_width_minutes": 32.39592202036559,
+      "median_history_km": 3894.1476400000006,
+      "min_history_km": 210.74599999999998,
+      "max_history_km": 8574.065949999998
+    },
+    "60": {
+      "n": 25,
+      "mape": 4.671730721095691,
+      "mae_minutes": 4.410948456360544,
+      "bias_minutes": -0.6667736112719288,
+      "median_ape": 4.373202615940878,
+      "p90_ape": 8.366278849926207,
+      "coverage": 100.0,
+      "above_upper": 0.0,
+      "median_width_minutes": 23.736320029041316,
+      "median_history_km": 3894.1476400000006,
+      "min_history_km": 210.74599999999998,
+      "max_history_km": 8574.065949999998
+    }
+  }
+}

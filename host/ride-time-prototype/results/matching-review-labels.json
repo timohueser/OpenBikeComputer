@@ -1,0 +1,360 @@
+[
+  {
+    "case": 1,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 2,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 3,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A",
+      "B"
+    ],
+    "note": "Path continuation at a dense junction; both adjoining ways are allowed."
+  },
+  {
+    "case": 4,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 5,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 6,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 7,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 8,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 9,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 10,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 11,
+    "phase": "development",
+    "judgeable": false,
+    "allowed_labels": [],
+    "note": "GPS turns between mapped path endpoints; exact connection cannot be established from this overlay."
+  },
+  {
+    "case": 12,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "B"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 13,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "B"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 14,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "B"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 15,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 16,
+    "phase": "development",
+    "judgeable": false,
+    "allowed_labels": [],
+    "note": "Road and footway near a junction cannot be distinguished confidently."
+  },
+  {
+    "case": 17,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 18,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "B"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 19,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "B",
+      "C"
+    ],
+    "note": "GPS crosses the north-south track while continuing between the west and east paths."
+  },
+  {
+    "case": 20,
+    "phase": "development",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 21,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 22,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 23,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 24,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 25,
+    "phase": "validation",
+    "judgeable": false,
+    "allowed_labels": [],
+    "note": "GPS lies between the road and parallel cycleway. Both are asphalt, but exact way identity is not resolved."
+  },
+  {
+    "case": 26,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 27,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 28,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 29,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 30,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 31,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 32,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A",
+      "B"
+    ],
+    "note": "Track-to-path turn; adjoining ways are both allowed because the boundary position is uncertain."
+  },
+  {
+    "case": 33,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 34,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A",
+      "B"
+    ],
+    "note": "Cycleway-to-road turn; adjoining ways are both allowed."
+  },
+  {
+    "case": 35,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 36,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  },
+  {
+    "case": 37,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "B",
+      "C"
+    ],
+    "note": "The trace follows the road through an OSM way split."
+  },
+  {
+    "case": 38,
+    "phase": "validation",
+    "judgeable": false,
+    "allowed_labels": [],
+    "note": "Very short interval at a path/service junction; the exact way boundary cannot be resolved."
+  },
+  {
+    "case": 39,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A",
+      "B"
+    ],
+    "note": "Track-to-path continuation; both adjoining ways are allowed."
+  },
+  {
+    "case": 40,
+    "phase": "validation",
+    "judgeable": true,
+    "allowed_labels": [
+      "A"
+    ],
+    "note": "Geometric continuation is visually identifiable."
+  }
+]

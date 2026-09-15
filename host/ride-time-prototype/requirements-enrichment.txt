@@ -1,0 +1,2 @@
+-r requirements.txt
+osmium==4.3.1

@@ -1,0 +1,609 @@
+{
+  "groups": {
+    "MTB": {
+      "totals": {
+        "raw_km": 721.6324529647827,
+        "screened_km": 678.4905331134796,
+        "length_disagreement_km": 21.041149326367304,
+        "plausible_path_km": 617.7269089957699,
+        "core_0_km": 233.73306193063036,
+        "core_5_km": 245.6782841333188,
+        "core_10_km": 273.59620968671516,
+        "core_15_km": 318.2119491766207,
+        "core_20_km": 375.05087319901213,
+        "large_offset_km": 28.65413671452552,
+        "timing_or_geometry_screen_km": 43.14192351114252,
+        "no_candidate_km": 10.900695295538753,
+        "disconnected_or_gap_km": 0.16764545440673828
+      },
+      "tag_km": {
+        "highway": {
+          "tertiary": 64.73456142632593,
+          "track": 160.892859315002,
+          "service": 15.748442054541167,
+          "path": 128.10870727830323,
+          "residential": 21.1275622331287,
+          "cycleway": 53.251186855495575,
+          "unclassified": 31.753463095228508,
+          "footway": 5.810256296264346,
+          "steps": 0.08553425587984816,
+          "secondary": 4.638669172809185,
+          "primary_link": 0.3830351448867199,
+          "primary": 1.2278307232843233,
+          "pedestrian": 0.1576748224649848,
+          "bridleway": 1.6895988530907096
+        },
+        "surface": {
+          "asphalt": 205.26333194906223,
+          "gravel": 97.42167362150634,
+          "grass": 4.202933498309522,
+          "dirt": 34.95471840023316,
+          "compacted": 11.663605779668705,
+          "ground": 11.652562089470155,
+          "paving_stones": 0.2050735424378088,
+          "wood": 0.34392064497157854,
+          "pebblestone": 1.1258383004984562,
+          "sett": 0.15696442506773084,
+          "metal": 0.07192822846629032,
+          "fine_gravel": 1.5399043614073231,
+          "sand": 0.04394191815544077,
+          "unpaved": 1.6702686274155951
+        },
+        "smoothness": {
+          "excellent": 1.16019545251005,
+          "very_bad": 0.4747107732709703,
+          "bad": 1.1293073166505216,
+          "good": 2.3076220250513813,
+          "intermediate": 0.10434245658417973
+        },
+        "tracktype": {
+          "grade3": 50.13905893893702,
+          "grade5": 1.5188559294521664,
+          "grade4": 20.300448554986964,
+          "grade2": 39.73638926849536,
+          "grade1": 1.0990456537087545
+        },
+        "mtb:scale": {
+          "2": 9.228851424768964,
+          "1": 10.999803154075764,
+          "3": 2.393820097405291,
+          "0": 7.738325882305395,
+          "0+": 2.910838470044742,
+          "2-": 0.9033762527467649,
+          "1-": 0.6239009353515468
+        },
+        "mtb:scale:uphill": {
+          "1": 0.048795342180186
+        }
+      },
+      "rides": 40,
+      "riders": 15
+    },
+    "other cycling": {
+      "totals": {
+        "raw_km": 1306.4503230452538,
+        "screened_km": 1238.011570751667,
+        "plausible_path_km": 1219.5930294154678,
+        "core_0_km": 562.9157440993004,
+        "core_5_km": 605.0711854021065,
+        "core_10_km": 674.4924680958502,
+        "core_15_km": 784.2446273784153,
+        "core_20_km": 931.4990440211259,
+        "timing_or_geometry_screen_km": 68.43876456006547,
+        "length_disagreement_km": 7.790299222571775,
+        "large_offset_km": 7.840602904791012,
+        "no_candidate_km": 2.45849222317338,
+        "disconnected_or_gap_km": 0.32913780584931374
+      },
+      "tag_km": {
+        "highway": {
+          "residential": 18.506151482322874,
+          "tertiary": 599.3892385082477,
+          "unclassified": 171.1145596177681,
+          "service": 1.2771911802854143,
+          "path": 30.714845705972966,
+          "secondary": 153.8860442493561,
+          "cycleway": 29.351061278797456,
+          "track": 48.0897257891938,
+          "footway": 1.3440296898940565,
+          "primary": 21.04375188275532,
+          "living_street": 0.06227852595120613
+        },
+        "surface": {
+          "asphalt": 1044.283283933898,
+          "sett": 0.47845537993588244,
+          "cobblestone": 0.03443132202414774,
+          "unpaved": 0.09462985165000443,
+          "gravel": 33.18806452306389,
+          "ground": 2.048991490147058,
+          "compacted": 7.713404169119302,
+          "grass": 0.050463735213117186,
+          "pebblestone": 0.41714505501607235,
+          "dirt": 2.3682804247771916,
+          "fine_gravel": 0.6214691653121418,
+          "stone": 0.00379476726891078
+        },
+        "smoothness": {
+          "bad": 3.8161511110729327,
+          "good": 14.57524682692446,
+          "excellent": 4.40831818311528,
+          "very_bad": 0.012922680005431175
+        },
+        "tracktype": {
+          "grade2": 18.431563046591457,
+          "grade3": 24.067593257306676,
+          "grade5": 1.274735762947323,
+          "grade4": 0.9159685383873344
+        },
+        "mtb:scale": {
+          "1": 6.0296642115224355,
+          "0+": 1.0423928680303982,
+          "3": 0.1689712693914771,
+          "1-": 0.055403080920871324,
+          "0": 8.168944954174814,
+          "2": 0.7818317646966784
+        },
+        "mtb:scale:uphill": {}
+      },
+      "rides": 40,
+      "riders": 22
+    }
+  },
+  "settings": {
+    "search_radius_m": 40,
+    "max_candidates": 8,
+    "gps_sigma_m": 12,
+    "transition_scale_m": 25,
+    "gap_seconds": 30,
+    "network_limit_m": 1200,
+    "accepted_offset_m": 20,
+    "accepted_margin": 3,
+    "accepted_length_ratio": [
+      0.5,
+      1.5
+    ],
+    "accepted_length_difference_m": 60,
+    "endpoint_tolerance_m": 20.0,
+    "minimum_shared_fraction": 0.5
+  },
+  "runtime_seconds": 102.52951078499973,
+  "source_hashes": {
+    "matching_audit.py": "0cbf0e0d570e58dd6908beea05f455c0a8cbb9adf9228fb8ddc9c762eea64090",
+    "matching_v2.py": "524692eaa6615ca93e3cd49948c54e3a07933ef6f53814e95233073ffe148e41",
+    "review-selection.json": "fe5ca625dc70727fbd1723ab14db9326077235b55ac43ac88bfffed84af18c5a",
+    "selection.json": "13302322b76b103cf28aea3fb97d9aa55ddaee05f58eef43b9ff359b43092447",
+    "ways.json.gz": "6754d07611c5da53c6d29cce5dab85ff16ee2f024bdae07c231f491da22a523c"
+  },
+  "old_groups": {
+    "all": {
+      "rides": 80,
+      "riders": 33,
+      "raw_km": 2028.0827760100365,
+      "screened_km": 1916.5021038651466,
+      "status_km": {
+        "ambiguous": 1016.6614746605046,
+        "accepted": 839.5446141199209,
+        "large_offset": 35.91521377232857,
+        "length_disagreement": 6.445412028348073,
+        "timing_or_geometry_screen": 111.58068807120799,
+        "no_candidate": 13.359187518712133,
+        "disconnected_or_gap": 4.5761952586472034
+      },
+      "tag_km": {
+        "highway": {
+          "tertiary": 355.54436458385095,
+          "track": 111.1991014554392,
+          "service": 7.653865420607077,
+          "path": 81.91056714483996,
+          "cycleway": 44.48244238614167,
+          "unclassified": 126.92158690346612,
+          "footway": 2.27243106734472,
+          "residential": 7.790269438032843,
+          "secondary": 87.03546182526627,
+          "primary_link": 0.2744625210762024,
+          "primary": 12.93135386306416,
+          "pedestrian": 0.04945024847984314,
+          "bridleway": 1.4792572623118758
+        },
+        "surface": {
+          "asphalt": 616.990756078223,
+          "gravel": 68.5828147220995,
+          "grass": 1.9247509358149175,
+          "unknown": 111.89778301674127,
+          "dirt": 19.880038756447416,
+          "compacted": 9.95788130415399,
+          "ground": 6.658844594281078,
+          "paving_stones": 0.05766134988516569,
+          "wood": 0.02964334312862131,
+          "sett": 0.07413533609360456,
+          "metal": 0.012946091076700732,
+          "fine_gravel": 1.660923570394516,
+          "pebblestone": 0.8296345579437912,
+          "unpaved": 0.9868004636373371
+        },
+        "smoothness": {
+          "unknown": 824.7858296020579,
+          "excellent": 2.174935319094478,
+          "good": 10.653221662224867,
+          "very_bad": 0.09664087789133191,
+          "bad": 1.833986658652331
+        },
+        "tracktype": {
+          "unknown": 754.1927649862757,
+          "grade3": 40.749628269589024,
+          "grade5": 1.5751978282351047,
+          "grade4": 12.090373977232773,
+          "grade2": 30.400843801550952,
+          "grade1": 0.535805257037282
+        },
+        "mtb:scale": {
+          "unknown": 807.8774868633002,
+          "2": 7.0152120203675805,
+          "1": 10.837724083385448,
+          "3": 2.0143033443018794,
+          "0": 8.29268409082296,
+          "0+": 2.252897580181117,
+          "2-": 0.7010865416377783,
+          "1-": 0.5532195959240198
+        },
+        "mtb:scale:uphill": {
+          "unknown": 839.5151969422586,
+          "1": 0.029417177662253376
+        }
+      },
+      "median_ride_match_fraction": 0.4015276570215597,
+      "nearest_different": 231,
+      "accepted_endpoint_occurrences": 29304
+    },
+    "MTB": {
+      "rides": 40,
+      "riders": 15,
+      "raw_km": 721.6324529647827,
+      "screened_km": 678.4905331134796,
+      "status_km": {
+        "ambiguous": 392.233490716666,
+        "accepted": 238.91958398045972,
+        "large_offset": 28.405224894173443,
+        "length_disagreement": 5.191132131265476,
+        "timing_or_geometry_screen": 43.14192351114252,
+        "no_candidate": 10.900695295538753,
+        "disconnected_or_gap": 2.840408768504858
+      },
+      "tag_km": {
+        "highway": {
+          "tertiary": 24.965885196394094,
+          "track": 86.88859563383917,
+          "service": 7.615500439321029,
+          "path": 67.43642947420868,
+          "cycleway": 24.714724762477182,
+          "unclassified": 19.25438100592722,
+          "footway": 1.7097495274292178,
+          "residential": 3.3661395272019465,
+          "secondary": 0.5648473713938031,
+          "primary_link": 0.2744625210762024,
+          "primary": 0.6001610103994608,
+          "pedestrian": 0.04945024847984314,
+          "bridleway": 1.4792572623118758
+        },
+        "surface": {
+          "asphalt": 66.57346366421841,
+          "gravel": 51.6809034839556,
+          "grass": 1.9247509358149175,
+          "unknown": 86.35899383912809,
+          "dirt": 17.66250538176144,
+          "compacted": 6.0165839504005385,
+          "ground": 5.798082611490876,
+          "paving_stones": 0.05766134988516569,
+          "wood": 0.02964334312862131,
+          "sett": 0.07413533609360456,
+          "metal": 0.012946091076700732,
+          "fine_gravel": 1.2747388388961554,
+          "pebblestone": 0.4683746909722686,
+          "unpaved": 0.9868004636373371
+        },
+        "smoothness": {
+          "unknown": 237.00105752366917,
+          "excellent": 0.29334269893032217,
+          "good": 1.2709449343383312,
+          "very_bad": 0.08371819788590074,
+          "bad": 0.27052062563598156
+        },
+        "tracktype": {
+          "unknown": 176.68435584718299,
+          "grade3": 27.945179529404374,
+          "grade5": 0.9536678369622678,
+          "grade4": 11.550086221168543,
+          "grade2": 21.250489288704234,
+          "grade1": 0.535805257037282
+        },
+        "mtb:scale": {
+          "unknown": 216.58385847341336,
+          "2": 6.707577005025196,
+          "1": 7.007229836657643,
+          "3": 1.8380104484967887,
+          "0": 3.816855358242126,
+          "0+": 1.7604070813395083,
+          "2-": 0.7010865416377783,
+          "1-": 0.5045592356473207
+        },
+        "mtb:scale:uphill": {
+          "unknown": 238.89016680279747,
+          "1": 0.029417177662253376
+        }
+      },
+      "median_ride_match_fraction": 0.33906336581047336,
+      "nearest_different": 153,
+      "accepted_endpoint_occurrences": 12848
+    },
+    "other cycling": {
+      "rides": 40,
+      "riders": 22,
+      "raw_km": 1306.4503230452538,
+      "screened_km": 1238.011570751667,
+      "status_km": {
+        "accepted": 600.6250301394612,
+        "ambiguous": 624.4279839438386,
+        "timing_or_geometry_screen": 68.43876456006547,
+        "length_disagreement": 1.254279897082597,
+        "large_offset": 7.509988878155127,
+        "no_candidate": 2.45849222317338,
+        "disconnected_or_gap": 1.7357864901423454
+      },
+      "tag_km": {
+        "highway": {
+          "residential": 4.424129910830897,
+          "path": 14.474137670631265,
+          "unclassified": 107.6672058975389,
+          "tertiary": 330.57847938745687,
+          "cycleway": 19.767717623664485,
+          "track": 24.31050582160005,
+          "secondary": 86.47061445387246,
+          "footway": 0.5626815399155021,
+          "primary": 12.3311928526647,
+          "service": 0.03836498128604727
+        },
+        "surface": {
+          "asphalt": 550.4172924140046,
+          "unknown": 25.53878917761318,
+          "gravel": 16.901911238143892,
+          "compacted": 3.9412973537534515,
+          "pebblestone": 0.36125986697152257,
+          "dirt": 2.2175333746859747,
+          "ground": 0.860761982790202,
+          "fine_gravel": 0.38618473149836063
+        },
+        "smoothness": {
+          "unknown": 587.7847720783886,
+          "good": 9.382276727886536,
+          "excellent": 1.881592620164156,
+          "very_bad": 0.012922680005431175,
+          "bad": 1.5634660330163495
+        },
+        "tracktype": {
+          "unknown": 577.5084091390927,
+          "grade2": 9.15035451284672,
+          "grade3": 12.80444874018465,
+          "grade5": 0.6215299912728369,
+          "grade4": 0.5402877560642293
+        },
+        "mtb:scale": {
+          "unknown": 591.2936283898866,
+          "1": 3.830494246727805,
+          "0+": 0.4924904988416084,
+          "3": 0.17629289580509067,
+          "1-": 0.048660360276699066,
+          "0": 4.475828732580833,
+          "2": 0.3076350153423846
+        },
+        "mtb:scale:uphill": {
+          "unknown": 600.6250301394612
+        }
+      },
+      "median_ride_match_fraction": 0.45528300720873316,
+      "nearest_different": 78,
+      "accepted_endpoint_occurrences": 16456
+    }
+  },
+  "review": {
+    "development": {
+      "plausible": {
+        "total": 20,
+        "accepted": 18,
+        "unresolved": 1,
+        "correct": 17,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.1843181350088518
+        ]
+      },
+      "core_0": {
+        "total": 20,
+        "accepted": 8,
+        "unresolved": 0,
+        "correct": 8,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.32440756488388023
+        ]
+      },
+      "core_5": {
+        "total": 20,
+        "accepted": 8,
+        "unresolved": 0,
+        "correct": 8,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.32440756488388023
+        ]
+      },
+      "core_10": {
+        "total": 20,
+        "accepted": 10,
+        "unresolved": 0,
+        "correct": 10,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.2775327998628892
+        ]
+      },
+      "core_15": {
+        "total": 20,
+        "accepted": 10,
+        "unresolved": 0,
+        "correct": 10,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.2775327998628892
+        ]
+      },
+      "core_20": {
+        "total": 20,
+        "accepted": 13,
+        "unresolved": 0,
+        "correct": 13,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.22809537235419838
+        ]
+      },
+      "surface": {
+        "total": 20,
+        "accepted": 11,
+        "unresolved": 0,
+        "correct": 11,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.2588329669680317
+        ]
+      }
+    },
+    "validation": {
+      "plausible": {
+        "total": 20,
+        "accepted": 20,
+        "unresolved": 2,
+        "correct": 18,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.17587922364665765
+        ]
+      },
+      "core_0": {
+        "total": 20,
+        "accepted": 9,
+        "unresolved": 1,
+        "correct": 8,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.32440756488388023
+        ]
+      },
+      "core_5": {
+        "total": 20,
+        "accepted": 9,
+        "unresolved": 1,
+        "correct": 8,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.32440756488388023
+        ]
+      },
+      "core_10": {
+        "total": 20,
+        "accepted": 9,
+        "unresolved": 1,
+        "correct": 8,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.32440756488388023
+        ]
+      },
+      "core_15": {
+        "total": 20,
+        "accepted": 10,
+        "unresolved": 1,
+        "correct": 9,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          0,
+          0.2991450484195441
+        ]
+      },
+      "core_20": {
+        "total": 20,
+        "accepted": 13,
+        "unresolved": 1,
+        "correct": 12,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          2.7755575615628914e-17,
+          0.24249400665524085
+        ]
+      },
+      "surface": {
+        "total": 20,
+        "accepted": 8,
+        "unresolved": 1,
+        "correct": 7,
+        "incorrect": 0,
+        "error_rate": 0.0,
+        "wilson95": [
+          5.551115123125783e-17,
+          0.35433043506668743
+        ]
+      }
+    }
+  },
+  "freeze": {
+    "frozen_utc": "2026-09-15T11:22:41.211284+00:00",
+    "primary_endpoint_tolerance_m": 20,
+    "source_hashes": {
+      "host/ride-time-prototype/matching_v2.py": "524692eaa6615ca93e3cd49948c54e3a07933ef6f53814e95233073ffe148e41",
+      "host/ride-time-prototype/matching_audit.py": "0cbf0e0d570e58dd6908beea05f455c0a8cbb9adf9228fb8ddc9c762eea64090",
+      "host/ride-time-prototype/enrichment_match.py": "7ec353797837009783edfd64cbcb0f544134592490bd5cb08025ea06a3eb88c1",
+      "host/ride-time-prototype/matching_validation.py": "b09f5c15ff9b513e9475ceb724b056bd20bb2ee6ce5f8d83940fb8ebb4743d5b",
+      "host/ride-time-prototype/matching_review.py": "59553a123e31c17b8e33ca05e1e896be2f87039158ecf2967843f60628b4b7fa",
+      ".artifacts/ride-time-matching-v2/review-selection.json": "fe5ca625dc70727fbd1723ab14db9326077235b55ac43ac88bfffed84af18c5a"
+    },
+    "development_labels_sha256": "4112e2becf6d7d7aad2e9a9a0c6b09f005ca3c7af932789ad67fc49fdf4ac281",
+    "note": "Frozen after development review and before labeling or inspecting predictions for the validation sections. Full-pilot unsupervised coverage was examined during development."
+  },
+  "osm": {
+    "source_url": "https://download.geofabrik.de/europe/denmark-260913.osm.pbf",
+    "source_sha256": "3a824f3aa2c41d41e91ff0a6c2164be5aeac742b157646ff79c0426f927e940f",
+    "source_bytes": 494296003,
+    "osm_timestamp": "2026-09-13T20:21:20Z",
+    "extracted_bbox": [
+      8.975,
+      55.975,
+      10.025,
+      57.025
+    ],
+    "ways": 177616,
+    "attribution": "\u00a9 OpenStreetMap contributors; ODbL 1.0. Extract by Geofabrik."
+  }
+}

@@ -1,0 +1,2311 @@
+{
+  "phase": {
+    "fixed_pace": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 18.838646127035613,
+        "rider_mape_ci": [
+          17.629397225520634,
+          20.193024285992415
+        ],
+        "median_ape": 14.12045214244998,
+        "p90_ape": 34.802277043660204,
+        "mean_absolute_minutes": 1.7921538957119028,
+        "rider_bias": -9.07536384134785,
+        "rider_coverage": 91.26030681863126,
+        "rider_coverage_ci": [
+          89.61918431589409,
+          92.73298855888903
+        ],
+        "pooled_coverage": 92.2654462242563,
+        "rider_upper_exceedance": 4.685028116316782,
+        "median_width_minutes": 5.923387480972618,
+        "median_relative_width": 90.40666736946194
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 19.7508903323799,
+        "rider_mape_ci": [
+          18.5857335124552,
+          20.963912676158884
+        ],
+        "median_ape": 15.795635296006072,
+        "p90_ape": 38.55033833096274,
+        "mean_absolute_minutes": 1.83432355099295,
+        "rider_bias": -0.8505358721079278,
+        "rider_coverage": 91.80640413757851,
+        "rider_coverage_ci": [
+          90.46122778642552,
+          93.03233830891189
+        ],
+        "pooled_coverage": 92.52587991718426,
+        "rider_upper_exceedance": 4.061483237776469,
+        "median_width_minutes": 6.535808950884982,
+        "median_relative_width": 101.21639117463768
+      }
+    },
+    "fixed_grade": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 18.27406344409986,
+        "rider_mape_ci": [
+          17.09719506070672,
+          19.564392239683112
+        ],
+        "median_ape": 13.530511500787213,
+        "p90_ape": 33.798197057626716,
+        "mean_absolute_minutes": 1.7980989406217802,
+        "rider_bias": -5.995678720420329,
+        "rider_coverage": 89.86222693414777,
+        "rider_coverage_ci": [
+          87.58906556697193,
+          91.86864976098651
+        ],
+        "pooled_coverage": 92.34172387490466,
+        "rider_upper_exceedance": 5.792117199847861,
+        "median_width_minutes": 5.310987758683205,
+        "median_relative_width": 80.62246415806143
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 18.666069421326277,
+        "rider_mape_ci": [
+          17.513118308227078,
+          19.835380515700745
+        ],
+        "median_ape": 15.27860521883469,
+        "p90_ape": 36.26715178912621,
+        "mean_absolute_minutes": 1.8060480977246618,
+        "rider_bias": 2.676993980828491,
+        "rider_coverage": 90.40395478660373,
+        "rider_coverage_ci": [
+          88.60703754278478,
+          92.02557895713329
+        ],
+        "pooled_coverage": 92.26708074534162,
+        "rider_upper_exceedance": 5.112479740030493,
+        "median_width_minutes": 4.909475471138291,
+        "median_relative_width": 72.6416975289532
+      }
+    },
+    "personal_scale": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 15.6784198850593,
+        "rider_mape_ci": [
+          14.655263483596833,
+          16.75746419024379
+        ],
+        "median_ape": 12.066815931250618,
+        "p90_ape": 30.081146048813647,
+        "mean_absolute_minutes": 1.3170810083573803,
+        "rider_bias": -6.422349609650312,
+        "rider_coverage": 90.17689262363854,
+        "rider_coverage_ci": [
+          87.8796016317162,
+          92.24237548961857
+        ],
+        "pooled_coverage": 92.44851258581235,
+        "rider_upper_exceedance": 6.03175145726752,
+        "median_width_minutes": 4.2324367751994325,
+        "median_relative_width": 72.20422856202072
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 14.135500871938909,
+        "rider_mape_ci": [
+          13.180267158930745,
+          15.079587796351747
+        ],
+        "median_ape": 10.246963183818592,
+        "p90_ape": 28.409208694782,
+        "mean_absolute_minutes": 1.2207996334177278,
+        "rider_bias": 2.334829294129992,
+        "rider_coverage": 90.47066332888343,
+        "rider_coverage_ci": [
+          88.51768364739982,
+          92.21463226401687
+        ],
+        "pooled_coverage": 92.32919254658385,
+        "rider_upper_exceedance": 5.606926354189473,
+        "median_width_minutes": 3.5128222496295116,
+        "median_relative_width": 58.17821026981838
+      }
+    },
+    "personal_grade": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 15.544942949214654,
+        "rider_mape_ci": [
+          14.540087781154313,
+          16.614798318969395
+        ],
+        "median_ape": 11.93549688914548,
+        "p90_ape": 29.744918898228082,
+        "mean_absolute_minutes": 1.303480753027724,
+        "rider_bias": -6.304948881289244,
+        "rider_coverage": 90.09145693129078,
+        "rider_coverage_ci": [
+          87.8148872023856,
+          92.13829647462053
+        ],
+        "pooled_coverage": 92.25019069412662,
+        "rider_upper_exceedance": 5.979945327756449,
+        "median_width_minutes": 4.174287506115361,
+        "median_relative_width": 71.45244325107416
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 14.004906654184456,
+        "rider_mape_ci": [
+          13.044917648108848,
+          14.9385201532553
+        ],
+        "median_ape": 10.09625616946882,
+        "p90_ape": 27.906042384618885,
+        "mean_absolute_minutes": 1.2058617631378863,
+        "rider_bias": 2.47399752625935,
+        "rider_coverage": 90.39739790137986,
+        "rider_coverage_ci": [
+          88.4303060059109,
+          92.15274224335232
+        ],
+        "pooled_coverage": 92.47412008281573,
+        "rider_upper_exceedance": 5.7146285369223735,
+        "median_width_minutes": 3.456069965683512,
+        "median_relative_width": 57.04248727043107
+      }
+    },
+    "scalar_live": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 15.6784198850593,
+        "rider_mape_ci": [
+          14.655263483596833,
+          16.75746419024379
+        ],
+        "median_ape": 12.066815931250618,
+        "p90_ape": 30.081146048813647,
+        "mean_absolute_minutes": 1.3170810083573803,
+        "rider_bias": -6.422349609650312,
+        "rider_coverage": 90.17689262363854,
+        "rider_coverage_ci": [
+          87.8796016317162,
+          92.24237548961857
+        ],
+        "pooled_coverage": 92.44851258581235,
+        "rider_upper_exceedance": 6.03175145726752,
+        "median_width_minutes": 4.2324367751994325,
+        "median_relative_width": 72.20422856202072
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 11.354487918983056,
+        "rider_mape_ci": [
+          10.665377657687705,
+          12.095308373194419
+        ],
+        "median_ape": 8.305953950954404,
+        "p90_ape": 23.958703700276576,
+        "mean_absolute_minutes": 1.0720711557208373,
+        "rider_bias": 6.652057837369847,
+        "rider_coverage": 89.99585484094196,
+        "rider_coverage_ci": [
+          88.0258507612213,
+          91.70803348342173
+        ],
+        "pooled_coverage": 91.66666666666666,
+        "rider_upper_exceedance": 4.895535845884579,
+        "median_width_minutes": 2.345690282374847,
+        "median_relative_width": 39.11703336454177
+      }
+    },
+    "grade_live": {
+      "0": {
+        "n": 6555,
+        "riders": 168,
+        "rider_mape": 15.544942949214654,
+        "rider_mape_ci": [
+          14.540087781154313,
+          16.614798318969395
+        ],
+        "median_ape": 11.93549688914548,
+        "p90_ape": 29.744918898228082,
+        "mean_absolute_minutes": 1.303480753027724,
+        "rider_bias": -6.304948881289244,
+        "rider_coverage": 90.09145693129078,
+        "rider_coverage_ci": [
+          87.8148872023856,
+          92.13829647462053
+        ],
+        "pooled_coverage": 92.25019069412662,
+        "rider_upper_exceedance": 5.979945327756449,
+        "median_width_minutes": 4.174287506115361,
+        "median_relative_width": 71.45244325107416
+      },
+      "1": {
+        "n": 9660,
+        "riders": 172,
+        "rider_mape": 11.19492119287324,
+        "rider_mape_ci": [
+          10.495293130644074,
+          11.928793296902661
+        ],
+        "median_ape": 8.118743229969706,
+        "p90_ape": 23.538233305077423,
+        "mean_absolute_minutes": 1.053474767722268,
+        "rider_bias": 6.640473767260555,
+        "rider_coverage": 90.27258844478298,
+        "rider_coverage_ci": [
+          88.25793572249732,
+          91.93606210138073
+        ],
+        "pooled_coverage": 91.78053830227744,
+        "rider_upper_exceedance": 4.741318986681267,
+        "median_width_minutes": 2.293959186416186,
+        "median_relative_width": 38.34648445514725
+      }
+    }
+  },
+  "all": {
+    "fixed_pace": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 19.229708595850944,
+      "rider_mape_ci": [
+        18.10195546176583,
+        20.41055345979136
+      ],
+      "median_ape": 15.035918101455191,
+      "p90_ape": 37.192791211187085,
+      "mean_absolute_minutes": 1.8172762435389096,
+      "rider_bias": -4.32329488289822,
+      "rider_coverage": 91.88485503147415,
+      "rider_coverage_ci": [
+        90.61912242376464,
+        93.09164082203701
+      ],
+      "pooled_coverage": 92.42059821153254,
+      "rider_upper_exceedance": 4.105404328651968,
+      "median_width_minutes": 6.205352242416721,
+      "median_relative_width": 98.85315602403885
+    },
+    "fixed_grade": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 18.267407307048046,
+      "rider_mape_ci": [
+        17.243755128262727,
+        19.318643891521585
+      ],
+      "median_ape": 14.581810756014324,
+      "p90_ape": 35.257012794724794,
+      "mean_absolute_minutes": 1.8028346086830713,
+      "rider_bias": -0.826754590885433,
+      "rider_coverage": 90.23547050860992,
+      "rider_coverage_ci": [
+        88.45373184568801,
+        91.82647622628323
+      ],
+      "pooled_coverage": 92.2972556275054,
+      "rider_upper_exceedance": 5.432869589561389,
+      "median_width_minutes": 5.041338578109978,
+      "median_relative_width": 76.84772724531975
+    },
+    "personal_scale": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 14.678686560270114,
+      "rider_mape_ci": [
+        13.8088208464182,
+        15.550061214858973
+      ],
+      "median_ape": 10.885525953250275,
+      "p90_ape": 29.174737601362015,
+      "mean_absolute_minutes": 1.2597218913720554,
+      "rider_bias": -1.061547329577687,
+      "rider_coverage": 90.29494760190148,
+      "rider_coverage_ci": [
+        88.36733447048888,
+        91.92585545990057
+      ],
+      "pooled_coverage": 92.37742830712304,
+      "rider_upper_exceedance": 5.916857776516334,
+      "median_width_minutes": 3.713372705665893,
+      "median_relative_width": 63.54028840490417
+    },
+    "personal_grade": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 14.540215916157651,
+      "rider_mape_ci": [
+        13.679840744161162,
+        15.406701089777831
+      ],
+      "median_ape": 10.763747614879126,
+      "p90_ape": 28.746797179685508,
+      "mean_absolute_minutes": 1.2453247590507994,
+      "rider_bias": -0.9322516340413701,
+      "rider_coverage": 90.23374114538936,
+      "rider_coverage_ci": [
+        88.32985410387379,
+        91.89338281742576
+      ],
+      "pooled_coverage": 92.3835954363244,
+      "rider_upper_exceedance": 5.942454876262654,
+      "median_width_minutes": 3.6480165594572913,
+      "median_relative_width": 62.53113179250105
+    },
+    "scalar_live": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 13.09712652633243,
+      "rider_mape_ci": [
+        12.432372569640279,
+        13.756559274482221
+      ],
+      "median_ape": 9.496408746741047,
+      "p90_ape": 26.951190871620383,
+      "mean_absolute_minutes": 1.1711176918930566,
+      "rider_bias": 1.8812241855463965,
+      "rider_coverage": 90.06937680011515,
+      "rider_coverage_ci": [
+        88.31753091922222,
+        91.66101173454426
+      ],
+      "pooled_coverage": 91.98273203823621,
+      "rider_upper_exceedance": 5.250794522806014,
+      "median_width_minutes": 2.623347253323195,
+      "median_relative_width": 41.969478398773845
+    },
+    "grade_live": {
+      "n": 16215,
+      "riders": 174,
+      "rider_mape": 12.94196788212301,
+      "rider_mape_ci": [
+        12.275615512461341,
+        13.599829003719735
+      ],
+      "median_ape": 9.359251590531613,
+      "p90_ape": 26.493844343059276,
+      "mean_absolute_minutes": 1.1545410171010695,
+      "rider_bias": 1.9246196213450502,
+      "rider_coverage": 90.22564037353877,
+      "rider_coverage_ci": [
+        88.47182956492018,
+        91.81996758099339
+      ],
+      "pooled_coverage": 91.97039777983349,
+      "rider_upper_exceedance": 5.109622696388159,
+      "median_width_minutes": 2.575641346823476,
+      "median_relative_width": 40.69542950643806
+    }
+  },
+  "history": {
+    "fixed_pace": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 18.494719828280413,
+        "rider_mape_ci": [
+          16.41827875328309,
+          20.663899801590667
+        ],
+        "median_ape": 14.34138328643994,
+        "p90_ape": 35.6945097572863,
+        "mean_absolute_minutes": 1.589464197601087,
+        "rider_bias": -7.541826723917732,
+        "rider_coverage": 93.85154061624651,
+        "rider_coverage_ci": [
+          89.81722689075629,
+          97.31197478991595
+        ],
+        "pooled_coverage": 94.3820224719101,
+        "rider_upper_exceedance": 4.439775910364146,
+        "median_width_minutes": 6.901197483388433,
+        "median_relative_width": 98.8531560240389
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 19.113948109308918,
+        "rider_mape_ci": [
+          17.039961638564506,
+          21.215400234249728
+        ],
+        "median_ape": 15.560763558304458,
+        "p90_ape": 38.466041244475434,
+        "mean_absolute_minutes": 1.773978608585083,
+        "rider_bias": -7.121513661011513,
+        "rider_coverage": 91.1339569702879,
+        "rider_coverage_ci": [
+          87.32510048404833,
+          94.51503572366882
+        ],
+        "pooled_coverage": 91.1353032659409,
+        "rider_upper_exceedance": 4.290139317117735,
+        "median_width_minutes": 6.9139718968924075,
+        "median_relative_width": 112.03269736129147
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 19.776004744431916,
+        "rider_mape_ci": [
+          17.938850366311208,
+          21.72546681272077
+        ],
+        "median_ape": 15.68386714224619,
+        "p90_ape": 35.74544120377583,
+        "mean_absolute_minutes": 1.69784621254808,
+        "rider_bias": -4.60628522930148,
+        "rider_coverage": 89.91374043699626,
+        "rider_coverage_ci": [
+          85.75744152488338,
+          93.22355788053461
+        ],
+        "pooled_coverage": 91.74825174825175,
+        "rider_upper_exceedance": 6.3450266357243095,
+        "median_width_minutes": 6.944414205511591,
+        "median_relative_width": 101.21639117463768
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 18.30940668525147,
+        "rider_mape_ci": [
+          16.924509707614664,
+          19.770886927796724
+        ],
+        "median_ape": 14.652832727197756,
+        "p90_ape": 37.717818805003716,
+        "mean_absolute_minutes": 1.6386754878476975,
+        "rider_bias": -2.574778457609477,
+        "rider_coverage": 92.01830112026198,
+        "rider_coverage_ci": [
+          89.78086474359637,
+          93.99025059570451
+        ],
+        "pooled_coverage": 92.28547854785478,
+        "rider_upper_exceedance": 3.6210108780117047,
+        "median_width_minutes": 6.926855017013215,
+        "median_relative_width": 101.5829771459273
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 18.977354828123087,
+        "rider_mape_ci": [
+          17.665628379790224,
+          20.33417228186718
+        ],
+        "median_ape": 15.451131005314334,
+        "p90_ape": 37.971587597093105,
+        "mean_absolute_minutes": 1.795216949657594,
+        "rider_bias": -1.0389133450506869,
+        "rider_coverage": 92.1348169143156,
+        "rider_coverage_ci": [
+          90.6587433726893,
+          93.59339993489091
+        ],
+        "pooled_coverage": 92.61785660148553,
+        "rider_upper_exceedance": 3.1893350854000366,
+        "median_width_minutes": 6.264760366560519,
+        "median_relative_width": 98.85315602403887
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 18.050110548592787,
+        "rider_mape_ci": [
+          16.76219501933876,
+          19.430346525358086
+        ],
+        "median_ape": 14.825608940028868,
+        "p90_ape": 35.959524092486674,
+        "mean_absolute_minutes": 1.958295829910836,
+        "rider_bias": -0.04715606438067626,
+        "rider_coverage": 92.09852429427475,
+        "rider_coverage_ci": [
+          90.3588429104163,
+          93.69612648727859
+        ],
+        "pooled_coverage": 92.35401459854015,
+        "rider_upper_exceedance": 3.22732707514789,
+        "median_width_minutes": 6.0026276056607735,
+        "median_relative_width": 88.61271903497034
+      }
+    ],
+    "fixed_grade": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 17.043154454605123,
+        "rider_mape_ci": [
+          15.24792852433066,
+          19.05188773094818
+        ],
+        "median_ape": 14.241261484298462,
+        "p90_ape": 33.83696497835935,
+        "mean_absolute_minutes": 1.6092452664919763,
+        "rider_bias": -3.3041655099886698,
+        "rider_coverage": 93.4873949579832,
+        "rider_coverage_ci": [
+          89.49579831932773,
+          96.70868347338934
+        ],
+        "pooled_coverage": 93.53932584269663,
+        "rider_upper_exceedance": 4.985994397759104,
+        "median_width_minutes": 5.498006270974491,
+        "median_relative_width": 80.57819748920505
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 17.607154041930784,
+        "rider_mape_ci": [
+          15.767905598127065,
+          19.5265921874975
+        ],
+        "median_ape": 14.157024322113887,
+        "p90_ape": 36.76091206841189,
+        "mean_absolute_minutes": 1.6893930195694613,
+        "rider_bias": -3.3914956064765227,
+        "rider_coverage": 87.77564362096737,
+        "rider_coverage_ci": [
+          83.35028715289508,
+          91.5081233714327
+        ],
+        "pooled_coverage": 88.18040435458786,
+        "rider_upper_exceedance": 7.618476647253626,
+        "median_width_minutes": 5.573370999294811,
+        "median_relative_width": 80.57819748920505
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 18.533516417368094,
+        "rider_mape_ci": [
+          16.861767701515046,
+          20.353695829650896
+        ],
+        "median_ape": 15.086485175729415,
+        "p90_ape": 34.82441696536294,
+        "mean_absolute_minutes": 1.640909409833017,
+        "rider_bias": -0.44655668901751355,
+        "rider_coverage": 90.67440096509863,
+        "rider_coverage_ci": [
+          86.88219478626456,
+          93.81922809103041
+        ],
+        "pooled_coverage": 91.04895104895104,
+        "rider_upper_exceedance": 5.361651698861001,
+        "median_width_minutes": 5.677481221588809,
+        "median_relative_width": 80.57819748920505
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 17.564901236309908,
+        "rider_mape_ci": [
+          16.31164815777676,
+          18.98723102972947
+        ],
+        "median_ape": 13.799834075858508,
+        "p90_ape": 35.19119973217839,
+        "mean_absolute_minutes": 1.6047818748207021,
+        "rider_bias": 0.9355340427002229,
+        "rider_coverage": 92.48067249786882,
+        "rider_coverage_ci": [
+          90.27642208918128,
+          94.42499520581342
+        ],
+        "pooled_coverage": 92.53300330033002,
+        "rider_upper_exceedance": 3.0980364001079748,
+        "median_width_minutes": 5.492781629374846,
+        "median_relative_width": 80.57819748920507
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 18.161819856365934,
+        "rider_mape_ci": [
+          17.00249539398735,
+          19.33924576620974
+        ],
+        "median_ape": 14.82159572787971,
+        "p90_ape": 36.34765140476794,
+        "mean_absolute_minutes": 1.7883682178772593,
+        "rider_bias": 2.4482368269569874,
+        "rider_coverage": 91.58931579063574,
+        "rider_coverage_ci": [
+          90.14010126107762,
+          92.97460837470304
+        ],
+        "pooled_coverage": 92.36016371077763,
+        "rider_upper_exceedance": 3.3026119222380212,
+        "median_width_minutes": 5.118841048590638,
+        "median_relative_width": 77.10725673714931
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 17.18607527126084,
+        "rider_mape_ci": [
+          15.999982128847176,
+          18.406532520293236
+        ],
+        "median_ape": 14.713007919340482,
+        "p90_ape": 33.99135091367596,
+        "mean_absolute_minutes": 1.9548696217900414,
+        "rider_bias": 3.659099576079271,
+        "rider_coverage": 92.24183736887541,
+        "rider_coverage_ci": [
+          90.51846543909345,
+          93.75146995433366
+        ],
+        "pooled_coverage": 92.68248175182482,
+        "rider_upper_exceedance": 2.863146418733956,
+        "median_width_minutes": 4.865277029724835,
+        "median_relative_width": 70.15231342468404
+      }
+    ],
+    "personal_scale": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 17.043154454605123,
+        "rider_mape_ci": [
+          15.24792852433066,
+          19.05188773094818
+        ],
+        "median_ape": 14.241261484298462,
+        "p90_ape": 33.83696497835935,
+        "mean_absolute_minutes": 1.6092452664919763,
+        "rider_bias": -3.3041655099886698,
+        "rider_coverage": 85.37114845938375,
+        "rider_coverage_ci": [
+          79.3890056022409,
+          90.47619047619048
+        ],
+        "pooled_coverage": 87.64044943820225,
+        "rider_upper_exceedance": 9.07563025210084,
+        "median_width_minutes": 4.361006422827973,
+        "median_relative_width": 63.540288404904175
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 15.090494560722501,
+        "rider_mape_ci": [
+          13.391109551209986,
+          16.89991164440731
+        ],
+        "median_ape": 10.552246192199366,
+        "p90_ape": 33.19105261319113,
+        "mean_absolute_minutes": 1.3967043637663046,
+        "rider_bias": -1.93530270687017,
+        "rider_coverage": 87.38013984416861,
+        "rider_coverage_ci": [
+          82.39248710921372,
+          91.75329736211032
+        ],
+        "pooled_coverage": 87.71384136858475,
+        "rider_upper_exceedance": 7.558524608884322,
+        "median_width_minutes": 4.008144153763556,
+        "median_relative_width": 63.540288404904175
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 14.717720585498153,
+        "rider_mape_ci": [
+          13.123419945006694,
+          16.400545125366868
+        ],
+        "median_ape": 10.51065152448083,
+        "p90_ape": 29.832888984207646,
+        "mean_absolute_minutes": 1.2104452948203193,
+        "rider_bias": 1.0274228553254208,
+        "rider_coverage": 91.15115504650389,
+        "rider_coverage_ci": [
+          87.96147408792757,
+          93.99465725919214
+        ],
+        "pooled_coverage": 91.6083916083916,
+        "rider_upper_exceedance": 4.389398284747122,
+        "median_width_minutes": 4.296026330645133,
+        "median_relative_width": 63.540288404904175
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 14.188813363167116,
+        "rider_mape_ci": [
+          13.276435114095765,
+          15.174967107300287
+        ],
+        "median_ape": 10.871273444740716,
+        "p90_ape": 29.163686801702745,
+        "mean_absolute_minutes": 1.2287564676694138,
+        "rider_bias": 0.7192824512289645,
+        "rider_coverage": 93.57363856023238,
+        "rider_coverage_ci": [
+          91.98030883730394,
+          95.08157791126777
+        ],
+        "pooled_coverage": 93.11056105610561,
+        "rider_upper_exceedance": 2.1532646844441334,
+        "median_width_minutes": 4.030446541690228,
+        "median_relative_width": 63.54028840490419
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 14.29037643908154,
+        "rider_mape_ci": [
+          13.319545724804378,
+          15.377839991456204
+        ],
+        "median_ape": 11.188806864630063,
+        "p90_ape": 29.94832397777719,
+        "mean_absolute_minutes": 1.255541409557335,
+        "rider_bias": -0.06643552991462534,
+        "rider_coverage": 91.69046651856699,
+        "rider_coverage_ci": [
+          90.0301458040525,
+          93.1606717376804
+        ],
+        "pooled_coverage": 91.99636198271942,
+        "rider_upper_exceedance": 4.561080087333255,
+        "median_width_minutes": 3.767664119325376,
+        "median_relative_width": 63.54028840490417
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 13.517001433368346,
+        "rider_mape_ci": [
+          12.593002398640527,
+          14.523393574265777
+        ],
+        "median_ape": 10.407153661902523,
+        "p90_ape": 27.287886517519265,
+        "mean_absolute_minutes": 1.2461017345890648,
+        "rider_bias": -1.4233511472106644,
+        "rider_coverage": 93.2874314371148,
+        "rider_coverage_ci": [
+          91.69077481615194,
+          94.78875171892399
+        ],
+        "pooled_coverage": 93.46715328467154,
+        "rider_upper_exceedance": 4.073020910343525,
+        "median_width_minutes": 3.5263892981495784,
+        "median_relative_width": 57.89283991595751
+      }
+    ],
+    "personal_grade": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 17.043154454605123,
+        "rider_mape_ci": [
+          15.24792852433066,
+          19.05188773094818
+        ],
+        "median_ape": 14.241261484298462,
+        "p90_ape": 33.83696497835935,
+        "mean_absolute_minutes": 1.6092452664919763,
+        "rider_bias": -3.3041655099886698,
+        "rider_coverage": 84.74089635854341,
+        "rider_coverage_ci": [
+          78.67647058823529,
+          90.02118347338936
+        ],
+        "pooled_coverage": 87.07865168539325,
+        "rider_upper_exceedance": 9.705882352941176,
+        "median_width_minutes": 4.291744249507564,
+        "median_relative_width": 62.53113179250106
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 15.01380938514868,
+        "rider_mape_ci": [
+          13.330589785689664,
+          16.855518522895128
+        ],
+        "median_ape": 10.498839904187651,
+        "p90_ape": 32.778873668726334,
+        "mean_absolute_minutes": 1.3935749995823468,
+        "rider_bias": -1.8726685398283103,
+        "rider_coverage": 86.84011731673601,
+        "rider_coverage_ci": [
+          81.75516125561089,
+          91.20756264618674
+        ],
+        "pooled_coverage": 87.55832037325038,
+        "rider_upper_exceedance": 7.673432682425489,
+        "median_width_minutes": 3.9424416096200003,
+        "median_relative_width": 62.53113179250106
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 14.656330619730687,
+        "rider_mape_ci": [
+          13.085676781227356,
+          16.300869712947655
+        ],
+        "median_ape": 10.596598281552039,
+        "p90_ape": 30.050084879105444,
+        "mean_absolute_minutes": 1.208772667370398,
+        "rider_bias": 1.121575960093895,
+        "rider_coverage": 90.78201514248026,
+        "rider_coverage_ci": [
+          87.50022044062742,
+          93.63248729091752
+        ],
+        "pooled_coverage": 91.32867132867133,
+        "rider_upper_exceedance": 4.64779621756366,
+        "median_width_minutes": 4.215002567634617,
+        "median_relative_width": 62.53113179250106
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 14.06441632778958,
+        "rider_mape_ci": [
+          13.180653262045135,
+          15.024393912157576
+        ],
+        "median_ape": 10.825524656580683,
+        "p90_ape": 28.84364543251393,
+        "mean_absolute_minutes": 1.2240123142747257,
+        "rider_bias": 0.8005677298146416,
+        "rider_coverage": 93.74016457786934,
+        "rider_coverage_ci": [
+          92.14657271513762,
+          95.25563444690654
+        ],
+        "pooled_coverage": 93.31683168316832,
+        "rider_upper_exceedance": 2.1673857974543,
+        "median_width_minutes": 3.9487336270309235,
+        "median_relative_width": 62.53113179250107
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 14.130034788800431,
+        "rider_mape_ci": [
+          13.178482916438352,
+          15.192044773654068
+        ],
+        "median_ape": 11.062906813827034,
+        "p90_ape": 29.71913940932138,
+        "mean_absolute_minutes": 1.2422999361830929,
+        "rider_bias": 0.07165781263801231,
+        "rider_coverage": 91.76668109488634,
+        "rider_coverage_ci": [
+          90.01674682870194,
+          93.25397662406486
+        ],
+        "pooled_coverage": 91.90541155070487,
+        "rider_upper_exceedance": 4.479307009855428,
+        "median_width_minutes": 3.6984840934172816,
+        "median_relative_width": 62.53113179250105
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 13.30608125296357,
+        "rider_mape_ci": [
+          12.394616212562589,
+          14.312457065033229
+        ],
+        "median_ape": 10.23124065222435,
+        "p90_ape": 26.65659362457009,
+        "mean_absolute_minutes": 1.2221259019041033,
+        "rider_bias": -1.1609403746152511,
+        "rider_coverage": 93.28724843695016,
+        "rider_coverage_ci": [
+          91.7865202739962,
+          94.68242240079843
+        ],
+        "pooled_coverage": 93.5948905109489,
+        "rider_upper_exceedance": 4.057654185562009,
+        "median_width_minutes": 3.4706692479630723,
+        "median_relative_width": 55.940126068001696
+      }
+    ],
+    "scalar_live": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 13.365398306597369,
+        "rider_mape_ci": [
+          11.660855696181988,
+          15.19322738800722
+        ],
+        "median_ape": 9.546002889203864,
+        "p90_ape": 27.72063992812315,
+        "mean_absolute_minutes": 1.3069752504551055,
+        "rider_bias": -0.35878400405468547,
+        "rider_coverage": 86.93977591036415,
+        "rider_coverage_ci": [
+          81.56775210084034,
+          91.79306722689074
+        ],
+        "pooled_coverage": 88.48314606741573,
+        "rider_upper_exceedance": 7.717086834733894,
+        "median_width_minutes": 2.4003012657826215,
+        "median_relative_width": 39.5855426398188
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 14.146035121098954,
+        "rider_mape_ci": [
+          12.718069467087242,
+          15.599373439792158
+        ],
+        "median_ape": 9.497001926813976,
+        "p90_ape": 28.92806606836288,
+        "mean_absolute_minutes": 1.197245614344406,
+        "rider_bias": 3.195027573289876,
+        "rider_coverage": 84.42022206410697,
+        "rider_coverage_ci": [
+          80.25964338419375,
+          88.21312345727812
+        ],
+        "pooled_coverage": 86.78071539657853,
+        "rider_upper_exceedance": 8.086102546534201,
+        "median_width_minutes": 2.5099718484280595,
+        "median_relative_width": 39.5855426398188
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 13.218185203066337,
+        "rider_mape_ci": [
+          11.685978412655027,
+          14.976973988748345
+        ],
+        "median_ape": 9.266383213524975,
+        "p90_ape": 28.17213407711714,
+        "mean_absolute_minutes": 1.1539115464703358,
+        "rider_bias": 2.6750572495303953,
+        "rider_coverage": 90.16753487683721,
+        "rider_coverage_ci": [
+          86.89052006348518,
+          93.11944079821987
+        ],
+        "pooled_coverage": 89.5104895104895,
+        "rider_upper_exceedance": 4.549666526410713,
+        "median_width_minutes": 2.788400718437714,
+        "median_relative_width": 39.585542639818804
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 13.230041392256554,
+        "rider_mape_ci": [
+          12.262432485178872,
+          14.288332876240808
+        ],
+        "median_ape": 9.46892591657193,
+        "p90_ape": 27.21611716550081,
+        "mean_absolute_minutes": 1.149193615050377,
+        "rider_bias": 3.3769807951886857,
+        "rider_coverage": 90.67091964943366,
+        "rider_coverage_ci": [
+          88.5061563344236,
+          92.79673981399104
+        ],
+        "pooled_coverage": 91.87293729372938,
+        "rider_upper_exceedance": 2.9858183240598,
+        "median_width_minutes": 2.720254441832952,
+        "median_relative_width": 42.10175724667125
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 12.9827066001,
+        "rider_mape_ci": [
+          12.185795291828489,
+          13.876940395608507
+        ],
+        "median_ape": 9.433687075959696,
+        "p90_ape": 27.340760539658383,
+        "mean_absolute_minutes": 1.1294100896888404,
+        "rider_bias": 2.171094061335007,
+        "rider_coverage": 91.7462342791833,
+        "rider_coverage_ci": [
+          90.48878404956656,
+          92.92142720648458
+        ],
+        "pooled_coverage": 92.13278763074125,
+        "rider_upper_exceedance": 4.256318135395906,
+        "median_width_minutes": 2.654453793233534,
+        "median_relative_width": 42.4491408150876
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 12.487951138524785,
+        "rider_mape_ci": [
+          11.777643986155264,
+          13.24496020503407
+        ],
+        "median_ape": 9.638765794588412,
+        "p90_ape": 25.690995585096665,
+        "mean_absolute_minutes": 1.2213778858713065,
+        "rider_bias": 1.0857075059856902,
+        "rider_coverage": 92.57073764801528,
+        "rider_coverage_ci": [
+          91.2050346699429,
+          93.89138806050856
+        ],
+        "pooled_coverage": 93.01094890510949,
+        "rider_upper_exceedance": 3.993957217057415,
+        "median_width_minutes": 2.537615430246874,
+        "median_relative_width": 41.058386964102276
+      }
+    ],
+    "grade_live": [
+      {
+        "n": 356,
+        "riders": 119,
+        "rider_mape": 13.365398306597369,
+        "rider_mape_ci": [
+          11.660855696181988,
+          15.19322738800722
+        ],
+        "median_ape": 9.546002889203864,
+        "p90_ape": 27.72063992812315,
+        "mean_absolute_minutes": 1.3069752504551055,
+        "rider_bias": -0.35878400405468547,
+        "rider_coverage": 86.93977591036415,
+        "rider_coverage_ci": [
+          81.56775210084034,
+          91.79306722689074
+        ],
+        "pooled_coverage": 88.48314606741573,
+        "rider_upper_exceedance": 7.717086834733894,
+        "median_width_minutes": 2.3483827459390954,
+        "median_relative_width": 38.617580147207235
+      },
+      {
+        "n": 643,
+        "riders": 139,
+        "rider_mape": 14.083471067768707,
+        "rider_mape_ci": [
+          12.652412683196223,
+          15.541910730854644
+        ],
+        "median_ape": 9.431689292596513,
+        "p90_ape": 28.896267991429017,
+        "mean_absolute_minutes": 1.191201903356048,
+        "rider_bias": 3.1964351055516604,
+        "rider_coverage": 84.50469993635463,
+        "rider_coverage_ci": [
+          80.31126682070926,
+          88.3998299362508
+        ],
+        "pooled_coverage": 86.4696734059098,
+        "rider_upper_exceedance": 7.646454265159301,
+        "median_width_minutes": 2.452080963965871,
+        "median_relative_width": 38.617580147207235
+      },
+      {
+        "n": 715,
+        "riders": 129,
+        "rider_mape": 13.125390534853423,
+        "rider_mape_ci": [
+          11.63385042773396,
+          14.846682782991685
+        ],
+        "median_ape": 9.172767636341096,
+        "p90_ape": 28.30655934799122,
+        "mean_absolute_minutes": 1.151156346223039,
+        "rider_bias": 2.7400527142751194,
+        "rider_coverage": 89.73876468062515,
+        "rider_coverage_ci": [
+          86.50359228411554,
+          92.78198147674892
+        ],
+        "pooled_coverage": 89.0909090909091,
+        "rider_upper_exceedance": 4.6092968185991445,
+        "median_width_minutes": 2.729098453712652,
+        "median_relative_width": 39.28972275535064
+      },
+      {
+        "n": 2424,
+        "riders": 150,
+        "rider_mape": 13.036639593340613,
+        "rider_mape_ci": [
+          12.089926068923843,
+          14.071759521746092
+        ],
+        "median_ape": 9.347938810649525,
+        "p90_ape": 27.05432295642996,
+        "mean_absolute_minutes": 1.1405964295699376,
+        "rider_bias": 3.3913486897205685,
+        "rider_coverage": 91.74820383106105,
+        "rider_coverage_ci": [
+          89.85882972921165,
+          93.60507629859711
+        ],
+        "pooled_coverage": 92.4092409240924,
+        "rider_upper_exceedance": 2.246977321636454,
+        "median_width_minutes": 2.6564422212953995,
+        "median_relative_width": 41.551103721015686
+      },
+      {
+        "n": 6597,
+        "riders": 135,
+        "rider_mape": 12.818604423122286,
+        "rider_mape_ci": [
+          12.028364531589801,
+          13.70591127296337
+        ],
+        "median_ape": 9.316917265884882,
+        "p90_ape": 27.01918052375606,
+        "mean_absolute_minutes": 1.112265699747591,
+        "rider_bias": 2.2143761734617304,
+        "rider_coverage": 91.51470460209487,
+        "rider_coverage_ci": [
+          90.17152661083357,
+          92.73037492501186
+        ],
+        "pooled_coverage": 91.82961952402607,
+        "rider_upper_exceedance": 4.223976121865624,
+        "median_width_minutes": 2.608700943170682,
+        "median_relative_width": 42.32756303903062
+      },
+      {
+        "n": 5480,
+        "riders": 88,
+        "rider_mape": 12.271681758811514,
+        "rider_mape_ci": [
+          11.575320862598538,
+          13.021920610495894
+        ],
+        "median_ape": 9.383667838889037,
+        "p90_ape": 25.23927681182096,
+        "mean_absolute_minutes": 1.1978389097102233,
+        "rider_bias": 1.2468531727429022,
+        "rider_coverage": 93.13539258713391,
+        "rider_coverage_ci": [
+          91.87671553443886,
+          94.31296597443458
+        ],
+        "pooled_coverage": 93.19343065693431,
+        "rider_upper_exceedance": 3.537532166416492,
+        "median_width_minutes": 2.5034175845190956,
+        "median_relative_width": 39.8016749916483
+      }
+    ]
+  },
+  "coverage_groups": [
+    {
+      "n": 4963,
+      "riders": 168,
+      "rider_mape": 16.30877038388114,
+      "rider_mape_ci": [
+        15.23404283096099,
+        17.4426135487151
+      ],
+      "median_ape": 13.337921059431569,
+      "p90_ape": 30.995889434553256,
+      "mean_absolute_minutes": 0.7293113965020199,
+      "rider_bias": -8.388971609149099,
+      "rider_coverage": 90.54687522839723,
+      "rider_coverage_ci": [
+        88.24500584860051,
+        92.58470037203894
+      ],
+      "pooled_coverage": 92.42393713479751,
+      "rider_upper_exceedance": 5.595998258891531,
+      "median_width_minutes": 2.2407621918601017,
+      "median_relative_width": 72.16057920409867
+    },
+    {
+      "n": 1163,
+      "riders": 140,
+      "rider_mape": 12.126990467635366,
+      "rider_mape_ci": [
+        10.973782880279966,
+        13.403034827951881
+      ],
+      "median_ape": 8.345460699460649,
+      "p90_ape": 24.017932443504684,
+      "mean_absolute_minutes": 2.3077496079774455,
+      "rider_bias": 2.6884056238582485,
+      "rider_coverage": 88.50374492614795,
+      "rider_coverage_ci": [
+        84.91312904769937,
+        91.76920044186492
+      ],
+      "pooled_coverage": 90.88564058469476,
+      "rider_upper_exceedance": 7.608036690016453,
+      "median_width_minutes": 9.401082603621976,
+      "median_relative_width": 42.431463435311464
+    },
+    {
+      "n": 429,
+      "riders": 95,
+      "rider_mape": 10.818508406912803,
+      "rider_mape_ci": [
+        9.206429978843168,
+        12.660491494823534
+      ],
+      "median_ape": 7.257247738579764,
+      "p90_ape": 24.209116023126583,
+      "mean_absolute_minutes": 5.22338247361174,
+      "rider_bias": 7.520324706555177,
+      "rider_coverage": 92.66334261396995,
+      "rider_coverage_ci": [
+        87.82942493794293,
+        96.35251150321625
+      ],
+      "pooled_coverage": 93.93939393939394,
+      "rider_upper_exceedance": 2.5404020417870834,
+      "median_width_minutes": 24.975513171336424,
+      "median_relative_width": 39.8016749916483
+    },
+    {
+      "n": 7246,
+      "riders": 172,
+      "rider_mape": 11.143030409725212,
+      "rider_mape_ci": [
+        10.46514079778606,
+        11.829947685837595
+      ],
+      "median_ape": 8.205188506551464,
+      "p90_ape": 23.596698119786822,
+      "mean_absolute_minutes": 0.43432994156359456,
+      "rider_bias": 6.302517449521279,
+      "rider_coverage": 91.15986957824963,
+      "rider_coverage_ci": [
+        89.06165626744021,
+        92.87586592223599
+      ],
+      "pooled_coverage": 92.39580458183826,
+      "rider_upper_exceedance": 4.441651286637918,
+      "median_width_minutes": 1.347474661930552,
+      "median_relative_width": 38.61758014720723
+    },
+    {
+      "n": 1823,
+      "riders": 156,
+      "rider_mape": 11.058165023417036,
+      "rider_mape_ci": [
+        10.085210050786063,
+        12.119297108980541
+      ],
+      "median_ape": 7.754717717892112,
+      "p90_ape": 22.09138734733081,
+      "mean_absolute_minutes": 1.925374145883575,
+      "rider_bias": 7.393740613844923,
+      "rider_coverage": 87.32639822457521,
+      "rider_coverage_ci": [
+        83.8145453875803,
+        90.26063024842715
+      ],
+      "pooled_coverage": 90.016456390565,
+      "rider_upper_exceedance": 5.9678799080237885,
+      "median_width_minutes": 6.926315690675597,
+      "median_relative_width": 31.477410889494973
+    },
+    {
+      "n": 591,
+      "riders": 112,
+      "rider_mape": 11.151396196337496,
+      "rider_mape_ci": [
+        9.747556822549116,
+        12.783661851159623
+      ],
+      "median_ape": 8.302955824027913,
+      "p90_ape": 25.278191126448956,
+      "mean_absolute_minutes": 5.955083640747119,
+      "rider_bias": 7.972284957441941,
+      "rider_coverage": 88.11059469774533,
+      "rider_coverage_ci": [
+        83.32222677846222,
+        92.46261818377016
+      ],
+      "pooled_coverage": 89.67851099830794,
+      "rider_upper_exceedance": 6.5179607099249965,
+      "median_width_minutes": 19.92781994945267,
+      "median_relative_width": 32.881697429843484
+    }
+  ],
+  "sports": {
+    "bike": {
+      "n": 14181,
+      "riders": 162,
+      "rider_mape": 12.649442817008737,
+      "rider_mape_ci": [
+        11.946295383951622,
+        13.358667238724795
+      ],
+      "median_ape": 9.221128945576563,
+      "p90_ape": 26.09753538467251,
+      "mean_absolute_minutes": 1.1569123298347597,
+      "rider_bias": 2.422843362213639,
+      "rider_coverage": 91.12231776289282,
+      "rider_coverage_ci": [
+        89.2604112469255,
+        92.65625637795273
+      ],
+      "pooled_coverage": 92.74381214300826,
+      "rider_upper_exceedance": 4.407894876452138,
+      "median_width_minutes": 2.5917879607459158,
+      "median_relative_width": 40.54296545021593
+    },
+    "bike (transport)": {
+      "n": 721,
+      "riders": 41,
+      "rider_mape": 14.793439976605619,
+      "rider_mape_ci": [
+        11.299380603335637,
+        19.46922022271854
+      ],
+      "median_ape": 8.356138120424905,
+      "p90_ape": 22.80268982206326,
+      "mean_absolute_minutes": 0.7427593742067364,
+      "rider_bias": 1.022093124941069,
+      "rider_coverage": 87.84463931346558,
+      "rider_coverage_ci": [
+        79.63409083920794,
+        94.19837165866255
+      ],
+      "pooled_coverage": 93.48127600554785,
+      "rider_upper_exceedance": 6.0534353247268085,
+      "median_width_minutes": 1.938307031338255,
+      "median_relative_width": 39.084557323524955
+    },
+    "mountain bike": {
+      "n": 1313,
+      "riders": 51,
+      "rider_mape": 17.44303441053377,
+      "rider_mape_ci": [
+        14.785952271594754,
+        20.280351064240133
+      ],
+      "median_ape": 11.920906119999252,
+      "p90_ape": 32.580931594564774,
+      "mean_absolute_minutes": 1.35504899779441,
+      "rider_bias": -7.021316210633678,
+      "rider_coverage": 74.17423530517193,
+      "rider_coverage_ci": [
+        66.45488028271876,
+        81.31770703950208
+      ],
+      "pooled_coverage": 82.7875095201828,
+      "rider_upper_exceedance": 21.535228841169886,
+      "median_width_minutes": 2.7788921837617946,
+      "median_relative_width": 45.484499611358316
+    }
+  },
+  "targets": [
+    {
+      "target_km": 1,
+      "scored": 7369,
+      "offered": 13199
+    },
+    {
+      "target_km": 3,
+      "scored": 5207,
+      "offered": 12816
+    },
+    {
+      "target_km": 10,
+      "scored": 2835,
+      "offered": 11115
+    },
+    {
+      "target_km": 30,
+      "scored": 804,
+      "offered": 6695
+    }
+  ],
+  "sensitivity": {
+    "all": {
+      "n": 6391,
+      "riders": 161,
+      "rider_mape": 13.484392160488929,
+      "rider_mape_ci": [
+        12.45270092301452,
+        14.721848920062932
+      ],
+      "median_ape": 9.396121751839836,
+      "p90_ape": 26.73577367058966,
+      "mean_absolute_minutes": 0.8827194649075355,
+      "rider_bias": 4.1096450735779,
+      "rider_coverage": 88.98605880311595,
+      "rider_coverage_ci": [
+        86.2245635447174,
+        91.262198081388
+      ],
+      "pooled_coverage": 91.84791112501955,
+      "rider_upper_exceedance": 3.660266133988649,
+      "median_width_minutes": 2.0956141984815235,
+      "median_relative_width": 40.408053116068004
+    },
+    "in_ride": {
+      "n": 3961,
+      "riders": 154,
+      "rider_mape": 11.755459795140617,
+      "rider_mape_ci": [
+        10.628203875972861,
+        13.051054489311962
+      ],
+      "median_ape": 8.180340332009505,
+      "p90_ape": 23.592704740082347,
+      "mean_absolute_minutes": 0.7512789799291035,
+      "rider_bias": 7.818661748386504,
+      "rider_coverage": 89.3337565810355,
+      "rider_coverage_ci": [
+        86.57307125564986,
+        91.97592767336202
+      ],
+      "pooled_coverage": 91.84549356223177,
+      "rider_upper_exceedance": 3.576359702606874,
+      "median_width_minutes": 1.505557356092131,
+      "median_relative_width": 38.61758014720723
+    }
+  },
+  "long_actual_count": 1,
+  "improvement_vs_fixed": {
+    "percentage_points": 7.47114822845304,
+    "ci": [
+      6.271984864334028,
+      8.739930724592162
+    ],
+    "riders": 172
+  },
+  "improvement_vs_scalar_live": {
+    "percentage_points": 0.15956672610981318,
+    "ci": [
+      0.10001740691774852,
+      0.23519639719682509
+    ],
+    "riders": 172
+  },
+  "audit": {
+    "source_url": "https://mcauleylab.ucsd.edu/public_datasets/gdrive/fitrec/endomondoHR.json.gz",
+    "source_sha256": "31a49f8ec2fa5d038983e7b3bfe35f5f7eabee581180c803023f011f046681b9",
+    "source_bytes": 1995378519,
+    "citation": "Ni, Muhlstein and McAuley (WWW 2019), Modeling heart rate and activity data for personalized fitness recommendation",
+    "terms_url": "https://cseweb.ucsd.edu/~jmcauley/datasets/fitrec.html",
+    "terms": "Academic use only; no redistribution or commercial use, per source page.",
+    "counts": {
+      "all_records": 253020,
+      "cycling_records": 121956,
+      "stored_records": 121776,
+      "development_records": 69008,
+      "intervals": 57379100,
+      "records_with_speed": 25279,
+      "accepted_intervals_15s": 39848859,
+      "accepted_km_15s": 1998431.4340440882,
+      "accepted_minutes_15s": 4801604.295213906,
+      "accepted_intervals_30s": 51466208,
+      "accepted_km_30s": 3697259.2158621335,
+      "accepted_minutes_30s": 8884929.222840609,
+      "test_records": 29702,
+      "calibration_records": 23066
+    },
+    "sports": {
+      "bike": 98001,
+      "bike (transport)": 10445,
+      "run": 117902,
+      "mountain bike": 13510,
+      "rowing": 127,
+      "hiking": 357,
+      "orienteering": 1197,
+      "tennis": 8,
+      "core stability training": 1262,
+      "kayaking": 255,
+      "walk": 3831,
+      "indoor cycling": 2606,
+      "skate": 512,
+      "cross-country skiing": 949,
+      "weight training": 237,
+      "stair climing": 13,
+      "elliptical": 83,
+      "soccer": 71,
+      "treadmill running": 70,
+      "fitness walking": 402,
+      "basketball": 14,
+      "swimming": 41,
+      "circuit training": 218,
+      "scuba diving": 1,
+      "gymnastics": 162,
+      "snowshoeing": 32,
+      "snowboarding": 5,
+      "yoga": 22,
+      "aerobics": 46,
+      "roller skiing": 408,
+      "horseback riding": 16,
+      "climbing": 6,
+      "step counter": 2,
+      "downhill skiing": 144,
+      "golf": 12,
+      "badminton": 17,
+      "dancing": 1,
+      "treadmill walking": 2,
+      "pilates": 7,
+      "table tennis": 5,
+      "martial arts": 5,
+      "sailing": 2,
+      "kite surfing": 1,
+      "squash": 1,
+      "wheelchair": 1,
+      "rugby": 7,
+      "beach volleyball": 2,
+      "windsurfing": 1,
+      "skateboarding": 1
+    },
+    "exclusions": {
+      "array_lengths": 180
+    },
+    "flags": {
+      "nonpositive_dt": 10902,
+      "dt_above_30s": 3507481,
+      "displacement_below_3m": 2395686,
+      "speed_outside_1_80": 2159408,
+      "grade_above_50pct": 73637,
+      "grade_outside_anchors": 189835
+    },
+    "cycling_users": 860,
+    "users": {
+      "development": 498,
+      "calibration": 177,
+      "test": 185
+    },
+    "point_counts": {
+      "500": 103865
+    },
+    "rounded_spacing_quantiles_seconds": {
+      "0.5": 9,
+      "0.9": 25,
+      "0.95": 33,
+      "0.99": 58
+    },
+    "preparation_seconds": 105.79
+  },
+  "diagnostics": {
+    "synthetic": {
+      "cold_start": {
+        "0.5": [
+          0.4999999990476729,
+          0.5637484274041039,
+          0.6356245800118456,
+          0.716664673450598,
+          0.8080371668067321,
+          0.9110593658779789,
+          0.9486672427909595,
+          0.9541044667991263,
+          0.9582862006581455,
+          0.9616051394540162,
+          0.9643050736109449,
+          0.9665454841139999,
+          0.9684351130026746,
+          0.970050515778821,
+          0.9714476309545184,
+          0.9726677134624879,
+          0.9737424771284638,
+          0.9746961277416702,
+          0.9755480771275684,
+          0.9763133616590678,
+          0.9770045294414081,
+          0.9776314448853766,
+          0.9782027294834241,
+          0.9787250522811186,
+          0.9792044044622487,
+          0.979645627496248,
+          0.9800527587286835,
+          0.9804296708456093,
+          0.9807793102613709,
+          0.9811044546571045,
+          0.9814073609501485
+        ],
+        "2.0": [
+          1.9999998846000224,
+          1.773840762625385,
+          1.5732556163525346,
+          1.3953525516695513,
+          1.2375666885999805,
+          1.097623248109268,
+          1.0541103928686533,
+          1.0481032578694935,
+          1.043529583660086,
+          1.0399278861672723,
+          1.0370162175496929,
+          1.034612458943582,
+          1.03259370356725,
+          1.0308740876164484,
+          1.029391567940134,
+          1.0281002716082477,
+          1.0269655107830211,
+          1.0259607193806286,
+          1.0250648055649176,
+          1.0242613681997834,
+          1.0235368302550616,
+          1.022880416578553,
+          1.02228316142814,
+          1.0217375926806471,
+          1.0212374191301992,
+          1.0207775243935724,
+          1.020353353738312,
+          1.0199611543288585,
+          1.0195975469215979,
+          1.0192596456647933,
+          1.0189450564603484
+        ]
+      },
+      "single_slow_ride_baseline_change": 0.02617826019082603,
+      "sustained_change": [
+        0.7893678924544817,
+        0.8009697885985212,
+        0.811682669117891,
+        0.8215984424050595,
+        0.8307970101349964,
+        0.8393480436552806,
+        0.8473125451544976,
+        0.8547443555291075,
+        0.8616908954567561,
+        0.8681942190637741,
+        0.87429177804348,
+        0.8800168976114903,
+        0.8853995059512267,
+        0.8904664190363768,
+        0.895241681090554,
+        0.8997472208587498,
+        0.9040026402797564,
+        0.9080258315925687,
+        0.9118330863225471,
+        0.9154392214265162,
+        0.9188576108878987
+      ],
+      "unseen_bike_surface_climb_ratio": 0.8325854932072957,
+      "live_response": [
+        {
+          "minutes": 0.0,
+          "multiplier": 1.0
+        },
+        {
+          "minutes": 0.5,
+          "multiplier": 1.0177250065514516
+        },
+        {
+          "minutes": 1.0,
+          "multiplier": 1.0345462299449475
+        },
+        {
+          "minutes": 1.5,
+          "multiplier": 1.0504916176906596
+        },
+        {
+          "minutes": 2.0,
+          "multiplier": 1.0655907444073665
+        },
+        {
+          "minutes": 2.5,
+          "multiplier": 1.07987437462843
+        },
+        {
+          "minutes": 3.0,
+          "multiplier": 1.0933740799332652
+        },
+        {
+          "minutes": 3.5,
+          "multiplier": 1.1061218971135733
+        },
+        {
+          "minutes": 4.0,
+          "multiplier": 1.1181500297246838
+        },
+        {
+          "minutes": 4.5,
+          "multiplier": 1.1294905960673358
+        },
+        {
+          "minutes": 5.0,
+          "multiplier": 1.1401754272856675
+        },
+        {
+          "minutes": 5.5,
+          "multiplier": 1.150235851289343
+        },
+        {
+          "minutes": 6.0,
+          "multiplier": 1.1597025929464568
+        },
+        {
+          "minutes": 6.5,
+          "multiplier": 1.1686056256221198
+        },
+        {
+          "minutes": 7.0,
+          "multiplier": 1.1769740793083425
+        },
+        {
+          "minutes": 7.5,
+          "multiplier": 1.1848361502168432
+        },
+        {
+          "minutes": 8.0,
+          "multiplier": 1.1922190782507944
+        },
+        {
+          "minutes": 8.5,
+          "multiplier": 1.1991490659949058
+        },
+        {
+          "minutes": 9.0,
+          "multiplier": 1.2056512946193214
+        },
+        {
+          "minutes": 9.5,
+          "multiplier": 1.2117498926755375
+        },
+        {
+          "minutes": 10.0,
+          "multiplier": 1.2174678891684758
+        },
+        {
+          "minutes": 10.5,
+          "multiplier": 1.2228272936639415
+        },
+        {
+          "minutes": 11.0,
+          "multiplier": 1.2278490854387334
+        },
+        {
+          "minutes": 11.5,
+          "multiplier": 1.2325531617329257
+        },
+        {
+          "minutes": 12.0,
+          "multiplier": 1.2369584819910235
+        },
+        {
+          "minutes": 12.5,
+          "multiplier": 1.2410829860398092
+        },
+        {
+          "minutes": 13.0,
+          "multiplier": 1.2449436873109638
+        },
+        {
+          "minutes": 13.5,
+          "multiplier": 1.2485566834438875
+        },
+        {
+          "minutes": 14.0,
+          "multiplier": 1.2519371745485317
+        },
+        {
+          "minutes": 14.5,
+          "multiplier": 1.2550995444665134
+        },
+        {
+          "minutes": 15.0,
+          "multiplier": 1.2580573365269883
+        },
+        {
+          "minutes": 15.5,
+          "multiplier": 1.260823346685894
+        },
+        {
+          "minutes": 16.0,
+          "multiplier": 1.2634096093420242
+        },
+        {
+          "minutes": 16.5,
+          "multiplier": 1.26582746223615
+        },
+        {
+          "minutes": 17.0,
+          "multiplier": 1.268087558774088
+        },
+        {
+          "minutes": 17.5,
+          "multiplier": 1.2701999401825914
+        },
+        {
+          "minutes": 18.0,
+          "multiplier": 1.2721740351049347
+        },
+        {
+          "minutes": 18.5,
+          "multiplier": 1.2740186993641696
+        },
+        {
+          "minutes": 19.0,
+          "multiplier": 1.275742258022131
+        },
+        {
+          "minutes": 19.5,
+          "multiplier": 1.277352492365083
+        },
+        {
+          "minutes": 20.0,
+          "multiplier": 1.2788567235571613
+        },
+        {
+          "minutes": 20.5,
+          "multiplier": 1.2802618218763475
+        },
+        {
+          "minutes": 21.0,
+          "multiplier": 1.2815742171134332
+        },
+        {
+          "minutes": 21.5,
+          "multiplier": 1.2827999291302221
+        },
+        {
+          "minutes": 22.0,
+          "multiplier": 1.2839446185873937
+        },
+        {
+          "minutes": 22.5,
+          "multiplier": 1.2850135812375543
+        },
+        {
+          "minutes": 23.0,
+          "multiplier": 1.2860117428280666
+        },
+        {
+          "minutes": 23.5,
+          "multiplier": 1.2869437887979984
+        },
+        {
+          "minutes": 24.0,
+          "multiplier": 1.2878140263651208
+        },
+        {
+          "minutes": 24.5,
+          "multiplier": 1.2886265152991574
+        },
+        {
+          "minutes": 25.0,
+          "multiplier": 1.2893850266699853
+        },
+        {
+          "minutes": 25.5,
+          "multiplier": 1.290093155559746
+        },
+        {
+          "minutes": 26.0,
+          "multiplier": 1.2907542036187145
+        },
+        {
+          "minutes": 26.5,
+          "multiplier": 1.291371292412185
+        },
+        {
+          "minutes": 27.0,
+          "multiplier": 1.2919473233091612
+        },
+        {
+          "minutes": 27.5,
+          "multiplier": 1.292485014481815
+        },
+        {
+          "minutes": 28.0,
+          "multiplier": 1.292986899630729
+        },
+        {
+          "minutes": 28.5,
+          "multiplier": 1.2934553653968552
+        },
+        {
+          "minutes": 29.0,
+          "multiplier": 1.293892611855545
+        },
+        {
+          "minutes": 29.5,
+          "multiplier": 1.294300690184839
+        },
+        {
+          "minutes": 30.0,
+          "multiplier": 1.2946815790903665
+        }
+      ]
+    },
+    "numerical": {
+      "development_rides": 120,
+      "reference_solver_failures": 0,
+      "max_float32_vs_float64_pace_difference": 1.0076977619505484e-07,
+      "max_fixed_sweeps_vs_reference_pace_difference": 1.233001598980212e-07,
+      "max_objective_gap": 3.0780933357732465e-14,
+      "finish_ms_quantiles": {
+        "0.5": 0.6950895012778346,
+        "0.95": 0.7162370005062257,
+        "0.99": 0.7527136296084791
+      }
+    },
+    "resources": {
+      "9": {
+        "learner_array_bytes": 512,
+        "interval_array_bytes": 840,
+        "live_scalar_bytes": 8,
+        "subtotal_array_bytes": 1360,
+        "observe_plus_live_microseconds": 46.90770520028309,
+        "python_traced_during_ride_peak_bytes": 3992,
+        "python_traced_including_finish_peak_bytes": 7180
+      },
+      "16": {
+        "learner_array_bytes": 1352,
+        "interval_array_bytes": 840,
+        "live_scalar_bytes": 8,
+        "subtotal_array_bytes": 2200,
+        "observe_plus_live_microseconds": 47.570086199993966,
+        "python_traced_during_ride_peak_bytes": 7304,
+        "python_traced_including_finish_peak_bytes": 10560
+      }
+    }
+  },
+  "test_stats": {
+    "candidate_records": 7425,
+    "scored": 97290,
+    "censored": 165660,
+    "two_learner_finish_seconds": 3.0979361590598273,
+    "rejected_baseline_updates": 0,
+    "rides": 7114,
+    "intervals": 3348543,
+    "accepted_intervals": 2950681,
+    "learning_intervals": 2597894,
+    "learning_km": 198292.5188328093,
+    "overlapping_records_excluded": 311,
+    "users": 185,
+    "runtime_seconds": 128.88127980900026
+  },
+  "calibration": {
+    "stats": {
+      "candidate_records": 6730,
+      "censored": 157332,
+      "two_learner_finish_seconds": 2.2789302000110183,
+      "rejected_baseline_updates": 0,
+      "rides": 6491,
+      "intervals": 3077444,
+      "accepted_intervals": 2782521,
+      "learning_intervals": 2437065,
+      "learning_km": 178743.8673541695,
+      "scored": 91146,
+      "overlapping_records_excluded": 239,
+      "users": 177,
+      "runtime_seconds": 87.85917797300135
+    },
+    "groups": {
+      "fixed_pace": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1107,
+          "riders": 122,
+          "fallback": null
+        },
+        {
+          "observations": 310,
+          "riders": 71,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1509,
+          "riders": 136,
+          "fallback": null
+        },
+        {
+          "observations": 337,
+          "riders": 71,
+          "fallback": null
+        }
+      ],
+      "fixed_grade": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1107,
+          "riders": 120,
+          "fallback": null
+        },
+        {
+          "observations": 326,
+          "riders": 74,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1552,
+          "riders": 138,
+          "fallback": null
+        },
+        {
+          "observations": 368,
+          "riders": 75,
+          "fallback": null
+        }
+      ],
+      "personal_scale": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1122,
+          "riders": 126,
+          "fallback": null
+        },
+        {
+          "observations": 394,
+          "riders": 82,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1577,
+          "riders": 139,
+          "fallback": null
+        },
+        {
+          "observations": 429,
+          "riders": 86,
+          "fallback": null
+        }
+      ],
+      "personal_grade": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1121,
+          "riders": 126,
+          "fallback": null
+        },
+        {
+          "observations": 395,
+          "riders": 83,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1595,
+          "riders": 139,
+          "fallback": null
+        },
+        {
+          "observations": 434,
+          "riders": 89,
+          "fallback": null
+        }
+      ],
+      "scalar_live": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1122,
+          "riders": 126,
+          "fallback": null
+        },
+        {
+          "observations": 394,
+          "riders": 82,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1678,
+          "riders": 147,
+          "fallback": null
+        },
+        {
+          "observations": 484,
+          "riders": 104,
+          "fallback": null
+        }
+      ],
+      "grade_live": [
+        {
+          "observations": 2892,
+          "riders": 163,
+          "fallback": null
+        },
+        {
+          "observations": 1121,
+          "riders": 126,
+          "fallback": null
+        },
+        {
+          "observations": 395,
+          "riders": 83,
+          "fallback": null
+        },
+        {
+          "observations": 4126,
+          "riders": 168,
+          "fallback": null
+        },
+        {
+          "observations": 1680,
+          "riders": 146,
+          "fallback": null
+        },
+        {
+          "observations": 486,
+          "riders": 106,
+          "fallback": null
+        }
+      ]
+    }
+  },
+  "initial_curve": {
+    "source": "Development riders only; median of rider median interval log-paces in nearest-anchor bins",
+    "minimum_observations_per_rider_anchor": 20,
+    "minimum_riders_per_anchor": 10,
+    "riders_per_anchor": [
+      57,
+      295,
+      441,
+      490,
+      494,
+      486,
+      449,
+      336,
+      68
+    ],
+    "fallback_pace": [
+      2.4,
+      1.8,
+      1.9,
+      2.3,
+      3.0,
+      4.0,
+      6.2,
+      10.0,
+      18.0
+    ],
+    "selection": {
+      "candidate_records": 19789,
+      "overlapping_records_excluded": 860
+    }
+  },
+  "config": {
+    "anchors": [
+      -0.2,
+      -0.1,
+      -0.05,
+      -0.02,
+      0.0,
+      0.02,
+      0.05,
+      0.1,
+      0.2
+    ],
+    "initial_pace": [
+      3.6678441275125553,
+      2.4586028318443796,
+      1.863102606340253,
+      2.0623855840047383,
+      2.3229872458051943,
+      2.796304532429891,
+      3.872365743392211,
+      5.719886350853427,
+      8.74980158383425
+    ],
+    "live_half_minutes": 5.0,
+    "history_half_rides": 20.0,
+    "ride_cap_km": 10.0,
+    "eta": 0.25,
+    "clip_log": 0.6931471805599453,
+    "live_min": -0.6931471805599453,
+    "live_max": 0.9162907318741551,
+    "lambda_global": 0.1,
+    "lambda_detail": 1.0,
+    "delta_global": 0.12,
+    "delta_detail": 0.04,
+    "absolute_global": 1.0986122886681098,
+    "absolute_detail": 0.6931471805599453,
+    "sweeps": 8,
+    "buffer_size": 32,
+    "reference_weight": 32.0,
+    "reference_knots": 64,
+    "established_minutes": 10.0,
+    "duration_boundaries": [
+      10.0,
+      30.0
+    ],
+    "target_km": [
+      1.0,
+      3.0,
+      10.0,
+      30.0
+    ],
+    "max_rides": 60
+  },
+  "frozen_manifest": {
+    "purpose": "Frozen before first held-out evaluation; same settings for prespecified 15s sensitivity",
+    "python": "3.14.7 (main, Aug 10 2026, 00:00:00) [GCC 16.1.1 20260515 (Red Hat 16.1.1-2)]",
+    "platform": "Linux-7.2.5-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "libraries": {
+      "numpy": "2.3.4",
+      "scipy": "1.18.0",
+      "matplotlib": "3.10.9"
+    },
+    "sha256": {
+      "host/ride-time-prototype/model.py": "6be62273183c797f95aad42c5ad2c4fa7ef98a15021f0ba5a9e01fe4298c0701",
+      "host/ride-time-prototype/data.py": "d63c7cb3e7ab8109f31544e95232964b35cbfe250f16aef68bad44f52c84f479",
+      "host/ride-time-prototype/replay.py": "1f0a75d93e7d383b3993f3a74f18fcd754540e6490fdec6a5a4e3acea9c2cbd2",
+      ".artifacts/ride-time/config.json": "58d37a33e0b80d1224ca4e01bf1cad3c33304d887919543488d76d9f2b63c702",
+      ".artifacts/ride-time/reference.json": "5d4a7339149aeb086886569ccdba0ac901657bd610a5260d05a7ffafecd02e45"
+    }
+  }
+}
