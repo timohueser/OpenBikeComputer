@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "country": "Switzerland",
+  "capture": {
+    "package": "assistant-wiki-switzerland",
+    "archive_sha256": "1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8",
+    "archive_bytes": 5348363006,
+    "source_manifest_sha256": "ec07a5a76f603f10784ae9391caffd9e6ae9f0513ff85e50ececc1f059a491e4",
+    "boundary_sha256": "1b36c21d52a4419d410893ea41dd522d36238ada0b253c7fe78b81d2ef1edd5b",
+    "source_interval_utc": [
+      "2026-09-14T22:15:04.272401+00:00",
+      "2026-09-15T05:23:27.837269+00:00"
+    ],
+    "country_complete": true,
+    "query_roots": 24,
+    "unresolved_source_requests": 0,
+    "missing_classes": [],
+    "retained_failed_attempts": 17,
+    "source_responses": 16913,
+    "source_bytes": 5733766258,
+    "captured_articles": 3013,
+    "original_images": 1481,
+    "original_image_bytes": 5271077439
+  },
+  "compiler": {
+    "source_commit": "7b5f9d50",
+    "executable_sha256": "d177fd5d80a13cdb86d35b11a9e0967cabc58dc8f76061f1ea01790a26f02ce0",
+    "input_sha256": "41348f1c7613ac423b653b78f6cad4aa636ab1e0cd242331fb5f584ec7a4f775",
+    "policy_sha256": "ab0ca42e41851a6a032b630020ff39dd6695d1a8d711f04e1917e66ff8edc5e6",
+    "category_policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
+    "requested_language": "en",
+    "content_json_sha256": "4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57",
+    "content_json_bytes": 8826684
+  },
+  "counts": {
+    "captured": 6221,
+    "candidates": 3508,
+    "texts": 1495,
+    "images": 1119,
+    "mapped_approaches": null,
+    "photo_bytes": 58008960
+  },
+  "languages": {
+    "de": 692,
+    "en": 669,
+    "fr": 117,
+    "it": 17
+  },
+  "omissions": [
+    {
+      "asset": "article",
+      "reason": "de: attribution_glyph",
+      "count": 10
+    },
+    {
+      "asset": "article",
+      "reason": "de: no_complete_sentence",
+      "count": 4
+    },
+    {
+      "asset": "article",
+      "reason": "de: unbreakable_word",
+      "count": 156
+    },
+    {
+      "asset": "article",
+      "reason": "de: unsupported_glyph",
+      "count": 20
+    },
+    {
+      "asset": "article",
+      "reason": "en: attribution_glyph",
+      "count": 8
+    },
+    {
+      "asset": "article",
+      "reason": "en: no_complete_sentence",
+      "count": 7
+    },
+    {
+      "asset": "article",
+      "reason": "en: unbreakable_word",
+      "count": 18
+    },
+    {
+      "asset": "article",
+      "reason": "en: unsupported_glyph",
+      "count": 16
+    },
+    {
+      "asset": "article",
+      "reason": "fr: attribution_glyph",
+      "count": 24
+    },
+    {
+      "asset": "article",
+      "reason": "fr: no_complete_sentence",
+      "count": 1
+    },
+    {
+      "asset": "article",
+      "reason": "fr: unbreakable_word",
+      "count": 17
+    },
+    {
+      "asset": "article",
+      "reason": "it: no_complete_sentence",
+      "count": 3
+    },
+    {
+      "asset": "article",
+      "reason": "it: unbreakable_word",
+      "count": 2
+    },
+    {
+      "asset": "article",
+      "reason": "no_usable_captured_language",
+      "count": 2013
+    },
+    {
+      "asset": "photo",
+      "reason": "attribution_bytes",
+      "count": 17
+    },
+    {
+      "asset": "photo",
+      "reason": "attribution_glyph",
+      "count": 11
+    },
+    {
+      "asset": "photo",
+      "reason": "no_usable_captured_image",
+      "count": 376
+    },
+    {
+      "asset": "photo",
+      "reason": "photo_creator_missing",
+      "count": 28
+    },
+    {
+      "asset": "photo",
+      "reason": "photo_license_missing",
+      "count": 95
+    },
+    {
+      "asset": "photo",
+      "reason": "unsupported_license",
+      "count": 28
+    },
+    {
+      "asset": "site",
+      "reason": "coordinate_missing_or_ambiguous",
+      "count": 44
+    },
+    {
+      "asset": "site",
+      "reason": "excluded_type",
+      "count": 156
+    }
+  ],
+  "real_attribution_cases": [
+    {
+      "qid": "Q1247344",
+      "name": "Tellenburg castle ruin",
+      "photo_filename": "Tellenburg Frutigen 01 09.jpg",
+      "metadata_path": "images/5c6d0ffd929e499852765350767c97c04135c3f0d490ac578e081e51453e266a.json",
+      "artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Chriusha\" title=\"User:Chriusha\">Хрюша</a>",
+        "source": "commons-desc-page"
+      },
+      "source_url": "https://commons.wikimedia.org/wiki/File:Tellenburg_Frutigen_01_09.jpg",
+      "text_available": true,
+      "photo_available": false,
+      "omissions": [
+        "attribution_glyph",
+        "no_usable_captured_image"
+      ]
+    },
+    {
+      "qid": "Q666668",
+      "name": "Grimsel Pass",
+      "photo_filename": "VS-65-06.jpg",
+      "metadata_path": "images/a4192f37a57ff840d177eb48c6535ad502eea67d1665f7f09d9b180398715aa2.json",
+      "artist": null,
+      "source_url": "https://commons.wikimedia.org/wiki/File:VS-65-06.jpg",
+      "text_available": true,
+      "photo_available": false,
+      "omissions": [
+        "photo_creator_missing",
+        "no_usable_captured_image"
+      ]
+    }
+  ],
+  "remaining": [
+    "Country mapped-approach count and final compressed map/index/credits storage are RA09/RA13 outputs.",
+    "Physical SD latency and stack high-water acceptance remain pending; no device is connected."
+  ],
+  "validation": {
+    "fixture_publish": "Passed immutable upload and full public SHA-256/byte verification.",
+    "clean_cache": "Passed sync and verify of assistant-country from a nonexistent OBC_FIXTURE_CACHE directory.",
+    "offline_reproducibility": {
+      "network_access": "denied by macOS sandbox-exec in both compiler processes",
+      "all_output_bytes_identical": true,
+      "output_files": 1120,
+      "output_bytes": 66835644,
+      "output_tree_sha256": "3c0c9af603b4110362b1a07059e6b37ee6e43325be3f3c31cee4496e4b5a473b",
+      "tree_hash_recipe": "SHA-256 of sorted relative path + NUL + lowercase file SHA-256 + LF rows"
+    },
+    "checks": [
+      "cargo test -p obc-pack --lib --locked: 329 passed",
+      "cargo clippy -p obc-pack --all-targets -- -D warnings: passed",
+      "python -m unittest discover -s tools/tests -p test_fixtures.py: 11 passed",
+      "python3 tools/suite_registry.py check: passed"
+    ],
+    "omitted": [
+      "Full CI mirror",
+      "UI snapshot sweep",
+      "Resource build",
+      "Physical device testing"
+    ]
+  }
+}
