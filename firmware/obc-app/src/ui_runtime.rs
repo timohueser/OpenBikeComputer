@@ -329,7 +329,7 @@ impl UiRuntime {
             ReaderNeed::Always => true,
             ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
             // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
-            ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending()),
+            ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending(&self.poi_scratch)),
             ReaderNeed::Photo | ReaderNeed::Landmarks => true,
             ReaderNeed::Never => false,
         }
