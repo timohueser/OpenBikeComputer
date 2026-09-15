@@ -273,11 +273,13 @@ impl ObjectSource {
     }
 
     /// Full current stored identity, independent of a particular mount's owner allocation.
-    pub(crate) fn fingerprint(&self) -> Option<obc_formats::retention::PayloadFingerprint> {
+    pub(crate) fn fingerprint(&self) -> Option<obc_formats::assistant::PayloadFingerprint> {
         let owner = self.0.owner.lock().ok()?;
         let card = owner.ready().ok()?;
         let entry = card.entries().find(|entry| {
-            entry.id == self.id() && entry.revision == self.revision() && entry.flags == EntryFlags::NONE
+            entry.id == self.id()
+                && entry.revision == self.revision()
+                && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
         })?;
         card.entries_ok().then(|| obc_storage::flat::metadata::fingerprint(entry))
     }
@@ -402,7 +404,12 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card.entries().filter(|entry| entry.flags == EntryFlags::NONE).collect();
+        let entries = card
+            .entries()
+            .filter(|entry| {
+                entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+            })
+            .collect();
         if !card.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -412,7 +419,10 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
+        let head = store.entries().find(|entry| {
+            entry.id == id
+                && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+        });
         if !store.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -489,7 +499,10 @@ impl HostStore {
             let count = store
                 .entries()
                 .filter(|entry| {
-                    entry.kind == kind && (entry.flags == EntryFlags::NONE || entry.flags == EntryFlags::RECORDING)
+                    entry.kind == kind
+                        && ((entry.flags == EntryFlags::NONE
+                            || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+                            || entry.flags == EntryFlags::RECORDING)
                 })
                 .count();
             if !store.entries_ok() {
@@ -521,6 +534,7 @@ impl HostStore {
                 return Err(ImportError::Io(io::ErrorKind::InvalidData.into()));
             }
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision,
                 kind,

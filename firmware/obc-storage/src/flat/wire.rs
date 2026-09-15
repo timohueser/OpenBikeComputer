@@ -57,6 +57,7 @@ fn flags_out(flags: EntryFlags) -> v4::EntryFlags {
         (EntryFlags::RECORDING, v4::EntryFlags::RECORDING),
         (EntryFlags::RETAINED, v4::EntryFlags::RETAINED),
         (EntryFlags::RESERVED, v4::EntryFlags::RESERVED),
+        (EntryFlags::ASSISTANT_ACCEPTED, v4::EntryFlags::ASSISTANT_ACCEPTED),
     ] {
         if flags.has(mine) {
             out = out.with(theirs);
@@ -71,6 +72,7 @@ fn flags_in(flags: v4::EntryFlags) -> EntryFlags {
         (EntryFlags::RECORDING, v4::EntryFlags::RECORDING),
         (EntryFlags::RETAINED, v4::EntryFlags::RETAINED),
         (EntryFlags::RESERVED, v4::EntryFlags::RESERVED),
+        (EntryFlags::ASSISTANT_ACCEPTED, v4::EntryFlags::ASSISTANT_ACCEPTED),
     ] {
         if flags.has(theirs) {
             out = EntryFlags::decode(out.bits() | mine.bits()).unwrap_or(out);
@@ -95,6 +97,7 @@ fn meta_out(meta: EntryMeta) -> v4::EntryMeta {
 
 fn meta_in(meta: v4::EntryMeta) -> EntryMeta {
     EntryMeta {
+        added_at_utc: 0,
         id: ObjectId(meta.id.0),
         revision: Revision(meta.revision.0),
         kind: kind_in(meta.kind),
@@ -264,7 +267,7 @@ mod tests {
             assert_eq!(kind_in(theirs), mine);
             assert_eq!(theirs.value(), mine as u16);
         }
-        for bits in 0..=0b111u16 {
+        for bits in 0..=0b1111u16 {
             let mine = EntryFlags::decode(bits).unwrap();
             let theirs = v4::EntryFlags::decode(bits).unwrap();
             assert_eq!(flags_out(mine).bits(), bits);
@@ -275,6 +278,7 @@ mod tests {
     #[test]
     fn an_entry_crosses_the_seam_unchanged() {
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(7),
             revision: Revision(3),
             kind: ObjectKind::Route,
