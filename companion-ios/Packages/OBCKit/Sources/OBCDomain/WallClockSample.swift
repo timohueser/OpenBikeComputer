@@ -3,11 +3,10 @@ import Foundation
 /// The phone's current time + local UTC offset, stamped onto the device's trusted
 /// wall clock on every connect via `setClock` (spec §4.4 cmd 5, epic #638). The
 /// device has no RTC; this is one of exactly two sources (GPS the other) that mark
-/// its clock *trusted* for the boot — the safety gate the retention sweep needs
-/// before it deletes anything.
+/// its clock trusted for this boot. Route upload dates use this clock.
 public struct WallClockSample: Equatable, Sendable {
     /// The phone's current time in **unix seconds** (UTC). The device sets its
-    /// wall-clock set-point from this; expiry arithmetic is pure UTC.
+    /// wall-clock set-point from this; route age uses UTC.
     public var utcSeconds: UInt32
     /// The phone's current **local UTC offset in minutes**, DST already applied
     /// (`+02:00` → `120`). The device holds no timezone tables — the offset only

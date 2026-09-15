@@ -46,7 +46,6 @@ struct TripReconcileModelTests {
     private func uploadTrip(_ model: MainScreenModel) async throws {
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         try await waitFor("trip landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
     }
 
@@ -178,7 +177,6 @@ struct TripReconcileModelTests {
 
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         try await waitFor("re-upload landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "the re-upload must not mint a second device trip")
         #expect(control.deviceTripStageIDs(deviceTripID).count == 2)
@@ -210,7 +208,6 @@ struct TripReconcileModelTests {
 
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         try await waitFor("re-upload landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a failed trip catalog read must never cause a duplicate trip")
     }
@@ -266,7 +263,6 @@ struct TripReconcileModelTests {
 
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the Auto-delete confirm (capable device)
         try await waitFor("the renamed send landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a renamed send replaces by id — never a duplicate")
         #expect(
@@ -288,7 +284,6 @@ struct TripReconcileModelTests {
         // No reload in between — the retry itself must plan against fresh truth.
         let upload = await model.prepareTripUpload(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         try await waitFor("retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "the retry must never mint a second device trip")
         #expect(model.tripOnDeviceState(tripID) == .upToDate)
@@ -310,7 +305,6 @@ struct TripReconcileModelTests {
         // object plans fresh. The device's dedup still converges it.
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         try await waitFor("blind retry landed", timeout: .seconds(20), interval: .milliseconds(5)) { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "identical bytes must dedup onto the stored trip")
         #expect(model.trip(tripID)?.deviceLink?.objectID == deviceTripID,

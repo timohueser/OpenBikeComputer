@@ -1,22 +1,3 @@
-//! The Ride screen — everything you tune for a ride, in one group. One row opens its own rich page
-//! (**Data fields**, the [`StatFields`](super::StatFieldsScreen) grid editor); the rest are simple
-//! controls edited in place: **Page cycle** (a stepper for how fast the
-//! [`Statistics`](crate::screen) grid auto-flips), **Climb** / **Waypoints** (press-to-cycle rows)
-//! and **Auto-delete** (the synced-ride retention ring — Never / 1 day / 1 week / 1 month, moved
-//! here from its old standalone page).
-//!
-//! Two rows have left this group for the sheet on the screen they modify — a screen-specific
-//! modifier has one home, and that home is not a settings tree two levels away. The Up-ahead source
-//! scope went to the timeline's own drawer (#1515 D4a); **Bike type**, the routing profile, went to
-//! the create-route confirm card's (#1515 D4d), which is the one screen whose next press consumes
-//! it.
-//!
-//! Five rows still overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
-//! cursor drives the window ([`window_start`](crate::screen::vocab::list::window_start)) exactly like the
-//! nav lists, and a scrollbar tracks the position. The two-level Select model is otherwise the
-//! shared one — a step moves the cursor (or edits an open stepper), a press opens a page / flips a
-//! cycle / toggles the Page-cycle stepper.
-
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
@@ -27,7 +8,6 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::retention::RideRetention;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
 use crate::screen::vocab::list::{scrollbar, window_start};
 use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_X};
@@ -57,24 +37,12 @@ const DATA_FIELDS: usize = 0;
 const PAGE_CYCLE: usize = 1;
 const CLIMB: usize = 2;
 const WAYPOINTS: usize = 3;
-const AUTODELETE: usize = 4;
-const ROWS: usize = 5;
+const ROWS: usize = 4;
 
 /// Step the page-cycle period by `n` steps (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
     (v as i32 + n).clamp(STAT_CYCLE_MIN as i32, STAT_CYCLE_MAX as i32) as u16
 }
-
-/// The catalog key for a [`RideRetention`] value — the Auto-delete row's cycle label.
-fn retention_msg(r: RideRetention) -> Msg {
-    match r {
-        RideRetention::Never => Msg::AutodeleteNever,
-        RideRetention::Day1 => Msg::AutodeleteDay1,
-        RideRetention::Week1 => Msg::AutodeleteWeek1,
-        RideRetention::Month1 => Msg::AutodeleteMonth1,
-    }
-}
-
 /// The Ride screen. `selected` is the highlighted row; `editing_cycle` is set only while the
 /// page-cycle stepper is open (every other row either navigates or cycles a value in place).
 #[derive(Debug, Default)]
@@ -114,12 +82,6 @@ impl RideScreen {
                 // Press cycles Off → Approach → Always in place, the twin of the Climb row.
                 WAYPOINTS => {
                     cx.settings.waypoint_mode = cx.settings.waypoint_mode.cycled();
-                    Transition::None
-                }
-                // Press cycles the synced-ride retention ring one forward (wraps at both ends), the
-                // same in-place idiom the old Auto-delete page used.
-                AUTODELETE => {
-                    cx.settings.ride_retention = cx.settings.ride_retention.stepped(1);
                     Transition::None
                 }
                 _ => Transition::None,
@@ -178,13 +140,6 @@ impl RideScreen {
                     row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideWaypoints), Some(rx.t(Msg::RideWaypointsSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.settings.waypoint_mode.name(rx.settings.language));
-                }
-                AUTODELETE => {
-                    // Auto-delete: the retention value rides on the sub-caption line with the same
-                    // ◄ "press to cycle" cue as the Climb / Waypoints rows above.
-                    row_cursor(cv, row, selected, false);
-                    super::row_label(cv, row, rx.t(Msg::RideAutodelete), Some(rx.t(Msg::RideAutodeleteSub)));
-                    draw_subline_cycle_value(cv, &row, val_r, rx.t(retention_msg(rx.settings.ride_retention)));
                 }
                 _ => {}
             }
@@ -291,21 +246,6 @@ mod tests {
             assert_eq!(s.waypoint_mode, expect);
         }
     }
-
-    /// The Auto-delete row cycles the retention ring one forward per press (wrapping), writing the
-    /// choice straight into `Settings` — the old standalone page's behaviour, now a row here.
-    #[test]
-    fn autodelete_row_cycles_retention() {
-        let mut s = Settings { ride_retention: RideRetention::Never, ..Settings::default() };
-        let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(4)); // → Auto-delete row (last)
-        assert_eq!(scr.selected, AUTODELETE);
-        for expect in [RideRetention::Day1, RideRetention::Week1, RideRetention::Month1, RideRetention::Never] {
-            assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
-            assert_eq!(s.ride_retention, expect, "a press cycles to the next value and persists it");
-        }
-    }
-
     /// Back closes an open stepper before it pops — the staged escape.
     #[test]
     fn back_closes_stepper_first() {
@@ -318,9 +258,6 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut s, Gesture::Back), Transition::Pop), "back again exits");
     }
 
-    /// Every row is reachable and *drawn*: the panel shows [`VISIBLE`] of the [`ROWS`] at a time, so
-    /// the scrolling window must always contain the cursor — the last row (Auto-delete) included.
-    /// Mirrors the draw's `window_start` call.
     #[test]
     fn every_row_is_reachable_inside_the_scrolling_window() {
         let mut s = Settings::default();
@@ -349,7 +286,7 @@ mod tests {
         let val_r = W - ROW_X - VAL_INSET;
         let lw = |s: &str| text_width(s, Font::Label) as i32;
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            let rows: [(&str, &[&str]); 3] = [
+            let rows: [(&str, &[&str]); 2] = [
                 (
                     t(Msg::RideClimbSub, lang),
                     &[ClimbMode::Off.name(lang), ClimbMode::Manual.name(lang), ClimbMode::Auto.name(lang)],
@@ -357,15 +294,6 @@ mod tests {
                 (
                     t(Msg::RideWaypointsSub, lang),
                     &[WaypointMode::Off.name(lang), WaypointMode::Approach.name(lang), WaypointMode::Always.name(lang)],
-                ),
-                (
-                    t(Msg::RideAutodeleteSub, lang),
-                    &[
-                        t(Msg::AutodeleteNever, lang),
-                        t(Msg::AutodeleteDay1, lang),
-                        t(Msg::AutodeleteWeek1, lang),
-                        t(Msg::AutodeleteMonth1, lang),
-                    ],
                 ),
             ];
             for (sub, values) in rows {

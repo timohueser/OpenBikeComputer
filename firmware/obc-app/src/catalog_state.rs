@@ -19,8 +19,7 @@ use crate::app::NAV_PREVIEW_MAX;
 use crate::device_core::derived::{DerivedInput, NavPreviewKey, RideTrackKey};
 use crate::device_core::Revision;
 use crate::placement::define_placement_constructors;
-use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
-use crate::ride::{RideCatalog, RideEntry, MAX_RIDES, UI_RIDES_CAP};
+use crate::ride::{RideCatalog, RideEntry, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 use crate::CatalogObjectId;
@@ -51,27 +50,12 @@ pub(crate) struct CatalogState {
     /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —
     /// only ever written in lock step with it (the component's whole point).
     route_ids: heapless::Vec<CatalogObjectId, MAX_ROUTES>,
-    /// Each route's device-local **retention meta** (level + `last_used`), pairwise with
-    /// [`route_ids`](CatalogState::route_ids) (epic #638, S3). Carried alongside the catalog — never
-    /// in the byte-pinned OBCR file — and **remapped by identity** across a rescan (a surviving
-    /// route keeps its meta, a new id defaults to [`Never`](crate::Retention::Never)), so the sweep
-    /// always reads the meta paired with the route it belongs to. The host re-pushes fresh sidecar
-    /// values through [`set_route_meta`](CatalogState::set_route_meta) after each scan.
-    route_meta: heapless::Vec<RouteRetentionMeta, MAX_ROUTES>,
     /// The resident **trip** catalog (epic #526): grouped-route folders resolving their stage
     /// route ids against [`route_ids`](CatalogState::route_ids); re-resolved on every route
     /// replacement so an appeared/vanished route re-files.
     trips: Trips,
     /// The resident ride catalog (paired entries) — what the Rides screen lists (epic #447, P7).
     rides: RideCatalog,
-    /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
-    /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
-    /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
-    /// synced+expired ride the menu never shows is still reachable by expiry. Seeded from all entries
-    /// supplied to [`replace_rides`](CatalogState::replace_rides). Hosts that read only the visible
-    /// summaries supply the full inventory through
-    /// [`set_ride_retention_inventory`](CatalogState::set_ride_retention_inventory).
-    ride_inventory: heapless::Vec<RideRetentionRecord, MAX_RIDES>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled once per detail entry. `None` while unanswered.
     ride_profile: Profile,
@@ -139,6 +123,7 @@ pub(crate) struct CatalogState {
     /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
     /// next intent go out.
     in_flight: bool,
+    cleanup_running: bool,
     /// The resident catalogs are behind the store, and a re-read has not gone out yet. Armed by
     /// [`note_store_moved`](CatalogState::note_store_moved) (the store-revision fact), by a
     /// completed removal, and by a read the store could not answer; spent by
@@ -163,10 +148,8 @@ impl CatalogState {
         fields {
             routes: Catalog::new(),
             route_ids: heapless::Vec::new(),
-            route_meta: heapless::Vec::new(),
             trips: Trips::new(),
             rides: RideCatalog::new(),
-            ride_inventory: heapless::Vec::new(),
             ride_profile: Profile::EMPTY,
             ride_profile_present: false,
             ride_profile_for: None,
@@ -183,6 +166,7 @@ impl CatalogState {
             pending: None,
             cascade: None,
             in_flight: false,
+            cleanup_running: false,
             refresh_owed: false,
             loaded_scope: None,
             remount_required: false,
@@ -224,20 +208,11 @@ impl CatalogState {
     /// ([`remap_route`](CatalogState::remap_route)).
     pub(crate) fn replace_routes(&mut self, summaries: &[RouteSummary], ids: &[CatalogObjectId]) -> OldRouteIds {
         let old_ids = self.route_ids.clone();
-        let old_meta = self.route_meta.clone();
         self.routes.clear();
         self.route_ids.clear();
-        self.route_meta.clear();
         for (s, &id) in summaries.iter().zip(ids).take(MAX_ROUTES) {
             let _ = self.routes.push(s.clone());
             let _ = self.route_ids.push(id);
-            // Carry each surviving route's retention meta across the rescan by identity (#638 S3):
-            // its id's old slot → its old meta, a genuinely new id → the default (Never). The host
-            // re-pushes fresh sidecar values via `set_route_meta` right after, but this keeps the
-            // meta coherent for a host that doesn't (tests, the map-only build) — the "kept coherent
-            // through the same remap machinery" contract.
-            let meta = old_ids.iter().position(|&o| o == id).map(|p| old_meta[p]).unwrap_or_default();
-            let _ = self.route_meta.push(meta);
         }
         // Trips resolve stage *ids* into catalog indices, so a catalog replacement re-points them:
         // a route that appeared re-files, one that vanished dangles (dropped from the resolved
@@ -256,37 +231,6 @@ impl CatalogState {
         let id = *old_ids.get(idx)?;
         self.route_index_of(id)
     }
-
-    // ---- route retention (epic #638, S3) ----
-
-    /// Each route's retention meta, pairwise with [`route_ids`](CatalogState::route_ids) — the
-    /// sweep's per-route input column.
-    pub(crate) fn route_metas(&self) -> &[RouteRetentionMeta] {
-        &self.route_meta
-    }
-
-    /// Push the host's fresh per-route retention metas (from the SD sidecar), pairwise with the
-    /// **current** [`route_ids`](CatalogState::route_ids) — the host calls this right after
-    /// [`replace_routes`](CatalogState::replace_routes) so the app mirrors device-durable retention.
-    /// Excess metas (a host that fed more than the catalog holds) are ignored; a short slice leaves
-    /// the remaining routes at their remap-carried value.
-    pub(crate) fn mark_route_accepted(&mut self, index: usize) {
-        if let Some(meta) = self.route_meta.get_mut(index) {
-            meta.assistant_accepted = true;
-        }
-    }
-    pub(crate) fn set_assistant_candidates(&mut self, mask: u64) {
-        for (i, meta) in self.route_meta.iter_mut().enumerate() {
-            meta.assistant_candidate = mask & (1 << i) != 0;
-            meta.assistant_accepted = false;
-        }
-    }
-    pub(crate) fn set_route_meta(&mut self, metas: &[RouteRetentionMeta]) {
-        for (slot, &m) in self.route_meta.iter_mut().zip(metas) {
-            *slot = m;
-        }
-    }
-
     // ---- trips ----
 
     /// Replace the resident trip catalog (epic #526, TR2), resolving each trip's stage ids against
@@ -318,33 +262,11 @@ impl CatalogState {
     pub(crate) fn rides(&self) -> &[RideEntry] {
         &self.rides
     }
-
-    /// The full compact ride-retention inventory the sweep reads (finding #876-2) — every stored
-    /// ride's `id + synced + synced_at`, not just the newest-[`UI_RIDES_CAP`] the menu shows.
-    pub(crate) fn ride_records(&self) -> &[RideRetentionRecord] {
-        &self.ride_inventory
-    }
-
-    /// Overwrite the compact ride-retention inventory from the host's full store scan (finding
-    /// #876-2). Independent of [`replace_rides`](CatalogState::replace_rides): the host streams
-    /// **every** stored ride (up to [`MAX_RIDES`]) here so retention sees rides beyond the display
-    /// catalog; entries past the cap are ignored.
-    pub(crate) fn set_ride_retention_inventory(&mut self, records: &[RideRetentionRecord]) {
-        self.ride_inventory.clear();
-        for r in records.iter().take(MAX_RIDES) {
-            let _ = self.ride_inventory.push(*r);
-        }
-    }
-
-    /// Overlay a fully validated proof during a catalog refresh, in both resident projections.
+    /// Overlay a fully validated proof during a catalog refresh, in the visible catalog.
     pub(crate) fn set_ride_archive_proof(&mut self, id: CatalogObjectId, timestamp: u32) {
-        if let Some(record) = self.ride_inventory.iter_mut().find(|record| record.id == id) {
-            record.synced = true;
-            record.synced_at_utc = timestamp;
-            if let Some(ride) = self.rides.iter_mut().find(|ride| ride.id == id) {
-                ride.summary.synced = true;
-                ride.summary.synced_at_utc = timestamp;
-            }
+        if let Some(ride) = self.rides.iter_mut().find(|ride| ride.id == id) {
+            ride.summary.synced = true;
+            ride.summary.synced_at_utc = timestamp;
         }
     }
 
@@ -359,24 +281,12 @@ impl CatalogState {
         self.rides.len()
     }
 
-    /// Replace the newest [`UI_RIDES_CAP`] visible rides and retain expiry metadata for up to
-    /// [`MAX_RIDES`] supplied entries. Returns the old visible id column for the caller's
-    /// screen/`Activity` remap; detail keys continue to name durable identities.
+    /// Replace the newest visible rides.
     pub(crate) fn replace_rides(&mut self, entries: &[RideEntry]) -> OldRideIds {
         let old_ids = self.rides.iter().map(|ride| ride.id).collect();
         self.rides.clear();
-        // The menu cap does not limit expiry coverage. Hosts that read only menu summaries can
-        // replace this inventory with their complete metadata scan afterwards.
-        self.ride_inventory.clear();
-        for entry in entries.iter().take(MAX_RIDES) {
-            if self.rides.len() < UI_RIDES_CAP {
-                let _ = self.rides.push(entry.clone());
-            }
-            let _ = self.ride_inventory.push(RideRetentionRecord {
-                id: entry.id,
-                synced: entry.summary.synced,
-                synced_at_utc: entry.summary.synced_at_utc,
-            });
+        for entry in entries.iter().take(UI_RIDES_CAP) {
+            let _ = self.rides.push(entry.clone());
         }
         // The view caches need no remap at all: their keys name a *durable ride identity*, so a
         // surviving ride keeps its answer (no re-stream) and a vanished one simply stops matching
@@ -607,24 +517,25 @@ impl CatalogState {
 
 use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
-/// What the UI (or another domain) asks of the catalog.
-///
-/// Expiry arrives here too: `RetentionMachine` advances first and sends its deletions as these same
-/// intents, so an auto-expired ride leaves through exactly the path a rider-deleted one does.
-///
-/// Every variant is a **deletion**. A re-read is not asked for from outside: it is owed by the
-/// domain itself ([`note_store_moved`](CatalogState::note_store_moved) and the two arms of
-/// [`apply_outcome`](CatalogState::apply_outcome)), and lives in one bit rather than in this slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
-    /// Automatic removal, bound to the catalog used by retention.
-    ExpireObject { id: CatalogObjectId, kind: CatalogObjectKind, scope: StoreRevision },
+    CleanupRoutes {
+        before_utc: u32,
+        store: crate::device_core::StoreIdentity,
+    },
+
     /// Delete one route.
-    DeleteRoute { id: CatalogObjectId },
+    DeleteRoute {
+        id: CatalogObjectId,
+    },
     /// Delete one ride.
-    DeleteRide { id: CatalogObjectId },
+    DeleteRide {
+        id: CatalogObjectId,
+    },
     /// Delete one trip **and its member routes** — the cascade, whose order the domain owns.
-    DeleteTrip { id: CatalogObjectId },
+    DeleteTrip {
+        id: CatalogObjectId,
+    },
 }
 
 /// The family selected by catalog policy, retained through physical deletion.
@@ -639,26 +550,30 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
-    /// Revalidate live retention policy before admitting this exact snapshot.
-    ExpireObject {
+    CleanupRoute {
+        token: OperationToken<CatalogTag>,
+        before_utc: u32,
+        store: crate::device_core::StoreIdentity,
+    },
+    /// Re-read the object store into the resident catalogs.
+    ReadCatalog {
+        token: OperationToken<CatalogTag>,
+    },
+    /// Remove one object of the family selected by the domain.
+    RemoveObject {
         token: OperationToken<CatalogTag>,
         object: CatalogObjectId,
         kind: CatalogObjectKind,
-        scope: StoreRevision,
     },
-    /// Re-read the object store into the resident catalogs.
-    ReadCatalog { token: OperationToken<CatalogTag> },
-    /// Remove one object of the family selected by the domain.
-    RemoveObject { token: OperationToken<CatalogTag>, object: CatalogObjectId, kind: CatalogObjectKind },
 }
 
 impl CatalogEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogEffect::ReadCatalog { token }
-            | CatalogEffect::RemoveObject { token, .. }
-            | CatalogEffect::ExpireObject { token, .. } => *token,
+            CatalogEffect::CleanupRoute { token, .. }
+            | CatalogEffect::ReadCatalog { token }
+            | CatalogEffect::RemoveObject { token, .. } => *token,
         }
     }
 }
@@ -679,24 +594,40 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
+    CleanupFinished {
+        token: OperationToken<CatalogTag>,
+    },
     /// The catalogs were re-read. No revision: that arrives as an external *fact*, and all a read
     /// owes back is that the operation is over.
-    CatalogRead { token: OperationToken<CatalogTag>, scope: Option<StoreRevision> },
+    CatalogRead {
+        token: OperationToken<CatalogTag>,
+        scope: Option<StoreRevision>,
+    },
     /// `object` is gone from the store. `existed` is `false` when it was already absent — the
     /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
     /// the cascade (the goal state holds) and must not read as a failure.
-    ObjectRemoved { token: OperationToken<CatalogTag>, object: CatalogObjectId, existed: bool },
+    ObjectRemoved {
+        token: OperationToken<CatalogTag>,
+        object: CatalogObjectId,
+        existed: bool,
+    },
     /// The operation failed.
-    Failed { token: OperationToken<CatalogTag>, error: CatalogError },
+    Failed {
+        token: OperationToken<CatalogTag>,
+        error: CatalogError,
+    },
     /// The executor abandoned the operation without completing it.
-    Cancelled { token: OperationToken<CatalogTag> },
+    Cancelled {
+        token: OperationToken<CatalogTag>,
+    },
 }
 
 impl CatalogOutcome {
     /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogOutcome::CatalogRead { token, .. }
+            CatalogOutcome::CleanupFinished { token }
+            | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
@@ -731,7 +662,7 @@ impl CatalogState {
     /// admitted or owed.
     ///
     /// **Deletions first, the owed re-read last**, and by construction rather than by a priority
-    /// list: an admitted intent is a rider's delete or an expiry, and the re-read is only reached
+    /// list: an admitted intent is a rider's deletion request, and the re-read is only reached
     /// when there is none. It is also why the re-read never occupies the one intent slot — a second
     /// copy of it there is a second read (a store commit and the delete it caused would each get
     /// one), which is exactly what the single owed bit exists to prevent.
@@ -748,10 +679,15 @@ impl CatalogState {
     pub(crate) fn change_store(&mut self) {
         self.ops.invalidate();
         self.in_flight = false;
+        self.cleanup_running = false;
         self.pending = None;
         self.cascade = None;
         self.loaded_scope = None;
         self.read_retry_at = None;
+    }
+
+    pub(crate) fn cleanup_running(&self) -> bool {
+        self.cleanup_running
     }
 
     pub(crate) fn accepts(&self, outcome: CatalogOutcome) -> bool {
@@ -779,8 +715,10 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
-            CatalogIntent::ExpireObject { id, kind, scope } => {
-                CatalogEffect::ExpireObject { token: self.ops.issue(), object: id, kind, scope }
+            CatalogIntent::CleanupRoutes { before_utc, store } => {
+                self.cleanup_running = true;
+                self.pending = Some(intent);
+                CatalogEffect::CleanupRoute { token: self.ops.issue(), before_utc, store }
             }
             CatalogIntent::DeleteRoute { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id, kind: CatalogObjectKind::Route }
@@ -827,24 +765,15 @@ impl CatalogState {
         trip.stage_ids.get(usize::from(ordinal)).copied()
     }
 
-    /// Consume the answer to a [`CatalogEffect`], returning the object it took out of the store.
-    /// That verdict is the whole of the
-    /// [`CatalogRemoval`](crate::device_core::connections::CatalogRemoval) connection: retention
-    /// retires its expiry candidate on it rather than waiting for the object to disappear from a
-    /// re-read (#1548). A stale token — a superseded operation, or a repeat of one already
-    /// accounted for — changes nothing and names nothing.
-    ///
-    /// The resident catalogs are not touched here: what is *in* the store reaches them through the
-    /// refresh feed, and inventing a removal locally would make the two disagree until it did.
-    ///
-    /// A failed cascade stops before any later member or the trip object is removed. The stored
-    /// trip keeps its stage references, so an explicit retry can pass already-absent members.
     pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) -> Option<CatalogObjectId> {
         if !self.ops.is_current(outcome.token()) {
             return None;
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
+        if core::mem::take(&mut self.cleanup_running) && !matches!(outcome, CatalogOutcome::ObjectRemoved { .. }) {
+            self.pending = None;
+        }
         if matches!(outcome, CatalogOutcome::Failed { .. })
             && self.cascade.is_some()
             && matches!(self.pending, Some(CatalogIntent::DeleteTrip { .. }))
@@ -852,16 +781,11 @@ impl CatalogState {
             self.pending = None;
             self.cascade = None;
         }
-        // A completed removal moved the store, so the resident catalogs are behind it — both
-        // `existed` verdicts, because an object the store did not have may still be a resident row.
-        // A read the store could not answer is still owed, and nothing else would order it again.
-        // A **refused** removal changed nothing and arms nothing; retention re-queues its own
-        // candidate, and a read per retry would walk the store for a store that did not move.
-        //
-        // **A cascade needs no arm of its own.** Every member step arms this bit and none can spend
-        // it: the walk keeps its `DeleteTrip` in `pending` until the folder, and `next_effect` only
-        // reaches the owed read when nothing is pending. One bit, spent once, after the folder.
         match outcome {
+            CatalogOutcome::CleanupFinished { .. } => {
+                self.refresh_owed = true;
+                None
+            }
             CatalogOutcome::Failed { error: CatalogError::RemountRequired, .. } => {
                 self.remount_required = true;
                 self.loaded_scope = None;
@@ -905,7 +829,7 @@ impl CatalogState {
 
 // Layout tripwires: an identity, a revision, a count — never a catalog.
 const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 40, "a request with one identity");
-const _: () = assert!(core::mem::size_of::<CatalogEffect>() == 40, "kind fits the existing effect allocation");
+const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 40, "kind fits the existing effect allocation");
 const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 40, "a token, an identity and a flag");
 const _: () = assert!(core::mem::size_of::<CatalogError>() <= 1, "a verdict, not a report");
 
@@ -917,10 +841,8 @@ impl CatalogState {
         let CatalogState {
             routes,
             route_ids,
-            route_meta,
             trips,
             rides,
-            ride_inventory,
             ride_profile,
             ride_profile_present,
             ride_profile_for,
@@ -937,15 +859,16 @@ impl CatalogState {
             pending,
             cascade,
             in_flight,
+            cleanup_running,
             refresh_owed,
             loaded_scope,
             remount_required,
             read_retry_at,
         } = self;
         assert!(loaded_scope.is_none() && !remount_required && read_retry_at.is_none());
-        assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
+        assert!(routes.is_empty() && route_ids.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
-        assert!(rides.is_empty() && ride_inventory.is_empty(), "no rides catalogued");
+        assert!(rides.is_empty(), "no rides catalogued");
         assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
@@ -955,7 +878,10 @@ impl CatalogState {
             "the derived key revisions start at zero — nothing committed, nothing invalidated"
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
-        assert!(pending.is_none() && cascade.is_none() && !*in_flight, "no catalog operation admitted or in flight");
+        assert!(
+            pending.is_none() && cascade.is_none() && !*cleanup_running && !*in_flight,
+            "no catalog operation admitted or in flight"
+        );
         assert!(!*refresh_owed, "nothing has moved the store yet, so no re-read is owed");
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no catalog operation has been issued");
     }
@@ -964,6 +890,29 @@ impl CatalogState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_waits_for_an_unrelated_read_and_stops_on_its_own_failure() {
+        let mut catalogs = CatalogState::new();
+        catalogs.note_store_moved();
+        let read = catalogs.next_effect().unwrap();
+        catalogs
+            .admit_intent(CatalogIntent::CleanupRoutes {
+                before_utc: 100,
+                store: crate::device_core::StoreIdentity::new(1),
+            })
+            .unwrap();
+        catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token(), scope: None });
+        let cleanup = catalogs.next_effect().expect("queued cleanup survives the read");
+        assert!(matches!(cleanup, CatalogEffect::CleanupRoute { .. }));
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: cleanup.token(), object: 1, existed: true });
+        let second = catalogs.next_effect().unwrap();
+        catalogs.apply_outcome(CatalogOutcome::Failed { token: second.token(), error: CatalogError::RemoveFailed });
+        let refresh = catalogs.next_effect().expect("earlier deletion still requires a refresh");
+        assert!(matches!(refresh, CatalogEffect::ReadCatalog { .. }));
+        catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: refresh.token(), scope: None });
+        assert!(catalogs.next_effect().is_none(), "no automatic retry after a failure");
+    }
 
     fn summary() -> RouteSummary {
         RouteSummary {
@@ -1150,8 +1099,8 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::RemoveObject { token, object, .. }
-                | CatalogEffect::ExpireObject { token, object, .. } => {
+                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
                 }
@@ -1168,8 +1117,6 @@ mod tests {
         );
     }
 
-    /// A removal the store **refused** changed nothing, so it orders nothing. Retention re-queues
-    /// its own candidate; a read per retry would walk the store for a store that did not move.
     #[test]
     fn a_removal_the_store_refused_orders_no_re_read() {
         let mut catalogs = CatalogState::new();

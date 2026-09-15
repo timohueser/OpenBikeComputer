@@ -39,8 +39,8 @@ There are no Python package dependencies.
 1. Make a clean staging directory containing only the package's final layout.
 2. Run `obc fixtures pack ID DIR --output ID.tar.gz`. Packing is deterministic.
 3. Add or update the package entry with the printed byte count and SHA-256,
-   then compose it into scenarios/profiles. Record source date, geography,
-   transformation, and license in the catalog.
+   then compose it into scenarios/profiles. Each archive must be at most 1 GiB.
+   Record source date, geography, transformation, and license in the catalog.
 4. Run `obc fixtures publish ID ARCHIVE`. The maintainer-only command refuses
    bytes that differ from the catalog, performs an immutable R2 upload, sets
    long-lived cache metadata, and verifies the object through the public domain.
@@ -56,8 +56,12 @@ Small authored format vectors, parser corpora, and pixel goldens stay beside
 their owning tests because code review needs their exact byte changes. Product
 demo assets stay with the app that ships them. Shared authored inputs live in
 `fixtures/sources/` and are also packed into their scenarios. Large maps,
-terrain, provider captures, and realistic ride bundles belong in R2. Generated design-review
-screenshots belong in PRs or project documentation, not a runtime asset folder.
+terrain, provider captures, and realistic ride bundles for bounded development scenarios belong
+in the dev fixture bucket. Country-scale raw landmark captures belong in the map-baker's local
+source cache. Do not register or publish them as development fixtures, including in opt-in profiles.
+Do not split country captures into smaller packages to bypass this scope. The 1 GiB archive limit
+is a backstop, not a target size; use the smallest input that covers the scenario.
+Generated design-review screenshots belong in PRs or project documentation, not a runtime asset folder.
 
 ## Package provenance
 
@@ -112,6 +116,13 @@ The Swiss package includes country-wide raw OSM; four Wiki review sites do not p
 content coverage. The initial map outputs precede landmark format integration.
 
 ## Storage contract
+
+The dev fixture bucket holds test and simulator inputs. It is not a country source archive or
+the production map-baker cache. Country acquisition retains raw responses locally for the build
+and its validation. Keep the source hashes, recipe and count report in Git. Remove local raw
+captures when that work is complete; retain them longer only for an active reproducibility need.
+Compiled landmark text, photos and Sources belong in ordinary map content and use the production
+map publication path. Raw source captures must not be moved into the production maps bucket.
 
 `fixtures.openbikecomputer.com` is a read-only custom domain for a separate R2
 EU-jurisdiction R2 bucket, `obc-dev-fixture`. Developers and CI need no cloud credentials. Upload credentials are

@@ -36,12 +36,11 @@ use obc_render::{
 
 use super::vocab::band::{ElevationBand, PeakLabel};
 use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
-use super::vocab::fmt::{duration_hms, expiry_short, write_distance_split};
+use super::vocab::fmt::{duration_hms, write_distance_split};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::input::Gesture;
 use crate::navigator::RouteState;
-use crate::retention::{RouteRetentionMeta, DAY_SECS};
 use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
@@ -50,18 +49,8 @@ use super::{palette, Ctx, Render, Transition};
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
-/// The media band's top when the Auto-delete expiry row shows (epic #638 S5): 24 px lower, so the
-/// row's compact caption line tucks between the title bar and the band. A `Never` route keeps
-/// [`BAND_TOP`] (the row is absent), so existing routes render byte-identically.
-const BAND_TOP_EXPIRY: i32 = LIST_TOP + 32;
 const BAND_BOT: i32 = 140;
 const SIDE_MARGIN: i32 = 12;
-
-/// The Auto-delete expiry row (epic #638 S5): a compact caption line between the title bar and the
-/// (lowered) media band — a muted "Auto-delete" label + the ink remaining-time value, centred as
-/// one group. `Y` is its top; `X` is the minimum side inset the centred group clamps to.
-const EXPIRY_ROW_Y: i32 = LIST_TOP + 4;
-const EXPIRY_ROW_X: i32 = 12;
 
 /// The stat ledger under the media band — the content-paired pager's stat half (owner review
 /// round 3): page A (track shape) carries DISTANCE + EST TIME, page B (elevation) CLIMB + DESCENT;
@@ -270,28 +259,7 @@ impl RouteOverviewScreen {
         let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
         title_frame(cv, w, h, &name, "");
 
-        // The Auto-delete expiry row (epic #638 S5): one muted metadata line between the title bar
-        // and the media band — the label left, the time left right — shown only for a route that
-        // actually expires (retention ≠ Never; hidden entirely otherwise). When shown, the media
-        // band starts [`BAND_TOP_EXPIRY`] instead of [`BAND_TOP`] to make room; a `Never` route
-        // keeps the full band, so nothing about the existing (all-`Never`) routes changes.
-        let meta = rx.route_metas.get(self.route).copied().unwrap_or_default();
-        let expiry = expiry_value(meta, rx.now_utc);
-        let band_top = if expiry.is_some() { BAND_TOP_EXPIRY } else { BAND_TOP };
-        if let Some(value) = &expiry {
-            // A muted label + an ink value, drawn as one **centred group** with a one-space gap:
-            // the label alone is nearly half the 240 px line, so left/right anchoring would leave
-            // no room between them. Two-tone (SUBTEXT label, INK value) separates the two without a
-            // separator glyph.
-            let label = rx.t(Msg::RouteOverviewAutoDelete);
-            let cw = Font::Label.char_width() as i32;
-            let label_w = label.chars().count() as i32 * cw;
-            let value_w = value.chars().count() as i32 * cw;
-            let gap = cw; // one space between label and value
-            let x0 = ((w - (label_w + gap + value_w)) / 2).max(EXPIRY_ROW_X);
-            cv.text(label, Point::new(x0, EXPIRY_ROW_Y), Font::Label, TextAlign::Left, SUBTEXT);
-            cv.text(value, Point::new(x0 + label_w + gap, EXPIRY_ROW_Y), Font::Label, TextAlign::Left, INK);
-        }
+        let band_top = BAND_TOP;
 
         // The content-paired media band (owner review round 3): the auto-flip swaps this WITH the
         // stat rows below — page A the route's track-shape preview, page B the elevation profile.
@@ -394,26 +362,6 @@ fn action_rows_top(h: i32) -> i32 {
     h - 10 - 2 * OPTION_ROW_H - OPTION_GAP
 }
 
-/// How close to its deletion deadline a route must be for the Auto-delete row to appear (epic #638
-/// S5, owner review): **5 days**. The row is a "this route is about to be auto-deleted" heads-up,
-/// not an always-on countdown — beyond this window it stays absent, reclaiming the vertical space.
-/// Past-due (a deadline already elapsed, before the hourly sweep collects it) is inside the window.
-const EXPIRY_SHOW_WINDOW: u32 = 5 * DAY_SECS;
-
-/// The Route overview's **Auto-delete** row value for `meta` at `now_utc` (epic #638 S5), or `None`
-/// when the row is **absent**. It shows **only** for a route with a *started* deadline
-/// ([`expires_at`](RouteRetentionMeta::expires_at) is `Some` — retention ≠ `Never`
-/// **and** `last_used != 0`) falling **within [`EXPIRY_SHOW_WINDOW`]** (past-due included). A `Never`
-/// route, an unstarted clock (`last_used == 0`), and a deadline more than 5 days out all read `None`.
-/// The value itself is [`expiry_short`]'s locked format ("in N d" / "in N h" / "soon").
-fn expiry_value(meta: RouteRetentionMeta, now_utc: u32) -> Option<heapless::String<12>> {
-    let deadline = meta.expires_at()?; // Never, or clock never started → absent
-    (deadline.saturating_sub(now_utc) <= EXPIRY_SHOW_WINDOW).then(|| expiry_short(deadline, now_utc))
-}
-
-/// The route's length in metres for the time model: the **opened** route's exact total once it has
-/// streamed in, else the catalog summary's whole-km figure. The estimate is a whole-minute readout,
-/// so the km-grain fallback only matters for the frame or two before the geometry opens.
 fn route_total_m(rx: &Render, summary: &RouteSummary) -> u32 {
     rx.route.map_or(summary.distance_km * 1000, |r| r.total_distance_m)
 }
@@ -526,7 +474,6 @@ pub(super) fn draw_start_button(cv: &mut impl Surface, w: i32, h: i32, label: &s
 mod tests {
     use super::*;
     use crate::activity::Mode;
-    use crate::retention::Retention;
     use crate::route::RouteSummary;
     use crate::screen::test_ctx;
     use crate::settings::Settings;
@@ -689,31 +636,5 @@ mod tests {
         assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
         // Degenerate inputs stay a readable zero rather than a placeholder.
         assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
-    }
-
-    /// The Auto-delete row's ≤ 5-day presence gate (owner review): absent for `Never`, absent for an
-    /// unstarted clock, absent for a deadline more than 5 days out, and shown (with the locked
-    /// format) once the deadline is within 5 days — past-due included as "soon".
-    #[test]
-    fn expiry_value_gated_to_five_days() {
-        let now = 100_000_000; // well past a month of seconds, so the `now - N*DAY_SECS` stamps don't underflow
-                               // Never → absent.
-        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Never, now), now), None);
-        // Retention set but the clock never started (last_used == 0) → absent (no more "--" state).
-        assert_eq!(expiry_value(RouteRetentionMeta::new(Retention::Week1, 0), now), None);
-        // A started deadline more than 5 days out → absent (30-day route used 24 days ago = 6 d left).
-        let far = RouteRetentionMeta::new(Retention::Month1, now - 24 * DAY_SECS);
-        assert_eq!(expiry_value(far, now), None, "6 days out → absent");
-        // Exactly 5 days out → shown as "in 5 d" (30-day route used 25 days ago).
-        let five = RouteRetentionMeta::new(Retention::Month1, now - 25 * DAY_SECS);
-        assert_eq!(expiry_value(five, now).as_deref(), Some("in 5 d"), "exactly 5 days is inside the window");
-        // A ≤ 48 h case → hours (1-day route used 19 h ago = 5 h left).
-        let hours = RouteRetentionMeta::new(Retention::Day1, now - (DAY_SECS - 5 * 3600));
-        assert_eq!(expiry_value(hours, now).as_deref(), Some("in 5 h"));
-        // Sub-hour and past-due both fold to "soon", both inside the window.
-        let subhour = RouteRetentionMeta::new(Retention::Day1, now - (DAY_SECS - 1800));
-        assert_eq!(expiry_value(subhour, now).as_deref(), Some("soon"));
-        let overdue = RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS);
-        assert_eq!(expiry_value(overdue, now).as_deref(), Some("soon"), "past-due is inside the window → soon");
     }
 }

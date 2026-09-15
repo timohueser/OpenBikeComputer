@@ -307,16 +307,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         case .notFound, .busy, .error: throw DeviceError.writeFailed
         }
     }
-
-    public func setRouteRetention(
-        _ id: DeviceObjectID, _ retention: Retention
-    ) async throws -> RetentionWriteOutcome {
-        // Protocol v4's flat route metadata does not yet carry retention. Restoring command 6 here
-        // would report success without a catalog field the app can reconcile; #1398 R4 owns that
-        // metadata shape and the eventual capability restoration.
-        .unsupported
-    }
-
     public func listRoutes() async throws -> [RouteCatalogEntry] {
         // This catalog is reconcile-only: identity + CRC are its proof, and it never feeds route
         // rows. Protocol v4 already carries both in LIST. Downloading every OBCR merely to rebuild

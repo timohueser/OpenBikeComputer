@@ -339,6 +339,18 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
         }
         panic!("bounded visit did not complete")
     };
+    // This forward point lies beside the graph: snapping succeeds, but tail composition must refuse it.
+    let mut offset = crate::VecSink::default();
+    obc_route::gpx_to_obcr(&SliceSource(b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.520\" lat=\"0.5001\"/><trkpt lon=\"0.530\" lat=\"0.5001\"/></trkseg></trk></gpx>"),"Offset tail",&mut offset).unwrap();
+    let offset_source = SliceSource(offset.bytes());
+    let offset_index = obc_route::RouteIndex::read(&offset_source).unwrap();
+    let offset_route = obc_route::RouteReader::new(&offset_index, &offset_source);
+    let mut fallback = crate::nav_visit::VisitPlan::start(context, Some(target), &offset_route).unwrap();
+    run(&mut fallback, &offset_route);
+    assert_eq!(fallback.searches(), 6);
+    assert_eq!(fallback.original_anchors(), [0; 3]);
+    let retained = obc_route::RouteObjectInfo::read(&SliceSource(fallback.bytes())).unwrap();
+    assert_eq!(retained.visit.unwrap().original_anchors_m, [0; 3]);
     let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
     let stats = run(&mut visit, &original);
     assert!(matches!(visit.searches(), 4 | 6));
