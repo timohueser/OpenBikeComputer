@@ -22,14 +22,6 @@ import OBCTransport
 @MainActor @Observable
 public final class UploadSheetModel {
     public enum Phase: Equatable {
-        /// The pre-transfer confirm (epic #638 S7): the route + size + the
-        /// **Auto-delete** row, seeded from the app default and changeable before
-        /// the push, then **Upload**. The transfer starts on that tap, not on
-        /// present — so the chosen retention is set *before* the upload (S6's
-        /// post-commit `setRouteRetention` sends it). Skipped straight to
-        /// `.uploading` for a device with no retention capability, which has
-        /// nothing to configure here.
-        case ready
         case uploading
         case interrupted
         case done
@@ -50,14 +42,6 @@ public final class UploadSheetModel {
 
     public private(set) var phase: Phase
     public private(set) var progress: TransferProgress
-    /// The desired retention for this route (epic #638 S7) — seeded from the app
-    /// default (or the route's existing choice), changeable in the `.ready` phase,
-    /// carried to `onCompleted` so the commit push sends it. Meaningless when
-    /// `supportsRetention` is false (the row is hidden).
-    public private(set) var retention: Retention
-    /// The live link state — the `.ready` phase's Upload button dims when the
-    /// link drops (the S4 rule), matching the detail's Upload button.
-    public private(set) var connection: ConnectionState = .connected
     /// Why the transfer failed — set alongside `.failed` so the failure copy can
     /// speak to the actual cause (storage-full vs. a generic no-answer failure).
     /// `nil` in every non-failed phase.
@@ -70,34 +54,14 @@ public final class UploadSheetModel {
 
     public let routeName: String
     public let deviceName: String
-    /// Whether the connected device honours retention (epic #638) — hides the
-    /// Auto-delete row and skips the `.ready` confirm when false (nothing to set).
-    public let supportsRetention: Bool
     /// Whether the size readout says "route + waypoints" or just "route".
     private let hasWaypoints: Bool
-
-    /// Whether the `.ready` phase's Upload button can act right now (link up).
-    public var canUpload: Bool { connection == .connected }
-
-    /// The total payload size line for the `.ready` confirm ("24 kB · route +
-    /// waypoints") — the transfer readout without the running "done /" prefix.
-    public var readySizeLine: String {
-        OBCFormat.transferTotalSizeLine(totalBytes: progress.total, hasWaypoints: hasWaypoints)
-    }
-
     // MARK: Wiring
 
     private let transport: any DeviceLink & DeviceObjects
     private let blob: RouteBlob
     private let timing: Timing
-    /// Fires once when the upload completes, carrying the **device-assigned object
-    /// id** (nil if the device didn't report one), the committed payload's CRC-32
-    /// (the `OnDeviceState` fingerprint), and the rider's chosen **retention**
-    /// (epic #638 — S6's post-commit `setRouteRetention` sends it) — the E1 landing
-    /// saves the route here ("Uploading saves it too") and records it as on-device,
-    /// up to date. Contract: fires **before** `phase` reads `.done` — an observer
-    /// that sees F₂ can rely on the save having happened.
-    private let onCompleted: (DeviceObjectID?, UInt32, Retention) -> Void
+    private let onCompleted: (DeviceObjectID?, UInt32) -> Void
     /// The foreground-only policy's in-flight ledger (#459) — `nil` in tests
     /// and previews that don't exercise the lifecycle.
     @ObservationIgnored private let activity: TransferActivity?
@@ -119,27 +83,20 @@ public final class UploadSheetModel {
         transport: any DeviceLink & DeviceObjects,
         blob: RouteBlob,
         deviceName: String,
-        retention: Retention = .appDefault,
-        supportsRetention: Bool = true,
         timing: Timing = Timing(),
         activity: TransferActivity? = nil,
-        onCompleted: @escaping (DeviceObjectID?, UInt32, Retention) -> Void = { _, _, _ in }
+        onCompleted: @escaping (DeviceObjectID?, UInt32) -> Void = { _, _ in }
     ) {
         self.transport = transport
         self.blob = blob
         self.routeName = blob.summary.name
         self.deviceName = deviceName
-        self.retention = retention
-        self.supportsRetention = supportsRetention
         self.hasWaypoints = !blob.waypoints.isEmpty
         self.timing = timing
         self.activity = activity
         self.onCompleted = onCompleted
         self.progress = TransferProgress(bytesDone: 0, total: blob.payload.count)
-        // A device with retention capability opens on the `.ready` confirm so the
-        // Auto-delete level is chosen before the push; without it there's nothing
-        // to configure, so the transfer starts straight away (the prior behaviour).
-        self.phase = supportsRetention ? .ready : .uploading
+        self.phase = .uploading
     }
 
     // MARK: Derived lines (design F)
@@ -180,33 +137,14 @@ public final class UploadSheetModel {
 
     // MARK: Lifecycle
 
-    /// Set up the sheet (call once, from `.task`): watch the link so the `.ready`
-    /// confirm's Upload button dims on a drop, then either hold on `.ready`
-    /// (retention-capable) or begin the transfer immediately (no capability — the
-    /// prior behaviour). The transfer machinery lives in ``beginUpload()``.
     public func start() {
         guard !started else { return }
         started = true
-        watchers.append(Task { [weak self, transport] in
-            for await state in transport.state {
-                guard let self else { return }
-                connection = state
-            }
-        })
-        if phase != .ready { beginUpload() }
+        beginUpload()
     }
-
-    /// Pick the Auto-delete level in the `.ready` confirm (epic #638 S7) — a plain
-    /// setter; the value rides to the commit push via `onCompleted`.
-    public func selectRetention(_ retention: Retention) {
-        self.retention = retention
-    }
-
-    /// Leave the `.ready` confirm and start the transfer (the Upload button).
-    /// No-op once the transfer is already under way.
-    public func beginUpload() {
+    private func beginUpload() {
         guard handle == nil else { return }
-        if phase == .ready { phase = .uploading }
+
         setTransferActive(true)
 
         let handle = transport.uploadRoute(blob)
@@ -270,7 +208,7 @@ public final class UploadSheetModel {
                 // The final tick rides a separate stream and can land after the
                 // outcome — snap the bar so `.done` always reads 100%.
                 progress = TransferProgress(bytesDone: progress.total, total: progress.total)
-                onCompleted(assignedID, CRC32.checksum(blob.payload), retention)
+                onCompleted(assignedID, CRC32.checksum(blob.payload))
                 phase = .done
                 try? await Task.sleep(for: timing.doneAutoDismiss)
                 shouldDismiss = true

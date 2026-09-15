@@ -42,8 +42,6 @@ public struct SettingsView: View {
         ScrollView {
             VStack(spacing: 26) {
                 deviceGroup
-                routesGroup
-
                 firmwareGroup
                 servicesGroup
                 aboutGroup
@@ -144,27 +142,6 @@ public struct SettingsView: View {
             OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
         }
     }
-
-    // MARK: Routes — default retention (epic #638 S7)
-
-    private var routesGroup: some View {
-        OBCGroupedSection(
-            "Routes",
-            footer: "New routes you upload auto-delete on the device after this long "
-                + "without use. Routes stay in your library — re-upload is one tap."
-        ) {
-            OBCRetentionRow(
-                icon: "trash",
-                iconColor: OBCTheme.wood,
-                label: "Auto-delete new routes",
-                selection: model.defaultRetention,
-                showsDivider: false,
-                accessibilityID: "settings.autoDelete",
-                onSelect: { model.setDefaultRetention($0) }
-            )
-        }
-    }
-
     // MARK: Firmware (coming soon)
 
     private var firmwareGroup: some View {

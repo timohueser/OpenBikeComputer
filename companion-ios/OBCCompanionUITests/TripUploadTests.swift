@@ -41,15 +41,6 @@ final class TripUploadTests: XCTestCase {
         XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "trip page did not open")
     }
 
-    /// A retention-capable device opens the trip upload on the Auto-delete confirm
-    /// (epic #638) — tap **Upload trip** to start the queue.
-    @MainActor
-    private func confirmTripUpload(_ app: XCUIApplication) {
-        let begin = app.buttons["tripUpload.begin"]
-        XCTAssertTrue(begin.waitForExistence(timeout: 10), "the trip Auto-delete confirm is missing")
-        begin.tap()
-    }
-
     // MARK: Happy path
 
     /// Upload trip → the queued sheet walks the stages then the trip object, and
@@ -65,7 +56,6 @@ final class TripUploadTests: XCTestCase {
 
         let sheet = app.otherElements["tripUpload.sheet"]
         XCTAssertTrue(sheet.waitForExistence(timeout: 10), "trip upload sheet missing")
-        confirmTripUpload(app)  // clear the Auto-delete confirm (epic #638)
         // The queued-mode header appears while stages move.
         XCTAssertTrue(
             app.staticTexts["tripUpload.stageLabel"].waitForExistence(timeout: 10),
@@ -94,7 +84,6 @@ final class TripUploadTests: XCTestCase {
         let app = launch(scenario: "uploadDrop")
         openTrip(app)
         app.buttons["trip.upload"].tap()
-        confirmTripUpload(app)  // clear the Auto-delete confirm (epic #638)
 
         let resume = app.buttons["tripUpload.resume"]
         XCTAssertTrue(resume.waitForExistence(timeout: 15), "interrupted framing never appeared")
@@ -116,7 +105,6 @@ final class TripUploadTests: XCTestCase {
         let app = launch(extraArgs: ["-OBCDeviceRoutesFull"])
         openTrip(app)
         app.buttons["trip.upload"].tap()
-        confirmTripUpload(app)
 
         XCTAssertTrue(
             app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
@@ -136,7 +124,6 @@ final class TripUploadTests: XCTestCase {
 
         // Land it on the device first.
         app.buttons["trip.upload"].tap()
-        confirmTripUpload(app)  // clear the Auto-delete confirm (epic #638)
         XCTAssertTrue(
             app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
             "trip upload never completed")
@@ -156,47 +143,4 @@ final class TripUploadTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Kettle Moraine Loop"].exists, "loose route wrongly removed")
     }
 
-    // MARK: Auto-delete confirm (epic #638)
-
-    /// A retention-capable device opens the trip upload on the Auto-delete confirm:
-    /// the row seeds from the app default ("After 2 weeks") and the picker changes
-    /// the whole-trip level before any bytes.
-    @MainActor
-    func testWholeTripUploadShowsAutoDeleteConfirm() {
-        let app = launch()
-        openTrip(app)
-        app.buttons["trip.upload"].tap()
-
-        XCTAssertTrue(app.buttons["tripUpload.begin"].waitForExistence(timeout: 10),
-                      "the trip pre-transfer confirm is missing")
-        let value = app.staticTexts["tripUpload.autoDelete.value"]
-        XCTAssertTrue(value.waitForExistence(timeout: 5), "the trip Auto-delete row is missing")
-        XCTAssertEqual(value.label, "After 2 weeks", "the row must seed from the app default")
-        snap(app, "TR8-trip-upload-auto-delete")
-
-        // The picker changes the whole-trip level.
-        app.buttons["tripUpload.autoDelete"].tap()
-        let option = app.buttons["After 1 month"]
-        XCTAssertTrue(option.waitForExistence(timeout: 5), "trip picker options missing")
-        option.tap()
-        XCTAssertEqual(
-            app.staticTexts["tripUpload.autoDelete.value"].label, "After 1 month",
-            "picking a level must update the trip row")
-    }
-
-    /// An old-firmware device (no expiry) skips the confirm/row entirely — the trip
-    /// upload starts running straight away, exactly as before epic #638.
-    @MainActor
-    func testOldFirmwareTripUploadSkipsTheConfirm() {
-        let app = launch(extraArgs: ["-OBCOldFirmware"])
-        openTrip(app)
-        app.buttons["trip.upload"].tap()
-
-        XCTAssertTrue(
-            app.staticTexts["tripUpload.stageLabel"].waitForExistence(timeout: 10),
-            "old-firmware trip upload must start immediately")
-        XCTAssertFalse(app.buttons["tripUpload.begin"].exists, "no pre-transfer confirm on old firmware")
-        XCTAssertFalse(app.staticTexts["tripUpload.autoDelete.value"].exists,
-                       "no Auto-delete row on old firmware")
-    }
 }
