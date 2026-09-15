@@ -170,6 +170,10 @@ impl Default for FindState {
 impl crate::App {
     /// The host binds the exact map object used by its reader and planner.
     pub fn bind_place_map(&mut self, map: Option<RouteSourceKey>) {
+        if self.ui.find.bound_map != map && self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            self.ui.ahead.invalidate();
+            self.ui.map_dirty = true;
+        }
         if self.ui.find.bound_map.is_some() && self.ui.find.bound_map != map {
             self.ui.poi_scratch.cancel();
             self.ui.landmarks.invalidate();

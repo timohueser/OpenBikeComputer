@@ -71,6 +71,7 @@ pub mod store_meta;
 pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
+pub mod whats_next;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest};
 pub use altitude::AltitudeFusion;

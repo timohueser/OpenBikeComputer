@@ -2024,7 +2024,13 @@ impl App {
     /// non-overlay row, so a sheet already up does not hide the content the chord is asking about
     /// (which is what makes the same chord close the context drawer again).
     fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
-        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| s.context())
+        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
+            if matches!(s, Screen::WhatsNext(_)) && self.ui.ahead.page != crate::whats_next::Page::Timeline {
+                None
+            } else {
+                s.context()
+            }
+        })
     }
 
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
@@ -2548,6 +2554,7 @@ impl App {
         let mut cx = Ctx {
             find: &mut ui.find,
             landmarks: &mut ui.landmarks,
+            ahead: &mut ui.ahead,
             place_local,
             state,
             activity,
@@ -2680,6 +2687,7 @@ impl App {
                     | Screen::VisitReview(_)
                     | Screen::Landmarks(_)
                     | Screen::UpAhead(_)
+                    | Screen::WhatsNext(_)
             )
         }) {
             let deadline = ms_to_next_minute;
@@ -2902,6 +2910,22 @@ impl App {
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
         self.navigator.refresh_route_profile(route);
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            let scope = self.up_ahead_scope();
+            let local = self.place_local_time();
+            self.ui.ahead.prepare(
+                core_reader,
+                route,
+                self.navigator.climbs(),
+                scope,
+                &mut self.ui.corridor_scratch,
+                local,
+            );
+            if self.ui.ahead.pending() {
+                self.ui.map_dirty = true;
+                self.ui.next_wake_ms = Some(1);
+            }
+        }
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the executor's keyed answer; only
@@ -2978,6 +3002,7 @@ impl App {
         let rx = Render {
             find: &ui.find,
             landmarks: &ui.landmarks,
+            ahead: &ui.ahead,
             peak_view,
             scratch,
 
