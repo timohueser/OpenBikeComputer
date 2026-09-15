@@ -13,7 +13,6 @@ use obc_app::{App, AppState};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
 use obc_reader::rgb565_to_device64;
 
-mod assistant_demo;
 mod calib;
 mod card;
 mod device_input;
@@ -186,8 +185,6 @@ struct Args {
     /// flows that start a plan leave the opaque planning spinner as the base (no map to freeze),
     /// and the one gesture that puts a map base back under a live search also cancels the plan.
     freeze: bool,
-    assistant_demo: bool,
-    assistant: assistant_demo::Seed,
     /// One mutually-exclusive DFU fixture state for headless snapshots.
     dfu: Option<DfuSeed>,
 }
@@ -234,8 +231,6 @@ impl Default for Args {
             hold: None,
             inject: None,
             freeze: false,
-            assistant_demo: false,
-            assistant: assistant_demo::Seed::default(),
             dfu: None,
         }
     }
@@ -546,46 +541,6 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
-            "--assistant-demo" => a.assistant_demo = true,
-            "--assistant-route" => {
-                a.assistant_demo = true;
-                a.assistant.route = Some(it.next().ok_or("--assistant-route needs a GPX path")?);
-            }
-            "--assistant-stage" => {
-                a.assistant_demo = true;
-                let key = it.next().ok_or("--assistant-stage needs a stage")?;
-                a.assistant.stage = obc_app::assistant_demo::Stage::ALL
-                    .iter()
-                    .find(|(_, name)| *name == key)
-                    .ok_or("unknown --assistant-stage; see --help")?
-                    .0;
-            }
-            "--assistant-scenario" => {
-                a.assistant_demo = true;
-                let key = it.next().ok_or("--assistant-scenario needs a candidate set")?;
-                a.assistant.scenario = assistant_demo::Scenario::ALL
-                    .iter()
-                    .find(|(_, name)| *name == key)
-                    .ok_or("unknown --assistant-scenario; see --help")?
-                    .0;
-            }
-            "--assistant-landmarks" => {
-                a.assistant_demo = true;
-                let key = it.next().ok_or("--assistant-landmarks needs glaciers or passes")?;
-                if !matches!(key.as_str(), "glaciers" | "passes") {
-                    return Err("--assistant-landmarks needs glaciers or passes".into());
-                }
-                a.assistant.landmarks = Some(key);
-                a.assistant.stage = obc_app::assistant_demo::Stage::Landmarks;
-            }
-            "--assistant-option" => {
-                a.assistant_demo = true;
-                let value: usize = it.next().and_then(|s| s.parse().ok()).ok_or("--assistant-option needs 1..4")?;
-                if !(1..=obc_app::assistant_demo::MAX_RESULTS).contains(&value) {
-                    return Err("--assistant-option needs 1..4".into());
-                }
-                a.assistant.option = value - 1;
-            }
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
@@ -664,9 +619,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
         return Err("--card reopens without map or route-directory imports".into());
     }
-    if a.assistant_demo && (a.card.is_some() || a.create_card.is_some() || a.gpx.is_some() || a.no_card) {
-        return Err("--assistant-demo uses a temporary card and its own position controls".into());
-    }
+
     if a.card.is_some() && matches!(a.inject, Some(Injection::TripUpload { .. })) {
         return Err("trip-upload names a TP fixture and requires a map import session".into());
     }
@@ -774,7 +727,6 @@ fn settle(
 ) {
     let mut quiet = 0usize;
     for _ in 0..MAX_SETTLE_PASSES {
-        app.start_assistant_demo_if_ready();
         session.sync(app, stores.routes);
         let (mut plan, owed) = {
             let src = stores.routes.active_source();
@@ -782,7 +734,7 @@ fn settle(
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            let fix = app.state.assistant_demo.and(app.state.user_fix);
+            let fix = None;
             let mut loc = crate::sim_location::SimLocationSource::new(fix);
             let sensors = obc_ports::Sensors::new(&mut loc);
             let plan = host.pass(
@@ -926,10 +878,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             ' ' => {}
             'd' => step(app, &mut now, 1),
             'u' => step(app, &mut now, -1),
-            'A' => {
-                app.advance_assistant_demo();
-                hook(app, ScriptHook::Tick, now);
-            }
+
             'p' => tap(app, &mut now, Button::Select),
             'b' => tap(app, &mut now, Button::Back),
             'h' => press_hold(app, &mut now, Button::Select),
@@ -954,7 +903,6 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             // One route-aware tick (see the fn doc): sync + open the active route and run the
             // once-per-load state builds the GUI's per-frame tick would have run.
             'T' => hook(app, ScriptHook::Tick, now),
-            'L' => app.open_landmarks(),
             // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
             // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
@@ -1027,19 +975,10 @@ Device state:
   --sensors MODE          demo|screen
 
 Scripted snapshots:
-  --assistant-demo        Ride Assistant UI study centred on any loaded map
-  --assistant-route GPX   Use this route instead of a synthetic local route
-  --assistant-landmarks S glaciers or passes; random content samples
-  --assistant-scenario S  four (default), two-along, useful-detour, worse-detour,
-                          four-along, detours-only, one, empty
-  --assistant-stage S     map (default), questions, whats-next, explore-ahead, landmarks,
-                          easier, easier-review, categories, choices, preview, to-stop,
-                          visit, arrival, returning, rejoined, remove-stop
-  --assistant-option N    Select result 1..4 (1..3 for easier); Assistant flags enable the study
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,
-                           w wait, f frame, T tick, I idle, L production landmarks)
+                           w wait, f frame, T tick, I idle)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
@@ -1304,12 +1243,7 @@ fn main() {
         // The startup import has committed route identities before the first catalog feed.
         let mut store = routes;
         app.set_routes_with_ids(store.catalog(), store.ids());
-        if args.assistant_demo {
-            assistant_demo::install(&mut app, &mut store, tables, &args).unwrap_or_else(|e| {
-                eprintln!("assistant demo: {e}");
-                std::process::exit(1)
-            });
-        }
+
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
         // to completion inside a pass; its planned detour stays resident here until commit/cancel.
         let mut host = HostLoop::new();
@@ -1751,14 +1685,6 @@ fn main() {
         };
         let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
 
-        if let Some(demo) = app.state.assistant_demo {
-            eprintln!(
-                "assistant study: {:?}; recording {}; route {:?}",
-                demo.phase,
-                app.recording(),
-                app.active_route_index()
-            );
-        }
         // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
         // sim checks it against the `screens!` table's own name before a single pixel is written.
         // Checked here — below every seam that can still change the top screen, including WX12's
@@ -1822,15 +1748,7 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }
-        if args.script.as_deref().is_some_and(|script| script.contains('L')) {
-            eprintln!(
-                "landmarks {:?}: {} rows, selected {:?}; visit {:?}",
-                app.landmarks_status(),
-                app.landmark_count(),
-                app.landmark_qid(),
-                app.assistant_review_status()
-            );
-        }
+
         eprintln!("wrote {path}");
         return;
     }
@@ -1937,32 +1855,6 @@ mod cli_tests {
     }
 
     #[test]
-    fn assistant_seeds_validate_the_shared_stage_and_scenario_vocabulary() {
-        for (_, key) in obc_app::assistant_demo::Stage::ALL {
-            assert!(parse(&["--assistant-stage", key]).unwrap().assistant_demo);
-        }
-        for (scenario, key) in assistant_demo::Scenario::ALL {
-            assert_eq!(parse(&["--assistant-scenario", key]).unwrap().assistant.scenario, scenario);
-        }
-        for key in ["glaciers", "passes"] {
-            let args = parse(&["--assistant-landmarks", key]).unwrap();
-            assert_eq!(args.assistant.landmarks.as_deref(), Some(key));
-            assert!(matches!(args.assistant.stage, obc_app::assistant_demo::Stage::Landmarks));
-        }
-        assert_eq!(parse(&["--assistant-option", "4"]).unwrap().assistant.option, 3);
-        for flags in [
-            ["--assistant-option", "0"],
-            ["--assistant-option", "5"],
-            ["--assistant-stage", "nope"],
-            ["--assistant-scenario", "nope"],
-            ["--assistant-landmarks", "nope"],
-        ] {
-            assert!(parse(&flags).is_err());
-        }
-        assert!(parse(&["--assistant-stage", "arrival", "--gpx", "ride.gpx"]).is_err());
-    }
-
-    #[test]
     fn removed_flags_are_rejected() {
         for flag in [
             "--true-color",
@@ -1987,12 +1879,6 @@ mod cli_tests {
             "--png",
             "--heading",
             "--peak-view",
-            "--assistant-demo",
-            "--assistant-route",
-            "--assistant-scenario",
-            "--assistant-stage",
-            "--assistant-option",
-            "--assistant-landmarks",
             "--gpx",
             "--at",
             "--center",

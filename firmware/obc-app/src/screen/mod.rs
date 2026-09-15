@@ -45,6 +45,7 @@ mod nav_route;
 mod passkey;
 mod peak_view;
 mod poi_detail;
+pub(crate) mod poi_display;
 mod poi_list;
 pub(crate) mod poi_menu;
 mod quick_drawer;
@@ -61,7 +62,6 @@ mod route_swap;
 mod settings;
 mod statistics;
 mod trip_delete;
-pub(crate) mod up_ahead;
 pub(crate) mod vocab;
 mod warning;
 
@@ -82,14 +82,14 @@ pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
-pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
+pub use nav_route::{NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
 pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
 mod easier;
 pub use easier::EasierScreen;
+pub(crate) use poi_display::poi_row_name;
 pub use poi_list::{PoiListScreen, PoiScratch};
-pub use poi_menu::PoiMenuScreen;
 /// The quick drawer's open duration, for the in-crate harness that has to settle a sheet before it
 /// acts on one — so retuning the constant cannot leave that helper acting mid-slide.
 #[cfg(test)]
@@ -112,9 +112,8 @@ pub use settings::{
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
-pub(crate) use up_ahead::poi_row_name;
 mod whats_next;
-pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
+pub use poi_display::OFF_ROUTE_HINT_M;
 /// The one exception to the vocabulary's import rule: the wait spinner's dirty disc is part of the
 /// host-facing repaint contract (`ScreenTick::region`), so it is re-exported for the integration
 /// tests that pin it. In-crate callers still import `vocab::spinner`.
@@ -290,12 +289,6 @@ impl Ctx<'_> {
 
             nav_profiles: self.nav_profiles,
         }
-    }
-
-    /// What the Up-ahead timeline is scoped to right now — the twin of [`Render::up_ahead_scope`],
-    /// so `handle` walks exactly the rows `draw` drew.
-    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
-        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
     }
 }
 
@@ -1024,7 +1017,7 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
-    Assistant(AssistantScreen) => Caps::map(),
+    Assistant(AssistantScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Landmarks),
     LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
@@ -1050,13 +1043,11 @@ screens! {
     /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
     /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and
     /// the source scope are rows of the [context sheet](context_drawer::UP_AHEAD) above it (D4a).
-    UpAhead(UpAheadScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
     /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
     DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
-    PoiMenu(PoiMenuScreen) => Caps::nav(),
     WhatsNext(WhatsNextScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     FindPlace(FindPlaceScreen) => Caps::map(),
     VisitReview(VisitReviewScreen) => Caps::map(),
@@ -1067,7 +1058,6 @@ screens! {
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours),
     /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
-    NavConfirm(NavConfirmScreen) => Caps::nav(),
     /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
     /// resumable router; Back cancels (pops to the detail + rings the pass). The
     /// host's answer (the pass's fact stage) replaces it with the computed-route overview
@@ -1230,39 +1220,12 @@ impl Screen {
         }
     }
 
-    /// **Pre-draw acquisition** (#803): resolve any reader-backed one-shot state before drawing, so
-    /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
-    /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
-    /// ([`base_needs_reader`](crate::App::base_needs_reader) reads the same [`ReaderNeed`]
-    /// declaration). The POI list takes its category snapshot into shared scratch, the detail
-    /// resolves its opening-hours cache, and Skip ahead resolves route geometry + its live anchor;
-    /// every other screen is a no-op.
-    /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
-    /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
-    /// here.
-    /// The **route-corridor snapshot** this screen wants, if any (epic #946, U3) — the Up-ahead
-    /// timeline's `(filter, anchor)` key, declared rather than queried. Read by
-    /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
-    /// settles, which is the whole arm/re-arm/disarm lifecycle. Intentionally partial: no other
-    /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
-    /// else — as does an Up-ahead list the rider scoped to **waypoints only** (U4), which declares
-    /// no key at all.
-    pub(crate) fn corridor_request(
-        &self,
-        scope: crate::corridor::UpAheadScope,
-    ) -> Option<crate::corridor::CorridorKey> {
-        match self {
-            Screen::UpAhead(s) => s.corridor_key(scope),
-            _ => None,
-        }
-    }
-
     /// The **contextual content** this screen declares (#1515 D3) — the rows the Down+Back sheet
     /// offers over it, or `None` when it has no secondary actions and the chord therefore does
     /// nothing. Data, never behaviour: [`ContextDrawerScreen`] owns the cursor, the dimming, the
     /// transitions and the drawing, so a screen joins the grammar by naming a table.
     ///
-    /// Intentionally partial like [`corridor_request`](Screen::corridor_request): most screens
+    /// Intentionally partial: most screens
     /// declare nothing, and an empty sheet is exactly what the issue forbids.
     pub(crate) fn context(&self) -> Option<&'static ContextMenu> {
         match self {
@@ -1274,17 +1237,15 @@ impl Screen {
             // change because the rider switched which readout they are looking at.
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
-            Screen::UpAhead(_) | Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
             Screen::Landmarks(_) => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
-            Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),
-            Screen::Assistant(s) if s.has_ahead_context() => Some(&context_drawer::UP_AHEAD),
 
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
             // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
             // promises the profile the route was planned *under*).
-            Screen::NavConfirm(_) | Screen::PoiDetail(_) => Some(&context_drawer::ROUTE_PLAN),
+            Screen::PoiDetail(_) => Some(&context_drawer::ROUTE_PLAN),
             _ => None,
         }
     }
@@ -1728,17 +1689,7 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            [
-                "Map",
-                "Assistant",
-                "Landmarks",
-                "LandmarkPhoto",
-                "Detour",
-                "DetourPreview",
-                "FindPlace",
-                "VisitReview",
-                "Easier"
-            ],
+            ["Map", "Landmarks", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview", "Easier"],
             "streamed map and prepared photo pixels stay unchanged while covered"
         );
     }

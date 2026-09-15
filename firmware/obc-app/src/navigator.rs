@@ -627,15 +627,6 @@ impl NavigatorMachine {
 
     // ---- fixture observations ----
 
-    /// Whether `family` has an undelivered plan request — the `PlanRoute` / `PlanDetour` peek.
-    #[cfg(test)]
-    pub(crate) fn request_pending(&self, family: PlanFamily) -> bool {
-        match family {
-            PlanFamily::Route => self.route_request.is_some(),
-            PlanFamily::Detour => self.detour_request.is_some(),
-        }
-    }
-
     /// Whether `family` has an undelivered cancellation — the `CancelRoutePlan` / `CancelDetour`
     /// peek.
     #[cfg(test)]

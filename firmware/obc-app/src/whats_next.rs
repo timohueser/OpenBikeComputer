@@ -504,7 +504,7 @@ impl crate::App {
             &mut self.ui.stack,
             crate::screen::Transition::Push(crate::screen::Screen::WhatsNext(crate::screen::WhatsNextScreen::new())),
         );
-        self.ui.reconcile_corridor(self.up_ahead_scope(), true);
+        self.ui.reconcile_corridor(self.up_ahead_scope());
         self.ui.map_dirty = true;
     }
 }
@@ -675,6 +675,75 @@ mod tests {
         assert!(a.rows.iter().all(|r| matches!(&r.item,Item::Waypoint(w) if w.category==Some(PoiCategory::Train))
             || matches!(r.item, Item::Place(_))));
     }
+    #[test]
+    fn ordinary_assistant_sources_and_filters_preserve_authored_rows_and_persist() {
+        use crate::{input::Chord, screen::Screen, App, AppState, Gesture};
+        let bytes = route(false);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.test_mount_store();
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.set_active_route(Some(0));
+        app.navigator.sync_route_state(Some(&route));
+        assert!(app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
+        app.apply_gesture(Gesture::Press);
+        let mut now = 1_000;
+        let act = |app: &mut App, now: &mut u32, gesture| {
+            *now += 400;
+            app.advance_animations(obc_ports::InputClock(*now));
+            app.apply_gesture(gesture);
+        };
+        assert!(app.apply_chord(Chord::Context));
+        act(&mut app, &mut now, Gesture::Step(1));
+        act(&mut app, &mut now, Gesture::Press);
+        act(&mut app, &mut now, Gesture::Step(1));
+        assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both);
+        act(&mut app, &mut now, Gesture::Press);
+        assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
+        assert!(!crate::harness::support::quiet_pass(&mut app, now).effects.settings.is_empty());
+        act(&mut app, &mut now, Gesture::Back);
+        let scope = app.up_ahead_scope();
+        settle(&mut app.ui.ahead, None, &route, scope, &mut app.ui.corridor_scratch);
+        assert!(app.ui.ahead.rows.iter().any(|r| matches!(r.item, Item::Waypoint(_))));
+        assert!(app.ui.ahead.rows.iter().all(|r| matches!(r.item, Item::Waypoint(_))));
+        assert!(app.ui.ahead.request(scope).is_none());
+        app.apply_gesture(Gesture::Step(1));
+        let selected = app.ui.ahead.rows[app.ui.ahead.selected].key;
+        assert!(app.apply_chord(Chord::Context));
+        act(&mut app, &mut now, Gesture::Press);
+        act(&mut app, &mut now, Gesture::Step(1));
+        act(&mut app, &mut now, Gesture::Back);
+        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
+        act(&mut app, &mut now, Gesture::Back);
+        assert_eq!(app.ui.ahead.rows[app.ui.ahead.selected].key, selected);
+        assert!(app.apply_chord(Chord::Context));
+        act(&mut app, &mut now, Gesture::Press);
+        act(&mut app, &mut now, Gesture::Step(1));
+        act(&mut app, &mut now, Gesture::Press);
+        act(&mut app, &mut now, Gesture::Back);
+        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
+        let scope = app.up_ahead_scope();
+        settle(&mut app.ui.ahead, None, &route, scope, &mut app.ui.corridor_scratch);
+        assert!(app
+            .ui
+            .ahead
+            .rows
+            .iter()
+            .all(|r| matches!(&r.item, Item::Waypoint(w) if w.category == Some(PoiCategory::Water))));
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
+        assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
+    }
+
     #[test]
     fn timeline_gestures_can_return_forward_after_reversing_to_the_first_page() {
         use crate::{App, AppState, Gesture, Settings};

@@ -637,3 +637,17 @@ impl<'r> Planner<'r> {
         core::mem::take(&mut self.render)
     }
 }
+
+/// A selected place for tests of the shared profile drawer.
+pub fn selected_place() -> obc_app::screen::Screen {
+    obc_app::screen::Screen::PoiDetail(obc_app::screen::PoiDetailScreen::new(obc_reader::Poi {
+        opening: obc_reader::hours::OpeningStatus::Unknown,
+        metadata: Default::default(),
+        lat: 43_736_000,
+        lon: 7_421_000,
+        subtype: 1,
+        name: heapless::String::try_from("Fontaine").unwrap(),
+        hours_ref: u16::MAX,
+        distance_m: 100,
+    }))
+}
