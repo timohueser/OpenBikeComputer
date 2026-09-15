@@ -234,6 +234,9 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d d d f d d d d d d p f p p f p T"
 # show on the graph-less Grimsel fixture.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/map-context-live.png"
+# The normal Ride drawer admits Easier after a fresh replay fix matches the loaded route.
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 30 \
+    --script "p p p p b T C d d d d p f" --expect-screen Easier --png "$OUT/easier-routes.png"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
@@ -523,7 +526,7 @@ ELEVPLAN="B d d w p d d p f d d d p f p p f"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
 # The **ride context** the other three riding views share — the unchanged four-row table, shot over
 # Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
