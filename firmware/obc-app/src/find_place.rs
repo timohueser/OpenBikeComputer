@@ -314,7 +314,10 @@ impl crate::App {
             }
             return;
         }
-        if !self.ui.find.owns_pages() {
+        if matches!(
+            self.ui.find.state,
+            State::Idle | State::NoFix | State::NoMap | State::NoAccess | State::Failed | State::Stale
+        ) {
             return;
         }
         if self.ui.find.state == State::Start {
@@ -572,6 +575,9 @@ mod tests {
         let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
         app.open_find_place();
         app.apply_gesture(crate::Gesture::Press);
+        app.prepare_find(None, None);
+        assert_eq!(app.find_place_state(), State::NoFix);
+        app.ui.find.profile = 1; // No request context was captured for this unavailable state.
         app.prepare_find(None, None);
         assert_eq!(app.find_place_state(), State::NoFix);
         let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
