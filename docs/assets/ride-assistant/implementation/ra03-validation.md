@@ -106,10 +106,40 @@ here. The orchestrator owns the final rendering/resource gates and integrated
 adversarial review. Hardware acceptance remains pending; no connected device is
 required for the independent integration and simulator work.
 
+## Adversarial review corrections
+
+Correction commit: `2c5e7638`. All four reported blockers are addressed:
+
+- Unique attribution now reports a read error when a competing edge cannot be
+  decoded. A two-lane fault source tests node and interior-anchor queries.
+- The Swift densifier leaves interior heights unknown when the incoming segment
+  is incomplete, while preserving measured endpoints.
+- The compact elevation band is unavailable for incomplete segments or failed
+  metadata, geometry reads, or decode. It no longer skips an unreadable chunk and
+  fills the missing band from neighboring heights.
+- Swift widens section-range arithmetic and rejects descriptor overlaps with the
+  index and waypoint table. Rust and Swift exercise the same valid envelope and
+  two malformed binary vectors.
+
+Focused whole-suite checks after these fixes:
+
+- `cargo test -p obc-route --test nav --test profile` (48 and 12 pass)
+- `cargo test -p obc-vectors --test vectors -- --ignored` (shared-vector generator)
+- `cargo test -p obc-vectors --test vectors` (19 pass, generator ignored)
+- `swift test --package-path companion-ios/Packages/OBCKit --filter RouteObjectCodecTests`
+  (12 pass)
+- `cargo clippy -p obc-route -p obc-reader -p obc-vectors --all-targets -- -D warnings`
+- `./tools/obc suites check` (73 suites, 358 execution units)
+- `cargo fmt --all`, `git diff --check`, and `python3 docs/build_docs.py --check-links`
+
+The next review covers only this correction delta. No resource build, rendering
+sweep, hardware test, or large map repack was repeated. Final maps will use the
+RA09 OBCM v16 header extension and preserve these v15 graph/place semantics.
+
 ## Review focus and remaining work
 
 - Independently review incoming segment ownership at chunk and splice boundaries,
   optional-section bounds, and conservative GPX attribution.
 - Implement RA04/RA05 descriptor-aware transforms and source binding through the
   reserved contract, then compare preview and committed facts from the same bytes.
-- Run the final pinned v15 real-map simulator scenarios and resource/layout gates.
+- Run the final pinned v16 real-map simulator scenarios and resource/layout gates.
