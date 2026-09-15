@@ -3,7 +3,7 @@ use common::{build_obcr, ChunkIn, RouteSpec, VecSink, WpRec};
 use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;
-use obc_route::visit::{forward_rejoin, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
+use obc_route::visit::{visit_anchor, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
 use obc_route::{for_each_waypoint, RouteIndex, RouteReader};
 
 fn key(id: u64) -> RouteSourceKey {
@@ -77,19 +77,78 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111]).is_err());
 }
 #[test]
-fn forward_join_is_clipped_to_first_stored_access_and_searches_are_bounded() {
-    let bytes = route(vec![(0, 0, 0), (30_000, 0, 0)], &[(300, 1000, 2000, 0, 1, 1, 200, b"A")], 3339);
+fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
+    let wps: Vec<WpRec<'_>> =
+        [10, 50, 150, 300, 500].into_iter().map(|at| (at, 0, 0, 0, 1, 1, 0, b"same" as &[u8])).collect();
+    let bytes = route(vec![(0, 0, 0), (2000, 0, 0), (0, 0, 0), (0, 2000, 0)], &wps, 666);
     let source = SliceSource(&bytes);
     let index = RouteIndex::read(&source).unwrap();
-    assert_eq!(forward_rejoin(&RouteReader::new(&index, &source), 0).unwrap(), Some(300));
-    let mut choice = VisitChoice::new(0, Some(300));
-    choice.remember_out_and_back(4000);
-    assert!(choice.prefer_forward(3999));
-    assert!(!choice.prefer_forward(4000));
-    for _ in 0..6 {
-        choice.search().unwrap();
-    }
+    let original = RouteReader::new(&index, &source);
+    let target = (1000, 100);
+    let anchor = visit_anchor(&original, 20, target).unwrap();
+    assert!((110..=112).contains(&anchor), "first matching forward occurrence");
+    assert!((332..=335).contains(&visit_anchor(&original, 250, target).unwrap()), "never return to the past crossing");
+    let at = original.position_at(anchor).unwrap();
+    let outbound = route(vec![(at.lon, at.lat, 0), (target.0, target.1, 0)], &[], 11);
+    let returning = route(vec![(target.0, target.1, 0), (at.lon, at.lat, 0)], &[], 11);
+    let mut builder = VisitBuilder::new(key(2), key(3), 20, anchor, SourceId::osm(1, 99), target).unwrap();
+    builder.keep_prefix(anchor).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    while !builder.append_prefix_step(&original, &mut sink).unwrap() {}
+    append(&mut builder, &outbound, &mut sink);
+    append(&mut builder, &returning, &mut sink);
+    while builder.finish_step(&original, &mut sink).unwrap().is_none() {}
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let derived = RouteReader::new(&index, &source);
+    let descriptor = derived.visit_descriptor().unwrap().unwrap();
+    assert_eq!(descriptor.original_anchors_m, [20, anchor, anchor]);
+    assert_eq!(descriptor.accepted_anchors_m[0], 0);
+    assert!((100..=104).contains(&descriptor.accepted_anchors_m[1]), "arrival includes the original prefix");
+    assert!((666..=670).contains(&derived.total_distance_m), "retain both original loops and add only the excursion");
+    let mut seen = 0;
+    for_each_waypoint(&source, |w| {
+        assert_eq!(w.provenance.unwrap().source, key(2));
+        assert_eq!(w.provenance.unwrap().ordinal, seen + 1);
+        if seen == 0 {
+            assert_eq!(w.dist_along_m, 30);
+        } else {
+            assert!((wps[seen as usize + 1].0 + 1..=wps[seen as usize + 1].0 + 4).contains(&w.dist_along_m));
+        }
+        seen += 1;
+    })
+    .unwrap();
+    assert_eq!(seen, 4);
+    let mut choice = VisitChoice::new();
+    choice.search().unwrap();
+    choice.search().unwrap();
     assert!(choice.search().is_err());
+}
+#[test]
+fn on_route_stop_needs_no_artificial_excursion() {
+    let bytes = route(vec![(0, 0, 0), (2000, 0, 0)], &[], 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let anchor = 100;
+    let at = original.position_at(anchor).unwrap();
+    let zero = route(vec![(at.lon, at.lat, 0), (at.lon, at.lat, 0)], &[], 0);
+    let mut builder = VisitBuilder::new(key(2), key(3), 0, anchor, SourceId::osm(1, 99), (at.lon, at.lat)).unwrap();
+    builder.keep_prefix(anchor).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    while !builder.append_prefix_step(&original, &mut sink).unwrap() {}
+    append(&mut builder, &zero, &mut sink);
+    append(&mut builder, &zero, &mut sink);
+    while builder.finish_step(&original, &mut sink).unwrap().is_none() {}
+    let source = SliceSource(&sink.buf);
+    let info = obc_route::RouteObjectInfo::read(&source).unwrap();
+    assert!((221..=223).contains(&info.distance_m));
+    let anchors = info.visit.unwrap().accepted_anchors_m;
+    assert_eq!(anchors[0], 0);
+    assert_eq!(anchors[1], anchors[2]);
+    assert!((99..=100).contains(&anchors[1]));
 }
 #[test]
 fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() {

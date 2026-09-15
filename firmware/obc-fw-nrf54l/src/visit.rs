@@ -17,7 +17,7 @@ use obc_formats::{
 };
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{
-    visit::{forward_rejoin, VisitChoice},
+    visit::{visit_anchor, VisitChoice},
     RouteReader, RouteStats, Step,
 };
 use obc_storage::flat::{Allocation, FlatStore, ObjectId, Revision, SealedAllocation, StoreError, StoreSource};
@@ -29,6 +29,7 @@ const RESERVE: u64 = (HEADER_FULL_LEN
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Work {
     Begin,
+    Prefix,
     Leg,
     Append,
     Finish,
@@ -37,6 +38,7 @@ enum Work {
 enum Done {
     Running,
     Begin,
+    Prefix,
     Leg,
     Append,
     Finish(RouteStats),
@@ -48,8 +50,6 @@ enum After {
     Flush(Work, Done),
     Seal,
     DropLeg,
-    RestartLeg,
-    Restart,
     CancelA,
     CancelB,
     Close,
@@ -66,19 +66,11 @@ enum Phase {
     Flush(Work, Done, usize, usize),
     Seal,
     DropLeg,
-    Restart,
     Await(Ticket, After),
     Publish,
     Preview,
     Stopped,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Variant {
-    OutAndBack,
-    Forward,
-    Rebuild,
-}
-
 pub(crate) struct Executor {
     original: Option<StoreSource<'static, FlatCard>>,
     a: Option<Allocation>,
@@ -88,7 +80,6 @@ pub(crate) struct Executor {
     token: Option<OperationToken<NavigatorTag>>,
     release: Option<bool>,
     choice: VisitChoice,
-    variant: Variant,
     rejoin: u32,
     return_to: (i32, i32),
     returning: bool,
@@ -105,8 +96,7 @@ impl Executor {
             phase: Phase::Empty,
             token: None,
             release: None,
-            choice: VisitChoice::new(0, None),
-            variant: Variant::OutAndBack,
+            choice: VisitChoice::new(),
             rejoin: 0,
             return_to: (0, 0),
             returning: false,
@@ -204,21 +194,10 @@ impl Executor {
                 } else {
                     context.progress_m
                 };
-                self.variant = Variant::OutAndBack;
-                if self.begin_variant(app, guard.as_mut().unwrap()).is_err() {
+                if self.begin_route(app, guard.as_mut().unwrap()).is_err() {
                     return self.fail(NavigatorError::Unavailable);
                 }
-                let (_, index, _, _) = guard.as_mut().unwrap().visit_parts();
-                let reader = RouteReader::new(index, self.original.as_ref().unwrap());
-                self.choice =
-                    match if matches!(context.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)) {
-                        Ok(None)
-                    } else {
-                        forward_rejoin(&reader, context.progress_m)
-                    } {
-                        Ok(forward) => VisitChoice::new(context.progress_m, forward),
-                        Err(_) => return self.fail(NavigatorError::Unavailable),
-                    };
+                self.choice = VisitChoice::new();
                 self.phase = Phase::AllocateA;
                 None
             }
@@ -337,7 +316,7 @@ impl Executor {
     }
 
     #[inline(never)]
-    fn begin_variant(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn begin_route(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
         let target = app.assistant_visit_target();
         guard.begin_visit(c, target, self.rejoin).map_err(|_| ())?;
@@ -349,6 +328,11 @@ impl Executor {
         }
         if matches!(c.purpose, ReviewPurpose::Easier(_)) {
             builder.prepare_easier(&route).map_err(|_| ())?;
+        }
+        if c.purpose == ReviewPurpose::Visit {
+            let approach = target.ok_or(())?.approach(c.map, c.profile).ok_or(())?;
+            self.rejoin = visit_anchor(&route, c.progress_m, approach).map_err(|_| ())?;
+            builder.keep_prefix(self.rejoin).map_err(|_| ())?;
         }
         let to = route.position_at(self.rejoin).ok_or(())?;
         self.return_to = (to.lon, to.lat);
@@ -378,7 +362,7 @@ impl Executor {
             if self.returning {
                 (guard.visit_parts().0.destination().ok_or(())?, self.return_to)
             } else {
-                (c.origin, approach)
+                (self.return_to, approach)
             }
         };
         if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
@@ -428,12 +412,6 @@ impl Executor {
                         Step::Running => Done::Running,
                         Step::Done(_) => Done::Leg,
                         Step::Failed(error) => {
-                            if self.variant == Variant::Forward {
-                                self.variant = Variant::Rebuild;
-                                self.rejoin = self.choice.departure_m;
-                                self.phase = Phase::Restart;
-                                return None;
-                            }
                             return self.fail(NavigatorError::Plan(error));
                         }
                     };
@@ -443,6 +421,9 @@ impl Executor {
                     let mut sink = crate::ride::NavStageSink { stage: output, appended: 0, patch_len: 0 };
                     let result = match work {
                         Work::Begin => builder.begin(&mut sink).map(|_| Done::Begin),
+                        Work::Prefix => builder
+                            .append_prefix_step(&RouteReader::new(original, self.original.as_ref().unwrap()), &mut sink)
+                            .map(|done| if done { Done::Prefix } else { Done::Running }),
                         Work::Append => {
                             let Some(sealed) = self.leg.as_ref() else { return self.fail(NavigatorError::Store) };
                             let source = store.sealed_source(sealed);
@@ -461,12 +442,6 @@ impl Executor {
                     };
                     let done = match result {
                         Ok(done) => done,
-                        Err(_) if self.variant == Variant::Forward && builder.rejected_geometry() => {
-                            self.variant = Variant::Rebuild;
-                            self.rejoin = self.choice.departure_m;
-                            self.phase = Phase::Restart;
-                            return None;
-                        }
                         Err(_) => return self.fail(NavigatorError::Unavailable),
                     };
                     (done, sink.appended, sink.patch_len)
@@ -507,16 +482,6 @@ impl Executor {
                     }
                 }
             }
-            Phase::Restart => {
-                if self.b.is_some() || self.leg.is_some() {
-                    return self.cleanup_buffers(store, writer, g, reply);
-                }
-                if let Some(allocation) = self.a {
-                    if let Ok(t) = writer.try_call(Request::Cancel { allocation }, reply) {
-                        self.phase = Phase::Await(t, After::Restart);
-                    }
-                }
-            }
             Phase::Publish => {
                 let Some(allocation) = self.a else { return self.fail(NavigatorError::Store) };
                 let original = self.original.as_ref().map(|s| (s.id(), s.revision()));
@@ -538,6 +503,10 @@ impl Executor {
     fn after_flush(&mut self, work: Work, done: Done, app: &mut App, guard: &mut NavGuard) -> Option<NavigatorOutcome> {
         match done {
             Done::Begin => {
+                self.phase = Phase::Step(Work::Prefix);
+                None
+            }
+            Done::Prefix => {
                 self.phase = Phase::AllocateB;
                 None
             }
@@ -558,37 +527,35 @@ impl Executor {
                 self.phase = Phase::DropLeg;
                 None
             }
-            Done::Finish(stats) => match self.variant {
-                Variant::OutAndBack if self.choice.forward_m.is_some() => {
-                    self.choice.remember_out_and_back(stats.total_distance_m);
-                    self.rejoin = self.choice.forward_m.unwrap();
-                    self.variant = Variant::Forward;
-                    self.phase = Phase::Restart;
-                    None
-                }
-                Variant::Forward if !self.choice.prefer_forward(stats.total_distance_m) => {
-                    self.rejoin = self.choice.departure_m;
-                    self.variant = Variant::Rebuild;
-                    self.phase = Phase::Restart;
-                    None
-                }
-                _ => {
-                    let anchors = guard.visit_parts().0.original_anchors();
-                    let token = self.token.take()?;
-                    self.phase = Phase::Stopped;
-                    Some(
-                        if app.assistant_review_context().is_some_and(|c| {
-                            matches!(c.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
-                                && c.required_anchors_m == anchors
-                        }) || app.assistant_visit_variant(token, anchors)
-                        {
-                            NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
-                        } else {
-                            NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
-                        },
-                    )
-                }
-            },
+            Done::Finish(stats) => {
+                let anchors = guard.visit_parts().0.original_anchors();
+                defmt::info!(
+                    "visit: complete searches={=u8} anchors={=u32}/{=u32}/{=u32} arrival={=u32} total={=u32}",
+                    self.choice.searches(),
+                    anchors[0],
+                    anchors[1],
+                    anchors[2],
+                    guard.visit_parts().0.arrival_m(),
+                    stats.total_distance_m
+                );
+                let token = self.token.take()?;
+                self.phase = Phase::Stopped;
+                Some(
+                    if app.assistant_review_context().is_some_and(|c| {
+                        matches!(c.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
+                            && c.required_anchors_m == anchors
+                    }) || app.assistant_visit_variant(token, anchors)
+                    {
+                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
+                    } else {
+                        NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                    },
+                )
+            }
+            Done::Running if work == Work::Prefix => {
+                self.phase = Phase::Step(work);
+                None
+            }
             Done::Running => self.ready(work),
         }
     }
@@ -660,9 +627,6 @@ impl Executor {
                     return self.ready(Work::Append);
                 }
             }
-            (After::RestartLeg, Ok(Outcome::Done)) => {
-                self.phase = if releasing { Phase::Stopped } else { Phase::Restart };
-            }
             (After::DropLeg, Ok(Outcome::Done)) => {
                 self.b = None;
                 if !releasing {
@@ -681,23 +645,13 @@ impl Executor {
                     self.phase = Phase::Stopped;
                 }
             }
-            (After::Restart, Ok(Outcome::Done)) => {
-                self.a = None;
-                self.phase = Phase::Stopped;
-                if !releasing {
-                    if self.begin_variant(app, guard.as_mut()?).is_err() {
-                        return self.fail(NavigatorError::Unavailable);
-                    }
-                    self.phase = Phase::AllocateA;
-                }
-            }
             (After::CancelA, Ok(Outcome::Done)) => {
                 self.a = None;
                 self.phase = Phase::Stopped;
             }
             (After::CancelB, Ok(Outcome::Done)) => {
                 self.b = None;
-                self.phase = if releasing { Phase::Stopped } else { Phase::Restart };
+                self.phase = Phase::Stopped;
             }
             (After::Close, Ok(Outcome::Done)) => {
                 self.phase = Phase::Stopped;
@@ -761,8 +715,7 @@ impl Executor {
                 self.phase = Phase::Stopped;
             }
             (_, Err(_)) => {
-                self.phase =
-                    if matches!(after, After::CancelB) && !releasing { Phase::Restart } else { Phase::Stopped };
+                self.phase = Phase::Stopped;
                 if !releasing {
                     return self.fail(NavigatorError::Store);
                 }
@@ -786,10 +739,7 @@ impl Executor {
         }
         if let Some(sealed) = self.leg.take().or_else(|| guard.visit_take_sealed()) {
             match writer.try_call_owned(Request::ReleaseSealed { sealed }, reply) {
-                Ok(t) => {
-                    self.phase =
-                        Phase::Await(t, if self.release.is_some() { After::DropLeg } else { After::RestartLeg })
-                }
+                Ok(t) => self.phase = Phase::Await(t, After::DropLeg),
                 Err(Request::ReleaseSealed { sealed }) => self.leg = Some(sealed),
                 _ => unreachable!(),
             }

@@ -401,8 +401,8 @@ impl crate::App {
         };
         if context.purpose != ReviewPurpose::Visit
             || anchors[0] != context.progress_m
-            || anchors[1] != context.progress_m
-            || anchors[2] < context.progress_m
+            || anchors[1] < context.progress_m
+            || anchors[2] < anchors[1]
         {
             return false;
         }
