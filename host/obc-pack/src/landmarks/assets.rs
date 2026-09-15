@@ -175,6 +175,14 @@ pub(super) fn photo(
     let info = &page["imageinfo"][0];
     let ext = &info["extmetadata"];
     let license = ext["LicenseUrl"]["value"].as_str().ok_or("photo_license_missing")?.to_owned();
+    if supported_license(&license)
+        && license.contains("/licenses/")
+        && ext["Artist"]["value"]
+            .as_str()
+            .is_none_or(|value| credits(value, "https://commons.wikimedia.org").trim().is_empty())
+    {
+        return Err("photo_creator_missing".into());
+    }
     let original = serde_json::to_string(ext).map_err(|e| e.to_string())?;
     let mut display = Vec::new();
     for key in
