@@ -32,6 +32,12 @@ pub(super) struct VisitState {
     needs_bind: bool,
 }
 impl VisitState {
+    #[cfg(test)]
+    pub(super) fn assert_boot_state(&self) {
+        assert!(self.target.is_none() && self.latest_fix.is_none() && self.phase.is_none());
+        assert!(!self.departed && !self.arrival && !self.needs_bind);
+        assert_eq!((self.catalog_revision, self.requested_route), (0, 0));
+    }
     pub const fn new() -> Self {
         Self {
             target: None,
@@ -156,6 +162,13 @@ impl NavigatorMachine {
 }
 
 impl crate::App {
+    /// True only after the physical planner release acknowledgement.
+    pub fn assistant_planner_released(&self) -> bool {
+        self.navigator.live.is_none()
+    }
+    pub fn assistant_visit_costs(&self) -> Option<obc_route::visit::VisitCosts> {
+        self.assistant_preview()?.visit_costs
+    }
     /// UI entry. Capture the live origin and catalog epoch here; Acquire binds the original
     /// fingerprint from that exact epoch before any planner runs.
     pub fn request_visit(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {

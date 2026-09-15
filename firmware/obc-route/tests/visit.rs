@@ -3,7 +3,7 @@ use common::{build_obcr, ChunkIn, RouteSpec, VecSink, WpRec};
 use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;
-use obc_route::visit::{forward_rejoin, VisitBuilder, VisitChoice, VisitTarget};
+use obc_route::visit::{forward_rejoin, VisitBuilder, VisitChoice, VisitCosts, VisitTarget};
 use obc_route::{for_each_waypoint, RouteIndex, RouteReader};
 
 fn key(id: u64) -> RouteSourceKey {
@@ -69,6 +69,12 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     assert_eq!(seen, 48);
     let facts = RouteReader::new(&index, &emitted).interval_facts(0, stats.total_distance_m).unwrap();
     assert_eq!((facts.ascent_m, facts.descent_m), (stats.total_ascent_m, stats.total_descent_m));
+    let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
+    assert_eq!(costs.arrival_ascent_m, 20);
+    assert!(costs.arrival_elevation_complete && costs.complete_elevation);
+    let mut corrupt = sink.buf.clone();
+    corrupt[40..44].copy_from_slice(&999u32.to_le_bytes());
+    assert!(VisitCosts::read(&SliceSource(&corrupt), [0, 111]).is_err());
 }
 #[test]
 fn forward_join_is_clipped_to_first_stored_access_and_searches_are_bounded() {
