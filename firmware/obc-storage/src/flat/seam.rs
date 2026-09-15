@@ -172,6 +172,8 @@ impl DisplayName {
 /// The metadata half of a catalog entry, and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryMeta {
+    /// UTC seconds when the current route payload was added; zero means unknown.
+    pub added_at_utc: u32,
     pub id: ObjectId,
     pub revision: Revision,
     pub kind: ObjectKind,

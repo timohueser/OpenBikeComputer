@@ -123,6 +123,7 @@ fn flat_census(pass: &Pass) -> ReadCensus {
     let mut allocation = store.allocate(OBJECT_LEN as u64).expect("one extent is available");
     store.write(&mut allocation, &pattern(0, 0, OBJECT_LEN)).expect("the payload fits its reservation");
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::MapShard,

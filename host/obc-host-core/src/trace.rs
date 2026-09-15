@@ -203,8 +203,6 @@ pub enum FeederKind {
     RouteCatalog,
     TripCatalog,
     RideCatalog,
-    RouteRetention,
-    RideRetention,
     RideProfile,
     RidePreview,
     NavPreview,
@@ -213,12 +211,10 @@ pub enum FeederKind {
 }
 
 /// Complete stable vocabulary of bulk feeder call sites.
-pub const ALL_FEEDER_KINDS: [FeederKind; 10] = [
+pub const ALL_FEEDER_KINDS: [FeederKind; 8] = [
     FeederKind::RouteCatalog,
     FeederKind::TripCatalog,
     FeederKind::RideCatalog,
-    FeederKind::RouteRetention,
-    FeederKind::RideRetention,
     FeederKind::RideProfile,
     FeederKind::RidePreview,
     FeederKind::NavPreview,
@@ -725,6 +721,6 @@ mod tests {
     /// a kind, or a scenario that exercises it records nothing and no coverage assertion notices.
     #[test]
     fn the_feeder_table_is_exhaustive() {
-        assert_eq!(ALL_FEEDER_KINDS.len(), 10);
+        assert_eq!(ALL_FEEDER_KINDS.len(), 8);
     }
 }

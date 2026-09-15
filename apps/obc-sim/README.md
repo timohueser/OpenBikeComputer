@@ -137,14 +137,13 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   A successful Save can export `ride-{card-id}.gpx`; an existing output file is not overwritten.
   Export failure leaves the committed ride on the card.
 - `--import PATH` commits a GPX as a route to `--card`, or converts it to an `.obcr` file in `--routes-dir`, then exits. No map is required.
-- `--route-retention LEVEL:AGE` commits route-retention metadata to the session card and reloads it. `LEVEL` is 0–5; `AGE` accepts
-  seconds, `h`, `d`, or `unknown` (for example `3:2d`).
 
 ## Device state
 
 - `--boot` starts a headless render at the real power-on Home state rather than Map.
 - `--battery PCT` sets the initial battery charge (0–100).
 - `--clock YYYY-MM-DDTHH:MM` pins the UTC wall-clock anchor.
+- `--route-cleanup` opens the storage-full cleanup dialog. Combine with `--clock` to preview the age picker; without it the dialog shows the unknown-date guidance.
 - `--lang en|de|fr|es` chooses the headless UI language.
 - `--stat-fields LIST` replaces the Statistics grid with comma-separated field ids.
 - `--physical` uses saved physical-size calibration for the GUI. Open calibration and choose any

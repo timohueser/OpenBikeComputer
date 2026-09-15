@@ -88,11 +88,15 @@ fn every_source_component_and_current_finalized_head_are_required() {
         .store
         .commit(&[
             Mutation::Put {
-                meta: obc_storage::flat::EntryMeta { flags: EntryFlags::RETAINED, ..old },
+                meta: obc_storage::flat::EntryMeta { added_at_utc: 0, flags: EntryFlags::RETAINED, ..old },
                 source: PutSource::Amend,
             },
             Mutation::Put {
-                meta: obc_storage::flat::EntryMeta { revision: obc_storage::flat::Revision(rev + 1), ..old },
+                meta: obc_storage::flat::EntryMeta {
+                    added_at_utc: 0,
+                    revision: obc_storage::flat::Revision(rev + 1),
+                    ..old
+                },
                 source: PutSource::Fresh(allocation),
             },
         ])

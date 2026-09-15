@@ -139,6 +139,7 @@ fn execute(store: &'static FlatStore<FlatCard>, request: Request) -> Answer {
             }
             let id = store.next_object_id();
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision: Revision(1),
                 kind: ObjectKind::Route,
