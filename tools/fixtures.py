@@ -33,6 +33,7 @@ CATALOG_SCHEMA = 1
 PACKAGE_SCHEMA = 1
 MANIFEST_NAME = ".obc-package.json"
 BUFFER_BYTES = 1024 * 1024
+MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 
 
 class FixtureError(RuntimeError):
@@ -100,6 +101,11 @@ class Catalog:
             size = package.get("bytes")
             if not isinstance(size, int) or size <= 0:
                 raise FixtureError(f"package {package_id!r} bytes must be positive")
+            if size > MAX_ARCHIVE_BYTES:
+                raise FixtureError(
+                    f"package {package_id!r} exceeds the 1 GiB development fixture archive limit; "
+                    "keep country-scale source captures in the map-baker cache"
+                )
             archive = package.get("archive")
             if not isinstance(archive, str) or _unsafe_relpath(archive) or ":" in archive or "\\" in archive:
                 raise FixtureError(f"package {package_id!r} archive must be a safe relative path")
