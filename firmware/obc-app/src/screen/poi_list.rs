@@ -33,6 +33,7 @@ const ROW_H: i32 = 64;
 pub struct PoiScratch {
     pub(crate) query: Option<PlaceQuery>,
     pub(crate) detail_valid: bool,
+    pub(crate) detail_source: u64,
     pub(crate) detail_schedule: Option<obc_reader::WeeklySchedule>,
     clock_key: Option<(bool, i16)>,
     local: Option<(u8, u16)>,
@@ -57,6 +58,7 @@ impl PoiScratch {
             pois: heapless::Vec::new(),
             query: None,
             detail_valid: false,
+            detail_source: 0,
             detail_schedule: None,
             clock_key: None,
             local: None,
@@ -73,6 +75,7 @@ impl PoiScratch {
         }
         self.status = QueryProgress::Unavailable;
         self.detail_valid = false;
+        self.detail_source = 0;
     }
 
     pub(crate) fn clock_changed(&mut self, local: Option<(u8, u16)>, offset: i16) -> bool {
@@ -83,6 +86,7 @@ impl PoiScratch {
             }
             self.status = QueryProgress::Unavailable;
             self.detail_valid = false;
+            self.detail_source = 0;
         }
         let changed = self.local != local;
         self.recheck |= changed;

@@ -61,8 +61,9 @@ impl PoiDetailScreen {
     /// Whether the schedule cache still needs a `Reader` — it hasn't resolved yet. Drives
     /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
     /// reader until the one hours read lands in `prepare`, then stops.
-    pub(crate) fn hours_pending(&self) -> bool {
-        !self.schedule_ready
+    pub(crate) fn hours_pending(&self, scratch: &super::PoiScratch) -> bool {
+        self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
+            && (!self.schedule_ready || scratch.detail_source != self.poi.metadata.source.0)
     }
 
     pub(crate) fn invalidate_source(&mut self) {
@@ -88,13 +89,14 @@ impl PoiDetailScreen {
     /// [`base_needs_reader`](crate::App::base_needs_reader) keeps the `Reader` built and passed here
     /// until this lands, then [`draw`](Self::draw) consumes the cache immutably.
     pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
-        if self.schedule_ready {
-            return; // already resolved (possibly to `None` — no hours)
+        if !self.hours_pending(px.poi_scratch) {
+            return;
         }
         let Some(reader) = px.reader else {
             return; // no map this frame — retry next prepare
         };
         let schedule = reader.try_poi_hours(self.poi.hours_ref);
+        px.poi_scratch.detail_source = self.poi.metadata.source.0;
         px.poi_scratch.detail_valid = schedule.is_ok();
         px.poi_scratch.detail_schedule = schedule.ok().flatten();
         self.schedule_ready = true;
@@ -192,7 +194,11 @@ impl PoiDetailScreen {
         // each open interval on its own row. An overnight spillover can add a third range;
         // compact numeric rows keep that case within the same hours area.
         let head_y = dist_bot + 16;
-        let schedule = rx.poi_scratch.detail_schedule.filter(|s| s.flags() == 0);
+        let schedule = rx.poi_scratch.detail_schedule.filter(|s| {
+            self.visit_error != Some(crate::navigator::VisitUnavailable::SourceChanged)
+                && rx.poi_scratch.detail_source == self.poi.metadata.source.0
+                && s.flags() == 0
+        });
         let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
         let head = rx.t(heading);
         cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
@@ -247,7 +253,9 @@ impl PoiDetailScreen {
         // Footer action row — `▶Route here`, exactly the Route overview's START RIDE bar (#685 §2:
         // the shared drawer, so the two can't drift). Press anywhere already opened the create-route
         // confirm; the bar only makes that visible. Back still returns to the list.
-        let label = if !rx.poi_scratch.detail_valid {
+        let label = if self.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged) {
+            "Map changed"
+        } else if self.hours_pending(rx.poi_scratch) || !rx.poi_scratch.detail_valid {
             "Place unavailable"
         } else if rx
             .poi_scratch
