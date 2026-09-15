@@ -3,11 +3,12 @@ name = "obc-ios-host"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "The iPhone host's device core: the shared firmware over a persistent card, the phone's GPS/compass/barometer/battery on the sensor ports, and the four on-screen buttons through the app's own gesture recognizer. Target-independent and natively tested; the C ABI and the Swift shell are separate."
+description = "The iPhone host's device core: the shared firmware over a persistent card, the phone's GPS/compass/barometer/battery on the sensor ports, and the four on-screen buttons through the app's own gesture recognizer. Target-independent and natively tested, with the hand-written C ABI the Swift shell links."
 
 [lib]
-# An rlib while the crate is Rust-only; the C ABI adds the staticlib the app links.
-crate-type = ["rlib"]
+# The staticlib the iOS app links through OBCHost.xcframework; the rlib beside it is what the
+# workspace type-checks and `cargo test` runs.
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 obc-reader = { path = "../../firmware/obc-reader" }

@@ -7,9 +7,10 @@
 //! something changed.
 //!
 //! The card is persistent and this host never creates it: [`import_map`] does, with no host open.
-//! Everything here is target-independent and tested natively; the C ABI and the Swift shell are
-//! separate.
+//! Everything here is target-independent and tested natively; [`ffi`] is the C ABI over it and the
+//! Swift shell is separate.
 
+pub mod ffi;
 mod sensors;
 #[cfg(test)]
 mod tests;
