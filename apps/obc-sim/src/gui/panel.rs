@@ -4,7 +4,7 @@
 
 use eframe::egui;
 use obc_app::CameraMode;
-use obc_host_core::{RouteRepository, TripCatalog};
+use obc_host_core::TripCatalog;
 
 use super::housing::Colorway;
 use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN};
@@ -19,20 +19,6 @@ fn separator_above(ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui.separator();
 }
-
-/// A short human label for a [`Retention`](obc_app::Retention) level — the retention combo's text.
-fn retention_label(r: obc_app::Retention) -> &'static str {
-    use obc_app::Retention;
-    match r {
-        Retention::Never => "Never",
-        Retention::Day1 => "1 day",
-        Retention::Week1 => "1 week",
-        Retention::Week2 => "2 weeks",
-        Retention::Month1 => "1 month",
-        Retention::Month2 => "2 months",
-    }
-}
-
 // The two render paths, colored the same in the legend and the stacked bars below.
 const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue
 const KIND_POLY: egui::Color32 = egui::Color32::from_rgb(227, 165, 43); // polygons = amber
@@ -294,10 +280,6 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        egui::CollapsingHeader::new("Auto-delete (retention)")
-                            .default_open(false)
-                            .show(ui, |ui| self.show_retention_controls(ui));
-
                         separator_above(ui);
 
                         self.show_display_controls(ui);
@@ -480,101 +462,6 @@ impl SimGui {
             }
         }
     }
-
-    /// The **auto-delete / retention** controls (auto-expiry epic #638, S3) — the sim's face of the
-    /// self-cleaning storage feature, so route/ride expiry is eyeball-testable without hardware:
-    ///
-    /// - **GPS time** toggles the trusted-clock feed ([`SimClock`](super::SimClock)); off is the
-    ///   fresh-device untrusted state where nothing auto-deletes.
-    /// - **+1 day** fast-forwards the fed clock 24 h and forces the next sweep, so a 1-day-retention
-    ///   route or an aged synced ride disappears in seconds.
-    /// - **Set route retention** stands in for the phone's `setRouteRetention` (until S4 gives it a
-    ///   wire): pick a route + level and the sweep will delete it once it's been unused that long.
-    fn show_retention_controls(&mut self, ui: &mut egui::Ui) {
-        use obc_app::Retention;
-
-        ui.checkbox(&mut self.panel.gps_time, "GPS time (trusted clock)");
-        ui.weak("feeds host UTC as a GPS fix — off = untrusted, nothing auto-deletes");
-
-        ui.horizontal(|ui| {
-            if ui.button("+1 day").clicked() {
-                self.panel.clock_offset_secs = self.panel.clock_offset_secs.saturating_add(86_400);
-                // Force the next tick's sweep regardless of the (fast-forwarded) wall-clock hour, so
-                // an expiry is visible immediately instead of on the next hour boundary.
-                self.app.force_retention_sweep();
-            }
-            if ui.button("reset clock").clicked() {
-                self.panel.clock_offset_secs = 0;
-            }
-            ui.weak(format!("+{} d", self.panel.clock_offset_secs / 86_400));
-        });
-
-        ui.separator();
-
-        // Set a route's retention level (the setRouteRetention stand-in until S4).
-        let mut apply: Option<(obc_app::CatalogObjectId, Retention)> = None;
-        {
-            let routes = self.app.routes();
-            if routes.is_empty() {
-                ui.weak("no routes — import a GPX or start with route fixtures");
-            } else {
-                self.panel.retention_route_sel = self.panel.retention_route_sel.min(routes.len() - 1);
-                let ids = self.app.route_ids();
-                let sel_id = ids[self.panel.retention_route_sel];
-                egui::ComboBox::from_id_salt("retention-route")
-                    .selected_text(routes[self.panel.retention_route_sel].name.as_str())
-                    .show_ui(ui, |ui| {
-                        for (i, r) in routes.iter().enumerate() {
-                            ui.selectable_value(&mut self.panel.retention_route_sel, i, r.name.as_str());
-                        }
-                    });
-                egui::ComboBox::from_id_salt("retention-level")
-                    .selected_text(retention_label(self.panel.retention_level))
-                    .show_ui(ui, |ui| {
-                        for lvl in [
-                            Retention::Never,
-                            Retention::Day1,
-                            Retention::Week1,
-                            Retention::Week2,
-                            Retention::Month1,
-                            Retention::Month2,
-                        ] {
-                            ui.selectable_value(&mut self.panel.retention_level, lvl, retention_label(lvl));
-                        }
-                    });
-                if ui.button("Set route retention").clicked() {
-                    apply = Some((sel_id, self.panel.retention_level));
-                }
-                let meta = self
-                    .store
-                    .ids()
-                    .iter()
-                    .position(|&id| id == sel_id)
-                    .and_then(|i| self.store.retention_metas().get(i).copied())
-                    .unwrap_or_default();
-                ui.weak(format!(
-                    "route id {sel_id}: {} · last_used {}",
-                    retention_label(meta.retention),
-                    if meta.last_used_utc == 0 { "unset".to_string() } else { meta.last_used_utc.to_string() }
-                ));
-            }
-        }
-        if let Some((id, level)) = apply {
-            let last_used = self
-                .store
-                .ids()
-                .iter()
-                .position(|&current| current == id)
-                .and_then(|i| self.store.retention_metas().get(i).copied())
-                .unwrap_or_default()
-                .last_used_utc;
-            match crate::routes::seed_retention(&mut self.store, id, level, last_used) {
-                Ok(()) => self.note_card_commit(),
-                Err(error) => eprintln!("retention write: {error}"),
-            }
-        }
-    }
-
     /// Commit a fixture copy or exact replacement, then report its real object identity.
     fn inject_upload(&mut self, sel: usize, replace: bool) {
         let id = match crate::routes::import_copy(&mut self.store, sel, replace) {

@@ -430,49 +430,6 @@ pub(crate) fn step_zoom(mut zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
 /// plus the single per-frame long-press, so this never overflows.
 pub const GESTURE_BUF: usize = 16;
 
-/// The whole device application, ready to run a frame.
-///
-/// The single entry point both hosts share: each constructs one `App`, then per frame
-/// [`tick`](App::tick)s it with their [`LocationSource`], feeds raw controls through
-/// [`handle_input`](App::handle_input), and [`render_frame`](App::render_frame)s to their display.
-/// `App` owns the screen stack, the input + overlay plane ([`InputPlane`]), the camera
-/// [`AppState`] and the ride [`Activity`]. It does **not** own the render path's scratch: the host
-/// keeps a [`RenderScratch`] and lends it to each render call (#1146).
-///
-/// The firmware can split the two planes across executors — recognising gestures on a
-/// high-priority [`InputPlane`] that preempts the map render and feeding them back through
-/// [`apply_gesture`](App::apply_gesture); [`handle_input`](App::handle_input) is those halves fused
-/// for the single-loop hosts.
-///
-/// ```ignore
-/// let mut app = App::new(AppState::new(cx, cy, zoom));
-/// let mut scratch = RenderScratch::new(); // the host's, lent per frame
-/// loop {
-///     // GPS + barometer + compass + active route → camera, map-match, ride stats.
-///     // Only the capabilities this host has; `Sensors::new` leaves the rest (here: the BLE
-///     // strap's heart rate / power / cadence) absent.
-///     let sensors = Sensors {
-///         altimeter: Some(&mut baro),
-///         temperature: Some(&mut thermometer),
-///         clock: Some(&mut gps_clock),
-///         compass: Some(&mut compass),
-///         track: Some(&mut track_log),
-///         fuel: Some(&mut fuel_gauge),
-///         ..Sensors::new(&mut location_source)
-///     };
-///     app.tick(RideClock(now_ms), sensors, route.as_ref());
-///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
-///     app.render_frame(Some(&mut scratch), &mut display, &reader, route.as_ref(), w, h, color_policy);
-/// }
-/// ```
-/// Whether — and by which source — the wall clock has been established from a **real time source
-/// this boot**. The safety core of the auto-expiry epic (#638): the device has no RTC, so at boot
-/// the clock resumes from a persisted set-point that is stale by the powered-off span. That stale
-/// clock is [`Untrusted`](ClockTrust::Untrusted); it advances to [`Gps`](ClockTrust::Gps) or
-/// [`Ble`](ClockTrust::Ble) **only** when that source stamps the clock this boot (via
-/// [`App::stamp_clock`]). The expiry sweep (S3) refuses to stamp or delete anything while untrusted,
-/// so a stale or fat-fingered clock can never drive a deletion. **Never persisted** — every power
-/// cycle resets it to `Untrusted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockTrust {
     /// No real time source has stamped the clock this boot: it is the stale persisted set-point (or
@@ -556,21 +513,7 @@ pub struct App {
     /// the set-point changes in [`set_settings`](App::set_settings) /
     /// [`apply_gesture`](App::apply_gesture). See [`WallClock`].
     wall_clock: WallClock,
-    /// Whether the wall clock has been established from a real time source **this boot** (see
-    /// [`ClockTrust`]). Starts [`Untrusted`](ClockTrust::Untrusted) at every boot — the persisted
-    /// set-point is display-only — and only [`stamp_clock`](App::stamp_clock) (GPS now, BLE in S2)
-    /// advances it. Read through [`clock_trusted`](App::clock_trusted); the auto-expiry sweep (#638
-    /// S3) gates every stamp and deletion on it. **Never persisted.**
     clock_trust: ClockTrust,
-    /// The retention domain (epic #638 S3, #1437): the whole auto-expiry policy — the trusted-clock
-    /// and hourly gates, the usage and sync stamps, expiry discovery, live revalidation, and the
-    /// delete retry pacing. Advanced from [`tick`](App::tick); it emits typed metadata effects and
-    /// catalog expiry intents.
-    pub(crate) retention: crate::retention::RetentionMachine,
-    /// The **Recorder** domain (#1398 R1/R2): the ride session identity, whether a ride is open,
-    /// the rider's undelivered close, the checkpoint deadline, the boot-recovery decision, and the
-    /// two per-session buffers a new ride restarts. The only thing in the app that decides a ride
-    /// is open or closed.
     pub recorder: crate::recorder::RecorderMachine,
 
     /// The **Navigator** domain: active-route following and caches, plus the rider's undelivered
@@ -664,7 +607,6 @@ impl App {
             wall_clock: WallClock::new(Settings::default().local_clock()),
             // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
             clock_trust: ClockTrust::Untrusted,
-            retention: crate::retention::RetentionMachine::new(),
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
             mode: CoreMode::new(),
@@ -700,7 +642,6 @@ impl App {
     /// to the plan must state its boot value here too.
     #[cfg(test)]
     fn assert_idle_boot_state(&self, state: AppState) {
-        use crate::retention::SweepKind;
         let App {
             state: camera,
             activity,
@@ -711,7 +652,6 @@ impl App {
             settings,
             wall_clock,
             clock_trust,
-            retention,
             recorder,
 
             navigator,
@@ -736,12 +676,6 @@ impl App {
         assert_eq!(*settings, Settings::default(), "the defaults until the store answers");
         assert_eq!(*wall_clock, WallClock::new(Settings::default().local_clock()), "the default set-point");
         assert_eq!(*clock_trust, ClockTrust::Untrusted, "a persisted set-point is display-only this boot");
-        assert!(
-            [SweepKind::DeleteRoute, SweepKind::StampRoute, SweepKind::DeleteRide, SweepKind::StampRide]
-                .iter()
-                .all(|k| !retention.has(*k)),
-            "no retention sweep in flight"
-        );
 
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
 
@@ -757,27 +691,8 @@ impl App {
         assert!(!*backlight_available, "no host has claimed a panel light yet");
     }
 
-    /// Advance one tick from the sensors.
-    ///
-    /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a route
-    /// loaded, snaps the fix onto it via [`RouteMatch`] and integrates ridden distance / moving
-    /// time. Separately polls the barometer for climb — the streams are asynchronous, so each
-    /// accumulates on its own cadence.
-    ///
-    /// `clock` is the [`RideClock`] (fix-consistent millis) so moving-time isn't scaled by the sim's
-    /// replay multiplier; button holds use [`InputClock`] in [`handle_input`](App::handle_input).
-    /// Loading or swapping a route resets the matcher and ride totals here, once per load.
-    ///
-    /// Two things happen, and the DeviceCore pass runs them at different stages: the world is
-    /// applied ([`advance_inputs`](App::advance_inputs), stage 3) and then the retention domain
-    /// advances ([`retention_tick`](App::retention_tick), stage 5). One implementation of each,
-    /// reached by both compositions.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         self.advance_inputs(clock, sensors, route);
-        // Auto-expiry (epic #638, S3): stamp the active route's `last_used` on activation, then run
-        // the roughly-hourly sweep — both gated on a trusted clock and no ride recording. Deletes +
-        // stamps leave here as typed host commands.
-        self.retention_tick();
     }
 
     /// Apply the world to the app: the sensor ports, the fix and its derived readouts, and the
@@ -865,11 +780,7 @@ impl App {
                 self.recorder.record_cadence(rpm, now_ms);
             }
         }
-        // GPS UTC time → the wall clock. GPS **always** stamps now (manual date/time was removed in
-        // #641, so a fat-fingered clock can't feed the expiry sweep). The receiver resolves time
-        // before a 3D position, so this lands during acquisition — the clock can be right while the
-        // "No GPS Fix" banner is still up. Funnels through `stamp_clock`, the one entry point that
-        // owns the trusted-clock invariant (BLE `setClock` joins it in epic #638 S2).
+        // GPS can establish UTC before a position fix is available.
         if let Some(t) = clock.and_then(|c| c.poll()) {
             // GPS carries no timezone — pass `None` to leave the persisted offset untouched (BLE
             // `setClock` is the only source that sets it).
@@ -982,58 +893,6 @@ impl App {
         }
         true
     }
-
-    /// Advance [`RetentionMachine`](crate::retention::RetentionMachine) one pass (epic #638 S3,
-    /// #1437). The whole policy — the trusted-clock and recording gates included — lives in the
-    /// domain; all this does is assemble the [`RetentionView`](crate::retention::RetentionView) of
-    /// the catalogs, the clocks and the live gates that the domain reads.
-    pub(crate) fn retention_tick(&mut self) {
-        self.with_retention(|retention, view| retention.advance(view));
-    }
-
-    /// Run `f` against the retention domain and the read-only [`RetentionView`] of the rest of the
-    /// app it decides from — disjoint field borrows, so the machine mutates its own queue while it
-    /// reads the catalogs.
-    ///
-    /// The view is assembled fresh at every call site (the tick *and* each drain), so discovery and
-    /// the just-in-time recheck can never read two different pictures.
-    ///
-    /// [`RetentionView`]: crate::retention::RetentionView
-    pub(crate) fn with_retention<T>(
-        &mut self,
-        f: impl FnOnce(&mut crate::retention::RetentionMachine, &crate::retention::RetentionView) -> T,
-    ) -> T {
-        // A `None` clock is invariant 1: no real time source established it this boot, so the
-        // domain stamps nothing, deletes nothing and sweeps nothing.
-        let now_utc = self.clock_trusted().then(|| self.wall_unix_now());
-        let now_ms = self.ui.now_ms;
-        let recording = self.recorder.recording();
-        let App { retention, catalogs, navigator, settings, .. } = self;
-        let view = crate::retention::RetentionView {
-            now_utc,
-            now_ms,
-            recording,
-            route_ids: catalogs.route_ids(),
-            route_metas: catalogs.route_metas(),
-            active_route: navigator.route_state().active_route,
-            ride_records: catalogs.ride_records(),
-            ride_retention: settings.ride_retention,
-        };
-        f(retention, &view)
-    }
-
-    /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
-    /// #638, S3) — a **test and simulator seam** with no production caller. The simulator's "+1 day"
-    /// control uses it so a fast-forwarded clock sweeps immediately instead of waiting for the
-    /// wall-clock hour to roll.
-    ///
-    /// The production path to the same fact is
-    /// [`note_catalog_changed`](crate::retention::RetentionMachine::note_catalog_changed), which
-    /// stage 5 calls when the catalog's identity set moves.
-    pub fn force_retention_sweep(&mut self) {
-        self.retention.note_catalog_changed();
-    }
-
     /// Recompute Navigator's active climb from the freshly-matched progress — its hysteresis and
     /// once-per-entry detail refill — then apply the App-plane consequences of a
     /// transition: one repaint, and the C5 host auto-switch off the same edge.
@@ -1274,38 +1133,6 @@ impl App {
         self.remap_route_indices(&old_ids);
         self.ui.map_dirty = true;
     }
-
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) **plus** the host's fresh per-route
-    /// retention metadata loaded from the card, pairwise with
-    /// `ids`. The base call remaps held indices and carries surviving routes' metas across by
-    /// identity; this then overlays the host's device-durable retention values so the sweep reads
-    /// device truth. Retention-aware hosts (the board, the simulator) call this; plain
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) callers leave every route at the safe
-    /// default ([`Never`](crate::Retention::Never) — nothing expires).
-    pub fn set_routes_with_meta(
-        &mut self,
-        summaries: &[RouteSummary],
-        ids: &[crate::CatalogObjectId],
-        metas: &[crate::retention::RouteRetentionMeta],
-    ) {
-        self.set_routes_with_ids(summaries, ids);
-        self.catalogs.set_route_meta(metas);
-    }
-
-    /// Each resident route's retention meta, pairwise with [`route_ids`](App::route_ids) (epic #638
-    /// S3) — the host's read-back (e.g. to keep a sidecar row aligned) and the sweep tests' probe.
-    pub fn route_metas(&self) -> &[crate::retention::RouteRetentionMeta] {
-        self.catalogs.route_metas()
-    }
-
-    /// Overlay the host's fresh per-route retention metas (from the SD sidecar), pairwise with the
-    /// **current** [`route_ids`](App::route_ids) — the standalone meta feed a host calls when it
-    /// re-reads the sidecar without replacing the catalog (the sim re-pushes it each frame so the
-    /// sweep always mirrors device truth). No catalog replacement, no remap. Excess metas are ignored.
-    pub fn set_route_meta(&mut self, metas: &[crate::retention::RouteRetentionMeta]) {
-        self.catalogs.set_route_meta(metas);
-    }
-
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
@@ -1423,14 +1250,6 @@ impl App {
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
         self.ui.map_dirty = true;
     }
-
-    /// Replace the full compact ride-retention inventory, up to [`MAX_RIDES`](crate::MAX_RIDES).
-    /// Hosts that supply only visible summaries to [`set_rides`](App::set_rides), such as the board,
-    /// call this afterwards with every stored ride's metadata so expiry also reaches older rides.
-    pub fn set_ride_retention_inventory(&mut self, records: &[crate::retention::RideRetentionRecord]) {
-        self.catalogs.set_ride_retention_inventory(records);
-    }
-
     /// Apply an exact durable archive row after the complete catalog and metadata reads succeed.
     /// The caller must finish the refresh under its unchanged store scope before policy can run.
     pub fn set_ride_archive_proof(&mut self, id: crate::CatalogObjectId, timestamp: u32) {
@@ -1893,6 +1712,20 @@ impl App {
 
     // ==================== map-transfer seam (issue #927) ====================
 
+    /// Offer explicit cleanup after a route upload ran out of storage.
+    pub fn offer_route_cleanup(&mut self, store: crate::device_core::StoreIdentity) {
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::RouteCleanup(_))) {
+            return;
+        }
+        let utc = self.clock_trusted().then(|| self.wall_unix_now());
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
+        );
+        self.ui.hold_cancel_pending = true;
+        self.ui.map_dirty = true;
+    }
+
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
         self.ui.cards.set_map_transfer(state);
         self.sweep_cards();
@@ -1967,11 +1800,6 @@ impl App {
         }
         self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
         self.sweep_cards();
-        // Anchor the route's retention clock at upload time (auto-expiry epic #638 S4): a fresh or
-        // replace upload is a "use", so its expiry clock anchors here rather than at the next hourly
-        // sweep. Whether the clock may be trusted is the domain's rule, applied inside
-        // `note_route_uploaded` — the same place its sibling `note_route_activated` applies it.
-        self.with_retention(|retention, view| retention.note_route_uploaded(id, view));
     }
 
     /// A committed trip upload: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
@@ -2353,21 +2181,11 @@ impl App {
         ))
     }
 
-    /// Whether the wall clock has an **established** set-point — a persisted/GPS/BLE time has been
-    /// applied, versus a fresh clock that has never been told the time (see
-    /// [`WallClock::is_established`](crate::wall_clock::WallClock::is_established)). The Home date
-    /// line gates on this so it never shows a date with no origin at all. This is the *coarse*
-    /// "do we know a date?" gate — a **stale persisted** set-point is established but **not**
-    /// [`trusted`](App::clock_trusted); the auto-expiry sweep uses the finer trust gate.
     pub fn clock_is_set(&self) -> bool {
         self.wall_clock.is_established()
     }
 
-    /// Whether the wall clock was established from a **real time source this boot** — GPS now, BLE in
-    /// epic #638 S2 (see [`ClockTrust`]). `false` from every boot until the first
-    /// [`stamp_clock`](App::stamp_clock), regardless of any stale persisted set-point. S3's expiry
-    /// sweep gates every timestamp write and deletion on this: no trusted clock → nothing is stamped
-    /// or deleted.
+    /// Whether GPS or BLE established the wall clock during this boot.
     pub fn clock_trusted(&self) -> bool {
         self.clock_trust != ClockTrust::Untrusted
     }
@@ -2411,16 +2229,6 @@ impl App {
         self.clock_trust = source;
     }
 
-    /// Stamp the wall clock from a BLE `setClock` (auto-expiry epic #638 S2, #642): the phone's UTC
-    /// **unix seconds** + its live local offset, arriving over the encrypted link on every connect.
-    /// The board crate's BLE plane validates the wire (spec §4.4) and hands the two decoded values
-    /// straight here, so the unix→`DateTime` split (and the seconds-into-the-minute back-date) stays
-    /// in `obc-app` beside [`stamp_clock`](App::stamp_clock), the one owner of that arithmetic — the
-    /// GPS path already carries a split `DateTime`+`second`, so only BLE needs the conversion.
-    ///
-    /// Passes the offset as `Some`, so a changed offset persists even when the clock is already
-    /// trusted this boot (a same-boot reconnect after a flight); records trust as
-    /// [`Ble`](ClockTrust::Ble).
     pub fn stamp_clock_ble(&mut self, utc_unix: u32, offset_min: i16) {
         let utc = DateTime::from_unix(utc_unix);
         let second = (utc_unix % 60) as u8;
@@ -3066,10 +2874,6 @@ impl App {
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
         let place_local = self.place_local_time();
-        // The UTC instant the Route overview's expiry row counts down from. Display-only, so
-        // (unlike the sweep) it isn't gated on the clock being trusted — a stale set-point just
-        // yields a stale readout.
-        let now_utc = self.wall_unix_now();
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
 
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
@@ -3118,7 +2922,6 @@ impl App {
             recorder,
             settings,
             routes: catalogs.routes(),
-            route_metas: catalogs.route_metas(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
@@ -3141,7 +2944,6 @@ impl App {
             w: w as i32,
             h: h as i32,
             now_ms: ui.now_ms,
-            now_utc,
             now,
             clock_set,
             place_local,
@@ -6286,822 +6088,6 @@ mod tests {
         app.admit_navigator_intent(NavigatorIntent::CancelPlan); // Back on B's spinner — annihilates the undrained B
         assert!(drain_cancel(&mut app), "one cancel: aborts the in-flight A");
         assert_eq!(drain_nav(&mut app), None, "B never runs");
-    }
-
-    // ==================== Auto-expiry sweep (epic #638, S3) — the safety invariants ====================
-
-    use crate::retention::{Retention, RideRetention, RouteRetentionMeta, DAY_SECS};
-
-    /// A known UTC set-point for the trusted-clock helper — mid-2026, offset 0.
-    fn sweep_dt() -> DateTime {
-        DateTime { year: 2026, month: 7, day: 14, hour: 12, minute: 0 }
-    }
-
-    /// A fresh app with a **trusted** GPS-stamped clock; returns it and the UTC `now` it reads.
-    fn trusted_app() -> (App, u32) {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now();
-        (app, now)
-    }
-
-    /// Re-stamp the trusted clock `days` days later than `sweep_dt` (advancing `now`) and force the
-    /// next sweep to run regardless of the hourly gate. Returns the new UTC `now`.
-    fn advance_days(app: &mut App, days: u32) -> u32 {
-        // The set-point is minute-resolution; advance via a fresh `stamp_clock` at a later date.
-        let mut dt = sweep_dt();
-        dt.day += days as u8; // stays within July for the small offsets these tests use
-        app.stamp_clock(dt, 0, None, ClockTrust::Gps);
-        app.force_retention_sweep();
-        app.wall_unix_now()
-    }
-
-    fn synced_ride(name: &str, synced: bool, synced_at_utc: u32) -> crate::ride::RideSummary {
-        crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced,
-            synced_at_utc,
-        }
-    }
-
-    /// What one pass asked the platform to do about retention.
-    ///
-    /// The old drain spelled these `DeleteRoute` / `DeleteRide` / `StampRouteUsed` /
-    /// `StampRideSynced`. The pass emits `CatalogEffect::RemoveObject`, which names the *object* and
-    /// not its namespace because the store removes by identity, and `RetentionEffect::Write*Metadata`
-    /// for the sidecar writes.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum SweepOp {
-        Remove(crate::CatalogObjectId),
-        StampRoute(crate::CatalogObjectId),
-        StampRide(crate::CatalogObjectId),
-    }
-
-    /// The retention executor these tests run: one pass at a time, serving whatever it asks for and
-    /// reporting the ops it asked for. Its outcome slots are its own, exactly like a host's — an
-    /// answer it deposits is read by the *next* pass, which is what makes "one operation in flight"
-    /// observable.
-    /// Every capability the test platform implements.
-    const EVERY_CAPABILITY: crate::device_core::PlatformSupport = crate::device_core::PlatformSupport {
-        detour: true,
-        settings_persistence: true,
-        dfu: true,
-
-        bonding: true,
-        storage_space_report: true,
-        retention_metadata: true,
-    };
-
-    /// A location source with nothing to say.
-    struct NoFix;
-    impl LocationSource for NoFix {
-        fn poll(&mut self) -> Option<obc_ports::Fix> {
-            None
-        }
-    }
-
-    struct Sweeper {
-        outcomes: crate::device_core::OutcomeSlots,
-        ms: u32,
-        /// What the store reports for a removal. `false` is a transient failure the domain retries.
-        store_ok: bool,
-        started: bool,
-        written: Option<crate::retention::RetentionEffect>,
-        removed: heapless::Vec<crate::CatalogObjectId, 192>,
-    }
-
-    impl Sweeper {
-        fn new() -> Self {
-            Sweeper {
-                outcomes: crate::device_core::OutcomeSlots::new(),
-                ms: 0,
-                store_ok: true,
-                started: false,
-                written: None,
-                removed: heapless::Vec::new(),
-            }
-        }
-
-        /// One pass: run it, record what it asked for, and answer it for the next one.
-        fn pass(&mut self, app: &mut App) -> heapless::Vec<SweepOp, 8> {
-            use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
-            use crate::retention::{RetentionEffect, RetentionOutcome};
-            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
-            if !self.started {
-                app.test_mount_store();
-                self.started = true;
-            }
-            self.ms += 1;
-            let ms = self.ms.max(app.ui.now_ms);
-            let mut loc = NoFix;
-            let mut facts = crate::device_core::ExternalFacts::NONE;
-            let mut plan = app.run_pass(crate::device_core::PassInputs {
-                now: crate::device_core::PassClock { ride: RideClock(ms), ui: obc_ports::InputClock(ms) },
-                gestures: &[],
-                sensors: Sensors::new(&mut loc),
-                route: None,
-
-                support: EVERY_CAPABILITY,
-                outcomes: &mut self.outcomes,
-                facts: &mut facts,
-                derived: crate::device_core::DerivedInputs::NONE,
-                targets: crate::device_core::DerivedTargets::NONE,
-            });
-            if let Some(effect) = plan.effects.retention.take() {
-                self.written = Some(effect);
-                let token = effect.token();
-                let outcome = match effect {
-                    RetentionEffect::WriteRouteMetadata { id, .. } => {
-                        let _ = out.push(SweepOp::StampRoute(id));
-                        RetentionOutcome::RouteMetadataWritten { token, id }
-                    }
-                    RetentionEffect::WriteRideMetadata { id, .. } => {
-                        let _ = out.push(SweepOp::StampRide(id));
-                        RetentionOutcome::RideMetadataWritten { token, id }
-                    }
-                };
-                let _ = self.outcomes.retention.try_put(outcome);
-            }
-            if let Some(effect) = plan.effects.catalog.take() {
-                let token = effect.token();
-                match effect {
-                    CatalogEffect::RemoveObject { object, .. } | CatalogEffect::ExpireObject { object, .. } => {
-                        let _ = out.push(SweepOp::Remove(object));
-                        if self.store_ok {
-                            self.removed.push(object).unwrap();
-                        }
-                        let _ = self.outcomes.catalog.try_put(if self.store_ok {
-                            CatalogOutcome::ObjectRemoved { token, object, existed: true }
-                        } else {
-                            CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed }
-                        });
-                    }
-                    // Publish the fake store changes through the same catalog feeders as a host.
-                    CatalogEffect::ReadCatalog { .. } => {
-                        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::MAX_ROUTES }> =
-                            heapless::Vec::new();
-                        let mut routes = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
-                        let mut metas = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
-                        for (i, &id) in app.route_ids().iter().enumerate() {
-                            if !self.removed.contains(&id) {
-                                ids.push(id).unwrap();
-                                routes.push(app.catalogs.routes()[i].clone()).unwrap();
-                                metas.push(app.route_metas()[i]).unwrap();
-                            }
-                        }
-                        app.set_routes_with_meta(&routes, &ids, &metas);
-                        let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
-                            heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
-                        inventory.retain(|ride| !self.removed.contains(&ride.id));
-                        let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
-                        rides.retain(|ride| !self.removed.contains(&ride.id));
-                        app.set_rides(&rides);
-                        app.set_ride_retention_inventory(&inventory);
-                        if let Some(effect) = self.written.take() {
-                            match effect {
-                                RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
-                                    let mut metas: heapless::Vec<RouteRetentionMeta, { crate::MAX_ROUTES }> =
-                                        heapless::Vec::from_slice(app.route_metas()).unwrap();
-                                    if let Some(index) = app.route_ids().iter().position(|&candidate| candidate == id) {
-                                        metas[index] = meta;
-                                    }
-                                    app.set_route_meta(&metas);
-                                }
-                                RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
-                                    let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
-                                    for ride in rides.iter_mut().filter(|ride| ride.id == id) {
-                                        ride.summary.synced_at_utc = synced_at;
-                                    }
-                                    app.set_rides(&rides);
-                                    let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
-                                        heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
-                                    for ride in inventory.iter_mut().filter(|ride| ride.id == id) {
-                                        ride.synced_at_utc = synced_at;
-                                    }
-                                    app.set_ride_retention_inventory(&inventory);
-                                }
-                            }
-                        }
-                        let _ = self.outcomes.catalog.try_put(CatalogOutcome::CatalogRead {
-                            token,
-                            scope: app.catalogs.loaded_scope.or(Some(crate::device_core::StoreRevision {
-                                store: crate::device_core::StoreIdentity::new(1),
-                                revision: crate::device_core::Revision::new(1),
-                            })),
-                        });
-                    }
-                }
-            }
-            out
-        }
-
-        /// `n` passes, with everything they ask for served.
-        fn rounds(&mut self, app: &mut App, n: usize) -> heapless::Vec<SweepOp, 8> {
-            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
-            for _ in 0..n {
-                for op in self.pass(app) {
-                    let _ = out.push(op);
-                }
-            }
-            out
-        }
-    }
-
-    /// Drive several retention-tick + pass rounds and collect every op produced. Multiple rounds are
-    /// needed because a domain performs one bounded operation at a time and the once-per-activation
-    /// stamp defers the batch sweep a tick; a round that produces nothing new ends the drive.
-    fn sweep_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
-        let mut host = Sweeper::new();
-        let mut out: heapless::Vec<SweepOp, 128> = heapless::Vec::new();
-        for _ in 0..24 {
-            let before = out.len();
-            app.retention_tick();
-            for _ in 0..4 {
-                for op in host.pass(app) {
-                    let _ = out.push(op);
-                }
-            }
-            if out.len() == before {
-                break; // a full round produced nothing new
-            }
-        }
-        out
-    }
-
-    fn n_deletes(ops: &[SweepOp]) -> usize {
-        ops.iter().filter(|op| matches!(op, SweepOp::Remove(_))).count()
-    }
-
-    /// Invariant 1: no trusted clock this boot → the sweep does nothing and stamps nothing, even
-    /// with data that *looks* long expired.
-    #[test]
-    fn sweep_does_nothing_without_a_trusted_clock() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
-        app.set_routes_with_meta(
-            &[summary("Old")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, 1)], // "used" at unix 1 → ancient
-        );
-        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("R", true, 1) }]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.is_empty(), "untrusted clock → no deletes, no stamps: {cmds:?}");
-    }
-
-    /// Invariant 6 + the delete happy-path: a trusted sweep deletes an expired route, keeps a fresh
-    /// one, and never touches a `Never` route.
-    #[test]
-    fn sweep_deletes_expired_keeps_fresh_and_never() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Expired"), summary("Fresh"), summary("Forever")],
-            &[10, 11, 12],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS),
-                RouteRetentionMeta::new(Retention::Week1, now - DAY_SECS),
-                RouteRetentionMeta::new(Retention::Never, 1),
-            ],
-        );
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&SweepOp::Remove(10)), "expired route deleted");
-        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(11 | 12))), "fresh + Never kept");
-    }
-
-    /// Invariant 2: a retention-set route with an **unknown** `last_used` is stamped (the clock
-    /// starts) — never deleted on sight — and only deletes after the full period from that stamp.
-    #[test]
-    fn sweep_starts_the_clock_then_deletes_after_the_period() {
-        let (mut app, _now) = trusted_app();
-        app.set_routes_with_meta(&[summary("New")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 0)]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "clock started");
-        assert_eq!(n_deletes(&cmds), 0, "unknown last_used is never deleted on sight");
-        // The stamp's optimistic mirror set last_used = now; a forced re-sweep at the same instant
-        // finds it freshly stamped and well within the 1-day window — nothing deletes.
-        app.force_retention_sweep();
-        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "freshly stamped — not expired");
-        // Days past the 1-day window it deletes.
-        advance_days(&mut app, 5);
-        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "deletes after the period");
-    }
-
-    /// Invariant 3: the active navigation route is never deleted — it re-stamps when it would expire.
-    #[test]
-    fn sweep_never_deletes_the_active_route() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Active"), summary("Idle")],
-            &[10, 11],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // active + long expired
-                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // inactive + long expired
-            ],
-        );
-        app.activate_route(0); // route 10 is the active nav route
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "active re-stamped");
-        assert!(!cmds.contains(&SweepOp::Remove(10)), "the active route is never deleted");
-        assert!(cmds.contains(&SweepOp::Remove(11)), "the idle expired route is deleted");
-    }
-
-    /// The route-upload `last_used` stamp (epic #638 S4): a committed upload under a **trusted** clock
-    /// enqueues a `StampRouteUsed` for the route — anchoring its expiry clock at upload time — while an
-    /// upload under an **untrusted** clock stamps nothing (the sweep starts the clock later, invariant
-    /// 2). A fresh route is `Never` at upload (the app sets real retention via a later
-    /// `setRouteRetention`), yet the upload still anchors `last_used` so the eventual expiry counts
-    /// from upload time.
-    #[test]
-    fn route_upload_stamps_last_used_only_when_trusted() {
-        fn upload_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
-            app.on_route_uploaded(10, false, None);
-            sweep_and_drain(app)
-        }
-
-        // Trusted: an upload commit stamps the route used (anchoring the expiry clock at upload time).
-        let (mut app, _now) = trusted_app();
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        let cmds = upload_and_drain(&mut app);
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
-            "a trusted upload stamps last_used: {cmds:?}"
-        );
-
-        // Untrusted (never stamped this boot): the same upload stamps nothing — the safe fallback.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        let cmds = upload_and_drain(&mut app);
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(_))),
-            "an untrusted upload stamps nothing: {cmds:?}"
-        );
-    }
-
-    /// #1548: the upload stamp does **not** take its sibling's expiring-route filter. Every fresh
-    /// route is `Never` at upload — the app sets the level in a separate command that never touches
-    /// `last_used` — so filtering `Never` here would slip the anchor to the next hourly sweep, which
-    /// is the imprecision this stamp exists to remove.
-    #[test]
-    fn a_never_route_uploaded_and_levelled_later_anchors_at_upload() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        app.on_route_uploaded(10, false, None);
-        sweep_and_drain(&mut app);
-        let anchored = app.route_metas()[0].last_used_utc;
-        assert_eq!(anchored, now, "the upload anchored `last_used`, not the next sweep");
-
-        // The phone's `setRouteRetention` sets the level and leaves `last_used` alone.
-        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Day1, anchored)]);
-        assert_eq!(app.route_metas()[0].expires_at(), Some(now + DAY_SECS), "the countdown runs from the upload");
-    }
-
-    /// Invariant 4: no sweep (no deletions) while a ride is recording — even with an expired route.
-    #[test]
-    fn sweep_suppressed_while_recording() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Expired")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)],
-        );
-        app.test_start_ride(); // recording in progress
-        let cmds = sweep_and_drain(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "recording suppresses the sweep — nothing deleted");
-    }
-
-    /// A ride acked synced under a **trusted clock while recording** gets its `synced_at` stamped
-    /// **at ack-time** (its countdown starts) — the eager stamp is *not* deferred to the
-    /// recording-gated delete sweep. A metadata stamp is safe mid-ride; only deletions wait for
-    /// recording to end (invariant 4). (Regression guard for the S3 review fix.)
-    #[test]
-    fn ride_synced_at_stamped_eagerly_even_while_recording() {
-        let (mut app, _now) = trusted_app();
-        app.test_start_ride(); // recording a multi-day tour
-                               // The phone acks a ride synced (synced_at not yet set) mid-recording.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("Acked", true, 0) }]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
-            "the countdown starts at ack-time, not deferred to recording-end: {cmds:?}"
-        );
-        assert_eq!(n_deletes(&cmds), 0, "but nothing is deleted while recording");
-        // The stamp mirrored synced_at = now, so it isn't re-enqueued on the next tick.
-        app.force_retention_sweep();
-        let again = sweep_and_drain(&mut app);
-        assert!(
-            !again.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
-            "a stamped ride is not re-stamped: {again:?}"
-        );
-    }
-
-    /// Invariant 5: rides — unsynced is untouched at any age; synced + aged deletes; synced +
-    /// `synced_at == 0` (legacy) is stamped then later deletes; `ride_retention = Never` deletes
-    /// nothing.
-    #[test]
-    fn sweep_ride_rules_end_to_end() {
-        let (mut app, now) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
-        // Re-stamp trust (set_settings re-stamped the wall clock from the persisted set-point).
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now().max(now);
-        app.set_rides(&[
-            crate::RideEntry { id: 1, summary: synced_ride("Aged", true, now - 8 * DAY_SECS) },
-            crate::RideEntry { id: 2, summary: synced_ride("Recent", true, now - DAY_SECS) },
-            crate::RideEntry { id: 3, summary: synced_ride("Legacy", true, 0) },
-            crate::RideEntry { id: 4, summary: synced_ride("Unsynced", false, 0) },
-        ]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&SweepOp::Remove(1)), "aged synced ride deleted");
-        assert!(!cmds.contains(&SweepOp::Remove(2)), "recent synced ride kept");
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRide(3))), "legacy ride stamped");
-        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(3))), "legacy ride not deleted on sight");
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(4) | SweepOp::StampRide(4))),
-            "the unsynced ride is never touched"
-        );
-    }
-
-    /// A full host feed keeps older synced rides eligible for expiry beyond the visible menu.
-    #[test]
-    fn ride_expiry_reaches_beyond_the_menu_cap() {
-        let (mut app, _) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now();
-        let mut rides: [RideEntry; 33] =
-            core::array::from_fn(|i| RideEntry { id: i as u64 + 1, summary: synced_ride("Unsynced", false, 0) });
-        rides[32].summary = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
-        app.set_rides(&rides);
-
-        assert_eq!(app.rides(), &rides[..32], "the menu still holds only its first 32 summaries");
-        let cmds = sweep_and_drain(&mut app);
-        assert_eq!(cmds.as_slice(), &[SweepOp::Remove(33)], "only the older synced ride expires");
-    }
-
-    /// `ride_retention = Never` deletes no ride, however long ago it synced.
-    #[test]
-    fn sweep_ride_retention_never_deletes_nothing() {
-        let (mut app, _now) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Never, ..Settings::default() });
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        app.set_rides(&[crate::RideEntry { id: 1, summary: synced_ride("Aged", true, 1) }]); // synced at unix 1 → ancient
-        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "ride_retention Never → nothing");
-    }
-
-    /// Exact boundary: `now == expires_at` deletes (the `>=` in the policy).
-    #[test]
-    fn sweep_deletes_on_the_exact_boundary() {
-        let (mut app, now) = trusted_app();
-        // last_used = now - 1 day, retention 1 day → expires_at == now exactly.
-        app.set_routes_with_meta(
-            &[summary("Boundary")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, now - DAY_SECS)],
-        );
-        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "now == expires_at deletes");
-    }
-
-    /// Remap coherence: a route delete mid-session keeps each surviving route's retention meta
-    /// aligned with its id across the rescan.
-    #[test]
-    fn route_meta_stays_aligned_across_a_rescan() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_routes_with_meta(
-            &[summary("A"), summary("B"), summary("C")],
-            &[10, 11, 12],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, 100),
-                RouteRetentionMeta::new(Retention::Week1, 200),
-                RouteRetentionMeta::new(Retention::Month1, 300),
-            ],
-        );
-        // A rescan drops the middle route (id 11) — B is gone, A and C survive in a new order.
-        app.set_routes_with_ids(&[summary("C"), summary("A")], &[12, 10]);
-        assert_eq!(app.route_ids(), &[12, 10]);
-        let metas = app.route_metas();
-        assert_eq!(metas[0], RouteRetentionMeta::new(Retention::Month1, 300), "C's meta followed its id");
-        assert_eq!(metas[1], RouteRetentionMeta::new(Retention::Day1, 100), "A's meta followed its id");
-    }
-
-    // ==================== finding #876: just-in-time execution guards ====================
-    //
-    // The tests above collect *and* dispatch in one `sweep_and_drain`, so a decision never goes
-    // stale between the two. These drive the race the issue is about: fill the candidate queue with
-    // one `retention_tick`, mutate live state, and prove the **drain** re-derives the decision.
-
-    use crate::retention::{RideRetentionRecord, SweepKind, RETENTION_DELETE_BACKOFF_MS};
-
-    /// One executor round, collecting the ops it produced. A domain performs one bounded
-    /// operation at a time, so a route delete and a ride delete are two catalog operations and
-    /// leave on consecutive passes.
-    /// Three passes, because that is one whole catalog operation from this executor's side: the
-    /// effect goes out, its answer comes back, and the re-read the answer orders (#1541) is served
-    /// too. Each call builds a fresh [`Sweeper`], so an answer left unconsumed at the last pass
-    /// would be dropped with it and the domain would stay in flight for the rest of the test.
-    fn drain_once(app: &mut App) -> heapless::Vec<SweepOp, 8> {
-        Sweeper::new().rounds(app, 3)
-    }
-
-    /// The same round against a store that **refuses** every removal — the one case the backstop
-    /// still covers, now that a completed removal is retired by the catalog's verdict.
-    fn drain_once_refusing(app: &mut App) -> heapless::Vec<SweepOp, 8> {
-        Sweeper { store_ok: false, ..Sweeper::new() }.rounds(app, 3)
-    }
-
-    fn expired(now: u32) -> RouteRetentionMeta {
-        RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)
-    }
-
-    /// Finding #876-1: a route **activated after the sweep discovered it** as a delete candidate but
-    /// **before the delete drains** is never deleted — the live drain recheck converts it to a
-    /// re-stamp, and the still-idle expired route deletes as normal.
-    #[test]
-    fn activation_after_discovery_cancels_the_queued_delete() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // the sweep queues DeleteRoute(10) + DeleteRoute(11)
-        assert!(app.retention.has(SweepKind::DeleteRoute), "both routes are delete candidates");
-        // The rider opens route 10 and starts navigating it before that item drains.
-        app.activate_route(0);
-        let cmds = drain_once(&mut app);
-        assert!(!cmds.contains(&SweepOp::Remove(10)), "the activated route is never deleted");
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
-            "the activated route is re-stamped instead: {cmds:?}"
-        );
-        assert!(cmds.contains(&SweepOp::Remove(11)), "the still-idle expired route deletes");
-    }
-
-    /// Finding #876-1 (invariant 4): deletes discovered while idle and **then** interrupted by a
-    /// recording are deferred — not dropped — and dispatch once recording ends.
-    #[test]
-    fn recording_after_discovery_defers_deletes_without_losing_them() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick(); // discovers DeleteRoute(10) + DeleteRide(7) while idle
-        assert!(app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide));
-        // Recording begins *after* discovery, on a later frame.
-        app.test_start_ride();
-        let while_recording = drain_once(&mut app);
-        assert_eq!(n_deletes(&while_recording), 0, "no auto-delete dispatches while recording");
-        assert!(
-            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
-            "the candidates are retained, not dropped"
-        );
-        // Recording ends → the same candidates dispatch (route + ride are separate classes → one pass).
-        app.test_end_ride();
-        let after = drain_once(&mut app);
-        assert!(after.contains(&SweepOp::Remove(10)), "the route delete dispatches after recording");
-        assert!(after.contains(&SweepOp::Remove(7)), "the ride delete dispatches after recording");
-    }
-
-    /// Finding #876-1: retention/metadata changed **between discovery and dispatch** — the live state
-    /// wins. A route lengthened to `Never` after the sweep queued its delete is not deleted.
-    #[test]
-    fn metadata_change_between_discovery_and_dispatch_wins() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.retention_tick(); // queues DeleteRoute(10)
-        assert!(app.retention.has(SweepKind::DeleteRoute));
-        // The phone sets this route to Never (or re-stamps it) before the delete drains.
-        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Never, now - 3 * DAY_SECS)]);
-        let cmds = drain_once(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "the live Never wins — the stale delete candidate is cancelled");
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "the cancelled candidate is retired");
-    }
-
-    /// Finding #876-3: multiple expired objects are drained **one in flight at a time**, and every id
-    /// is executed exactly once (or resolved already-absent) — none is overwritten or dropped, the
-    /// exact failure the coalescing delete `Signal` had. The host "applies" each delete by rescanning
-    /// the store without the id (as the real store-changed edge does).
-    #[test]
-    fn batched_deletes_all_execute_exactly_once() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B"), summary("C")], &[10, 11, 12], &[expired(now); 3]);
-        let mut host = Sweeper::new();
-        let deleted: heapless::Vec<crate::CatalogObjectId, 8> = host
-            .rounds(&mut app, 16)
-            .iter()
-            .filter_map(|op| if let SweepOp::Remove(id) = op { Some(*id) } else { None })
-            .collect();
-        assert_eq!(deleted.len(), 3, "every expired route was deleted: {deleted:?}");
-        for id in [10u64, 11, 12] {
-            assert_eq!(deleted.iter().filter(|&&x| x == id).count(), 1, "id {id} executed exactly once");
-        }
-    }
-
-    /// Finding #876-3, now the backstop's own case (#1548): a **refused** removal keeps its
-    /// candidate and retries it — no second hourly sweep is needed — paced by the bounded window so
-    /// a dead card is not hammered every frame.
-    #[test]
-    fn a_refused_removal_keeps_its_candidate_and_retries_after_the_backoff() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "first dispatch");
-        // The store refused: route 10 is still there, and nothing retired the candidate.
-        assert!(
-            !drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
-            "the backstop paces the retry — no per-frame hammering"
-        );
-        // Past the window, the *same* candidate re-dispatches — no new sweep ran in between.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        assert!(
-            drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
-            "the retained candidate retries itself, without another hourly discovery"
-        );
-    }
-
-    /// One in-flight slot, not one per class (#1548): the backstop belongs to the **store**, so a
-    /// ride removal does not walk into a card that refused a route removal a frame ago. It follows
-    /// once the window has passed, or — on the ordinary path — in the pass the route's verdict lands.
-    #[test]
-    fn a_refused_removal_paces_the_next_delete_of_either_kind() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick();
-        let first = drain_once_refusing(&mut app);
-        assert!(first.contains(&SweepOp::Remove(10)), "the route removal goes out first: {first:?}");
-        assert_eq!(n_deletes(&first), 1, "the card just refused — the ride does not walk into it: {first:?}");
-
-        let blocked = drain_once_refusing(&mut app);
-        assert_eq!(n_deletes(&blocked), 0, "and it still waits inside the window: {blocked:?}");
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "past the window the head retries");
-    }
-
-    /// The class order is the domain's, not the stage's (#1548): a route expiry is offered before a
-    /// ride expiry, which is the order the sweep discovers them in.
-    #[test]
-    fn an_expiry_offers_a_route_before_a_ride() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick();
-        let mut host = Sweeper::new();
-        assert_eq!(host.pass(&mut app).first(), Some(&SweepOp::Remove(10)), "the route class goes first");
-        assert!(host.rounds(&mut app, 2).contains(&SweepOp::Remove(7)), "and the ride follows it");
-    }
-
-    /// #1548: a **completed** removal retires the expiry candidate in the pass its answer lands —
-    /// while the resident catalogs are still the pre-removal picture, because the re-read the
-    /// removal ordered has not run yet.
-    #[test]
-    fn a_completed_removal_retires_its_expiry_candidate_in_the_same_pass() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        let mut host = Sweeper::new();
-        assert!(host.pass(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches");
-
-        host.pass(&mut app); // the answer lands at stage 1 of this pass
-        assert!(app.route_ids().is_empty(), "the executor has served the removal’s re-read");
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "and the candidate is already retired");
-    }
-
-    /// #1548: every producer of a deletion converges on the same verdict. A route the **rider**
-    /// deletes retires the expiry candidate the sweep had for it, so the object is removed once.
-    #[test]
-    fn a_riders_delete_retires_the_expiry_candidate_for_the_same_object() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // both routes are expiry candidates, and 10 is the head
-        app.activity.request_route_delete(1); // the rider deletes 11 by hand, so the sweep never did
-
-        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
-        for _ in 0..4 {
-            for op in drain_once(&mut app) {
-                let _ = ops.push(op);
-            }
-        }
-        for id in [10u64, 11] {
-            let n = ops.iter().filter(|op| **op == SweepOp::Remove(id)).count();
-            assert_eq!(n, 1, "{id} removed once, whoever ordered it: {ops:?}");
-        }
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "both candidates were retired by their verdicts");
-    }
-
-    /// #1548: the same race one pass tighter. The rider deletes the route the sweep's **head**
-    /// candidate names, so both reach the catalog in one pass: the rider's is admitted and the
-    /// expiry is refused and parked. When the verdict lands, the parked intent is a copy of a
-    /// candidate that is already retired — admitting it would remove an object that has gone.
-    #[test]
-    fn a_riders_delete_of_the_head_candidate_orders_one_removal() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        app.activity.request_route_delete(0);
-
-        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
-        for _ in 0..3 {
-            for op in drain_once(&mut app) {
-                let _ = ops.push(op);
-            }
-        }
-        assert_eq!(n_deletes(&ops), 1, "the rider's removal is the only one: {ops:?}");
-    }
-
-    /// #1548 finding 2: the store **answered `ObjectRemoved`**, and the re-read that answer ordered
-    /// has not re-fed the catalogs yet — the object is still a resident row. That is the ordinary
-    /// board cadence, not a fault: the pass clock is real monotonic millis and the device sleeps
-    /// between wakes, so more than [`RETENTION_DELETE_BACKOFF_MS`] routinely elapses between the
-    /// answer and the read landing. A second removal for an object the store has already removed is
-    /// a second `ObjectRemoved`, a second armed re-read and a second wake, and it breaks #1541's
-    /// "one read per delete".
-    #[test]
-    fn an_expiry_answered_removed_is_not_dispatched_twice_when_the_re_read_is_slow() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        assert!(drain_once(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches once");
-
-        // The removal was answered `ObjectRemoved`. The catalogs are still the pre-removal picture
-        // until the owed read lands, and the device slept past the backoff in the meantime.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        let later = drain_once(&mut app);
-        assert!(
-            !later.contains(&SweepOp::Remove(10)),
-            "the verdict retired the candidate — a slow re-read must not order a second removal: {later:?}"
-        );
-    }
-
-    /// Review fix (#886): cancelling a queued-but-never-dispatched candidate must NOT re-open the
-    /// dispatch window while a *different* id's removal is outstanding. Interleaving:
-    /// `DeleteRoute(10)` is dispatched and refused, `DeleteRoute(11)` is queued behind it; the
-    /// rider activates route 11 → `note_active_route` cancels 11's candidate. The same-pass drain
-    /// must not re-emit `DeleteRoute(10)` mid-flight, and 10 must stay retained for its own retry.
-    #[test]
-    fn cancel_of_a_queued_candidate_does_not_reopen_the_inflight_window() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("X"), summary("A")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // queues DeleteRoute(10) + DeleteRoute(11)
-                              // The store refuses, so 10 stays in flight instead of being retired by its own verdict.
-        let first = drain_once_refusing(&mut app);
-        assert!(first.contains(&SweepOp::Remove(10)), "10 dispatches first and is in flight");
-        assert!(!first.contains(&SweepOp::Remove(11)), "one delete in flight at a time");
-
-        // The rider activates route 11 (catalog index 1) — the next tick's `note_active_route`
-        // cancels 11's queued (never-dispatched) delete candidate.
-        app.activate_route(1);
-        app.retention_tick();
-        assert!(!app.retention.has(SweepKind::StampRide), "sanity: only route work is queued");
-        let cmds = drain_once_refusing(&mut app);
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(_))),
-            "cancelling 11 must not re-emit the in-flight 10 mid-backoff: {cmds:?}"
-        );
-        assert_eq!(app.retention.peek(SweepKind::DeleteRoute), Some(10), "10 stays retained for its own retry");
-
-        // 10's own backoff still governs its retry: past the window, 10 (and only 10) re-dispatches.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        let retry = drain_once(&mut app);
-        assert!(retry.contains(&SweepOp::Remove(10)), "10 retries after its backoff");
-        assert!(!retry.contains(&SweepOp::Remove(11)), "the activated 11 is never deleted");
-    }
-
-    /// Review fix (#886): the drain-time trust guard. Delete candidates that are already queued
-    /// (collected under a trusted clock) are **retained and nothing dispatches** when the clock is
-    /// not trusted at drain time — invariant 1 holds at execution time, not only at collection time.
-    /// (Production trust never reverts within a boot; the guard is belt-and-braces, exercised here
-    /// by seeding candidates directly into an untrusted app.)
-    #[test]
-    fn untrusted_clock_at_drain_time_defers_queued_deletes() {
-        use crate::retention::SweepAction;
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
-        app.set_routes_with_meta(&[summary("Old")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 1)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord { id: 7, synced: true, synced_at_utc: 1 }]);
-        // Candidates as an earlier trusted sweep would have queued them.
-        app.retention.test_push(SweepAction::DeleteRoute(10));
-        app.retention.test_push(SweepAction::DeleteRide(7));
-
-        let cmds = drain_once(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "no trusted clock at drain time → nothing dispatches: {cmds:?}");
-        assert!(
-            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
-            "the candidates are retained (deferred), not dropped"
-        );
-
-        // Trust arrives → the same candidates dispatch (their live recheck still holds them due).
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let after = drain_once(&mut app);
-        assert!(after.contains(&SweepOp::Remove(10)), "route delete dispatches once trusted");
-        assert!(after.contains(&SweepOp::Remove(7)), "ride delete dispatches once trusted");
     }
 
     // ==================== keyed derived data (#1437) ====================

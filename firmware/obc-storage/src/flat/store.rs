@@ -359,6 +359,7 @@ pub struct FlatStore<D> {
     /// iterator with nowhere to put an error, so the failure is recorded here and
     /// [`entries_ok`](Self::entries_ok) is how a caller finds out its listing was short.
     listing_failed: Cell<bool>,
+    route_added_at: Cell<u32>,
 }
 
 fn read_blocks<D: BlockDevice>(dev: &D, lba: u64, buf: &mut [u8]) -> Result<(), StoreError> {
@@ -577,6 +578,11 @@ struct Resolved {
 }
 
 impl<D: BlockDevice> FlatStore<D> {
+    /// Supply a trusted UTC time for route publications. Unknown time leaves age unknown.
+    pub fn set_route_added_at(&self, utc: Option<u32>) {
+        self.route_added_at.set(utc.unwrap_or(0));
+    }
+
     fn read_ranges(&self, ranges: &Ranges, payload_len: u64, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError> {
         if offset >= payload_len {
             return Ok(0);
@@ -808,6 +814,7 @@ impl<D: BlockDevice> FlatStore<D> {
             ride: Cell::new(None),
             recovered: Cell::new(None),
             listing_failed: Cell::new(false),
+            route_added_at: Cell::new(0),
         }
     }
 
@@ -1553,6 +1560,7 @@ impl<D: BlockDevice> FlatStore<D> {
                             return Err(StoreError::Invalid);
                         }
                         let mut entry = Entry { meta: *meta, ranges: existing.ranges };
+                        entry.meta.added_at_utc = existing.meta.added_at_utc;
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {
@@ -1597,6 +1605,12 @@ impl<D: BlockDevice> FlatStore<D> {
                             return Err(StoreError::Invalid);
                         }
                         let mut entry = Entry { meta: *meta, ranges };
+                        if meta.kind == super::ObjectKind::Route
+                            && !meta.flags.has(EntryFlags::RETAINED)
+                            && meta.added_at_utc == 0
+                        {
+                            entry.meta.added_at_utc = self.route_added_at.get();
+                        }
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {

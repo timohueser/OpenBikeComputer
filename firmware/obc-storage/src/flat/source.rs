@@ -239,6 +239,7 @@ mod tests {
             let mut allocation = store.allocate(LEN as u64).expect("an extent is free");
             store.write(&mut allocation, &payload()).expect("the payload fits");
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision: Revision(1),
                 kind: ObjectKind::MapShard,
@@ -297,6 +298,7 @@ mod tests {
 
         let id = store.next_object_id();
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: ObjectKind::Route,
@@ -468,6 +470,7 @@ mod tests {
         // keeps the extents the entry already holds and rewrites only the metadata.
         const SHORT: u64 = 1_000;
         let trimmed = EntryMeta {
+            added_at_utc: 0,
             id: ids[0],
             revision: Revision(1),
             kind: ObjectKind::MapShard,
@@ -519,6 +522,7 @@ mod tests {
         let mut allocation = store.allocate(LEN as u64).expect("an extent is free");
         store.write(&mut allocation, &payload()).expect("the payload fits");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: ObjectKind::MapShard,
