@@ -79,7 +79,7 @@ exact identity types, and one transfer state machine. It owns no transport or st
 board adapters supply records and implement its store seam. The independent fixture producer
 builds [`specs/vectors/flat-store-v4/`](../specs/vectors/flat-store-v4/) directly from the contract's
 offset tables. Regenerate these fixtures deliberately with
-`cargo test -p obc-link flat_regenerate -- --ignored`. Host tests exercise the engine against the
+`cargo run -p obc-link --features std --example flat_vectors --locked`. Host tests exercise the engine against the
 real flat store and its faulting card model.
 
 `obc-storage::flat` is the **flat card store** (Device Object System v3): the whole of
