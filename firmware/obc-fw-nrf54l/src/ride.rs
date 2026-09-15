@@ -2428,6 +2428,22 @@ pub(crate) async fn run_app(
                 }
             }
 
+            if let Some(expected) = app.requested_assistant_resume() {
+                use obc_storage::flat::Store;
+                let exact = flat
+                    .entries()
+                    .find(|entry| entry.id.0 == expected.object)
+                    .map(obc_storage::flat::metadata::fingerprint)
+                    == Some(expected)
+                    && flat.entries_ok();
+                let source = crate::flat_store::reconcile_route(flat, exact.then_some(expected.object));
+                let reader = source
+                    .filter(|source| route_index.read_into(*source).is_ok())
+                    .map(|source| RouteReader::new(&route_index, source));
+                app.prepare_assistant_resume(reader.as_ref());
+                route_index_valid = false;
+                index_route = None;
+            }
             let active = app.active_route_index();
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
             // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).

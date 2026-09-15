@@ -1726,6 +1726,17 @@ impl App {
     /// frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
+            self.ui.find.review = self.assistant_review_status();
+        }
+        let arrival = self.visit_arrival_pending();
+        let accepted = self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted;
+        if accepted {
+            self.ui.find.resume_offer = false;
+        }
+        let hold = self.ui.hold_charging();
+        self.ui.map_dirty |=
+            self.ui.cards.reconcile_journey(&mut self.ui.stack, hold, arrival, self.ui.find.resume_offer, accepted);
     }
 
     /// The update domain's terminal answer — a scan result, the install beginning, or its failure:
@@ -1885,7 +1896,7 @@ impl App {
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 
@@ -1899,7 +1910,7 @@ impl App {
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 
@@ -2028,6 +2039,10 @@ impl App {
         self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
             if matches!(s, Screen::Assistant(_)) && self.current_visit_index().is_some() {
                 Some(&crate::screen::context_drawer::ASSISTANT_VISIT)
+            } else if matches!(s, Screen::Assistant(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::ResumeAvailable
+            {
+                Some(&crate::screen::context_drawer::ASSISTANT_RESUME)
             } else if matches!(s, Screen::WhatsNext(_)) && self.ui.ahead.page != crate::whats_next::Page::Timeline {
                 None
             } else {

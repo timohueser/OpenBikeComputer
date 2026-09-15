@@ -419,17 +419,21 @@ impl NavigatorMachine {
             return;
         };
         if !origin.trustworthy
-            || origin.occurrence != checkpoint.occurrence
             || origin.progress_m < checkpoint.lower_m
             || origin.progress_m > checkpoint.upper_m
-            || origin.progress_m.abs_diff(checkpoint.progress_m) > REVIEW_ALONG_TOLERANCE_M
             || origin.lateral_m > REVIEW_LATERAL_TOLERANCE_M
         {
             self.review.status = ReviewStatus::Failed(NavigatorError::Movement);
             return;
         }
         // Even explicit Resume rechecks the exact payloads through the same serialized operation.
-        self.review.change = Some(Some(checkpoint));
+        self.review.change = Some(Some(NavigatorCheckpoint {
+            progress_m: origin.progress_m,
+            occurrence: origin.occurrence,
+            lon: origin.fix.0,
+            lat: origin.fix.1,
+            ..checkpoint
+        }));
         self.review.after = AfterCheckpoint::Activate(checkpoint.route.object);
         self.review.latest_origin = Some(origin);
         self.review.status = ReviewStatus::Saving;
@@ -501,16 +505,31 @@ impl NavigatorMachine {
             return Ok(self.checkpoint_committed());
         }
         // The complete recovered head proves the pending edit did not commit.
+        self.checkpoint_unpublished();
+        Ok(None)
+    }
+
+    fn checkpoint_unpublished(&mut self) {
+        let retry_phase =
+            self.review.after == AfterCheckpoint::Phase && self.review.change.is_some_and(|next| next.is_some());
         self.review.change = None;
         self.review.status = if self.review.preview.is_some() {
             ReviewStatus::Preview
+        } else if self.review.checkpoint.is_some() {
+            if self.following.active_route.is_some() {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::ResumeAvailable
+            }
         } else {
             ReviewStatus::Failed(NavigatorError::Store)
         };
+        if retry_phase && self.review.status == ReviewStatus::Accepted {
+            self.retry_visit_phase();
+        }
         if core::mem::take(&mut self.review.cancel_after) {
             self.cancel_review();
         }
-        Ok(None)
     }
 
     fn checkpoint_answer(&mut self, outcome: MetadataOutcome) -> Option<AfterCheckpoint> {
@@ -526,15 +545,7 @@ impl NavigatorMachine {
                 None
             }
             MetadataOutcome::Failed { .. } => {
-                self.review.change = None;
-                self.review.status = if self.review.preview.is_some() {
-                    ReviewStatus::Preview
-                } else {
-                    ReviewStatus::Failed(NavigatorError::Store)
-                };
-                if core::mem::take(&mut self.review.cancel_after) {
-                    self.cancel_review();
-                }
+                self.checkpoint_unpublished();
                 None
             }
             MetadataOutcome::Cancelled { .. } => None,
@@ -571,6 +582,53 @@ impl crate::App {
     }
     pub fn resume_assistant(&mut self, origin: ReviewOrigin) {
         self.admit_navigator_intent(super::NavigatorIntent::ResumeAssistant { origin });
+    }
+
+    /// A rider-requested recovery read. Executors reuse their existing route index for this read.
+    pub fn requested_assistant_resume(&self) -> Option<PayloadFingerprint> {
+        (self.ui.find.action == crate::find_place::Action::Resume
+            && self.assistant_review_status() == ReviewStatus::ResumeAvailable
+            && self.active_route_index().is_none())
+        .then(|| self.assistant_checkpoint().map(|c| c.route))
+        .flatten()
+    }
+
+    /// Match only the accepted phase window before naming the existing durable Resume operation.
+    pub fn prepare_assistant_resume(&mut self, route: Option<&obc_route::RouteReader>) {
+        if self.requested_assistant_resume().is_none() {
+            return;
+        }
+        self.ui.find.action = crate::find_place::Action::None;
+        self.ui.map_dirty = true;
+        let fix = self.fresh_position();
+        if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+            screen.error = fix.is_none().then_some(crate::screen::JourneyError::NoFix);
+        }
+        let Some(fix) = fix else {
+            return;
+        };
+        let Some(route) = route else {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
+            return;
+        };
+        let checkpoint = self.assistant_checkpoint().unwrap();
+        let matcher = &mut self.navigator.route_match;
+        let Some(matched) = matcher.recover(fix.lon, fix.lat, route, checkpoint.lower_m, checkpoint.upper_m) else {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::Unmatched);
+            }
+            return;
+        };
+        let origin = ReviewOrigin {
+            fix: (fix.lon, fix.lat),
+            progress_m: matched.progress_m,
+            occurrence: matcher.occurrence(),
+            lateral_m: matched.dist_m,
+            trustworthy: !matched.off_route,
+        };
+        self.resume_assistant(origin);
     }
 
     pub fn assistant_needs_recovery(&self) -> bool {
@@ -632,9 +690,14 @@ impl crate::App {
                 self.catalogs.loaded_scope = None;
                 self.catalogs.note_store_moved();
                 self.apply_assistant_checkpoint_action(after);
+                self.ui.map_dirty = true;
+                self.note_resume_save_refusal();
             }
         } else {
+            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            self.ui.find.resume_offer |= offer;
+            self.ui.map_dirty |= offer;
         }
     }
     /// A transient immutable edit, available only to the current MetadataMachine token.
@@ -650,8 +713,18 @@ impl crate::App {
         self.navigator.checkpoint_submission(token)
     }
     pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: MetadataOutcome) {
+        let before = self.assistant_review_status();
         let after = self.navigator.checkpoint_answer(outcome);
         self.apply_assistant_checkpoint_action(after);
+        self.ui.map_dirty |= self.assistant_review_status() != before;
+        self.note_resume_save_refusal();
+    }
+    fn note_resume_save_refusal(&mut self) {
+        if self.assistant_review_status() == ReviewStatus::ResumeAvailable {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
+        }
     }
     fn apply_assistant_checkpoint_action(&mut self, after: Option<AfterCheckpoint>) {
         match after {
@@ -1000,7 +1073,7 @@ mod tests {
         nav.offer_checkpoint(context().store, Some(checkpoint));
         assert!(nav.following.active_route.is_none());
         let mut wrong = origin();
-        wrong.occurrence += 1;
+        wrong.progress_m = checkpoint.upper_m + 1;
         nav.resume_review(wrong);
         assert!(nav.review.change.is_none());
         let mut nav = NavigatorMachine::new();
