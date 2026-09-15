@@ -2800,6 +2800,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-ios-host"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "obc-app",
+ "obc-display",
+ "obc-formats",
+ "obc-host-core",
+ "obc-ports",
+ "obc-reader",
+ "obc-render",
+ "obc-route",
+ "obc-storage",
+ "obcm-testkit",
+]
+
+[[package]]
 name = "obc-link"
 version = "0.1.0"
 dependencies = [
