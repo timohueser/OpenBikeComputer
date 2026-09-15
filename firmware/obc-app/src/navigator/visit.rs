@@ -1,7 +1,7 @@
 //! Visit requests and phase progress stay in Navigator. Geometry is accepted once.
 use super::{review::AfterCheckpoint, NavigatorMachine, ReviewContext, ReviewPurpose, ReviewStatus};
+use obc_formats::assistant::JourneyPhase;
 use obc_formats::obcm::PoiMetadata;
-use obc_formats::retention::JourneyPhase;
 use obc_route::visit::VisitTarget;
 use obc_route::RouteReader;
 
@@ -181,7 +181,7 @@ impl crate::App {
     pub fn set_assistant_preview_shape(
         &mut self,
         token: crate::device_core::OperationToken<crate::device_core::NavigatorTag>,
-        source: obc_formats::retention::PayloadFingerprint,
+        source: obc_formats::assistant::PayloadFingerprint,
         points: &[(i32, i32)],
     ) -> bool {
         if !self.navigator.accepts(&super::NavigatorOutcome::ReviewReady { token })
@@ -281,7 +281,7 @@ impl crate::App {
     pub fn bind_visit_sources(
         &mut self,
         scope: crate::device_core::StoreRevision,
-        original: Option<obc_formats::retention::PayloadFingerprint>,
+        original: Option<obc_formats::assistant::PayloadFingerprint>,
         avoidance: bool,
     ) -> bool {
         if !self.navigator.visit.needs_bind {
@@ -435,11 +435,11 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_core::{RetentionTag, TokenSource};
-    use crate::retention::RetentionOutcome;
+    use crate::device_core::{MetadataTag, TokenSource};
+    use crate::metadata::MetadataOutcome;
+    use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
     use obc_formats::io::{ByteSink, Error, SliceSource};
     use obc_formats::obcr::{RouteSourceKey, VisitDescriptor};
-    use obc_formats::retention::{NavigatorCheckpoint, PayloadFingerprint};
 
     #[derive(Default)]
     struct Sink(std::vec::Vec<u8>);
@@ -498,11 +498,11 @@ mod tests {
     fn fix(app: &mut crate::App, route: &RouteReader, lon: i32, lat: i32) {
         app.navigator.match_fix(obc_ports::Fix::at(lat, lon), route);
     }
-    fn ack(app: &mut crate::App, tokens: &mut TokenSource<RetentionTag>, route: &RouteReader) {
+    fn ack(app: &mut crate::App, tokens: &mut TokenSource<MetadataTag>, route: &RouteReader) {
         let token = tokens.issue();
         app.navigator.checkpoint_issued(token);
         assert!(app.assistant_checkpoint_submission(token));
-        app.assistant_checkpoint_answer(RetentionOutcome::CheckpointWritten { token });
+        app.assistant_checkpoint_answer(MetadataOutcome::CheckpointWritten { token });
         app.navigator.reconcile_visit(route);
     }
     #[test]
