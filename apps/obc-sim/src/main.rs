@@ -15,7 +15,6 @@ use obc_reader::rgb565_to_device64;
 
 mod calib;
 mod card;
-mod device_input;
 mod dfu;
 mod framebuffer;
 mod gui;
@@ -27,22 +26,19 @@ mod peak_view;
 mod present;
 mod rides;
 mod routes;
-mod settings_store;
 mod sim_compass;
 mod sim_location;
 mod sim_sensors;
-mod track;
 mod trips;
 
 use framebuffer::Framebuffer;
 use obc_host_core::{
-    initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
+    initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors, TrackStore,
 };
 use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
-use track::TrackStore;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BleSeed {
@@ -849,7 +845,7 @@ fn write_png(fb: &Framebuffer, scale: u32, path: &str) -> Result<(), String> {
 }
 
 /// A scripted [`InputSource`] that replays a fixed queue of raw events — the
-/// headless counterpart to the control panel's [`device_input::DeviceInput`].
+/// headless counterpart to the control panel's [`obc_host_core::DeviceInput`].
 struct ScriptInput(std::collections::VecDeque<InputEvent>);
 impl InputSource for ScriptInput {
     fn poll(&mut self) -> Option<InputEvent> {
