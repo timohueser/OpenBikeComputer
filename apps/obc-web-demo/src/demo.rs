@@ -78,8 +78,6 @@ pub enum Cmd {
     Gesture(Gesture),
     Play,
     Pause,
-    /// Open the shared place search for the guided journey.
-    Find,
     Seek(f64),
     Heading(f32),
     /// Rebuild the idle device that waits underneath the phone-to-device handoff.
@@ -113,7 +111,7 @@ impl Cmd {
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
 /// `hold`, `backhold`, `quick` (Up+Select), `context` (Down+Back), `step:<n>` (signed Up/Down),
-/// `play`, `pause`, `find`, `seek:<secs>`, `enter`, `exit`, `ambient`, `upload`, `receive`,
+/// `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`, `upload`, `receive`,
 /// `heading:<degrees>` (stop and turn the simulated compass). Unknown or malformed input is ignored.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
     match cmd {
@@ -125,7 +123,6 @@ pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
         "backhold" => Some(Cmd::Gesture(Gesture::BackHold)),
         "play" => Some(Cmd::Play),
         "pause" => Some(Cmd::Pause),
-        "find" => Some(Cmd::Find),
         "enter" => Some(Cmd::Enter),
         "exit" => Some(Cmd::Exit),
         "ambient" => Some(Cmd::Ambient),
@@ -555,7 +552,6 @@ impl Demo {
                 }
             }
             Cmd::Pause => self.player.pause(),
-            Cmd::Find => self.app.open_find_place(),
             Cmd::Seek(t) => self.player.seek(t),
             Cmd::Heading(degrees) => {
                 self.compass.0 = Some(degrees.rem_euclid(360.0));
@@ -1075,9 +1071,13 @@ mod tests {
 
         drive(&mut d, &mut now, "enter", "Map");
         drive(&mut d, &mut now, "context", "ContextDrawer");
-        drive(&mut d, &mut now, "press", "UpAhead");
+        drive(&mut d, &mut now, "press", "Assistant");
+        drive(&mut d, &mut now, "step:1", "Assistant");
+        drive(&mut d, &mut now, "press", "WhatsNext");
+        drive(&mut d, &mut now, "press", "WhatsNext");
         assert!(d.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
-        // One Back: the row replaced the sheet rather than stacking over it.
+        drive(&mut d, &mut now, "back", "WhatsNext");
+        drive(&mut d, &mut now, "back", "Assistant");
         drive(&mut d, &mut now, "back", "Map");
     }
 
@@ -1098,7 +1098,9 @@ mod tests {
         let original = d.app.route_ids()[d.app.active_route_index().unwrap()];
         assert!(d.app.recording());
         dwell(&mut d, &mut now, 2600);
-        drive(&mut d, &mut now, "find", "FindPlace");
+        drive(&mut d, &mut now, "context", "ContextDrawer");
+        drive(&mut d, &mut now, "press", "Assistant");
+        drive(&mut d, &mut now, "press", "FindPlace");
         dwell(&mut d, &mut now, 2600);
         for _ in 0..6 {
             drive(&mut d, &mut now, "step:1", "FindPlace");

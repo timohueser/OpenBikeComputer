@@ -644,22 +644,20 @@ fn replay() -> Vec<Step> {
     steps.push(step("the rider turns their bars", 75_900).compass(115.0));
     steps.push(step("the compass goes quiet", 76_000));
 
-    // --- the Up-ahead timeline: live distances under a chrome base --------------------------------
-    // Its rows measure from `App::progress_m`, and the row set never changes as the rider
-    // advances — so nothing about the *stack* moves and no fix-driven map key is even built. Before
-    // this row declared its own key, the only thing that refreshed the figures was the next-waypoint
-    // dirty site, which fired on a waypoint crossing rather than on the distances actually moving.
+    // The production timeline keeps its prepared rows while fixes advance beneath it.
     steps.push(step("squeeze the ride context open", 76_100).keys(&squeeze(Button::Down, Button::Back)));
     steps.push(step("the sheet settles", 76_700).expect("ContextDrawer"));
     steps.push(step("release the squeeze", 76_800).keys(&[release(Button::Back), release(Button::Down)]));
-    steps.push(step("press the Up ahead row", 77_000).keys(&tap(Button::Select)).expect("UpAhead"));
-    steps.push(step("the corridor snapshot settles", 77_100).expect("UpAhead"));
-    steps.push(step("quiet on the timeline", 77_200).expect("UpAhead"));
-    steps.push(step("the rider advances under the timeline", 77_500).fix(20).expect("UpAhead"));
-    steps.push(step("and again", 78_000).fix(21).expect("UpAhead"));
-    steps.push(step("quiet again", 78_200).expect("UpAhead"));
-    // One Back, not two: the row replaced the sheet rather than stacking over it.
-    steps.push(step("leave the timeline", 78_400).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("open Assistant", 77_000).keys(&tap(Button::Select)).expect("Assistant"));
+    steps.push(step("choose What's next", 77_100).keys(&[InputEvent::Step(1)]));
+    steps.push(step("open the overview", 77_200).keys(&tap(Button::Select)).expect("WhatsNext"));
+    steps.push(step("explore ahead", 77_300).keys(&tap(Button::Select)).expect("WhatsNext"));
+    steps.push(step("the rider advances under the timeline", 77_500).fix(20).expect("WhatsNext"));
+    steps.push(step("and again", 78_000).fix(21).expect("WhatsNext"));
+    steps.push(step("quiet again", 78_200).expect("WhatsNext"));
+    steps.push(step("return to overview", 78_300).keys(&tap(Button::Back)).expect("WhatsNext"));
+    steps.push(step("return to questions", 78_400).keys(&tap(Button::Back)).expect("Assistant"));
+    steps.push(step("return to map", 78_500).keys(&tap(Button::Back)).expect("Map"));
 
     // --- the freeze banner ----------------------------------------------------------------------
     // Between leaving the timeline (78_400) and the first card (79_000): the clock is monotonic

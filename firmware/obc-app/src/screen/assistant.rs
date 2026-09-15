@@ -1,495 +1,159 @@
-//! Ride Assistant interaction study, drawn by the device renderer over its ordinary map scene.
-
-mod easier;
-mod landmarks;
-mod whats_next;
-
-use core::fmt::Write;
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Canvas, Surface, Viewport,
-};
-
+//! The ordinary Ride Assistant question list.
 use super::{
     palette::*,
     vocab::{chrome::title_frame, list},
-    Ctx, MapScreen, RenderFrame, Screen, Transition,
+    Ctx, Render, Transition,
 };
-use crate::{
-    assistant_demo::{Demo, Phase, Stage, Stop},
-    Gesture,
+use crate::{navigator::VisitUnavailable, Gesture, Msg};
+use embedded_graphics::prelude::Point;
+use obc_render::{
+    rect,
+    text::{Font, TextAlign},
+    Surface,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Page {
-    Questions,
-    WhatsNext,
-    Landmarks,
-    Easier,
-    Sources,
-    Categories,
-    Choices,
-    Preview,
-    Visit,
-    Arrived,
-    Skip,
-}
-
-#[derive(Debug)]
+pub(crate) const QUESTIONS: [Msg; 7] = [
+    Msg::AssistantFind,
+    Msg::AssistantNext,
+    Msg::AssistantEasier,
+    Msg::AssistantBlocked,
+    Msg::AssistantBackRoute,
+    Msg::AssistantLandmarks,
+    Msg::AssistantDetour,
+];
+#[derive(Debug, Default)]
 pub struct AssistantScreen {
-    page: Page,
-    selected: usize,
-    ahead: whats_next::View,
-    landmarks: landmarks::View,
-    easier: easier::View,
-    preview_landmark: Option<u8>,
+    pub(crate) selected: usize,
+    pub(crate) error: Option<VisitUnavailable>,
 }
-
-const QUESTIONS: [&str; 7] =
-    ["Find a place", "What's next", "Easier route", "Road blocked", "Back on route", "Landmarks", "Worth a detour"];
-const CATEGORIES: [&str; 6] = ["Water", "Shop", "Pharmacy", "Bike repair", "Accommodation", "Train station"];
-
 impl AssistantScreen {
-    pub fn new(demo: Demo) -> Self {
-        let page = match demo.phase {
-            Phase::Riding => Page::Questions,
-            Phase::ToStop | Phase::Returning => Page::Visit,
-        };
-        Self {
-            page,
-            selected: 0,
-            ahead: whats_next::View::new(false),
-            landmarks: landmarks::View::default(),
-            easier: easier::View::default(),
-            preview_landmark: None,
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn handle(&mut self, g: Gesture, _: &mut Ctx) -> Transition {
+        match g {
+            Gesture::Back if self.error.is_some() => self.error = None,
+            Gesture::Back => return Transition::Pop,
+            Gesture::Step(n) if self.error.is_none() => {
+                self.selected = list::step_selection(self.selected, n, QUESTIONS.len())
+            }
+            _ => {}
         }
-    }
-
-    pub(crate) fn sources() -> Self {
-        Self {
-            page: Page::Sources,
-            selected: 0,
-            ahead: whats_next::View::new(false),
-            landmarks: landmarks::View::default(),
-            easier: easier::View::default(),
-            preview_landmark: None,
-        }
-    }
-
-    pub(crate) fn has_landmark_context(&self) -> bool {
-        self.page == Page::Landmarks
-    }
-
-    pub fn arrival() -> Self {
-        Self {
-            page: Page::Arrived,
-            selected: 0,
-            ahead: whats_next::View::new(false),
-            landmarks: landmarks::View::default(),
-            easier: easier::View::default(),
-            preview_landmark: None,
-        }
-    }
-
-    pub(crate) fn for_stage(stage: Stage, selected: usize, demo: Demo) -> Option<Self> {
-        let page = match stage {
-            Stage::Questions => Page::Questions,
-            Stage::WhatsNext | Stage::ExploreAhead => Page::WhatsNext,
-            Stage::Categories => Page::Categories,
-            Stage::Landmarks => Page::Landmarks,
-            Stage::Easier | Stage::EasierReview => Page::Easier,
-            Stage::Choices => Page::Choices,
-            Stage::Preview => Page::Preview,
-            Stage::Visit => Page::Visit,
-            Stage::Arrived => Page::Arrived,
-            Stage::Skip => Page::Skip,
-            _ => return None,
-        };
-        Some(Self {
-            page,
-            ahead: whats_next::View::new(stage == Stage::ExploreAhead),
-            landmarks: landmarks::View::new(demo.fixture, demo.fixture.start),
-            easier: easier::View::new(selected, stage == Stage::EasierReview),
-            preview_landmark: None,
-            selected: match page {
-                Page::Choices => selected,
-                Page::Categories => 1,
-                _ => 0,
-            },
-        })
-    }
-
-    fn go(&mut self, page: Page, selected: usize) -> Transition {
-        self.page = page;
-        self.selected = selected;
         Transition::None
     }
-
-    pub(crate) fn has_ahead_context(&self) -> bool {
-        self.page == Page::WhatsNext && self.ahead.is_timeline()
-    }
-
-    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        if self.page == Page::WhatsNext {
-            return if self.ahead.handle(g, cx.up_ahead_scope()) {
-                self.go(Page::Questions, 1)
-            } else {
-                Transition::None
+    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
+        title_frame(cv, rx.w, rx.h, rx.t(Msg::AssistantTitle), "");
+        if let Some(error) = self.error {
+            let message = match error {
+                VisitUnavailable::NoFix => Msg::AssistantNoFix,
+                VisitUnavailable::Unmatched => Msg::AssistantNoRoute,
+                VisitUnavailable::Busy => Msg::AssistantBusy,
+                _ => Msg::AssistantUnavailable,
             };
+            cv.text(rx.t(message), Point::new(rx.w / 2, 124), Font::Label, TextAlign::Center, INK);
+            cv.text(rx.t(Msg::AssistantRetry), Point::new(rx.w / 2, 164), Font::Label, TextAlign::Center, SUBTEXT);
+            return;
         }
-        let Some(mut demo) = cx.state.assistant_demo else { return Transition::Pop };
-        if self.page == Page::Easier {
-            return match self.easier.handle(g, &mut demo) {
-                easier::Action::None => Transition::None,
-                easier::Action::Back => self.go(Page::Questions, 2),
-                easier::Action::Accept(route) => {
-                    cx.navigator.set_active_route(Some(route));
-                    cx.state.assistant_demo = Some(demo);
-                    Transition::Root(Screen::Map(MapScreen::new()))
-                }
-            };
-        }
-        if self.page == Page::Sources {
-            return match g {
-                Gesture::Back | Gesture::Press => Transition::Pop,
-                Gesture::Step(n) => {
-                    let count = landmarks::source_pages(demo);
-                    self.selected = list::step_selection(self.selected, n, count);
-                    Transition::None
-                }
-                _ => Transition::None,
-            };
-        }
-        if self.page == Page::Landmarks {
-            return match self.landmarks.handle(g, demo.fixture) {
-                landmarks::Action::None => Transition::None,
-                landmarks::Action::Back => self.go(Page::Questions, 5),
-                landmarks::Action::Preview(index) => {
-                    self.preview_landmark = Some(index);
-                    self.go(Page::Preview, 0)
-                }
-            };
-        }
-        match g {
-            Gesture::Step(n) => {
-                let count = match self.page {
-                    Page::Questions => QUESTIONS.len(),
-                    Page::Categories => 6,
-                    Page::Choices => demo.candidates.len as usize,
-                    Page::Visit => {
-                        if demo.phase == Phase::ToStop {
-                            3
-                        } else {
-                            2
-                        }
-                    }
-                    _ => 1,
-                };
-                self.selected = list::step_selection(self.selected, n, count.max(1));
-                if self.page == Page::Choices {
-                    demo.selected = self.selected as u8;
-                    cx.state.assistant_demo = Some(demo);
-                }
-                Transition::None
+        let first = list::window_start(self.selected, 6, QUESTIONS.len());
+        for (slot, &label) in QUESTIONS.iter().skip(first).take(6).enumerate() {
+            let i = first + slot;
+            let y = 43 + slot as i32 * 44;
+            if i == self.selected {
+                cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
             }
-            Gesture::Back => match self.page {
-                Page::Questions | Page::Arrived | Page::Visit => Transition::Pop,
-                Page::WhatsNext | Page::Landmarks | Page::Sources | Page::Easier => unreachable!(),
-                Page::Categories => self.go(Page::Questions, 0),
-                Page::Choices => self.go(Page::Categories, 1),
-                Page::Preview if self.preview_landmark.is_some() => self.go(Page::Landmarks, 0),
-                Page::Preview => self.go(Page::Choices, demo.selected as usize),
-                Page::Skip => self.go(Page::Visit, 1),
-            },
-            Gesture::Press => match self.page {
-                Page::Questions if self.selected == 0 => self.go(Page::Categories, 1),
-                Page::Questions if self.selected == 1 => {
-                    cx.state.up_ahead_filter = obc_reader::PoiCategorySet::ALL;
-                    self.ahead = whats_next::View::new(false);
-                    self.go(Page::WhatsNext, 0)
-                }
-                Page::Questions if self.selected == 2 => {
-                    self.easier = easier::View::default();
-                    self.go(Page::Easier, 0)
-                }
-                Page::Questions if self.selected == 5 => {
-                    let origin = cx.state.user_fix.map(|fix| (fix.lon, fix.lat)).unwrap_or(demo.fixture.start);
-                    self.landmarks = landmarks::View::new(demo.fixture, origin);
-                    self.go(Page::Landmarks, 0)
-                }
-                Page::Categories if self.selected == 1 => {
-                    self.preview_landmark = None;
-                    demo.selected = 0;
-                    cx.state.assistant_demo = Some(demo);
-                    self.go(Page::Choices, 0)
-                }
-                Page::Choices if demo.candidates.len > 0 => {
-                    demo.selected = self.selected as u8;
-                    cx.state.assistant_demo = Some(demo);
-                    self.go(Page::Preview, 0)
-                }
-                Page::Preview => {
-                    demo.phase = Phase::ToStop;
-                    demo.visiting =
-                        Some(self.preview_landmark.unwrap_or(demo.candidates.indices[demo.selected as usize]));
-                    cx.navigator.set_active_route(Some(demo.visit_stop().outbound));
-                    cx.state.assistant_demo = Some(demo);
-                    Transition::Root(Screen::Map(MapScreen::new()))
-                }
-                Page::Visit if self.selected == 0 => Transition::Pop,
-                Page::Visit if demo.phase == Phase::ToStop && self.selected == 1 => self.go(Page::Skip, 0),
-                Page::Visit => self.go(Page::Questions, 0),
-                Page::Arrived => Transition::Pop,
-                Page::Skip => {
-                    demo.phase = Phase::Riding;
-                    demo.visiting = None;
-                    cx.navigator.set_active_route(Some(demo.riding_route()));
-                    cx.state.assistant_demo = Some(demo);
-                    Transition::Root(Screen::Map(MapScreen::new()))
-                }
-                _ => Transition::None,
-            },
-            _ => Transition::None,
+            cv.text(
+                rx.t(label),
+                Point::new(18, y + 5),
+                Font::Body,
+                TextAlign::Left,
+                if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT },
+            );
+        }
+        cv.vline(rx.w - 7, 44, 261, 2, RULE);
+        cv.vline(rx.w - 7, 44 + first as i32 * 36, 225, 2, WOOD);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{input::Chord, screen::Screen, settings::Language, App, AppState};
+
+    fn open() -> App {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        assert!(app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app
+    }
+    #[test]
+    fn normal_drawer_reaches_real_questions_and_keeps_placeholders_inert() {
+        for (selected, expected) in [(0, "FindPlace"), (1, "WhatsNext"), (5, "Landmarks")] {
+            let mut app = open();
+            app.apply_gesture(Gesture::Step(selected));
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.top_screen().name(), expected);
+            app.apply_gesture(Gesture::Back);
+            assert!(matches!(app.top_screen(), Screen::Assistant(s) if s.selected == selected as usize));
+            assert!(app.settings().ble_enabled);
+        }
+        let mut app = open();
+        app.apply_gesture(Gesture::Step(2));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Assistant(s) if s.error.is_some()));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(s) if s.error.is_none()));
+        for selected in [3, 4, 6] {
+            let mut app = open();
+            app.apply_gesture(Gesture::Step(selected));
+            app.apply_gesture(Gesture::Press);
+            assert!(
+                matches!(app.top_screen(), Screen::Assistant(s) if s.selected == selected as usize && s.error.is_none())
+            );
+            assert!(app.active_route_index().is_none());
+            assert!(!app.recording());
         }
     }
-
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: obc_map_scene::MapScene,
-    {
-        if self.page == Page::WhatsNext {
-            self.ahead.draw(cv, rx.up_ahead_scope());
-            return;
-        }
-        let Some(mut demo) = rx.state.assistant_demo else { return };
-        if self.page == Page::Easier {
-            self.easier.draw(cv, rx, demo);
-            return;
-        }
-        if self.page == Page::Sources {
-            landmarks::sources(cv, demo, self.selected);
-            return;
-        }
-        if self.page == Page::Landmarks {
-            self.landmarks.draw(cv, rx, demo);
-            return;
-        }
-        if self.page == Page::Questions || self.page == Page::Categories {
-            let (title, rows, active): (&str, &[&str], usize) = if self.page == Page::Questions {
-                ("Assistant", &QUESTIONS, 0)
-            } else {
-                ("Find a place", &CATEGORIES, 1)
-            };
-            title_frame(cv, rx.w, rx.h, title, "");
-            let first = list::window_start(self.selected, 6, rows.len());
-            for (slot, &label) in rows.iter().skip(first).take(6).enumerate() {
-                let i = first + slot;
-                let y = 43 + slot as i32 * 44;
-                if i == self.selected {
-                    cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
-                }
-                cv.text(
-                    label,
-                    Point::new(18, y + 5),
-                    Font::Body,
-                    TextAlign::Left,
-                    if i == active || (self.page == Page::Questions && matches!(i, 1 | 2 | 5)) { INK } else { SUBTEXT },
-                );
+    #[test]
+    fn question_and_photo_labels_fit_all_supported_languages() {
+        for language in Language::ALL {
+            for message in QUESTIONS {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
             }
-            if rows.len() > 6 {
-                cv.vline(rx.w - 7, 44, 261, 2, RULE);
-                cv.vline(rx.w - 7, 44 + first as i32 * 36, 225, 2, WOOD);
+            for message in [
+                Msg::AssistantPhotoVisit,
+                Msg::AssistantPhotoClosed,
+                Msg::AssistantPhotoNoAccess,
+                Msg::AssistantPhotoUnavailableHint,
+                Msg::AssistantPhotoMissing,
+                Msg::AssistantPhotoUnavailable,
+            ] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Label) <= 228, "{language:?}: {text}");
             }
-            return;
-        }
-        if self.page == Page::Choices {
-            demo.selected = self.selected as u8;
-        }
-        let choices = self.page == Page::Choices;
-        let map_bottom = match self.page {
-            Page::Choices => 208,
-            Page::Preview => 192,
-            Page::Visit => 174,
-            Page::Arrived => 154,
-            _ => 176,
-        };
-        if choices && demo.candidates.len == 0 {
-            let vp = rx.state.viewport(rx.w as f32, rx.h as f32);
-            let _ = super::map::draw_map_scene(cv, rx, &vp, None);
-            cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
-            cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-            cv.text("Shops", Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
-            cv.fill(rect(0, map_bottom, rx.w, rx.h - map_bottom), PARCHMENT);
-            cv.text("No shops found", Point::new(14, 220), Font::Body, TextAlign::Left, INK);
-            cv.text("Try another area", Point::new(14, 254), Font::Label, TextAlign::Left, SUBTEXT);
-            return;
-        }
-        let stop = match self.page {
-            Page::Choices => demo.stop(),
-            Page::Preview => {
-                self.preview_landmark.map(|i| &demo.fixture.stops[i as usize]).unwrap_or_else(|| demo.stop())
+            for message in [
+                Msg::AssistantCalculating,
+                Msg::AssistantAddStop,
+                Msg::AssistantGoHere,
+                Msg::AssistantSaving,
+                Msg::AssistantBackMap,
+                Msg::AssistantVisitUnavailable,
+                Msg::AssistantUseRoute,
+                Msg::AssistantPreviewRoute,
+            ] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 216, "{language:?}: {text}");
             }
-            _ => demo.visit_stop(),
-        };
-        let vp = viewport(demo, stop, rx.w, rx.h, map_bottom, choices);
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None);
-        if matches!(self.page, Page::Choices | Page::Preview) {
-            if let Some(scratch) = rx.scratch.as_deref_mut() {
-                let (target, color) = cv.split();
-                scratch.stroke_path(target, &vp, stop.approach.iter().copied(), color(DETOUR), super::ROUTE_WEIGHT);
-            }
-        }
-        if choices {
-            for (i, candidate) in demo.stops().enumerate() {
-                let (x, y) = vp.to_screen(candidate.position().0, candidate.position().1);
-                landmarks::marker(cv, x, y, i, i == demo.selected as usize);
-            }
-        } else {
-            let (x, y) = vp.to_screen(stop.position().0, stop.position().1);
-            cv.round(rect(x - 13, y - 14, 27, 28), 4, INK);
-            cv.round(rect(x - 11, y - 12, 23, 24), 3, AMBER);
-            if stop.landmark.is_some() {
-                cv.text("L", Point::new(x, y - 12), Font::Label, TextAlign::Center, INK);
-            } else {
-                super::poi_menu::draw_category_icon(
-                    cv,
-                    obc_reader::PoiCategory::Resupply,
-                    Point::new(x, y),
-                    INK,
-                    AMBER,
+            for message in
+                [Msg::AssistantVisit, Msg::AssistantClosed, Msg::AssistantNoAccess, Msg::AssistantAccessUnavailable]
+            {
+                let text = crate::i18n::t(message, language);
+                assert!(
+                    obc_render::text::text_width(text, Font::Label) + 4 * Font::Label.char_width() <= 228,
+                    "{language:?}: {text} plus page count"
                 );
             }
         }
-        cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
-        cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        let title = match self.page {
-            Page::Choices => "Shops",
-            Page::Preview => stop.name,
-            Page::Arrived => "Arrived",
-            Page::Skip => "Skip visit?",
-            Page::Visit if demo.phase == Phase::Returning => "Back to route",
-            _ => "Visit",
-        };
-        cv.text(title, Point::new(14, 8), name_font(title), TextAlign::Left, PARCHMENT);
-        cv.fill(rect(0, map_bottom, rx.w, rx.h - map_bottom), PARCHMENT);
-        if choices {
-            cv.round(rect(10, 210, rx.w - 20, 104), 6, AMBER);
-            let role = if stop.on_way() {
-                "On the way"
-            } else if demo.stops().all(|other| stop.distance_m <= other.distance_m) {
-                "Nearest"
-            } else {
-                "Detour"
-            };
-            let mut label = heapless::String::<24>::new();
-            let _ = write!(label, "{} {role}", letter(self.selected));
-            cv.text(&label, Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT);
-            let mut count = heapless::String::<8>::new();
-            let _ = write!(count, "{}/{}", self.selected + 1, demo.candidates.len);
-            cv.text(&count, Point::new(rx.w - 18, 212), Font::Label, TextAlign::Right, INK);
-            cv.text(stop.name, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
-            figures(cv, stop.distance_m, stop.climb_m, 264, false);
-            let mut line = heapless::String::<24>::new();
-            super::vocab::fmt::write_distance_coarse(&mut line, "+", stop.extra_m, rx.settings.units);
-            let _ = line.push_str(" extra");
-            cv.text(&line, Point::new(18, 288), Font::Label, TextAlign::Left, INK);
-        } else if self.page == Page::Preview {
-            figures(cv, stop.distance_m, stop.climb_m, 196, false);
-            cv.text("Extra incl. return", Point::new(14, 222), Font::Label, TextAlign::Left, SUBTEXT);
-            figures(cv, stop.extra_m, stop.extra_climb_m, 248, true);
-            button(cv, "Add stop", 280, true);
-        } else if self.page == Page::Arrived {
-            cv.text(stop.name, Point::new(14, 158), name_font(stop.name), TextAlign::Left, INK);
-            cv.text("Guidance continues", Point::new(14, 190), Font::Label, TextAlign::Left, INK);
-            cv.text("Back to your route", Point::new(14, 214), Font::Label, TextAlign::Left, SUBTEXT);
-            figures(cv, stop.return_m, stop.return_climb_m, 240, false);
-            button(cv, "Dismiss", 280, true);
-        } else if self.page == Page::Skip {
-            cv.text(stop.name, Point::new(14, 180), name_font(stop.name), TextAlign::Left, INK);
-            cv.text("Use original route", Point::new(14, 215), Font::Label, TextAlign::Left, INK);
-            cv.text("Rejoin when ready.", Point::new(14, 243), Font::Label, TextAlign::Left, SUBTEXT);
-            button(cv, "Remove stop", 280, true);
-        } else {
-            cv.text(stop.name, Point::new(14, 178), name_font(stop.name), TextAlign::Left, INK);
-            button(cv, "Back to map", 208, self.selected == 0);
-            if demo.phase == Phase::ToStop {
-                button(cv, "Skip stop", 244, self.selected == 1);
-            }
-            button(cv, "Assistant", 280, self.selected == if demo.phase == Phase::ToStop { 2 } else { 1 });
-        }
     }
-}
-
-fn viewport(demo: Demo, target: &Stop, w: i32, h: i32, bottom: i32, choices: bool) -> Viewport {
-    let mut min = if choices { demo.fixture.start } else { target.approach[0] };
-    let mut max = min;
-    let mut include = |stop: &Stop| {
-        for &(lon, lat) in stop.approach {
-            min = (min.0.min(lon), min.1.min(lat));
-            max = (max.0.max(lon), max.1.max(lat));
-        }
-    };
-    if choices {
-        for stop in demo.stops() {
-            include(stop);
-        }
-    } else {
-        include(target);
-    }
-    fit(min, max, w, h, bottom, 40)
-}
-
-fn name_font(name: &str) -> Font {
-    if name.len() > 15 {
-        Font::Label
-    } else {
-        Font::Body
-    }
-}
-
-fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32, top: i32) -> Viewport {
-    let lat = min.1 + (max.1 - min.1) / 2;
-    let aspect = libm::cosf(lat as f32 * core::f32::consts::PI / 180_000_000.0);
-    let zoom = ((w - 48) as f32 / ((max.0 - min.0).max(1) as f32 * aspect))
-        .min((bottom - top - 44) as f32 / (max.1 - min.1).max(1) as f32);
-    let desired_y = (top + bottom) as f32 / 2.0;
-    Viewport::new(
-        w as f32,
-        h as f32,
-        min.0 + (max.0 - min.0) / 2,
-        lat - ((h as f32 / 2.0 - desired_y) / zoom) as i32,
-        zoom,
-    )
-}
-
-fn letter(index: usize) -> &'static str {
-    ["A", "B", "C", "D"][index]
-}
-
-fn figures(cv: &mut impl Surface, distance: u32, climb: u32, y: i32, extra: bool) {
-    let mut d = heapless::String::<16>::new();
-    if extra {
-        let _ = d.push('+');
-    }
-    if distance < 1000 {
-        let _ = write!(d, "{distance}m");
-    } else {
-        let _ = write!(d, "{}.{:01}km", distance / 1000, distance % 1000 / 100);
-    }
-    cv.text(&d, Point::new(18, y), Font::Label, TextAlign::Left, INK);
-    cv.triangle(Point::new(125, y + 18), Point::new(132, y + 6), Point::new(139, y + 18), INK);
-    let mut c = heapless::String::<16>::new();
-    let _ = write!(c, "{climb}m");
-    cv.text(&c, Point::new(146, y), Font::Label, TextAlign::Left, INK);
-}
-
-fn button(cv: &mut impl Surface, label: &str, y: i32, selected: bool) {
-    if selected {
-        cv.round(rect(12, y, 216, 32), 6, AMBER);
-    }
-    cv.text(label, Point::new(120, y + 2), Font::Body, TextAlign::Center, INK);
 }

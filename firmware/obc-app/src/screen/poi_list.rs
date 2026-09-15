@@ -151,7 +151,7 @@ pub struct PoiListScreen {
 }
 
 impl PoiListScreen {
-    /// Open the list for `category`. The caller ([`PoiMenuScreen`](super::PoiMenuScreen)) also
+    /// Open the list for `category`. The caller (the Find a place screen) also
     /// [invalidates](PoiScratch::invalidate) the App scratch on this transition, so the first draw
     /// re-queries even when re-entering the same category.
     pub fn new(category: PoiCategory) -> Self {
@@ -298,7 +298,7 @@ impl PoiListScreen {
     /// Fill the [`App`](crate::App)-owned scratch with this category's nearest-16 on the first
     /// **prepare** pass that has both a `Reader` and a fix — then never again (the scratch already
     /// `holds` the category). A re-entry invalidated the scratch in
-    /// [`PoiMenuScreen`](super::PoiMenuScreen), so it re-queries.
+    /// the Find a place screen, so it re-queries.
     ///
     /// Runs in the pre-draw [`prepare`](super::Screen::prepare) pass (#803) — the one place the
     /// side-effectful `Reader` query lives — writing solely to the shared [`Prepare::poi_scratch`];

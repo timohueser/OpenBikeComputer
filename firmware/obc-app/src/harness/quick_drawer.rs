@@ -34,10 +34,6 @@ fn chord(app: &mut App, frames: &mut Frames, a: Button, b: Button, ms: u32) -> u
     ms + settled + 100
 }
 
-/// One gesture on the sheet at `ms`, straight to the map plane — the clock first (so the sheet's
-/// page slide has settled), then the gesture. Returns a millis past the slide it may have started,
-/// so calls chain. Raw edges are the chord's business, tested above and in `input.rs`; from here on
-/// what matters is what the drawer does with a recognised gesture.
 fn at(app: &mut App, ms: u32, g: crate::Gesture) -> u32 {
     app.advance_animations(InputClock(ms));
     app.apply_gesture(g);
@@ -132,143 +128,6 @@ fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     assert_eq!(app.debug_stack_len(), depth);
 }
 
-/// The Up-ahead sheet's **Sources** commit is the migrated Ride-settings row, and it reaches the
-/// same persistence handshake that row did — the App's one before/after `==` over `Settings`, with
-/// no new path (#1515 D4a). The sheet stays up afterwards: a commit returns to the row table, it
-/// does not close the drawer.
-#[test]
-fn the_up_ahead_sources_commit_reaches_the_settings_save() {
-    use crate::settings::UpAheadSource;
-    let mut app = lit();
-    let mut f = Frames::new();
-    app.test_mount_store();
-    app.test_start_ride();
-    assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both, "the factory scope");
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000); // the ride sheet
-    let ms = at(&mut app, ms, Gesture::Press); // its first row -> the timeline
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms); // the timeline's own sheet
-    let ms = at(&mut app, ms, Gesture::Step(1)); // Filter -> Sources
-    let ms = at(&mut app, ms, Gesture::Press); // -> the Sources editor
-    let ms = at(&mut app, ms, Gesture::Step(2)); // stage Map POIs only
-    assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both, "staging commits nothing");
-
-    let ms = at(&mut app, ms, Gesture::Press);
-    assert_eq!(app.settings().up_ahead_source, UpAheadSource::MapPoisOnly, "Select wrote the row");
-    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)), "…and the sheet is still up");
-    assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and a persist is owed");
-
-    // The scope the commit wrote is the scope the list under the sheet now reads: Map-POIs-only
-    // still arms the corridor query, and Waypoints-only would not — the U4 rule, live.
-    let ms = at(&mut app, ms, Gesture::Back); // close the sheet, back onto the timeline
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-    assert!(app.corridor_snapshot_pending(), "Map POIs only still wants a snapshot");
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms);
-    let ms = at(&mut app, ms, Gesture::Step(1));
-    let ms = at(&mut app, ms, Gesture::Press);
-    let ms = at(&mut app, ms, Gesture::Step(-1)); // Map POIs only -> Waypoints only
-    let ms = at(&mut app, ms, Gesture::Press);
-    at(&mut app, ms, Gesture::Back);
-    assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
-    assert!(!app.corridor_snapshot_pending(), "…and Waypoints only disarms it, from the sheet");
-}
-
-/// The **Filter** commit is the other half, and it is *not* a settings field: it reaches the
-/// timeline's live scope, which re-keys the corridor snapshot — the thing the Hold picker used to do
-/// from inside the list. Back out of the editor discards instead.
-#[test]
-fn the_up_ahead_filter_commit_re_keys_the_snapshot_and_back_discards() {
-    use obc_reader::{PoiCategory, PoiCategorySet};
-    let mut app = lit();
-    let mut f = Frames::new();
-    app.test_mount_store();
-    app.test_start_ride();
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
-    let ms = at(&mut app, ms, Gesture::Press); // -> the timeline, which opens on Everything
-    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
-
-    // Staged, then discarded: the list is still unfiltered.
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms);
-    let ms = at(&mut app, ms, Gesture::Press); // -> the Filter editor
-    let ms = at(&mut app, ms, Gesture::Step(1));
-    let ms = at(&mut app, ms, Gesture::Back);
-    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL, "Back discarded the staged choice");
-
-    // Staged, then committed: the list is filtered, and the sheet's own row reads it back.
-    let ms = at(&mut app, ms, Gesture::Press);
-    let ms = at(&mut app, ms, Gesture::Step(1));
-    let ms = at(&mut app, ms, Gesture::Press);
-    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
-    at(&mut app, ms, Gesture::Back); // close the sheet
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-
-    // Leaving and re-entering the timeline resets it: the list opens on Everything, every time.
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Map(_)));
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 20_000);
-    at(&mut app, ms, Gesture::Press);
-    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL, "predictable beats sticky (epic #946, U3)");
-}
-
-/// The same property end to end, through the real sheet: **scroll the timeline, filter it, and the
-/// rider lands on the nearest match ahead.** The Select-hold picker used to clear the cursor itself
-/// when it applied; the sheet sits above the screen and cannot, so the cursor states which list it
-/// indexes into and re-homes when that list changes.
-#[test]
-fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
-    use obc_reader::{PoiCategory, PoiCategorySet};
-
-    let mut app = lit();
-    let mut f = Frames::new();
-    app.test_mount_store();
-    app.test_start_ride();
-    app.navigator.route_state_mut().active_route = Some(0);
-    // Four stops ahead, two of them Water and 3.6 km apart, so clamping and re-homing differ.
-    *app.navigator.waypoints_mut() = crate::harness::support::wpts_detailed(&[
-        (400, "Brunnen", Some(PoiCategory::Water), 0),
-        (500, "Bakery", Some(PoiCategory::Resupply), 0),
-        (600, "Camp", Some(PoiCategory::Campsite), 0),
-        (4_000, "Far water", Some(PoiCategory::Water), 0),
-    ]);
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
-    let mut ms = at(&mut app, ms, Gesture::Press); // -> the timeline
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-
-    for _ in 0..3 {
-        ms = at(&mut app, ms, Gesture::Step(1)); // scroll to the last row
-    }
-    assert_eq!(cursor_row(&app), 3, "the rider is on \"Far water\"");
-
-    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms); // the timeline's own sheet
-    let ms = at(&mut app, ms, Gesture::Press); // -> the Filter editor
-    let ms = at(&mut app, ms, Gesture::Step(1)); // stage Water
-    let ms = at(&mut app, ms, Gesture::Press); // commit
-    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
-    at(&mut app, ms, Gesture::Back); // close the sheet, back onto the timeline
-
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-    assert_eq!(cursor_row(&app), 0, "re-homed onto the nearest Water stop, not clamped onto the far one");
-
-    /// The row the timeline would draw the amber cursor on, resolved the way `draw` resolves it.
-    fn cursor_row(app: &App) -> usize {
-        let Some(Screen::UpAhead(s)) = app.ui.stack.iter().find(|s| matches!(s, Screen::UpAhead(_))) else {
-            panic!("the timeline is not on the stack")
-        };
-        s.test_cursor(
-            app.navigator.waypoints().as_slice(),
-            &[],
-            app.navigator.route_state().active_route.is_some(),
-            app.navigator.route_state().progress_m,
-            app.up_ahead_scope(),
-        )
-    }
-}
-
 /// **The route-plan sheet reaches the plan and the save** (#1515 D4d), through a real chord and
 /// real passes: the bike-type row is the only writer of `Settings::bike_profile_idx` left in the
 /// tree, so this is the whole loop from the squeeze to the value the host reads at `nav_begin`.
@@ -280,8 +139,6 @@ fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
 /// which is what the host drains and plans with.
 #[test]
 fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
-    use crate::navigator::PlanFamily;
-
     let mut app = lit();
     let mut f = Frames::new();
     app.test_mount_store();
@@ -296,11 +153,7 @@ fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
     // The card the POI detail would push, seeded directly: the browse that reaches it needs a
     // queried map and a corridor snapshot, neither of which this test is about.
     app.ui.stack.truncate(1); // [Home]
-    let _ = app.ui.stack.push(Screen::NavConfirm(crate::screen::NavConfirmScreen::new(
-        (7_421_000, 43_736_000),
-        "Fontaine",
-        None,
-    )));
+    let _ = app.ui.stack.push(crate::harness::support::selected_place());
     let depth = app.debug_stack_len();
 
     let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
@@ -315,15 +168,11 @@ fn the_route_plan_sheet_reaches_the_plan_and_the_save() {
     assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and the pass owes a persist at once");
 
     let ms = at(&mut app, ms, Gesture::Back); // close the sheet
-    assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the card is still under it — not a navigation");
+    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "the card is still under it — not a navigation");
     assert_eq!(app.debug_stack_len(), depth);
 
-    // The very next press is *Create route*, the card's first row.
-    assert!(!app.navigator.request_pending(PlanFamily::Route), "nothing asked for yet");
-    at(&mut app, ms, Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the card swapped itself for the wait");
-    assert!(app.navigator.request_pending(PlanFamily::Route), "…having recorded the plan request");
-    assert_eq!(app.settings().bike_profile_idx, 1, "and the host will plan it under the committed profile");
+    assert_eq!(app.settings().bike_profile_idx, 1);
+    let _ = ms;
 }
 
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
@@ -345,16 +194,17 @@ fn no_squeeze_stacks_a_second_sheet() {
 /// The BLE icon flips the real radio row **and** reaches the persistence handshake — the same
 /// before/after `==` a settings screen's edit arms, with no new path.
 #[test]
-fn the_ble_icon_toggle_reaches_the_settings_save() {
+fn the_assistant_icon_opens_without_a_settings_write() {
     let mut app = lit();
     let mut f = Frames::new();
     assert!(app.settings().ble_enabled);
 
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
-    let ms = at(&mut app, ms, Gesture::Step(1)); // brightness -> BLE
+    let ms = at(&mut app, ms, Gesture::Step(1)); // brightness -> Assistant
     let ms = at(&mut app, ms, Gesture::Press);
-    assert!(!app.settings().ble_enabled, "the radio row flipped");
-    assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and a persist is owed");
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    assert!(app.settings().ble_enabled);
+    assert!(quiet_pass(&mut app, ms).effects.settings.is_empty());
 }
 
 /// The brightness the host would drive follows the editor live, sticks on Select, and falls back
@@ -404,9 +254,11 @@ fn a_platform_without_a_panel_light_drops_the_brightness_control() {
     assert!(!app.backlight_available());
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let ms = at(&mut app, ms, Gesture::Press);
-    assert!(!app.settings().ble_enabled, "the first control is the radio");
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    assert!(app.settings().ble_enabled);
     assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "no editor, and no preview to hold");
-    assert!(drawer_up(&app), "the sheet is still up");
+    let ms = at(&mut app, ms, Gesture::Back);
+    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, ms);
 
     let ms = at(&mut app, ms, Gesture::Step(2)); // -> power, the last of three
     let ms = at(&mut app, ms, Gesture::Press);

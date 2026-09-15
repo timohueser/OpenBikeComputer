@@ -370,12 +370,6 @@ impl HostLoop {
         self.inbox.derived = DerivedInputs::NONE;
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
-        let source = map.source();
-        app.prepare_easier_entry(obc_formats::obcr::RouteSourceKey {
-            store: source.store_id().0,
-            object: source.id().0,
-            revision: source.revision().0,
-        });
         self.sync_recorder(app, tracks);
         let navigation = plan.effects.navigator.take().or_else(|| self.releasing.take());
         if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && self.plan.is_none() {
