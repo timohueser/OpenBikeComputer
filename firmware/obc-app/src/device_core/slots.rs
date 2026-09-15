@@ -2,6 +2,7 @@ use crate::ble::{BondEffect, BondOutcome};
 use crate::catalog_state::{CatalogEffect, CatalogOutcome};
 use crate::device_core::storage_info::{StorageInfoEffect, StorageInfoOutcome};
 use crate::dfu::{DfuEffect, DfuOutcome};
+use crate::metadata::{MetadataEffect, MetadataOutcome};
 use crate::navigator::{NavigatorEffect, NavigatorOutcome};
 use crate::recorder::{RecorderEffect, RecorderOutcome};
 use crate::settings::{SettingsEffect, SettingsOutcome};
@@ -100,6 +101,7 @@ domain_slots! {
         recorder: RecorderEffect,
         /// Planner acquire, step, commit and release.
         navigator: NavigatorEffect,
+        metadata: MetadataEffect,
         /// The settings-revision write.
         settings: SettingsEffect,
         /// Firmware package scan and install arming.
@@ -122,6 +124,7 @@ domain_slots! {
         recorder: RecorderOutcome,
         /// The answer to a [`NavigatorEffect`].
         navigator: NavigatorOutcome,
+        metadata: MetadataOutcome,
         /// The answer to a [`SettingsEffect`].
         settings: SettingsOutcome,
         /// The answer to a [`DfuEffect`].

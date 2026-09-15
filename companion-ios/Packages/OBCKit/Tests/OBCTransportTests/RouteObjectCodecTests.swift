@@ -84,6 +84,11 @@ final class RouteObjectCodecTests: XCTestCase {
         XCTAssertEqual(plain.totalDistanceMeters, waypoints.totalDistanceMeters)
         XCTAssertEqual(plain.totalAscentMeters, waypoints.totalAscentMeters)
         XCTAssertEqual(plain.points, waypoints.points)
+        var candidate = try fixture("route-plain.obcr")
+        candidate[5] |= 8
+        XCTAssertEqual(try RouteObjectCodec.decode(candidate).points, plain.points)
+        candidate[5] |= 16
+        XCTAssertThrowsError(try RouteObjectCodec.decode(candidate))
     }
 
     // MARK: Encode → decode round-trips

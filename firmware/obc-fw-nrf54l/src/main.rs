@@ -64,6 +64,8 @@ mod flpr_mux;
 // host-tested `obc_app::ArenaGate`.
 mod arena;
 #[cfg(has_nav)]
+mod assistant;
+#[cfg(has_nav)]
 mod detour;
 mod peak_view;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021

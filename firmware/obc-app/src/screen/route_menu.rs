@@ -247,6 +247,9 @@ impl RouteMenuScreen {
     /// asks whether to swap or re-ride; from Idle it opens the Route overview with the route
     /// streaming open behind it.
     fn press_route(&self, i: usize, cx: &mut Ctx) -> Transition {
+        if cx.navigator.route_unaccepted(i) {
+            return Transition::None;
+        }
         if cx.recorder.recording() {
             if cx.navigator.route_state().active_route == Some(i) {
                 return Transition::Root(Screen::Map(MapScreen::new()));
@@ -306,7 +309,17 @@ impl RouteMenuScreen {
             let accent = if row.selected { INK } else { SUBTEXT };
             match rows[row.index] {
                 Row::Folder(ti) => draw_folder_row(cv, &row.area, &trips[ti], w, accent),
-                Row::Route(ri) => draw_route_row(cv, &row.area, &routes[ri], w, accent),
+                Row::Route(ri) => {
+                    let unaccepted = rx.unaccepted_routes & (1 << ri) != 0;
+                    draw_route_row(
+                        cv,
+                        &row.area,
+                        &routes[ri],
+                        w,
+                        accent,
+                        unaccepted.then(|| rx.t(Msg::RouteMenuUnaccepted)),
+                    );
+                }
             }
         });
     }
@@ -320,7 +333,14 @@ fn climb_col_x(area_x: i32, w: i32) -> i32 {
 
 /// A standard route row: name on line 1, distance under it, and the climb group (`▲` + metres) at
 /// the fixed second column. Unchanged from the flat menu — used verbatim inside a folder.
-fn draw_route_row(cv: &mut impl Surface, area: &Rectangle, route: &RouteSummary, w: i32, accent: u16) {
+fn draw_route_row(
+    cv: &mut impl Surface,
+    area: &Rectangle,
+    route: &RouteSummary,
+    w: i32,
+    accent: u16,
+    unavailable: Option<&str>,
+) {
     use palette::*;
     let y = area.top_left.y;
     let name_x = area.top_left.x + NAME_INSET;
@@ -329,6 +349,10 @@ fn draw_route_row(cv: &mut impl Surface, area: &Rectangle, route: &RouteSummary,
     cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
     let sy = y + 35;
+    if let Some(label) = unavailable {
+        cv.text(label, Point::new(name_x, sy), Font::Label, TextAlign::Left, SUBTEXT);
+        return;
+    }
     let mut dist: heapless::String<12> = heapless::String::new();
     let _ = write!(dist, "{} km", route.distance_km);
     cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);

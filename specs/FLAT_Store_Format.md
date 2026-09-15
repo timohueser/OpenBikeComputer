@@ -290,9 +290,14 @@ Flags:
 | Bit | Name | Meaning |
 | --: | :-- | :-- |
 | 0 | `RECORDING` | the active ride. Payload length and CRC are the values of the last commit, not of the current recording; the ride journal (§7) is authoritative for what is beyond them. At most one entry in the catalog carries it. |
+| 1 | `RETAINED` | a non-head revision kept by the store. |
 | 2 | `RESERVED` | the entry owns extents and the store does not write the payload. Only kind 8 uses it; the bootloader writes those bytes. Payload length is zero and `read` on it is refused. |
+| 3 | `ASSISTANT_ACCEPTED` | the exact immutable Route payload was accepted by Navigator. It is valid only for Route entries without `RECORDING` or `RESERVED`. |
 
-Bits `3..15` are zero.
+Bits `4..15` are zero. The acceptance flag is set by an `Amend` with unchanged ObjectId,
+revision, payload length, and CRC in the checkpoint transaction described in
+[Ride archive metadata](Ride_Archive_Metadata.md). A fresh payload cannot carry this flag.
+Catalog copying preserves it. Clearing the checkpoint does not clear acceptance.
 
 **Display name** is what a menu shows. It is UTF-8, at most 48 bytes, and the store does not
 normalise, trim or case-fold it. An empty name (length `0`) is legal — a ride has none until it is

@@ -1,14 +1,20 @@
 //! Explicit age-based route cleanup. The caller supplies a confirmed cutoff and protects navigation.
-use super::{BlockDevice, EntryFlags, FlatStore, Mutation, ObjectId, ObjectKind, Store, StoreError};
+use super::{BlockDevice, FlatStore, Mutation, ObjectId, ObjectKind, Store, StoreError};
 
 pub fn next<D: BlockDevice>(
     store: &FlatStore<D>,
     before_utc: u32,
     active: Option<ObjectId>,
 ) -> Result<Option<(ObjectId, heapless::Vec<Mutation, 2>)>, StoreError> {
+    let protected = super::metadata::protected_routes(store).map_err(|error| match error {
+        super::metadata::Error::Store(error) => error,
+        super::metadata::Error::RemountRequired => StoreError::ReadOnly,
+        _ => StoreError::Invalid,
+    })?;
     let head = store.entries().find(|e| {
         e.kind == ObjectKind::Route
-            && e.flags == EntryFlags::NONE
+            && e.flags.is_route_head()
+            && !protected.contains(&Some(e.id))
             && Some(e.id) != active
             && e.added_at_utc != 0
             && e.added_at_utc < before_utc
@@ -30,7 +36,7 @@ pub fn next<D: BlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flat::{sim::SparseDisk, EntryMeta, PutSource, Revision, StoreId};
+    use crate::flat::{sim::SparseDisk, EntryFlags, EntryMeta, PutSource, Revision, StoreId};
 
     fn route(store: &FlatStore<&SparseDisk>, utc: Option<u32>) -> EntryMeta {
         store.set_route_added_at(utc);

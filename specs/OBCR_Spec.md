@@ -72,7 +72,7 @@ the chunks have streamed out (see §5).
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCR"` |
 | 4 | Version | 1 | `uint8` | `0x04`; readers reject anything else |
-| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; other bits zero |
+| 5 | Flags | 1 | `uint8` | bit 0 unresolved avoidance; bit 1 at least one valid elevation; bit 2 attribution-map identity present; bit 3 Assistant candidate; other bits zero |
 | 6 | Name Len | 1 | `uint8` | Used bytes of the Name field (≤ 48) |
 | 7 | Reserved | 1 | `uint8` | `0` |
 | 8 | Min Lon | 4 | `int32` | Global bbox, microdegrees |
@@ -120,6 +120,13 @@ A descriptor must fit inside the object and must not overlap the index or waypoi
 table. Unsupported versions and nonzero absent-section fields are errors.
 
 ---
+
+An Assistant candidate is immutable. Its flag remains set after acceptance. A device
+can offer it as an ordinary route only when the current card Metadata has an accepted
+route row with the same object ID, revision, length, and CRC. An orphan candidate stays
+unavailable after reboot. The optional Navigator checkpoint and accepted route row are
+published in the same Metadata operation. Clearing that checkpoint preserves the accepted
+row. Replacing the route does not inherit the old acceptance.
 
 ## 2. Chunk Index
 

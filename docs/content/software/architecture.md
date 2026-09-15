@@ -405,6 +405,37 @@ They do not start another step or publish a completed plan on their own.
 | Commit | Publish the completed route, or the detour the rider accepted. | The new durable route identifier, or failure. |
 | Release | Finish pending storage work, cancel unused allocations or remove a cancelled publication, then return the workspace. | Cleanup is complete and the arena is available. |
 
+Assistant planning adds an immutable review step. Navigator freezes the request's exact
+map and original-route identities, profile, progress occurrence, required anchors, and facts
+policy. The executor publishes one complete candidate, releases planner memory, and keeps
+the admitted source leases. Preview does not change the active route or Recorder.
+
+Accept checks the current origin and sources again. Navigator's small Metadata handshake
+asks the existing serialized writer to update the optional checkpoint. The same transaction
+marks the exact route catalog entry as accepted. The Metadata image preserves all 128 ride
+archive proof rows. Only a verified durable acknowledgment activates the candidate. A
+known failure keeps the preview available for retry. An uncertain publication keeps a
+fence until recovery; cancellation does not assume that the publication failed. A complete
+read after remount of the same card can resolve the pending edit against either its old
+or proposed checkpoint. The shared writer resumes only after that read and its durability
+barrier succeed. A queued cancellation clears a recovered accepted checkpoint before
+candidate retirement. Reopened host sources must match the frozen map and route identities,
+including stored payload length and CRC. A different host owner does not make unchanged
+bytes stale, and a changed source cannot authorize the preview.
+
+A candidate remains marked in its immutable route bytes. Its accepted catalog flag makes
+it available as an ordinary route. Without that flag, the route list labels it as an
+unaccepted preview and does not activate it. Acceptance binds the current revision, length,
+and CRC. A replacement payload cannot inherit the flag. Clearing the checkpoint preserves
+accepted route eligibility.
+
+At boot, a verified checkpoint only offers **Resume**. It does not restore ordinary
+navigation or start Recorder. Explicit Resume requires a matching phase occurrence,
+current map binding, and re-verified route bytes. An accepted visit also protects its
+original route from explicit cleanup, deletion, and replacement until that dependency is released
+by a durable phase update. New fixes received during a phase write remain available to
+the phase owner after acknowledgment.
+
 A replacement plan cannot acquire the workspace before the previous release is acknowledged.
 Release after successful planning keeps the accepted route or detour preview. Releasing working
 memory is not a cancellation result. Workspace refusal, planner failure and storage failure remain distinct.

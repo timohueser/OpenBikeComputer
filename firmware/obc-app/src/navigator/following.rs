@@ -201,12 +201,16 @@ impl NavigatorMachine {
 
     /// Select or clear the active catalog route. Route-keyed caches reconcile on the next tick.
     pub(crate) fn set_active_route(&mut self, route: Option<usize>) {
-        self.following.active_route = route;
+        if self.select_after_checkpoint(route) {
+            self.following.active_route = route;
+        }
     }
 
     /// Select a route and return the previous selection.
     pub(crate) fn replace_active_route(&mut self, route: usize) -> Option<usize> {
-        self.following.active_route.replace(route)
+        let previous = self.following.active_route;
+        self.set_active_route(Some(route));
+        previous
     }
 
     /// Queue a seam re-anchor for the newly committed route.

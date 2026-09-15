@@ -760,6 +760,8 @@ pub struct NavPlanner {
     /// step frame because the fill spans steps, not because of its size.
     ele: EleFill,
     map_source: Option<obc_formats::obcr::RouteSourceKey>,
+    unresolved_avoidance: bool,
+    assistant_candidate: bool,
 }
 
 /// Whether a sample has resolved, used to continue bounded sampling through coverage gaps.
@@ -780,6 +782,14 @@ impl NavPlanner {
     /// Bind measured graph surfaces to the exact installed map used for this operation.
     pub fn set_attribution_map(&mut self, source: obc_formats::obcr::RouteSourceKey) {
         self.map_source = Some(source);
+    }
+
+    pub fn set_assistant_candidate(&mut self) {
+        self.assistant_candidate = true;
+    }
+
+    pub fn set_unresolved_avoidance(&mut self) {
+        self.unresolved_avoidance = true;
     }
 
     /// A planner for one route request routed under bike profile `profile_idx` (§8.6; an
@@ -819,6 +829,8 @@ impl NavPlanner {
             corridor: None,
             ele: EleFill::new(),
             map_source: None,
+            unresolved_avoidance: false,
+            assistant_candidate: false,
         }
     }
 
@@ -1180,6 +1192,10 @@ impl NavPlanner {
     ) -> Result<bool, NavError> {
         let mut em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
         em.set_attribution_map(self.map_source);
+        em.set_flags(
+            if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 }
+                | if self.unresolved_avoidance { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 },
+        );
         self.em = Some(em);
         if self.chain_len == 1 {
             let e = &scratch.entries[scratch.heap[0] as usize];

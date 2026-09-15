@@ -69,6 +69,8 @@ enum Phase {
 /// object (heap box on the host) — its one big field is the emitter.
 pub struct Splicer {
     phase: Phase,
+    adds_avoidance: bool,
+    assistant_candidate: bool,
     split_m: u32,
     rejoin_m: u32,
     name: heapless::String<NAME_CAP>,
@@ -122,6 +124,8 @@ impl Splicer {
             }
         }
         Splicer {
+            adds_avoidance: true,
+            assistant_candidate: false,
             phase: Phase::Init,
             split_m,
             rejoin_m,
@@ -144,6 +148,15 @@ impl Splicer {
             waypoints: Vec::new(),
             waypoint_cursor: None,
         }
+    }
+
+    /// Visit composition retains existing flags without adding a new unresolved avoidance.
+    pub fn set_assistant_candidate(&mut self) {
+        self.assistant_candidate = true;
+    }
+    pub fn set_visit_composition(&mut self) {
+        self.assistant_candidate = true;
+        self.adds_avoidance = false;
     }
 
     /// Terminal-transition helper: latch and return the failure.
@@ -182,7 +195,13 @@ impl Splicer {
                     Err(e) => return self.fail(e),
                 };
                 self.em.set_attribution_map(if original_map == detour_map { original_map } else { None });
-                self.em.set_flags(obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE);
+                self.em.set_flags(
+                    if self.adds_avoidance || orig.has_unresolved_avoidance() || detour.has_unresolved_avoidance() {
+                        obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
+                    } else {
+                        0
+                    } | if self.assistant_candidate { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
+                );
                 // Preserve the sampled heights that the planner deliberately densified.
                 if detour.has_elevation() {
                     self.em.keep_elevation_detail(ELE_SPLICE_KEEP_M);

@@ -16,6 +16,12 @@
 //! preview *figures* the HUD prints.
 
 mod following;
+mod review;
+use review::ReviewState;
+pub use review::{
+    CheckpointChange, ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, ReviewedRoute,
+    REVIEW_ALONG_TOLERANCE_M, REVIEW_FACTS_POLICY, REVIEW_LATERAL_TOLERANCE_M,
+};
 
 pub use following::RouteState;
 
@@ -41,6 +47,14 @@ pub enum PlanFamily {
 /// then sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigatorIntent {
+    AcceptAssistant {
+        origin: ReviewOrigin,
+        profile: u8,
+    },
+    CancelAssistant,
+    ResumeAssistant {
+        origin: ReviewOrigin,
+    },
     /// Plan a route from the rider's fix to a chosen point.
     PlanRoute(NavRequest),
     /// Abandon the in-flight route plan. Navigator invalidates its token, so the planner's eventual
@@ -59,6 +73,7 @@ pub enum NavigatorIntent {
 /// [`DetourRequest`] is four numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlannerWork {
+    AssistantRoute(NavRequest),
     /// A full route plan from a fix to a goal.
     Route(NavRequest),
     /// A detour around the span ahead of the rider.
@@ -123,6 +138,9 @@ pub enum NavigatorError {
     Store,
     /// An admitted map or original-route source changed.
     SourceChanged,
+    Movement,
+    Unavailable,
+    DurabilityUnknown,
 }
 
 /// The result of one [`NavigatorEffect`] — success, a typed failure, or cancellation. Never
@@ -130,30 +148,59 @@ pub enum NavigatorError {
 /// [`device_core::slots`](crate::device_core::slots)), not an operation that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigatorOutcome {
+    ReleaseUnresolved {
+        token: OperationToken<NavigatorTag>,
+    },
+    ReviewReady {
+        token: OperationToken<NavigatorTag>,
+    },
     /// The workspace and sources are held; stepping may begin.
-    Acquired { token: OperationToken<NavigatorTag> },
+    Acquired {
+        token: OperationToken<NavigatorTag>,
+    },
     /// One planner step ran.
-    Stepped { token: OperationToken<NavigatorTag>, progress: PlannerProgress },
+    Stepped {
+        token: OperationToken<NavigatorTag>,
+        progress: PlannerProgress,
+    },
     /// The planned route was committed under `route`.
-    PlanFinished { token: OperationToken<NavigatorTag>, route: CatalogObjectId },
+    PlanFinished {
+        token: OperationToken<NavigatorTag>,
+        route: CatalogObjectId,
+    },
     /// The detour search finished and its preview figures are ready. The preview *polyline* reaches
     /// the screens as a keyed derived input, never here.
-    DetourFinished { token: OperationToken<NavigatorTag>, preview: DetourPreview },
+    DetourFinished {
+        token: OperationToken<NavigatorTag>,
+        preview: DetourPreview,
+    },
     /// The spliced detour was committed under `route` — the re-adoption key.
-    DetourCommitted { token: OperationToken<NavigatorTag>, route: CatalogObjectId },
+    DetourCommitted {
+        token: OperationToken<NavigatorTag>,
+        route: CatalogObjectId,
+    },
     /// The workspace and sources are back with the executor.
-    Released { token: OperationToken<NavigatorTag> },
+    Released {
+        token: OperationToken<NavigatorTag>,
+    },
     /// The operation failed.
-    Failed { token: OperationToken<NavigatorTag>, error: NavigatorError },
+    Failed {
+        token: OperationToken<NavigatorTag>,
+        error: NavigatorError,
+    },
     /// The executor abandoned the operation without completing it.
-    Cancelled { token: OperationToken<NavigatorTag> },
+    Cancelled {
+        token: OperationToken<NavigatorTag>,
+    },
 }
 
 impl NavigatorOutcome {
     /// The operation this outcome answers. Navigator accepts it only while the token is current.
     pub fn token(&self) -> OperationToken<NavigatorTag> {
         match self {
-            NavigatorOutcome::Acquired { token }
+            NavigatorOutcome::ReleaseUnresolved { token }
+            | NavigatorOutcome::ReviewReady { token, .. }
+            | NavigatorOutcome::Acquired { token }
             | NavigatorOutcome::Stepped { token, .. }
             | NavigatorOutcome::PlanFinished { token, .. }
             | NavigatorOutcome::DetourFinished { token, .. }
@@ -170,7 +217,8 @@ impl NavigatorOutcome {
 // buffer) and the dominating outcome is the four-figure `DetourPreview`.
 const _: () = assert!(core::mem::size_of::<NavigatorIntent>() <= 48, "an intent is a bounded request");
 const _: () = assert!(core::mem::size_of::<NavigatorEffect>() <= 56, "the planner request plus a token");
-const _: () = assert!(core::mem::size_of::<NavigatorOutcome>() <= 24, "preview figures, never a polyline");
+const _: () =
+    assert!(core::mem::size_of::<NavigatorOutcome>() <= 40, "one bounded result; review figures stay with Navigator");
 const _: () = assert!(core::mem::size_of::<NavigatorError>() <= 2, "a verdict, not a report");
 const _: () = assert!(core::mem::size_of::<PlannerWork>() <= 48, "the largest planner request");
 const _: () = assert!(core::mem::size_of::<PlannerProgress>() <= 1, "a two-state answer");
@@ -251,6 +299,7 @@ pub struct NavigatorMachine {
     /// family's terminal edge may release what — and they stay per-family (#1146) whatever the
     /// token layer allows.
     ops: TokenSource<NavigatorTag>,
+    review: ReviewState,
     /// The family that owns physical work, through the acknowledged release.
     live: Option<PlanFamily>,
     /// The route family's phase.
@@ -293,6 +342,7 @@ impl NavigatorMachine {
         pub(crate) unsafe fn init_in_place;
         fields {
             ops: TokenSource::new(),
+            review: ReviewState::new(),
             live: None,
             route: PlanPhase::Idle,
             detour: PlanPhase::Idle,
@@ -325,7 +375,13 @@ impl NavigatorMachine {
     /// stays engaged until the executor acknowledges release, including any pending publication.
     pub(crate) fn admit_intent(&mut self, intent: NavigatorIntent) {
         match intent {
+            NavigatorIntent::AcceptAssistant { origin, profile } => self.accept_review(origin, profile),
+            NavigatorIntent::CancelAssistant => self.cancel_review(),
+            NavigatorIntent::ResumeAssistant { origin } => self.resume_review(origin),
             NavigatorIntent::PlanRoute(request) => {
+                if !self.prepare_ordinary_route() {
+                    return;
+                }
                 self.supersede(PlanFamily::Route);
                 self.route_request = Some(request);
                 self.route = PlanPhase::Requested;
@@ -358,7 +414,12 @@ impl NavigatorMachine {
     }
 
     fn supersede(&mut self, family: PlanFamily) {
-        if self.live == Some(family) || family == PlanFamily::Detour && self.detour == PlanPhase::PreviewReady {
+        if self.live == Some(family)
+            || match family {
+                PlanFamily::Route => self.route == PlanPhase::PreviewReady,
+                PlanFamily::Detour => self.detour == PlanPhase::PreviewReady,
+            }
+        {
             self.cancel_mask |= Self::family_bit(family);
             if self.live.is_none() {
                 self.live = Some(family);
@@ -407,11 +468,19 @@ impl NavigatorMachine {
         }
         self.phase = OperationPhase::Releasing;
         let retain_result = match family {
-            PlanFamily::Route => self.route == PlanPhase::Active,
+            PlanFamily::Route => {
+                matches!(self.route, PlanPhase::Active | PlanPhase::PreviewReady)
+                    || self.review.status == ReviewStatus::Unresolved
+            }
             PlanFamily::Detour => matches!(self.detour, PlanPhase::PreviewReady | PlanPhase::Active),
         } && self.cancel_mask & Self::family_bit(family) == 0;
         self.cancel_mask = (self.cancel_mask & 3)
-            | if retain_result && family == PlanFamily::Detour && self.detour == PlanPhase::PreviewReady {
+            | if retain_result
+                && match family {
+                    PlanFamily::Route => self.route == PlanPhase::PreviewReady,
+                    PlanFamily::Detour => self.detour == PlanPhase::PreviewReady,
+                }
+            {
                 4
             } else {
                 0
@@ -424,7 +493,17 @@ impl NavigatorMachine {
             return None;
         }
         let work = match family {
-            PlanFamily::Route => PlannerWork::Route(self.route_request.take()?),
+            PlanFamily::Route => {
+                if self.review.change.is_some() || self.review.status == ReviewStatus::Unresolved {
+                    return None;
+                }
+                let request = self.route_request.take()?;
+                if self.review.status == ReviewStatus::Planning {
+                    PlannerWork::AssistantRoute(request)
+                } else {
+                    PlannerWork::Route(request)
+                }
+            }
             PlanFamily::Detour => PlannerWork::Detour(self.detour_request.take()?),
         };
         match family {
@@ -459,6 +538,11 @@ impl NavigatorMachine {
                 self.phase == OperationPhase::Stepping
                     && (*progress == PlannerProgress::Searching || self.live == Some(PlanFamily::Route))
             }
+            NavigatorOutcome::ReviewReady { .. } => {
+                self.phase == OperationPhase::Committing
+                    && self.live == Some(PlanFamily::Route)
+                    && self.review.context.is_some()
+            }
             NavigatorOutcome::PlanFinished { .. } => {
                 self.phase == OperationPhase::Committing && self.live == Some(PlanFamily::Route)
             }
@@ -468,7 +552,9 @@ impl NavigatorMachine {
             NavigatorOutcome::DetourCommitted { .. } => {
                 self.phase == OperationPhase::Committing && self.live == Some(PlanFamily::Detour)
             }
-            NavigatorOutcome::Released { .. } => self.phase == OperationPhase::Releasing,
+            NavigatorOutcome::Released { .. } | NavigatorOutcome::ReleaseUnresolved { .. } => {
+                self.phase == OperationPhase::Releasing
+            }
             NavigatorOutcome::Failed { .. } | NavigatorOutcome::Cancelled { .. } => {
                 matches!(self.phase, OperationPhase::Acquiring | OperationPhase::Stepping | OperationPhase::Committing)
             }
@@ -595,6 +681,7 @@ impl NavigatorMachine {
     pub(crate) fn assert_boot_state(&self) {
         let NavigatorMachine {
             ops,
+            review,
             live,
             route,
             detour,
@@ -615,6 +702,7 @@ impl NavigatorMachine {
             route_match,
             matched_route,
         } = self;
+        assert_eq!(review.status, ReviewStatus::Idle);
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no navigation operation has been issued");
         assert!(live.is_none(), "no operation is in flight");
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");

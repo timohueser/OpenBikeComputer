@@ -72,7 +72,8 @@ public struct CatalogFlags: OptionSet, Hashable, Sendable {
     public static let recording = Self(rawValue: 1 << 0)
     public static let retained = Self(rawValue: 1 << 1)
     public static let reserved = Self(rawValue: 1 << 2)
-    static let known: Self = [.recording, .retained, .reserved]
+    public static let assistantAccepted = Self(rawValue: 1 << 3)
+    static let known: Self = [.recording, .retained, .reserved, .assistantAccepted]
 }
 
 public struct CatalogEntry: Hashable, Sendable {

@@ -5,10 +5,12 @@ use super::{
     StoreError, StoreId,
 };
 
+use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint, CHECKPOINT_LEN, CHECKPOINT_VERSION};
+
 pub const HEADER_LEN: usize = 32;
 pub const ROW_LEN: usize = 40;
 pub const MAX_RIDES: usize = 128;
-pub const MAX_LEN: usize = HEADER_LEN + MAX_RIDES * ROW_LEN;
+pub const MAX_LEN: usize = HEADER_LEN + MAX_RIDES * ROW_LEN + CHECKPOINT_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -94,7 +96,7 @@ impl<'a> Image<'a> {
         }
         buffer[..HEADER_LEN].fill(0);
         buffer[..4].copy_from_slice(b"OBRM");
-        buffer[4..6].copy_from_slice(&1u16.to_le_bytes());
+        buffer[4..6].copy_from_slice(&2u16.to_le_bytes());
         buffer[6..8].copy_from_slice(&(HEADER_LEN as u16).to_le_bytes());
         buffer[8..10].copy_from_slice(&(ROW_LEN as u16).to_le_bytes());
         buffer[16..32].copy_from_slice(&store.0);
@@ -106,16 +108,22 @@ impl<'a> Image<'a> {
             return Err(Error::Invalid);
         }
         let count = u16::from_le_bytes(buffer[10..12].try_into().unwrap()) as usize;
+        let checkpoint_version = u16::from_le_bytes(buffer[12..14].try_into().unwrap());
+        let checkpoint_len = u16::from_le_bytes(buffer[14..16].try_into().unwrap()) as usize;
+        let rows_end = HEADER_LEN + count * ROW_LEN;
         if &buffer[..4] != b"OBRM"
-            || buffer[4..10] != [1, 0, 32, 0, 40, 0]
-            || buffer[12..16] != [0; 4]
-            || len != HEADER_LEN + count * ROW_LEN
+            || buffer[4..10] != [2, 0, 32, 0, 40, 0]
+            || !matches!((checkpoint_version, checkpoint_len), (0, 0) | (CHECKPOINT_VERSION, CHECKPOINT_LEN))
+            || len != rows_end + checkpoint_len
         {
+            return Err(Error::Invalid);
+        }
+        if checkpoint_len != 0 && NavigatorCheckpoint::decode(&buffer[rows_end..len]).is_none() {
             return Err(Error::Invalid);
         }
         let mut previous = ObjectId::NONE;
         let mut rides = 0;
-        for bytes in buffer[HEADER_LEN..len].as_chunks::<ROW_LEN>().0 {
+        for bytes in buffer[HEADER_LEN..rows_end].as_chunks::<ROW_LEN>().0 {
             let row = Row::decode(bytes)?;
             if row.id <= previous {
                 return Err(Error::Invalid);
@@ -136,14 +144,43 @@ impl<'a> Image<'a> {
         StoreId(self.buffer[16..32].try_into().unwrap())
     }
     pub fn rows(&self) -> impl Iterator<Item = Row> + '_ {
-        self.bytes()[HEADER_LEN..].as_chunks::<ROW_LEN>().0.iter().map(|b| Row::decode(b).unwrap())
+        self.bytes()[HEADER_LEN..self.rows_end()].as_chunks::<ROW_LEN>().0.iter().map(|b| Row::decode(b).unwrap())
+    }
+
+    fn rows_end(&self) -> usize {
+        HEADER_LEN + u16::from_le_bytes(self.buffer[10..12].try_into().unwrap()) as usize * ROW_LEN
+    }
+
+    pub fn checkpoint(&self) -> Option<NavigatorCheckpoint> {
+        NavigatorCheckpoint::decode(&self.bytes()[self.rows_end()..])
+    }
+
+    pub fn set_checkpoint(&mut self, checkpoint: Option<NavigatorCheckpoint>) -> Result<(), Error> {
+        let start = self.rows_end();
+        let encoded = match checkpoint {
+            Some(value) => Some(value.encode().ok_or(Error::Invalid)?),
+            None => None,
+        };
+        if let Some(bytes) = encoded {
+            if start + CHECKPOINT_LEN > self.buffer.len() {
+                return Err(Error::Capacity);
+            }
+            self.buffer[start..start + CHECKPOINT_LEN].copy_from_slice(&bytes);
+            self.buffer[12..14].copy_from_slice(&CHECKPOINT_VERSION.to_le_bytes());
+            self.buffer[14..16].copy_from_slice(&(CHECKPOINT_LEN as u16).to_le_bytes());
+            self.len = start + CHECKPOINT_LEN;
+        } else {
+            self.buffer[12..16].fill(0);
+            self.len = start;
+        }
+        Ok(())
     }
 
     pub fn set(&mut self, row: Row) -> Result<(), Error> {
         if !row.valid() {
             return Err(Error::Invalid);
         }
-        let index = self.rows().position(|r| r.id >= row.id).unwrap_or((self.len - HEADER_LEN) / ROW_LEN);
+        let index = self.rows().position(|r| r.id >= row.id).unwrap_or(self.rows().count());
         let at = HEADER_LEN + index * ROW_LEN;
         let existing = self.rows().nth(index).filter(|r| r.id == row.id);
         let count = self.rows().filter(|r| r.kind == row.kind).count()
@@ -155,14 +192,14 @@ impl<'a> Image<'a> {
         if existing.is_none() {
             self.buffer.copy_within(at..self.len, at + ROW_LEN);
             self.len += ROW_LEN;
-            self.update_count();
+            self.update_count(self.rows().count() + 1);
         }
         row.encode(&mut self.buffer[at..at + ROW_LEN]);
         Ok(())
     }
 
-    fn update_count(&mut self) {
-        self.buffer[10..12].copy_from_slice(&(((self.len - HEADER_LEN) / ROW_LEN) as u16).to_le_bytes());
+    fn update_count(&mut self, count: usize) {
+        self.buffer[10..12].copy_from_slice(&(count as u16).to_le_bytes());
     }
 
     /// Remove stale rows only after a complete, successful catalog scan.
@@ -180,16 +217,18 @@ impl<'a> Image<'a> {
             return Err(Error::Store(StoreError::Media));
         }
         let old_len = self.len;
+        let rows_end = self.rows_end();
         let mut dest = HEADER_LEN;
-        for (index, &keep) in keep.iter().take((old_len - HEADER_LEN) / ROW_LEN).enumerate() {
+        for (index, &keep) in keep.iter().take((rows_end - HEADER_LEN) / ROW_LEN).enumerate() {
             if keep {
                 let at = HEADER_LEN + index * ROW_LEN;
                 self.buffer.copy_within(at..at + ROW_LEN, dest);
                 dest += ROW_LEN;
             }
         }
-        self.len = dest;
-        self.update_count();
+        self.buffer.copy_within(rows_end..old_len, dest);
+        self.len = dest + old_len - rows_end;
+        self.update_count((dest - HEADER_LEN) / ROW_LEN);
         Ok(self.len != old_len)
     }
 }
@@ -249,6 +288,25 @@ impl Metadata {
         image: &mut Image<'_>,
         target: Option<EntryMeta>,
     ) -> Result<EntryMeta, Error> {
+        self.replace_image(store, image, target, false)
+    }
+
+    /// Publish Navigator data through the same complete-image CAS and readback path.
+    pub fn replace_checkpoint<D: BlockDevice>(
+        &mut self,
+        store: &FlatStore<D>,
+        image: &mut Image<'_>,
+    ) -> Result<EntryMeta, Error> {
+        self.replace_image(store, image, None, true)
+    }
+
+    fn replace_image<D: BlockDevice>(
+        &mut self,
+        store: &FlatStore<D>,
+        image: &mut Image<'_>,
+        target: Option<EntryMeta>,
+        checkpoint_edit: bool,
+    ) -> Result<EntryMeta, Error> {
         self.check(store)?;
         if !self.loaded || image.store_id() != self.store {
             return Err(Error::WrongStore);
@@ -272,6 +330,17 @@ impl Metadata {
         {
             return Err(Error::Stale);
         }
+        let accepted = if checkpoint_edit {
+            validate_checkpoint(store, image.checkpoint())?;
+            image
+                .checkpoint()
+                .map(|checkpoint| checkpoint_source(store, checkpoint.route))
+                .transpose()?
+                .filter(|entry| !entry.flags.has(EntryFlags::ASSISTANT_ACCEPTED))
+                .map(|entry| EntryMeta { flags: EntryFlags::ASSISTANT_ACCEPTED, ..entry })
+        } else {
+            None
+        };
         let (id, revision) = match self.head {
             Some(head) => (head.id, Revision(head.revision.0.checked_add(1).ok_or(Error::Invalid)?)),
             None => (store.next_object_id(), Revision(1)),
@@ -300,10 +369,15 @@ impl Metadata {
             return Err(Error::Stale);
         }
         let put = Mutation::Put { meta, source: PutSource::Fresh(allocation) };
-        let result = match self.head {
-            Some(old) => store.commit(&[Mutation::Remove { id: old.id, revision: old.revision }, put]),
-            None => store.commit(&[put]),
-        };
+        let mut batch = heapless::Vec::<Mutation, 3>::new();
+        if let Some(old) = self.head {
+            batch.push(Mutation::Remove { id: old.id, revision: old.revision }).unwrap();
+        }
+        batch.push(put).unwrap();
+        if let Some(meta) = accepted {
+            batch.push(Mutation::Put { meta, source: PutSource::Amend }).unwrap();
+        }
+        let result = store.commit(&batch);
         if let Err(error) = result {
             if store.mode() == super::Mode::RemountRequired {
                 self.blocked = true;
@@ -326,7 +400,11 @@ impl Metadata {
             store.close(handle);
             result
         });
-        if verified.is_err() {
+        let acceptance_verified = accepted.is_none_or(|want| {
+            let found = store.entries().any(|entry| entry == want);
+            found && store.entries_ok()
+        });
+        if verified.is_err() || !acceptance_verified {
             store.require_remount();
             self.blocked = true;
             return Err(Error::RemountRequired);
@@ -444,4 +522,162 @@ pub fn archive_ride<D: BlockDevice>(
     image.set(Row { id, revision, payload_len, payload_crc, timestamp: 0, kind: ObjectKind::Ride })?;
     owner.replace(store, &mut image, Some(target))?;
     Ok(0)
+}
+
+/// The full immutable source tuple; its StoreId comes from the Metadata image.
+pub fn fingerprint(entry: EntryMeta) -> PayloadFingerprint {
+    PayloadFingerprint {
+        object: entry.id.0,
+        revision: entry.revision.0,
+        length: entry.payload_len,
+        crc: entry.payload_crc,
+    }
+}
+
+fn checkpoint_source<D: BlockDevice>(store: &FlatStore<D>, source: PayloadFingerprint) -> Result<EntryMeta, Error> {
+    let entry = source_head(store, ObjectId(source.object), ObjectKind::Route)?;
+    if fingerprint(entry) != source {
+        return Err(Error::Stale);
+    }
+    Ok(entry)
+}
+
+fn validate_checkpoint<D: BlockDevice>(
+    store: &FlatStore<D>,
+    checkpoint: Option<NavigatorCheckpoint>,
+) -> Result<(), Error> {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint_source(store, checkpoint.route)?;
+        if let Some(original) = checkpoint.original {
+            checkpoint_source(store, original)?;
+        }
+    }
+    Ok(())
+}
+
+/// Serialize this with archive proof updates. No draft survives the call.
+/// A changed prior checkpoint is stale even when an unrelated metadata write was reconciled.
+#[inline(never)]
+pub fn write_checkpoint<D: BlockDevice>(
+    store: &FlatStore<D>,
+    expected_store: StoreId,
+    sequence: u64,
+    expected: Option<NavigatorCheckpoint>,
+    next: Option<NavigatorCheckpoint>,
+) -> Result<(), Error> {
+    check_scope(store, expected_store, sequence)?;
+    let mut bytes = [0; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let mut image = owner.load(store, &mut bytes)?;
+    if image.checkpoint() != expected {
+        return Err(Error::Stale);
+    }
+    validate_checkpoint(store, next)?;
+    if expected == next {
+        verify_checkpoint_payloads(store, next)?;
+        return durable(store);
+    }
+    image.reconcile(store)?;
+    image.set_checkpoint(next)?;
+    owner.replace_checkpoint(store, &mut image)?;
+    Ok(())
+}
+
+/// A validated recovery offer. No checkpoint means ordinary boot behavior.
+#[inline(never)]
+pub fn read_checkpoint<D: BlockDevice>(store: &FlatStore<D>) -> Result<Option<NavigatorCheckpoint>, Error> {
+    let mut bytes = [0; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let image = owner.load(store, &mut bytes)?;
+    let checkpoint = image.checkpoint();
+    if let Some(checkpoint) = checkpoint {
+        if !checkpoint_source(store, checkpoint.route)?.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
+            return Err(Error::Invalid);
+        }
+    }
+    validate_checkpoint(store, checkpoint)?;
+    verify_checkpoint_payloads(store, checkpoint)?;
+    durable(store)?;
+    Ok(checkpoint)
+}
+
+#[inline(never)]
+fn verify_checkpoint_payloads<D: BlockDevice>(
+    store: &FlatStore<D>,
+    checkpoint: Option<NavigatorCheckpoint>,
+) -> Result<(), Error> {
+    if let Some(checkpoint) = checkpoint {
+        for source in [Some(checkpoint.route), checkpoint.original].into_iter().flatten() {
+            let handle = store.open(ObjectId(source.object), Some(Revision(source.revision)))?;
+            let verified = (|| {
+                let mut crc = obc_crc::Crc32::new();
+                let mut block = [0; 512];
+                let mut offset = 0;
+                while offset < source.length {
+                    let want = (source.length - offset).min(block.len() as u64) as usize;
+                    if store.read(&handle, offset, &mut block[..want])? != want {
+                        return Err(Error::Invalid);
+                    }
+                    crc.update(&block[..want]);
+                    offset += want as u64;
+                }
+                if crc.finalize() != source.crc {
+                    return Err(Error::Invalid);
+                }
+                Ok(())
+            })();
+            store.close(handle);
+            verified?;
+        }
+    }
+    Ok(())
+}
+
+/// Explicit removal/replacement must preserve an accepted journey's sources.
+#[inline(never)]
+pub fn check_route_change<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId) -> Result<(), Error> {
+    let route = store.entries().any(|entry| entry.id == id && entry.kind == ObjectKind::Route);
+    if !store.entries_ok() {
+        return Err(Error::Store(StoreError::Media));
+    }
+    if !route {
+        return Ok(());
+    }
+    let mut bytes = [0; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let image = owner.load(store, &mut bytes)?;
+    if image.checkpoint().is_some_and(|c| c.route.object == id.0 || c.original.is_some_and(|o| o.object == id.0)) {
+        return Err(Error::Store(StoreError::Busy));
+    }
+    Ok(())
+}
+
+fn source_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId, kind: ObjectKind) -> Result<EntryMeta, Error> {
+    let entry = store.entries().find(|entry| entry.id == id && entry.kind == kind && entry.flags.is_route_head());
+    if !store.entries_ok() {
+        return Err(Error::Store(StoreError::Media));
+    }
+    entry.ok_or(Error::Stale)
+}
+
+pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequence: u64) -> Result<(), Error> {
+    if store.store_id() != expected {
+        return Err(Error::WrongStore);
+    }
+    if store.mode() == super::Mode::RemountRequired {
+        return Err(Error::RemountRequired);
+    }
+    if store.sequence() != sequence {
+        return Err(Error::Stale);
+    }
+    Ok(())
+}
+
+pub(crate) fn protected_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<[Option<ObjectId>; 2], Error> {
+    let mut bytes = [0; MAX_LEN];
+    let mut owner = Metadata::new(store);
+    let image = owner.load(store, &mut bytes)?;
+    Ok(image
+        .checkpoint()
+        .map_or([None, None], |c| [Some(ObjectId(c.route.object)), c.original.map(|o| ObjectId(o.object))]))
 }

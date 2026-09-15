@@ -355,6 +355,7 @@ pub struct Render<'a> {
     /// [`units`](Settings::units) to caption + scale their readouts.
     pub settings: &'a Settings,
     pub routes: &'a [RouteSummary],
+    pub unaccepted_routes: u64,
     /// The resident ride catalog (read-only) — the Rides screen draws its two-line rows + the
     /// hold-to-delete footer from it (epic #447, P7).
     pub rides: &'a [RideEntry],

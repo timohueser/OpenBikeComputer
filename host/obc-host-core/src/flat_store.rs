@@ -272,6 +272,18 @@ impl ObjectSource {
         card.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
     }
 
+    /// Full current stored identity, independent of a particular mount's owner allocation.
+    pub(crate) fn fingerprint(&self) -> Option<obc_formats::assistant::PayloadFingerprint> {
+        let owner = self.0.owner.lock().ok()?;
+        let card = owner.ready().ok()?;
+        let entry = card.entries().find(|entry| {
+            entry.id == self.id()
+                && entry.revision == self.revision()
+                && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+        })?;
+        card.entries_ok().then(|| obc_storage::flat::metadata::fingerprint(entry))
+    }
+
     pub fn store_id(&self) -> StoreId {
         self.0.store_id
     }
@@ -317,6 +329,15 @@ impl ByteSource for ObjectSource {
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
+    #[cfg(test)]
+    pub(crate) fn remount_memory_snapshot(&self) -> Self {
+        let mut owner = self.0.lock().unwrap();
+        let HostMedia::Memory(pages) = owner.card.device() else { panic!("memory card required") };
+        let media = HostMedia::Memory(RefCell::new(pages.borrow().clone()));
+        owner.remount_required = true;
+        Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::mount(media), false))))
+    }
+
     pub fn memory() -> Result<Self, ImportError> {
         Self::new(HostMedia::Memory(RefCell::default()))
     }
@@ -383,7 +404,12 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card.entries().filter(|entry| entry.flags == EntryFlags::NONE).collect();
+        let entries = card
+            .entries()
+            .filter(|entry| {
+                entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+            })
+            .collect();
         if !card.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -393,7 +419,10 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
+        let head = store.entries().find(|entry| {
+            entry.id == id
+                && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+        });
         if !store.entries_ok() {
             return Err(StoreError::Media);
         }
@@ -403,6 +432,12 @@ impl HostStore {
         }
         if head.revision != revision {
             return Err(StoreError::RevisionConflict { current: head.revision });
+        }
+        if kind == ObjectKind::Route {
+            obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                obc_storage::flat::metadata::Error::Store(StoreError::Busy) => StoreError::Busy,
+                _ => StoreError::Media,
+            })?;
         }
         let result = store.commit(&[Mutation::Remove { id, revision }]);
         if result == Err(StoreError::Media) {
@@ -448,6 +483,14 @@ impl HostStore {
             return Err(ImportError::RemountRequired);
         }
         let store = &owner.card;
+        if kind == ObjectKind::Route {
+            if let Some((id, _)) = previous {
+                obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                    obc_storage::flat::metadata::Error::Store(error) => ImportError::Storage(error),
+                    _ => ImportError::RemountRequired,
+                })?;
+            }
+        }
         // A computed route needs one later commit to retract an abandoned publication.
         if !store.has_commit_capacity(commits) {
             return Err(StoreError::ReadOnly.into());
@@ -456,7 +499,10 @@ impl HostStore {
             let count = store
                 .entries()
                 .filter(|entry| {
-                    entry.kind == kind && (entry.flags == EntryFlags::NONE || entry.flags == EntryFlags::RECORDING)
+                    entry.kind == kind
+                        && ((entry.flags == EntryFlags::NONE
+                            || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+                            || entry.flags == EntryFlags::RECORDING)
                 })
                 .count();
             if !store.entries_ok() {

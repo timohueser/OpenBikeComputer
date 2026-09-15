@@ -276,6 +276,7 @@ impl App {
 
         let mut effects = EffectSlots::new();
         self.stage_catalog(&mut effects);
+        self.stage_metadata(&mut effects);
         self.stage_recorder(&mut effects);
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
@@ -323,6 +324,23 @@ impl App {
                 }
             }
             self.catalogs.apply_outcome(outcome);
+        }
+        if let Some(outcome) = outcomes.metadata.take() {
+            if self.metadata.apply_outcome(outcome) {
+                self.assistant_checkpoint_answer(outcome);
+                use crate::metadata::{MetadataError, MetadataOutcome};
+                match outcome {
+                    MetadataOutcome::Failed { error: MetadataError::RemountRequired, .. } => {
+                        self.catalogs.loaded_scope = None;
+                        self.catalogs.remount_required = true;
+                    }
+                    MetadataOutcome::CheckpointWritten { .. } => {
+                        self.catalogs.loaded_scope = None;
+                        self.catalogs.note_store_moved();
+                    }
+                    _ => {}
+                }
+            }
         }
         if let Some(outcome) = outcomes.recorder.take() {
             // Recorder's verdict on the close. A committed ride tells the catalog at stage 6 of this
@@ -390,6 +408,8 @@ impl App {
                             }
                         }
                     }
+                    self.metadata.reset_store();
+                    self.navigator.review_store_changed(store.store);
                     self.catalogs.remount_required = false;
                     self.catalogs.loaded_scope = self.catalogs.loaded_scope.filter(|scope| scope.store == store.store);
                 }
@@ -521,6 +541,19 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn stage_metadata(&mut self, effects: &mut EffectSlots) {
+        if effects.metadata.is_empty() && self.navigator.checkpoint_change().is_some() {
+            let Some(scope) = self.catalogs.loaded_scope else {
+                return;
+            };
+            if let Some(mut effect) = self.metadata.next_checkpoint_effect() {
+                effect.bind(Some(scope));
+                self.navigator.checkpoint_issued(effect.token());
+                let _ = effects.metadata.try_put(effect);
+            }
+        }
     }
 
     /// Stage 7 — `RecorderMachine`'s one bounded operation: a journal checkpoint the cadence owes,
