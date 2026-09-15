@@ -310,8 +310,7 @@ impl RouteMenuScreen {
             match rows[row.index] {
                 Row::Folder(ti) => draw_folder_row(cv, &row.area, &trips[ti], w, accent),
                 Row::Route(ri) => {
-                    let unaccepted =
-                        rx.route_metas.get(ri).is_some_and(|meta| meta.assistant_candidate && !meta.assistant_accepted);
+                    let unaccepted = rx.unaccepted_routes & (1 << ri) != 0;
                     draw_route_row(
                         cv,
                         &row.area,

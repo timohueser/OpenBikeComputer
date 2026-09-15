@@ -1,7 +1,9 @@
 # Ride Assistant source captures
 
-These files describe the initial real inputs for Ride Assistant. Large bytes live in the
-immutable fixture store. This input revision does not contain the later landmark map format.
+These files describe the initial real inputs for Ride Assistant. Scenario inputs live in the
+immutable fixture store. Country-scale raw landmark captures stay in a local map-baker source
+cache; see [acquisition and recount commands](CAPTURE.md). This input revision does not contain
+the later landmark map format.
 It does not prove that an Assistant feature or a hardware test passed.
 
 ## Acquire and verify
