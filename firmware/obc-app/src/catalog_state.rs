@@ -656,7 +656,7 @@ impl CatalogOutcome {
 /// cascade**, member routes first and the folder last.
 impl CatalogState {
     pub(crate) fn can_admit_intent(&self) -> bool {
-        self.pending.is_none() && !self.in_flight
+        self.pending.is_none() && !self.in_flight && !self.refresh_owed && !self.remount_required
     }
 
     /// Admit `intent`, or refuse it and hand it back.
