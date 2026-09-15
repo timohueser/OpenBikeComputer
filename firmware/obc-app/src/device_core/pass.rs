@@ -312,6 +312,9 @@ impl App {
                     self.ui.map_dirty = true;
                 }
                 match outcome {
+                    crate::catalog_state::CatalogOutcome::ReviewRemoved { source, .. } => {
+                        self.find_review_removed(source);
+                    }
                     crate::catalog_state::CatalogOutcome::Failed {
                         error: crate::catalog_state::CatalogError::Unreadable,
                         ..

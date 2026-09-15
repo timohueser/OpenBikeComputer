@@ -545,6 +545,17 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
     ) -> CatalogOutcome {
         match effect {
+            CatalogEffect::RemoveReview { token, source } => {
+                let publication = crate::RoutePublication {
+                    store: Some(StoreIdentity::from_bytes(source.store)),
+                    id: source.object,
+                    revision: source.revision,
+                };
+                match routes.retract_nav_route(publication) {
+                    Ok(()) | Err(CatalogError::Stale) => CatalogOutcome::ReviewRemoved { token, source },
+                    Err(error) => CatalogOutcome::Failed { token, error },
+                }
+            }
             CatalogEffect::CleanupRoute { token, before_utc, store } => {
                 let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
                 match routes.cleanup_route(before_utc, store, active) {
