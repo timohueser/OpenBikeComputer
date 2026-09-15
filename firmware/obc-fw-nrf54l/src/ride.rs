@@ -855,6 +855,8 @@ pub(crate) async fn run_app(
     let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
     #[cfg(has_nav)]
     let mut detour = crate::detour::Executor::new();
+    #[cfg(has_nav)]
+    let mut visit = crate::visit::Executor::new();
     // The scratch arena's **nav arm**, held for the whole search (#1146 P2) — many passes, by
     // design: the A* table, the tile cache and the planner all have to survive from one bounded step
     // to the next. This loop is the arena's sole owner-switcher, and the Recalculating freeze is what
@@ -1541,11 +1543,12 @@ pub(crate) async fn run_app(
                                     && context.map == crate::flat_store::planner_map_key(flat)
                                     && context.profile == app.settings().bike_profile_idx
                                     && context.original.is_none_or(|original| {
-                                        review_original.as_ref().is_some_and(|held| {
-                                            held.id().0 == original.object
-                                                && held.revision().0 == original.revision
-                                                && held.is_current()
-                                        })
+                                        visit.original_current()
+                                            || review_original.as_ref().is_some_and(|held| {
+                                                held.id().0 == original.object
+                                                    && held.revision().0 == original.revision
+                                                    && held.is_current()
+                                            })
                                     })
                             });
                     #[cfg(not(has_nav))]
@@ -1606,10 +1609,50 @@ pub(crate) async fn run_app(
                     flat.close(source.release());
                 }
             }
+            #[cfg(has_nav)]
+            visit.accepted(app, flat);
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
                 #[cfg(has_nav)]
-                let detour_effect = detour.accepts(&effect);
+                let source_error =
+                    if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
+                        && app.assistant_visit_target().is_some()
+                    {
+                        let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                        let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
+                        let avoidance = id.is_some_and(|id| {
+                            flat.with_source(obc_storage::flat::ObjectId(id), None, |source| {
+                                obc_route::RouteObjectInfo::read(source).map(|info| info.unresolved_avoidance)
+                            })
+                            .ok()
+                            .and_then(Result::ok)
+                            .unwrap_or(true)
+                        });
+                        !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
+                    } else {
+                        false
+                    };
+                #[cfg(not(has_nav))]
+                let source_error = false;
+                if source_error {
+                    RideExec::deliver(
+                        &mut exec.outcomes.navigator,
+                        NavigatorOutcome::Failed { token: effect.token(), error: NavigatorError::SourceChanged },
+                        "navigator",
+                    );
+                }
+                #[cfg(has_nav)]
+                let visit_effect = !source_error && visit.accepts(&effect, app);
+                #[cfg(not(has_nav))]
+                let visit_effect = false;
+                #[cfg(has_nav)]
+                if visit_effect {
+                    if let Some(outcome) = visit.accept(effect, app, flat, &mut nav_guard) {
+                        RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                    }
+                }
+                #[cfg(has_nav)]
+                let detour_effect = !source_error && !visit_effect && detour.accepts(&effect);
                 #[cfg(not(has_nav))]
                 let detour_effect = false;
                 #[cfg(has_nav)]
@@ -1620,7 +1663,7 @@ pub(crate) async fn run_app(
                         RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                     }
                 }
-                if !detour_effect {
+                if !source_error && !visit_effect && !detour_effect {
                     match effect {
                         #[cfg(has_nav)]
                         NavigatorEffect::Acquire {
@@ -1847,6 +1890,19 @@ pub(crate) async fn run_app(
 
             #[cfg(has_nav)]
             if let Some(writer) = crate::flat_store::writer() {
+                if let Some(outcome) = visit.poll(
+                    app,
+                    flat,
+                    writer,
+                    &mut nav_guard,
+                    flat_map,
+                    map_tables,
+                    map_cache,
+                    &mut *nav.elev,
+                    &NAV_STORE_REPLY,
+                ) {
+                    RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
+                }
                 if let Some(outcome) = detour.poll(
                     app,
                     flat,
@@ -2084,13 +2140,24 @@ pub(crate) async fn run_app(
                                                                     obc_storage::flat::ObjectId(id),
                                                                     Some(obc_storage::flat::Revision(source.revision)),
                                                                     |bytes| {
+                                                                        if let Some(target) =
+                                                                            app.assistant_visit_target()
+                                                                        {
+                                                                            target
+                                                                                .validate_destination(
+                                                                                    bytes,
+                                                                                    context.profile,
+                                                                                )
+                                                                                .map_err(|_| {
+                                                                                    NavigatorError::Unavailable
+                                                                                })?;
+                                                                        }
                                                                         obc_app::navigator::ReviewedRoute::read(
                                                                             source, bytes, context,
                                                                         )
                                                                     },
                                                                 )
-                                                                .ok()
-                                                                .and_then(Result::ok);
+                                                                .ok();
                                                         }
                                                     }
                                                     crate::flat_store::load_routes(flat, app);
@@ -2201,7 +2268,38 @@ pub(crate) async fn run_app(
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match result {
                                     Ok(_) if app.assistant_review_context().is_some() => match finished_review {
-                                        Some(preview) => app.assistant_preview_outcome(token, preview),
+                                        Some(Ok(preview)) => {
+                                            guard.begin_sources();
+                                            let shape = flat.with_source(
+                                                obc_storage::flat::ObjectId(preview.source.object),
+                                                Some(obc_storage::flat::Revision(preview.source.revision)),
+                                                |source| crate::assistant::preview_shape(guard.sources().1, source),
+                                            );
+                                            match shape {
+                                                Ok(Ok(shape)) => {
+                                                    let outcome = app.assistant_preview_outcome(token, preview);
+                                                    if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                                        && !app.set_assistant_preview_shape(
+                                                            token,
+                                                            preview.source,
+                                                            &shape,
+                                                        )
+                                                    {
+                                                        NavigatorOutcome::Failed {
+                                                            token,
+                                                            error: NavigatorError::SourceChanged,
+                                                        }
+                                                    } else {
+                                                        outcome
+                                                    }
+                                                }
+                                                _ => NavigatorOutcome::Failed {
+                                                    token,
+                                                    error: NavigatorError::DurabilityUnknown,
+                                                },
+                                            }
+                                        }
+                                        Some(Err(error)) => NavigatorOutcome::Failed { token, error },
                                         None => {
                                             NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
                                         }

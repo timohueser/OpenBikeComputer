@@ -187,6 +187,41 @@ pub(crate) struct ObcrEmitter {
 }
 
 impl ObcrEmitter {
+    /// Initialize the emitter directly inside its phase-owned workspace.
+    ///
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete emitter.
+    pub(crate) unsafe fn init_in_place(slot: *mut Self) {
+        use core::ptr::addr_of_mut;
+        unsafe {
+            Encoder::init_in_place(addr_of_mut!((*slot).enc));
+            addr_of_mut!((*slot).cum_dist).write(0.0);
+            addr_of_mut!((*slot).prev).write(None);
+            addr_of_mut!((*slot).bbox).write(None);
+            addr_of_mut!((*slot).start).write((0, 0));
+            addr_of_mut!((*slot).emitted).write(0);
+            addr_of_mut!((*slot).last_kept).write(None);
+            addr_of_mut!((*slot).pending).write(None);
+            addr_of_mut!((*slot).ele_keep_m).write(1);
+            addr_of_mut!((*slot).surface).write(0);
+            addr_of_mut!((*slot).flags).write(0);
+            addr_of_mut!((*slot).map_source).write(None);
+            let Self {
+                enc: _,
+                cum_dist: _,
+                prev: _,
+                bbox: _,
+                start: _,
+                emitted: _,
+                last_kept: _,
+                pending: _,
+                ele_keep_m: _,
+                surface: _,
+                flags: _,
+                map_source: _,
+            } = &*slot;
+        }
+    }
     /// Reserve the v4 header on `sink`; the body follows immediately
     /// (`data_offset = HEADER_FULL_LEN`).
     pub(crate) fn new(sink: &mut dyn ByteSink) -> Result<ObcrEmitter, Error> {
@@ -238,10 +273,19 @@ impl ObcrEmitter {
         self.map_source = source;
     }
 
+    pub(crate) fn attribution_map(&self) -> Option<obc_formats::obcr::RouteSourceKey> {
+        self.map_source
+    }
+
     /// Measured retained distance, including the most recently retained transform point.
     #[inline]
     pub(crate) fn distance_m(&self) -> u32 {
         self.enc.distance as u32
+    }
+
+    /// End of the geometry and index after `finish` with no waypoint records.
+    pub(crate) fn geometry_end(&self) -> u32 {
+        self.enc.data_pos + self.enc.index.len() as u32 * CHUNK_META_LEN as u32
     }
 
     /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
@@ -530,6 +574,33 @@ struct Encoder {
 }
 
 impl Encoder {
+    unsafe fn init_in_place(slot: *mut Self) {
+        use core::ptr::addr_of_mut;
+        unsafe {
+            addr_of_mut!((*slot).index).write(Vec::new());
+            addr_of_mut!((*slot).cur).write(Vec::new());
+            addr_of_mut!((*slot).data_pos).write(HEADER_FULL_LEN as u32);
+            addr_of_mut!((*slot).chunk_start_dist).write(0);
+            addr_of_mut!((*slot).chunk_start_ascent).write(0);
+            addr_of_mut!((*slot).distance).write(0.0);
+            addr_of_mut!((*slot).previous).write(None);
+            addr_of_mut!((*slot).band).write(DeadBand::new());
+            addr_of_mut!((*slot).min_ele).write(i16::MAX);
+            addr_of_mut!((*slot).max_ele).write(i16::MIN);
+            let Self {
+                index: _,
+                cur: _,
+                data_pos: _,
+                chunk_start_dist: _,
+                chunk_start_ascent: _,
+                distance: _,
+                previous: _,
+                band: _,
+                min_ele: _,
+                max_ele: _,
+            } = &*slot;
+        }
+    }
     fn new(data_offset: u32) -> Self {
         Encoder {
             index: Vec::new(),
