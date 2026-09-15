@@ -730,6 +730,16 @@ class CiRoutingTests(unittest.TestCase):
         )
         self.assertEqual(registry.gate_claims(suites, graph)["test"], {"ci.policy", "rust.core"})
 
+    def test_fast_workspace_gate_does_not_claim_fixture_or_manual_execution(self):
+        fast = {**self.suites[0], "level": "unit", "pull_request": "affected"}
+        fixtures = {**fast, "id": "fixtures.core", "level": "fixture"}
+        manual = {**fast, "id": "manual.core", "pull_request": "never"}
+        gate = {**self.suites[1], "command": "obc check test", "ownership": [{"kind": "workflow", "pattern":
+            'cargo nextest run --workspace --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"'}]}
+        graph = registry.CargoGraph({"core": registry.CargoPackage("core", "crates/core", "crates/core/Cargo.toml", frozenset(), True)},
+                                    {"core": frozenset()})
+        self.assertEqual(registry.gate_claims([fast, fixtures, manual, gate], graph)["test"], {"ci.policy", "rust.core"})
+
 class ShippedRoutingTests(unittest.TestCase):
     """The shipped registry's own routing, so a real change class cannot drift silently."""
 
