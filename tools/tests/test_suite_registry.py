@@ -95,6 +95,27 @@ class SuiteRegistryTests(unittest.TestCase):
             },
         )
 
+    def test_command_package_flags_belong_to_cargo(self) -> None:
+        suites, coverage, discovered = self.base_documents()
+        suites["suite"][0]["command"] = "mkdir -p reports && cargo test -p demo --locked"
+        registry.validate(self.root, suites, coverage, discovered)
+        suites["suite"][0]["command"] = "mkdir -p reports && cargo test -p missing --locked"
+        with self.assertRaisesRegex(registry.RegistryError, "unknown Cargo package missing"):
+            registry.validate(self.root, suites, coverage, discovered)
+
+    def test_step_condition_does_not_replace_job_selection_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / '.github/workflows/ci.yml'
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("jobs:\n  test:\n    runs-on: ubuntu-latest\n    needs: selection\n"
+                                "    if: contains(fromJSON(needs.selection.outputs.jobs), 'test')\n"
+                                "    steps:\n      - name: optional suite\n"
+                                "        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')\n"
+                                "        run: echo run\n")
+            self.assertEqual(registry.workflow_jobs(root)['test'].gates_on, 'test')
+
+
     def test_list_data_is_derived_not_stored(self) -> None:
         suites, coverage, discovered = self.base_documents()
         inventory = registry.validate(self.root, suites, coverage, discovered)
