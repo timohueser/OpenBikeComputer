@@ -28,6 +28,7 @@ pub struct EasierScreen {
     ready: bool,
     review: bool,
     saving: bool,
+    unresolved: bool,
     unavailable: bool,
     failure: Option<obc_route::NavError>,
 }
@@ -45,6 +46,7 @@ impl EasierScreen {
             ready: false,
             review: false,
             saving: false,
+            unresolved: false,
             unavailable: false,
             failure: None,
         }
@@ -59,8 +61,9 @@ impl EasierScreen {
         self.review = state.review;
         self.count = state.choices.iter().filter(|r| r.is_some()).count() as u8;
         self.ordinal = state.choices[..=state.selected as usize].iter().filter(|r| r.is_some()).count() as u8;
-        self.ready = state.phase == Phase::Ready;
+        self.ready = state.phase == Phase::Ready && status == ReviewStatus::Preview;
         self.saving = status == ReviewStatus::Saving;
+        self.unresolved = status == ReviewStatus::Unresolved;
         self.unavailable = state.phase == Phase::Unavailable;
         self.failure = state.failure;
         *self != before
@@ -113,7 +116,17 @@ impl EasierScreen {
                     cv.hline(12, y + 30, rx.w - 24, SUBTEXT);
                 }
             }
-            button(cv, if self.saving { rx.t(Msg::AssistantSaving) } else { rx.t(Msg::AssistantUseRoute) });
+            if self.ready || self.saving {
+                button(cv, if self.saving { rx.t(Msg::AssistantSaving) } else { rx.t(Msg::AssistantUseRoute) });
+            } else {
+                cv.text(
+                    if self.unresolved { rx.t(Msg::AssistantSaveUnknown) } else { rx.t(Msg::AssistantUnavailable) },
+                    Point::new(rx.w / 2, 282),
+                    Font::Label,
+                    TextAlign::Center,
+                    INK,
+                );
+            }
             return;
         }
         let vp = fit(self.bounds, rx.w, rx.h);
@@ -262,5 +275,31 @@ fn benefit(
             cv.disc(Point::new(x - 8, y), 3, INK);
             cv.disc(Point::new(x + 8, y), 3, INK);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retained_review_costs_do_not_make_stale_or_unresolved_actions_available() {
+        let mut state = State::new();
+        state.review = true;
+        state.phase = Phase::Ready;
+        state.choices[0] = Some(crate::easier::Candidate {
+            choice: obc_route::easier::Choice { objective: obc_route::nav::Objective::Profile, costs: state.current },
+            crc: 1,
+        });
+        let mut screen = EasierScreen::new();
+        screen.update(&state, ReviewStatus::Preview);
+        assert!(screen.ready && screen.review && screen.next.is_some());
+        screen.update(&state, ReviewStatus::Saving);
+        assert!(screen.saving && !screen.ready);
+        screen.update(&state, ReviewStatus::Unresolved);
+        assert!(screen.unresolved && !screen.ready && !screen.saving);
+        state.phase = Phase::Unavailable;
+        screen.update(&state, ReviewStatus::Idle);
+        assert!(screen.review && screen.next.is_some());
+        assert!(!screen.ready && !screen.saving && !screen.unresolved);
     }
 }

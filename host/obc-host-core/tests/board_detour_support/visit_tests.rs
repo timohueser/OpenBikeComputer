@@ -300,3 +300,32 @@ fn easier_uses_shared_board_owner_and_releases_each_leg_without_adding_avoidance
         h.h.assert_clean();
     }
 }
+
+#[test]
+fn easier_terminal_anchor_at_the_last_required_coordinate_finishes_without_another_search() {
+    let gpx = br#"<gpx><wpt lon="0.530" lat="0.500"><name>Required access</name></wpt><trk><trkseg><trkpt lon="0.500" lat="0.500"/><trkpt lon="0.530" lat="0.500"/><trkpt lon="0.520" lat="0.500"/><trkpt lon="0.530" lat="0.500"/></trkseg></trk></gpx>"#;
+    let mut sink = obc_host_core::VecSink::default();
+    obc_route::gpx_to_obcr(&SliceSource(gpx), "Terminal return", &mut sink).unwrap();
+    let mut h = VisitHarness::with_route(sink.bytes());
+    let mut context = h.h.app.assistant_review_context().unwrap();
+    h.h.app.cancel_assistant();
+    context.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
+    h.h.app.plan_assistant(obc_app::NavRequest::new(context.origin, (530_000, 500_000), "Easier"), context);
+    h.settle(ReviewStatus::Preview);
+    let preview = h.h.app.assistant_preview().unwrap();
+    h.h.store
+        .with_source(ObjectId(preview.source.object), None, |source| {
+            let count = obc_route::reader::for_each_waypoint(source, |waypoint| {
+                assert_eq!(waypoint.name.as_str(), "Required access");
+                assert_eq!(waypoint.dist_along_m, preview.distance_m);
+            })
+            .unwrap();
+            assert_eq!(count, 1);
+        })
+        .unwrap();
+    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 1);
+    assert!(h.h.writer.transport().completed.borrow().contains(&Kind::Cancel));
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    h.h.assert_clean();
+}
