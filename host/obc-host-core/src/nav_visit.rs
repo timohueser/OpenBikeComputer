@@ -40,7 +40,10 @@ impl VisitPlan {
     pub fn start(context: ReviewContext, target: VisitTarget, original: &RouteReader) -> Result<Self, NavigatorError> {
         let approach = target.approach(context.map, context.profile).ok_or(NavigatorError::Unavailable)?;
         if original.has_unresolved_avoidance()
-            || original.visit_descriptor().map_err(|_| NavigatorError::Unavailable)?.is_some()
+            || original
+                .visit_descriptor()
+                .map_err(|_| NavigatorError::Unavailable)?
+                .is_some_and(|v| context.progress_m < v.accepted_anchors_m[2])
         {
             return Err(NavigatorError::Unavailable);
         }
