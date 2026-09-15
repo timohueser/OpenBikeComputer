@@ -575,8 +575,7 @@ mod tests {
         );
     }
     fn open_current(app: &mut crate::App, route: &RouteReader) {
-        app.apply_chord(crate::input::Chord::Quick);
-        app.apply_gesture(crate::Gesture::Press);
+        assert!(app.apply_chord(crate::input::Chord::Assistant));
         app.apply_chord(crate::input::Chord::Context);
         app.apply_gesture(crate::Gesture::Press);
         app.prepare_find(None, Some(route));
@@ -956,8 +955,7 @@ mod tests {
         app.navigator.following.active_route = Some(0);
         let checkpoint = app.assistant_checkpoint();
         let session = app.ride_session();
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::Press); // Explore another question first.
         assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         app.apply_gesture(Gesture::Back);
@@ -968,18 +966,18 @@ mod tests {
         assert_eq!(app.ui.find.review, ReviewStatus::Accepted);
         assert_eq!(app.ui.find.review_costs.unwrap().arrival_m, 111);
         assert_eq!(app.derived_needs().nav_preview.unwrap().route, 8);
-        // A new question above the read-only view owns preparation and geometry.
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
-        app.apply_gesture(Gesture::Press);
+        // Returning to Assistant lets the new question own preparation and geometry.
+        assert!(app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::Press);
         app.prepare_find(None, Some(&route));
         assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
         assert_ne!(app.find_place_state(), crate::find_place::State::Start);
         assert!(app.derived_needs().nav_preview.is_none());
         app.apply_gesture(Gesture::Back);
-        app.apply_gesture(Gesture::Back);
-        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        app.prepare_find(None, Some(&route));
         assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted));
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
