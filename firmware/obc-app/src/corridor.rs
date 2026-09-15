@@ -114,6 +114,15 @@ impl CorridorScratch {
         }
     }
 
+    pub(crate) fn previous_page(&mut self, key: obc_reader::reader::places::PlaceKey) {
+        if let Some(query) = &mut self.query {
+            query.previous_page(key);
+            self.pois.clear();
+            self.taken_for = None;
+            self.status = QueryProgress::Pending;
+        }
+    }
+
     /// Stop wanting a snapshot at all (the screen closed): drops the rows *and* the request, so the
     /// reader seam goes quiet.
     pub fn disarm(&mut self) {

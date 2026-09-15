@@ -119,3 +119,43 @@ fn malformed_optional_metadata_and_zero_length_steps_are_explicit() {
     let route = RouteReader::new(&index, &src);
     assert_eq!(route.interval_facts(0, route.total_distance_m).unwrap().ascent_m, route.total_ascent_m);
 }
+
+#[test]
+fn ahead_window_keeps_the_complete_crossing_climb_and_rejects_another_parse() {
+    use obc_route::{
+        window::{AheadRange, RouteWindow},
+        ClimbSeg, Climbs,
+    };
+    let bytes = route(&vec![Some(0); 300]);
+    let src = SliceSource(&bytes);
+    let idx = RouteIndex::read(&src).unwrap();
+    let r = RouteReader::new(&idx, &src);
+    let mut climbs = Climbs::new();
+    let climb = ClimbSeg { start_m: 2000, end_m: 9000, base_ele_m: 100, top_ele_m: 500, gain_m: 400, avg_grade_pct: 6 };
+    climbs.0.push(climb).unwrap();
+    let next = RouteWindow::new(&r, 1000, AheadRange::FiveKm);
+    assert_eq!(next.end_m, 6000);
+    assert_eq!(next.climb(&climbs), Some(&climb));
+    let active = RouteWindow::new(&r, 4000, AheadRange::FiveKm);
+    assert_eq!(active.climb(&climbs), Some(&climb));
+    let past = RouteWindow::new(&r, 9000, AheadRange::FiveKm);
+    assert!(past.climb(&climbs).is_none());
+    let other = RouteIndex::read(&src).unwrap();
+    let other = RouteReader::new(&other, &src);
+    assert!(next.facts(&other).is_err());
+}
+
+#[test]
+fn next_authored_waypoint_keeps_its_name_beyond_the_window() {
+    use obc_route::window::{AheadRange, RouteWindow};
+    let gpx=b"<gpx><wpt lat=\"0\" lon=\"0.07\"><name>Village bridge</name></wpt><trk><trkseg><trkpt lat=\"0\" lon=\"0\"><ele>0</ele></trkpt><trkpt lat=\"0\" lon=\"0.1\"><ele>0</ele></trkpt></trkseg></trk></gpx>";
+    let mut sink = VecSink::default();
+    obc_route::gpx_to_obcr(&SliceSource(gpx), "Late waypoint", &mut sink).unwrap();
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let route = RouteReader::new(&index, &source);
+    let window = RouteWindow::new(&route, 0, AheadRange::FiveKm);
+    let next = window.next_waypoint(&route).unwrap().unwrap();
+    assert!(!window.contains(next.dist_along_m));
+    assert_eq!(next.name.as_str(), "Village bridge");
+}
