@@ -3,11 +3,14 @@
 use super::poi::{decode_poi_name, PoiCatEntry};
 use super::{Reader, BRANCH_BIT, EMPTY_LEAF};
 use crate::hours::OpeningStatus;
-use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath, MAX_POI_RESULTS};
+use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath};
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16};
 use obc_formats::obcm::{poi_category_of, PoiMetadata, SourceId, POI_RECORD_LEN};
 use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox};
+
+/// Resident page capacity; identity continuations expose all matching places.
+pub const PLACE_PAGE_SIZE: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryProgress {
@@ -33,8 +36,18 @@ pub enum PlaceWindow {
 
 #[derive(Debug, Clone, Copy)]
 struct Branch {
-    index: u32,
+    index: [u8; 4],
     quadrant: u8,
+}
+
+impl Branch {
+    fn new(index: u32, quadrant: u8) -> Self {
+        Self { index: index.to_le_bytes(), quadrant }
+    }
+
+    fn index(self) -> u32 {
+        u32::from_le_bytes(self.index)
+    }
 }
 
 /// One immutable browsing generation. Each step reads at most one index node or POI chunk.
@@ -124,12 +137,12 @@ impl PlaceQuery {
     }
 
     /// A changed source or caller generation cancels the old query rather than mixing pages.
-    pub fn step(
+    pub fn step<const N: usize>(
         &mut self,
         reader: &Reader,
         route: Option<&dyn RoutePath>,
         generation: u32,
-        out: &mut Vec<CorridorPoi, MAX_POI_RESULTS>,
+        out: &mut Vec<CorridorPoi, N>,
     ) -> QueryProgress {
         if generation != self.generation || self.source_generation.is_some_and(|g| g != reader.tables.generation) {
             self.cancel();
@@ -137,6 +150,10 @@ impl PlaceQuery {
             return self.progress;
         }
         if self.progress != QueryProgress::Pending {
+            return self.progress;
+        }
+        if N == 0 {
+            self.progress = QueryProgress::Failed(Error::BadOffset);
             return self.progress;
         }
         self.source_generation = Some(reader.tables.generation);
@@ -147,11 +164,11 @@ impl PlaceQuery {
         self.progress
     }
 
-    fn advance(
+    fn advance<const N: usize>(
         &mut self,
         reader: &Reader,
         route: Option<&dyn RoutePath>,
-        out: &mut Vec<CorridorPoi, MAX_POI_RESULTS>,
+        out: &mut Vec<CorridorPoi, N>,
     ) -> Result<(), Error> {
         let search = match self.window {
             PlaceWindow::Nearby { position: (lon, lat), radius_m } => crate::corridor::inflate_bbox(
@@ -204,7 +221,7 @@ impl PlaceQuery {
             return Ok(());
         };
         if !self.started {
-            self.stack.push(Branch { index: 0, quadrant: 4 }).map_err(|_| Error::BadOffset)?;
+            self.stack.push(Branch::new(0, 4)).map_err(|_| Error::BadOffset)?;
             self.started = true;
         }
         if let Some(leaf) = self.leaf.take() {
@@ -216,7 +233,7 @@ impl PlaceQuery {
             self.next_category();
             return Ok(());
         };
-        let index = top.index as usize;
+        let index = top.index() as usize;
         if index >= entry.node_count {
             return Err(Error::BadOffset);
         }
@@ -237,7 +254,7 @@ impl PlaceQuery {
             if child <= index as u32 || child as usize + 3 >= entry.node_count {
                 return Err(Error::BadOffset);
             }
-            self.stack.push(Branch { index: child, quadrant: 0 }).map_err(|_| Error::BadOffset)?;
+            self.stack.push(Branch::new(child, 0)).map_err(|_| Error::BadOffset)?;
         }
         Ok(())
     }
@@ -253,7 +270,7 @@ impl PlaceQuery {
     fn next_node(&mut self) {
         while let Some(mut node) = self.stack.pop() {
             if node.quadrant < 3 {
-                node.index += 1;
+                node.index = (node.index() + 1).to_le_bytes();
                 node.quadrant += 1;
                 let _ = self.stack.push(node);
                 break;
@@ -278,13 +295,13 @@ impl PlaceQuery {
         bbox
     }
 
-    fn read_leaf(
+    fn read_leaf<const N: usize>(
         &mut self,
         reader: &Reader,
         entry: &PoiCatEntry,
         leaf: u32,
         route: Option<&dyn RoutePath>,
-        out: &mut Vec<CorridorPoi, MAX_POI_RESULTS>,
+        out: &mut Vec<CorridorPoi, N>,
     ) -> Result<(), Error> {
         let size = reader.tables.pois.chunk_size;
         let (start, end) = entry.chunk_range(leaf, size).ok_or(Error::BadOffset)?;
@@ -391,7 +408,7 @@ impl PlaceQuery {
         }
     }
 
-    fn consider(&mut self, out: &mut Vec<CorridorPoi, MAX_POI_RESULTS>, hit: CorridorPoi) {
+    fn consider<const N: usize>(&mut self, out: &mut Vec<CorridorPoi, N>, hit: CorridorPoi) {
         let key = self.key(&hit);
         if self.after.is_some_and(|after| if self.backwards { key >= after } else { key <= after })
             || out.iter().any(|p| self.key(p) == key)
