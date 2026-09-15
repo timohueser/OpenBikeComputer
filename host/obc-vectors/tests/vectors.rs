@@ -38,6 +38,23 @@ impl ByteSink for VecSink {
 }
 
 #[test]
+fn landmark_vector_uses_the_production_record_decoder() {
+    use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN};
+    let bytes = fixture("landmark-section-v16.bin");
+    let encoded: &[u8; RECORD_LEN] = bytes[16..108].try_into().unwrap();
+    let record = LandmarkRecord::decode(encoded).unwrap();
+    assert_eq!(record.qid, 123);
+    assert_eq!(record.language, *b"de");
+    assert_eq!((record.lon, record.lat), (8_000_000, 47_000_000));
+    assert!(record.osm.is_none());
+    assert!(record.photo.is_absent());
+    assert_eq!(record.encode(), *encoded);
+    for reference in [record.name, record.text, record.article] {
+        assert!(reference.range(108, bytes.len() as u32, 65_535).is_some());
+    }
+}
+
+#[test]
 fn place_vector_uses_the_production_metadata_decoder() {
     use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
     let bytes = fixture("place-train-v15.bin");
