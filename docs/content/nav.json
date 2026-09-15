@@ -16,6 +16,14 @@
         { "path": "software/packer-routing", "title": "Packer & routing" },
         { "path": "software/graph-assembly", "title": "Graph assembly evaluation" },
         { "path": "software/terrain", "title": "Terrain & elevation" },
+        { "path": "software/ride-time-estimation", "title": "Ride time algorithm" },
+        { "path": "software/ride-time-final", "title": "Final ride time evaluation" },
+        { "path": "software/ride-time-long", "title": "Long rides and learning history" },
+        { "path": "software/ride-time-endurance", "title": "Small long-ride corrections" },
+        { "path": "software/ride-time-evaluation", "title": "Ride time evaluation" },
+        { "path": "software/ride-time-enrichment", "title": "OSM surface enrichment" },
+        { "path": "software/ride-time-matching", "title": "Map matching validation" },
+        { "path": "software/ride-time-surface", "title": "ETA accuracy with surface data" },
         { "path": "software/companion-link", "title": "The companion link" },
         { "path": "software/firmware-updates", "title": "Firmware updates" }
       ]
