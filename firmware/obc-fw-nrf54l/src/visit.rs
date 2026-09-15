@@ -125,7 +125,9 @@ impl Executor {
                     | NavigatorEffect::Release { family: PlanFamily::Route, .. }
             ))
             || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                && app.assistant_review_context().is_some_and(|c| c.purpose == ReviewPurpose::Visit)
+                && app
+                    .assistant_review_context()
+                    .is_some_and(|c| matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute))
     }
     pub(crate) fn original_current(&self) -> bool {
         self.original.as_ref().is_some_and(StoreSource::is_current)
@@ -192,14 +194,22 @@ impl Executor {
                     Ok(g) => Some(g),
                     Err(_) => return self.fail(NavigatorError::Workspace),
                 };
-                self.rejoin = context.progress_m;
+                self.rejoin = if context.purpose == ReviewPurpose::ReturnToRoute {
+                    context.required_anchors_m[2]
+                } else {
+                    context.progress_m
+                };
                 self.variant = Variant::OutAndBack;
                 if self.begin_variant(app, guard.as_mut().unwrap()).is_err() {
                     return self.fail(NavigatorError::Unavailable);
                 }
                 let (_, index, _, _) = guard.as_mut().unwrap().visit_parts();
                 let reader = RouteReader::new(index, self.original.as_ref().unwrap());
-                self.choice = match forward_rejoin(&reader, context.progress_m) {
+                self.choice = match if context.purpose == ReviewPurpose::ReturnToRoute {
+                    Ok(None)
+                } else {
+                    forward_rejoin(&reader, context.progress_m)
+                } {
                     Ok(forward) => VisitChoice::new(context.progress_m, forward),
                     Err(_) => return self.fail(NavigatorError::Unavailable),
                 };
@@ -235,21 +245,35 @@ impl Executor {
     #[inline(never)]
     fn begin_variant(&mut self, app: &App, guard: &mut NavGuard) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
-        let target = app.assistant_visit_target().ok_or(())?;
+        let target = app.assistant_visit_target();
         guard.begin_visit(c, target, self.rejoin).map_err(|_| ())?;
         let (_, original, _, _) = guard.visit_parts();
         original.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
         let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
         let to = route.position_at(self.rejoin).ok_or(())?;
         self.return_to = (to.lon, to.lat);
-        self.returning = false;
+        self.returning = c.purpose == ReviewPurpose::ReturnToRoute;
+        if self.returning
+            && (c.required_anchors_m != [self.rejoin; 3]
+                || route.visit_descriptor().map_err(|_| ())?.map(|v| v.accepted_anchors_m[2]) != Some(self.rejoin))
+        {
+            return Err(());
+        }
         Ok(())
     }
     fn start_leg(&mut self, app: &App, guard: &mut NavGuard) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
-        let approach = app.assistant_visit_target().ok_or(())?.approach(c.map, c.profile).ok_or(())?;
         self.choice.search().map_err(|_| ())?;
-        let (from, to) = if self.returning { (approach, self.return_to) } else { (c.origin, approach) };
+        let (from, to) = if c.purpose == ReviewPurpose::ReturnToRoute {
+            (c.origin, self.return_to)
+        } else {
+            let approach = app.assistant_visit_target().ok_or(())?.approach(c.map, c.profile).ok_or(())?;
+            if self.returning {
+                (approach, self.return_to)
+            } else {
+                (c.origin, approach)
+            }
+        };
         guard.visit_begin_plan(from, to, c);
         Ok(())
     }
@@ -422,14 +446,19 @@ impl Executor {
                     None
                 }
                 _ => {
-                    let anchors = guard.visit_parts().0.descriptor().original_anchors_m;
+                    let anchors = guard.visit_parts().0.original_anchors();
                     let token = self.token.take()?;
                     self.phase = Phase::Stopped;
-                    Some(if app.assistant_visit_variant(token, anchors) {
-                        NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
-                    } else {
-                        NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
-                    })
+                    Some(
+                        if app.assistant_review_context().is_some_and(|c| {
+                            c.purpose == ReviewPurpose::ReturnToRoute && c.required_anchors_m == anchors
+                        }) || app.assistant_visit_variant(token, anchors)
+                        {
+                            NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
+                        } else {
+                            NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                        },
+                    )
                 }
             },
             Done::Running => self.ready(work),
