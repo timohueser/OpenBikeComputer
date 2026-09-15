@@ -172,10 +172,11 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
-# The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
-# pill wears its warning-red CLOSED face on the Today line.
-"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
-    --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
+# Select Carrefour while open, then advance the trusted clock past its 21:00 closing time.
+# Closed places are excluded from a new nearby query; an already-open detail must update in place.
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
+    --clock-after-script "2025-01-06T23:00" --script "B d d w p d d d p f p f" \
+    --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
 # The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
 # Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
