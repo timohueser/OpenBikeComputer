@@ -570,11 +570,10 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
-# (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
-# ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
+# (e) No-route and outside-map states. The plain vector route is outside Monaco;
+# the coverage guard takes precedence over map-place filters.
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-outside-map.png"
 # (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
 # Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
 # presses into its editor, stages `n` steps round the Both → Waypoints → Map POIs ring, commits and
@@ -590,7 +589,6 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPSCOPE 1) $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
 # The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
 # Auto climb panel would take the base screen on this line, so the script turns it Off first
 # (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics
