@@ -1249,9 +1249,9 @@ mod tests {
         assert!(matches!(effect, NavigatorEffect::Acquire { .. }));
         app.apply_navigator_outcome(NavigatorOutcome::Acquired { token: effect.token() });
         assert!(!app.assistant_planner_released());
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS - 1));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS - 1));
         assert_eq!(app.ui.find.state, State::Planning);
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS));
         assert_eq!(app.ui.find.state, State::Releasing);
         assert_eq!(app.ui.find.next as usize, PLAN_LIMIT);
         let effect = app.navigator.next_effect(&mut app.mode).unwrap();
@@ -1297,25 +1297,25 @@ mod tests {
                 complete_elevation: true,
             }),
         });
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS));
         assert_eq!(app.ui.find.state, State::Planning, "the complete preview must be harvested first");
         app.prepare_find(None, None);
         assert_eq!(app.ui.find.costs[0].unwrap().arrival_m, 25);
         assert_eq!(app.ui.find.retained[0].object, 5);
         assert_eq!(app.ui.find.state, State::Releasing);
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS + 1));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS + 1));
         assert_eq!(app.ui.find.next as usize, PLAN_LIMIT);
         assert_eq!(app.ui.find.retained[0].object, 5);
 
         let mut app = budget_app();
         app.navigator.review_failed(NavigatorError::SourceChanged);
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS));
         app.prepare_find(None, None);
         assert_eq!(app.ui.find.state, State::Stale, "timeout cannot mask a changed source");
 
         let mut app = budget_app();
         app.ui.find.state = State::Querying;
-        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.advance_animations(obc_ports::InputClock(PREPARATION_BUDGET_MS));
         app.prepare_find(None, None);
         assert_eq!(app.ui.find.state, State::Ready, "a partial search cannot claim nothing exists");
     }
