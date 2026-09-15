@@ -39,7 +39,6 @@ final class UploadSheetTests: XCTestCase {
         upload.tap()
     }
 
-    @MainActor
     /// F → F₂ against the mock: moving progress at a realistic speed, the
     /// done confirm, and the detail still underneath — the app never left it.
     @MainActor

@@ -1501,11 +1501,6 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
             }
 
-            // The domains with no board executor at all. Each is answered rather than dropped, so a
-            // domain that starts producing one cannot wedge behind an executor that ignored it —
-            // and the loud line names the slice that owes it.
-            // Reuse the catalog reply only when no earlier catalog ticket owns it.
-            if exec.catalog.is_none() {}
             if let Some(effect) = exec.effects.bond.take() {
                 if let Err(error) = crate::ble::try_forget_bond(effect) {
                     RideExec::deliver(

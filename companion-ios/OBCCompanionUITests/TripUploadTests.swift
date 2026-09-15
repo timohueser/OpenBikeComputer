@@ -41,7 +41,6 @@ final class TripUploadTests: XCTestCase {
         XCTAssertTrue(app.buttons[stageAID].waitForExistence(timeout: 10), "trip page did not open")
     }
 
-    @MainActor
     // MARK: Happy path
 
     /// Upload trip → the queued sheet walks the stages then the trip object, and

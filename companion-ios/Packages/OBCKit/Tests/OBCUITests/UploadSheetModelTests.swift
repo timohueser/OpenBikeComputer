@@ -51,7 +51,7 @@ final class UploadSheetModelTests: XCTestCase {
         // with the very watcher it is waiting for.
         let completed = expectation(description: "onCompleted fires")
         var assignedObjectID: DeviceObjectID??
-        let (model, _) = makeModel(.happyPath, onCompleted: { id, _, _ in
+        let (model, _) = makeModel(.happyPath, onCompleted: { id, _ in
             assignedObjectID = id
             completed.fulfill()
         })
