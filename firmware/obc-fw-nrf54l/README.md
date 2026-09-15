@@ -1041,3 +1041,17 @@ cargo run --release --bin obc-fw-nrf54l
 ```
 
 See the [photo study and attribution](../../docs/assets/ride-assistant/landmark-photos/README.md).
+
+
+### Map-backed landmark photo acceptance
+
+Hardware acceptance is pending. Use the normal application with the selected landmark's packed OBCM photo. Record the firmware commit, map hash, QID, map revision, decode time and final frame hash with the result.
+
+- Open a photo from the installed map. Compare the image rectangle at `(12, 40)`, size `216 × 240`, with a fresh simulator capture from that map.
+- Open a drawer during loading. Check that no image pixels overwrite the drawer. Close it and check that the complete image returns.
+- Open Sources and return to the photo. Check that the image is reconstructed without old page pixels.
+- Leave the photo during loading, then open another landmark. Check that no pixels from the first photo appear in the second selection.
+- Replace or remove the selected map. Check that the previous image disappears and the source is shown as unavailable.
+- Repeat after a map render or route search has used the shared arena. Check that the image is complete, the controls respond and the display COM task continues.
+
+The phase releases its source, frame and arena borrows before each display await. The host tests cover reconstruction, drawer cover, cancellation and source failure. Physical display and power acceptance require the device.
