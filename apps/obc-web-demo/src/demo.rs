@@ -111,7 +111,7 @@ impl Cmd {
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
 /// `hold`, `backhold`, `quick` (Up+Select), `context` (Down+Back), `step:<n>` (signed Up/Down),
-/// `play`, `pause`, `find`, `seek:<secs>`, `enter`, `exit`, `ambient`, `upload`, `receive`,
+/// `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`, `upload`, `receive`,
 /// `heading:<degrees>` (stop and turn the simulated compass). Unknown or malformed input is ignored.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
     match cmd {
