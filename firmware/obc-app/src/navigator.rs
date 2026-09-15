@@ -694,6 +694,7 @@ impl NavigatorMachine {
         let NavigatorMachine {
             ops,
             review,
+            visit,
             live,
             route,
             detour,
@@ -717,6 +718,7 @@ impl NavigatorMachine {
             travel_at_m,
         } = self;
         assert_eq!(review.status, ReviewStatus::Idle);
+        visit.assert_boot_state();
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no navigation operation has been issued");
         assert!(live.is_none(), "no operation is in flight");
         assert!(*route == PlanPhase::Idle && *detour == PlanPhase::Idle, "neither family has been asked");
