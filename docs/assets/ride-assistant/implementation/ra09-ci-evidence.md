@@ -45,3 +45,6 @@ The Linux desktop journey reached the map card, then waited for the old
 `53233340` updates that exact label and the terrain staging assertion to v16.
 The suite registry and diff check pass. Linux launch remains the CI gate; no
 local full sweep or image build ran. CI retains snapshot PNGs for review.
+
+Independent delta review also found the old 994-byte selected-price assertion.
+Both selection label and selected price now require the actual 1,010-byte total.
