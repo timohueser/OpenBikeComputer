@@ -85,6 +85,7 @@ pub(crate) struct Executor {
     returning: bool,
     published: Option<(ObjectId, Revision)>,
     uncertain: bool,
+    validated: Option<(u64, u32)>,
 }
 impl Executor {
     pub(crate) fn new() -> Self {
@@ -102,6 +103,7 @@ impl Executor {
             returning: false,
             published: None,
             uncertain: false,
+            validated: None,
         }
     }
     pub(crate) fn active(&self) -> bool {
@@ -124,14 +126,42 @@ impl Executor {
     pub(crate) fn original_current(&self) -> bool {
         self.original.as_ref().is_some_and(StoreSource::is_current)
     }
-    fn current(&self, app: &App, store: &FlatStore<FlatCard>) -> bool {
-        app.assistant_review_context().is_some_and(|c| {
-            c.map == crate::flat_store::planner_map_key(store)
-                && c.store.bytes() == store.store_id().0
-                && c.profile == app.settings().bike_profile_idx
-                && c.original.is_some_and(|p| crate::flat_store::route_fingerprint(store, p.object) == Some(p))
-        }) && crate::flat_store::planner_map_current()
-            && self.original_current()
+    pub(crate) fn immediate(&self, reply: &crate::flat_store::Reply, owed: bool) -> bool {
+        match self.phase {
+            Phase::Await(..) => reply.signaled(),
+            Phase::Step(_) => self.release.is_none(),
+            Phase::Ready(_) | Phase::Stopped => self.release.is_none() && owed,
+            _ => false,
+        }
+    }
+    fn current(&mut self, app: &App, store: &FlatStore<FlatCard>) -> bool {
+        let Some(c) = app.assistant_review_context() else { return false };
+        let Some(p) = c.original else { return false };
+        if !store.mode().readable()
+            || c.map != crate::flat_store::planner_map_key(store)
+            || c.store.bytes() != store.store_id().0
+            || c.profile != app.settings().bike_profile_idx
+            || self
+                .original
+                .as_ref()
+                .is_none_or(|s| s.id().0 != p.object || s.revision().0 != p.revision || s.len() != p.length)
+        {
+            return false;
+        }
+        let binding = (store.sequence(), p.crc);
+        if self.validated == Some(binding) {
+            return true;
+        }
+        // Immutable handles remain bound; catalog changes require fresh authority checks.
+        self.validated = None;
+        if crate::flat_store::route_fingerprint(store, p.object) != Some(p)
+            || !crate::flat_store::planner_map_current()
+            || !self.original_current()
+        {
+            return false;
+        }
+        self.validated = Some(binding);
+        true
     }
     fn fail(&mut self, error: NavigatorError) -> Option<NavigatorOutcome> {
         self.phase = Phase::Stopped;
@@ -156,12 +186,14 @@ impl Executor {
             NavigatorEffect::Release { retain_result, .. } => {
                 self.token = Some(token);
                 self.release = Some(retain_result);
+                self.validated = None;
                 None
             }
             NavigatorEffect::Acquire { work: PlannerWork::RestoreReview(source), .. } => {
                 self.restore(source, token, app, store, guard)
             }
             NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. } => {
+                self.validated = None;
                 self.token = Some(token);
                 if !matches!(self.phase, Phase::Empty) || guard.is_some() {
                     return self.fail(NavigatorError::Workspace);
@@ -236,6 +268,7 @@ impl Executor {
         store: &'static FlatStore<FlatCard>,
         guard: &mut Option<NavGuard>,
     ) -> Option<NavigatorOutcome> {
+        self.validated = None;
         self.token = Some(token);
         if !matches!(self.phase, Phase::Empty) || guard.is_some() {
             return self.fail(NavigatorError::Workspace);
@@ -806,6 +839,7 @@ impl Executor {
         if app.assistant_review_status() == ReviewStatus::Accepted && matches!(self.phase, Phase::Preview) {
             crate::assistant::release_original(store, &mut self.original, false);
             self.published = None;
+            self.validated = None;
             self.phase = Phase::Empty;
         }
     }

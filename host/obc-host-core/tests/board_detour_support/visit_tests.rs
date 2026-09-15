@@ -238,16 +238,45 @@ fn visit_cancellation_drains_owned_tickets_before_releasing_arena() {
     for kind in [Kind::Allocate, Kind::Write, Kind::Seal, Kind::ReleaseSealed, Kind::Publish] {
         let mut h = VisitHarness::new();
         h.until_ticket(kind);
+        assert!(!h.visit.immediate(h.h.reply, true));
         h.h.app.cancel_assistant();
         for _ in 0..3 {
             h.pass();
             assert!(h.h.guard.is_some());
             assert_eq!(h.h.writer.pending(), Some(kind));
+            assert!(!h.visit.immediate(h.h.reply, true));
         }
+        h.h.writer.complete();
+        assert!(h.visit.immediate(h.h.reply, false));
         h.settle(ReviewStatus::Idle);
         h.h.assert_clean();
         assert_eq!(h.h.store.entries().count(), 2);
     }
+}
+
+#[test]
+fn visit_reuses_validation_until_catalog_changes_without_spinning_on_a_full_writer() {
+    let mut h = VisitHarness::new();
+    h.h.writer.transport().full.set(true);
+    h.pass();
+    assert!(h.h.guard.is_some());
+    let reads = flat_store::fingerprint_reads();
+    for _ in 0..3 {
+        h.pass();
+        assert!(!h.visit.immediate(h.h.reply, true));
+        assert_eq!(flat_store::fingerprint_reads(), reads);
+    }
+    let unrelated = put(h.h.store, ObjectKind::Route, &route(), None);
+    h.h.free = h.h.store.free_extents();
+    h.pass();
+    assert_eq!(flat_store::fingerprint_reads(), reads + 1);
+    h.pass();
+    assert_eq!(flat_store::fingerprint_reads(), reads + 1);
+    h.h.writer.transport().full.set(false);
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    assert_eq!(h.h.store.current_revision(unrelated), Ok(Some(Revision(1))));
+    h.h.assert_clean();
 }
 
 #[test]

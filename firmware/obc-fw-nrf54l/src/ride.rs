@@ -3424,7 +3424,13 @@ pub(crate) async fn run_app(
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
         let immediate = immediate || peak_view.busy();
-        let next_ms = if animating || exec.polling_store() {
+        #[cfg(has_nav)]
+        let visit_immediate = visit.immediate(&NAV_STORE_REPLY, immediate || exec.owed());
+        #[cfg(not(has_nav))]
+        let visit_immediate = false;
+        let next_ms = if visit_immediate {
+            Some(0)
+        } else if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
         } else if immediate || exec.owed() {
             Some(0)
