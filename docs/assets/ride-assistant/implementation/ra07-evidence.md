@@ -70,3 +70,14 @@ Checks on this fix: the whole App library suite passed with 909 tests;
 `git diff --check`, and `./tools/obc suites check` passed. The registry has 68 suites and
 320 execution units. Public conceptual documentation remains accurate. No resource build,
 snapshot sweep, simulator build, or physical test was repeated. The fix needs a delta review.
+
+## Shipping CI allocation
+
+CI run `34947772625`, board job `104311828433`, measured `22bf808a`:
+App 50,336 bytes; linked resident 306,088 bytes; flash 1,624,708 bytes;
+residual stack 53,336 bytes. The exact App record now matches that image.
+Arena 131,072 bytes, uninitialized section 132,096 bytes, poll frame 9,784 bytes,
+task body 4,048 bytes, and boot chain 7,768 bytes remain unchanged. Margin over
+recorded hardware deep-ride high-water is 16,320 bytes, above the unchanged
+8,704-byte floor. No cap or hardware record changed. No local image ran.
+Final CI and regional acceptance remain required.
