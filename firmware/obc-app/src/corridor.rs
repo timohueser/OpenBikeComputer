@@ -180,6 +180,16 @@ impl CorridorScratch {
     }
 
     pub(crate) fn prepare(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>, local: Option<(u8, u16)>) {
+        self.prepare_to(reader, route, local, u32::MAX);
+    }
+
+    pub(crate) fn prepare_to(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        local: Option<(u8, u16)>,
+        to_m: u32,
+    ) {
         let Some(key) = self.want else { return };
         if self.holds(key) && !self.recheck {
             return;
@@ -200,7 +210,7 @@ impl CorridorScratch {
             PlaceQuery::new(
                 self.generation,
                 key.filter,
-                PlaceWindow::Corridor { from_m: key.anchor_m, to_m: u32::MAX, half_width_m: 300 },
+                PlaceWindow::Corridor { from_m: key.anchor_m, to_m, half_width_m: 300 },
                 local,
             )
         });

@@ -31,22 +31,22 @@ const ROW_H: i32 = 64;
 
 /// The App owns one bounded nearby page, outside the screen stack so each stack slot stays small.
 pub struct PoiScratch {
-    query: Option<PlaceQuery>,
+    pub(crate) query: Option<PlaceQuery>,
     pub(crate) detail_valid: bool,
     pub(crate) detail_schedule: Option<obc_reader::WeeklySchedule>,
     clock_key: Option<(bool, i16)>,
     local: Option<(u8, u16)>,
-    recheck: bool,
+    pub(crate) recheck: bool,
     page: Option<(PlaceKey, bool)>,
-    status: QueryProgress,
-    generation: u32,
+    pub(crate) status: QueryProgress,
+    pub(crate) generation: u32,
     /// The category the current snapshot is for once a query has run — `Some` even when the result
     /// is empty (so the screen can tell "queried, empty category" from "not queried yet"). `None`
     /// on a fresh/invalidated scratch.
-    taken_for: Option<PoiCategory>,
+    pub(crate) taken_for: Option<PoiCategory>,
     /// The current page for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
     /// filled; the query owns the ordering.
-    pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
+    pub(crate) pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
 }
 
 impl PoiScratch {
@@ -484,7 +484,7 @@ pub(super) fn draw_bearing_arrow(
 
 /// Fit `s` into `max` chars, appending ".." when truncated (no ellipsis glyph). Truncates on a char
 /// boundary. A local twin of the Route menu's `fit_name`, capped for a POI name (≤ 20 bytes).
-fn fit(s: &str, max: usize) -> heapless::String<24> {
+pub(super) fn fit(s: &str, max: usize) -> heapless::String<24> {
     let mut out = heapless::String::new();
     if s.chars().count() <= max {
         let _ = out.push_str(s);
