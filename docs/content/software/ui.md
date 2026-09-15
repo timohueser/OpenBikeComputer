@@ -481,8 +481,8 @@ places are excluded before these limits. The shared corridor page keeps its rout
 
 The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
 measured route on the card and releases the planner before the next plan starts. The Finding
-indicator stays visible through the complete batch. Its activity dots update once per second without
-redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
+indicator stays visible through the complete batch. Its small compass turns by one third of a revolution once per
+second without redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
 
