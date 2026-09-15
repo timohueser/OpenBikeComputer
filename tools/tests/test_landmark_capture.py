@@ -4,10 +4,10 @@ from pathlib import Path
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from tools.landmark_capture import Capture, LeadImage, bbox, claim_values, digest, query, select_candidates, semantic_sources
+from tools.landmark_capture import Capture, LeadImage, bbox, claim_values, class_parents, digest, entity, query, select_candidates, semantic_sources
 
 
 class Response(BytesIO):
@@ -94,6 +94,17 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(claim_values(entity, "P18"), ["New.jpg"])
         entity["claims"]["P18"][1] = claim("preferred")
         self.assertEqual(claim_values(entity, "P18"), [])
+
+    def test_class_redirect_keeps_the_canonical_identity_in_the_closure(self):
+        canonical = {"id": "Q2", "claims": {"P279": [{"mainsnak": {"datavalue": {"value": {"id": "Q3"}}}}]}}
+        redirected = dict(canonical, redirects={"from": "Q1", "to": "Q2"})
+        capture = Mock()
+        capture.json.side_effect = [{"entities": {"Q2": canonical}}, {"entities": {"Q1": redirected}}]
+        value = entity(capture, "Q1", "classes")
+        self.assertEqual(class_parents(value, "Q1"), ["Q2"])
+        self.assertEqual(class_parents(canonical, "Q2"), ["Q3"])
+        with self.assertRaisesRegex(ValueError, "invalid class redirect"):
+            class_parents(value, "Q4")
 
     def test_geographic_queries_include_boundary_without_country_filter(self):
         boundary = {"type": "Polygon", "coordinates": [[[5, 45], [11, 45], [11, 48], [5, 48], [5, 45]]]}

@@ -237,7 +237,23 @@ class LeadImage(HTMLParser):
 
 def entity(capture: Capture, qid: str, directory: str = "entities") -> dict | None:
     raw = capture.json(f"{directory}/{qid}.json", f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json")
-    return raw.get("entities", {}).get(qid) if raw else None
+    value = raw.get("entities", {}).get(qid) if raw else None
+    if value is None and directory == "classes" and raw:
+        # EntityData follows redirects. The API also records the original ID,
+        # which is needed to keep aliases in the captured class closure.
+        redirected = capture.json(f"classes/{qid}-redirect.json", api("www.wikidata.org", action="wbgetentities", ids=qid, redirects="yes", props="claims"))
+        value = redirected.get("entities", {}).get(qid) if redirected else None
+    return value
+
+
+def class_parents(value: dict, qid: str) -> list[str]:
+    redirect = value.get("redirects")
+    if redirect:
+        target = redirect.get("to", "")
+        if redirect.get("from") != qid or value.get("id") != target or not re.fullmatch(r"Q[1-9][0-9]*", target):
+            raise ValueError(f"invalid class redirect: {qid}")
+        return [target]
+    return [v["id"] for v in claim_values(value, "P279") if isinstance(v, dict) and "id" in v]
 
 
 def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict | None, str | None, str]:
@@ -379,7 +395,7 @@ def run(args) -> int:
             missing.append(qid)
             classes[qid] = []
             continue
-        parents = [v["id"] for v in claim_values(value, "P279") if isinstance(v, dict) and "id" in v]
+        parents = class_parents(value, qid)
         classes[qid] = parents
         pending.update(p for p in parents if p not in classes)
         if len(classes) + len(pending) > MAX_CLASSES:
