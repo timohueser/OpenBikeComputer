@@ -94,7 +94,7 @@ pub struct ChunkMeta {
 
 /// The lightweight route description for the Route menu — readable from the header alone
 /// (no chunk index), so a catalog scan is one small read per file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteSummary {
     pub name: String<NAME_CAP>,
     /// Total distance, km (rounded) — the v1 stat display unit.

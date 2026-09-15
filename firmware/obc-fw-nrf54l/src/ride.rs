@@ -166,9 +166,6 @@ async fn read_catalogs(
     app.begin_catalog_refresh();
     metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
     let start = crate::flat_store::catalog_scope(flat);
-    // Drop the held revision before rebuilding identity/index state. A replace at the same ObjectId
-    // must reopen the new revision, not keep rendering the hold.
-    crate::flat_store::reconcile_route(flat, None);
     let routes_loaded = crate::flat_store::load_routes(flat, app);
     let trips_loaded = crate::flat_store::load_trips(flat, app);
     let rides_loaded = crate::flat_store::load_rides(flat, app);
@@ -1375,9 +1372,20 @@ pub(crate) async fn run_app(
                     // The rescan block: rebuild the flat route/trip/ride identities and remap the
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
+                        let old_source = crate::flat_store::route_source_key();
                         let read = read_catalogs(flat, app, &mut exec.facts).await;
-                        prev_active = None; // force reconcile_route/track to re-run against the new indexing
-                        index_route = None; // and the chunk index to rebuild off the freshly-opened file
+                        let active = app.active_route_index();
+                        crate::flat_store::reconcile_route(flat, active.and_then(|i| app.route_ids().get(i).copied()));
+                        if read.is_ok() && old_source.is_some() && crate::flat_store::route_source_key() == old_source {
+                            prev_active = active;
+                            if route_index_valid {
+                                index_route = active;
+                            }
+                        } else {
+                            prev_active = None;
+                            index_route = None;
+                            route_index_valid = false;
+                        }
 
                         // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
                         // (#1541) — one per pass, which is one per wake.

@@ -1160,9 +1160,13 @@ impl App {
     /// [`RouteSwapScreen`](crate::screen::RouteSwapScreen) at the *same route* (by id) in the new
     /// order. A vanished route falls back sanely: navigation unloads (`active_route = None`, stale
     /// matcher progress + profile dropped), a menu selection clamps near its old position, a
-    /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
-    /// a store change is a repaint-worthy host event (the open menu refreshes in place).
+    /// preview/swap subject turns into its screen's own missing-route path. Changed summaries or
+    /// identities dirty the map once. A replacing upload separately invalidates geometry-derived state.
     pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[crate::CatalogObjectId]) {
+        let len = summaries.len().min(ids.len()).min(crate::MAX_ROUTES);
+        if self.catalogs.routes() == &summaries[..len] && self.catalogs.route_ids() == &ids[..len] {
+            return;
+        }
         // The catalog + trip replacement (and the id ↔ summary pairing) is `CatalogState`'s; the
         // old-id snapshot it returns drives the remap of everything held *outside* it.
         let old_ids = self.catalogs.replace_routes(summaries, ids);
@@ -1175,7 +1179,10 @@ impl App {
     }
 
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
-        self.navigator.set_unaccepted_routes(mask);
+        if self.navigator.unaccepted_routes() != mask {
+            self.navigator.set_unaccepted_routes(mask);
+            self.ui.map_dirty = true;
+        }
     }
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
@@ -1257,6 +1264,14 @@ impl App {
     /// resolve; a later [`set_routes_with_ids`](App::set_routes_with_ids) re-resolves them in place.
     /// Dirties the map so an open (TR3) menu repaints.
     pub fn set_trips(&mut self, trips: &[crate::trip::TripInput]) {
+        let trips = &trips[..trips.len().min(crate::trip::MAX_TRIPS)];
+        if self.catalogs.trips().len() == trips.len()
+            && self.catalogs.trips().iter().zip(trips).all(|(old, input)| {
+                *old == crate::trip::TripSummary::resolve(input, self.catalogs.routes(), self.catalogs.route_ids())
+            })
+        {
+            return;
+        }
         self.catalogs.set_trips(trips);
         self.ui.map_dirty = true;
     }
@@ -1279,6 +1294,10 @@ impl App {
     /// up to [`MAX_RIDES`](crate::MAX_RIDES) supplied rides. Re-point open screens by durable id
     /// across the rescan and dirty the map once.
     pub fn set_rides(&mut self, entries: &[RideEntry]) {
+        let entries = &entries[..entries.len().min(crate::UI_RIDES_CAP)];
+        if self.catalogs.rides() == entries {
+            return;
+        }
         // Screen indices follow the durable identity through each rescan.
         // Derived track answers already carry that identity and need no remap.
         let old_ids = self.catalogs.replace_rides(entries);
@@ -6455,6 +6474,39 @@ mod tests {
 
         let _ = app.ui.stack.push(overview()); // …and comes back
         assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    #[test]
+    fn repeated_catalog_feeds_do_not_repaint_but_changed_content_does() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut routes = [summary("Col")];
+        let trips = [crate::trip::TripInput { id: 20, name: "Tour", stage_ids: &[10] }];
+        let mut rides = [RideEntry { id: 30, summary: ride_summary("Ride") }];
+        app.take_dirty();
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        app.set_trips(&trips);
+        assert!(app.take_dirty().map);
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_routes_with_ids(&routes, &[10]);
+        app.set_trips(&trips);
+        app.set_rides(&rides);
+        app.set_unaccepted_routes(0);
+        assert!(!app.take_dirty().map, "an identical catalog feed changes no pixels");
+        routes[0].climb_m += 1;
+        app.set_routes_with_ids(&routes, &[10]);
+        assert!(app.take_dirty().map);
+        assert_eq!(app.trips()[0].climb_m, routes[0].climb_m);
+        rides[0].summary.synced = true;
+        app.set_rides(&rides);
+        assert!(app.take_dirty().map);
+        app.set_unaccepted_routes(1);
+        assert!(app.take_dirty().map, "candidate visibility changes the route menu");
+        app.set_unaccepted_routes(1);
+        assert!(!app.take_dirty().map);
+        app.set_trips(&[]);
+        assert!(app.take_dirty().map);
     }
 
     /// The nav-preview twin of the staleness rule, over the one thing identity cannot catch: an

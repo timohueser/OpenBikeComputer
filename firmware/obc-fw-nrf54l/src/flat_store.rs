@@ -1670,6 +1670,12 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
 /// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
 static mut ROUTE_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
 
+/// The exact revision held for the ride loop's cached route index.
+pub(crate) fn route_source_key() -> Option<(ObjectId, obc_storage::flat::Revision)> {
+    // SAFETY: only the ride loop owns or reconciles this source, synchronously between frames.
+    unsafe { (*core::ptr::addr_of!(ROUTE_SOURCE)).as_ref().map(|source| (source.id(), source.revision())) }
+}
+
 /// Take another reader of the exact active route, never a replacement found through a stale menu.
 #[cfg(has_nav)]
 pub(crate) fn planner_original(
