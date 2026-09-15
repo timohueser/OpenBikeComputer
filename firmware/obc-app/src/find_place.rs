@@ -394,17 +394,12 @@ impl crate::App {
                 if self.assistant_review_status() == ReviewStatus::Preview && self.assistant_planner_released() {
                     if let Some(target) = self.assistant_visit_target() {
                         self.cancel_assistant();
-                        let result = if destination {
-                            self.request_destination(target, "Route to place")
-                        } else {
-                            self.request_visit(target, "Visit")
-                        };
                         if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
                             screen.destination = destination;
-                            screen.error = result.err();
+                            screen.pending_target = Some(target);
                         }
                         self.ui.find.review_costs = None;
-                        self.ui.find.review = self.assistant_review_status();
+                        self.ui.find.review = ReviewStatus::Planning;
                     }
                 }
             }
@@ -563,6 +558,26 @@ impl crate::App {
     /// Advance place queries and candidate ownership while streamed readers are available.
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
+        if let Some(Screen::VisitReview(screen)) = self.ui.stack.last() {
+            if let Some(target) = screen.pending_target {
+                if !self.assistant_planner_released()
+                    || !self.catalogs.can_admit_intent()
+                    || !matches!(self.assistant_review_status(), ReviewStatus::Idle | ReviewStatus::Accepted)
+                {
+                    return;
+                }
+                let destination = screen.destination;
+                let result = if destination {
+                    self.request_destination(target, "Route to place")
+                } else {
+                    self.request_visit(target, "Visit")
+                };
+                if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                    screen.pending_target = None;
+                    screen.error = result.err();
+                }
+            }
+        }
         if let Action::Preview(selected) = self.ui.find.action {
             if let Some(reader) = reader {
                 self.preview_find_result(reader, selected as usize);
