@@ -36,13 +36,11 @@ impl Preparer {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        app.render_scene_map_rain_photo_timed(
+        app.render_scene_map_photo_timed(
             None,
             target,
             reader,
             reader,
-            None,
-            None,
             None,
             None,
             240.0,
@@ -58,13 +56,11 @@ impl Preparer {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        app.render_scene_map_rain_photo_timed(
+        app.render_scene_map_photo_timed(
             None,
             target,
             reader,
             reader,
-            None,
-            None,
             None,
             None,
             240.0,
@@ -289,13 +285,11 @@ mod tests {
         app.set_resident_frame(true);
         app.apply_gesture(Gesture::Press); // Brightness editor requests its base for the page slide.
         assert!(!app.sheet_only(), "the actual drawer transition requests a base redraw");
-        app.render_scene_map_rain_photo_timed(
+        app.render_scene_map_photo_timed(
             None,
             &mut retained,
             Some(&reader),
             Some(&reader),
-            None,
-            None,
             None,
             None,
             240.0,

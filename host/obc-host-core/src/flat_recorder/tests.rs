@@ -94,7 +94,7 @@ fn batch_capacity_and_context_are_atomic_and_legacy_lifecycle_remains_compatible
 
 #[test]
 #[cfg(unix)]
-fn reopen_continues_exact_object_clock_totals_and_six_independent_readers() {
+fn reopen_continues_exact_object_clock_totals_with_all_reader_slots_full() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("card.obc");
     let owner = HostStore::create_file(&path).unwrap();
@@ -112,7 +112,7 @@ fn reopen_continues_exact_object_clock_totals_and_six_independent_readers() {
     assert_eq!(owner.store_id().unwrap(), original.store);
     // Each finalized object occupies a distinct hold; recovery itself occupies none.
     let mut readers = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..obc_storage::flat::store::MAX_OPEN_OBJECTS {
         let meta = seed(&owner);
         readers.push(owner.open(meta.id, meta.revision).unwrap());
     }

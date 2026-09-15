@@ -1,19 +1,18 @@
 import preset from "../../../../presets/schema.json";
 import type { SchemaEntry, SkinStyle } from "../catalog/manifest";
 
-// Catalog content revision for these bands; this is not the preset metadata version.
+// Catalog content revision for these assignments; this is not the preset metadata version.
 const CATALOG_SCHEMA_REVISION = 1;
 
-// The packer assigns IDs in feature document order. Catalogs do not yet carry canonical z values.
+// The packer assigns IDs in feature document order.
 const canonical = Object.entries(preset.features)
-    .flatMap(([tag, values]) => Object.entries(values).map(([value, style]) => ({
+    .flatMap(([tag, values]) => Object.entries(values).map(([value]) => ({
         feature_type: `${tag}.${value}`,
-        z_index: style.z_index,
     })))
     .map((style, index) => ({ ...style, id: index + 1 }));
 
-/** Refuse unknown assignments and drawing-order changes across the reserved rain band. */
-export function skinBandError(
+/** Check schema assignments and the drawing-order field range. */
+export function skinStyleError(
     schema: Pick<SchemaEntry, "id" | "revision" | "styles">,
     styles: readonly Pick<SkinStyle, "feature_type" | "z_index">[],
 ): string | null {
@@ -32,10 +31,6 @@ export function skinBandError(
         if (style.feature_type !== expected.feature_type) return "The skin must follow the map's style assignment.";
         const z = style.z_index;
         if (!Number.isInteger(z) || z < -128 || z > 127) return "Drawing order must be an integer from -128 to 127.";
-        if (z > 16 && z < 24) return `${style.feature_type}: drawing order 17–23 is reserved for rain.`;
-        if ((z >= 24) !== (expected.z_index >= 24)) {
-            return `${style.feature_type}: drawing order must stay ${expected.z_index >= 24 ? "at least 24" : "at most 16"}.`;
-        }
     }
     return null;
 }

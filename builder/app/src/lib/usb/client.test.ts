@@ -192,8 +192,8 @@ describe("LIST", () => {
         await withDevice({ pageEntries: 1 }, async ({ client, device }) => {
             // The catalog sorts a retained revision before its head, so this page boundary is two
             // entries wide — exactly the case a cursor of `ObjectId` alone would skip.
-            device.seed({ objectId: 4n, revision: 1n, kind: ObjectKind.WeatherBundle, flags: EntryFlags.Retained, bytes: payload(8) });
-            device.seed({ objectId: 4n, revision: 2n, kind: ObjectKind.WeatherBundle, bytes: payload(9) });
+            device.seed({ objectId: 4n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: payload(8) });
+            device.seed({ objectId: 4n, revision: 2n, kind: ObjectKind.Route, bytes: payload(9) });
             const catalog = await client.list();
             expect(catalog.entries.map((entry) => [entry.objectId, entry.revision])).toEqual([
                 [4n, 1n],
@@ -302,34 +302,6 @@ describe("PUT", () => {
         });
     });
 
-    it("leaves the displaced revision RETAINED only when the flag asked for it", async () => {
-        await withDevice({}, async ({ client, device }) => {
-            const first = await client.put({ kind: ObjectKind.WeatherBundle, displayName: "wx" }, payload(64));
-            const kept = await client.put(
-                {
-                    objectId: first.objectId,
-                    expectedRevision: first.revision,
-                    kind: ObjectKind.WeatherBundle,
-                    displayName: "wx",
-                    retainPrevious: true,
-                },
-                payload(65),
-            );
-            expect(device.entries.map((entry) => [entry.revision, entry.flags])).toEqual([
-                [1n, EntryFlags.Retained],
-                [2n, 0],
-            ]);
-
-            // A replace *without* the flag clears retention outright — it never leaves a revision two
-            // generations back alive behind a head that did not ask for it.
-            await client.put(
-                { objectId: first.objectId, expectedRevision: kept.revision, kind: ObjectKind.WeatherBundle, displayName: "wx" },
-                payload(66),
-            );
-            expect(device.entries.map((entry) => entry.revision)).toEqual([3n]);
-        });
-    });
-
     it("refuses the kinds the device produces itself", async () => {
         await withDevice({}, async ({ client }) => {
             for (const kind of [ObjectKind.Ride, ObjectKind.RollbackReserve, ObjectKind.Metadata]) {
@@ -422,8 +394,8 @@ describe("GET", () => {
         await withDevice({}, async ({ client, device }) => {
             const old = payload(32, 1);
             const head = payload(48, 2);
-            device.seed({ objectId: 9n, revision: 1n, kind: ObjectKind.WeatherBundle, flags: EntryFlags.Retained, bytes: old });
-            device.seed({ objectId: 9n, revision: 2n, kind: ObjectKind.WeatherBundle, bytes: head });
+            device.seed({ objectId: 9n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: old });
+            device.seed({ objectId: 9n, revision: 2n, kind: ObjectKind.Route, bytes: head });
             expect((await client.get({ objectId: 9n, revision: 1n })).bytes).toEqual(old);
             expect((await client.get({ objectId: 9n, revision: 0n })).bytes).toEqual(head);
         });
@@ -540,8 +512,8 @@ describe("REMOVE", () => {
 
     it("takes a retained previous revision with the head", async () => {
         await withDevice({}, async ({ client, device }) => {
-            device.seed({ objectId: 3n, revision: 1n, kind: ObjectKind.WeatherBundle, flags: EntryFlags.Retained, bytes: payload(8) });
-            device.seed({ objectId: 3n, revision: 2n, kind: ObjectKind.WeatherBundle, bytes: payload(9) });
+            device.seed({ objectId: 3n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: payload(8) });
+            device.seed({ objectId: 3n, revision: 2n, kind: ObjectKind.Route, bytes: payload(9) });
             await client.remove({ objectId: 3n, revision: 2n });
             expect(device.entries).toEqual([]);
         });

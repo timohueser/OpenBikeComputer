@@ -65,13 +65,6 @@ pub use sensors::{SensorScanScreen, SensorsScreen};
 pub use system::SystemScreen;
 pub use units::UnitsScreen;
 
-/// The number of Settings list entries — five themed groups. The row *labels* are looked up
-/// per-language at draw time (see [`SettingsScreen::draw`]). Each row opens a group screen: Ride
-/// (routing + the riding grid + retention), Display, Connections (Phone + Sensors), Power, and
-/// System (Units / Date & Time / Language / Firmware update / About / Reset).
-///
-/// Weather is **not** among them (#1515 D4b): its one control, the scheduled refresh interval, is a
-/// row of the weather screens' own contextual sheet, which is the only home it has.
 const N_ITEMS: usize = 5;
 
 /// The Settings list — a nav menu whose rows open the individual settings screens. State is the

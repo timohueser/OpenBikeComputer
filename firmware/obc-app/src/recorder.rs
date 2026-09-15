@@ -38,7 +38,7 @@ use crate::altitude::AltitudeFusion;
 use crate::breadcrumb::Breadcrumb;
 use crate::device_core::{OperationToken, RecorderCapabilities, RecorderTag, TokenSource};
 use crate::placement::define_placement_constructors;
-use crate::weather::SpeedWindow;
+
 use crate::CatalogObjectId;
 
 /// How long a ride may go unjournalled. The cadence is the domain's, not an executor's: a board and
@@ -423,9 +423,7 @@ pub struct RecorderMachine {
     /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix and drawn on the Map.
     /// Per-session: a new ride starts with an empty trail.
     pub(crate) breadcrumb: Breadcrumb,
-    /// The bounded recent moving-speed window feeding the weather ride projection (WX12). Also
-    /// per-session — a new ride is a new pace.
-    pub(crate) speed_win: SpeedWindow,
+
     /// The assembled samples no executor has written yet. An [`Append`](RecorderEffect::Append)
     /// names how many are ready and the answer says how many reached the medium; the rest stay
     /// here. **The one sample queue in the device.**
@@ -524,7 +522,7 @@ impl RecorderMachine {
             recovery_offered: false,
             recovery: RideRecoveryState::None,
             breadcrumb: Breadcrumb::new() => Breadcrumb::init_in_place,
-            speed_win: SpeedWindow::new(),
+
             samples: heapless::Vec::new(),
             clock: FooterClock { unix_at_anchor: 0, anchor_ms: 0, trusted: false },
             ridden_m: 0.0,
@@ -853,11 +851,9 @@ impl RecorderMachine {
         }
     }
 
-    /// Forget the previous ride's per-session buffers: the trail, the pace window and any samples
-    /// the ride that owned them never wrote. Cleared together because a new ride restarts all three.
+    /// Clear the previous ride's trail and unwritten samples before starting a new ride.
     pub(crate) fn restart_buffers(&mut self) {
         self.breadcrumb.clear();
-        self.speed_win.clear();
         self.samples.clear();
     }
 
@@ -1287,7 +1283,6 @@ impl RecorderMachine {
             recovery_offered,
             recovery,
             breadcrumb,
-            speed_win,
             samples,
             clock,
             ridden_m: _,
@@ -1323,7 +1318,7 @@ impl RecorderMachine {
         assert!(!*checkpoint_owed, "no checkpoint owed");
         assert!(!*recovery_offered && *recovery == RideRecoveryState::None, "no recovered ride offered this boot");
         assert!(breadcrumb.is_empty(), "no trail");
-        assert!(speed_win.median_cms().is_none(), "no moving speeds recorded");
+
         assert!(samples.is_empty(), "no sample is waiting to be written");
         assert_eq!(*clock, FooterClock::default(), "no pass has stamped a footer anchor");
         assert!(last_fix.is_none() && last_ms.is_none() && last_alt.is_none(), "no fix and no altitude");

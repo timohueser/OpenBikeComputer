@@ -1,21 +1,3 @@
-//! [`CardScheduler`] — one delivery discipline for every host-pushed modal card.
-//!
-//! Six card families arrive from the *host* rather than from a gesture: the BLE passkey card, the
-//! map-transfer card, the route/trip upload prompts, the advisory warning card, the post-update
-//! toast, and the terminal DFU answers. They share one discipline — never land while a hold
-//! charges, the passkey card outranks the advisory ones, replace instead of stacking, a timeout
-//! dismisses, a durable identity is resolved only at delivery — and that discipline used to be
-//! re-implemented once per card.
-//!
-//! Here it is stated once. A host fact is **posted** into a named slot; one [`sweep`](CardScheduler::sweep)
-//! lands, rewrites, merges or drops each family according to the [`POLICY`] table. [`UiRuntime`](crate::ui_runtime::UiRuntime) stays the stack's
-//! owner: the scheduler reaches it only through
-//! [`UiRuntime::run_card_sweep`](crate::ui_runtime::UiRuntime::run_card_sweep).
-//!
-//! Deliberately **outside** the scheduler: weather alerts (the WeatherDomain schedules those at its
-//! own ownership cutover) and every rider-opened screen, which travels through
-//! [`screen::apply`](crate::screen::apply) as a `Transition`.
-
 use crate::catalog_state::CatalogState;
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use crate::screen::{self, MapTransfer, Screen, Stack, WarningFlags};

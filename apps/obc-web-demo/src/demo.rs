@@ -65,7 +65,7 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     detour: true,
     settings_persistence: true,
     dfu: true,
-    weather: true,
+
     bonding: true,
     storage_space_report: true,
     // The shared memory card holds metadata for this page session.
@@ -432,14 +432,12 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            self.app.render_scene_map_rain_photo_timed(
+            self.app.render_scene_map_photo_timed(
                 Some(&mut self.scratch),
                 &mut self.frame,
                 Some(&reader),
                 Some(&reader),
                 route.as_ref(),
-                None,
-                None,
                 self.peaks.panorama(),
                 FRAME_W as f32,
                 FRAME_H as f32,
@@ -502,7 +500,6 @@ impl Demo {
                 gestures,
                 sensors,
                 route.as_ref(),
-                None, // the landing demo mounts no weather store
                 SUPPORT,
             )
         };

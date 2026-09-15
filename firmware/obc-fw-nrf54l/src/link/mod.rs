@@ -49,26 +49,6 @@ static mut STORE: MaybeUninit<RefCell<ObjectStore>> = MaybeUninit::uninit();
 /// under the historical `ble_object_store` name — the allocation did not change, only its module.)
 pub(crate) const OBJECT_STORE_BYTES: usize = core::mem::size_of::<RefCell<ObjectStore>>();
 
-/// Build the object store into its `.bss` slot and hand out the one `&'static` reference.
-///
-/// `#[inline(never)]` is load-bearing: the ~13.5 KB construction temporary must land in **this**
-/// transient frame — popped immediately, at boot's shallow depth — and not become a permanent slot
-/// in a caller's async poll frame, which is allocated at entry on *every* poll (#677).
-///
-/// Construction is two-phase on purpose: the **const** empty store ([`ObjectStore::EMPTY`], a
-/// `.rodata` image the slot write memcpys from — no stack temporary can exist for a constant),
-/// then [`ObjectStore::hydrate`] loads settings and scans the card **in place**. History, because
-/// this shape has bitten twice: the original `RefCell::new(ObjectStore::new(shared))` stacked two
-/// ~13.5 KB copies (the `new` return slot + the wrapper argument) into a measured ~27.6 KB frame
-/// — which overran the residual main stack the moment EL7 grew the ride task's poll frame by 2 KB
-/// (STKOF HardFault at this function's prologue, every boot, 2026-08-03). The fix then was a
-/// by-value `empty()` hop the optimizer collapsed to one copy — until WX12 (#1197) grew
-/// `Settings` by 96 B and rustc 1.96 stopped collapsing it, re-stacking both temporaries (the
-/// boot-chain guard caught it before any glass did). The const image ends the optimizer's say in
-/// the matter, at the price of the empty store's bytes in flash.
-///
-/// # Safety
-/// Sole writer of [`STORE`]; called exactly once, from `main`, before any plane is spawned.
 #[inline(never)]
 pub(crate) fn init_store(shared: &mut crate::SharedStore) -> &'static RefCell<ObjectStore> {
     /// The fully-wrapped initial value as a named constant: `ptr::write` of a constant lowers to

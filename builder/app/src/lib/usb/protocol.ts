@@ -121,7 +121,6 @@ export const ObjectKind = {
     Route: 1,
     Trip: 2,
     Ride: 3,
-    WeatherBundle: 4,
     /** OBCM. Since v14 (#1420) a map is **one** object carrying its terrain inside it. */
     MapShard: 5,
     /** Retired (#1420). Listable, removable, never written. */
@@ -139,7 +138,6 @@ const KIND_NAMES: Readonly<Record<ObjectKind, string>> = {
     [ObjectKind.Route]: "route",
     [ObjectKind.Trip]: "trip",
     [ObjectKind.Ride]: "ride",
-    [ObjectKind.WeatherBundle]: "weather bundle",
     [ObjectKind.MapShard]: "map",
     [ObjectKind.MapSetManifest]: "map set manifest",
     [ObjectKind.UpdatePackage]: "update package",
@@ -428,7 +426,6 @@ export interface PutRequest {
     readonly payloadCrc32: number;
     readonly kind: ObjectKind;
     /** Ask the same commit to leave the displaced revision `RETAINED` (§3.6). */
-    readonly retainPrevious: boolean;
     readonly displayName: string;
 }
 
@@ -560,7 +557,7 @@ function decodeRequestBody(opcode: Opcode, body: Uint8Array): Request | Refusal 
             const kind = view.getUint16(28, true);
             if (!OBJECT_KINDS.has(kind)) return refusal(ErrorCode.Unsupported, Detail.unsupported.kind);
             const flags = view.getUint16(30, true);
-            if ((flags & ~1) !== 0 || !isZero(body.subarray(33, 36))) return reservedBits();
+            if (flags !== 0 || !isZero(body.subarray(33, 36))) return reservedBits();
             const name = decodeName(body[32], body.subarray(36, 36 + NAME_CAPACITY));
             if (typeof name !== "string") return name;
             return {
@@ -571,7 +568,6 @@ function decodeRequestBody(opcode: Opcode, body: Uint8Array): Request | Refusal 
                     payloadLength: view.getBigUint64(16, true),
                     payloadCrc32: view.getUint32(24, true),
                     kind: kind as ObjectKind,
-                    retainPrevious: (flags & 1) !== 0,
                     displayName: name,
                 },
             };
@@ -676,7 +672,7 @@ export function encodePutRequest(requestId: number, request: PutRequest): Uint8A
     view.setBigUint64(16, request.payloadLength, true);
     view.setUint32(24, request.payloadCrc32, true);
     view.setUint16(28, request.kind, true);
-    view.setUint16(30, request.retainPrevious ? 1 : 0, true);
+    view.setUint16(30, 0, true);
     encodeName(body, 32, 36, request.displayName);
     return encodeControl(Opcode.Put, 0, requestId, body);
 }

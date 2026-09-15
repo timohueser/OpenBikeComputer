@@ -16,9 +16,8 @@ covers those files, and report exactly what it ran. CI remains the cross-reposit
 Run the directly affected tests while iterating and the affected package before handoff:
 
 ```sh
-obc test -p obc-weather
 obc test -p obc-app
-cargo clippy -p obc-weather --all-targets -- -D warnings
+cargo clippy -p obc-app --all-targets -- -D warnings
 ```
 
 `obc test` deliberately requires a scope. It does not silently expand to the workspace. Multiple
@@ -44,10 +43,9 @@ scripts. Do not run Rust gates for a Swift-, documentation-, or frontend-only ch
 
 ### 2. External-fixture checks — when captured data is part of the behavior
 
-Tests backed by maps, routes, rides, or captured weather products are opt-in:
+Tests backed by maps, routes, or rides are opt-in:
 
 ```sh
-obc test fixtures -p obc-wx-bake
 obc test fixtures -p obc-route
 ```
 

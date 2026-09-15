@@ -71,32 +71,13 @@ describe("custom skin storage", () => {
 });
 
 
-describe("custom skin rain bands", () => {
-    it.each([
-        ["highway.primary", 16], ["natural.water", 24],
-        ["highway.primary", 17], ["natural.water", 23],
-    ])("refuses %s at z=%i on prepare, persist and reload", (feature, z) => {
-        const valid = prepareCustomSkin(hosted, schema, "Mine", null, () => "custom-mine");
-        const storage = new MemoryStorage();
-        persistCustomSkins(storage, schema, [{ skin: valid, based_on: "default" }]);
-        const saved = storage.values.get(CUSTOM_SKINS_KEY)!;
-        const invalid = cloneSkin(valid);
-        invalid.styles.find((style) => style.feature_type === feature)!.z_index = z;
-        expect(() => prepareCustomSkin(invalid, schema, "Mine", valid)).toThrow(/drawing order/);
-        expect(() => persistCustomSkins(storage, schema, [{ skin: invalid, based_on: "default" }])).toThrow(/drawing order/);
-        expect(storage.values.get(CUSTOM_SKINS_KEY), "failed admission must not replace saved bytes").toBe(saved);
-        const envelope = JSON.parse(saved);
-        envelope.skins[0].skin = invalid;
-        storage.values.set(CUSTOM_SKINS_KEY, JSON.stringify(envelope));
-        expect(loadCustomSkins(storage, schema)).toEqual([]);
-    });
-
-    it("allows each band's endpoints and reorders styles within a band", () => {
+describe("custom skin validation", () => {
+    it("preserves drawing order across the signed byte range", () => {
         const draft = cloneSkin(hosted);
-        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 24;
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 17;
         draft.styles.find((style) => style.feature_type === "highway.track")!.z_index = 127;
         draft.styles.find((style) => style.feature_type === "natural.water")!.z_index = -128;
-        draft.styles.find((style) => style.feature_type === "natural.land")!.z_index = 16;
+        draft.styles.find((style) => style.feature_type === "natural.land")!.z_index = 23;
         const skin = prepareCustomSkin(draft, schema, "Mine", null, () => "custom-mine");
         const storage = new MemoryStorage();
         persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
