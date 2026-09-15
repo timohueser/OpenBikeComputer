@@ -92,7 +92,9 @@ The arrival card is informational. Select or Back closes it. Guidance and record
 Rejoining the original journey clears an arrival card that is still open.
 
 After a restart, a saved Assistant journey offers **Resume route**. This needs a fresh position
-inside the saved route phase and exact source validation. Select resumes guidance only after the
+inside the saved route phase and exact source validation. A loop or crossing with more than one
+matching position remains unavailable. Move to a clear part of the route and retry. Select resumes
+guidance only after the
 saved change is confirmed. It does not start recording. Back leaves navigation inactive. Open the
 Assistant context drawer to reach the Resume card again. Ordinary routes do not resume on their own.
 
