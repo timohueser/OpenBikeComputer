@@ -568,7 +568,7 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
     --expect-screen ContextDrawer --png "$OUT/up-ahead-sources-editor.png"
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE d d d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
+    --script "$UPBASE d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
 # (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
 # ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"

@@ -57,3 +57,8 @@ prepares its detail before activation. The named `elev-nav-overview.png` and
 `detour-chooser-final.png` pass through the normal simulator. CI now retains its
 rendered PNG files as review artifacts so changed manifest entries can be
 inspected without another local sweep. No expectation is regenerated in CI.
+
+The next CI walk reached Up ahead. Complete encounter ordering moved its old
+POI-detail cursor onto an authored waypoint, where Select is correctly inert.
+The recipe now selects the actual map POI with eight steps. Its named detail
+frame passed. This changes only the fixture journey; waypoint behavior is intact.
