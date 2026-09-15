@@ -475,6 +475,19 @@ impl NavigatorMachine {
 }
 
 impl crate::App {
+    /// Stage one exact publication under the current commit token. The outcome exposes the preview.
+    pub fn assistant_preview_outcome(
+        &mut self,
+        token: OperationToken<crate::device_core::NavigatorTag>,
+        preview: ReviewedRoute,
+    ) -> super::NavigatorOutcome {
+        let outcome = super::NavigatorOutcome::ReviewReady { token };
+        if !self.navigator.accepts(&outcome) || self.navigator.review.preview.is_some() {
+            return super::NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged };
+        }
+        self.navigator.review.preview = Some(preview);
+        outcome
+    }
     pub fn plan_assistant(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
         self.navigator.request_review(request, context);
         self.ui.map_dirty = true;

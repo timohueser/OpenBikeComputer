@@ -225,7 +225,7 @@ domain_slots! {
 // `DfuOutcome`'s two fixed 32-byte version strings — see `dfu.rs` for why that one is allowed to be
 // the biggest thing in the protocol.
 const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 216, "nine bounded effects, no payloads");
-const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 304, "nine bounded outcomes, no payloads");
+const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 248, "nine bounded outcomes, no payloads");
 
 #[cfg(test)]
 mod tests {

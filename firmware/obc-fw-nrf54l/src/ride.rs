@@ -2293,7 +2293,7 @@ pub(crate) async fn run_app(
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match result {
                                     Ok(_) if app.assistant_review_context().is_some() => match finished_review {
-                                        Some(preview) => NavigatorOutcome::ReviewReady { token, preview },
+                                        Some(preview) => app.assistant_preview_outcome(token, preview),
                                         None => {
                                             NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
                                         }

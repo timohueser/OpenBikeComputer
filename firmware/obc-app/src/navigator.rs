@@ -153,7 +153,6 @@ pub enum NavigatorOutcome {
     },
     ReviewReady {
         token: OperationToken<NavigatorTag>,
-        preview: ReviewedRoute,
     },
     /// The workspace and sources are held; stepping may begin.
     Acquired {
@@ -218,7 +217,8 @@ impl NavigatorOutcome {
 // buffer) and the dominating outcome is the four-figure `DetourPreview`.
 const _: () = assert!(core::mem::size_of::<NavigatorIntent>() <= 48, "an intent is a bounded request");
 const _: () = assert!(core::mem::size_of::<NavigatorEffect>() <= 56, "the planner request plus a token");
-const _: () = assert!(core::mem::size_of::<NavigatorOutcome>() <= 72, "preview figures, never a polyline");
+const _: () =
+    assert!(core::mem::size_of::<NavigatorOutcome>() <= 40, "one bounded result; review figures stay with Navigator");
 const _: () = assert!(core::mem::size_of::<NavigatorError>() <= 2, "a verdict, not a report");
 const _: () = assert!(core::mem::size_of::<PlannerWork>() <= 48, "the largest planner request");
 const _: () = assert!(core::mem::size_of::<PlannerProgress>() <= 1, "a two-state answer");

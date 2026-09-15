@@ -653,7 +653,7 @@ impl HostLoop {
                             );
                             feed_routes(app, routes, &mut NoTrace);
                             match preview {
-                                Ok(preview) => NavigatorOutcome::ReviewReady { token, preview },
+                                Ok(preview) => app.assistant_preview_outcome(token, preview),
                                 Err(error) => NavigatorOutcome::Failed { token, error },
                             }
                         }
