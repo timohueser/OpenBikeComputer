@@ -185,6 +185,7 @@ enum Phase {
     Waypoints,
     Descriptor,
     Done,
+    RejectedGeometry,
 }
 
 /// Final emitter state lives in a named arena partition alongside the leg planner. No source,
@@ -329,6 +330,11 @@ impl VisitBuilder {
         self.anchors
     }
 
+    /// A decoded leg cannot join the next required coordinate. Source and sink failures do not set this state.
+    pub fn rejected_geometry(&self) -> bool {
+        self.phase == Phase::RejectedGeometry
+    }
+
     /// Append the sealed outbound or return B. `true` releases B before the next leg starts.
     pub fn append_leg_step(&mut self, leg: &RouteReader, sink: &mut dyn ByteSink) -> Result<bool, Error> {
         if !matches!(self.phase, Phase::Outbound | Phase::Return) || leg.chunks().is_empty() {
@@ -342,6 +348,7 @@ impl VisitBuilder {
             if self.last.is_none_or(|p| {
                 obc_map_scene::ground_dist_m(p, (descriptor.target_lon, descriptor.target_lat)) > APPROACH_TOLERANCE_M
             }) {
+                self.phase = Phase::RejectedGeometry;
                 return Err(Error::BadOffset);
             }
             descriptor.accepted_anchors_m[1] = self.em.distance_m();
@@ -465,6 +472,7 @@ impl VisitBuilder {
         }
         if !self.segment_started && self.last.is_some_and(|last| points.first().is_none_or(|p| last != (p.lon, p.lat)))
         {
+            self.phase = Phase::RejectedGeometry;
             return Err(Error::BadOffset);
         }
         self.segment_started = true;

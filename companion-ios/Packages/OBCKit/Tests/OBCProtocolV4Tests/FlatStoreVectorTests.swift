@@ -36,6 +36,33 @@ struct FlatStoreVectorTests {
         }
     }
 
+    @Test("Accepted Assistant routes remain readable and undefined catalog flags fail")
+    func assistantCatalogFlags() throws {
+        var bytes = try Vectors.frame(named: "list-response-two-entries")
+        guard case .list(let original) = try ControlResponse(decoding: bytes) else {
+            Issue.record("Expected a catalog page")
+            return
+        }
+        let routeFlagsOffset = FlatStoreV4.controlHeaderLength + 24 + 30
+        bytes[routeFlagsOffset] = 1 << 3
+        guard case .list(let accepted) = try ControlResponse(decoding: bytes) else {
+            Issue.record("Expected the accepted route catalog page")
+            return
+        }
+        #expect(accepted.entries.count == 2)
+        #expect(accepted.entries[0].kind == .route)
+        #expect(accepted.entries[0].objectID == original.entries[0].objectID)
+        #expect(accepted.entries[0].revision == original.entries[0].revision)
+        #expect(accepted.entries[0].flags == .assistantAccepted)
+        #expect(accepted.entries[1] == original.entries[1])
+        for bit in 4..<16 {
+            let flags = UInt16(1 << 3) | UInt16(1 << bit)
+            bytes[routeFlagsOffset] = UInt8(truncatingIfNeeded: flags)
+            bytes[routeFlagsOffset + 1] = UInt8(truncatingIfNeeded: flags >> 8)
+            #expect(throws: WireError.invalidFlags) { try ControlResponse(decoding: bytes) }
+        }
+    }
+
     @Test("Every stream vector decodes and re-encodes byte-for-byte")
     func streams() throws {
         for entry in try Vectors.entries(in: "streams") {

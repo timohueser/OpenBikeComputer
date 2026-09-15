@@ -24,12 +24,7 @@ pub(crate) struct CommandOutcome {
     pub(crate) forget_bond: bool,
 }
 
-/// Execute a legacy control-plane command. Route/trip/ride mutation moved to the flat-store object
-/// protocol. Ride sync/retention returns with its ObjectId-keyed metadata boundary in #1398; the
-/// former FAT `ackRides` sidecar command is intentionally no longer accepted here. `setClock`
-/// (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the peer's clock and crosses it to
-/// the ride loop to stamp — no store movement.
-/// Any other command byte is `unknownCommand`.
+/// Execute device control commands. Object mutations use the flat-store protocol.
 pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
@@ -73,13 +68,7 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
             (CommandStatus::Ok, 0)
         }
         (obc_ble::CMD_SET_CLOCK, _) => {
-            // setClock (auto-expiry epic #638 S2, #642): the peer stamps the device's UTC clock +
-            // local offset on every connect. `SetClock::decode` owns the whole §4.4 validation (exact
-            // 7-byte length, `utc` ≥ 2020-01-01, `|offset|` ≤ 14 h) so a bad peer clock never seeds a
-            // trusted-but-stale set-point the retention sweep would honour: any `Err` → `error`. On
-            // success the validated pair crosses to the ride loop (`post_ble_clock`), which stamps it
-            // through `App::stamp_clock_ble` (sets + persists the offset, marks trust `Ble`). The clock
-            // is not a listed object and produces no flat-catalog movement.
+            // Validate UTC and offset before publishing the clock to the ride loop.
             match SetClock::decode(data) {
                 Ok(sc) => {
                     crate::object_store::post_ble_clock(sc.utc, sc.offset_min);

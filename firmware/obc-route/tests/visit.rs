@@ -119,6 +119,24 @@ fn disconnected_return_is_not_joined_with_a_straight_segment() {
     let source = SliceSource(&returning);
     let index = RouteIndex::read(&source).unwrap();
     assert!(builder.append_leg_step(&RouteReader::new(&index, &source), &mut sink).is_err());
+    assert!(builder.rejected_geometry());
+    struct FailedSource;
+    impl obc_formats::io::ByteSource for FailedSource {
+        fn read_at(&self, _: u64, _: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+            Err(obc_formats::io::Error::Io)
+        }
+        fn len(&self) -> u64 {
+            u64::MAX
+        }
+    }
+    let mut builder = VisitBuilder::new(key(1), key(2), 0, 0, SourceId::osm(1, 2), (0, 1000)).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    assert_eq!(
+        builder.append_leg_step(&RouteReader::new(&index, &FailedSource), &mut sink),
+        Err(obc_formats::io::Error::Io)
+    );
+    assert!(!builder.rejected_geometry());
 }
 
 #[test]

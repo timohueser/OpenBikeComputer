@@ -295,8 +295,7 @@ A failed save reports no success. A different revision or missing archive remain
 
 Protocol v4 can persist proof that a client holds the exact finalized ride. The device checks the
 card, object, revision, length and CRC, then commits and reads back the proof. A duplicate keeps
-the original timestamp. A lost reply can be retried from the durable archive without starting a
-new countdown.
+the existing proof. A lost reply can be retried from the durable archive.
 
 The companion sends proof after saving a ride and after revalidating an existing archive.
 Reconnect retries these confirmations without downloading missing rides. Manual sync can download
@@ -304,26 +303,11 @@ missing rides. If confirmation fails, the phone keeps its archive and shows the 
 warning with the Resume action. A lost reply can mean the device already saved the proof; retry
 is safe. Local save counts do not establish device confirmation.
 
-This proof initially has no expiry timestamp. The board validates it before the retention policy
-starts the countdown on a trusted clock. Only an existing exact proof can receive that first stamp;
-a duplicate cannot reset it. A successful write becomes visible through a complete catalog reload.
-The policy covers up to 128 ride inventory records, including rides outside the 32-entry menu.
-Unknown clock, recording, missing proof and failed reads protect rides from automatic expiry.
-The [archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
-the remaining physical acceptance.
+Archive proof controls the device's synced indicator. Routes and rides remain on the device
+until the rider deletes them. A storage-full route upload offers explicit age-based cleanup
+on the device; the rider confirms deletion and then retries the upload.
 
-The board and flat-store host persist route-use stamps in a card metadata object.
-Each row binds to the card and the exact source revision, length, and CRC. The store replaces
-metadata atomically and checks the committed bytes before it reports success. Clients can list
-and read this object but cannot upload or remove it. A card without metadata gives routes no
-automatic expiry period; this path does not add a remote retention setting.
-
-Retention uses a complete loaded catalog scope. A successful stamp orders a reload before further
-policy decisions. Automatic route deletion checks that scope and the current active-route and
-recording protections before the card operation. Unsupported ride work does not block route work.
-Write and read failures wait before retry. An uncertain catalog commit or failed metadata readback
-stops card writes and policy reads until restart and a fresh mount. See the
-[metadata contract](src:specs/Retention_Metadata.md).
+The exact durable format is in the [metadata contract](src:specs/Ride_Archive_Metadata.md).
 
 ## Pairing and BLE controls
 

@@ -69,7 +69,6 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     bonding: true,
     storage_space_report: true,
     // The shared memory card holds metadata for this page session.
-    retention_metadata: true,
 };
 
 /// One queued page command, drained per [`Demo::tick`]. Gestures are injected through the app's
@@ -618,9 +617,6 @@ impl Demo {
         app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
         app.set_rides(self.rides.catalog());
-        if let Some(records) = self.rides.retention_inventory() {
-            app.set_ride_retention_inventory(records);
-        }
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
         //

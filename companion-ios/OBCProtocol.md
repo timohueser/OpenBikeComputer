@@ -42,7 +42,8 @@ The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
   bytes verbatim.
 - Ride bytes contain recorded samples and an OBRF footer. The phone decodes them to `Ride` before
   archiving or exporting GPX.
-- Route, ride and trip catalogs are v4 `LIST` entries.
+- Route, ride and trip catalogs are v4 `LIST` entries. Catalog flag bit 3 (`assistantAccepted`)
+  marks an accepted Assistant route. The decoder accepts it and rejects undefined flag bits.
 - Trips contain route object ids, not route bytes. Upload stages first and the trip last; deleting a
   trip does not implicitly delete its routes.
 - Firmware images are signed OBCU containers carried as update objects.
@@ -65,8 +66,8 @@ A timeout or failed receipt leaves the local archive intact and device confirmat
 existing sync banner. Resume or reconnect revalidates and retries without downloading saved rides.
 Unsupported and refused receipts remain visible; a changed source is terminal for that receipt.
 Only the matching ARCHIVE_RIDE response confirms proof. STATUS and local save counts cannot do so.
-Timestamp zero is valid and does not start a countdown. Live device retention consumes this proof
-separately. See the [archive contract](../specs/Ride_Archive_Contract.md).
+Timestamp zero is valid. The device uses archive proof for the synced indicator.
+Rides remain on the device until the user deletes them. See the [archive contract](../specs/Ride_Archive_Contract.md).
 
 ## Delta 1 — device name lives in Config
 

@@ -17,7 +17,10 @@ struct VisitHarness {
 }
 impl VisitHarness {
     fn new() -> Self {
-        let mut h = Harness::new();
+        Self::with_route(&route())
+    }
+    fn with_route(route: &[u8]) -> Self {
+        let mut h = Harness::with_route(route);
         h.app.activate_route(0);
         h.app.set_nav_profiles(obc_reader::Reader::new(h.map.as_ref().unwrap(), &h.tables, &h.cache).nav_profiles());
         h.app.set_map_nav_graph(true);
@@ -77,7 +80,6 @@ impl VisitHarness {
                 dfu: false,
                 bonding: false,
                 storage_space_report: false,
-                retention_metadata: true,
             },
             outcomes: &mut self.outcomes,
             facts: &mut self.facts,
@@ -250,4 +252,23 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
     assert_eq!(h.h.app.active_route_index(), Some(0));
     h.h.app.cancel_assistant();
     h.settle(ReviewStatus::Idle);
+}
+
+#[test]
+fn rejected_forward_tail_rebuilds_proven_out_and_back() {
+    let gpx=b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.5001\" lat=\"0.510\"/><trkpt lon=\"0.530\" lat=\"0.510\"/></trkseg></trk></gpx>";
+    let mut sink = obc_host_core::VecSink::default();
+    obc_route::gpx_to_obcr(&SliceSource(gpx), "Original", &mut sink).unwrap();
+    let mut h = VisitHarness::with_route(sink.bytes());
+    h.settle(ReviewStatus::Preview);
+    let preview = h.h.app.assistant_preview().unwrap();
+    let info =
+        h.h.store
+            .with_source(ObjectId(preview.source.object), None, |s| obc_route::RouteObjectInfo::read(s).unwrap())
+            .unwrap();
+    assert_eq!(info.visit.unwrap().original_anchors_m, [0; 3]);
+    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 6);
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    h.h.assert_clean();
 }

@@ -3,33 +3,6 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// The main-screen state (B3, design C1/C2): the route/ride lists, the live
-/// device cluster (name · battery · connection), search, and the phone-side
-/// library edits (rename/delete/import landing). Depends only on link, battery,
-/// stored-object, and retention capabilities (the golden rule).
-///
-/// **Sync (B7)** lives in `RideSyncCoordinator` (#358), exposed whole as
-/// `sync` — the view reads `sync.syncState` etc. directly rather than through
-/// duplicated properties. The coordinator persists each landed ride itself;
-/// this model only mirrors landed rides into its in-memory Tracked list (the
-/// `onRideLanded` seam) and vetoes sync on a protocol mismatch (`canSync`).
-///
-/// **Both lists are library-first (#289, extended to rides in #296):**
-/// - **Planned routes** show exactly the phone's saved routes; `listRoutes()`
-///   (the device catalog, keyed by device object ids) is consulted *only* to reconcile
-///   each record's `deviceObjectID` — lighting and clearing the C1 "on device"
-///   badge — never to add rows. A route that exists only on the device (another
-///   phone's upload, a side-loaded file) isn't the app's to manage and never
-///   appears.
-/// - **Tracked rides** show exactly the rides the phone has **synced** (its
-///   library), newest first, minus phone-side tombstones. A ride sitting on the
-///   device but not yet downloaded is *not* a row — it has no tracklog or
-///   preview yet, only summary stats, and a half-empty card is worse than none.
-///   `listRides()` drives the *sync* (what to fetch on Sync), never the rows;
-///   nothing downloads until the user presses Sync.
-///
-/// That split is also why S4 degrades to a banner over browsable content
-/// instead of emptying, and why an H4 import survives a relaunch.
 @MainActor @Observable
 public final class MainScreenModel {
     /// The Planned | Tracked segmented split.
@@ -90,14 +63,6 @@ public final class MainScreenModel {
     /// The current device serial and full StoreId. Missing identity keeps
     /// reconciliation disabled while local browsing continues.
     public private(set) var connectedScope: LibraryScope?
-    /// Whether the connected device understands **auto-expiry** (epic #638) —
-    /// settled by each connection's `setClock` in the prologue (`.stamped` → true,
-    /// `.unsupported` → false; a thrown/absent stamp leaves the last verdict, so a
-    /// flaky reconnect doesn't hide a known-capable device). Optimistic before the
-    /// first stamp. **S7 hides the expiry UI behind this**, and the retention
-    /// pushes are gated on it. A device predating expiry is a supported peer, not
-    /// an error.
-    public private(set) var supportsRetention = true
     /// Whether the identity read has settled this session (with an answer *or*
     /// a failed read) — the other half of the `canSync` gate, so an id-keyed
     /// write can never run ahead of the #303 verdict. See `runIdentityCheck`.
@@ -132,12 +97,8 @@ public final class MainScreenModel {
 
     // MARK: Wiring
 
-    private let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceRetention
+    private let transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock
     private let library: any LibraryStore
-    /// The app-local default-retention preference (epic #638) — read to seed a
-    /// new upload's level and the upload sheet's picker, written by Settings.
-    /// Never touched by a reconcile: changing the default is not a retro write.
-    private let retentionDefaults: any RetentionDefaultsStore
     /// Desired-name reconcile (#361), run once per established connection —
     /// the logic lives in `DeviceNameReconciler`; this model only owns the
     /// "connection established" trigger. `nil` (tests/previews) skips it.
@@ -209,9 +170,8 @@ public final class MainScreenModel {
     /// The default `library` keeps persistence out of previews and tests that
     /// don't care; the composition root always passes its chosen store.
     public init(
-        transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceRetention,
+        transport: any DeviceLink & DeviceBattery & DeviceObjects & DeviceClock,
         library: any LibraryStore = InMemoryLibraryStore(),
-        retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
         nameReconciler: DeviceNameReconciler? = nil,
         transferActivity: TransferActivity? = nil,
@@ -219,7 +179,6 @@ public final class MainScreenModel {
     ) {
         self.transport = transport
         self.library = library
-        self.retentionDefaults = retentionDefaults
         self.nameReconciler = nameReconciler
         self.transferActivity = transferActivity
         self.now = now
@@ -432,7 +391,6 @@ public final class MainScreenModel {
         // Unknown until proven, every connection: the device may have been
         // reinitialized (new StoreId) or swapped since the last read.
         connectedScope = nil
-        // Establish the device clock before reconciliation and settle retention support.
         await stampDeviceClock()
         if let info = try? await transport.deviceInfo() {
             deviceName = info.name
@@ -462,58 +420,9 @@ public final class MainScreenModel {
         }
     }
 
-    /// Stamp the device's trusted wall clock (`setClock`, epic #638) with the
-    /// phone's current time + local UTC offset, and settle `supportsRetention` for
-    /// the connection. `.unsupported` (a device predating expiry) is a supported
-    /// peer — no error surfaced. A thrown/absent stamp (a link dying mid-prologue)
-    /// leaves the last verdict untouched: the next connect re-stamps, and a flaky
-    /// reconnect must not flip a known-capable device to "hidden".
     private func stampDeviceClock() async {
         guard let outcome = try? await transport.setClock(WallClockSample()) else { return }
-        supportsRetention = (outcome == .stamped)
     }
-
-    /// The reconcile half of route retention (epic #638): land the device's
-    /// reported `expires_at`/`retention` on each linked record (display-only) and
-    /// push the desired level when it diverges. Capability-gated — a device
-    /// predating expiry reports `nil` retention, so nothing pushes — and a `nil`
-    /// **desired** level never pushes (invariant 6: a route uploaded before this
-    /// feature migrates as "not set" and can't be surprise-deleted). Scope-gated
-    /// via the same valid-link predicate the badge reconcile uses.
-    private func reconcileRetention(scope: LibraryScope, catalog: [RouteCatalogEntry]) {
-        let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for (id, record) in plannedRecords {
-            guard let link = record.deviceLink, link.matches(scope),
-                let entry = byID[link.objectID] else { continue }
-            var updated = record
-            // Device truth, refreshed wholesale from the catalog (display-only).
-            updated.deviceExpiresAt = entry.expiresAt
-            updated.deviceRetention = entry.retention
-            // Push the desired level when it's set and diverges from the device's.
-            // `entry.retention != nil` is the capability signal (a pre-expiry
-            // device reports no retention), belt-and-braces with the flag.
-            if supportsRetention, let desired = record.retention,
-                entry.retention != nil, desired != entry.retention {
-                pushRetention(desired, to: link.objectID)
-                updated.deviceRetention = desired  // optimistic; a later list confirms
-            }
-            if updated != record {
-                plannedRecords[id] = updated
-                library.savePlannedRoute(updated)
-            }
-        }
-    }
-
-    /// Fire-and-forget `setRouteRetention` (epic #638) — best-effort like the
-    /// name reconcile: a failed push self-heals at the next
-    /// reconcile (the desired level still diverges) or on reconnect, so the error
-    /// is dropped rather than surfaced. Captures only the transport.
-    private func pushRetention(_ retention: Retention, to objectID: DeviceObjectID) {
-        Task { [transport] in
-            _ = try? await transport.setRouteRetention(objectID, retention)
-        }
-    }
-
     /// True-up every record's `deviceLink` against the device's live catalog
     /// (device object ids **and** content CRCs — #770), then adopt-by-content.
     /// Absence, or a catalog CRC that disagrees with what we committed, drops
@@ -558,9 +467,6 @@ public final class MainScreenModel {
         // 2) Adopt-by-content — heal identical unlinked copies (app reinstall,
         //    device switch-back) without a re-upload.
         adoptByContent(scope: scope, catalog: deviceRoutes)
-        // 3) Retention (epic #638): land the device's expiry truth on each linked
-        //    record and push the desired level where it diverges.
-        reconcileRetention(scope: scope, catalog: deviceRoutes)
         refreshOnDeviceStates()
     }
 
@@ -906,13 +812,7 @@ public final class MainScreenModel {
             let name = plannedRecords[routeID]?.summary.name ?? "Stage"
             switch stagePlan.action {
             case .skip:
-                // The stage's bytes are current, so nothing transfers — but the
-                // trip's chosen retention must still reach it (finding #876-4). Wire
-                // the same postcondition path the fresh/replace commit uses; the
-                // trip level is read at execution time (after the rider confirmed).
-                steps.append(.skip(title: name, applyRetention: { [weak self] retention in
-                    self?.applyStageRetention(routeID, retention)
-                }))
+                steps.append(.skip(title: name))
             case .fresh, .replace:
                 let target: DeviceObjectID? =
                     if case .replace(let objectID) = stagePlan.action { objectID } else { nil }
@@ -922,15 +822,10 @@ public final class MainScreenModel {
                         guard let self, let blob = self.makeStageBlob(routeID, target: target) else { return nil }
                         return (self.transport.uploadRoute(blob), CRC32.checksum(blob.payload))
                     },
-                    commit: { [weak self] objectID, crc, retention in
+                    commit: { [weak self] objectID, crc in
                         guard let objectID else { return }
-                        // adopt: false — the queue pushes the trip object itself, last.
-                        // The trip sheet's chosen retention (epic #638) is applied to
-                        // every stage, overriding any per-route level (a trip is one
-                        // unit) — passed explicitly so `markRouteUploaded` sets and
-                        // pushes it rather than falling back to the record's own value.
                         self?.markRouteUploaded(
-                            routeID, objectID: objectID, crc32: crc, retention: retention, adopt: false)
+                            routeID, objectID: objectID, crc32: crc, adopt: false)
                     }
                 ))
             }
@@ -948,9 +843,7 @@ public final class MainScreenModel {
                     guard let self, let blob = self.makeTripBlob(id, target: target) else { return nil }
                     return (self.transport.uploadTrip(blob), CRC32.checksum(blob.payload))
                 },
-                commit: { [weak self] objectID, crc, _ in
-                    // The trip object carries no retention (trips have no expiry) —
-                    // the trip's chosen level rode to the member stages above.
+                commit: { [weak self] objectID, crc in
                     self?.markTripUploaded(id, objectID: objectID, crc32: crc)
                 }
             ))
@@ -958,10 +851,6 @@ public final class MainScreenModel {
         return TripUploadModel(
             transport: transport, tripName: trip.name, deviceName: deviceName,
             precheck: plan.precheck, steps: steps,
-            // The whole trip's Auto-delete choice seeds from the app default and
-            // applies to every member route (epic #638); capability-gated so old
-            // firmware shows no row and the flow is unchanged.
-            retention: defaultRetention, supportsRetention: supportsRetention,
             timing: timing, activity: transferActivity
         )
     }
@@ -1363,89 +1252,6 @@ public final class MainScreenModel {
         guard let record = plannedRecords[id] else { return nil }
         return provenCommittedCRC(for: record)
     }
-
-    // MARK: Route retention — S7 UI seams (epic #638)
-
-    /// The app-local default retention a **new** upload seeds (Settings picks it).
-    /// The upload sheet's Auto-delete row and its post-commit push both start here.
-    public var defaultRetention: Retention { retentionDefaults.loadDefaultRetention() }
-
-    /// The **desired** app-side retention for this planned route (`nil` = not set),
-    /// used to seed the upload sheet and the detail control. Distinct from the
-    /// device's reported level.
-    public func plannedRetention(for id: RouteID) -> Retention? {
-        plannedRecords[id]?.retention
-    }
-
-    /// The library-card countdown footnote (C1) for a route on the device — the
-    /// device's `expires_at` phrased "Expires in 2 days" / "Expires today", but
-    /// **only** within ``OBCFormat/expiryBadgeDayWindow`` days and while the route
-    /// is actually on the device (the badge disappears with the on-device state
-    /// once a device-side delete reconciles to `notOnDevice`). `nil` otherwise.
-    public func expiryBadge(for id: RouteID) -> String? {
-        guard onDeviceState(id) != .notOnDevice,
-            let expiresAt = plannedRecords[id]?.deviceExpiresAt
-        else { return nil }
-        return OBCFormat.routeExpiryBadge(expiresAt, relativeTo: now())
-    }
-
-    /// The device's actual retention level for this route (`nil` = unknown /
-    /// pre-expiry firmware) — the route detail falls back to it for the row value
-    /// when no desired level is set, so the row doesn't claim "Never" over a live
-    /// expiry. Display-only; the push still gates on the *desired* level.
-    public func plannedDeviceRetention(for id: RouteID) -> Retention? {
-        plannedRecords[id]?.deviceRetention
-    }
-
-    /// The device's expiry truth for this route (`nil` = never / not started /
-    /// pre-expiry firmware) — the route detail formats it into its "Expires …"
-    /// line. Display-only; it goes stale gracefully (extend-on-use moves it).
-    public func plannedDeviceExpiresAt(for id: RouteID) -> Date? {
-        plannedRecords[id]?.deviceExpiresAt
-    }
-
-    /// Edit a route's desired retention from its detail (S7). Stores the choice on
-    /// the record (persisted), then — connected, capable, and holding a valid link
-    /// for a level that diverges from the device's — pushes it now; disconnected,
-    /// it just stores and the next connect's reconcile pushes it (the desired level
-    /// still diverges). No "pending" chrome: the reconcile model makes it
-    /// eventually-true. A retro change to the default never lands here — only an
-    /// explicit per-route edit does.
-    public func setRouteRetention(_ id: RouteID, _ retention: Retention) {
-        guard plannedRecords[id]?.retention != retention else { return }
-        applyStageRetention(id, retention)
-    }
-
-    /// Force a route to a desired retention **postcondition** and push it when the
-    /// device holds it and its level diverges — the shared path behind the
-    /// single-route setter and every whole-trip member stage (finding #876-4). A
-    /// whole-trip choice must reach **every** member route, including a stage whose
-    /// *bytes* were skipped (already current): a skip skips the transfer, never the
-    /// policy. Idempotent — no command when the device is already at `retention`
-    /// (`deviceRetention == retention`) — and capability-gated (an incapable device
-    /// records the desired level for a later reconcile push but sends nothing now).
-    func applyStageRetention(_ id: RouteID, _ retention: Retention) {
-        guard var record = plannedRecords[id] else { return }
-        // Push when the device holds this route (valid scoped link), is capable,
-        // and the desired level diverges from the device's — optimistic, like the
-        // reconcile push; a failed send self-heals at the next reconcile.
-        let needsPush: Bool = {
-            guard supportsRetention, let scope = connectedScope, let link = record.deviceLink,
-                link.matches(scope), record.deviceRetention != retention else { return false }
-            return true
-        }()
-        // Fully idempotent postcondition: the record already holds the level and
-        // the device already matches — nothing to mutate, persist, or send.
-        guard record.retention != retention || needsPush else { return }
-        record.retention = retention
-        if needsPush, let link = record.deviceLink {
-            pushRetention(retention, to: link.objectID)
-            record.deviceRetention = retention  // optimistic; a later list confirms
-        }
-        plannedRecords[id] = record
-        library.savePlannedRoute(record)
-    }
-
     /// H3 write-through from Settings (B8) — the top bar shows the new device
     /// name at once; Settings owns the config write and the bond record.
     public func deviceRenamed(to name: String) {
@@ -1461,9 +1267,9 @@ public final class MainScreenModel {
     /// direction (no badge, the next push or V6's adoption re-links) — because
     /// a scope-less link is exactly the v1 aliasing this change retires.
     public func markRouteUploaded(
-        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, retention: Retention? = nil
+        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32
     ) {
-        markRouteUploaded(id, objectID: objectID, crc32: crc32, retention: retention, adopt: true)
+        markRouteUploaded(id, objectID: objectID, crc32: crc32, adopt: true)
     }
 
     /// The commit itself, with the adoption rule made optional: a **single**
@@ -1472,7 +1278,7 @@ public final class MainScreenModel {
     /// the trip object once, at the end, so a per-stage adoption would be a
     /// redundant (and racing) trip push.
     func markRouteUploaded(
-        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, retention: Retention?, adopt: Bool
+        _ id: RouteID, objectID: DeviceObjectID, crc32: UInt32, adopt: Bool
     ) {
         guard var record = plannedRecords[id] else { return }
         if let scope = connectedScope {
@@ -1483,21 +1289,7 @@ public final class MainScreenModel {
             // before the next `listRoutes()` catches up. A later catalog read
             // overwrites this with what the device actually reports.
             deviceRouteCRCs[objectID] = crc32
-            // Retention opt-in on upload (epic #638): an upload is an explicit
-            // "put this on the device now". The upload sheet's Auto-delete row
-            // (S7) passes the rider's chosen level; without one, a route with no
-            // desired level yet takes the app-local default, and an existing
-            // choice is kept. Push it so the fresh route gets its expiry without a
-            // second upload — the device stamps `last_used = now` at commit, so
-            // `expires_at = now + retention`. Capability-gated (skipped, but the
-            // desired level is still recorded for a later reconcile push against
-            // newer firmware).
-            let chosen = retention ?? record.retention ?? retentionDefaults.loadDefaultRetention()
-            record.retention = chosen
-            if supportsRetention {
-                pushRetention(chosen, to: objectID)
-                record.deviceRetention = chosen  // optimistic; a later list confirms
-            }
+
         } else {
             record.deviceLink = nil
             record.uploadedCRC32 = nil

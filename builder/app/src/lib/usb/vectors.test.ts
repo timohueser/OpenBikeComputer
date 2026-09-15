@@ -31,6 +31,7 @@ import {
     Detail,
     ERROR_CODE_NAMES,
     ErrorCode,
+    EntryFlags,
     Flags,
     ObjectState,
     Opcode,
@@ -392,6 +393,20 @@ describe("control vectors decode and re-encode byte for byte", () => {
         expect(decoded.response.opcode, "opcode").toBe(vector.opcode.value);
         expect(semanticResponse(decoded.response)).toEqual(vector.body);
         expectSameBytes(reencodeResponse(decoded.requestId, decoded.response), bytes, vector.name);
+    });
+
+    it("reads an accepted Assistant route in a catalog page", () => {
+        const row = MANIFEST.controls.find((r) => r.name === "list-response-two-entries");
+        if (!row) throw new Error("missing LIST vector");
+        const bytes = hexToBytes(fixture<ControlFixture>(row).frame);
+        new DataView(bytes.buffer, bytes.byteOffset).setUint16(16 + 24 + 30, 1 << 3, true);
+        const decoded = decodeResponse(bytes);
+        if (!decoded.ok || decoded.response.opcode !== Opcode.List) throw new Error("not a LIST page");
+        expect(decoded.response.body.entries).toHaveLength(2);
+        expect(decoded.response.body.entries[0]).toMatchObject({
+            objectId: 1n, revision: 3n, flags: EntryFlags.AssistantAccepted,
+        });
+        expect(decoded.response.body.entries[1]).toMatchObject({ objectId: 2n, flags: EntryFlags.Recording });
     });
 
     it("reads §3.11's LIST page as two entries in catalog order", () => {
