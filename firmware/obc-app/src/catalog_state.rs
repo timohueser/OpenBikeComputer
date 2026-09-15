@@ -1122,7 +1122,7 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
                 CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });

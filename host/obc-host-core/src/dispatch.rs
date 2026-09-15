@@ -897,10 +897,12 @@ impl HostLoop {
     ) -> NavigatorOutcome {
         let failed = |error| NavigatorOutcome::Failed { token, error };
         let Some(context) = app.assistant_review_context() else { return failed(NavigatorError::SourceChanged) };
-        if source.store != context.store.bytes()
-            || app
-                .current_review_origin()
-                .is_none_or(|origin| !context.accepts_origin(app.settings().bike_profile_idx, origin))
+        if source.store != context.store.bytes() {
+            return failed(NavigatorError::SourceChanged);
+        }
+        if app
+            .current_review_origin()
+            .is_none_or(|origin| !context.accepts_origin(app.settings().bike_profile_idx, origin))
         {
             return failed(NavigatorError::Movement);
         }

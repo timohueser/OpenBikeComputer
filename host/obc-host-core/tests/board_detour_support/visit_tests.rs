@@ -205,7 +205,7 @@ fn stored_visit_restores_without_planning_and_rejects_changed_identity() {
             derived: DerivedInputs::NONE,
             targets: DerivedTargets::NONE,
         });
-        assert!(plan.effects.navigator.is_none());
+        assert!(plan.effects.navigator.is_empty());
         let source = obc_formats::obcr::RouteSourceKey {
             store: h.h.store.store_id().0,
             object: id.0,

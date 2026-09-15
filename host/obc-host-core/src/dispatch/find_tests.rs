@@ -12,14 +12,25 @@ impl LocationSource for Position {
 }
 
 #[test]
-fn find_runs_sixteen_sequential_real_visits_then_keeps_paging_independent() {
-    use obc_app::navigator::ReviewStatus;
-    for cancel_at in [None, Some(ReviewStatus::Planning), Some(ReviewStatus::Preview)] {
-        run_find(cancel_at);
+fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
+    for scenario in
+        [Scenario::Browse, Scenario::CancelPlanning, Scenario::CancelPreview, Scenario::Accept, Scenario::Deleted]
+    {
+        run_find(scenario);
     }
 }
 
-fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scenario {
+    Browse,
+    CancelPlanning,
+    CancelPreview,
+    Accept,
+    AcceptEscaped,
+    Deleted,
+}
+
+fn run_find(scenario: Scenario) {
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
     points.extend((1..=8).map(|n| (500_000 + n * 10_000, 500_000)));
@@ -95,7 +106,16 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
     let mut failures = Vec::new();
     let mut previews = 0;
     let mut acquisitions = 0;
+    let mut restores = 0;
     let mut releases = 0;
+    let mut selected_preview = None;
+    let mut selected_shape = Vec::new();
+    let mut calculated = Vec::new();
+    let cancel_at = match scenario {
+        Scenario::CancelPlanning => Some(obc_app::navigator::ReviewStatus::Planning),
+        Scenario::CancelPreview => Some(obc_app::navigator::ReviewStatus::Preview),
+        _ => None,
+    };
     let mut phase = 0;
     for tick in 0..4000 {
         if tick == 4 {
@@ -114,9 +134,19 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
             tests::SUPPORT,
         );
         if let Some(effect) = plan.effects.navigator.take() {
-            if matches!(effect, NavigatorEffect::Acquire { .. }) {
+            if let NavigatorEffect::Acquire { work, .. } = effect {
                 assert!(host.plan_token().is_none());
-                acquisitions += 1;
+                if matches!(work, PlannerWork::RestoreReview(_)) {
+                    restores += 1;
+                } else {
+                    acquisitions += 1;
+                }
+            }
+            if phase > 0 {
+                assert!(
+                    !matches!(effect, NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. }),
+                    "selection and reopening must not run A* or publish another route"
+                );
             }
             if matches!(effect, NavigatorEffect::Release { .. }) {
                 releases += 1;
@@ -140,13 +170,21 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
         }
         if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview {
             previews += 1;
+            if phase == 0 {
+                let preview = app.assistant_preview().unwrap();
+                if !calculated.contains(&preview.source) {
+                    calculated.push(preview.source);
+                }
+            }
         }
         app.render_frame(Some(&mut scratch), &mut frame, &map.reader(), Some(&route), 240.0, 320.0, |c| {
             embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
                 embedded_graphics::pixelcolor::raw::RawU16::new(c),
             ))
         });
-        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) || phase < 12 {
+            assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        }
         if phase == 2 && cancel_at == Some(app.assistant_review_status()) {
             app.apply_gesture(Gesture::BackHold);
             assert!(matches!(app.top_screen(), obc_app::screen::Screen::Menu(_)));
@@ -154,16 +192,20 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
         }
         match phase {
             8 if app.assistant_planner_released()
-                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Idle =>
+                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Idle
+                && routes.ids() == [original] =>
             {
                 assert!(routes.read_checkpoint().unwrap().is_none());
                 assert!(app.assistant_preview_shape().is_empty());
-                assert!(releases >= acquisitions, "all planner owners receive release ACKs");
+                assert!(releases >= acquisitions + restores, "all planner owners receive release ACKs");
                 phase = 9;
                 break;
             }
-            0 if app.find_place_state() == State::Ready => {
+            0 if app.find_place_state() == State::Ready && routes.ids().len() == 5 => {
                 assert_eq!(acquisitions, 16, "eight eligible nearby plus eight distinct forward places");
+                assert_eq!(calculated.len(), 16);
+                assert_eq!(restores, 0);
+                assert_eq!(routes.unaccepted_routes().count_ones(), 4, "only the ranked choices remain after pruning");
                 assert!(releases >= acquisitions);
                 assert!(app.assistant_planner_released());
                 assert_eq!(app.find_place_result_count(), 4, "previews={previews}, failures={failures:?}");
@@ -177,15 +219,75 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
             1 if matches!(app.top_screen(), obc_app::screen::Screen::VisitReview(_)) => {
                 phase = 2;
             }
-            2 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview => {
-                assert_eq!(acquisitions, 17, "selection recomputes one exact review");
+            2 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
+                && app.assistant_planner_released() =>
+            {
+                assert_eq!(acquisitions, 16);
+                assert_eq!(restores, 1);
+                let preview = app.assistant_preview().unwrap();
+                assert!(calculated.contains(&preview.source), "selection reuses a measured candidate");
                 assert!(!app.assistant_preview_shape().is_empty(), "published shape is token-bound and readable");
                 assert!(routes.read_checkpoint().unwrap().is_none());
+                selected_preview = Some(preview);
+                selected_shape = app.assistant_preview_shape().to_vec();
+                if matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) {
+                    app.apply_gesture(Gesture::Press);
+                    if scenario == Scenario::AcceptEscaped {
+                        app.apply_gesture(Gesture::BackHold);
+                    }
+                    phase = 12;
+                } else {
+                    app.apply_gesture(Gesture::Back);
+                    phase = 10;
+                }
+            }
+            10 if app.assistant_planner_released() => {
+                assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Idle);
+                assert!(app.assistant_preview_shape().is_empty());
+                let preview = selected_preview.unwrap();
+                assert_eq!(routes.fingerprint(preview.source.object), Some(preview.source), "Back retains exact bytes");
+                if scenario == Scenario::Deleted {
+                    routes
+                        .retract_nav_route(crate::RoutePublication {
+                            store: routes.store_scope().map(|scope| scope.store),
+                            id: preview.source.object,
+                            revision: preview.source.revision,
+                        })
+                        .unwrap();
+                    feed_routes(&mut app, &routes, &mut NoTrace);
+                }
+                app.apply_gesture(Gesture::Press);
+                phase = 11;
+            }
+            11 if scenario == Scenario::Deleted
+                && matches!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Failed(_)) =>
+            {
+                assert_eq!(acquisitions, 16);
+                assert!(app.assistant_preview().is_none(), "a removed source cannot be restored");
+                app.apply_gesture(Gesture::BackHold);
+                phase = 8;
+            }
+            11 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview => {
+                assert_eq!(acquisitions, 16);
+                assert_eq!(restores, 2);
+                assert_eq!(app.assistant_preview(), selected_preview);
+                assert_eq!(app.assistant_preview_shape(), selected_shape);
                 app.stamp_clock_ble(1_727_007_200, 0);
                 app.apply_gesture(Gesture::Press);
                 assert!(routes.read_checkpoint().unwrap().is_none(), "a place that closed cannot be accepted");
                 assert_ne!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Saving);
                 phase = 7;
+            }
+            12 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
+                && routes.ids().len() == 2 =>
+            {
+                let preview = selected_preview.unwrap();
+                assert_eq!(routes.fingerprint(preview.source.object), Some(preview.source));
+                assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, preview.source);
+                assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
+                assert_eq!(routes.unaccepted_routes(), 0);
+                phase = 13;
+                break;
             }
             7 => {
                 assert_ne!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Preview);
@@ -210,12 +312,26 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
             5 => {
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
-                assert_eq!(acquisitions, 17, "paging does not plan more candidates");
+                assert_eq!(acquisitions, 16, "paging does not plan more candidates");
                 phase = 6;
-                break;
             }
+            6 if routes.ids() == [original] => break,
             _ => {}
         }
     }
-    assert_eq!(phase, if cancel_at.is_some() { 9 } else { 6 }, "all requested phases complete");
+    let expected = match scenario {
+        Scenario::Accept | Scenario::AcceptEscaped => 13,
+        Scenario::Browse => 6,
+        _ => 9,
+    };
+    assert_eq!(
+        phase,
+        expected,
+        "{scenario:?}: all requested phases complete; failures={failures:?}; review={:?}; routes={:?}",
+        app.assistant_review_status(),
+        routes.ids()
+    );
+    if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) {
+        assert_eq!(routes.ids(), &[original], "{scenario:?}: no retained route leaks after leaving Find");
+    }
 }
