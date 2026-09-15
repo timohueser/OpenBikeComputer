@@ -397,6 +397,7 @@ mod tests {
                 ("WhatsNext", RenderKeyKind::UpAhead),
                 ("FindPlace", RenderKeyKind::Map),
                 ("VisitReview", RenderKeyKind::Map),
+                ("Easier", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),

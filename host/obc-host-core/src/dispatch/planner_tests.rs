@@ -5,6 +5,9 @@ use obc_app::device_core::TokenSource;
 use obc_storage::flat::{DisplayName, ObjectId, ObjectKind, Revision, Store};
 
 pub(super) fn map_bytes() -> Vec<u8> {
+    map_bytes_with(&mut obc_route::NullElevation)
+}
+fn map_bytes_with(elevation: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
     use obc_pack::nav::{Edge, NavGraph, Node};
     let coords = [(500_000, 500_000), (520_000, 500_000), (510_000, 510_000)];
     let nodes = coords.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect();
@@ -23,17 +26,7 @@ pub(super) fn map_bytes() -> Vec<u8> {
         [obc_pack::LodLayer { max_mpp: None, chunk_size: 2048, root: obc_pack::Node::Leaf { bbox, features: vec![] } }];
     let profiles =
         [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-    obc_pack::serialize_lods(
-        &lods,
-        &[],
-        0,
-        bbox,
-        &[],
-        &NavGraph { nodes, edges },
-        &profiles,
-        &mut obc_route::NullElevation,
-    )
-    .0
+    obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &NavGraph { nodes, edges }, &profiles, elevation).0
 }
 
 struct Planner {
@@ -377,4 +370,139 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     let info = obc_route::RouteObjectInfo::read(&source).unwrap();
     assert!(info.visit.is_none());
     assert!(stats.total_distance_m < route.total_distance_m);
+}
+
+#[test]
+fn easier_production_batch_is_bounded_deduplicates_and_accepts_only_on_explicit_review() {
+    use obc_app::device_core::*;
+    use obc_app::navigator::ReviewStatus;
+    struct Flat;
+    impl obc_route::ElevationSource for Flat {
+        fn sample(&mut self, _: i32, _: i32) -> Option<i16> {
+            Some(10)
+        }
+    }
+    struct Fix;
+    impl obc_ports::LocationSource for Fix {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            Some(obc_ports::Fix::at(500_000, 500_000))
+        }
+    }
+    let mut p = Planner::new();
+    p.map = FlatMap::from_bytes_in(&p.card, &map_bytes_with(&mut Flat)).unwrap();
+    let mut original = crate::VecSink::default();
+    obc_route::gpx_to_obcr(&obc_formats::io::SliceSource(b"<gpx><trk><trkseg><trkpt lon=\"0.5\" lat=\"0.5\"><ele>10</ele></trkpt><trkpt lon=\"0.51\" lat=\"0.51\"><ele>10</ele></trkpt><trkpt lon=\"0.52\" lat=\"0.5\"><ele>10</ele></trkpt></trkseg></trk></gpx>"),"Original",&mut original).unwrap();
+    let original_id = p.routes.import(original.bytes()).unwrap();
+    feed_routes(&mut p.app, &p.routes, &mut NoTrace);
+    p.app.activate_route(0);
+    p.routes.sync_active(Some(0));
+    let held = p.routes.pin_active().unwrap();
+    let index = obc_route::RouteIndex::read(&held).unwrap();
+    let original = obc_route::RouteReader::new(&index, &held);
+    let source = p.map.source();
+    let key = obc_formats::obcr::RouteSourceKey {
+        store: source.store_id().0,
+        object: source.id().0,
+        revision: source.revision().0,
+    };
+    let mut session = ActiveRouteSession::new();
+    let mut rides = crate::MemRideStore::new(vec![]);
+    let mut tracks = crate::MemTrackStore::new();
+    let support = PlatformSupport {
+        detour: true,
+        settings_persistence: false,
+        dfu: false,
+        bonding: false,
+        storage_space_report: false,
+    };
+    let mut acquisitions = 0;
+    let mut opened = false;
+    let mut reviewed = false;
+    let mut pressed = false;
+    for now in 1..10_000 {
+        let mut plan = p.host.pass(
+            &mut p.app,
+            PassClock { ride: obc_ports::RideClock(now), ui: obc_ports::InputClock(now) },
+            &[],
+            obc_ports::Sensors::new(&mut Fix),
+            Some(&original),
+            support,
+        );
+        if let Some(effect) = plan.effects.navigator.take() {
+            if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
+                acquisitions += 1;
+            }
+            plan.effects.navigator.try_put(effect).unwrap();
+        }
+        p.host.execute(
+            &mut p.app,
+            &mut plan,
+            &mut session,
+            &mut p.routes,
+            &mut rides,
+            &mut tracks,
+            &mut (),
+            &p.map,
+            &mut Flat,
+            &mut (),
+        );
+        if !opened && now > 2 {
+            p.app.open_easier_routes(key).unwrap();
+            opened = true;
+        }
+        if acquisitions == 8 && p.app.assistant_review_status() == ReviewStatus::Preview {
+            assert_eq!(p.app.route_ids()[p.app.active_route_index().unwrap()], original_id);
+            assert!(!p.app.assistant_preview_shape().is_empty());
+            if !reviewed {
+                p.app.apply_gesture(obc_app::Gesture::Press);
+                p.app.apply_gesture(obc_app::Gesture::Back); // Back retains the frozen selected candidate.
+                p.app.apply_gesture(obc_app::Gesture::Press);
+                reviewed = true;
+            } else if !pressed {
+                p.app.apply_gesture(obc_app::Gesture::Press);
+                pressed = true;
+            }
+        }
+        if pressed && p.app.assistant_review_status() == ReviewStatus::Accepted {
+            let checkpoint = p.routes.read_checkpoint().unwrap().unwrap();
+            assert!(!checkpoint.unresolved_avoidance);
+            assert_ne!(checkpoint.route.object, original_id);
+            assert!(checkpoint.route.length > 0);
+            assert_eq!(acquisitions, 8); // Seven complete probes and one exact selected reconstruction.
+            let source = p.routes.source(checkpoint.route.object).unwrap();
+            let accepted = obc_route::RouteIndex::read(&source).unwrap();
+            assert!(accepted.total_distance_m + 500 <= original.total_distance_m);
+            let route = obc_route::RouteReader::new(&accepted, &source);
+            for step in 1..32 {
+                let mut plan = p.host.pass(
+                    &mut p.app,
+                    PassClock { ride: obc_ports::RideClock(now + step), ui: obc_ports::InputClock(now + step) },
+                    &[],
+                    obc_ports::Sensors::new(&mut Fix),
+                    Some(&route),
+                    support,
+                );
+                p.host.execute(
+                    &mut p.app,
+                    &mut plan,
+                    &mut session,
+                    &mut p.routes,
+                    &mut rides,
+                    &mut tracks,
+                    &mut (),
+                    &p.map,
+                    &mut Flat,
+                    &mut (),
+                );
+                if p.app.assistant_planner_released() {
+                    break;
+                }
+            }
+            assert_eq!(p.app.open_easier_routes(key), Ok(()), "accepted route permits a later refresh after release");
+            p.app.apply_gesture(obc_app::Gesture::BackHold);
+            assert!(p.app.assistant_review_status() != ReviewStatus::Planning);
+            return;
+        }
+    }
+    panic!("batch did not finish: acquisitions={acquisitions}, status={:?}", p.app.assistant_review_status());
 }

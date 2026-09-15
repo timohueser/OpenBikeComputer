@@ -36,6 +36,10 @@ impl NavPlan {
         }
     }
 
+    pub fn set_objective(&mut self, objective: obc_route::nav::Objective) {
+        self.planner.set_objective(objective);
+    }
+
     pub fn set_assistant_candidate(&mut self) {
         self.planner.set_assistant_candidate();
     }
