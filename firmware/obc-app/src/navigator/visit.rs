@@ -570,6 +570,19 @@ mod tests {
         assert_eq!(app.ui.find.review, ReviewStatus::Accepted);
         assert_eq!(app.ui.find.review_costs.unwrap().arrival_m, 111);
         assert_eq!(app.derived_needs().nav_preview.unwrap().route, 8);
+        // A new question above the read-only view owns preparation and geometry.
+        assert!(app.apply_chord(Chord::Quick));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.prepare_find(None, Some(&route));
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        assert_ne!(app.find_place_state(), crate::find_place::State::Start);
+        assert!(app.derived_needs().nav_preview.is_none());
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::VisitReview(s) if s.accepted));
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
         assert_eq!(app.assistant_checkpoint(), checkpoint);
@@ -586,6 +599,12 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
         app.apply_gesture(Gesture::Back);
         assert_eq!(app.assistant_checkpoint(), checkpoint);
+        app.navigator.following.active_route = Some(0);
+        assert!(app.current_visit_index().is_some());
+        app.on_route_uploaded(8, true, None);
+        assert!(app.current_visit_index().is_none());
+        assert_eq!(app.assistant_checkpoint(), checkpoint);
+        assert!(app.navigator.review.change.is_none());
     }
 
     #[test]

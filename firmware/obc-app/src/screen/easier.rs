@@ -96,8 +96,8 @@ impl EasierScreen {
                 cv.text(name, Point::new(12, y), Font::Body, TextAlign::Left, INK);
                 let known = i != 1 || self.current.elevation_complete;
                 let surface = i != 2 || (self.current.surface_attributed && self.current.unknown_m == 0);
-                let a = distance(*old, i == 1, rx.settings.units);
-                let b = distance(*new, i == 1, rx.settings.units);
+                let a = table_distance(*old, i == 1, rx.settings.units);
+                let b = table_distance(*new, i == 1, rx.settings.units);
                 cv.text(
                     if known && surface { &a } else { "--" },
                     Point::new(146, y),
@@ -221,6 +221,31 @@ fn distance(value: u32, ascent: bool, units: crate::settings::Units) -> heapless
     text
 }
 
+// The comparison columns each have room for six Body characters. The saving above the
+// table retains the ordinary precision when large totals need a coarser unit here.
+fn table_distance(value: u32, ascent: bool, units: crate::settings::Units) -> heapless::String<16> {
+    use core::fmt::Write;
+    let mut text = distance(value, ascent, units);
+    if text.len() > 6 {
+        text.clear();
+        let (quantity, unit) = if ascent && units.is_imperial() {
+            (((u64::from(value) * 328_084 + 50_000_000) / 100_000_000), "kft")
+        } else if ascent {
+            ((u64::from(value) + 500) / 1000, "km")
+        } else if units.is_imperial() {
+            ((u64::from(value) + 804_672) / 1_609_344, "kmi")
+        } else {
+            ((u64::from(value) + 500_000) / 1_000_000, "Mm")
+        };
+        let _ = write!(text, "{quantity}{unit}");
+        if text.len() > 6 {
+            text.clear();
+            let _ = text.push_str("--");
+        }
+    }
+    text
+}
+
 fn benefit(
     cv: &mut impl Surface,
     current: Costs,
@@ -281,6 +306,19 @@ fn benefit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparison_values_fit_both_columns_with_normal_units() {
+        use crate::settings::Units;
+        for units in [Units::Metric, Units::Imperial] {
+            for value in [0, 999, 1608, 3100, 3200, 10_000, 100_000, u32::MAX] {
+                for ascent in [false, true] {
+                    assert!(table_distance(value, ascent, units).len() <= 6);
+                }
+            }
+        }
+        assert_eq!(table_distance(3200, true, Units::Imperial).as_str(), "10kft");
+        assert_eq!(distance(100, true, Units::Imperial).as_str(), "328ft");
+    }
     #[test]
     fn retained_review_costs_do_not_make_stale_or_unresolved_actions_available() {
         let mut state = State::new();

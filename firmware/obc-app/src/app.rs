@@ -1819,6 +1819,7 @@ impl App {
         let active_id = self.active_route_index().and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if replaced {
+            self.invalidate_current_visit(id);
             // New bytes under a durable identity: every derived key moves, so a preview or profile
             // produced from the old geometry stops matching. Identity alone cannot catch this one —
             // the id is exactly what did *not* change (#1437).
@@ -2988,14 +2989,13 @@ impl App {
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
 
-        let assistant_preview =
-            self.ui.stack.iter().any(|s| matches!(s, Screen::Easier(_) | Screen::VisitReview(_))).then(|| {
-                if self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(s) if s.accepted)) {
-                    self.current_visit_index().and_then(|i| self.route_ids().get(i).copied())
-                } else {
-                    self.assistant_preview().map(|p| p.source.object)
-                }
-            });
+        let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
+            if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
+                self.current_visit_index().and_then(|i| self.route_ids().get(i).copied())
+            } else {
+                self.assistant_preview().map(|p| p.source.object)
+            }
+        });
         let App {
             state,
             activity,
@@ -3312,10 +3312,10 @@ impl App {
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level — is an overview up? — is the UI's; the data half is
         // the key's.
-        let overview_open = self.ui.stack.iter().any(|s| {
-            matches!(s, Screen::RouteOverview(_))
-                || matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some())
-        });
+        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
+            || self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
+                |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
+            );
         let nav_preview = overview_open
             .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
             .flatten()
