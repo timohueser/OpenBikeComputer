@@ -31,14 +31,16 @@ cargo build --locked --release -p obc-bake -p obc-dem -p obcm-assemble
 python3 fixtures/build-assistant-package.py west-cork
 ```
 
-The recipe verifies the four input packages before work. It runs the offline landmark compiler,
-`obc-bake` with the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
+The recipe verifies the selected region's input packages before work. Cork runs the offline
+landmark compiler; Switzerland loads its compiled input package. Both then run `obc-bake` with
+the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
 the normal catalog selection, verifies every cell hash, and explicitly accepts partial cells at
 the authored crop boundary. It does not accept missing cells or skip the final map verification.
 The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
 
-The default compiler input has four review sites. `--landmarks PATH/content.json` can use an
-existing production compiler output with its own source coverage declaration. It must include
+The Cork compiler input has four review sites. The Swiss recipe uses verified
+`assistant-switzerland-content`: 1,495 texts, 1,119 RGB222 photos, and their source notices.
+`--landmarks PATH/content.json` can use another production compiler output with its own source coverage declaration. It must include
 its referenced photos. This does not turn the regional crop into full-country map coverage.
 No country raw archive is needed or published by the scenario.
 
@@ -61,8 +63,27 @@ The published Cork map is 4,746,240 bytes, SHA-256
 compiler coverage, and normal assembly counts. Source commit attribution uses retained build times
 and Git reflog; it is not an embedded binary build stamp. The new metadata adapter reproduced the
 completed map byte for byte from the retained tree and native terrain; the bake was not repeated.
-Monaco already uses its pinned 2026-09-13 v16 output. The Swiss regional v14 package is unchanged
-until its actual v16 crop is complete and published.
+Monaco also uses its pinned 2026-09-13 v16 output. The published Swiss regional map is
+44,643,264 bytes, SHA-256 `ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba`.
+[Its retained record](meiringen-v16.json) pins the full source PBF, polygon, content, producer
+executables, 18 selected cells, four native terrain cells and normal assembly result. The map
+contains 65 landmark records and 2,632 services. The completed tree was assembled without a rebake.
+
+## Swiss compiled input
+
+`assistant-switzerland-content` is a 10,554,318-byte immutable archive. Its SHA-256 is
+`cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1`.
+[The source record](switzerland-content.json) pins the compiled manifest, input tree, compiler
+policy, counts, and coverage. The 1,120 content members are `content.json` and 1,119 RGB222 photos, plus the package manifest.
+Each published article and photo keeps its original source and license notice. Raw requests,
+article captures, and full-resolution photos remain in the local acquisition cache.
+
+The Swiss map recipe gives the full pinned national PBF to the shipping baker. It selects cells
+that intersect longitude 8.1–8.4 and latitude 46.5–46.8. It does not pre-extract the PBF: a pre-extract
+would change data in the boundary cells. These map-selection bounds are separate from the wider
+acquisition/replay bounds in `regions.geojson`. The catalog region ID is `europe/switzerland`, with
+a validation-crop name; the assembled simulator package remains `sim-assistant-meiringen`.
+This regional map is not a full-country map. The completed country source census is separate.
 
 ## Source boundaries and provenance
 
@@ -117,10 +138,10 @@ those timestamps. The other traces use distance-derived sampling times to contro
 
 These are motion inputs for interactive visits, not preselected navigation plans. The rider
 must still select a place and accept a computed route. The scenario clock is an explicit UTC
-validation clock, separate from GPX timestamps. The ready Cork and Monaco scenarios use `--clock`
-with `--utc-offset-min` to establish trusted UTC and the declared +01:00 or +02:00 local offset in both GUI and headless mode. The GUI disables
-ambient GPS time for an explicit initial clock unless the user enables it. The Swiss entries keep
-their initial arguments until their map replacement is ready. No host timezone is inferred.
+validation clock, separate from GPX timestamps. All five scenarios use `--clock` with
+`--utc-offset-min` to establish trusted UTC and the declared local offset in GUI and headless mode.
+The GUI disables ambient GPS time for an explicit initial clock unless the user enables it.
+No host timezone is inferred.
 Dunlough paths have `sac_scale=mountain_hiking` and mud/ground surfaces. They do not explicitly
 set `bicycle=no`. The planner must use actual access and profile suitability; unknown access
 must remain unknown. Hours are absent on the selected landmark objects. No data was edited to
@@ -137,8 +158,8 @@ tools/obc sim assistant-monaco-dense
 
 These commands use ordinary map loading and authored GPS replay. They do not select a place,
 accept a plan, inject arrival, or enable a study model. After the packages and Cargo dependencies
-are cached, they require no live source API. The Cork fixture was also synced, verified and
-resolved with network requests disabled after a fresh-cache download.
+are cached, they require no live source API. The Cork and Swiss fixtures were also synced, verified and resolved with network requests disabled
+after fresh-cache downloads.
 
 Dunlough Castle is Wikidata `Q5315471`, linked by OSM way `300189816`. It has real article and photo
 Sources. Its captured way has no opening-hours or bicycle/access tags. The walking approach has
@@ -158,8 +179,7 @@ The second command reopens saved routes and recordings without importing the fix
 See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording recovery.
 The card is user state; fixture sync does not replace it. Create a new card to test a new package.
 
-The Swiss commands below remain registered with their initial v14 regional package. They are
-not ready for the v16 application until the ongoing crop build is published:
+The three Swiss scenarios use the same v16 crop and the +02:00 local clock offset:
 
 ```sh
 tools/obc sim assistant-out-and-back
