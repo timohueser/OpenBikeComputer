@@ -274,7 +274,9 @@ impl crate::App {
     pub(crate) fn activate_place_detail(&mut self) -> bool {
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
         let poi = detail.poi().clone();
-        if !self.ui.poi_scratch.detail_valid
+        if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
+            || detail.hours_pending(&self.ui.poi_scratch)
+            || !self.ui.poi_scratch.detail_valid
             || self
                 .ui
                 .poi_scratch
@@ -644,6 +646,83 @@ mod tests {
         assert!(!app.ui.poi_scratch.detail_valid, "a successful hours read cannot restore old source identity");
         app.apply_gesture(crate::Gesture::Press);
         assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
+
+        // A retained detail can sit below the menu while another detail uses the shared cache.
+        app.apply_gesture(crate::Gesture::BackHold);
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(page[0].poi.clone()))).is_ok());
+        app.render_frame(None, &mut frame, &reader, None, 240.0, 320.0, |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+        });
+        assert!(app.ui.poi_scratch.detail_valid);
+        app.apply_gesture(crate::Gesture::Back);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(
+            matches!(app.top_screen(), Screen::PoiDetail(detail) if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged))
+        );
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
+    }
+
+    #[test]
+    fn retained_detail_reloads_its_own_schedule_after_another_place() {
+        let mut open = [0; 29];
+        open[2] = 96;
+        let bytes = obcm_testkit::build_poi_map_with_hours(
+            (0, 0, 100_000, 100_000),
+            512,
+            &[(
+                1,
+                (0..2)
+                    .map(|i| obcm_testkit::PoiSpec {
+                        lat: 50_000,
+                        lon: 50_000 + i * 100,
+                        subtype: 1,
+                        name: format!("Water {i}"),
+                        hours_ref: i as u16,
+                    })
+                    .collect(),
+            )],
+            &[[0; 29], open],
+        );
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut page = heapless::Vec::<_, 8>::new();
+        let mut query = PlaceQuery::new(
+            0,
+            PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
+            None,
+        );
+        while query.step(&reader, None, 0, &mut page) == QueryProgress::Pending {}
+        assert_eq!(page.len(), 2);
+        let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+        app.bind_place_map(Some(RouteSourceKey { store: [1; 16], object: 1, revision: 1 }));
+        let mut frame = crate::harness::support::Buf::new(240, 320);
+        let draw = |app: &mut crate::App, frame: &mut crate::harness::support::Buf| {
+            app.render_frame(None, frame, &reader, None, 240.0, 320.0, |color| {
+                let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+                embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+            });
+        };
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(page[0].poi.clone()))).is_ok());
+        draw(&mut app, &mut frame);
+        assert_eq!(app.ui.poi_scratch.detail_schedule.unwrap().status(Some((0, 30))), OpeningStatus::Closed);
+        app.apply_gesture(crate::Gesture::BackHold);
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(page[1].poi.clone()))).is_ok());
+        draw(&mut app, &mut frame);
+        assert_eq!(app.ui.poi_scratch.detail_schedule.unwrap().status(Some((0, 30))), OpeningStatus::Open);
+        app.apply_gesture(crate::Gesture::Back);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(app.base_needs_reader());
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(detail) if detail.visit_error.is_none()));
+        draw(&mut app, &mut frame);
+        assert_eq!(app.ui.poi_scratch.detail_source, page[0].poi.metadata.source.0);
+        assert_eq!(app.ui.poi_scratch.detail_schedule.unwrap().status(Some((0, 30))), OpeningStatus::Closed);
     }
 
     #[test]
