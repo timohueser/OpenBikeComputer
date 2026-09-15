@@ -330,7 +330,7 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
 }
 
 #[test]
-fn rejected_forward_tail_rebuilds_proven_out_and_back() {
+fn near_place_anchor_retains_prefix_and_uses_only_two_legs() {
     let gpx=b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.5001\" lat=\"0.510\"/><trkpt lon=\"0.530\" lat=\"0.510\"/></trkseg></trk></gpx>";
     let mut sink = obc_host_core::VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(gpx), "Original", &mut sink).unwrap();
@@ -341,8 +341,11 @@ fn rejected_forward_tail_rebuilds_proven_out_and_back() {
         h.h.store
             .with_source(ObjectId(preview.source.object), None, |s| obc_route::RouteObjectInfo::read(s).unwrap())
             .unwrap();
-    assert_eq!(info.visit.unwrap().original_anchors_m, [0; 3]);
-    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 6);
+    let anchors = info.visit.unwrap().original_anchors_m;
+    assert_eq!(anchors[0], 0);
+    assert!((1110..=1115).contains(&anchors[1]));
+    assert_eq!(anchors[1], anchors[2]);
+    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count(), 2);
     h.h.app.cancel_assistant();
     h.settle(ReviewStatus::Idle);
     h.h.assert_clean();

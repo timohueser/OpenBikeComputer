@@ -129,7 +129,7 @@ impl VisitCosts {
     }
 }
 
-/// Choose the closest remaining route occurrence; near-equal crossings keep the earlier pass.
+/// Choose the closest remaining route occurrence in whole metres; ties keep the earlier pass.
 /// The prefix and tail stay on the original route, so no waypoint or loop is skipped.
 pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32)) -> Result<u32, Error> {
     if progress_m > original.total_distance_m
@@ -138,9 +138,17 @@ pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32))
     {
         return Err(Error::BadOffset);
     }
+    let mut waypoints = WaypointCursor::new(original.source())?;
+    let mut previous = 0;
+    while let Some(waypoint) = waypoints.next(original.source())? {
+        if waypoint.dist_along_m < previous || waypoint.dist_along_m > original.total_distance_m {
+            return Err(Error::BadOffset);
+        }
+        previous = waypoint.dist_along_m;
+    }
     let end = progress_m.saturating_add(VISIT_FORWARD_M).min(original.total_distance_m);
     let origin = original.position_at(progress_m).ok_or(Error::BadOffset)?;
-    let mut best = (obc_map_scene::ground_dist_m((origin.lon, origin.lat), target), progress_m);
+    let mut best = ((obc_map_scene::ground_dist_m((origin.lon, origin.lat), target) + 0.5) as u32, progress_m);
     let mut points = Vec::<_, MAX_POINTS_PER_CHUNK>::new();
     let cl = obc_map_scene::cos_lat(target.1);
     for (k, meta) in original.chunks().iter().enumerate() {
@@ -161,8 +169,8 @@ pub fn visit_anchor(original: &RouteReader, progress_m: u32, target: (i32, i32))
                 let at = (along + t as f64 * length).clamp(progress_m as f64, end as f64);
                 let t = ((at - along) / length).clamp(0.0, 1.0);
                 let point = (a.0 + ((b.0 - a.0) as f64 * t) as i32, a.1 + ((b.1 - a.1) as f64 * t) as i32);
-                let distance = obc_map_scene::ground_dist_m(point, target);
-                if distance + 2.0 < best.0 {
+                let distance = (obc_map_scene::ground_dist_m(point, target) + 0.5) as u32;
+                if distance < best.0 {
                     best = (distance, at as u32);
                 }
             }

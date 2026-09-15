@@ -301,7 +301,7 @@ impl NavigatorMachine {
             self.review.status = ReviewStatus::Failed(NavigatorError::Movement);
             return;
         }
-        let (progress_m, upper_m) = if context.purpose == ReviewPurpose::Visit {
+        let (progress_m, upper_m, phase) = if context.purpose == ReviewPurpose::Visit {
             let Some([entry, stop, rejoin]) = preview.visit_anchors_m else {
                 self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
                 return;
@@ -310,9 +310,13 @@ impl NavigatorMachine {
                 self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
                 return;
             }
-            (entry, stop)
+            if entry == stop {
+                (entry, if stop == rejoin { preview.distance_m } else { rejoin }, JourneyPhase::AtStop)
+            } else {
+                (entry, stop, JourneyPhase::Outbound)
+            }
         } else {
-            (0, preview.distance_m)
+            (0, preview.distance_m, JourneyPhase::Following)
         };
         // The measured candidate axis is authoritative for its accepted phase.
         let next = NavigatorCheckpoint {
@@ -322,11 +326,7 @@ impl NavigatorMachine {
             occurrence: 0,
             lon: context.origin.0,
             lat: context.origin.1,
-            phase: if context.purpose == ReviewPurpose::Visit {
-                JourneyPhase::Outbound
-            } else {
-                JourneyPhase::Following
-            },
+            phase,
             unresolved_avoidance: context.unresolved_avoidance,
             lower_m: progress_m,
             upper_m,

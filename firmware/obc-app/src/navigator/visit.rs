@@ -89,7 +89,7 @@ impl NavigatorMachine {
             self.visit.arrival = false;
             return true;
         }
-        if c.phase == JourneyPhase::AtStop && previous == Some(JourneyPhase::Outbound) {
+        if c.phase == JourneyPhase::AtStop && previous == Some(JourneyPhase::Outbound) && self.visit.departed {
             self.visit.arrival = true;
         }
         if c.phase != JourneyPhase::Outbound {
@@ -127,7 +127,7 @@ impl NavigatorMachine {
         }
         let at_stop = obc_map_scene::ground_dist_m(fix, (descriptor.target_lon, descriptor.target_lat));
         let departure_m = departure_m(entry, stop);
-        let leave_m = LEAVE_STOP_M.min(rejoin.saturating_sub(stop) / 2).max(1);
+        let leave_m = if stop == rejoin { LEAVE_STOP_M } else { LEAVE_STOP_M.min((rejoin - stop) / 2).max(1) };
         let return_arrival_m = ARRIVAL_M.min(rejoin.saturating_sub(stop) / 2).max(1);
         if current.phase == JourneyPhase::Outbound {
             let first = *self.visit.departure_fix.get_or_insert(fix);
@@ -154,11 +154,18 @@ impl NavigatorMachine {
             {
                 next.phase = JourneyPhase::AtStop;
                 next.lower_m = stop;
-                next.upper_m = rejoin;
+                next.upper_m = if stop == rejoin { route.total_distance_m } else { rejoin };
                 next.progress_m = stop;
             }
             JourneyPhase::AtStop if progress >= stop.saturating_add(leave_m) && at_stop >= leave_m as f32 => {
-                next.phase = JourneyPhase::Returning;
+                if stop == rejoin {
+                    next.phase = JourneyPhase::Following;
+                    next.original = None;
+                    next.lower_m = rejoin;
+                    next.upper_m = route.total_distance_m;
+                } else {
+                    next.phase = JourneyPhase::Returning;
+                }
                 next.progress_m = progress;
             }
             JourneyPhase::Returning if progress >= rejoin.saturating_sub(return_arrival_m) => {
@@ -1035,6 +1042,73 @@ mod tests {
         assert!(!app.active_visit() && !app.visit_arrival_pending());
         assert!(app.assistant_checkpoint().unwrap().original.is_none());
         assert!(app.navigator.review.change.is_none());
+    }
+
+    #[test]
+    fn on_route_stops_resume_the_tail_after_stationary_dwell() {
+        use crate::navigator::{ReviewContext, ReviewOrigin, ReviewedRoute, REVIEW_FACTS_POLICY};
+        for stop in [0, 111] {
+            let bytes = visit_route(
+                b"<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"0.002\"/></trkseg></trk></gpx>",
+                [0, stop, stop],
+                if stop == 0 { 0 } else { 1000 },
+            );
+            let source = SliceSource(&bytes.0);
+            let index = obc_route::RouteIndex::read(&source).unwrap();
+            let route = RouteReader::new(&index, &source);
+            let mut app = app();
+            app.set_routes_with_ids(&[route.summary(), route.summary()], &[8, 7]);
+            let checkpoint = app.assistant_checkpoint().unwrap();
+            app.navigator.review.context = Some(ReviewContext {
+                purpose: ReviewPurpose::Visit,
+                map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
+                store: crate::device_core::StoreIdentity::from_bytes([1; 16]),
+                original: checkpoint.original,
+                origin: (0, 0),
+                progress_m: 0,
+                occurrence: 0,
+                required_anchors_m: [0; 3],
+                profile: 0,
+                facts_policy: REVIEW_FACTS_POLICY,
+                unresolved_avoidance: false,
+            });
+            app.navigator.review.preview = Some(ReviewedRoute {
+                source: checkpoint.route,
+                distance_m: route.total_distance_m,
+                ascent_m: 0,
+                descent_m: 0,
+                visit_anchors_m: Some([0, stop, stop]),
+                visit_costs: None,
+            });
+            app.navigator.review.status = ReviewStatus::Preview;
+            app.navigator.accept_review(
+                ReviewOrigin { fix: (0, 0), progress_m: 0, occurrence: 0, lateral_m: 0, trustworthy: true },
+                0,
+            );
+            let mut tokens = TokenSource::new();
+            ack(&mut app, &mut tokens, &route);
+            assert!(!app.visit_arrival_pending());
+            if stop != 0 {
+                for lat in [0, 300, 600, 900, 1000] {
+                    fix(&mut app, &route, 0, lat);
+                }
+                ack(&mut app, &mut tokens, &route);
+                assert!(app.visit_arrival_pending());
+            }
+            assert_eq!(app.assistant_checkpoint().unwrap().phase, JourneyPhase::AtStop);
+            assert_eq!(app.assistant_checkpoint().unwrap().upper_m, route.total_distance_m);
+            let lat = if stop == 0 { 0 } else { 1000 };
+            for _ in 0..3 {
+                fix(&mut app, &route, 0, lat);
+            }
+            assert!(app.navigator.review.change.is_none());
+            fix(&mut app, &route, 0, lat + 300);
+            assert_eq!(app.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::Following);
+            ack(&mut app, &mut tokens, &route);
+            assert!(!app.active_visit());
+            assert!(app.assistant_checkpoint().unwrap().original.is_none());
+            assert!(!app.visit_arrival_pending());
+        }
     }
 
     #[test]

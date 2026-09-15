@@ -1,6 +1,10 @@
 //! Actual board detour executor over real card bytes, with deterministic ticket delivery.
 extern crate self as defmt;
 #[macro_export]
+macro_rules! info {
+    ($format:literal $(, $arg:expr)* $(,)?) => {{ let _ = ($($arg,)*); }};
+}
+#[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {{
         $crate::unexpected_compensation_refusal()
