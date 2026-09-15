@@ -187,3 +187,17 @@ verified cache; `cargo fmt --all`; `obc suites check`. Mainline explicit route
 cleanup was also reconciled, and the whole shared-vector suite passes with its
 new route-list layout and current v4 payload checksums. No public conceptual
 page changes. No image build, UI sweep, or hardware test was added.
+
+
+## Current CI resource measurement
+
+CI run `34941623849`, job `104291474354`, measured head `b0ee7337`.
+App is 48,432 bytes. The exact allocation record is updated to that measured
+value; no resource limit changes. Linked resident is 303,760 bytes (297,976 B
+BSS + 5,784 B data), with 132,096 B uninitialized section and 131,072 B arena.
+The largest guarded poll frame is 9,784 B, residual main stack 55,664 B, largest
+task body 4,048 B, and boot-chain ceiling 7,768 B. The recorded 37,016 B deep-ride
+high-water leaves 18,648 B above it, exceeding the unchanged 8,704 B floor.
+App construction is 64 B against 4,096 B. Flash is 1,529,880 B.
+The existing query benchmark correction and regional catalog publication still
+block green CI. No local image or base rebuild was run.

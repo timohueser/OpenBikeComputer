@@ -113,3 +113,17 @@ and a card with the pinned map, ordinary original route, candidate, and 128 arch
 6. Run explicit cleanup with an active visit. Confirm active, original, and accepted journey sources
    remain readable, while other eligible old routes can be removed.
 7. Clear the journey, then run cleanup. Confirm released route dependencies can be removed.
+
+## Catalog flag consumer review fix
+
+Commit `cb06fb05` adds catalog acceptance bit 3 to the Swift decoder's known flags and names the
+same bit in the browser vocabulary. Both protocol vector suites exercise a LIST page with an
+accepted Route beside a recording Ride. Swift still rejects every undefined bit from 4 through 15.
+
+- `swift test --package-path companion-ios/Packages/OBCKit --filter OBCProtocolV4Tests`: all 19 tests
+  in the four protocol suites pass.
+- `npm test -- src/lib/usb/vectors.test.ts` in `builder/app`: all 92 vector tests pass.
+- `./tools/obc suites check` and documentation links pass.
+
+No Rust suite, linked resource build, image, UI snapshot sweep, or hardware run was repeated for
+this client-only delta. Independent delta review and CI remain required before merge.

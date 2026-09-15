@@ -42,7 +42,8 @@ The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
   bytes verbatim.
 - Ride bytes contain recorded samples and an OBRF footer. The phone decodes them to `Ride` before
   archiving or exporting GPX.
-- Route, ride and trip catalogs are v4 `LIST` entries.
+- Route, ride and trip catalogs are v4 `LIST` entries. Catalog flag bit 3 (`assistantAccepted`)
+  marks an accepted Assistant route. The decoder accepts it and rejects undefined flag bits.
 - Trips contain route object ids, not route bytes. Upload stages first and the trip last; deleting a
   trip does not implicitly delete its routes.
 - Firmware images are signed OBCU containers carried as update objects.
