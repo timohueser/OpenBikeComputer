@@ -617,8 +617,9 @@ no_matches = "Keine passenden Routen. Kürzeres Alter wählen oder Routen im Rou
 done = "Alte Routen gelöscht. Upload erneut versuchen. Zum Schließen drücken."
 
 [assistant]
+from_place = "bis zum Ort"
 title = "Assistent"
-find = "Wo ist das nächste..."
+find = "Wo gibt es..."
 next = "Was kommt?"
 easier = "Leichtere Route"
 blocked = "Weg gesperrt"

@@ -651,6 +651,7 @@ no_matches = "No routes matched this age. Try a shorter age or delete routes fro
 done = "Old routes deleted. Retry the upload. Press to close."
 
 [assistant]
+from_place = "from place"
 title = "Assistant"
 find = "Where's the next..."
 next = "What's next"

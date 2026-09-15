@@ -85,7 +85,7 @@ impl FindPlaceScreen {
     {
         let Some(category) = self.category else {
             title_frame(cv, rx.w, rx.h, "", "");
-            cv.text(rx.t(Msg::AssistantFind), Point::new(14, 10), Font::Label, TextAlign::Left, PARCHMENT);
+            super::assistant::draw_find_title(cv, rx.t(Msg::AssistantFind), Point::new(14, 10), PARCHMENT);
             let first = list::window_start(self.selected, 6, PoiCategory::ALL.len());
             for (slot, cat) in PoiCategory::ALL.iter().skip(first).take(6).enumerate() {
                 let y = 43 + slot as i32 * 44;
@@ -288,6 +288,16 @@ impl VisitReviewScreen {
                 let (target, color) = cv.split();
                 scratch.stroke_path(target, &vp, points.iter().copied(), color(DETOUR), super::ROUTE_WEIGHT);
             }
+        }
+        if let Some(gap) = rx
+            .visit_gap_m
+            .filter(|_| !self.accepted && matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving))
+        {
+            let mut label = heapless::String::<40>::new();
+            super::vocab::fmt::write_distance_coarse(&mut label, "", gap, rx.settings.units);
+            let _ = write!(label, " {}", rx.t(Msg::AssistantFromPlace));
+            cv.round(rect(8, 164, rx.w - 16, 24), 4, PARCHMENT);
+            cv.text(&label, Point::new(rx.w / 2, 166), Font::Label, TextAlign::Center, INK);
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);

@@ -616,6 +616,7 @@ no_matches = "Ninguna ruta coincide. Elige un plazo más corto o borra desde el 
 done = "Rutas antiguas borradas. Reintenta el envío. Pulsa para cerrar."
 
 [assistant]
+from_place = "del lugar"
 title = "Asistente"
 find = "¿Dónde está...?"
 next = "¿Qué sigue?"
