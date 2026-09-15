@@ -361,6 +361,12 @@ impl HostLoop {
     ) {
         // The keyed answers and their polylines were consumed by the pass that produced `plan`;
         // a later answer brings its own.
+        let source = map.source();
+        app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey {
+            store: source.store_id().0,
+            object: source.id().0,
+            revision: source.revision().0,
+        }));
         self.inbox.derived = DerivedInputs::NONE;
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
@@ -384,6 +390,18 @@ impl HostLoop {
                     }
                 }
             }
+        }
+        if let Some(expected) = app.requested_assistant_resume() {
+            let index = routes.ids().iter().position(|id| *id == expected.object);
+            let exact = routes.fingerprint(expected.object) == Some(expected);
+            let changed = routes.sync_active(index.filter(|_| exact));
+            session.reparse(changed, routes);
+            let reader = session
+                .index()
+                .zip(routes.active_source())
+                .map(|(index, source)| obc_route::RouteReader::new(index, source));
+            app.prepare_assistant_resume(reader.as_ref());
+            session.sync(app, routes);
         }
         if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
@@ -627,7 +645,21 @@ impl HostLoop {
                             );
                             feed_routes(app, routes, &mut NoTrace);
                             match preview {
-                                Ok(preview) => app.assistant_preview_outcome(token, preview),
+                                Ok(preview) => {
+                                    let outcome = app.assistant_preview_outcome(token, preview);
+                                    let src = obc_formats::io::SliceSource(bytes);
+                                    if let Ok(index) = obc_route::RouteIndex::read(&src) {
+                                        let reader = obc_route::RouteReader::new(&index, &src);
+                                        let points = reader.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                                        if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                            && !app.set_assistant_preview_shape(token, preview.source, &points)
+                                        {
+                                            return failed(NavigatorError::SourceChanged);
+                                        }
+                                        app.assistant_easier_bounds(preview.source, index.bbox);
+                                    }
+                                    outcome
+                                }
                                 Err(error) => NavigatorOutcome::Failed { token, error },
                             }
                         }
@@ -723,7 +755,11 @@ impl HostLoop {
                 None
             }
             PlannerWork::AssistantRoute(request) => {
-                if app.assistant_visit_target().is_some() {
+                if app.assistant_visit_target().is_some()
+                    || app
+                        .assistant_review_context()
+                        .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_)))
+                {
                     let Some(scope) = routes.store_scope() else { return failed(NavigatorError::SourceChanged) };
                     let held = routes.pin_active();
                     let fingerprint = held.as_ref().and_then(|route| routes.fingerprint(route.id()));
@@ -778,12 +814,17 @@ impl HostLoop {
                 };
                 if matches!(
                     context.purpose,
-                    obc_app::navigator::ReviewPurpose::Visit | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                    obc_app::navigator::ReviewPurpose::Visit
+                        | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                        | obc_app::navigator::ReviewPurpose::Easier(_)
                 ) {
                     let Some((source, index)) = original.as_ref() else {
                         return failed(NavigatorError::Unavailable);
                     };
                     let route = obc_route::RouteReader::new(index, source);
+                    if !app.assistant_easier_original(context, &route) {
+                        return failed(NavigatorError::Unavailable);
+                    }
                     match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
                         Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
                         Err(error) => return failed(error),
@@ -792,9 +833,7 @@ impl HostLoop {
                     let mut plan = NavPlan::start(&request, context.profile);
                     plan.set_attribution_map(context.map);
                     plan.set_assistant_candidate();
-                    if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                        plan.set_unresolved_avoidance();
-                    }
+
                     self.plan = Some(InflightPlan::Nav(plan));
                 }
                 original
@@ -1222,6 +1261,30 @@ mod tests {
         reboot.offer_assistant_checkpoint(routes.store_scope().unwrap().store, routes.read_checkpoint().unwrap());
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
         assert!(reboot.active_route_index().is_none());
+        feed_routes(&mut reboot, &routes, &mut NoTrace);
+        reboot.tick(
+            RideClock(0),
+            Sensors::new(&mut OneFix(Some(Fix::at(points[0].1, (points[0].0 + points[1].0) / 2)))),
+            None,
+        );
+        reboot.advance_animations(InputClock(0));
+        assert_eq!(reboot.top_screen().name(), "Journey");
+        assert!(reboot.requested_assistant_resume().is_none());
+        reboot.apply_gesture(obc_app::Gesture::Press);
+        assert_eq!(reboot.requested_assistant_resume(), Some(preview.source));
+        for _ in 0..12 {
+            frame(&mut host, &mut reboot, &mut routes);
+            if reboot.assistant_review_status() == ReviewStatus::Accepted {
+                break;
+            }
+        }
+        assert_eq!(reboot.assistant_review_status(), ReviewStatus::Accepted);
+        assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], preview.source.object);
+        assert!(!reboot.recording());
+        assert!(!reboot.visit_arrival_pending());
+        assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
+        assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());
+        app = reboot;
         app.activate_route(usize::MAX);
         for _ in 0..12 {
             frame(&mut host, &mut app, &mut routes);
@@ -1564,7 +1627,7 @@ mod tests {
     }
 
     /// A host that can do everything — none of it reached by the recording path under test.
-    const SUPPORT: PlatformSupport = PlatformSupport {
+    pub(super) const SUPPORT: PlatformSupport = PlatformSupport {
         detour: true,
         settings_persistence: true,
         dfu: true,
@@ -1584,7 +1647,7 @@ mod tests {
     /// A ride object that keeps what it was handed: every appended sample, in order, and the footer
     /// the close wrote. Enough to ask whether the samples reached the object the rider saved.
     #[derive(Default)]
-    struct RecordingTrackStore {
+    pub(super) struct RecordingTrackStore {
         open: bool,
         points: Vec<TrackPoint>,
         footer: Option<RideStats>,
@@ -1829,3 +1892,6 @@ mod tests {
 
 #[cfg(test)]
 mod planner_tests;
+
+#[cfg(test)]
+mod find_tests;

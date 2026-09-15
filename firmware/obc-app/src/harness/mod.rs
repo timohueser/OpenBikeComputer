@@ -18,3 +18,5 @@ pub(crate) mod support;
 mod quick_drawer;
 mod screens;
 mod upload;
+
+mod nav;

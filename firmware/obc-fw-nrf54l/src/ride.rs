@@ -1616,7 +1616,10 @@ pub(crate) async fn run_app(
                 #[cfg(has_nav)]
                 let source_error =
                     if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                        && app.assistant_visit_target().is_some()
+                        && (app.assistant_visit_target().is_some()
+                            || app
+                                .assistant_review_context()
+                                .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
                     {
                         let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
                         let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
@@ -1717,9 +1720,6 @@ pub(crate) async fn run_app(
                                             if let Some((planner, ..)) = bufs.guard.plan_parts() {
                                                 planner.set_attribution_map(context.map);
                                                 planner.set_assistant_candidate();
-                                                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                                                    planner.set_unresolved_avoidance();
-                                                }
                                             }
                                             if let Some(original) = context.original {
                                                 crate::assistant::release_original(flat, &mut review_original, false);
@@ -2428,6 +2428,22 @@ pub(crate) async fn run_app(
                 }
             }
 
+            if let Some(expected) = app.requested_assistant_resume() {
+                use obc_storage::flat::Store;
+                let exact = flat
+                    .entries()
+                    .find(|entry| entry.id.0 == expected.object)
+                    .map(obc_storage::flat::metadata::fingerprint)
+                    == Some(expected)
+                    && flat.entries_ok();
+                let source = crate::flat_store::reconcile_route(flat, exact.then_some(expected.object));
+                let reader = source
+                    .filter(|source| route_index.read_into(*source).is_ok())
+                    .map(|source| RouteReader::new(&route_index, source));
+                app.prepare_assistant_resume(reader.as_ref());
+                route_index_valid = false;
+                index_route = None;
+            }
             let active = app.active_route_index();
             // Re-centre the synthetic GPS onto a freshly-loaded route's start so Follow doesn't yank the
             // camera off it (`synth` build only — the host feed and the real GPS stream absolute positions).
@@ -2518,6 +2534,7 @@ pub(crate) async fn run_app(
             // live across an await would instead become a permanent slot in this task's future
             // (#808/#1084 — `run_app` is `#[inline(always)]` into `__embassy_main`, whose task
             // storage is `.bss`, so "in the future" and "resident" are the same thing).
+            app.bind_place_map(Some(crate::flat_store::planner_map_key(flat)));
             let plan = {
                 // ── The keyed derived reads (#1437), answered immediately before the pass ──
                 //
@@ -2969,11 +2986,13 @@ pub(crate) async fn run_app(
                     // map-transfer card the only explanation for a saturated SD bus.
                     let draws_map = app.base_draws_map();
                     let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
+                    let photo_active = app.photo_base_active();
+                    let mut photo_guard = if photo_active { crate::arena::claim_photo() } else { None };
                     // Unreachable on the ordinary path (the freeze above skips map frames during a
                     // search, and a transfer puts its card over the map), so a refusal is a gating
                     // bug — already reported loudly by `arena::claim_render`. Degrade the way every
                     // other transient render failure does: keep the frame on glass, retry next pass.
-                    if draws_map && render_guard.is_none() {
+                    if (draws_map && render_guard.is_none()) || (photo_active && photo_guard.is_none()) {
                         pending_map_redraw = true;
                         defmt::warn!(
                             "map: the scratch arena is held by {} — skipping this map redraw, retrying next frame",
@@ -3003,7 +3022,7 @@ pub(crate) async fn run_app(
                         // every frame of an open comes through with `None` and clips nothing. A region does
                         // survive on a settled sheet whose *own* overlay ticked one, and clipping that frame
                         // to it is exactly right: the sheet is all that is drawn, and only that part moved.
-                        let clip = if needs_map { None } else { dirty.region };
+                        let clip = if needs_map || photo_active { None } else { dirty.region };
                         app.set_render_clip(clip);
                         // Sampled before the render closure borrows `app`; nothing between here and the log
                         // below moves the screen stack.
@@ -3023,7 +3042,7 @@ pub(crate) async fn run_app(
                                 // `MountedSet` as the scene and the core `Reader` for everything else
                                 // — is gone with the set mount (FS7.5-c2, #1420).
                                 let panorama = peak_view.panorama();
-                                app.render_scene_map_timed(
+                                let stats = app.render_scene_map_photo_timed(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
@@ -3034,7 +3053,12 @@ pub(crate) async fn run_app(
                                     FRAME_H as f32,
                                     color_fn,
                                     &InstantClock,
-                                )
+                                    photo_guard
+                                        .as_deref_mut()
+                                        .map(|runtime| obc_app::photo::FramePhoto::interactive(runtime, true)),
+                                );
+
+                                stats
                             });
                             #[cfg(feature = "sd-bench")]
                             if needs_map {
@@ -3056,6 +3080,29 @@ pub(crate) async fn run_app(
                             Some(RenderedFrame { needs_map, sheet_only, stats, render_us })
                         }
                     }
+                }
+            } else if app.photo_pending() {
+                if let Some(mut photo) = crate::arena::claim_photo() {
+                    let reader = Reader::new(flat_map, map_tables, map_cache);
+                    let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
+                        let mut target = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                        app.render_scene_map_photo_timed(
+                            None,
+                            &mut target,
+                            Some(&reader),
+                            Some(&reader),
+                            route.as_ref(),
+                            None,
+                            FRAME_W as f32,
+                            FRAME_H as f32,
+                            color_fn,
+                            &InstantClock,
+                            Some(obc_app::photo::FramePhoto::interactive(&mut photo, false)),
+                        )
+                    });
+                    Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
+                } else {
+                    None
                 }
             } else {
                 None

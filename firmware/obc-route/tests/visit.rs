@@ -212,3 +212,93 @@ fn cancellation_connector_keeps_tail_and_removes_visit() {
     })
     .unwrap();
 }
+
+#[test]
+fn easier_composition_preserves_access_order_full_metadata_and_clean_provenance() {
+    let wps = [
+        (55, 450, 500, 17, 4, 4, -50, b"Cafe" as &[u8]),
+        (55, 451, 501, 18, 2, 4, 50, b"Camp" as &[u8]),
+        (166, 1400, 400, 19, 1, 4, 40, b"Shop" as &[u8]),
+    ];
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+        slot.assume_init()
+    };
+    builder.prepare_easier(&original).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    let mut targets = vec![];
+    while let Some((from, to)) = builder.easier_leg(&original, (0, 0)).unwrap() {
+        targets.push(to);
+        // A bent candidate leg still ends at the exact on-route access point, never the annotation.
+        let leg = route(vec![(from.0, from.1, 10), ((from.0 + to.0) / 2, 200, 20), (to.0, to.1, 30)], &[], 100);
+        append(&mut builder, &leg, &mut sink);
+        builder.finish_easier_leg(&original).unwrap();
+    }
+    assert_eq!(targets.len(), 3);
+    assert!(targets.iter().all(|p| p.1 == 0));
+    let stats = loop {
+        if let Some(stats) = builder.finish_step(&original, &mut sink).unwrap() {
+            break stats;
+        }
+    };
+    assert_eq!(stats.waypoint_count, 3);
+    let out = SliceSource(&sink.buf);
+    let info = obc_route::RouteObjectInfo::read(&out).unwrap();
+    assert!(info.assistant_candidate && !info.unresolved_avoidance && info.visit.is_none());
+    let mut seen = vec![];
+    for_each_waypoint(&out, |w| seen.push(w.clone())).unwrap();
+    for (i, w) in seen.iter().enumerate() {
+        assert_eq!(
+            (w.lon, w.lat, w.ele, w.category_id, w.lateral_offset_m),
+            (wps[i].1, wps[i].2, wps[i].3, wps[i].4, wps[i].6)
+        );
+        assert_eq!(w.name.as_bytes(), wps[i].7);
+        assert_eq!(w.provenance.unwrap().ordinal, i as u16);
+        assert_eq!(w.provenance.unwrap().source, key(1));
+    }
+    assert_eq!(seen[0].dist_along_m, seen[1].dist_along_m);
+    assert!(seen[2].dist_along_m > seen[1].dist_along_m);
+    let index = RouteIndex::read(&out).unwrap();
+    let accepted = RouteReader::new(&index, &out);
+    builder.prepare_easier(&accepted).unwrap(); // A clean accepted route permits another comparison.
+}
+
+#[test]
+fn easier_refuses_constraint_overflow_and_preserves_later_loop_anchors() {
+    let wps: Vec<_> = (0..33).map(|i| (20 + i, 100, 100, 10, 1, 1, 10, b"A" as &[u8])).collect();
+    let bytes = route(vec![(0, 0, 10), (2000, 0, 30)], &wps, 222);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key(1), key(2), 0).unwrap();
+        slot.assume_init()
+    };
+    assert_eq!(builder.prepare_easier(&original), Err(obc_formats::io::Error::TooLarge));
+    let bytes = route(
+        vec![(0, 0, 10), (1000, 0, 10), (0, 0, 10), (2000, 0, 10)],
+        &[(111, 1000, 100, 10, 1, 1, 10, b"A"), (222, 0, 100, 10, 1, 1, 10, b"B")],
+        444,
+    );
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    builder.prepare_easier(&original).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    let mut targets = vec![];
+    while let Some((from, to)) = builder.easier_leg(&original, (0, 0)).unwrap() {
+        targets.push(to);
+        append(&mut builder, &route(vec![(from.0, from.1, 10), (to.0, to.1, 10)], &[], 111), &mut sink);
+        builder.finish_easier_leg(&original).unwrap();
+    }
+    assert_eq!(targets.len(), 3);
+    assert!(targets[1].0 < targets[0].0 && targets[2].0 > targets[0].0);
+}

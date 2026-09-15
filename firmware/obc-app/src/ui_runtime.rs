@@ -125,6 +125,9 @@ pub(crate) struct UiRuntime {
     /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
     /// when a POI list opens, so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
+    pub(crate) find: crate::find_place::FindState,
+    pub(crate) landmarks: crate::landmarks::Landmarks,
+    pub(crate) ahead: crate::whats_next::AheadState,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
     /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
@@ -178,6 +181,9 @@ impl UiRuntime {
             hold_progress_override: None,
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
+            find: crate::find_place::FindState::new(),
+            landmarks: crate::landmarks::Landmarks::new(),
+            ahead: crate::whats_next::AheadState::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
             cards: CardScheduler::new(),
@@ -310,7 +316,13 @@ impl UiRuntime {
         // sheet-only open skips that draw, and on the board building the `Reader` for it is an SD
         // style-table parse the frame then throws away — measured at about 45 ms of an 80 ms open
         // step, which is the difference between six steps of a 440 ms slide and eleven.
-        if self.sheet_only() {
+        let rebuilding_photo = self
+            .stack
+            .iter()
+            .rev()
+            .find(|s| !s.is_overlay())
+            .is_some_and(|s| matches!(s, Screen::LandmarkPhoto(page) if page.covered_rebuild));
+        if self.sheet_only() && !rebuilding_photo {
             return false;
         }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
@@ -319,7 +331,8 @@ impl UiRuntime {
             ReaderNeed::Always => true,
             ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
             // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
-            ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending()),
+            ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending(&self.poi_scratch)),
+            ReaderNeed::Photo | ReaderNeed::Landmarks => true,
             ReaderNeed::Never => false,
         }
     }
@@ -344,7 +357,9 @@ impl UiRuntime {
         // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
         // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
         // than inside one screen's `prepare`. A no-op unless a screen armed it.
-        self.corridor_scratch.prepare(reader, route, place_local);
+        if !self.find.owns_pages() && !self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            self.corridor_scratch.prepare(reader, route, place_local);
+        }
         // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
         // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
         // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
@@ -382,50 +397,23 @@ impl UiRuntime {
         }
     }
 
-    /// Point the App-owned corridor snapshot at whatever the **stack** currently wants (epic #946,
-    /// U3). The Up-ahead screen never queries anything itself: it declares a
-    /// [`CorridorKey`](crate::corridor::CorridorKey) (its filter + the progress anchor frozen at
-    /// entry) through [`Screen::corridor_request`], and this arms it. Everything the lifecycle needs
-    /// falls out of that one declaration:
-    ///
-    /// * **entry** — a screen appears that wants a key ⇒ armed (and, on a *fresh* open,
-    ///   [`invalidate`](crate::corridor::CorridorScratch::invalidate)d, so re-entering re-takes the
-    ///   identical key: the "re-enter refreshes" half of the #115 contract);
-    /// * **a filter change** — the key changes ⇒ the stale rows drop and the query re-runs;
-    /// * **riding on** — the key does *not* change (the anchor is frozen) ⇒ nothing re-runs;
-    /// * **exit** (Back, or the idle return — both *pop* the list off the stack) — nobody wants a
-    ///   key ⇒ disarmed, and the reader-build seam goes quiet;
-    /// * **buried** — a host-pushed card (a passkey, a warning) on top is *not* an exit: the scan
-    ///   covers the whole stack, so the list's request is still found and the scratch stays armed
-    ///   for the uncover.
-    ///
-    /// Cheap enough to call whenever the stack may have moved: a scan of ≤ [`MAX_DEPTH`] slots and
-    /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
-    ///
-    /// [`MAX_DEPTH`]: crate::screen::MAX_DEPTH
-    /// U5 adds a **second, lower-priority** requester: with no screen asking, the
-    /// [`NextAhead`](crate::next_ahead::NextAhead) cache may want one single-category snapshot to
-    /// refresh a `Next: <category>` tile. A screen always wins — the Up-ahead list is a thing the
-    /// rider is *looking at*, a stat tile's refresh can wait a screen visit — and a cache request
-    /// never counts as a "fresh open" (there is no screen entry to re-take for).
-    ///
-    /// The two can never fight over the buffer's *contents*: the cache only asks while the
-    /// Statistics screen is the base one (so never while the Up-ahead list is up, including U4's
-    /// `Waypoints only` scope where that screen deliberately asks for nothing), and
-    /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
-    /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
-    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope, fresh_open: bool) {
-        match self.stack.iter().rev().find_map(|s| s.corridor_request(scope)) {
-            Some(key) => {
+    /// The visible Assistant query owns the shared corridor scratch. Statistics use it only
+    /// when no Assistant query is active. Rows are still read in prepare, never in draw.
+    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope) {
+        if self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            if let Some(key) = self.ahead.request(scope) {
                 self.corridor_scratch.arm(key);
-                if fresh_open {
-                    self.corridor_scratch.invalidate();
-                }
+            } else {
+                self.corridor_scratch.disarm();
             }
-            None => match self.next_ahead.request() {
-                Some(key) => self.corridor_scratch.arm(key),
-                None => self.corridor_scratch.disarm(),
-            },
+            return;
+        }
+        if self.find.owns_pages() {
+            return;
+        }
+        match self.next_ahead.request() {
+            Some(key) => self.corridor_scratch.arm(key),
+            None => self.corridor_scratch.disarm(),
         }
     }
 
@@ -453,7 +441,7 @@ impl UiRuntime {
             }
         }
         self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
-        self.reconcile_corridor(scope, false);
+        self.reconcile_corridor(scope);
     }
 
     /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the
@@ -757,12 +745,16 @@ impl UiRuntime {
             hold_progress_override,
             hold_cancel_pending,
             poi_scratch,
+            find,
+            landmarks,
+            ahead,
             corridor_scratch,
             next_ahead,
             cards,
             sensor_status,
             sensor_scan_hits,
         } = self;
+        assert!(ahead.window.is_none());
         assert_eq!(stack.len(), 1, "Home is the only screen");
         assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
@@ -775,6 +767,8 @@ impl UiRuntime {
         assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
         assert!(*idle_return_timing, "idle time accumulates from the first pass");
         assert!(hold_progress_override.is_none() && !*hold_cancel_pending, "no hold charging or cancelled");
+        assert_eq!(find.state, crate::find_place::State::Idle);
+        assert_eq!(landmarks.status, crate::landmarks::Status::Idle);
         assert_eq!(poi_scratch.len(), 0, "the POI snapshot is empty");
         assert!(corridor_scratch.armed().is_none() && corridor_scratch.is_empty(), "the corridor is disarmed");
         assert!(next_ahead.request().is_none(), "the next-ahead cache asks for nothing");

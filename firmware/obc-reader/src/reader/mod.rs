@@ -431,6 +431,16 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Identity of the immutable map tables used by this view.
+    pub fn generation(&self) -> u32 {
+        self.tables.generation
+    }
+
+    /// The immutable source paired with these tables.
+    pub fn source(&self) -> &dyn ByteSource {
+        self.src
+    }
+
     /// Build a per-frame reader over the pre-parsed [`MapTables`], a fresh `src`, and a `cache` the
     /// geometry + index reads stream through. **Cheap**: borrows the tables and copies only the
     /// header scalars (no parse, no SD read). The cache is caller-owned and reusable across frames;

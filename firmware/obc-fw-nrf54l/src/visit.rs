@@ -126,9 +126,9 @@ impl Executor {
                     | NavigatorEffect::Release { family: PlanFamily::Route, .. }
             ))
             || matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                && app
-                    .assistant_review_context()
-                    .is_some_and(|c| matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute))
+                && app.assistant_review_context().is_some_and(|c| {
+                    matches!(c.purpose, ReviewPurpose::Visit | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
+                })
     }
     pub(crate) fn original_current(&self) -> bool {
         self.original.as_ref().is_some_and(StoreSource::is_current)
@@ -206,14 +206,15 @@ impl Executor {
                 }
                 let (_, index, _, _) = guard.as_mut().unwrap().visit_parts();
                 let reader = RouteReader::new(index, self.original.as_ref().unwrap());
-                self.choice = match if context.purpose == ReviewPurpose::ReturnToRoute {
-                    Ok(None)
-                } else {
-                    forward_rejoin(&reader, context.progress_m)
-                } {
-                    Ok(forward) => VisitChoice::new(context.progress_m, forward),
-                    Err(_) => return self.fail(NavigatorError::Unavailable),
-                };
+                self.choice =
+                    match if matches!(context.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)) {
+                        Ok(None)
+                    } else {
+                        forward_rejoin(&reader, context.progress_m)
+                    } {
+                        Ok(forward) => VisitChoice::new(context.progress_m, forward),
+                        Err(_) => return self.fail(NavigatorError::Unavailable),
+                    };
                 self.phase = Phase::AllocateA;
                 None
             }
@@ -244,13 +245,19 @@ impl Executor {
         }
     }
     #[inline(never)]
-    fn begin_variant(&mut self, app: &App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn begin_variant(&mut self, app: &mut App, guard: &mut NavGuard) -> Result<(), ()> {
         let c = app.assistant_review_context().ok_or(())?;
         let target = app.assistant_visit_target();
         guard.begin_visit(c, target, self.rejoin).map_err(|_| ())?;
-        let (_, original, _, _) = guard.visit_parts();
+        let (builder, original, _, _) = guard.visit_parts();
         original.read_into(self.original.as_ref().ok_or(())?).map_err(|_| ())?;
         let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
+        if !app.assistant_easier_original(c, &route) {
+            return Err(());
+        }
+        if matches!(c.purpose, ReviewPurpose::Easier(_)) {
+            builder.prepare_easier(&route).map_err(|_| ())?;
+        }
         let to = route.position_at(self.rejoin).ok_or(())?;
         self.return_to = (to.lon, to.lat);
         self.returning = c.purpose == ReviewPurpose::ReturnToRoute;
@@ -262,10 +269,17 @@ impl Executor {
         }
         Ok(())
     }
-    fn start_leg(&mut self, app: &App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn start_leg(&mut self, app: &App, guard: &mut NavGuard) -> Result<bool, ()> {
         let c = app.assistant_review_context().ok_or(())?;
-        self.choice.search().map_err(|_| ())?;
-        let (from, to) = if c.purpose == ReviewPurpose::ReturnToRoute {
+        let (from, to) = if matches!(c.purpose, ReviewPurpose::Easier(_)) {
+            let (builder, original, _, _) = guard.visit_parts();
+            let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
+            let Some(endpoints) = builder.easier_leg(&route, c.origin).map_err(|_| ())? else {
+                self.returning = true;
+                return Ok(false);
+            };
+            endpoints
+        } else if c.purpose == ReviewPurpose::ReturnToRoute {
             (c.origin, self.return_to)
         } else {
             let approach = app.assistant_visit_target().ok_or(())?.approach(c.map, c.profile).ok_or(())?;
@@ -275,8 +289,10 @@ impl Executor {
                 (c.origin, approach)
             }
         };
+        if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
+            .map_err(|_| ())?;
         guard.visit_begin_plan(from, to, c);
-        Ok(())
+        Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn poll(
@@ -387,7 +403,11 @@ impl Executor {
                 }
             }
             Phase::DropLeg => {
-                if let Some(sealed) = self.leg.take() {
+                if let Some(allocation) = self.b {
+                    if let Ok(t) = writer.try_call(Request::Cancel { allocation }, reply) {
+                        self.phase = Phase::Await(t, After::DropLeg);
+                    }
+                } else if let Some(sealed) = self.leg.take() {
                     match writer.try_call_owned(Request::ReleaseSealed { sealed }, reply) {
                         Ok(t) => self.phase = Phase::Await(t, After::DropLeg),
                         Err(Request::ReleaseSealed { sealed }) => self.leg = Some(sealed),
@@ -435,6 +455,14 @@ impl Executor {
                 None
             }
             Done::Append => {
+                if app.assistant_review_context().is_some_and(|c| matches!(c.purpose, ReviewPurpose::Easier(_))) {
+                    let (builder, original, _, _) = guard.visit_parts();
+                    let route = RouteReader::new(original, self.original.as_ref()?);
+                    if builder.finish_easier_leg(&route).is_err() {
+                        return self.fail(NavigatorError::Unavailable);
+                    }
+                    self.returning = builder.easier_finished();
+                }
                 self.phase = Phase::DropLeg;
                 None
             }
@@ -458,7 +486,8 @@ impl Executor {
                     self.phase = Phase::Stopped;
                     Some(
                         if app.assistant_review_context().is_some_and(|c| {
-                            c.purpose == ReviewPurpose::ReturnToRoute && c.required_anchors_m == anchors
+                            matches!(c.purpose, ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_))
+                                && c.required_anchors_m == anchors
                         }) || app.assistant_visit_variant(token, anchors)
                         {
                             NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached }
@@ -487,8 +516,15 @@ impl Executor {
             }
             (After::AllocateB, Ok(Outcome::Allocated(b))) => {
                 self.b = Some(b);
-                if !releasing && self.start_leg(app, guard.as_mut()?).is_err() {
-                    return self.fail(NavigatorError::Unavailable);
+                if !releasing {
+                    match self.start_leg(app, guard.as_mut()?) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.phase = Phase::DropLeg;
+                            return None;
+                        }
+                        Err(()) => return self.fail(NavigatorError::Unavailable),
+                    }
                 }
                 self.phase = Phase::Ready(Work::Leg);
                 if !releasing {
@@ -530,11 +566,17 @@ impl Executor {
                 self.phase = if releasing { Phase::Stopped } else { Phase::Restart };
             }
             (After::DropLeg, Ok(Outcome::Done)) => {
+                self.b = None;
                 if !releasing {
                     if self.returning {
                         return self.ready(Work::Finish);
                     } else {
-                        self.returning = true;
+                        if !app
+                            .assistant_review_context()
+                            .is_some_and(|c| matches!(c.purpose, ReviewPurpose::Easier(_)))
+                        {
+                            self.returning = true;
+                        }
                         self.phase = Phase::AllocateB;
                     }
                 } else {
@@ -580,12 +622,14 @@ impl Executor {
                             source,
                         )
                         .map_err(|_| NavigatorError::Store)?;
-                        Ok::<_, NavigatorError>((preview, shape))
+                        let bounds = guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2.bbox;
+                        Ok::<_, NavigatorError>((preview, shape, bounds))
                     });
                     let token = self.token.take()?;
                     return Some(match preview {
-                        Ok(Ok((preview, shape))) => {
+                        Ok(Ok((preview, shape, bounds))) => {
                             let outcome = app.assistant_preview_outcome(token, preview);
+                            app.assistant_easier_bounds(preview.source, bounds);
                             if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
                                 && !app.set_assistant_preview_shape(token, preview.source, &shape)
                             {

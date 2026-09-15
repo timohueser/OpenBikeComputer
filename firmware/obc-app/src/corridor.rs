@@ -23,7 +23,7 @@ pub struct CorridorKey {
 /// decide which tables the list may walk and whether a corridor snapshot is wanted at all, so they
 /// travel as one value — the pair cannot be passed apart and cannot drift.
 ///
-/// Neither half lives on [`UpAheadScreen`](crate::screen::UpAheadScreen) any more (#1515 D4a): both
+/// Neither half lives on [`WhatsNextScreen`](crate::screen::WhatsNextScreen) any more (#1515 D4a): both
 /// are edited from the context sheet *above* that screen, so a copy frozen inside it would be a
 /// copy the rider's edit could not reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +114,15 @@ impl CorridorScratch {
         }
     }
 
+    pub(crate) fn previous_page(&mut self, key: obc_reader::reader::places::PlaceKey) {
+        if let Some(query) = &mut self.query {
+            query.previous_page(key);
+            self.pois.clear();
+            self.taken_for = None;
+            self.status = QueryProgress::Pending;
+        }
+    }
+
     /// Stop wanting a snapshot at all (the screen closed): drops the rows *and* the request, so the
     /// reader seam goes quiet.
     pub fn disarm(&mut self) {
@@ -180,6 +189,16 @@ impl CorridorScratch {
     }
 
     pub(crate) fn prepare(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>, local: Option<(u8, u16)>) {
+        self.prepare_to(reader, route, local, u32::MAX);
+    }
+
+    pub(crate) fn prepare_to(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        local: Option<(u8, u16)>,
+        to_m: u32,
+    ) {
         let Some(key) = self.want else { return };
         if self.holds(key) && !self.recheck {
             return;
@@ -200,7 +219,7 @@ impl CorridorScratch {
             PlaceQuery::new(
                 self.generation,
                 key.filter,
-                PlaceWindow::Corridor { from_m: key.anchor_m, to_m: u32::MAX, half_width_m: 300 },
+                PlaceWindow::Corridor { from_m: key.anchor_m, to_m, half_width_m: 300 },
                 local,
             )
         });

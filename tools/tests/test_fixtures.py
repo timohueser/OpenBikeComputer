@@ -1,3 +1,5 @@
+import importlib.util
+import json
 from argparse import Namespace
 from pathlib import Path
 import tarfile
@@ -235,6 +237,45 @@ class FixtureRegistryTests(unittest.TestCase):
             self.assertEqual(stale, [stale_package])
             self.assertFalse((store.by_id / "sample").exists())
             self.assertFalse((store.by_id / "sample").is_symlink())
+
+
+
+
+class AssistantPackageTests(unittest.TestCase):
+    def test_local_assembly_uses_exact_catalog_selection_and_hashes(self):
+        spec = importlib.util.spec_from_file_location("assistant_package", Path(__file__).resolve().parents[2] / "fixtures/build-assistant-package.py")
+        recipe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recipe)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tree, native, out = root / "tree", root / "native", root / "out"
+            cell = tree / "cells/fine/0001/0002.obcm"
+            cell.parent.mkdir(parents=True)
+            cell.write_bytes(b"authored cell payload")
+            index = tree / "cells/fine/index.json"
+            index.write_text(json.dumps({"cells": [{"id": "18/0001/0002", "sha256": sha256_file(cell), "partial": True}]}))
+            selected = tree / "regions/sample/cells.json"
+            selected.parent.mkdir(parents=True)
+            selected.write_text(json.dumps({"cells": {"fine": ["18/0001/0002"]}}))
+            (tree / "catalog.json").write_text(json.dumps({"schema": {"id": "authored"}, "regions": [{"id": "sample", "cells_sha256": sha256_file(selected)}], "cell_index": [{"band": "fine", "sha256": sha256_file(index)}], "skins": [{"id": "default"}]}))
+            native.mkdir()
+            (native / "19_0001_0002.obcd").write_bytes(b"authored terrain")
+            recipe.assembly_inputs(tree, "sample", native, out)
+            sidecar = json.loads((out / "cells.json").read_text())
+            self.assertEqual(len(sidecar["cells"]), 1)
+            self.assertTrue(sidecar["cells"][0]["partial"])
+            self.assertEqual(sidecar["cells"][0]["path"], str(cell))
+            self.assertEqual(json.loads((out / "native-terrain.json").read_text())["cells"][0]["id"], "19/0001/0002")
+            cell.write_bytes(b"changed source")
+            with self.assertRaisesRegex(FixtureError, "source hash mismatch"):
+                recipe.assembly_inputs(tree, "sample", native, out)
+            candidate = root / "map.obcm"
+            candidate.write_bytes(b"OBCM\x10authored")
+            with self.assertRaisesRegex(FixtureError, "retained provenance"):
+                recipe.package("west-cork", root / "package", candidate, {"map": {"sha256": "0" * 64, "bytes": candidate.stat().st_size}}, None, None)
+            candidate.write_bytes(b"OBCM")
+            with self.assertRaisesRegex(FixtureError, "OBCM v16"):
+                recipe.package("west-cork", root / "package", candidate, {}, None, None)
 
 
 if __name__ == "__main__":

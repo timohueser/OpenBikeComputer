@@ -208,6 +208,7 @@ pub struct Demo {
     /// render (so the map opens without a per-frame `RouteIndex` reparse).
     session: ActiveRouteSession,
     frame: RgbaFrame,
+    photo: obc_host_core::photo::Preparer,
     peaks: crate::peak_view::Runtime,
     elevation: obc_elevation::TerrainElevation<'static, 4>,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
@@ -284,6 +285,7 @@ impl Demo {
             host: HostLoop::new(),
             session: ActiveRouteSession::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
+            photo: obc_host_core::photo::Preparer::default(),
             peaks: crate::peak_view::Runtime::new(),
             elevation: obc_elevation::TerrainElevation::parse(&*crate::peak_view::TERRAIN)
                 .expect("demo elevation parses"),
@@ -337,6 +339,16 @@ impl Demo {
                 panorama.view_ready(self.app.peak_view_heading_q4(), profile.horizontal_fov_q4())
             })
         })
+    }
+
+    pub fn find_ready(&self) -> bool {
+        self.app.find_place_state() == obc_app::find_place::State::Ready
+            && self.app.find_place_result_count() > 0
+            && self.app.assistant_planner_released()
+    }
+
+    pub fn visit_status(&self) -> obc_app::navigator::ReviewStatus {
+        self.app.assistant_review_status()
     }
 
     pub fn reset_status(&self) -> ResetStatus {
@@ -419,7 +431,7 @@ impl Demo {
         //
         // Render on demand — `plan.render` is the same signal the firmware gates its repaints on.
         // The first frame always renders (`ready` doubles as the page's poster-swap signal).
-        if plan.render.map || plan.render.overlay || !self.ready {
+        if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
             // Re-open the active route: the executor may have committed new geometry under it (a
             // planned route, a spliced detour), and the frame must draw what is there now.
             self.session.sync(&self.app, &mut self.routes);
@@ -429,7 +441,7 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            self.app.render_scene_map_timed(
+            self.app.render_scene_map_photo_timed(
                 Some(&mut self.scratch),
                 &mut self.frame,
                 Some(&reader),
@@ -443,6 +455,7 @@ impl Demo {
                     Rgb888::new(r, g, b)
                 },
                 &obc_render::NoopClock,
+                Some(self.photo.interactive(plan.render.map || !self.ready)),
             );
             self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
                 let (r, g, b) = rgb565_to_device64(c);
@@ -1058,33 +1071,54 @@ mod tests {
 
         drive(&mut d, &mut now, "enter", "Map");
         drive(&mut d, &mut now, "context", "ContextDrawer");
-        drive(&mut d, &mut now, "press", "UpAhead");
+        drive(&mut d, &mut now, "press", "Assistant");
+        drive(&mut d, &mut now, "step:1", "Assistant");
+        drive(&mut d, &mut now, "press", "WhatsNext");
+        drive(&mut d, &mut now, "press", "WhatsNext");
         assert!(d.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
-        // One Back: the row replaced the sheet rather than stacking over it.
+        drive(&mut d, &mut now, "back", "WhatsNext");
+        drive(&mut d, &mut now, "back", "Assistant");
         drive(&mut d, &mut now, "back", "Map");
     }
 
     #[test]
-    fn reroute_tour_reaches_pois_directly_from_the_ride_context() {
+    fn reroute_tour_reviews_and_accepts_a_real_visit_without_restarting_recording() {
+        use obc_app::navigator::ReviewStatus;
+        fn dwell(d: &mut Demo, now: &mut f64, ms: u32) {
+            for _ in 0..ms.div_ceil(16) {
+                *now += 16.0;
+                d.tick(*now);
+            }
+        }
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
-
         drive(&mut d, &mut now, "enter", "Map");
+        drive(&mut d, &mut now, "pause", "Map");
+        let original = d.app.route_ids()[d.app.active_route_index().unwrap()];
+        assert!(d.app.recording());
+        dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "context", "ContextDrawer");
-        drive(&mut d, &mut now, "step:1", "ContextDrawer");
-        drive(&mut d, &mut now, "step:1", "ContextDrawer");
-        drive(&mut d, &mut now, "press", "PoiMenu");
-        drive(&mut d, &mut now, "step:1", "PoiMenu");
-        drive(&mut d, &mut now, "step:1", "PoiMenu");
-        drive(&mut d, &mut now, "press", "PoiList");
-        assert!(d.app.poi_snapshot_len() > 0, "the scripted category should contain a demo POI");
+        drive(&mut d, &mut now, "press", "Assistant");
+        drive(&mut d, &mut now, "press", "FindPlace");
+        dwell(&mut d, &mut now, 2600);
+        for _ in 0..6 {
+            drive(&mut d, &mut now, "step:1", "FindPlace");
+            dwell(&mut d, &mut now, 420);
+        }
+        drive(&mut d, &mut now, "press", "FindPlace");
+        for _ in 0..750 {
+            if d.find_ready() {
+                break;
+            }
+            now += 16.0;
+            d.tick(now);
+        }
+        assert!(d.find_ready(), "real station search: {:?}, {:?}", d.app.find_place_state(), d.visit_status());
+        dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "press", "PoiDetail");
-        drive(&mut d, &mut now, "press", "NavConfirm");
-
-        d.cmd("press");
-        now += 16.0;
-        d.tick(now);
+        dwell(&mut d, &mut now, 2600);
+        drive(&mut d, &mut now, "press", "VisitReview");
         assert!(d.host.owns_navigation());
         let offset = d.ui_offset_ms;
         d.cmd("enter");
@@ -1095,22 +1129,41 @@ mod tests {
         assert_eq!(d.ui_offset_ms, offset);
         assert!(d.host.owns_navigation());
         assert!(!d.app.recorder.closing());
-        d.player.seek(d.player.duration() - 0.5);
-        now += 250.0;
-        d.tick(now);
-        assert!(!d.player.is_playing());
-        assert_eq!(d.reset_status(), ResetStatus::Failed);
-        assert!(d.queue.is_empty(), "an ambient end cannot clear a refused reset");
-        for _ in 0..2_000 {
-            if d.state() != "NavPlanning" {
+        for _ in 0..750 {
+            if d.visit_status() == ReviewStatus::Preview {
                 break;
             }
             now += 16.0;
             d.tick(now);
         }
-        assert_eq!(d.state(), "RouteOverview", "the embedded map should route to the scripted POI");
-        drive(&mut d, &mut now, "press", "RouteSwap");
-        drive(&mut d, &mut now, "press", "Map");
+        assert_eq!(d.visit_status(), ReviewStatus::Preview);
+        let preview = d.app.assistant_preview().unwrap();
+        assert!(preview.visit_costs.is_some() && preview.distance_m > 0);
+        assert_eq!(d.app.route_ids()[d.app.active_route_index().unwrap()], original);
+        dwell(&mut d, &mut now, 2600);
+        assert_eq!(d.visit_status(), ReviewStatus::Preview);
+        drive(&mut d, &mut now, "press", "VisitReview");
+        for _ in 0..200 {
+            if d.visit_status() == ReviewStatus::Accepted {
+                break;
+            }
+            now += 16.0;
+            d.tick(now);
+        }
+        assert_eq!(d.visit_status(), ReviewStatus::Accepted);
+        assert_eq!(d.routes.read_checkpoint().unwrap().unwrap().route, preview.source);
+        assert_eq!(d.app.route_ids()[d.app.active_route_index().unwrap()], preview.source.object);
+        assert!(d.app.recording() && !d.app.recorder.closing());
+        assert_eq!(d.state(), "Map", "accepted Visit returns to the riding map");
+        let session = d.app.recorder.session();
+        d.cmd("exit");
+        d.cmd(&format!("seek:{}", d.player.duration() - 0.5));
+        now += 250.0;
+        d.tick(now);
+        assert!(!d.player.is_playing());
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert!(d.queue.is_empty(), "playback end cannot clear a refused navigation reset");
+        assert_eq!(d.app.recorder.session(), session);
     }
 
     /// **The tour drift-guard** (epic #624 S3 / #628). The landing page's guided scenarios wait on

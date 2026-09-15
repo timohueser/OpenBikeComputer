@@ -58,6 +58,8 @@ impl VisitTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisitCosts {
     pub arrival_ascent_m: u32,
+    pub rough_m: u32,
+    pub unknown_m: u32,
     pub arrival_elevation_complete: bool,
     pub complete_elevation: bool,
 }
@@ -114,6 +116,8 @@ impl VisitCosts {
         }
         Ok(Self {
             arrival_ascent_m: to_stop.ascent_m,
+            rough_m: full.rough_m(),
+            unknown_m: full.surface_m[0],
             arrival_elevation_complete: to_stop.complete_elevation(),
             complete_elevation: full.complete_elevation(),
         })
@@ -158,7 +162,13 @@ impl VisitChoice {
         Self { departure_m, forward_m, outbound_cost: None, searches: 0 }
     }
     pub fn search(&mut self) -> Result<(), Error> {
-        if self.searches >= MAX_VISIT_SEARCHES {
+        self.search_with_limit(MAX_VISIT_SEARCHES)
+    }
+    pub fn search_easier(&mut self) -> Result<(), Error> {
+        self.search_with_limit(crate::MAX_WAYPOINTS as u8 + 1)
+    }
+    fn search_with_limit(&mut self, limit: u8) -> Result<(), Error> {
+        if self.searches >= limit {
             return Err(Error::TooLarge);
         }
         self.searches += 1;
@@ -192,6 +202,7 @@ enum Phase {
 /// route index or reservation is owned here. Each step writes one chunk or one waypoint record.
 pub struct VisitBuilder {
     em: ObcrEmitter,
+    easier: Option<crate::easier::Anchors>,
     descriptor: Option<VisitDescriptor>,
     original: RouteSourceKey,
     anchors: [u32; 3],
@@ -278,6 +289,7 @@ impl VisitBuilder {
         unsafe {
             ObcrEmitter::init_in_place(addr_of_mut!((*slot).em));
             addr_of_mut!((*slot).descriptor).write(descriptor);
+            addr_of_mut!((*slot).easier).write(None);
             addr_of_mut!((*slot).original).write(original);
             addr_of_mut!((*slot).anchors).write(anchors);
             addr_of_mut!((*slot).accepted_rejoin_m).write(0);
@@ -295,6 +307,7 @@ impl VisitBuilder {
             addr_of_mut!((*slot).stats).write(None);
             let Self {
                 em: _,
+                easier: _,
                 descriptor: _,
                 original: _,
                 anchors: _,
@@ -316,6 +329,46 @@ impl VisitBuilder {
             (*slot).em.set_flags(obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE);
         }
         Ok(())
+    }
+
+    /// Reuse the same candidate emitter for a complete constrained replacement.
+    /// # Safety
+    /// The same placement and ownership requirements as `init_in_place` apply.
+    pub unsafe fn init_easier_in_place(
+        slot: *mut Self,
+        original: RouteSourceKey,
+        map: RouteSourceKey,
+        progress: u32,
+    ) -> Result<(), Error> {
+        unsafe { Self::init(slot, original, map, None, [progress; 3]) }
+    }
+    pub fn prepare_easier(&mut self, original: &RouteReader) -> Result<(), Error> {
+        self.easier = Some(crate::easier::Anchors::read(original, self.anchors[0])?);
+        Ok(())
+    }
+    pub fn easier_leg(
+        &mut self,
+        original: &RouteReader,
+        origin: (i32, i32),
+    ) -> Result<Option<crate::easier::LegEndpoints>, Error> {
+        let anchors = self.easier.as_mut().ok_or(Error::BadOffset)?;
+        if anchors.finished {
+            return Ok(None);
+        }
+        anchors.advance(original)?;
+        let from = self.last.unwrap_or(origin);
+        while obc_map_scene::ground_dist_m(from, anchors.target) <= APPROACH_TOLERANCE_M {
+            anchors.reached(self.em.distance_m(), original.total_distance_m);
+            if anchors.finished {
+                self.phase = Phase::Geometry;
+                return Ok(None);
+            }
+            anchors.advance(original)?;
+        }
+        Ok(Some((from, anchors.target)))
+    }
+    pub fn easier_finished(&self) -> bool {
+        self.easier.as_ref().is_some_and(|a| a.finished)
     }
 
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
@@ -343,6 +396,16 @@ impl VisitBuilder {
         if self.append_chunk(leg, 0, leg.total_distance_m, sink)? {
             return Ok(false);
         }
+        if let Some(anchors) = &mut self.easier {
+            if self.last.is_none_or(|last| obc_map_scene::ground_dist_m(last, anchors.target) > APPROACH_TOLERANCE_M) {
+                self.phase = Phase::RejectedGeometry;
+                return Err(Error::BadOffset);
+            }
+            // The destination is the original route's terminal anchor.
+            self.chunk = 0;
+            self.segment_started = false;
+            return Ok(true);
+        }
         if self.phase == Phase::Outbound {
             let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
             if self.last.is_none_or(|p| {
@@ -363,6 +426,15 @@ impl VisitBuilder {
         self.chunk = 0;
         self.segment_started = false;
         Ok(true)
+    }
+
+    pub fn finish_easier_leg(&mut self, original: &RouteReader) -> Result<(), Error> {
+        let anchors = self.easier.as_mut().ok_or(Error::BadOffset)?;
+        anchors.reached(self.em.distance_m(), original.total_distance_m);
+        if anchors.finished {
+            self.phase = Phase::Geometry;
+        }
+        Ok(())
     }
 
     /// Finish with the original tail, complete stored waypoint section and visit descriptor.
@@ -387,7 +459,11 @@ impl VisitBuilder {
             }
             Phase::Geometry => {
                 let mut capture = HeaderSink { sink, header: &mut self.header };
-                self.stats = Some(self.em.finish(&mut capture, "Visit", &mut Vec::new())?);
+                self.stats = Some(self.em.finish(
+                    &mut capture,
+                    if self.easier.is_some() { "Easier route" } else { "Visit" },
+                    &mut Vec::new(),
+                )?);
                 self.waypoint_offset = self.em.geometry_end();
                 self.cursor = Some(WaypointCursor::new(original.source())?);
                 self.phase = Phase::Waypoints;
@@ -407,7 +483,9 @@ impl VisitBuilder {
                     return Err(Error::BadOffset);
                 }
                 w.provenance.get_or_insert(WaypointProvenance { source: self.original, ordinal });
-                w.dist_along_m = if w.dist_along_m == original.total_distance_m {
+                w.dist_along_m = if let Some(anchors) = &self.easier {
+                    anchors.mapped(w.dist_along_m)?
+                } else if w.dist_along_m == original.total_distance_m {
                     self.em.distance_m()
                 } else {
                     self.accepted_rejoin_m.saturating_add(w.dist_along_m - rejoin).min(self.em.distance_m())

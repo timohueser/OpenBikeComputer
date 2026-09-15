@@ -135,7 +135,8 @@ pub struct LandmarkKey {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LandmarkHit {
-    pub record: LandmarkRecord,
+    pub index: u32,
+    pub position: (i32, i32),
     pub key: LandmarkKey,
 }
 
@@ -192,12 +193,12 @@ impl LandmarkQuery {
         self.progress = QueryProgress::Cancelled;
     }
 
-    pub fn step(
+    pub fn step<const N: usize>(
         &mut self,
         source: &dyn ByteSource,
         directory: LandmarkDirectory,
         generation: u32,
-        output: &mut Vec<LandmarkHit, PAGE_SIZE>,
+        output: &mut Vec<LandmarkHit, N>,
     ) -> QueryProgress {
         if generation != self.generation {
             self.cancel();
@@ -215,11 +216,11 @@ impl LandmarkQuery {
         self.progress
     }
 
-    fn advance(
+    fn advance<const N: usize>(
         &mut self,
         source: &dyn ByteSource,
         directory: LandmarkDirectory,
-        output: &mut Vec<LandmarkHit, PAGE_SIZE>,
+        output: &mut Vec<LandmarkHit, N>,
     ) -> Result<(), Error> {
         let Some(cursor) = self.cursor else {
             if self.lower < self.upper {
@@ -249,15 +250,20 @@ impl LandmarkQuery {
         if distance > self.radius_m as f32 || self.after.is_some_and(|after| key <= after) {
             return Ok(());
         }
+        if output.iter().any(|hit| hit.key.qid == key.qid) {
+            return Ok(());
+        }
         let at = output.partition_point(|hit| hit.key < key);
         if output.is_full() {
             self.more = true;
-            if at == PAGE_SIZE {
+            if at == N {
                 return Ok(());
             }
             output.pop();
         }
-        output.insert(at, LandmarkHit { record, key }).map_err(|_| Error::BadOffset)?;
+        output
+            .insert(at, LandmarkHit { index: cursor, position: (record.lon, record.lat), key })
+            .map_err(|_| Error::BadOffset)?;
         Ok(())
     }
 }

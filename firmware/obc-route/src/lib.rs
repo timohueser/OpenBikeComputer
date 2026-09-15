@@ -47,6 +47,7 @@ pub mod climb;
 pub mod climb_profile;
 pub mod convert;
 pub mod corridor;
+pub mod easier;
 pub mod eta;
 pub mod facts;
 mod geo;
@@ -62,6 +63,7 @@ pub mod track;
 mod trim;
 pub mod trip;
 pub mod visit;
+pub mod window;
 
 pub use climb::{
     segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
@@ -81,7 +83,7 @@ pub use obc_elevation::{ElevationSource, NullElevation};
 pub use profile::{elevation_sparkline, ride_track_into, Profile, Window, PROFILE_COLS, SPARKLINE_BUCKETS};
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RoutePosition, RouteReader,
-    RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
+    RouteSummary, Waypoint, WaypointCursor, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
 pub use ride::{encode_summary_footer, RideInfo, RideStats};
 pub use splice::{splice_detour, SpliceStep, Splicer};

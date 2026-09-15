@@ -206,6 +206,11 @@ impl NavigatorMachine {
         }
     }
 
+    /// Recording recovery suspends guidance without cancelling a saved Assistant journey.
+    pub(crate) fn suspend_for_recording_recovery(&mut self) {
+        self.following.active_route = None;
+    }
+
     /// Select a route and return the previous selection.
     pub(crate) fn replace_active_route(&mut self, route: usize) -> Option<usize> {
         let previous = self.following.active_route;
@@ -237,11 +242,6 @@ impl NavigatorMachine {
 
     pub(crate) fn waypoints(&self) -> &Waypoints {
         &self.waypoints
-    }
-
-    #[cfg(test)]
-    pub(crate) fn waypoints_mut(&mut self) -> &mut Waypoints {
-        &mut self.waypoints
     }
 
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.

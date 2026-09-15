@@ -430,6 +430,7 @@ mod tests {
         assert!(runtime.panorama().unwrap().has_incomplete_coverage());
         let completed = Arc::clone(&runtime.job.cancel);
         let panorama = runtime.panorama().unwrap() as *const Panorama;
+        app.set_backlight_available(true);
         assert!(app.apply_chord(obc_app::Chord::Quick));
         runtime.update(&mut app);
         assert_eq!(runtime.panorama().unwrap() as *const Panorama, panorama);

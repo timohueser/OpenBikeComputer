@@ -13,7 +13,7 @@ pub enum ReviewPurpose {
     Destination,
     Visit,
     ReturnToRoute,
-    Easier,
+    Easier(obc_route::nav::Objective),
 }
 
 /// Frozen request inputs. Exact sources must still match before candidate publication and acceptance.
@@ -81,7 +81,7 @@ impl ReviewedRoute {
         if !info.assistant_candidate
             || bytes.len() != source.length
             || info.attribution_map != Some(context.map)
-            || info.unresolved_avoidance != (context.unresolved_avoidance || context.purpose == ReviewPurpose::Easier)
+            || info.unresolved_avoidance != context.unresolved_avoidance
         {
             return Err(NavigatorError::SourceChanged);
         }
@@ -104,7 +104,7 @@ impl ReviewedRoute {
         };
         let visit_costs = if matches!(
             context.purpose,
-            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute | ReviewPurpose::Easier(_)
         ) {
             let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
             Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
@@ -324,7 +324,7 @@ impl NavigatorMachine {
             } else {
                 JourneyPhase::Following
             },
-            unresolved_avoidance: context.purpose == ReviewPurpose::Easier,
+            unresolved_avoidance: context.unresolved_avoidance,
             lower_m: progress_m,
             upper_m,
         };
@@ -419,17 +419,21 @@ impl NavigatorMachine {
             return;
         };
         if !origin.trustworthy
-            || origin.occurrence != checkpoint.occurrence
             || origin.progress_m < checkpoint.lower_m
             || origin.progress_m > checkpoint.upper_m
-            || origin.progress_m.abs_diff(checkpoint.progress_m) > REVIEW_ALONG_TOLERANCE_M
             || origin.lateral_m > REVIEW_LATERAL_TOLERANCE_M
         {
             self.review.status = ReviewStatus::Failed(NavigatorError::Movement);
             return;
         }
         // Even explicit Resume rechecks the exact payloads through the same serialized operation.
-        self.review.change = Some(Some(checkpoint));
+        self.review.change = Some(Some(NavigatorCheckpoint {
+            progress_m: origin.progress_m,
+            occurrence: origin.occurrence,
+            lon: origin.fix.0,
+            lat: origin.fix.1,
+            ..checkpoint
+        }));
         self.review.after = AfterCheckpoint::Activate(checkpoint.route.object);
         self.review.latest_origin = Some(origin);
         self.review.status = ReviewStatus::Saving;
@@ -501,16 +505,31 @@ impl NavigatorMachine {
             return Ok(self.checkpoint_committed());
         }
         // The complete recovered head proves the pending edit did not commit.
+        self.checkpoint_unpublished();
+        Ok(None)
+    }
+
+    fn checkpoint_unpublished(&mut self) {
+        let retry_phase =
+            self.review.after == AfterCheckpoint::Phase && self.review.change.is_some_and(|next| next.is_some());
         self.review.change = None;
         self.review.status = if self.review.preview.is_some() {
             ReviewStatus::Preview
+        } else if self.review.checkpoint.is_some() {
+            if self.following.active_route.is_some() {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::ResumeAvailable
+            }
         } else {
             ReviewStatus::Failed(NavigatorError::Store)
         };
+        if retry_phase && self.review.status == ReviewStatus::Accepted {
+            self.retry_visit_phase();
+        }
         if core::mem::take(&mut self.review.cancel_after) {
             self.cancel_review();
         }
-        Ok(None)
     }
 
     fn checkpoint_answer(&mut self, outcome: MetadataOutcome) -> Option<AfterCheckpoint> {
@@ -526,15 +545,7 @@ impl NavigatorMachine {
                 None
             }
             MetadataOutcome::Failed { .. } => {
-                self.review.change = None;
-                self.review.status = if self.review.preview.is_some() {
-                    ReviewStatus::Preview
-                } else {
-                    ReviewStatus::Failed(NavigatorError::Store)
-                };
-                if core::mem::take(&mut self.review.cancel_after) {
-                    self.cancel_review();
-                }
+                self.checkpoint_unpublished();
                 None
             }
             MetadataOutcome::Cancelled { .. } => None,
@@ -571,6 +582,53 @@ impl crate::App {
     }
     pub fn resume_assistant(&mut self, origin: ReviewOrigin) {
         self.admit_navigator_intent(super::NavigatorIntent::ResumeAssistant { origin });
+    }
+
+    /// A rider-requested recovery read. Executors reuse their existing route index for this read.
+    pub fn requested_assistant_resume(&self) -> Option<PayloadFingerprint> {
+        (self.ui.find.action == crate::find_place::Action::Resume
+            && self.assistant_review_status() == ReviewStatus::ResumeAvailable
+            && self.active_route_index().is_none())
+        .then(|| self.assistant_checkpoint().map(|c| c.route))
+        .flatten()
+    }
+
+    /// Match only the accepted phase window before naming the existing durable Resume operation.
+    pub fn prepare_assistant_resume(&mut self, route: Option<&obc_route::RouteReader>) {
+        if self.requested_assistant_resume().is_none() {
+            return;
+        }
+        self.ui.find.action = crate::find_place::Action::None;
+        self.ui.map_dirty = true;
+        let fix = self.fresh_position();
+        if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+            screen.error = fix.is_none().then_some(crate::screen::JourneyError::NoFix);
+        }
+        let Some(fix) = fix else {
+            return;
+        };
+        let Some(route) = route else {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
+            return;
+        };
+        let checkpoint = self.assistant_checkpoint().unwrap();
+        let matcher = &mut self.navigator.route_match;
+        let Some(matched) = matcher.recover(fix.lon, fix.lat, route, checkpoint.lower_m, checkpoint.upper_m) else {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::Unmatched);
+            }
+            return;
+        };
+        let origin = ReviewOrigin {
+            fix: (fix.lon, fix.lat),
+            progress_m: matched.progress_m,
+            occurrence: matcher.occurrence(),
+            lateral_m: matched.dist_m,
+            trustworthy: !matched.off_route,
+        };
+        self.resume_assistant(origin);
     }
 
     pub fn assistant_needs_recovery(&self) -> bool {
@@ -632,9 +690,14 @@ impl crate::App {
                 self.catalogs.loaded_scope = None;
                 self.catalogs.note_store_moved();
                 self.apply_assistant_checkpoint_action(after);
+                self.ui.map_dirty = true;
+                self.note_resume_save_refusal();
             }
         } else {
+            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            self.ui.find.resume_offer |= offer;
+            self.ui.map_dirty |= offer;
         }
     }
     /// A transient immutable edit, available only to the current MetadataMachine token.
@@ -650,8 +713,18 @@ impl crate::App {
         self.navigator.checkpoint_submission(token)
     }
     pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: MetadataOutcome) {
+        let before = self.assistant_review_status();
         let after = self.navigator.checkpoint_answer(outcome);
         self.apply_assistant_checkpoint_action(after);
+        self.ui.map_dirty |= self.assistant_review_status() != before;
+        self.note_resume_save_refusal();
+    }
+    fn note_resume_save_refusal(&mut self) {
+        if self.assistant_review_status() == ReviewStatus::ResumeAvailable {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
+        }
     }
     fn apply_assistant_checkpoint_action(&mut self, after: Option<AfterCheckpoint>) {
         match after {
@@ -732,6 +805,94 @@ mod tests {
         nav.checkpoint_issued(token);
         token
     }
+    #[test]
+    fn easier_review_refuses_movement_and_preserves_uncertain_acceptance_until_recovery() {
+        use crate::easier::Phase;
+        for recovery in [None, Some(false), Some(true)] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+            app.navigator = preview();
+            let mut easier = context();
+            easier.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
+            app.navigator.review.context = Some(easier);
+            app.easier.context = Some(easier);
+            app.easier.phase = Phase::Ready;
+            app.easier.review = true;
+            assert!(app.ui.stack.push(crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new())).is_ok());
+            assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
+            if recovery.is_some() {
+                app.navigator.accept_review(origin(), 0);
+                let mut tokens = TokenSource::new();
+                let token = issued(&mut app.navigator, &mut tokens);
+                assert!(app.navigator.checkpoint_submission(token));
+                app.advance_easier();
+                assert!(app.easier.phase == Phase::Ready, "Saving must remain visible");
+                app.navigator
+                    .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+            } else {
+                let mut moved = origin();
+                moved.progress_m += REVIEW_ALONG_TOLERANCE_M + 1;
+                app.navigator.accept_review(moved, 0);
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
+            }
+            app.advance_easier();
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Unavailable });
+            app.apply_gesture(crate::Gesture::Press);
+            assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
+            assert_eq!(app.active_route_index(), Some(0));
+            if let Some(committed) = recovery {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                assert!(app.navigator.checkpoint_change().is_none());
+                assert!(!app.navigator.review.cancel_after, "an uncertain write is not a cancel request");
+                let checkpoint =
+                    if committed { app.navigator.review.change.unwrap() } else { app.navigator.review.checkpoint };
+                let after = app.navigator.recover_checkpoint(context().store, checkpoint).unwrap();
+                assert!(app.navigator.review.change.is_none(), "recovery must not schedule a clear");
+                if committed {
+                    assert_eq!(after, Some(AfterCheckpoint::Activate(5)));
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                    app.advance_easier();
+                    assert!(app.easier.phase == Phase::Idle);
+                    assert!(matches!(app.top_screen(), crate::screen::Screen::Map(_)));
+                    assert!(!app.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::Assistant(_))));
+                } else {
+                    assert_eq!(after, None);
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
+                    assert!(app.assistant_preview().is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn easier_failed_entry_preserves_another_review_and_its_uncertain_save() {
+        use crate::{input::Chord, screen::Screen, Gesture};
+        for unresolved in [false, true] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+            app.navigator = preview();
+            app.bind_place_map(Some(context().map));
+            if unresolved {
+                app.navigator.accept_review(origin(), 0);
+                let token = issued(&mut app.navigator, &mut TokenSource::new());
+                assert!(app.navigator.checkpoint_submission(token));
+                app.navigator
+                    .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+            }
+            let status = app.assistant_review_status();
+            let change = app.navigator.review.change;
+            assert!(app.apply_chord(Chord::Quick));
+            app.apply_gesture(Gesture::Press);
+            app.apply_gesture(Gesture::Step(2));
+            app.apply_gesture(Gesture::Press);
+            assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+            app.advance_easier();
+            app.apply_gesture(Gesture::Back);
+            assert_eq!(app.assistant_review_status(), status);
+            assert_eq!(app.navigator.review.change, change);
+            assert!(!app.navigator.review.cancel_after);
+            assert!(app.assistant_preview().is_some());
+        }
+    }
+
     #[test]
     fn changing_cards_cannot_submit_or_recover_an_old_checkpoint() {
         let other = StoreIdentity::from_bytes([9; 16]);
@@ -912,7 +1073,7 @@ mod tests {
         nav.offer_checkpoint(context().store, Some(checkpoint));
         assert!(nav.following.active_route.is_none());
         let mut wrong = origin();
-        wrong.occurrence += 1;
+        wrong.progress_m = checkpoint.upper_m + 1;
         nav.resume_review(wrong);
         assert!(nav.review.change.is_none());
         let mut nav = NavigatorMachine::new();

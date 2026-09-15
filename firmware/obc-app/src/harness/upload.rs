@@ -244,7 +244,7 @@ fn an_upload_replaces_the_manual_swap_prompt_too() {
     // Open the *manual* swap prompt from the ride context: Map → the sheet (Down+Back) → Routes →
     // highlight route 1 (step down) → press (tracking + different route ⇒ the swap prompt).
     assert!(app.apply_chord(crate::input::Chord::Context));
-    app.apply_gesture(Gesture::Step(3));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
@@ -330,7 +330,7 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
     let mut app = idle_app();
     start_riding(&mut app);
     assert!(app.apply_chord(crate::input::Chord::Context));
-    app.apply_gesture(Gesture::Step(3));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press);
@@ -466,7 +466,7 @@ fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     let mut app = idle_app();
     start_riding(&mut app);
     assert!(app.apply_chord(crate::input::Chord::Context));
-    app.apply_gesture(Gesture::Step(3));
+    app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));
     route_upload(&mut app, 12, false);

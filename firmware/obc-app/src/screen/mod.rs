@@ -29,11 +29,16 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
 mod detour;
 mod dfu;
+mod find_place;
 mod home;
+mod journey;
+mod landmark_photo;
+mod landmarks;
 mod map;
 mod map_transfer;
 mod menu;
@@ -41,6 +46,7 @@ mod nav_route;
 mod passkey;
 mod peak_view;
 mod poi_detail;
+pub(crate) mod poi_display;
 mod poi_list;
 pub(crate) mod poi_menu;
 mod quick_drawer;
@@ -57,10 +63,10 @@ mod route_swap;
 mod settings;
 mod statistics;
 mod trip_delete;
-pub(crate) mod up_ahead;
 pub(crate) mod vocab;
 mod warning;
 
+pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
@@ -69,17 +75,24 @@ pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
     DfuProgressScreen, DfuUpdatedScreen,
 };
+pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
+pub(crate) use journey::JourneyError;
+pub use journey::JourneyScreen;
+pub use landmark_photo::LandmarkPhotoScreen;
+pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
-pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
+pub use nav_route::{NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
 pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
+mod easier;
+pub use easier::EasierScreen;
+pub(crate) use poi_display::poi_row_name;
 pub use poi_list::{PoiListScreen, PoiScratch};
-pub use poi_menu::PoiMenuScreen;
 /// The quick drawer's open duration, for the in-crate harness that has to settle a sheet before it
 /// acts on one — so retuning the constant cannot leave that helper acting mid-slide.
 #[cfg(test)]
@@ -102,13 +115,14 @@ pub use settings::{
 };
 pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
-pub(crate) use up_ahead::poi_row_name;
-pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
+mod whats_next;
+pub use poi_display::OFF_ROUTE_HINT_M;
 /// The one exception to the vocabulary's import rule: the wait spinner's dirty disc is part of the
 /// host-facing repaint contract (`ScreenTick::region`), so it is re-exported for the integration
 /// tests that pin it. In-crate callers still import `vocab::spinner`.
 pub use vocab::spinner::needle_region;
 pub use warning::{WarningFlags, WarningScreen};
+pub use whats_next::WhatsNextScreen;
 
 /// Maximum overlay depth. The deepest normal path is seven screens
 /// (`Home → Map → Menu → Settings → Ride → Fields → Add field`); keep the rest of the slots
@@ -210,6 +224,9 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 /// Logic context handed to [`Screen::handle`]: the mutable app state a screen adjusts. The
 /// render half is [`Render`].
 pub struct Ctx<'a> {
+    pub find: &'a mut crate::find_place::FindState,
+    pub landmarks: &'a mut crate::landmarks::Landmarks,
+    pub ahead: &'a mut crate::whats_next::AheadState,
     pub place_local: Option<(u8, u16)>,
     pub state: &'a mut AppState,
     pub activity: &'a mut Activity,
@@ -276,12 +293,6 @@ impl Ctx<'_> {
             nav_profiles: self.nav_profiles,
         }
     }
-
-    /// What the Up-ahead timeline is scoped to right now — the twin of [`Render::up_ahead_scope`],
-    /// so `handle` walks exactly the rows `draw` drew.
-    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
-        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
-    }
 }
 
 #[cfg(test)]
@@ -292,6 +303,9 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
     static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
+        find: Box::leak(Box::new(crate::find_place::FindState::new())),
+        landmarks: Box::leak(Box::new(crate::landmarks::Landmarks::new())),
+        ahead: Box::leak(Box::new(crate::whats_next::AheadState::new())),
         place_local: None,
         state,
         activity,
@@ -332,6 +346,9 @@ pub struct ActiveClimb<'a> {
 /// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
+    pub find: &'a crate::find_place::FindState,
+    pub landmarks: &'a crate::landmarks::Landmarks,
+    pub ahead: &'a crate::whats_next::AheadState,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
@@ -641,6 +658,7 @@ pub enum BaseContent {
 /// runtime pending check, but which check to run is chosen from this declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReaderNeed {
+    Landmarks,
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
     /// Always needs it — any [`Map`](BaseContent::Map) base screen.
@@ -649,6 +667,8 @@ pub enum ReaderNeed {
     PoiSnapshot,
     /// Needs it until the POI detail's opening-hours read has resolved (issue #444).
     PoiHours,
+    /// Reads selected photo content during bounded preparation.
+    Photo,
 }
 
 /// The **render key** a screen's content is made of — the exact facts its draw reads, declared in
@@ -747,7 +767,8 @@ pub struct Caps {
     /// Whether a drawer **recesses** this screen: the sheet lifts off a base drawn one device-64
     /// level down ([`dim_color`]), so the eye reads the sheet as being in front of a page.
     ///
-    /// `true` for chrome — a menu, a list, a settings page — where the second draw is a handful of
+    /// Prepared photos retain their pixels while covered; they cannot decode in draw.
+    /// `true` for other chrome — a menu, a list, a settings page — where the second draw is a handful of
     /// rules and glyphs and the recess costs nothing. `false` for a **map base** (#1559): its
     /// second draw is the streamed map, and dimming it means re-rendering it, which is tens of
     /// milliseconds at near zoom and far more at far zoom. On the panel the map under an open
@@ -999,6 +1020,11 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
+    Assistant(AssistantScreen) => Caps::nav(),
+    Journey(JourneyScreen) => Caps::nav(),
+    Landmarks(LandmarksScreen) => Caps::map(),
+    LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Landmarks),
+    LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
@@ -1021,20 +1047,21 @@ screens! {
     /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
     /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and
     /// the source scope are rows of the [context sheet](context_drawer::UP_AHEAD) above it (D4a).
-    UpAhead(UpAheadScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
     /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
     DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
-    PoiMenu(PoiMenuScreen) => Caps::nav(),
+    WhatsNext(WhatsNextScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
+    FindPlace(FindPlaceScreen) => Caps::map(),
+    VisitReview(VisitReviewScreen) => Caps::map(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
     PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
+    Easier(EasierScreen) => Caps::map(),
     PoiDetail(PoiDetailScreen) => Caps::nav().reader(ReaderNeed::PoiHours),
     /// The POI "Create a route?" confirm (epic #116, R4): *Create route* records the one-shot
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
-    NavConfirm(NavConfirmScreen) => Caps::nav(),
     /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
     /// resumable router; Back cancels (pops to the detail + rings the pass). The
     /// host's answer (the pass's fact stage) replaces it with the computed-route overview
@@ -1197,39 +1224,12 @@ impl Screen {
         }
     }
 
-    /// **Pre-draw acquisition** (#803): resolve any reader-backed one-shot state before drawing, so
-    /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
-    /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
-    /// ([`base_needs_reader`](crate::App::base_needs_reader) reads the same [`ReaderNeed`]
-    /// declaration). The POI list takes its category snapshot into shared scratch, the detail
-    /// resolves its opening-hours cache, and Skip ahead resolves route geometry + its live anchor;
-    /// every other screen is a no-op.
-    /// Intentionally partial, like [`tick_timers`](Screen::tick_timers) and
-    /// [`wants_hold_fill`](Screen::wants_hold_fill): a row that declares no reader need never lands
-    /// here.
-    /// The **route-corridor snapshot** this screen wants, if any (epic #946, U3) — the Up-ahead
-    /// timeline's `(filter, anchor)` key, declared rather than queried. Read by
-    /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
-    /// settles, which is the whole arm/re-arm/disarm lifecycle. Intentionally partial: no other
-    /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
-    /// else — as does an Up-ahead list the rider scoped to **waypoints only** (U4), which declares
-    /// no key at all.
-    pub(crate) fn corridor_request(
-        &self,
-        scope: crate::corridor::UpAheadScope,
-    ) -> Option<crate::corridor::CorridorKey> {
-        match self {
-            Screen::UpAhead(s) => s.corridor_key(scope),
-            _ => None,
-        }
-    }
-
     /// The **contextual content** this screen declares (#1515 D3) — the rows the Down+Back sheet
     /// offers over it, or `None` when it has no secondary actions and the chord therefore does
     /// nothing. Data, never behaviour: [`ContextDrawerScreen`] owns the cursor, the dimming, the
     /// transitions and the drawing, so a screen joins the grammar by naming a table.
     ///
-    /// Intentionally partial like [`corridor_request`](Screen::corridor_request): most screens
+    /// Intentionally partial: most screens
     /// declare nothing, and an empty sheet is exactly what the issue forbids.
     pub(crate) fn context(&self) -> Option<&'static ContextMenu> {
         match self {
@@ -1241,13 +1241,15 @@ impl Screen {
             // change because the rider switched which readout they are looking at.
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
-            Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::Landmarks(_) => Some(&context_drawer::LANDMARK_CONTENT),
+            Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
 
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
             // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
             // promises the profile the route was planned *under*).
-            Screen::NavConfirm(_) => Some(&context_drawer::ROUTE_PLAN),
+            Screen::PoiDetail(_) => Some(&context_drawer::ROUTE_PLAN),
             _ => None,
         }
     }
@@ -1612,7 +1614,7 @@ mod tests {
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
-                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours => {
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo | ReaderNeed::Landmarks => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
                     assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
                 }
@@ -1652,8 +1654,8 @@ mod tests {
             // screen cannot arrive dimmed by accident (#1559).
             assert_eq!(
                 c.recess,
-                c.base != BaseContent::Map,
-                "{name}: a map base is left alone under a sheet; anything cheaper recedes"
+                c.base != BaseContent::Map && c.reader != ReaderNeed::Photo,
+                "{name}: streamed maps and prepared photos retain their pixels under a sheet"
             );
             // A drawer is an overlay sheet, and the two halves of that are one declaration: the
             // frame recesses a base that asks for it under any `Overlay` row, and the pass freezes
@@ -1686,14 +1688,13 @@ mod tests {
     /// property to the base content; this is the list that ties it to the rider's experience, so a
     /// change to either shows up in review as a change to both.
     #[test]
-    fn only_the_map_class_screens_are_left_undimmed_under_a_sheet() {
+    fn streamed_map_and_photo_screens_are_left_undimmed_under_a_sheet() {
         let undimmed: std::vec::Vec<&str> =
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview"],
-            "the map-class screens, and only those — Statistics and the Climb view draw panels, \
-             which are cheap enough to keep the recess"
+            ["Map", "Landmarks", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview", "Easier"],
+            "streamed map and prepared photo pixels stay unchanged while covered"
         );
     }
 
