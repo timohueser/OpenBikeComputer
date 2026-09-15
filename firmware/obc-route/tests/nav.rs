@@ -2083,3 +2083,55 @@ fn graph_interior_terrain_gaps_survive_valid_emit_samples() {
         assert_eq!(facts.descent_m, stats.total_descent_m);
     }
 }
+
+#[test]
+fn unreadable_parallel_edge_cannot_prove_unique_import_attribution() {
+    use obc_formats::io::{ByteSource, Error};
+    struct UnreadableEdge<'a> {
+        bytes: &'a [u8],
+        offset: u64,
+        failures: std::cell::Cell<usize>,
+    }
+    impl ByteSource for UnreadableEdge<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+            if offset == self.offset {
+                self.failures.set(self.failures.get() + 1);
+                return Err(Error::Io);
+            }
+            SliceSource(self.bytes).read_at(offset, out)
+        }
+    }
+    let mut graph = NavGraph::default();
+    for lane in 0..2 {
+        let polyline: Vec<_> = (0..124).map(|i| (BASE.0 + i * 80, BASE.1 + lane * 40)).collect();
+        let a = graph.nodes.len() as u32;
+        graph.nodes.extend([Node { id: a, coord: polyline[0] }, Node { id: a + 1, coord: polyline[123] }]);
+        graph.edges.push(Edge { a, b: a + 1, polyline, length_m: 1095, kind: if lane == 0 { 32 } else { 96 } });
+    }
+    let bytes = map_with(&graph);
+    let source = SliceSource(&bytes);
+    let tables = MapTables::parse(&source).unwrap();
+    let cache = MapCache::new();
+    let readable = Reader::new(&source, &tables, &cache);
+    assert_eq!(readable.nav_directory().edge_chunk_count, 2, "one edge per source block");
+    let fault = UnreadableEdge {
+        bytes: &bytes,
+        offset: readable.nav_directory().edge_pool_offset + 512,
+        failures: std::cell::Cell::new(0),
+    };
+    let reader = Reader::new(&fault, &tables, &cache);
+    for offset in [1_000, 4_000] {
+        let from = (BASE.0 + offset, BASE.1);
+        let to = (from.0 + 500, from.1);
+        assert_eq!(obc_route::attribution::attribute_segment(&readable, &mut NavTileCache::new(), from, to), Ok(0));
+        assert_eq!(
+            obc_route::attribution::attribute_segment(&reader, &mut NavTileCache::new(), from, to),
+            Err(Error::Io),
+            "node and interior-anchor queries must both refuse incomplete evidence"
+        );
+    }
+    assert_eq!(fault.failures.get(), 2);
+}

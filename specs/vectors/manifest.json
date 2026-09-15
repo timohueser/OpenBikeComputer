@@ -66,6 +66,24 @@
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
     },
+    "route-visit.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 340,
+      "crc32": "0x6B264AEC",
+      "valid": true
+    },
+    "route-visit-waypoint-overlap.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 416,
+      "crc32": "0x592CE5D0",
+      "valid": false
+    },
+    "route-visit-index-overlap.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 380,
+      "crc32": "0xFD29B876",
+      "valid": false
+    },
     "terrain-shard.obcd": {
       "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) \u2014 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
       "byte_len": 6192,
