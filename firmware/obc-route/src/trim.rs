@@ -1,13 +1,13 @@
 //! Resumable first-contact trim. Each step visits at most one source chunk.
-use crate::convert::{EmitStats, ObcrEmitter, WpPlace};
+use crate::convert::{ObcrEmitter, WpPlace};
 use crate::geo::{inflated_bbox, project_to_segment};
 use crate::reader::{
     decode_route_points_between_checked, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_WAYPOINTS,
 };
 use heapless::Vec;
-use obc_elevation::{DeadBand, ELE_DEADBAND_M};
+use obc_elevation::ELE_DEADBAND_M;
 use obc_formats::io::{ByteSink, Error};
-use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
+use obc_map_scene::{cos_lat, ground_dist_m, BBox};
 
 /// Per-point hug distance to the route tail (m). Two consecutive detour points each within this of
 /// the tail count as *sustained* contact — the same both-endpoints-proximity trick
@@ -123,9 +123,6 @@ pub struct Trimmer {
     trim_index: usize,
     rejoin_m: u32,
     emitter: ObcrEmitter,
-    band: DeadBand<f64>,
-    min_ele: i16,
-    max_ele: i16,
 }
 
 impl Trimmer {
@@ -144,9 +141,6 @@ impl Trimmer {
             trim_index: 0,
             rejoin_m: target_m,
             emitter: ObcrEmitter::empty(),
-            band: DeadBand::new(),
-            min_ele: i16::MAX,
-            max_ele: i16::MIN,
         }
     }
 
@@ -193,7 +187,7 @@ impl Trimmer {
                                 self.last_seen = Some(p);
                                 continue;
                             }
-                            let d = ground_dist_m_cl(self.last_seen.unwrap_or(p), p, self.tail.cl);
+                            let d = ground_dist_m(self.last_seen.unwrap_or(p), p);
                             self.arc += d;
                             self.since_kept += d;
                             self.last_seen = Some(p);
@@ -255,7 +249,16 @@ impl Trimmer {
                 }
             }
             Phase::Begin => {
+                if detour.visit_descriptor()?.is_some() {
+                    return Err(Error::BadOffset);
+                }
                 ObcrEmitter::begin(sink)?;
+                self.emitter.set_attribution_map(detour.attribution_map()?);
+                self.emitter.set_flags(if detour.has_unresolved_avoidance() {
+                    obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
+                } else {
+                    0
+                });
                 if self.has_elevation {
                     self.emitter.keep_elevation_detail(ELE_DEADBAND_M as i16);
                 }
@@ -268,11 +271,10 @@ impl Trimmer {
                 let skip = usize::from(self.chunk > 0);
                 self.chunk += 1;
                 for p in buf.iter().skip(skip) {
-                    let ele = if self.has_elevation { p.ele } else { 0 };
-                    self.min_ele = self.min_ele.min(ele);
-                    self.max_ele = self.max_ele.max(ele);
-                    self.band.push(f64::from(ele));
-                    self.emitter.push(sink, p.lon, p.lat, ele, self.band.ascent() as u32)?;
+                    let ele = p.ele;
+                    self.emitter.set_surface(p.surface);
+                    self.emitter.set_elevation_incomplete(p.elevation_incomplete);
+                    self.emitter.push_retained(sink, p.lon, p.lat, ele)?;
                     if self.distinct == self.trim_index {
                         self.phase = Phase::Finish;
                         break;
@@ -281,21 +283,7 @@ impl Trimmer {
                 }
             }
             Phase::Finish => {
-                let (min_ele_m, max_ele_m) = if self.has_elevation && self.min_ele <= self.max_ele {
-                    (self.min_ele, self.max_ele)
-                } else {
-                    (0, 0)
-                };
-                let stats = EmitStats {
-                    min_ele_m,
-                    max_ele_m,
-                    ascent_m: if self.has_elevation { self.band.ascent() as u32 } else { 0 },
-                    descent_m: if self.has_elevation { self.band.descent() as u32 } else { 0 },
-                    total_distance_m: None,
-                    has_elevation: self.has_elevation,
-                };
-                let stats =
-                    self.emitter.finish(sink, detour.name(), stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
+                let stats = self.emitter.finish(sink, detour.name(), &mut Vec::<WpPlace, MAX_WAYPOINTS>::new())?;
                 return Ok(TrimStep::Done(Some(TrimOutcome {
                     rejoin_m: self.rejoin_m,
                     detour_len_m: stats.total_distance_m,

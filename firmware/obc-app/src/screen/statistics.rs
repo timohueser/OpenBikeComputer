@@ -291,7 +291,11 @@ impl StatisticsScreen {
         } else if off {
             write_distance_coarse(&mut readout, rx.t(Msg::StatsOff), rx.navigation.dist_to_route_m, units);
         } else {
-            let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), stat_fields::grade_at(profile, total, cursor_frac));
+            if let Some(grade) = stat_fields::grade_at(profile, total, cursor_frac) {
+                let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), grade);
+            } else {
+                let _ = readout.push_str("—");
+            }
         }
         title_frame(cv, w, h, rx.t(Msg::StatsTitle), &readout);
 
@@ -308,15 +312,22 @@ impl StatisticsScreen {
 
         // The cursor (scrub point, or the zoom centre)
         let cursor_x = band.frac_to_x(cursor_frac).clamp(chart_x, chart_x + chart_w - 1);
-        let cur_ele = profile.at(cursor_frac).1;
+        let cursor_band = profile.at(cursor_frac);
+        let cur_ele = if cursor_band.0 <= cursor_band.1 { cursor_band.1 } else { profile.min_ele_m };
         let cur_y = band.ele_to_y(cur_ele);
         cv.vline(cursor_x, CHART_TOP, CHART_BOT - CHART_TOP + 1, 2, cursor_color);
-        cv.disc(Point::new(cursor_x, cur_y), 4, INK);
-        cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color);
+        if cursor_band.0 <= cursor_band.1 {
+            cv.disc(Point::new(cursor_x, cur_y), 4, INK);
+            cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color);
+        }
         // Elevation readout at the cursor. Below the dot near the peak so labels don't overlap;
         // else just above, clamped inside the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
-        let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
+        if cursor_band.0 <= cursor_band.1 {
+            let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
+        } else {
+            let _ = ele_s.push_str("—");
+        }
         let peak_x = band.frac_to_x(profile.peak_frac());
         let near_peak = (chart_x..chart_x + chart_w).contains(&peak_x) && (cursor_x - peak_x).abs() < PEAK_NEAR_PX;
         let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, CHART_BOT - 24);

@@ -32,13 +32,13 @@ enum WaypointPlacement {
         var cumulative: [Double] = [0]
         cumulative.reserveCapacity(points.count)
         for i in 1..<points.count {
-            cumulative.append(cumulative[i - 1] + points[i - 1].coordinate.distance(to: points[i].coordinate))
+            cumulative.append(cumulative[i - 1] + points[i - 1].coordinate.routeDistance(to: points[i].coordinate))
         }
 
         let placed = raw.map { waypoint -> Placement in
             var best = (index: 0, distance: Double.infinity)
             for (i, point) in points.enumerated() {
-                let d = waypoint.coordinate.distance(to: point.coordinate)
+                let d = waypoint.coordinate.routeDistance(to: point.coordinate)
                 if d < best.distance { best = (i, d) }
             }
             return Placement(

@@ -1306,7 +1306,7 @@ fn append_snap_anchors(
     if record.len() < NAV_EDGE_FIXED_LEN {
         return Err(Error::Format("a merged edge record is shorter than the §8.4 fixed header".into()));
     }
-    let point_count = u16::from_le_bytes(record[4..6].try_into().expect("2 bytes")) as usize;
+    let point_count = (u16::from_le_bytes(record[4..6].try_into().expect("2 bytes")) & 0x7fff) as usize;
     let expected = NAV_EDGE_FIXED_LEN + point_count.saturating_sub(1) * 4;
     if point_count < 2 || expected != record.len() {
         return Err(Error::Format(format!(

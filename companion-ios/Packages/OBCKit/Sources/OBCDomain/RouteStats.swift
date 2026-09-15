@@ -22,7 +22,7 @@ public struct RouteStats: Equatable, Sendable {
 
     /// Elevation-noise hysteresis: climb only accumulates once the track has
     /// risen this far above its last confirmed elevation.
-    public static let climbHysteresisMeters = 2.0
+    public static let climbHysteresisMeters = 3.0
     /// Grades are measured over windows at least this long, so single noisy
     /// samples can't spike the MAX stat.
     public static let gradeWindowMeters = 100.0
@@ -32,7 +32,7 @@ public struct RouteStats: Equatable, Sendable {
         var cumulative: [Double] = [0]
         cumulative.reserveCapacity(points.count)
         for i in 1..<max(points.count, 1) {
-            cumulative.append(cumulative[i - 1] + points[i - 1].coordinate.distance(to: points[i].coordinate))
+            cumulative.append(cumulative[i - 1] + points[i - 1].coordinate.routeDistance(to: points[i].coordinate))
         }
         let distance = cumulative.last ?? 0
 
@@ -41,7 +41,8 @@ public struct RouteStats: Equatable, Sendable {
         var descent = 0.0
         var confirmed: Double?
         for point in points {
-            guard let elevation = point.elevationMeters else { continue }
+            if point.elevationIncomplete { confirmed = nil }
+            guard let elevation = point.elevationMeters else { confirmed = nil; continue }
             guard let last = confirmed else {
                 confirmed = elevation
                 continue
@@ -59,6 +60,8 @@ public struct RouteStats: Equatable, Sendable {
         var maxGrade: Double?
         var windowStart = 0
         for i in 1..<max(points.count, 1) {
+            if points[i].elevationMeters == nil || points[i].elevationIncomplete { windowStart = i; continue }
+            if points[windowStart].elevationMeters == nil { windowStart = i; continue }
             while cumulative[i] - cumulative[windowStart] >= gradeWindowMeters,
                 windowStart + 1 < i,
                 cumulative[i] - cumulative[windowStart + 1] >= gradeWindowMeters {
@@ -73,7 +76,7 @@ public struct RouteStats: Equatable, Sendable {
             if grade > (maxGrade ?? -.infinity) { maxGrade = grade }
         }
 
-        let elevations = points.compactMap(\.elevationMeters)
+        let elevations = points.allSatisfy { $0.elevationMeters != nil && !$0.elevationIncomplete } ? points.compactMap(\.elevationMeters) : []
         let estimateMinutes = distance / 1000 / 16 * 60 + climb / 10
         return RouteStats(
             distanceMeters: distance,
