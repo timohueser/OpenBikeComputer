@@ -41,9 +41,19 @@ adds the existing `f` token before activation, so the schedule read has complete
 It also pages to the seventh result on the second Resupply page for the real
 detour scenario. Complete place ordering changes the old row-based destination;
 the new destination gives a measured 1,078 m ordinary route and an 801 m detour
-(+1 m). Named NavConfirm, RouteOverview, Detour, and DetourPreview frames passed.
+(+1 m). Named NavConfirm, RouteOverview, and DetourPreview frames passed.
+The local `detour-chooser.png` records an earlier 548 m route that was too short;
+it is not successful detour evidence.
 The first farther-row probe omitted the page preparation and failed its expected
 screen; the corrected script uses the real page boundary. No production bypass
 was added. `cargo build --locked -p obc-sim`, `./tools/obc suites check`, and
 `git diff --check` passed. No local full snapshot sweep or shipping image ran.
 The public v15 catalog publication and independent composition delta remain open.
+
+CI run `34945372506` passed the shipping resource gate. Its snapshot script
+stopped at an old v14-only terrain staging assertion before the manifest check.
+The assertion now requires the current v15 format, and the elevation plan also
+prepares its detail before activation. The named `elev-nav-overview.png` and
+`detour-chooser-final.png` pass through the normal simulator. CI now retains its
+rendered PNG files as review artifacts so changed manifest entries can be
+inspected without another local sweep. No expectation is regenerated in CI.
