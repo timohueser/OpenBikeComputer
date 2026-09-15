@@ -371,3 +371,13 @@ questions are outside this prototype.
 The committed snapshot sweep is [`firmware/ui-snapshots.sh`](../../firmware/ui-snapshots.sh). When
 changing command spelling or fixture ownership, compare the surviving `--png` outputs byte for
 byte; delete a scenario only when its capability was intentionally removed.
+
+### Production Landmarks validation
+
+The temporary headless script token `L` opens the production Landmarks screen. It reads the
+installed map and uses the ordinary Reader, photo preparation, place detail and Visit planner.
+It does not install the Assistant study or start recording. Use `--center LON,LAT --heading 0`
+for an explicit simulated GPS fix, then `L f p f` to open the first source text page.
+`u` opens its optional photo; `C p f` opens Sources. This entry is for bounded implementation
+checks. Remove `L` when the ordinary Assistant menu is connected; release acceptance must use
+that menu. See the [recorded evidence](../../docs/assets/ride-assistant/implementation/ra10-evidence/README.md).
