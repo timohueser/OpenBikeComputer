@@ -267,37 +267,67 @@ impl VisitReviewScreen {
         S: obc_map_scene::MapScene,
     {
         let points = rx.nav_preview;
-        let vp = if !points.is_empty()
-            && (matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)
-                || (self.accepted && rx.find.review == ReviewStatus::Accepted))
-        {
+        let visible = matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)
+            || (self.accepted && rx.find.review == ReviewStatus::Accepted);
+        let gap = rx.visit_target.and_then(|target| {
+            let approach = target.metadata.approach?;
+            let endpoint = (approach.lon, approach.lat);
+            let meters = obc_map_scene::ground_dist_m(target.display, endpoint) as u32;
+            (!self.accepted && meters > 100).then_some((endpoint, meters))
+        });
+        let vp = if !points.is_empty() && visible {
             let (mut min, mut max) = (points[0], points[0]);
             for &(lon, lat) in points {
                 min = (min.0.min(lon), min.1.min(lat));
                 max = (max.0.max(lon), max.1.max(lat));
             }
-            fit(min, max, rx.w, rx.h, 192)
+            if let Some(target) = rx.visit_target {
+                min = (min.0.min(target.display.0), min.1.min(target.display.1));
+                max = (max.0.max(target.display.0), max.1.max(target.display.1));
+            }
+            fit(min, max, rx.w, rx.h, if gap.is_some() { 142 } else { 192 })
         } else {
             rx.state.viewport(rx.w as f32, rx.h as f32)
         };
-        let _ = super::map::draw_map_scene(cv, rx, &vp, None);
-        if matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)
-            || (self.accepted && rx.find.review == ReviewStatus::Accepted)
-        {
+        let marker_color = super::map::draw_map_scene(cv, rx, &vp, None);
+        if visible {
             if let Some(scratch) = rx.scratch.as_deref_mut() {
                 let (target, color) = cv.split();
-                scratch.stroke_path(target, &vp, points.iter().copied(), color(DETOUR), super::ROUTE_WEIGHT);
+                scratch.stroke_path(target, &vp, points.iter().copied(), color(DETOUR), 9);
             }
-        }
-        if let Some(gap) = rx
-            .visit_gap_m
-            .filter(|_| !self.accepted && matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving))
-        {
-            let mut label = heapless::String::<40>::new();
-            super::vocab::fmt::write_distance_coarse(&mut label, "", gap, rx.settings.units);
-            let _ = write!(label, " {}", rx.t(Msg::AssistantFromPlace));
-            cv.round(rect(8, 164, rx.w - 16, 24), 4, PARCHMENT);
-            cv.text(&label, Point::new(rx.w / 2, 166), Font::Label, TextAlign::Center, INK);
+            if let Some(target) = rx.visit_target {
+                let (x, y) = vp.to_screen(target.display.0, target.display.1);
+                let place = Point::new(x, y);
+                if let Some((endpoint, _)) = gap {
+                    let (x, y) = vp.to_screen(endpoint.0, endpoint.1);
+                    let end = Point::new(x, y);
+                    dotted_connector(cv, end, place);
+                    cv.disc(end, 7, PARCHMENT);
+                    cv.disc(end, 5, DETOUR);
+                    cv.disc(end, 2, PARCHMENT);
+                }
+                destination_pin(cv, place);
+            }
+            if let (Some(fix), Some(color), Some(scratch)) =
+                (rx.state.user_fix, marker_color, rx.scratch.as_deref_mut())
+            {
+                let (target, colors) = cv.split();
+                scratch.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, colors(color));
+            }
+            if let Some((_, meters)) = gap {
+                let mut label = heapless::String::<40>::new();
+                super::vocab::fmt::write_distance_coarse(&mut label, "", meters, rx.settings.units);
+                let _ = write!(label, " {}", rx.t(Msg::AssistantStraightLine));
+                cv.round(rect(8, 142, rx.w - 16, 48), 4, PARCHMENT);
+                cv.text(
+                    rx.t(Msg::AssistantRouteEndToPin),
+                    Point::new(rx.w / 2, 142),
+                    Font::Label,
+                    TextAlign::Center,
+                    INK,
+                );
+                cv.text(&label, Point::new(rx.w / 2, 166), Font::Label, TextAlign::Center, INK);
+            }
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
@@ -350,6 +380,22 @@ impl VisitReviewScreen {
         cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
     }
 }
+fn destination_pin(cv: &mut impl Surface, point: Point) {
+    let head = Point::new(point.x, point.y - 10);
+    cv.triangle(point, Point::new(point.x - 7, point.y - 10), Point::new(point.x + 7, point.y - 10), INK);
+    cv.disc(head, 9, PARCHMENT);
+    cv.disc(head, 7, INK);
+    cv.disc(head, 3, PARCHMENT);
+}
+
+fn dotted_connector(cv: &mut impl Surface, start: Point, end: Point) {
+    let delta = end - start;
+    let steps = delta.x.abs().max(delta.y.abs()).max(1);
+    for step in (0..steps).step_by(6) {
+        cv.disc(Point::new(start.x + delta.x * step / steps, start.y + delta.y * step / steps), 1, INK);
+    }
+}
+
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]
 }

@@ -5,7 +5,7 @@ use core::fmt::Write;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Canvas, Surface,
 };
 #[derive(Debug)]
@@ -96,7 +96,7 @@ impl LandmarksScreen {
         }
         let (x, y) = vp.to_screen(rx.landmarks.origin.0, rx.landmarks.origin.1);
         cv.disc(Point::new(x, y), 5, INK);
-        header(cv, rx.t(Msg::AssistantLandmarks));
+        header(cv, rx.t(Msg::AssistantLandmarks), None);
         cv.fill(rect(0, 208, 240, 112), PARCHMENT);
         cv.round(rect(6, 210, 228, 104), 6, AMBER);
         let state = rx.landmarks;
@@ -203,7 +203,14 @@ where
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    header(cv, if sources { rx.t(Msg::RideContextSources) } else { &state.name });
+    let page = state.record.filter(|_| state.ready()).map(|record| {
+        if sources {
+            (state.source_page + 1, state.source_pages)
+        } else {
+            (state.page + 1, record.text_pages as u16 + u16::from(!record.photo.is_absent()))
+        }
+    });
+    header(cv, if sources { rx.t(Msg::RideContextSources) } else { &state.name }, page);
     if !state.ready() || state.record.is_none() {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
@@ -217,22 +224,13 @@ where
             INK,
         );
     }
-    let mut label = heapless::String::<40>::new();
-    if sources {
-        let _ = write!(label, "{}  {}/{}", rx.t(Msg::AssistantBack), state.source_page + 1, state.source_pages);
+    let label = if sources {
+        rx.t(Msg::AssistantBack)
     } else {
-        let record = state.record.unwrap();
-        let action = rx.t(visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx));
-        let _ = write!(
-            label,
-            "{} {}/{}",
-            action,
-            state.page + 1,
-            record.text_pages as u16 + u16::from(!record.photo.is_absent())
-        );
-    }
+        rx.t(visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx))
+    };
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
-    cv.text(&label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+    cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
 }
 pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
@@ -263,10 +261,17 @@ pub(super) fn visit_action(
         Msg::AssistantNoAccess
     }
 }
-fn header(cv: &mut impl Surface, title: &str) {
+pub(super) fn header(cv: &mut impl Surface, title: &str, page: Option<(u16, u16)>) {
     cv.fill(rect(0, 0, 240, 40), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
-    cv.text(&super::poi_list::fit(title, 18), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+    let mut count = heapless::String::<12>::new();
+    if let Some((current, total)) = page {
+        let _ = write!(count, "{current}/{total}");
+    }
+    let reserved = if count.is_empty() { 0 } else { text_width(&count, Font::Label) as usize + 12 };
+    let title_chars = (216 - reserved) / Font::Label.char_width() as usize;
+    cv.text(&super::poi_list::fit(title, title_chars), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+    cv.text(&count, Point::new(228, 9), Font::Label, TextAlign::Right, PARCHMENT);
 }
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]

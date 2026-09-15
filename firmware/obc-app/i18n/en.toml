@@ -651,7 +651,8 @@ no_matches = "No routes matched this age. Try a shorter age or delete routes fro
 done = "Old routes deleted. Retry the upload. Press to close."
 
 [assistant]
-from_place = "from place"
+route_end_to_pin = "Route end to pin"
+straight_line = "(direct)"
 title = "Assistant"
 find = "Where's the next..."
 next = "What's next"
@@ -745,7 +746,7 @@ no_road = "No road access"
 profile_blocked = "Profile blocked"
 blocked_route = "Blocked route"
 unmatched = "Route unmatched"
-review_visit = "Review visit"
+review_visit = "Preview route"
 current_visit = "Current visit"
 current_leg = "Current leg"
 save_unknown = "Save state unknown"
