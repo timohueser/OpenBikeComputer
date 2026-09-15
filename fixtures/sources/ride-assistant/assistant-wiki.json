@@ -1,0 +1,823 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "path": "articles/en-Aare_Gorge.json",
+      "url": "https://en.wikipedia.org/w/api.php?format=json&action=query&titles=Aare_Gorge&prop=pageprops%7Crevisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.430929+00:00",
+      "sha256": "3a61b09483a6e7cfb1f828a1335006688d7c96ac21b1beca5fe26d68f23488ad",
+      "bytes": 7948
+    },
+    {
+      "path": "entities/Q301191.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q301191.json",
+      "retrieved_at": "2026-09-14T21:38:30.431381+00:00",
+      "sha256": "7bd5699cf42f8403f9804329d1f22d84b942c4aa25a4bb727b87021e57db74b5",
+      "bytes": 11209
+    },
+    {
+      "path": "articles/en-Q301191.html",
+      "url": "https://en.wikipedia.org/w/index.php?title=Aare+Gorge&oldid=1327206534",
+      "retrieved_at": "2026-09-14T21:38:30.431844+00:00",
+      "sha256": "b110411a34212492bcfeafb59305e23ab3a84da55b9514e3f71ab8c9c3a91ec4",
+      "bytes": 101866
+    },
+    {
+      "path": "articles/de-Q301191.json",
+      "url": "https://de.wikipedia.org/w/api.php?format=json&action=query&titles=Aareschlucht&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.431980+00:00",
+      "sha256": "0571ae44e3fa8c0c302b039e0c7df6434d0101602a1d8420afedd66d097077af",
+      "bytes": 7302
+    },
+    {
+      "path": "articles/de-Q301191.html",
+      "url": "https://de.wikipedia.org/w/index.php?title=Aareschlucht&oldid=259342436",
+      "retrieved_at": "2026-09-14T21:38:30.432229+00:00",
+      "sha256": "5bc3b4159bc690256d619801108f52ed85923d6d11bfce8b0b06080b55485b22",
+      "bytes": 86358
+    },
+    {
+      "path": "articles/fr-Q301191.json",
+      "url": "https://fr.wikipedia.org/w/api.php?format=json&action=query&titles=Gorges+de+l%27Aar&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.432340+00:00",
+      "sha256": "cedb65a9cd06464974c901ff6cadc7ea3a02cdb2f7f8589a9f5d85a7feb2b888",
+      "bytes": 3657
+    },
+    {
+      "path": "articles/fr-Q301191.html",
+      "url": "https://fr.wikipedia.org/w/index.php?title=Gorges+de+l%27Aar&oldid=234455299",
+      "retrieved_at": "2026-09-14T21:38:30.432526+00:00",
+      "sha256": "48753ceefbacf902bbe9b3a17a1a16ee05bb29411783221549aee5ec7cae0953",
+      "bytes": 100514
+    },
+    {
+      "path": "images/Q301191-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3AAareschlucht_166_7.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&iilimit=1&uselang=en",
+      "retrieved_at": "2026-09-14T21:38:30.432641+00:00",
+      "sha256": "ca60a83d21a8a5dca0b472fd1e8cd98f10a32695d1d1d953d6d92c8876d2ba8a",
+      "bytes": 8396
+    },
+    {
+      "path": "images/Q301191.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/3/33/Aareschlucht_166_7.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:38:30.432864+00:00",
+      "sha256": "c5c64c04f01a378f5c284bb02c50ec11bac3311a86ca3f077bd762f82d20cd01",
+      "bytes": 5753592
+    },
+    {
+      "path": "articles/en-Reichenbach_Falls.json",
+      "url": "https://en.wikipedia.org/w/api.php?format=json&action=query&titles=Reichenbach_Falls&prop=pageprops%7Crevisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.443046+00:00",
+      "sha256": "1285ca9f4c925969b529a319d74323967b1802c5f7428b72f90794b19d92770f",
+      "bytes": 18130
+    },
+    {
+      "path": "entities/Q183395.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q183395.json",
+      "retrieved_at": "2026-09-14T21:38:30.443448+00:00",
+      "sha256": "704e39663a8d5978feb97b85656a3fd6e1312400e5fb2cbe88f36e4e0bc278cc",
+      "bytes": 19041
+    },
+    {
+      "path": "articles/en-Q183395.html",
+      "url": "https://en.wikipedia.org/w/index.php?title=Reichenbach+Falls&oldid=1362225684",
+      "retrieved_at": "2026-09-14T21:38:30.443847+00:00",
+      "sha256": "01adab3432fd1f68aba90685854b223b42c8b0325eeea3163e586a8bd37268ce",
+      "bytes": 188784
+    },
+    {
+      "path": "articles/de-Q183395.json",
+      "url": "https://de.wikipedia.org/w/api.php?format=json&action=query&titles=Reichenbachfall&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.444034+00:00",
+      "sha256": "1ebd89a05f67b0389b669a2f66ce2d123d859b9017f259bed6c9ff9ebf3fdc2d",
+      "bytes": 7080
+    },
+    {
+      "path": "articles/de-Q183395.html",
+      "url": "https://de.wikipedia.org/w/index.php?title=Reichenbachfall&oldid=264244626",
+      "retrieved_at": "2026-09-14T21:38:30.444302+00:00",
+      "sha256": "1c1d3c7e790b2f0abc8ee6c4ae992b343b47851fa952a9ec39ae86f74d589007",
+      "bytes": 90588
+    },
+    {
+      "path": "articles/fr-Q183395.json",
+      "url": "https://fr.wikipedia.org/w/api.php?format=json&action=query&titles=Chutes+du+Reichenbach&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.444404+00:00",
+      "sha256": "0c3e4a2648e33de556bfa77a640979bd05093aad9358cdfb96b1c31e9c8e0a4e",
+      "bytes": 6638
+    },
+    {
+      "path": "articles/fr-Q183395.html",
+      "url": "https://fr.wikipedia.org/w/index.php?title=Chutes+du+Reichenbach&oldid=225781524",
+      "retrieved_at": "2026-09-14T21:38:30.444568+00:00",
+      "sha256": "87eaef58209734e8746668ea0c5b3bfcecaa79940527e88aa2ebd4308f6a3195",
+      "bytes": 111679
+    },
+    {
+      "path": "images/Q183395-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3ASchattenhalb_Reichenbachfall_7-05-2024_10-56-28.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&iilimit=1&uselang=en",
+      "retrieved_at": "2026-09-14T21:38:30.444687+00:00",
+      "sha256": "ea657c775bf1fb4dc1e18326aaf0215b5ef771dbb9b9a1e1afc610559fd34bed",
+      "bytes": 2304
+    },
+    {
+      "path": "images/Q183395.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/Schattenhalb_Reichenbachfall_7-05-2024_10-56-28.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:38:30.444812+00:00",
+      "sha256": "ffb2b3415b34aa703f2c6fe1580e402657f87bad4be5263bd6765ef2a41def41",
+      "bytes": 15840155
+    },
+    {
+      "path": "articles/en-Dunlough_Castle.json",
+      "url": "https://en.wikipedia.org/w/api.php?format=json&action=query&titles=Dunlough_Castle&prop=pageprops%7Crevisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.462069+00:00",
+      "sha256": "fddca6ef68255d7130827db8ecba06b3046165459572b2508ccc2e4ad334c968",
+      "bytes": 13762
+    },
+    {
+      "path": "entities/Q5315471.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q5315471.json",
+      "retrieved_at": "2026-09-14T21:38:30.462448+00:00",
+      "sha256": "0e8ae17c6acdb554a8abdc86d691453f124df99c76a527e32eb2079a646cd171",
+      "bytes": 5390
+    },
+    {
+      "path": "articles/en-Q5315471.html",
+      "url": "https://en.wikipedia.org/w/index.php?title=Dunlough+Castle&oldid=1322295338",
+      "retrieved_at": "2026-09-14T21:38:30.462749+00:00",
+      "sha256": "83997e3b61635542e360f6b4e42ff341467876782eb68fcbb722d30681af8f6a",
+      "bytes": 114607
+    },
+    {
+      "path": "articles/de-Q5315471.json",
+      "url": "https://de.wikipedia.org/w/api.php?format=json&action=query&titles=Dunlough+Castle&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.462873+00:00",
+      "sha256": "2cdc8846d432c34a3d58438b035afba2fa6f79ac792b17bc4fff0129173b08cd",
+      "bytes": 15696
+    },
+    {
+      "path": "articles/de-Q5315471.html",
+      "url": "https://de.wikipedia.org/w/index.php?title=Dunlough+Castle&oldid=244103094",
+      "retrieved_at": "2026-09-14T21:38:30.462986+00:00",
+      "sha256": "fd0d1992ac123c8b8698068ee4b67005e7aeb92ca22b843eb0cef2cee8aa284d",
+      "bytes": 98977
+    },
+    {
+      "path": "images/Q5315471-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3A2019-07-30-Dunlough_Castle-0819.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&iilimit=1&uselang=en",
+      "retrieved_at": "2026-09-14T21:38:30.463091+00:00",
+      "sha256": "0c4d73d35f6151a092c1f5b22f00855bd63f5ba44e3babfa5879c1b46a1dee9a",
+      "bytes": 4681
+    },
+    {
+      "path": "images/Q5315471.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2b/2019-07-30-Dunlough_Castle-0819.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:38:30.463175+00:00",
+      "sha256": "c503ede94bfa59127d85fbefc4571f3184e9513c31a2cdda3ccef6b32a92e91e",
+      "bytes": 14978985
+    },
+    {
+      "path": "articles/en-Grimsel_Pass.json",
+      "url": "https://en.wikipedia.org/w/api.php?format=json&action=query&titles=Grimsel_Pass&prop=pageprops%7Crevisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.472220+00:00",
+      "sha256": "74707a5101522b71a4df68112a5b8cc860357fbc07154539a83ae67c0a03a089",
+      "bytes": 20309
+    },
+    {
+      "path": "entities/Q666668.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q666668.json",
+      "retrieved_at": "2026-09-14T21:38:30.472420+00:00",
+      "sha256": "970a669d707132768bd3b9b8f39f13c51a0bd671b9366219a59e91aeb62ab5a4",
+      "bytes": 22144
+    },
+    {
+      "path": "articles/en-Q666668.html",
+      "url": "https://en.wikipedia.org/w/index.php?title=Grimsel+Pass&oldid=1362433518",
+      "retrieved_at": "2026-09-14T21:38:30.472639+00:00",
+      "sha256": "5253e89c22b75a5d23200a574c477c3b07a546efdcee989ac49ab991ec97b000",
+      "bytes": 173192
+    },
+    {
+      "path": "articles/de-Q666668.json",
+      "url": "https://de.wikipedia.org/w/api.php?format=json&action=query&titles=Grimselpass&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.472792+00:00",
+      "sha256": "43036fa29d3ad8c0e4fe24ba6af6ee829961c9eb76444192328fbc4503be7679",
+      "bytes": 26605
+    },
+    {
+      "path": "articles/de-Q666668.html",
+      "url": "https://de.wikipedia.org/w/index.php?title=Grimselpass&oldid=270413329",
+      "retrieved_at": "2026-09-14T21:38:30.472934+00:00",
+      "sha256": "fe66171cfc98410b949620170a042f9ef96230a48a0cd169851b0094f99134eb",
+      "bytes": 225942
+    },
+    {
+      "path": "articles/fr-Q666668.json",
+      "url": "https://fr.wikipedia.org/w/api.php?format=json&action=query&titles=Col+du+Grimsel&prop=revisions%7Cextracts&rvprop=ids%7Ctimestamp%7Ccontent&rvslots=main&explaintext=1",
+      "retrieved_at": "2026-09-14T21:38:30.473104+00:00",
+      "sha256": "49fd72e43e27b8d8d8ff3276e57b40fd2e00c2a12020abb258b53f231c77faa5",
+      "bytes": 14147
+    },
+    {
+      "path": "articles/fr-Q666668.html",
+      "url": "https://fr.wikipedia.org/w/index.php?title=Col+du+Grimsel&oldid=211752236",
+      "retrieved_at": "2026-09-14T21:38:30.473208+00:00",
+      "sha256": "880ed2b2089aa5ddfdd01299c20718e2a05c9a4dddbbfb725d37ed1167eaef28",
+      "bytes": 171650
+    },
+    {
+      "path": "images/Q666668-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3AGrimselpass-passh%C3%B6he01.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&iilimit=1&uselang=en",
+      "retrieved_at": "2026-09-14T21:38:30.473348+00:00",
+      "sha256": "d4ceaa83d03583ae12a221c8e4f23d080f7f05d28b0965caf2c2c1780cc2466a",
+      "bytes": 2516
+    },
+    {
+      "path": "images/Q666668.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/4/48/Grimselpass-passh%C3%B6he01.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:38:30.473613+00:00",
+      "sha256": "7744acb28cff2fa7db6b900bd85afc863c4cfa6cf32ab53275aa11f71fb6d2eb",
+      "bytes": 2893515
+    },
+    {
+      "path": "images/Q301191-p18-0-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3AAareschlucht+159+7+8.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&uselang=en",
+      "retrieved_at": "2026-09-14T21:41:30.328288+00:00",
+      "sha256": "8909be68cf14361744378fdd36fcfa3c23f135acb5946dabe463bace7ecbfd16",
+      "bytes": 8317
+    },
+    {
+      "path": "images/Q301191-p18-0.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7f/Aareschlucht_159_7_8.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:41:30.911173+00:00",
+      "sha256": "f7544ad0ef5a3cd3ece104d3a68c4f1da3ac702effe4d5995e3b6bc759159d33",
+      "bytes": 5905601
+    },
+    {
+      "path": "images/Q183395-p18-0-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3ASchattenhalb+Reichenbachfall+7-05-2024+10-56-28.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&uselang=en",
+      "retrieved_at": "2026-09-14T21:41:31.178278+00:00",
+      "sha256": "3af3c27e1231c2c732794917bc2a4a58389155fcff48fc34707147b91e9f8247",
+      "bytes": 2157
+    },
+    {
+      "path": "images/Q183395-p18-0.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/Schattenhalb_Reichenbachfall_7-05-2024_10-56-28.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:41:32.251042+00:00",
+      "sha256": "ffb2b3415b34aa703f2c6fe1580e402657f87bad4be5263bd6765ef2a41def41",
+      "bytes": 15840155
+    },
+    {
+      "path": "images/Q5315471-p18-0-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3ADunloughcastle+4.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&uselang=en",
+      "retrieved_at": "2026-09-14T21:41:32.548242+00:00",
+      "sha256": "2f220cdb12b651f8d6e5e099dc207a5e82df86276309830c5cefbea31890e67e",
+      "bytes": 1849
+    },
+    {
+      "path": "images/Q5315471-p18-0.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c0/Dunloughcastle_4.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:41:33.568399+00:00",
+      "sha256": "b24d47691dd394242222d2e06fa61efebd9ccb9cc78109bebba4655c506adceb",
+      "bytes": 341498
+    },
+    {
+      "path": "images/Q666668-p18-0-metadata.json",
+      "url": "https://commons.wikimedia.org/w/api.php?format=json&action=query&titles=File%3AVS-65-06.jpg&prop=imageinfo&iiprop=url%7Ctimestamp%7Csha1%7Cextmetadata&uselang=en",
+      "retrieved_at": "2026-09-14T21:41:34.530163+00:00",
+      "sha256": "ede1415d91baccfcce5950177315ef8f1e779a89ab607acd773ee69cbd278af0",
+      "bytes": 1805
+    },
+    {
+      "path": "images/Q666668-p18-0.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/4/42/VS-65-06.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "retrieved_at": "2026-09-14T21:41:34.891092+00:00",
+      "sha256": "749c418bd35fca06dd352012516a0571086d533b8d9b4076968d6c6b14198498",
+      "bytes": 57997
+    },
+    {
+      "path": "classes/Q133056.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q133056.json?revision=2537666178",
+      "revision": 2537666178,
+      "retrieved_at": "2026-09-14T21:42:35.448212+00:00",
+      "sha256": "93eaa763b5570f7bf8aae31568174d0b120c32b77ad07a6cbf14f8e2adc19d6d",
+      "bytes": 63267
+    },
+    {
+      "path": "classes/Q136749248.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q136749248.json?revision=2526141637",
+      "revision": 2526141637,
+      "retrieved_at": "2026-09-14T21:42:35.448763+00:00",
+      "sha256": "d176b4244a9bc1588a66f736a312b3bcddcea3d9d9dc09452aaacc10a92863af",
+      "bytes": 8322
+    },
+    {
+      "path": "classes/Q150784.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q150784.json?revision=2544095908",
+      "revision": 2544095908,
+      "retrieved_at": "2026-09-14T21:42:35.449399+00:00",
+      "sha256": "75a1a73cfd6e86de8925646cb3163503fbb2e28724dc88e06bd44dca7bd55770",
+      "bytes": 62140
+    },
+    {
+      "path": "classes/Q15324.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q15324.json?revision=2536214642",
+      "revision": 2536214642,
+      "retrieved_at": "2026-09-14T21:42:35.450176+00:00",
+      "sha256": "1ed8374a2b8f0a3652296125db61c9c9a2762890772c980600922b64d1249baa",
+      "bytes": 61618
+    },
+    {
+      "path": "classes/Q17334923.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q17334923.json?revision=2542148084",
+      "revision": 2542148084,
+      "retrieved_at": "2026-09-14T21:42:35.450817+00:00",
+      "sha256": "fadaf9cf58292ccc6f6846450b7c633641ce64d84c0126b9d9d0e7948a91a115",
+      "bytes": 33888
+    },
+    {
+      "path": "classes/Q1744266.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q1744266.json?revision=2544393358",
+      "revision": 2544393358,
+      "retrieved_at": "2026-09-14T21:42:35.451154+00:00",
+      "sha256": "9cf2dc6d50fd792b87cc28830022af0e67485131de289498336b32ca9c974f54",
+      "bytes": 10933
+    },
+    {
+      "path": "classes/Q2221906.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q2221906.json?revision=2534297161",
+      "revision": 2534297161,
+      "retrieved_at": "2026-09-14T21:42:35.451742+00:00",
+      "sha256": "f477afc4ea5d72383c3c47b7f48fb11bf391ff5a7cc6977888d8f1f9ad5a0e54",
+      "bytes": 64818
+    },
+    {
+      "path": "classes/Q23413.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q23413.json?revision=2534319678",
+      "revision": 2534319678,
+      "retrieved_at": "2026-09-14T21:42:35.452672+00:00",
+      "sha256": "f889dbe4b49827e7cbb76985ab3a3ce556530659e527c32fc945be6fcba9d097",
+      "bytes": 85391
+    },
+    {
+      "path": "classes/Q27096213.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q27096213.json?revision=2527180901",
+      "revision": 2527180901,
+      "retrieved_at": "2026-09-14T21:42:35.453061+00:00",
+      "sha256": "c08f04604da2068ba9bf258fb4ee8f307a10b82e3fef05d0109036b1f9b4e9b6",
+      "bytes": 16741
+    },
+    {
+      "path": "classes/Q271669.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q271669.json?revision=2541631689",
+      "revision": 2541631689,
+      "retrieved_at": "2026-09-14T21:42:35.453589+00:00",
+      "sha256": "8f2c6b782441d7f538bea022d67b18fd0fd707e9f9229cfd468246db07100e54",
+      "bytes": 53730
+    },
+    {
+      "path": "classes/Q34038.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q34038.json?revision=2535791584",
+      "revision": 2535791584,
+      "retrieved_at": "2026-09-14T21:42:35.454420+00:00",
+      "sha256": "ebf1ebd27b37381dff2bb443dadf40b88fe1f2afbe29d2c9efb6be2ae80500a7",
+      "bytes": 97751
+    },
+    {
+      "path": "classes/Q35145263.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q35145263.json?revision=2543043496",
+      "revision": 2543043496,
+      "retrieved_at": "2026-09-14T21:42:35.454817+00:00",
+      "sha256": "be23830db6c4373d8429542f3f9dba6032134ce44924b6834ae8c8c23f25f5c7",
+      "bytes": 17549
+    },
+    {
+      "path": "classes/Q39816.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q39816.json?revision=2532248631",
+      "revision": 2532248631,
+      "retrieved_at": "2026-09-14T21:42:35.456074+00:00",
+      "sha256": "cae480b29c3d4e1d43bd9dbe1f6e968b36b823716ece5ec44f01f5836d0f8bd1",
+      "bytes": 87784
+    },
+    {
+      "path": "classes/Q4406616.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q4406616.json?revision=2545040581",
+      "revision": 2545040581,
+      "retrieved_at": "2026-09-14T21:42:35.456551+00:00",
+      "sha256": "10e4e133b9c9284ed077a4fb74bdddf3cb8a06c93907a009a196b4612d6e480b",
+      "bytes": 26084
+    },
+    {
+      "path": "classes/Q55462971.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q55462971.json?revision=2525221038",
+      "revision": 2525221038,
+      "retrieved_at": "2026-09-14T21:42:35.456731+00:00",
+      "sha256": "0f25035685cb34fa9dcb9e0140b03098648fe6951522a410531fc77baea80a21",
+      "bytes": 6398
+    },
+    {
+      "path": "classes/Q57821.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q57821.json?revision=2539898576",
+      "revision": 2539898576,
+      "retrieved_at": "2026-09-14T21:42:35.457701+00:00",
+      "sha256": "d43e1cbf9b2c9c1170699e5b9f41e99cc2e533a169882c726407e81e75815d5a",
+      "bytes": 73756
+    },
+    {
+      "path": "classes/Q618123.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q618123.json?revision=2543044377",
+      "revision": 2543044377,
+      "retrieved_at": "2026-09-14T21:42:35.458266+00:00",
+      "sha256": "6d29afb1b4a780e1ba0f55a6c5b564b5ca408b1f1e57170daa549dedcaed32d1",
+      "bytes": 45218
+    },
+    {
+      "path": "classes/Q6852233.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q6852233.json?revision=2505232003",
+      "revision": 2505232003,
+      "retrieved_at": "2026-09-14T21:42:35.458585+00:00",
+      "sha256": "da37a83414b1e6479fffc684759c879c3001d058ac9cfc86d6ba340b723b7e18",
+      "bytes": 10075
+    },
+    {
+      "path": "classes/Q811979.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q811979.json?revision=2538424688",
+      "revision": 2538424688,
+      "retrieved_at": "2026-09-14T21:42:35.458965+00:00",
+      "sha256": "b231bec8190b7ba2565a3ef5925c37454256437e4bff8d852ac0243c564f1fdf",
+      "bytes": 48657
+    },
+    {
+      "path": "classes/Q97095925.json",
+      "url": "https://www.wikidata.org/wiki/Special:EntityData/Q97095925.json?revision=2520294634",
+      "revision": 2520294634,
+      "retrieved_at": "2026-09-14T21:42:35.459448+00:00",
+      "sha256": "29d7fa64dffc3456d98c51359785cf4a60ec1bab94faad50523c7e2491dfc232",
+      "bytes": 9390
+    },
+    {
+      "path": "classes/batch-0.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q115095765%7CQ115385384%7CQ11908691%7CQ123349660%7CQ12766313%7CQ134301417%7CQ141159271%7CQ141187343%7CQ141204587%7CQ16686022%7CQ17350442%7CQ18691599%7CQ190429%7CQ20719696%7CQ27096220%7CQ386724%7CQ41176%7CQ488383%7CQ52105%7CQ53617407%7CQ56061%7CQ811430%7CQ82794%7CQ937228&props=claims",
+      "retrieved_at": "2026-09-14T21:42:58.660704+00:00",
+      "sha256": "26e5d1e9faa84a7af603c12fc7fb68c8baf05fe5ef390366e40025160fd74e38",
+      "bytes": 413391
+    },
+    {
+      "path": "classes/batch-1.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q115385481%7CQ1190554%7CQ124711484%7CQ13196193%7CQ13226383%7CQ137023128%7CQ141085495%7CQ141104744%7CQ141183644%7CQ141238296%7CQ141445610%7CQ15642541%7CQ15710813%7CQ16686448%7CQ1791627%7CQ1970309%7CQ223557%7CQ35120%7CQ3622002%7CQ38885242%7CQ43229%7CQ43619%7CQ4835091%7CQ53617489%7CQ6502323%7CQ7048977%7CQ8205328%7CQ98929991%7CQ994895&props=claims",
+      "retrieved_at": "2026-09-14T21:42:59.913479+00:00",
+      "sha256": "6961cecd42bd2917a69888bcaac8ba7458574d1e7dda305af8e2685f77fb19a8",
+      "bytes": 435566
+    },
+    {
+      "path": "classes/batch-2.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q103940464%7CQ106559804%7CQ106668099%7CQ121359%7CQ12352399%7CQ124711467%7CQ131085629%7CQ132907471%7CQ140451665%7CQ140961237%7CQ141104747%7CQ141149247%7CQ141158989%7CQ141159298%7CQ141159595%7CQ141238201%7CQ141401462%7CQ141447513%7CQ1454986%7CQ16334295%7CQ1639378%7CQ210272%7CQ24229398%7CQ2424752%7CQ27096235%7CQ2920644%7CQ58778%7CQ6671777%7CQ67518978%7CQ854457&props=claims",
+      "retrieved_at": "2026-09-14T21:43:00.677090+00:00",
+      "sha256": "5e563e409e70ebad8af72b03875885d381a3061fd4ffda17902bf8ec4a790d26",
+      "bytes": 377883
+    },
+    {
+      "path": "classes/batch-3.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q124711455%7CQ1272626%7CQ12893838%7CQ134261520%7CQ134601727%7CQ136433660%7CQ140919303%7CQ141156557%7CQ141182323%7CQ141204632%7CQ141204674%7CQ141214836%7CQ141222889%7CQ141238145%7CQ141257229%7CQ2434238%7CQ25404640%7CQ30060700%7CQ35758%7CQ830077%7CQ99527517&props=claims",
+      "retrieved_at": "2026-09-14T21:43:01.376322+00:00",
+      "sha256": "ea71d2f4289abc2560ec9f3d49f5f9fc444357ea48ab765eabc371dd817e3f72",
+      "bytes": 175786
+    },
+    {
+      "path": "classes/batch-4.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q1207505%7CQ123240632%7CQ134601875%7CQ134602505%7CQ141158787%7CQ141159342%7CQ141222582%7CQ16334298%7CQ28732711%7CQ3505845%7CQ3695082&props=claims",
+      "retrieved_at": "2026-09-14T21:43:01.890356+00:00",
+      "sha256": "f802d61fe2e10ebd67f51132b5dc02c7d6e6947cc2ec4c2b6bbd0654482c414f",
+      "bytes": 102070
+    },
+    {
+      "path": "classes/batch-5.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q124711658%7CQ134602526%7CQ140960213%7CQ141159324%7CQ141195507%7CQ141214410%7CQ141438977%7CQ141445732%7CQ141447391%7CQ21871294%7CQ483247%7CQ61961344&props=claims",
+      "retrieved_at": "2026-09-14T21:43:02.418922+00:00",
+      "sha256": "918db80cb3836a407d66e31344471509548c6b4e70e2c7479e7b5b0e9b11276a",
+      "bytes": 57235
+    },
+    {
+      "path": "classes/batch-6.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q141156634%7CQ141205897%7CQ141444919%7CQ30241068%7CQ98119401&props=claims",
+      "retrieved_at": "2026-09-14T21:43:02.759446+00:00",
+      "sha256": "28119e107414edc548b4f9b4d2498477d99a508f58dac5d7064f16c71e5d5c4e",
+      "bytes": 23641
+    },
+    {
+      "path": "classes/batch-7.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q141250146%7CQ7551287&props=claims",
+      "retrieved_at": "2026-09-14T21:43:03.035964+00:00",
+      "sha256": "50d726587c2429b8cd47937b25e3dae4e3d9d2faee0ce7e2699e32481858c978",
+      "bytes": 11820
+    },
+    {
+      "path": "classes/batch-8.json",
+      "url": "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&ids=Q123139280&props=claims",
+      "retrieved_at": "2026-09-14T21:43:03.308845+00:00",
+      "sha256": "a33bae5c16b5ecaebf82f348939efb1913f2807806c18a4a62ae08212f560847",
+      "bytes": 6308
+    }
+  ],
+  "places": [
+    {
+      "qid": "Q301191",
+      "name": "Aare Gorge",
+      "entity_revision": 2475967758,
+      "coordinate": {
+        "latitude": 46.717777777778,
+        "longitude": 8.2136111111111,
+        "altitude": null,
+        "precision": 0.00027777777777778,
+        "globe": "http://www.wikidata.org/entity/Q2"
+      },
+      "article": {
+        "language": "en",
+        "title": "Aare Gorge",
+        "url": "https://en.wikipedia.org/w/index.php?title=Aare+Gorge&oldid=1327206534",
+        "revision": 1327206534,
+        "timestamp": "2025-12-13T05:45:37Z",
+        "path": "articles/en-Aare_Gorge.json",
+        "html_path": "articles/en-Q301191.html",
+        "attribution_source": "articles/en-Q301191.html",
+        "notices_source": "articles/en-Aare_Gorge.json"
+      },
+      "articles": [
+        {
+          "language": "en",
+          "title": "Aare Gorge",
+          "url": "https://en.wikipedia.org/w/index.php?title=Aare+Gorge&oldid=1327206534",
+          "revision": 1327206534,
+          "timestamp": "2025-12-13T05:45:37Z",
+          "path": "articles/en-Aare_Gorge.json",
+          "html_path": "articles/en-Q301191.html",
+          "attribution_source": "articles/en-Q301191.html",
+          "notices_source": "articles/en-Aare_Gorge.json"
+        },
+        {
+          "language": "de",
+          "title": "Aareschlucht",
+          "url": "https://de.wikipedia.org/w/index.php?title=Aareschlucht&oldid=259342436",
+          "revision": 259342436,
+          "timestamp": "2025-08-31T11:03:05Z",
+          "path": "articles/de-Q301191.json",
+          "html_path": "articles/de-Q301191.html",
+          "attribution_source": "articles/de-Q301191.html",
+          "notices_source": "articles/de-Q301191.json"
+        },
+        {
+          "language": "fr",
+          "title": "Gorges de l'Aar",
+          "url": "https://fr.wikipedia.org/w/index.php?title=Gorges+de+l%27Aar&oldid=234455299",
+          "revision": 234455299,
+          "timestamp": "2026-03-25T21:11:47Z",
+          "path": "articles/fr-Q301191.json",
+          "html_path": "articles/fr-Q301191.html",
+          "attribution_source": "articles/fr-Q301191.html",
+          "notices_source": "articles/fr-Q301191.json"
+        }
+      ],
+      "image": {
+        "metadata_path": "images/Q301191-metadata.json",
+        "path": "images/Q301191.jpg"
+      },
+      "images": [
+        {
+          "path": "images/Q301191-p18-0.jpg",
+          "metadata_path": "images/Q301191-p18-0-metadata.json",
+          "source": "P18",
+          "filename": "Aareschlucht 159 7 8.jpg"
+        },
+        {
+          "metadata_path": "images/Q301191-metadata.json",
+          "path": "images/Q301191.jpg",
+          "source": "wikipedia-lead"
+        }
+      ]
+    },
+    {
+      "qid": "Q183395",
+      "name": "Reichenbach Falls",
+      "entity_revision": 2540034497,
+      "coordinate": {
+        "latitude": 46.713611111111,
+        "longitude": 8.1830555555556,
+        "altitude": null,
+        "precision": null,
+        "globe": "http://www.wikidata.org/entity/Q2"
+      },
+      "article": {
+        "language": "en",
+        "title": "Reichenbach Falls",
+        "url": "https://en.wikipedia.org/w/index.php?title=Reichenbach+Falls&oldid=1362225684",
+        "revision": 1362225684,
+        "timestamp": "2026-07-02T16:50:39Z",
+        "path": "articles/en-Reichenbach_Falls.json",
+        "html_path": "articles/en-Q183395.html",
+        "attribution_source": "articles/en-Q183395.html",
+        "notices_source": "articles/en-Reichenbach_Falls.json"
+      },
+      "articles": [
+        {
+          "language": "en",
+          "title": "Reichenbach Falls",
+          "url": "https://en.wikipedia.org/w/index.php?title=Reichenbach+Falls&oldid=1362225684",
+          "revision": 1362225684,
+          "timestamp": "2026-07-02T16:50:39Z",
+          "path": "articles/en-Reichenbach_Falls.json",
+          "html_path": "articles/en-Q183395.html",
+          "attribution_source": "articles/en-Q183395.html",
+          "notices_source": "articles/en-Reichenbach_Falls.json"
+        },
+        {
+          "language": "de",
+          "title": "Reichenbachfall",
+          "url": "https://de.wikipedia.org/w/index.php?title=Reichenbachfall&oldid=264244626",
+          "revision": 264244626,
+          "timestamp": "2026-02-13T18:04:22Z",
+          "path": "articles/de-Q183395.json",
+          "html_path": "articles/de-Q183395.html",
+          "attribution_source": "articles/de-Q183395.html",
+          "notices_source": "articles/de-Q183395.json"
+        },
+        {
+          "language": "fr",
+          "title": "Chutes du Reichenbach",
+          "url": "https://fr.wikipedia.org/w/index.php?title=Chutes+du+Reichenbach&oldid=225781524",
+          "revision": 225781524,
+          "timestamp": "2025-05-19T02:30:53Z",
+          "path": "articles/fr-Q183395.json",
+          "html_path": "articles/fr-Q183395.html",
+          "attribution_source": "articles/fr-Q183395.html",
+          "notices_source": "articles/fr-Q183395.json"
+        }
+      ],
+      "image": {
+        "metadata_path": "images/Q183395-metadata.json",
+        "path": "images/Q183395.jpg"
+      },
+      "images": [
+        {
+          "path": "images/Q183395-p18-0.jpg",
+          "metadata_path": "images/Q183395-p18-0-metadata.json",
+          "source": "P18",
+          "filename": "Schattenhalb Reichenbachfall 7-05-2024 10-56-28.jpg"
+        },
+        {
+          "metadata_path": "images/Q183395-metadata.json",
+          "path": "images/Q183395.jpg",
+          "source": "wikipedia-lead"
+        }
+      ]
+    },
+    {
+      "qid": "Q5315471",
+      "name": "Dunlough Castle",
+      "entity_revision": 2512692808,
+      "coordinate": {
+        "latitude": 51.482665,
+        "longitude": -9.829419,
+        "altitude": null,
+        "precision": 1e-06,
+        "globe": "http://www.wikidata.org/entity/Q2"
+      },
+      "article": {
+        "language": "en",
+        "title": "Dunlough Castle",
+        "url": "https://en.wikipedia.org/w/index.php?title=Dunlough+Castle&oldid=1322295338",
+        "revision": 1322295338,
+        "timestamp": "2025-11-15T12:45:42Z",
+        "path": "articles/en-Dunlough_Castle.json",
+        "html_path": "articles/en-Q5315471.html",
+        "attribution_source": "articles/en-Q5315471.html",
+        "notices_source": "articles/en-Dunlough_Castle.json"
+      },
+      "articles": [
+        {
+          "language": "en",
+          "title": "Dunlough Castle",
+          "url": "https://en.wikipedia.org/w/index.php?title=Dunlough+Castle&oldid=1322295338",
+          "revision": 1322295338,
+          "timestamp": "2025-11-15T12:45:42Z",
+          "path": "articles/en-Dunlough_Castle.json",
+          "html_path": "articles/en-Q5315471.html",
+          "attribution_source": "articles/en-Q5315471.html",
+          "notices_source": "articles/en-Dunlough_Castle.json"
+        },
+        {
+          "language": "de",
+          "title": "Dunlough Castle",
+          "url": "https://de.wikipedia.org/w/index.php?title=Dunlough+Castle&oldid=244103094",
+          "revision": 244103094,
+          "timestamp": "2024-04-16T10:39:02Z",
+          "path": "articles/de-Q5315471.json",
+          "html_path": "articles/de-Q5315471.html",
+          "attribution_source": "articles/de-Q5315471.html",
+          "notices_source": "articles/de-Q5315471.json"
+        }
+      ],
+      "image": {
+        "metadata_path": "images/Q5315471-metadata.json",
+        "path": "images/Q5315471.jpg"
+      },
+      "images": [
+        {
+          "path": "images/Q5315471-p18-0.jpg",
+          "metadata_path": "images/Q5315471-p18-0-metadata.json",
+          "source": "P18",
+          "filename": "Dunloughcastle 4.jpg"
+        },
+        {
+          "metadata_path": "images/Q5315471-metadata.json",
+          "path": "images/Q5315471.jpg",
+          "source": "wikipedia-lead"
+        }
+      ]
+    },
+    {
+      "qid": "Q666668",
+      "name": "Grimsel Pass",
+      "entity_revision": 2525214307,
+      "coordinate": {
+        "latitude": 46.56166666666667,
+        "longitude": 8.345277777777778,
+        "altitude": null,
+        "precision": 0.0002777777777777778,
+        "globe": "http://www.wikidata.org/entity/Q2"
+      },
+      "article": {
+        "language": "en",
+        "title": "Grimsel Pass",
+        "url": "https://en.wikipedia.org/w/index.php?title=Grimsel+Pass&oldid=1362433518",
+        "revision": 1362433518,
+        "timestamp": "2026-07-03T22:38:07Z",
+        "path": "articles/en-Grimsel_Pass.json",
+        "html_path": "articles/en-Q666668.html",
+        "attribution_source": "articles/en-Q666668.html",
+        "notices_source": "articles/en-Grimsel_Pass.json"
+      },
+      "articles": [
+        {
+          "language": "en",
+          "title": "Grimsel Pass",
+          "url": "https://en.wikipedia.org/w/index.php?title=Grimsel+Pass&oldid=1362433518",
+          "revision": 1362433518,
+          "timestamp": "2026-07-03T22:38:07Z",
+          "path": "articles/en-Grimsel_Pass.json",
+          "html_path": "articles/en-Q666668.html",
+          "attribution_source": "articles/en-Q666668.html",
+          "notices_source": "articles/en-Grimsel_Pass.json"
+        },
+        {
+          "language": "de",
+          "title": "Grimselpass",
+          "url": "https://de.wikipedia.org/w/index.php?title=Grimselpass&oldid=270413329",
+          "revision": 270413329,
+          "timestamp": "2026-09-12T00:40:54Z",
+          "path": "articles/de-Q666668.json",
+          "html_path": "articles/de-Q666668.html",
+          "attribution_source": "articles/de-Q666668.html",
+          "notices_source": "articles/de-Q666668.json"
+        },
+        {
+          "language": "fr",
+          "title": "Col du Grimsel",
+          "url": "https://fr.wikipedia.org/w/index.php?title=Col+du+Grimsel&oldid=211752236",
+          "revision": 211752236,
+          "timestamp": "2024-01-22T14:39:07Z",
+          "path": "articles/fr-Q666668.json",
+          "html_path": "articles/fr-Q666668.html",
+          "attribution_source": "articles/fr-Q666668.html",
+          "notices_source": "articles/fr-Q666668.json"
+        }
+      ],
+      "image": {
+        "metadata_path": "images/Q666668-metadata.json",
+        "path": "images/Q666668.jpg"
+      },
+      "images": [
+        {
+          "path": "images/Q666668-p18-0.jpg",
+          "metadata_path": "images/Q666668-p18-0-metadata.json",
+          "source": "P18",
+          "filename": "VS-65-06.jpg"
+        },
+        {
+          "metadata_path": "images/Q666668-metadata.json",
+          "path": "images/Q666668.jpg",
+          "source": "wikipedia-lead"
+        }
+      ]
+    }
+  ],
+  "classes_path": "classes.json",
+  "missing_classes": [],
+  "coverage": {
+    "kind": "review-examples",
+    "country_complete": false,
+    "remaining": [
+      "Full Switzerland candidate/content capture and production recount belong to RA08/RA13."
+    ]
+  },
+  "regions_path": "regions.geojson"
+}

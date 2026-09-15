@@ -210,6 +210,7 @@ do_terrain() {
 # =============================================================================
 
 case "${1:-}" in
+assistant) python3 "$FIXTURES_DIR/build-assistant-package.py" "${2:-all}" ;;
 grimsel) do_grimsel "${2:-}" ;;
 grimsel-demo) do_grimsel_demo "${2:-}" ;;
 monaco) do_monaco "${2:-}" ;;
@@ -221,7 +222,7 @@ all)
     do_monaco "${3:-}"
     ;;
 *)
-    echo "usage: $0 grimsel|grimsel-demo|monaco|terrain|all [source.osm.pbf ...] [dem_dir]" >&2
+    echo "usage: $0 grimsel|grimsel-demo|monaco|terrain|all|assistant [source.osm.pbf ... | meiringen|west-cork|all]" >&2
     exit 2
     ;;
 esac
