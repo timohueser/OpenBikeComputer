@@ -80,6 +80,14 @@ provenance = "Sources captured 2026-09-14. Exact URLs, source dates, revisions, 
 license = "CC0-1.0 (Wikidata); article and image licenses in captured source notices"
 tracked_sources = { "manifest.json" = "sources/ride-assistant/assistant-wiki.json", "regions.geojson" = "sources/ride-assistant/regions.geojson" }
 
+[packages.assistant-switzerland-content]
+summary = "Compiled Swiss landmark text, RGB222 photos, and source notices"
+archive = "packages/cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1.tar.gz"
+sha256 = "cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1"
+bytes = 10554318
+provenance = "Production compiler output from the complete country policy capture. 1495 texts and 1119 photos; exact compiler input and policy hashes are in sources/ride-assistant/switzerland-content.json. This package contains compiled content, not raw acquisition data or mapped-access claims."
+license = "CC0-1.0 (Wikidata); CC-BY-SA and source-specific article/media licenses retained per record"
+
 [packages.assistant-replays]
 summary = "Authored GPS motion and clock recipes for five Ride Assistant cases"
 archive = "packages/3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574.tar.gz"
@@ -90,8 +98,8 @@ license = "GPL-3.0-only"
 tracked_sources = { "manifest.json" = "sources/ride-assistant/replays.json", "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx", "replays/dunlough-access.gpx" = "sources/ride-assistant/replays/dunlough-access.gpx", "replays/monaco-dense.gpx" = "sources/ride-assistant/replays/monaco-dense.gpx" }
 
 [profiles.assistant-inputs]
-summary = "Pinned raw data and authored motion for Ride Assistant development"
-packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-replays"]
+summary = "Pinned map sources, compiled country content, and authored motion for Ride Assistant"
+packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-replays", "assistant-switzerland-content"]
 
 [packages.sim-assistant-meiringen]
 summary = "Initial real Ride Assistant map and motion for meiringen"
