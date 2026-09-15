@@ -1,6 +1,6 @@
 # Place route actions: validation record
 
-This record covers [PR #1806](https://github.com/timohueser/OpenBikeComputer/pull/1806). The reviewed production source is `77fe2b79fe4036f1530190e065e071753ba58ac2`. Commit `bca6b4cab` updates the exact allocation record only. Hardware acceptance is pending.
+This record covers [PR #1806](https://github.com/timohueser/OpenBikeComputer/pull/1806). The final production source is `cc5bf0ebaf38ee9df07fe07982e4ac14168a4814`. The physical bench replay passed. Road riding and power-loss acceptance remain pending.
 
 The place preview switches between **Add detour** and **Route here**. Route here replaces the goal and has no original route continuation. Generated routes stay out of saved Routes while the stored objects needed for navigation and recovery remain available. Independent adversarial review and reviews of the fixes covered this source.
 
@@ -37,20 +37,26 @@ The separate [real Swiss simulator evidence](simulator/README.md) retains six pr
 
 ## Resources
 
-The authoritative ARM report from [CI run 35027121846](https://github.com/timohueser/OpenBikeComputer/actions/runs/35027121846), on source `77fe2b79f`, measured:
+The final ARM report from [CI run 35030359323](https://github.com/timohueser/OpenBikeComputer/actions/runs/35030359323), on integration checkout `2385a32b72e83df9c15af1d5a4da6eca2e072e84` for PR source `cc5bf0eba`, passed the resource gates and measured:
 
 | Measurement | Bytes |
 | --- | ---: |
 | App allocation | 52,720 |
 | Linked resident RAM | 308,496 |
 | `.uninit` | 132,096 |
-| Flash | 1,712,324 |
+| Flash | 1,712,836 |
 | Residual main stack | 50,928 |
 
-The resource check reported exact allocation drift from the earlier recorded App size. Commit `bca6b4cab` records the measured 52,720 bytes in [resource_baseline.json](../../../../../firmware/tools/resource_baseline.json). Resource and stack ceilings remain unchanged. Corrected-baseline CI is still the merge gate; the failed earlier exact-match check is not reported as a pass. No base image was rebuilt for comparison.
+Commit `bca6b4cab` records the measured 52,720-byte App allocation in [resource_baseline.json](../../../../../firmware/tools/resource_baseline.json). The final report matches all 35 exact allocation entries. Resource and stack ceilings remain unchanged. One local head resource bundle was run; later shipping measurements came from CI. No base image was rebuilt for comparison.
 
-## Hardware acceptance
+## Final lifecycle and hardware checks
 
-Physical replay is in progress on the real Swiss map. It found a board-specific stall while a RouteMode request waits for deferred work. The fix and its physical verification are pending. Simulator and host results do not close that finding. The final device source, flash identity, replay logs and acceptance result must be added here after the replay completes.
+The final source fixes two board transitions found during replay. A pending preview-mode change advances after release even when no map redraw is due. A navigation stop that encounters a changed catalog revision before submission refreshes its scope and retains the latest selection intent. Actual write errors and uncertain outcomes retain their existing behavior.
 
-This documentation update did not run tests, builds, a resource measurement or another snapshot sweep. It records completed checks and leaves hardware acceptance open.
+The whole host suite reproduced the recorder-discard scope race, then passed with the fix. Final App 922 library tests, host 73 library tests, scoped Clippy and the suite registry passed. The source adds no persistent state beyond the allocation already recorded above. Independent adversarial review and reviews of the fixes reported no remaining findings.
+
+The [final physical replay](hardware/final/README.md) verifies the exact flashed source, acceptance, concurrent recording discard, route-free search, preview cancellation and search re-entry. The [earlier physical replay](hardware/README.md) retains both route-mode directions and the saved Routes capture. The final board is left without a recording or active route, with the Swiss map and fixed Meiringen GPS feed available.
+
+Remaining hardware acceptance belongs to [#1748](https://github.com/timohueser/OpenBikeComputer/issues/1748): real-motion arrival and rejoin with recording, card/power failure and recovery, and broader regional coverage. The separate recording-start warning remains in [#1810](https://github.com/timohueser/OpenBikeComputer/issues/1810). Bench and simulator evidence do not close these checks.
+
+Deliberately omitted: a local full CI mirror, a base resource rebuild, another local UI sweep, mutation testing, and unrelated wake-profile isolation. Final source [CI run 35030359323](https://github.com/timohueser/OpenBikeComputer/actions/runs/35030359323) passed. PR #1806 merged as `36257ee4b78ef2a641769fec8ff39973d77bdb14`.
