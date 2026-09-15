@@ -59,11 +59,6 @@ mod trip_delete;
 pub(crate) mod up_ahead;
 pub(crate) mod vocab;
 mod warning;
-mod weather_alert;
-mod weather_dash;
-mod weather_hourly;
-pub mod weather_icons;
-mod weather_map;
 
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
@@ -112,10 +107,6 @@ pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
 /// tests that pin it. In-crate callers still import `vocab::spinner`.
 pub use vocab::spinner::needle_region;
 pub use warning::{WarningFlags, WarningScreen};
-pub use weather_alert::{WeatherAlertKind, WeatherAlertScreen};
-pub use weather_dash::WeatherScreen;
-pub use weather_hourly::WeatherHourlyScreen;
-pub use weather_map::WeatherRainMapScreen;
 
 /// Maximum overlay depth. The deepest normal path is seven screens
 /// (`Home → Map → Menu → Settings → Ride → Fields → Add field`); keep the rest of the slots
@@ -265,9 +256,7 @@ pub struct Ctx<'a> {
     pub dfu: &'a mut crate::dfu::DfuState,
     /// The **StorageInfo** domain — the System screen asks for a free-space refresh on entry.
     pub storage: &'a mut crate::device_core::storage_info::StorageInfo,
-    /// The **Weather** domain — the menu row that opens the dashboard names its refresh here, and
-    /// the rain-map screens clamp against the zoom floor it derived.
-    pub weather: &'a mut crate::weather::WeatherDomain,
+
     pub now_ms: u32,
 }
 
@@ -280,7 +269,7 @@ impl Ctx<'_> {
             navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
-            weather_request_outstanding: self.weather.request_outstanding(),
+
             nav_profiles: self.nav_profiles,
         }
     }
@@ -292,16 +281,6 @@ impl Ctx<'_> {
     }
 }
 
-/// A [`Ctx`] over borrowed state/activity/settings with every catalog empty and the clock at zero —
-/// the shape essentially every screen test wants. The handful that need one field populated say so
-/// with struct-update syntax, so the other eleven stay out of the way:
-/// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
-///
-/// The five domain seams — Navigator, Recorder, DFU, `StorageInfo` and weather — are **leaked**,
-/// one fresh set per call: they need `&mut` for a lifetime
-/// the helper cannot own, and a test that asserts on one passes its own instead
-/// (`Ctx { navigator: &mut nav, ..test_ctx(…) }`). A few dozen bytes per screen test, in a build
-/// that has `std`.
 #[cfg(test)]
 pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, settings: &'a mut Settings) -> Ctx<'a> {
     // Shared empty borrows: the screens under test read these but never fill them, so one immutable
@@ -325,7 +304,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         recorder: Box::leak(Box::new(crate::recorder::RecorderMachine::new())),
         dfu: Box::leak(Box::new(crate::dfu::DfuState::new())),
         storage: Box::leak(Box::new(crate::device_core::storage_info::StorageInfo::new())),
-        weather: Box::leak(Box::new(crate::weather::WeatherDomain::new())),
+
         now_ms: 0,
     }
 }
@@ -359,18 +338,7 @@ pub struct Render<'a> {
     /// is exactly the set of frames that never reach the map scene's draw, the one place this is
     /// unwrapped.
     pub scratch: Option<&'a mut RenderScratch>,
-    /// The frame's **rain overlay lease** (WX10) — the host-constructed adapter over the active
-    /// weather bundle's *current* frame, or `None` when nothing may render (no store, no current
-    /// frame, expired bundle) **or when the base screen did not declare
-    /// [`Caps::rain_overlay`]**. Like the scratch it is per-frame: the map-drawing base screen
-    /// `take`s it and threads it into [`RenderScratch::render_rain_timed`], where the
-    /// precipitation raster draws below the road band; `None` renders a byte-identical rain-free
-    /// map. The freshness decision lives with the adapter (`obc-weather`'s `current_frame`), never
-    /// in a screen; *which screen may see rain at all* is the declared capability, resolved once in
-    /// [`App::render_scene_map_rain_timed`](crate::App::render_scene_map_rain_timed) — so a map
-    /// base that never asked for rain (the Map, the Detour pair) is handed `None` and cannot leak
-    /// the rain map's raster onto its own frame.
-    pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
+
     pub state: &'a AppState,
     pub activity: &'a Activity,
     /// The active route and live guidance facts, borrowed from Navigator without a copied mirror.
@@ -516,29 +484,7 @@ pub struct Render<'a> {
     /// System screen's on-entry refresh — the figure
     /// [`StorageInfo`](crate::device_core::storage_info::StorageInfo) owns.
     pub card_free_bytes: Option<u64>,
-    /// The host-fed resident **weather snapshot** (WX11, epic #1185) — the 24 hourly records +
-    /// sampled rain-frame table the weather screens derive every claim from
-    /// ([`rain_outlook`](crate::weather::rain_outlook) against this frame's [`now_utc`](Render::now_utc)),
-    /// or `None` when no store is mounted / nothing was ever fetched (the explicit no-data state).
-    /// Host-owned like the rain lease: the sim samples its loaded bundle, the board's WX8 mount
-    /// will feed the same shape.
-    pub weather: Option<&'a crate::weather::WeatherSnapshot>,
-    /// A weather refresh is in flight (WX8's request/upload cycle; the sim's injection flag).
-    /// The dashboard shows its one non-blocking cue off this — cached content stays visible
-    /// (locked UX), so this is a title-slot caption, never a blocking spinner.
-    pub weather_refreshing: bool,
-    /// A weather request is **outstanding** — the wider level: in flight, or asked for and not yet
-    /// sent because no companion could carry it. The weather sheet's *Refresh now* row draws off
-    /// this (#1515 D4b) rather than off [`weather_refreshing`](Render::weather_refreshing), so the
-    /// row a frame draws and the row a press resolves can never be two different rows: a request
-    /// raised with no phone in reach stays pending for many frames, and over all of them the cue is
-    /// honestly absent while the row is honestly inert.
-    pub weather_request_outstanding: bool,
-    /// The rider's travel direction (degrees CW from north) for the route-relative wind arrows
-    /// (WX12, epic #1185): active-route tangent at the matched progress, else the moving GPS
-    /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
-    /// head/tail ([`wind_class`](crate::weather::wind_class)'s locked fallback).
-    pub travel_deg: Option<f32>,
+
     /// Whether the panel has a controllable light — see [`Ctx::backlight`]. The quick drawer draws
     /// three icons instead of four without one.
     pub backlight: bool,
@@ -552,7 +498,7 @@ impl Render<'_> {
             navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
-            weather_request_outstanding: self.weather_request_outstanding,
+
             nav_profiles: self.nav_profiles,
         }
     }
@@ -733,19 +679,10 @@ pub enum RenderKeyKind {
     Climb,
     /// The saved sensors' per-slot status and the live scan list's revision.
     SensorSettings,
-    /// The installed weather data's identity.
-    Weather,
+
     /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
     /// the rows are merged from.
     UpAhead,
-    /// A **drawer**: the page it shows, the row selected on it, and the value it has staged
-    /// against the one already committed.
-    ///
-    /// This kind does one thing no other does — it **shadows** every other kind. A drawer freezes
-    /// the base it covers: while one is visible the key names only these facts, so a camera move,
-    /// a fresh fix or an arriving weather bundle under an open drawer cannot dirty the map, and
-    /// closing it changes the key's shape exactly once. That is the whole of "the frozen base" —
-    /// there is no capture buffer and no second framebuffer, only a key that stops looking.
     Drawer,
 }
 
@@ -809,14 +746,7 @@ pub struct Caps {
     /// refuses the escape too, so [`blocking`](Caps::blocking) sets both — plus the recovered-ride
     /// card, over which a sheet is harmless but an exit would strand the recovered object.
     pub blocks_escape: bool,
-    /// Declares the screen **wants the rain overlay** (WX10/WX11): the frame's rain lease is
-    /// handed to it and the precipitation raster draws inside its map scene. Off for every other
-    /// screen — including the ordinary Map and the Detour pair, which draw the same scene through
-    /// the same helper — so the overlay is a property of the screen the rider is on, not of the
-    /// frame the host happened to lease weather for. That makes leaving the rain map clean by
-    /// construction: there is no exit hook to forget, and a future map screen is rain-free until
-    /// its row says otherwise.
-    pub rain_overlay: bool,
+
     /// Whether a drawer **recesses** this screen: the sheet lifts off a base drawn one device-64
     /// level down ([`dim_color`]), so the eye reads the sheet as being in front of a page.
     ///
@@ -853,7 +783,7 @@ impl Caps {
             hold_fill: false,
             blocks_chords: false,
             blocks_escape: false,
-            rain_overlay: false,
+
             recess: true,
             remap: RemapKind::None,
             render_key: RenderKeyKind::Static,
@@ -948,13 +878,6 @@ impl Caps {
         self
     }
 
-    /// Declare the screen wants the frame's **rain overlay** lease (see
-    /// [`rain_overlay`](Caps::rain_overlay)) — the rain map's row, and nothing else's.
-    pub const fn rain_overlay(mut self) -> Self {
-        self.rain_overlay = true;
-        self
-    }
-
     /// Set the screen's [`ReaderNeed`].
     pub const fn reader(mut self, need: ReaderNeed) -> Self {
         self.reader = need;
@@ -967,9 +890,6 @@ impl Caps {
         self
     }
 
-    /// Set the screen's [`RenderKeyKind`] — for the rows whose content is not the one their
-    /// archetype names (the Climb view among the riding screens, the weather pages among the
-    /// chrome, the Sensors pages among the settings).
     pub const fn key(mut self, render_key: RenderKeyKind) -> Self {
         self.render_key = render_key;
         self
@@ -1164,20 +1084,6 @@ screens! {
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by the pass's fact stage, coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
-    /// The Weather dashboard (WX11, epic #1185): the concept-C decision card, the two-hour strip,
-    /// and the HOURLY / RAIN MAP actions. Timed: the countdown/freshness copy moves once a minute.
-    Weather(WeatherScreen) => Caps::nav().timed().key(RenderKeyKind::Weather),
-    /// The hourly forecast list (WX11): 24 evenly-spaced rows, no separators — time, WX17 icon,
-    /// temperature, precipitation, wind.
-    WeatherHourly(WeatherHourlyScreen) => Caps::nav().key(RenderKeyKind::Weather),
-    /// The rain map (WX11): the normal map scene with the WX10 precipitation raster below the
-    /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners. The
-    /// **one** screen that declares [`rain_overlay`](Caps::rain_overlay) — the raster is its
-    /// content, so it cannot survive the screen.
-    WeatherRainMap(WeatherRainMapScreen) => Caps::map().timed().rain_overlay(),
-    /// The weather alert card (WX11): RAIN AHEAD / STORM AHEAD with VIEW RAIN MAP + DISMISS.
-    /// **Host-pushed** by [`App::show_weather_alert`]; alert *generation* is WX12's.
-    WeatherAlert(WeatherAlertScreen) => Caps::modal(),
     Settings(SettingsScreen) => Caps::settings(),
     /// The Ride settings screen: the riding stats grid (fields, page cycle, climb, waypoints) + the
     /// synced-ride retention ring. The one settings screen that scrolls (5 rows).
@@ -1340,9 +1246,7 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
-            // The three weather surfaces share one context (#1515 D4b): *Refresh now* and the
-            // scheduled *Interval*. The pushed alert card is `Caps::modal()` and declares nothing.
-            Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_) => Some(&context_drawer::WEATHER),
+
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
             // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
@@ -1466,10 +1370,7 @@ impl Screen {
             // reboot replaces them.
             Screen::DfuCheck(s) => s.tick_timers(now_ms, w, h),
             Screen::DfuProgress(s) => s.tick_timers(now_ms, w, h),
-            // The Weather dashboard's countdown + the rain map's frame-currency labels move with
-            // the wall clock — one region-free repaint per minute while up.
-            Screen::Weather(s) => s.tick_timers(now, ms_to_next_minute),
-            Screen::WeatherRainMap(s) => s.tick_timers(now, ms_to_next_minute),
+
             _ => ScreenTick::idle(),
         }
     }
@@ -1614,10 +1515,6 @@ pub mod palette {
     /// reads apart from the magenta route it will replace, the warning-orange skipped span, and
     /// the (recessive navy) breadcrumb behind it.
     pub const DETOUR: u16 = rgb565(0, 90, 255); // → (0,85,255) blue
-    /// Rain blue — the precipitation *amount* on the Hourly rows, so a wet hour's millimetres read
-    /// as water at a glance rather than as another ink number. The WX17 icons' own rain-streak
-    /// blue (`weather_icons::SKY`), so the row's icon and its number carry one hue.
-    pub const RAIN: u16 = rgb565(0, 110, 230); // → (0,85,255) blue
     /// Navy — the recorded breadcrumb (travelled path), stroked over the route and under the marker.
     /// Recessive so the trail behind reads quieter than the magenta route ahead.
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
@@ -1637,7 +1534,7 @@ const DIM_LEVEL: [u8; 4] = [0, 1, 1, 2];
 /// for the 64-colour panel to approximate.
 ///
 /// **Per colour resolution, not per pixel.** `Canvas` resolves `color_fn` once per primitive - one
-/// span, one outline, one string, one sampled rain cell - so this runs O(primitives), not
+/// span, one outline, one string - so this runs O(primitives), not
 /// O(pixels), and the MIP's partial-line budget never sees it.
 pub(crate) fn dim_color(rgb565: u16) -> u16 {
     let r = DIM_LEVEL[((rgb565 >> 14) & 0x3) as usize];
@@ -1729,19 +1626,7 @@ mod tests {
                 assert!(c.ride_view, "{name}: a live-data base must be a ride view");
                 assert!(!c.idle_exempt, "{name}: a live view is not a modal exemption");
             }
-            // A rain-overlay screen must be a map base: the raster draws inside the map scene's
-            // paint order, so there is nowhere for it to go on a chrome or live-riding screen. And
-            // it must not be an *overlay* kind: the lease is resolved against the base (lowest
-            // non-overlay) screen, so a rain screen declared `Overlay` would carry a capability
-            // that never fires — a silently dead declaration, exactly the drift this table exists
-            // to catch.
-            if c.rain_overlay {
-                assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base can carry the rain overlay");
-                assert!(
-                    !c.kind.is_overlay(),
-                    "{name}: an overlay-kind screen is never the base the lease resolves against"
-                );
-            }
+
             // A browse-exempt "deliberate view when not tracking" must be map-based.
             if c.browse_exempt {
                 assert_eq!(c.base, BaseContent::Map, "{name}: only a Map base is browse-exempt");
@@ -1809,69 +1694,10 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview", "WeatherRainMap"],
+            ["Map", "Detour", "DetourPreview"],
             "the map-class screens, and only those — Statistics and the Climb view draw panels, \
              which are cheap enough to keep the recess"
         );
-    }
-
-    /// Every declared capability is actually exercised by at least one screen, and the headline
-    /// classifications land on the screens they should — a coarse guard that the table isn't
-    /// mis-populated (e.g. every reader kind, both remap catalogs, and the ride-view/modal roles
-    /// have a member).
-    #[test]
-    fn capability_coverage_and_landmarks() {
-        let caps = Screen::CAPS;
-        let named = |name: &str| caps[Screen::NAMES.iter().position(|n| *n == name).unwrap()];
-        // Landmark screens carry the capabilities their behavior depends on.
-        assert_eq!(named("Map").base, BaseContent::Map);
-        assert_eq!(named("Map").reader, ReaderNeed::Always);
-        assert!(named("Map").browse_exempt && named("Map").ride_view && named("Map").timed);
-        assert_eq!(named("Statistics").base, BaseContent::LiveRiding);
-        assert_eq!(named("Climb").base, BaseContent::LiveRiding);
-        assert_eq!(named("PoiList").reader, ReaderNeed::PoiSnapshot);
-        assert_eq!(named("PoiDetail").reader, ReaderNeed::PoiHours);
-        assert!(named("RideControl").ride_view, "the Paused page is a deliberate ride view");
-        assert!(named("Passkey").idle_exempt, "the passkey card is idle-exempt");
-        assert!(named("RouteSwap").idle_exempt, "the route-swap prompt is idle-exempt");
-        assert_eq!(named("RouteMenu").remap, RemapKind::Route);
-        assert_eq!(named("Detour").remap, RemapKind::Route);
-        assert_eq!(named("DetourPreview").remap, RemapKind::Route);
-        assert_eq!(named("Rides").remap, RemapKind::Ride);
-        // The rain overlay belongs to the rain map and to nothing else — the Map and the Detour
-        // pair draw the very same scene through `draw_map_scene`, so a stray `.rain_overlay()` on
-        // one of them is exactly how the raster would start outliving its screen again.
-        // The suppression set, named: exactly the three screens a squeeze must not reach past.
-        let blocking: std::vec::Vec<&str> =
-            Screen::NAMES.iter().zip(caps).filter(|(_, c)| c.blocks_chords).map(|(n, _)| *n).collect();
-        assert_eq!(blocking, ["Passkey", "MapTransfer", "DfuInstalling"], "the chord suppression set, in table order");
-        // The escape's set is the chord's plus the recovered-ride card: a sheet over it is
-        // harmless, but leaving it would strand the recovered recording.
-        let no_escape: std::vec::Vec<&str> =
-            Screen::NAMES.iter().zip(caps).filter(|(_, c)| c.blocks_escape).map(|(n, _)| *n).collect();
-        assert_eq!(
-            no_escape,
-            ["RideRecovery", "Passkey", "MapTransfer", "DfuInstalling"],
-            "the escape suppression set, in table order"
-        );
-        assert_eq!(caps.iter().filter(|c| c.kind.is_overlay()).count(), 2, "the two drawers");
-        assert!(named("QuickDrawer").kind.is_overlay() && named("QuickDrawer").hold_fill);
-        assert!(named("ContextDrawer").kind.is_overlay());
-        assert!(named("WeatherRainMap").rain_overlay, "the rain map is the screen rain belongs to");
-        assert!(!named("Map").rain_overlay, "the ordinary Map never draws rain");
-        assert_eq!(caps.iter().filter(|c| c.rain_overlay).count(), 1, "exactly one screen wants rain");
-        // Each capability value is used by at least one screen (nothing dead-declared).
-        assert!(caps.iter().any(|c| c.reader == ReaderNeed::Always));
-        assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiSnapshot));
-        assert!(caps.iter().any(|c| c.reader == ReaderNeed::PoiHours));
-        assert!(caps.iter().any(|c| c.remap == RemapKind::Route));
-        assert!(caps.iter().any(|c| c.remap == RemapKind::Ride));
-        assert!(caps.iter().any(|c| c.timed));
-        assert!(caps.iter().any(|c| c.hold_fill));
-        assert!(caps.iter().any(|c| c.idle_exempt));
-        assert!(caps.iter().any(|c| c.base == BaseContent::Map));
-        assert!(caps.iter().any(|c| c.base == BaseContent::LiveRiding));
-        assert!(caps.iter().any(|c| c.base == BaseContent::Chrome));
     }
 
     /// The capability additions compile to `const` tables and generated matches, never to fields on
