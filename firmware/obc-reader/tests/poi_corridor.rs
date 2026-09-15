@@ -220,9 +220,7 @@ fn pois_behind_progress_are_rejected() {
     assert_eq!(query(&bytes, PoiCategorySet::ALL, &path, at + 1).len(), 0);
 }
 
-/// A hairpin projects a POI in its crook onto **two** legs — and, because the legs land in
-/// different route chunks, onto two separate scans. It must appear **once**, at its nearest
-/// projection (the near leg), not twice.
+/// A hairpin leaves the POI radius between its two legs, creating two distinct passes.
 #[test]
 fn switchback_retains_distinct_route_encounters() {
     // Out east along LAT, up 2000 µdeg (≈222 m), back west — a hairpin whose two legs are inside
@@ -372,7 +370,7 @@ fn dense_route_bounds_each_step_and_the_first_page_reads() {
 /// A missing route chunk cannot establish a complete corridor result.
 #[test]
 fn an_undecodable_chunk_fails_the_query() {
-    struct Holey(FixturePath);
+    struct Holey(FixturePath, usize);
     impl RoutePath for Holey {
         fn chunk_count(&self) -> usize {
             self.0.chunk_count()
@@ -384,7 +382,7 @@ fn an_undecodable_chunk_fails_the_query() {
             self.0.chunk_bbox(k)
         }
         fn visit_chunk_points(&self, k: usize, visit: &mut dyn FnMut(&[(i32, i32)])) {
-            if k == 0 {
+            if k == self.1 {
                 return; // pretend chunk 0's geometry read failed
             }
             self.0.visit_chunk_points(k, visit);
@@ -392,7 +390,7 @@ fn an_undecodable_chunk_fails_the_query() {
     }
     let pois = vec![water("In chunk 0", 7_110_000, LAT + 500), water("In chunk 2", 7_190_000, LAT + 500)];
     let bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
-    let path = Holey(FixturePath::straight(7_100_000, 10_000, 10, 4));
+    let path = Holey(FixturePath::straight(7_100_000, 10_000, 10, 4), 0);
 
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
@@ -401,4 +399,105 @@ fn an_undecodable_chunk_fails_the_query() {
     let mut out = heapless::Vec::<CorridorPoi, MAX_CORRIDOR_RESULTS>::new();
     assert!(r.corridor_pois(PoiCategorySet::ALL, &path, 0, &mut out).is_err());
     assert!(out.is_empty(), "a missing route chunk is not a complete empty corridor");
+
+    let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Across the hole", 7_105_000, LAT + 500)])]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let path = Holey(FixturePath::straight(7_100_000, 1_000, 10, 1), 4);
+    assert!(reader.corridor_pois(PoiCategorySet::ALL, &path, 0, &mut out).is_err());
+    assert!(out.is_empty(), "a pass cannot publish its nearest point before its unreadable continuation");
+}
+
+/// Small bends remain one pass even when the nearest point and the exit are many chunks apart.
+/// Returning after leaving the radius creates another pass with its own signed offset and key.
+#[test]
+fn meanders_across_chunks_keep_one_nearest_encounter_per_pass_and_stable_pages() {
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
+    let outward: Vec<_> = (0..=400)
+        .map(|i| {
+            (
+                7_100_000 + i * 100,
+                LAT + if !(180..=220).contains(&i) {
+                    0
+                } else if i % 2 == 0 {
+                    120
+                } else {
+                    -120
+                },
+            )
+        })
+        .collect();
+    let mut points = outward.clone();
+    points.extend(outward.iter().rev().skip(1).copied());
+    let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Meander water", 7_120_000, LAT + 1_620)])]);
+    for per_chunk in [1, 2, 7, 64, 1000] {
+        let path = FixturePath::new(chunked(&points, per_chunk));
+        let hits = query(&bytes, PoiCategorySet::ALL, &path, 0);
+        assert_eq!(hits.len(), 2, "one place, two passes; {per_chunk} segments per chunk");
+        assert_eq!(hits[0].offset_m, -167);
+        assert_eq!(hits[1].offset_m, 167);
+        assert!(hits[0].dist_along_m < hits[1].dist_along_m);
+        assert_eq!(hits[0].poi.metadata.source, hits[1].poi.metadata.source);
+
+        let source = CountingSource::new(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut q = PlaceQuery::new(
+            3,
+            PoiCategorySet::ALL,
+            PlaceWindow::Corridor { from_m: 0, to_m: u32::MAX, half_width_m: 300 },
+            None,
+        );
+        let mut page = heapless::Vec::<CorridorPoi, 1>::new();
+        let finish = |q: &mut PlaceQuery, page: &mut heapless::Vec<CorridorPoi, 1>| {
+            for _ in 0..100_000 {
+                let before_route = path.visits.get();
+                let before_map = source.reads.get();
+                let state = q.step(&reader, Some(&path), 3, page);
+                assert!(path.visits.get() - before_route <= 1, "one route chunk per step");
+                assert!(source.reads.get() - before_map <= 1, "one POI/index chunk per step");
+                if state != QueryProgress::Pending {
+                    assert!(matches!(state, QueryProgress::Ready { .. }));
+                    return;
+                }
+            }
+            panic!("query did not settle");
+        };
+        finish(&mut q, &mut page);
+        assert_eq!(page[0], hits[0]);
+        let first = q.key(&page[0]);
+        q.next_page(first);
+        page.clear();
+        finish(&mut q, &mut page);
+        assert_eq!(page[0], hits[1]);
+        let second = q.key(&page[0]);
+        q.previous_page(second);
+        page.clear();
+        finish(&mut q, &mut page);
+        assert_eq!(q.key(&page[0]), first);
+
+        // An anchor inside the first pass must include its nearest point once, then stop showing
+        // that pass after the rider has passed the canonical nearest point.
+        let before = query(&bytes, PoiCategorySet::ALL, &path, hits[0].dist_along_m - 5);
+        assert_eq!(before.len(), 2);
+        assert_eq!(before[0].dist_along_m, hits[0].dist_along_m);
+        let after = query(&bytes, PoiCategorySet::ALL, &path, hits[0].dist_along_m + 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].dist_along_m, hits[1].dist_along_m);
+    }
+}
+
+#[test]
+fn a_tie_inside_one_pass_keeps_the_first_segment_side() {
+    let points = [(7_120_000 - 100, LAT), (7_120_000 + 100, LAT), (7_120_000 - 100, LAT)];
+    let bytes = build_poi_map(BBOX, CS, &[(1, vec![water("Equal approach", 7_120_000, LAT + 500)])]);
+    for per_chunk in [1, 2] {
+        let path = FixturePath::new(chunked(&points, per_chunk));
+        let hits = query(&bytes, PoiCategorySet::ALL, &path, 0);
+        assert_eq!(hits.len(), 1, "turning within the radius does not leave the pass");
+        assert_eq!(hits[0].offset_m, -56, "the eastbound first segment wins the equal-distance tie");
+    }
 }
