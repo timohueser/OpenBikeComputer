@@ -82,25 +82,6 @@ pub(crate) fn write_distance_coarse<const N: usize>(s: &mut heapless::String<N>,
     }
 }
 
-/// Append a straight-line distance as a spaced unit-value plus the catalog's trailing word:
-/// `600 m away` below 1 km, else `2.3 km away`; imperial, whole feet below a mile, else
-/// one-decimal miles. `away` is the translated suffix, so the phrase reads as value + word in
-/// every language.
-pub(crate) fn write_distance_away<const N: usize>(s: &mut heapless::String<N>, d_m: u32, units: Units, away: &str) {
-    if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u64;
-        if ft >= u64::from(FT_PER_MI) {
-            let _ = write!(s, "{:.1} mi {away}", ft as f32 / FT_PER_MI as f32);
-        } else {
-            let _ = write!(s, "{ft} ft {away}");
-        }
-    } else if d_m >= 1000 {
-        let _ = write!(s, "{:.1} km {away}", d_m as f32 / 1000.0);
-    } else {
-        let _ = write!(s, "{d_m} m {away}");
-    }
-}
-
 /// Append a distance as a **spaced large unit**: `NN.N km` / `NN.N mi`, compacting to a whole unit
 /// (`142 km`) from 100 up — the tenths stop meaning anything at that magnitude, and the whole
 /// figure keeps the worst legitimate metadata run inside an inset row's budget. The rides-list and
@@ -401,24 +382,6 @@ mod tests {
         let mut pilled: heapless::String<24> = heapless::String::new();
         write_distance_coarse(&mut pilled, "OFF ", 1500, Units::Metric);
         assert_eq!(pilled.as_str(), "OFF 2km");
-    }
-
-    /// The spaced away-phrase: whole metres below 1 km, one-decimal km from there, with the
-    /// catalog's trailing word after the unit.
-    #[test]
-    fn distance_away_switches_at_one_large_unit() {
-        let away = |d_m, units| {
-            let mut s: heapless::String<20> = heapless::String::new();
-            write_distance_away(&mut s, d_m, units, "away");
-            s
-        };
-        assert_eq!(away(0, Units::Metric).as_str(), "0 m away");
-        assert_eq!(away(600, Units::Metric).as_str(), "600 m away");
-        assert_eq!(away(999, Units::Metric).as_str(), "999 m away");
-        assert_eq!(away(1000, Units::Metric).as_str(), "1.0 km away");
-        assert_eq!(away(2300, Units::Metric).as_str(), "2.3 km away");
-        assert_eq!(away(100, Units::Imperial).as_str(), "328 ft away");
-        assert_eq!(away(2000, Units::Imperial).as_str(), "1.2 mi away");
     }
 
     /// The metadata shape is always a large unit — a spaced `0.5 km`, never `500 m` — and drops

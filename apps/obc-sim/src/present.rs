@@ -1084,7 +1084,9 @@ mod tests {
         until_then_dwell!(&mut app, "reroute: Map", Screen::Map(_), 60);
         player.pause();
         let original = app.route_ids()[app.active_route_index().unwrap()];
-        app.open_find_place();
+        app.apply_chord(obc_app::input::Chord::Context);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
         until_then_dwell!(&mut app, "visit: category", Screen::FindPlace(_), 45);
         app.apply_gesture(Gesture::Step(6));
         app.apply_gesture(Gesture::Press);

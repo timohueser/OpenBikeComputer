@@ -13,7 +13,7 @@ use crate::Msg;
 use super::vocab::chrome::title_frame_ble;
 use super::vocab::list;
 use super::{
-    palette, Ctx, MapScreen, PeakViewScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick,
+    palette, AssistantScreen, Ctx, MapScreen, PeakViewScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick,
     SettingsScreen, Transition,
 };
 
@@ -21,7 +21,7 @@ use super::{
 enum MenuItem {
     Routes,
     Rides,
-    Pois,
+    Assistant,
     Map,
     Peaks,
 
@@ -29,9 +29,9 @@ enum MenuItem {
 }
 
 const BASE_ITEMS: [MenuItem; 5] =
-    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Settings];
+    [MenuItem::Routes, MenuItem::Rides, MenuItem::Assistant, MenuItem::Map, MenuItem::Settings];
 const PEAK_ITEMS: [MenuItem; 6] =
-    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Peaks, MenuItem::Settings];
+    [MenuItem::Routes, MenuItem::Rides, MenuItem::Assistant, MenuItem::Map, MenuItem::Peaks, MenuItem::Settings];
 
 fn menu_items(state: &crate::AppState) -> &'static [MenuItem] {
     if state.peak_view_profile.is_some() {
@@ -57,7 +57,7 @@ impl MenuText {
             *slot = match kind {
                 MenuItem::Routes => rx.t(Msg::MenuRoutes),
                 MenuItem::Rides => rx.t(Msg::MenuRides),
-                MenuItem::Pois => rx.t(Msg::MenuPois),
+                MenuItem::Assistant => rx.t(Msg::AssistantTitle),
                 MenuItem::Map => rx.t(Msg::MenuMap),
                 MenuItem::Peaks => rx.t(Msg::MenuPeaks),
 
@@ -164,7 +164,7 @@ impl MenuScreen {
                 match menu_items(cx.state).get(self.dial.selected()).copied().unwrap_or(MenuItem::Settings) {
                     MenuItem::Routes => Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())),
                     MenuItem::Rides => Transition::Push(Screen::Rides(RidesScreen::new())),
-                    MenuItem::Pois => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
+                    MenuItem::Assistant => Transition::Push(Screen::Assistant(AssistantScreen::new())),
                     MenuItem::Map => open_map(cx),
                     MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::default())),
 
@@ -361,7 +361,7 @@ fn draw_icon(cv: &mut impl Surface, item: MenuItem, c: Point, k: f32, color: u16
     match item {
         MenuItem::Routes => icon_route(cv, c, k, color),
         MenuItem::Rides => icon_rides(cv, c, k, color, bg),
-        MenuItem::Pois => icon_poi(cv, c, k, color, bg),
+        MenuItem::Assistant => icon_assistant(cv, c, k, color, bg),
         MenuItem::Map => icon_map(cv, c, k, color),
         MenuItem::Peaks => icon_peaks(cv, c, k, color, bg),
 
@@ -430,17 +430,16 @@ fn icon_route(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     cv.disc(Point::new(c.x + si(k, 12.0), c.y + si(k, -6.0)), si(k, 3.0) as u32, color);
 }
 
-/// A map pin: head disc, tapering tip, and a punched-out centre dot.
-fn icon_poi(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
-    let head = Point::new(c.x, c.y + si(k, -5.0));
-    cv.disc(head, si(k, 8.0) as u32, color);
+/// The Assistant compass, shared in shape with the quick drawer.
+pub(super) fn icon_assistant(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    cv.disc(c, si(k, 12.0) as u32, color);
+    cv.disc(c, si(k, 10.0) as u32, bg);
     cv.triangle(
-        Point::new(c.x + si(k, -6.0), c.y),
-        Point::new(c.x + si(k, 6.0), c.y),
-        Point::new(c.x, c.y + si(k, 12.0)),
+        Point::new(c.x + si(k, 6.0), c.y - si(k, 8.0)),
+        Point::new(c.x + si(k, 1.0), c.y + si(k, 2.0)),
+        Point::new(c.x - si(k, 6.0), c.y + si(k, 8.0)),
         color,
     );
-    cv.disc(head, si(k, 3.0) as u32, bg);
 }
 
 /// A folded map with a "you are here" dot: an outlined sheet, two *hairline* fold creases inset
