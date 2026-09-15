@@ -969,6 +969,32 @@ mod tests {
     }
 
     #[test]
+    fn mode_change_surfaces_release_failure_without_starting_another_route() {
+        use crate::navigator::NavigatorError;
+        for error in [NavigatorError::Store, NavigatorError::DurabilityUnknown] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            let mut screen = VisitReviewScreen::new("Water").route_choices(true);
+            screen.pending_target = Some(VisitTarget {
+                map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
+                metadata: obc_formats::obcm::PoiMetadata {
+                    source: obc_formats::obcm::SourceId::osm(1, 1),
+                    approach: None,
+                },
+                display: (0, 0),
+            });
+            app.ui.stack.push(Screen::VisitReview(screen)).unwrap();
+            app.ui.find.review = ReviewStatus::Planning;
+            app.navigator.review_failed(error);
+            let expected = app.assistant_review_status();
+            app.prepare_find(None, None);
+            assert_eq!(app.ui.find.review, expected);
+            assert!(matches!(app.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_none()));
+            assert!(app.assistant_planner_released());
+            assert!(app.assistant_review_context().is_none());
+        }
+    }
+
+    #[test]
     fn find_shortlist_uses_visit_occurrence_without_reordering_corridor() {
         use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
         let mut sink = Sink(std::vec::Vec::new());
