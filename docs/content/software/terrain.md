@@ -89,7 +89,6 @@ Thus, all consumers use the same elevation values.
 <figcaption>The center-sample example uses equal weights. The packer and device share elevation rules; Peak View additionally uses the baked surface index.</figcaption>
 </figure>
 
-
 ## Peak View surface data
 
 The production terrain baker writes a geographic surface index for Peak View.
@@ -113,7 +112,7 @@ Opening Peak View uses a GPS fix from the last 30 seconds or requests a new fix,
 ride is recording. It waits for that fix before it generates terrain. A cached position without
 an arrival time does not count as a current fix. With a recent fix, the compass and
 pending-column hatch appear in the first frame, without a waiting screen.
-After acquisition, GPS can sleep if no recording or weather request needs it. The compass stays
+After acquisition, GPS can sleep if no recording needs it. The compass stays
 active while Peak View is open. Leaving the screen cancels its pending position request.
 Completed terrain replaces the hatch as generation progresses. Progress redraws occur at most twice per second.
 The renderer prepares the current field of view first, then fills the rest of the circle in the

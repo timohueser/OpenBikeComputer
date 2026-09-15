@@ -14,7 +14,6 @@
     {
       "id": "kettle-moraine-loop",
       "deviceObjectID": 7,
-      "deviceRetention": 2,
       "lastUsedDaysAgo": 5,
       "name": "Kettle Moraine Loop",
       "distanceMeters": 62400,
@@ -45,7 +44,6 @@
     {
       "id": "sugar-river-trail",
       "deviceObjectID": 12,
-      "deviceRetention": 4,
       "lastUsedDaysAgo": 3,
       "name": "Sugar River Trail",
       "distanceMeters": 38100,

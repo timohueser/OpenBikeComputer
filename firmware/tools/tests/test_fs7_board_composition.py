@@ -13,17 +13,14 @@ read (#1541) — the executor keeps no retry of its own.
 from pathlib import Path
 import unittest
 
-
 ROOT = Path(__file__).resolve().parents[3]
 FLAT_STORE = (ROOT / "firmware/obc-fw-nrf54l/src/flat_store.rs").read_text()
 RIDE = (ROOT / "firmware/obc-fw-nrf54l/src/ride.rs").read_text()
-
 
 def body(source: str, start: str, end: str | None) -> str:
     """Return one deliberately delimited production section."""
     first = source.index(start)
     return source[first:] if end is None else source[first : source.index(end, first)]
-
 
 class Fs7BoardCompositionTests(unittest.TestCase):
     def test_successful_upload_is_typed_only_after_catalog_rescan(self) -> None:
@@ -33,7 +30,7 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("ObjectKind::Trip => Some(CatalogUploadKind::Trip)", publish)
         self.assertIn("note_catalog_upload(CatalogUpload::new(kind, id.0, replaced))", publish)
 
-        delivery = body(RIDE, "fn note_catalog_uploads", "/// **`CatalogEffect::ReadCatalog`")
+        delivery = body(RIDE, "fn note_catalog_uploads", "async fn read_catalogs")
         self.assertIn("note_route_upload", delivery)
         self.assertIn("note_trip_upload", delivery)
         self.assertIn("replaced: upload.replaced()", delivery)
@@ -61,7 +58,7 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("UPLOAD_EVENTS_LOSS.store(true", note)
         self.assertNotIn("advisory deferred", note, "a dropped fact is loss, not deferred work")
 
-        delivery = body(RIDE, "fn note_catalog_uploads", "/// **`CatalogEffect::ReadCatalog`")
+        delivery = body(RIDE, "fn note_catalog_uploads", "async fn read_catalogs")
         loss = delivery.index("take_catalog_upload_loss()")
         drain = delivery.index("while let Some(upload)")
         self.assertLess(loss, drain, "the conservative refresh precedes retained facts in commit order")
@@ -86,14 +83,14 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         stages = [
             "app.begin_catalog_refresh()",
             "Request::ReconcileMetadata",
-            "let start = crate::flat_store::retention_scope(flat)",
+            "let start = crate::flat_store::catalog_scope(flat)",
             "load_routes(flat, app)",
             "load_trips(flat, app)",
             "load_rides(flat, app)",
             "if !routes_loaded || !trips_loaded || !rides_loaded",
             "return Err(CatalogError::Unreadable)",
-            "load_retention(flat, app).map_err(catalog_metadata_error)?",
-            "if start != crate::flat_store::retention_scope(flat)",
+            "load_metadata(flat, app).map_err(catalog_metadata_error)?",
+            "if start != crate::flat_store::catalog_scope(flat)",
             "return Err(CatalogError::Stale)",
             "Ok(start)",
         ]
@@ -101,7 +98,7 @@ class Fs7BoardCompositionTests(unittest.TestCase):
             self.assertLess(
                 rescan.index(previous),
                 rescan.index(following),
-                "policy scope requires a complete catalog and metadata load at one stable identity",
+                "catalog scope requires a complete catalog and metadata load at one stable identity",
             )
 
         # The executor returns the captured scope or the actual failure. Retry remains owned by
@@ -127,7 +124,6 @@ class Fs7BoardCompositionTests(unittest.TestCase):
                 section,
                 "menu loaders must not put full catalog metadata for every slot on one frame",
             )
-
 
 if __name__ == "__main__":
     unittest.main()

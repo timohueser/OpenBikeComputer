@@ -18,7 +18,7 @@ A `screens!` table defines each variant and its `Caps`. The table generates the 
 and drawing dispatch, and capability metadata. A small manual `prepare` match delegates only the
 four reader-backed screens that need a one-shot operation before drawing.
 
-`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, rain, catalog remapping, and the render key.
+`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, catalog remapping, and the render key.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -319,8 +319,7 @@ A row can also hold a **value** in place of a screen. Such a row slides the shee
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
 and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
 becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
-two such rows, Filter and Sources; the three weather views declare one, Interval — the time between
-the weather requests the device makes on its own. The create-route card declares one, Bike type —
+two such rows, Filter and Sources. The create-route card declares one, Bike type —
 the routing profile the device plans with. These rows are the only place those controls are set.
 
 The bike-type row shows what a value row does when its choices come from the loaded map. The
@@ -337,11 +336,6 @@ change is not visible until the sheet closes, because the screen below a sheet i
 rider sets all three in one visit and the flips themselves cost no map render. The map is drawn once
 when the shorter display sheet replaces the taller sheet, and once more, with all three answers,
 when the sheet goes away.
-
-A row can also simply **act**. The weather views declare one such row, Refresh now. It asks for
-fresh weather and closes the sheet, because the answer and the cue for it are content of the screen
-below, which a sheet holds still. The row is drawn recessed while a request is already on its way,
-or while one waits for the phone to come back into range: a second request would change nothing.
 
 The drawer is the only home for a setting that belongs to one screen. A control that moves into a
 drawer is removed from the central settings tree in the same change. A check in the build fails if
@@ -385,7 +379,6 @@ A destructive or irreversible action can require `Hold`. The screen must also de
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 278" role="img" aria-label="Top: a timeline showing Select pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit."><text class="d-tag" x="20" y="24">Hold to confirm — the guarded-action pattern</text><g transform="translate(0 28)">
-
 
   <!-- timeline -->
   <line x1="40" y1="70" x2="540" y2="70" stroke="#9aa884" stroke-width="1.5" />
@@ -682,54 +675,26 @@ Settings screens use two focus levels. The row cursor selects a setting. Edit fo
 
 The application marks settings dirty when a value changes. `SettingsMachine` waits until the user leaves the Settings subtree before it requests a write. The host writes the snapshot through `SettingsStore` and reports the result.
 
-The weather alert cooldown is not a setting. It is device state, and it has its own record with its own lifecycle. A firing alert writes only that record, and it writes it immediately: an open settings screen does not hold it back, and a change to a setting does not touch it.
-
 The settings blob is independent of the SD card. The current UI languages are English, German, French, and Spanish.
 
-A firmware update does not erase the stored settings. The blob format is append-only: a new setting is added at the end, and it carries the version that first wrote it. Stored fields never move. The device reads a stored blob at the blob's own version, and the fields added after that version take their defaults. Two cases reset the settings, and both are deliberate: a blob older than the oldest version whose exact bytes are committed as a reference, and a downgrade, where the stored blob is newer than the firmware and its layout is unknown.
+Settings use layout version 20. The device rejects older or newer layouts and uses defaults. A valid current layout preserves the rider’s settings across updates.
 
 The build generates a complete translation table from four TOML catalogs. The build fails if a catalog has missing or extra keys.
 
-## Retention
+## Route cleanup
 
-Routes have individual retention values. The shared retention policy has one setting for synced rides.
-Current protocol-v4 clients cannot mark device rides synced, so these rides remain protected
-from automatic expiry. See [ride reconciliation](../companion-link/#reconciliation).
+The device does not delete routes or rides automatically.
+When a route upload fails because storage is full, the device offers a cleanup dialog.
+Choose an age in weeks, then hold **Delete old routes** to confirm. Cancel is selected first.
+The dialog reports completion, no matching routes, or a failure. Retry the upload after cleanup.
 
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 300" role="img" aria-label="A trusted GPS or phone clock permits retention checks. Active routes and unsynced rides are protected. Current protocol-v4 downloads do not mark device rides synced, so those rides do not expire automatically.">
-  <defs><marker id="software-ui-11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-  <text class="d-tag" x="20" y="26" text-anchor="start">Retention needs both time and eligibility</text>
-  <rect class="d-panel" x="20" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="120" y="85" text-anchor="middle">Trusted clock</text>
-  <text class="d-sub" x="120" y="105" text-anchor="middle">GPS or phone · this boot</text>
-  <path class="d-flow" d="M220 98 L258 98" marker-end="url(#software-ui-11)" />
-  <rect class="d-panel" x="260" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="360" y="85" text-anchor="middle">Check eligibility</text>
-  <text class="d-sub" x="360" y="105" text-anchor="middle">Inactive route</text>
-  <text class="d-sub" x="360" y="122" text-anchor="middle">Or a synced ride</text>
-  <path class="d-flow" d="M460 98 L498 98" marker-end="url(#software-ui-11)" />
-  <rect class="d-panel" x="500" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="600" y="85" text-anchor="middle">Check age</text>
-  <text class="d-sub" x="600" y="105" text-anchor="middle">Delete only after expiry</text>
-  <rect class="d-panel d-focus" x="20" y="184" width="680" height="92" rx="8" />
-  <text class="d-title" x="360" y="209" text-anchor="middle">Current device rides remain protected</text>
-  <text class="d-sub" x="360" y="229" text-anchor="middle">Protocol v4 has no ride-possession acknowledgment.</text>
-  <text class="d-sub" x="360" y="246" text-anchor="middle">A local download does not start device ride expiry.</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>A trusted clock is necessary, but it is not sufficient for deletion. Active routes and unsynced rides remain protected.</figcaption>
-</figure>
+Age starts when the current route copy is uploaded under a trusted clock. Navigation does not
+change this date. Cleanup scans the complete store, including routes beyond the visible menu.
+It keeps the active route, routes with unknown dates, and routes newer than the selected age.
+If the current date is unknown, use manual deletion from the Routes menu.
 
-The retention sweep requires a trusted clock from this boot. GPS or the companion can establish this clock.
-
-### The device has no clock — so deletion waits for a trusted one
-
-The sweep does not delete the active route. It does not delete unsynced rides.
-
-An unknown route-use time starts a new retention period. It does not cause immediate deletion.
+Ride archive proof controls the synced indicator. It never starts a deletion timer.
+See [ride reconciliation](../companion-link/#reconciliation).
 
 ## Runtime boundaries
 
@@ -789,7 +754,7 @@ Each screen row **declares a render-key kind** — the name of the facts its dra
 returns their exact values.
 
 Each kind names what its screen draws. The Map names the camera, the fix, the pan mode, the
-route-relative chrome, the low-battery cue, and, on the rain map alone, the selected rain frame. The
+route-relative chrome and the low-battery cue. The
 riding grid names the ride readouts and the live sensor values of the fields the rider pinned. The
 Climb view names the climb and the cursor on it. The Up-ahead timeline names the progress its rows
 measure from. Home names the battery level, the connected indicator, and the screensaver backdrop. A
@@ -852,7 +817,7 @@ The overlay presenter reads the clean base frame, adds the overlay, and presents
 
 ## Screens the companion link pushes
 
-The companion can open modal cards for pairing, route updates, trip updates, warnings, and weather alerts.
+The companion can open modal cards for pairing, route updates, trip updates, and warnings.
 
 The card scheduler assigns a fixed priority to each card type. A new card does not replace a hold in progress.
 
@@ -1176,7 +1141,7 @@ layout. Cards compose the existing `chrome` helpers. There is no universal card-
 abstraction.
 
 `draw_rows` is for selected, actionable lists. A read-only timeline can compose `list_frame` and
-`scrollbar` without inventing a selection. Weather Hourly uses this composition.
+`scrollbar` without inventing a selection.
 
 Overlays and screen-specific drawing layers stay local. The Climb grade renderer is different from
 the shared elevation band.
@@ -1223,29 +1188,6 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
 - Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n), [`i18n.rs`](src:firmware/obc-app/src/i18n.rs)
 - POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`up_ahead.rs`](src:firmware/obc-app/src/screen/up_ahead.rs)
-- Retention policy: [`retention.rs`](src:firmware/obc-app/src/retention.rs)
+- Route cleanup: [`route_cleanup.rs`](src:firmware/obc-storage/src/flat/route_cleanup.rs)
 
 See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.
-
-## Weather between phone connections
-
-The device shows stored forecasts without waiting for the phone. A refresh does not hide usable
-data. The rain card reports the continuous coverage ahead, up to two hours. For example, 95
-minutes of covered dry weather shows **DRY FOR 95 MIN**. Time passing reduces this duration.
-A gap, unknown cell, route-coverage limit, or expired frame ends the dry claim. Missing data does
-not mean dry weather.
-
-When detailed rain data cannot answer, the dashboard keeps the hourly forecast available for its
-remaining valid times. Open **Hourly** to see the forecast times. The hourly forecast covers
-24 hours from its first record and
-describes the location used for the request. It is not a forecast for every point on a long route.
-The rain map shows only valid rain frames; hourly data does not create a replacement rain map.
-
-**UPDATING** means the phone has started a weather attempt. Waiting for a phone or a retry does
-not show this cue. Success, a reported failure, or a bounded timeout clears it. A failed refresh
-leaves valid stored forecasts available. The device asks for an update when no forecast can answer
-for the current time.
-
-Sources: [src:firmware/obc-app/src/weather.rs],
-[src:firmware/obc-app/src/screen/weather_dash.rs],
-[src:firmware/obc-ble/src/weather_request.rs].

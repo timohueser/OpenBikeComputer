@@ -1,88 +1,3 @@
-//! The read seam, joined to the byte seam: an open object as an [`ByteSource`].
-//!
-//! Everything that reads a format — `obc-reader`'s chunk caches, `obc-route`'s A\*, `RouteReader`,
-//! the OBCW reader — consumes [`ByteSource`] and nothing else. The store speaks
-//! [`open`](Store::open) and [`read`](Store::read). This module is the one adapter between them, and
-//! it is deliberately the *only* thing in the crate that knows both vocabularies: no reader learns
-//! what an `ObjectId` is, and the store learns nothing about chunks.
-//!
-//! ## The lifecycle, and why it is shaped like this
-//!
-//! `close` is mandatory — a dropped [`Handle`] leaks its row, and its extents, until the next mount
-//! (`FLAT_Store_Format.md` §6.2). The obvious fix, closing in `Drop`, is still **impossible**, though
-//! no longer for the reason it used to be: a `Drop` impl could reach `close` now that the whole seam
-//! is `&self`, but it has no handle to pass it — [`release`](StoreSource::release) is what takes the
-//! handle out, and a `Drop` that could take it too would be a second way to spend the same row.
-//!
-//! So the seam makes the pairing structural instead, in two shapes, and a consumer picks by how long
-//! it holds the object:
-//!
-//! - **Short-lived** — [`FlatStore::with_source`]. Opens, runs the body, closes. Nothing to forget,
-//!   and the borrow checker never sees a source outlive its close. It does **not** close on a panic —
-//!   see its own docs.
-//! - **Session-long** — [`StoreSource`] + [`release`](StoreSource::release), for an object read
-//!   from boot to power-off across a hundred `await`s, where a scope is not available. **The map is
-//!   that object**: the board resolves one source over it at mount and every frame reads through it
-//!   for the life of the image (it lives in `.bss`, and a `with_source` scope cannot span the ride
-//!   loop). Here the pairing is enforced twice over: the source *owns* its handle and will only give
-//!   it back through `release`, and dropping one that still holds a handle trips a `debug_assert` —
-//!   so a leak fails loudly in every test and every host build rather than showing up as a card that
-//!   will not open its map after the third boot.
-//!
-//!   (Until FS7.5-c2 this shape was justified by the eleven shards and the terrain sidecar a mounted
-//!   volume set held. A map is one file now, so the *count* collapsed to one and the *lifetime*
-//!   argument — the only one that ever mattered — did not.)
-//!
-//! ## What a live source costs: a refcount, and no longer the store's mutability
-//!
-//! A `StoreSource` holds `&'a FlatStore`, and since #1256's owner ruling of 2026-08-18 **every seam
-//! operation takes `&self`** — `allocate`, `write`, `commit`, `journal`, `cancel` and `close`
-//! included. So sources and writers coexist: the board holds a `&'static` source over the map for
-//! the life of the image while an upload commits and a ride journals. That is its actual shape, and
-//! it is the whole point of the ruling. (A mount *is* a `&'static` borrow of the store, so under the
-//! old `&mut` write half it pinned the store immutable forever.) The two alternatives were rejected by
-//! name — per-call store passing, because it cannot fit under `ByteSource::read_at(&self)` without
-//! threading context through the very consumers FS6 promised not to touch; and unsafe board-side
-//! aliasing, because it discards the guarantee exactly where it matters most.
-//!
-//! **What was given up is one compile-time guarantee, and it is the one the type system was making
-//! for free: an object could not be closed while a source read it, because a `close` needed `&mut`
-//! and the source held `&`.** That property is now enforced at runtime instead, by the reader
-//! refcount the hold table already keeps, and the downgrade is from *impossible* to *refused* — never
-//! to *silent*:
-//!
-//! - A `StoreSource` **owns** its handle and surrenders it only through `release`, so the only close
-//!   that can name a live source's row is a close of some *other* handle on the same object.
-//! - [`FlatStore::close`] on a row with more than one reader spends a refcount and returns. The row,
-//!   its ranges and its length are untouched, and the source keeps reading exactly the revision it
-//!   resolved. `a_close_beside_a_live_source_is_refused_by_the_refcount` is where that is a fact
-//!   rather than a claim.
-//! - Extents a commit takes away from a held revision stay out of the allocator until the **last**
-//!   reader closes — `FlatStore::release` asks the hold table before it frees anything, which is
-//!   §6.2's rule and is what makes the refusal safe rather than merely polite.
-//!
-//! The other half of the ruling is granularity, and it is the store's to keep rather than this
-//! adapter's: **the state borrow is per card command, never per commit.** [`store`](super::store)'s
-//! module docs carry the three rules and the re-entrancy argument; what matters here is the
-//! consequence — a source's `read_at` can be served in the gaps of a running commit, because that
-//! commit's ~36 card commands hold no borrow this path needs.
-//!
-//! What is still *not* here is the board's cross-task layer: one storage task owning the writes, with
-//! callers sending it messages, so that a commit's card commands and a render's reads interleave on a
-//! real scheduler rather than merely being able to. That is FS7 slice 3's. Nothing in this module
-//! precludes it — a `Cell`/`RefCell` store is the single-context shape of exactly that design — but
-//! nothing in this module provides it either, and a `FlatStore` must not be shared between execution
-//! contexts until it does.
-//!
-//! ## Addressing
-//!
-//! [`ByteSource`] is `u64`-addressed since FS7.5-seam, and the store's own lengths always were — so
-//! this adapter no longer converts between two address spaces, it just hands one through. The
-//! saturation that used to live here (`payload_len.min(u32::MAX)`, plus a `len()` that reported an
-//! *addressable prefix* rather than the object) is **gone**, and with it the one case in this module
-//! where a source told the truth about bytes it would then refuse to serve. An object is as long as
-//! it is; a read past its end is [`Error::BadOffset`], exactly as it was for a 4 KiB object.
-
 use obc_formats::io::{ByteSource, Error};
 
 use super::device::BlockDevice;
@@ -324,6 +239,7 @@ mod tests {
             let mut allocation = store.allocate(LEN as u64).expect("an extent is free");
             store.write(&mut allocation, &payload()).expect("the payload fits");
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision: Revision(1),
                 kind: ObjectKind::MapShard,
@@ -382,6 +298,7 @@ mod tests {
 
         let id = store.next_object_id();
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: ObjectKind::Route,
@@ -553,6 +470,7 @@ mod tests {
         // keeps the extents the entry already holds and rewrites only the metadata.
         const SHORT: u64 = 1_000;
         let trimmed = EntryMeta {
+            added_at_utc: 0,
             id: ids[0],
             revision: Revision(1),
             kind: ObjectKind::MapShard,
@@ -604,6 +522,7 @@ mod tests {
         let mut allocation = store.allocate(LEN as u64).expect("an extent is free");
         store.write(&mut allocation, &payload()).expect("the payload fits");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: ObjectKind::MapShard,

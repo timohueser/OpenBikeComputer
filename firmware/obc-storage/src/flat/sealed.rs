@@ -35,6 +35,7 @@ fn sealing_revokes_every_writable_copy_without_publishing_or_spending_a_hold() {
     assert!(matches!(store.seal(stale), Err(StoreError::Invalid)));
     store.cancel(stale);
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: ObjectId(1),
         revision: Revision(1),
         kind: ObjectKind::Route,

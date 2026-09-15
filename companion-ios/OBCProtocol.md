@@ -18,8 +18,7 @@ cannot alias an old object id. A version mismatch is surfaced, never decoded opt
 
 ### Control plane
 
-The app discovers DIS (`0x180A`), BAS (`0x180F`), OBC Control (`3C920000-…`) and Weather Request
-(`B3B60000-…`). `GATT.swift` owns UUIDs; `OBCProtocolV4` owns control and stream records.
+The app discovers DIS (`0x180A`), BAS (`0x180F`), OBC Control (`3C920000-…`).
 The DIS Firmware Revision String is either an installed OBCU version or a bare Git hash. Hashes are
 not parsed as release versions and therefore never produce an automatic update offer.
 
@@ -47,7 +46,6 @@ The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
 - Trips contain route object ids, not route bytes. Upload stages first and the trip last; deleting a
   trip does not implicitly delete its routes.
 - Firmware images are signed OBCU containers carried as update objects.
-- Weather bundles are OBCW objects. A create requests object id zero; the store assigns the id.
 
 The wire codecs live under `OBCTransport/Codecs/`; interchange-file parsing lives in `OBCFormats`.
 
@@ -67,39 +65,13 @@ A timeout or failed receipt leaves the local archive intact and device confirmat
 existing sync banner. Resume or reconnect revalidates and retries without downloading saved rides.
 Unsupported and refused receipts remain visible; a changed source is terminal for that receipt.
 Only the matching ARCHIVE_RIDE response confirms proof. STATUS and local save counts cannot do so.
-Timestamp zero is valid and does not start a countdown. Live device retention consumes this proof
-separately. See the [archive contract](../specs/Ride_Archive_Contract.md).
-
-## Weather Request
-
-The device advertises the secondary Weather Request service while a request is pending. iOS wakes,
-connects to the known bonded peripheral, performs one authenticated 52-byte context read, then
-disconnects before HTTP work. The resulting OBCW bundle returns later through the ordinary object
-upload path.
-
-Optional context groups are controlled by validity bits, never coordinate or timestamp sentinels.
-Unknown reason/validity bits and an unknown refresh byte are tolerated on reads. The request id
-correlates work but is not authorization; the device may accept a valid newer bundle raised by an
-older request.
-
-A served context with a valid position starts the device's bounded UPDATING cue. A resumed job
-uses `weatherAttempt` (command 8, request id plus `started=1`) when it has not read a new context.
-A failed job sends the same command with `started=0`. This ends activity without satisfying the
-request. If the report cannot arrive, the device clears activity after 120 seconds. Successful
-uploads and `weatherUnchanged` clear activity and finish their matching request.
-
-One CoreBluetooth manager arbitrates foreground and weather intents. Foreground work wins. A
-weather operation may reuse but must not tear down a foreground connection. The standing watch is
-rider-controlled and persisted; the bounded read and upload legs use absolute deadlines.
+Timestamp zero is valid. The device uses archive proof for the synced indicator.
+Rides remain on the device until the user deletes them. See the [archive contract](../specs/Ride_Archive_Contract.md).
 
 ## Delta 1 — device name lives in Config
 
 Renaming is a `Config` object write; there is no rename command. The UTF-8 name is capped at 48 bytes
 and truncated only at a Character boundary.
-
-`weather_refresh` is an optional trailing raw byte. On read, an absent value means the device default;
-on write, absence means preserve the stored choice. Unknown values survive a round trip and are not
-written as a guessed interval. The companion reports this device-owned setting but does not edit it.
 
 ## Delta 2 — GPX and TCX import
 
@@ -119,7 +91,6 @@ The device never parses XML. `RouteSource` and the import UI expose the same two
 | `TransferProgress` / `TransferOutcome` | whole-object transfer lifecycle |
 | `DeviceError` | typed protocol, radio, CRC and storage failures |
 | `OBCUHeader` / `StagedFirmware` | validated firmware-update container |
-| `WeatherRequestContext` | authenticated §11 request read |
 
 `OBCDomain` contains transport-free values. `OBCTransport` contains the interface and codecs;
 `OBCTransport/BLE` is the real radio implementation. Tests should normally exercise codecs and

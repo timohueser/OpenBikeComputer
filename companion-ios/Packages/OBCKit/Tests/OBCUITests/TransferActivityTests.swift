@@ -85,10 +85,6 @@ struct TransferActivityTests {
             transport: MockTransport(control: control),
             blob: blob,
             deviceName: "Trailhead",
-            // Ledger tests exercise the transfer path — no retention capability, so
-            // `start()` begins the transfer straight away (the `.ready` confirm is
-            // covered elsewhere).
-            supportsRetention: false,
             timing: UploadSheetModel.Timing(doneAutoDismiss: .milliseconds(40)),
             activity: activity
         )
@@ -141,7 +137,6 @@ struct TransferActivityTests {
                 payload: Data(count: 100_000)
             ),
             deviceName: "Trailhead",
-            supportsRetention: false,
             timing: UploadSheetModel.Timing(doneAutoDismiss: .milliseconds(40)),
             activity: activity
         )

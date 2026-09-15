@@ -34,14 +34,11 @@ FIXTURE_SUFFIXES = (
 )
 FIXTURE_AREAS = (
     "apps/obc-sim/assets/",
-    "host/obc-wx-bake/tests/events/",
 )
-
 
 def tracked_files() -> list[str]:
     output = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
     return [item.decode() for item in output.split(b"\0") if item]
-
 
 def main() -> int:
     try:
@@ -64,7 +61,6 @@ def main() -> int:
         return 1
     print("fixture policy: archive budgets valid; no unregistered large blobs")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

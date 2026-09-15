@@ -47,6 +47,7 @@ pub mod i18n;
 pub mod input;
 pub mod input_plane;
 pub mod map_catalog;
+pub mod metadata;
 pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
@@ -54,7 +55,6 @@ pub mod peak_view;
 pub(crate) mod placement;
 pub mod recorder;
 pub(crate) mod render_key;
-pub mod retention;
 pub mod ride;
 pub mod route;
 pub mod screen;
@@ -67,17 +67,12 @@ pub mod store_meta;
 pub mod trip;
 pub(crate) mod ui_runtime;
 pub mod wall_clock;
-pub mod weather;
-pub mod weather_alerts;
-pub mod weather_rain;
 
 pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest};
 pub use altitude::AltitudeFusion;
-pub use app::{
-    App, AppState, CameraMode, ClockTrust, MarksProvenance, Pan, PanBasis, PanTool, GESTURE_BUF, NAV_PREVIEW_MAX,
-};
+pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, GESTURE_BUF, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
-pub use ble::{BleLink, BleStatus, WeatherFix};
+pub use ble::{BleLink, BleStatus};
 pub use breadcrumb::Breadcrumb;
 pub use corridor::{CorridorKey, CorridorScratch};
 pub use device_status::DeviceStatus;
@@ -94,14 +89,13 @@ pub use nav_profiles::NavProfiles;
 pub use next_ahead::{NextAhead, NextPoi, REFRESH_STEP_M};
 pub use peak_view::{PeakName, PeakViewPeak, PeakViewProfile};
 pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation, RideDamage};
-pub use retention::{Retention, RideRetention, RideRetentionRecord, RouteRetentionMeta};
 pub use ride::{RideCatalog, RideEntry, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
-pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen, WeatherAlertKind};
+pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
 pub use settings::{
-    ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, WeatherRefresh,
-    DATETIME_MAX_YEAR, DATETIME_MIN_YEAR, SENSOR_SLOTS,
+    ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, DATETIME_MAX_YEAR,
+    DATETIME_MIN_YEAR, SENSOR_SLOTS,
 };
 pub use stat_fields::{StatField, StatFieldList};
 pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
@@ -110,6 +104,3 @@ pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 /// the primitive alias so `obc-app` does not depend on a storage implementation.
 pub type CatalogObjectId = u64;
 pub use wall_clock::{MinuteTicker, WallClock};
-pub use weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot};
-pub use weather_alerts::{AlertCandidate, AlertClass, AlertMark};
-pub use weather_rain::RainOverlayAdapter;

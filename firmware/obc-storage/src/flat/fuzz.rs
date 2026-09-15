@@ -51,6 +51,7 @@ fn sample_entry() -> Entry {
     ranges.push(9, 1).unwrap();
     Entry {
         meta: EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(7),
             revision: Revision(3),
             kind: ObjectKind::MapShard,
@@ -164,7 +165,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
             ObjectKind::Route,
             ObjectKind::Trip,
             ObjectKind::Ride,
-            ObjectKind::WeatherBundle,
+            ObjectKind::Route,
             ObjectKind::MapShard,
             ObjectKind::RollbackReserve,
         ];
@@ -178,6 +179,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
             _ => rng.next(),
         };
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(edge(&mut rng)),
             revision: Revision(edge(&mut rng)),
             kind: kinds[rng.below(kinds.len())],

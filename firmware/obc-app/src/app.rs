@@ -113,17 +113,6 @@ pub struct Pan {
     route_camera_dirty: bool,
 }
 
-/// The device's view state: where the camera looks, how zoomed in it is, what mode it's in, and
-/// the last known user fix. Small platform-fed facts shown by app chrome live together in
-/// [`device`](AppState::device); weather, catalogs, navigation, and transfers keep their own state.
-///
-/// The shared core the host renders. The host owns the display size and the
-/// [`obc_render::RenderScratch`]/draw target; each frame it calls [`update`] with the platform's
-/// [`LocationSource`], then [`viewport`] for the camera to render through. The split keeps display
-/// dimensions out of the shared state.
-///
-/// [`update`]: AppState::update
-/// [`viewport`]: AppState::viewport
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppState {
     /// Camera center longitude in microdegrees (1e-6°).
@@ -166,19 +155,10 @@ pub struct AppState {
     /// the station instead of failing a plan). Carried here because both `handle` (the gate) and
     /// `draw` (the dimming) need it without a `Reader`.
     pub has_nav_graph: bool,
-    /// The rain map's selected **time step** (WX11): `0` = the current frame, `n` = the n-th
-    /// future frame of the active bundle. Rider *selection* state, which is why it stays in the UI
-    /// plane while the range it clamps against
-    /// ([`WeatherDomain::steps_ahead`](crate::weather::WeatherDomain::steps_ahead)) does not.
-    /// Written by the rain-map screen's Step arm and reset to `0` on every entry/exit, so it can
-    /// never leak a stale offset; read by the host when it leases the frame's
-    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (`at_step`), so the leased raster and the
-    /// on-screen frame timestamp are one decision.
-    pub rain_step: u8,
+
     /// The **Up-ahead timeline's category filter** — "Everything" ([`PoiCategorySet::ALL`]) or one
-    /// of the six §7.4 categories. Rider *selection* state, like [`rain_step`](AppState::rain_step)
-    /// beside it, and reset to Everything on every entry to the list (epic #946, U3: predictable
-    /// beats sticky).
+    /// of the six §7.4 categories.
+    /// It resets to Everything on every entry to the list.
     ///
     /// It lives in the app plane rather than on
     /// [`UpAheadScreen`](crate::screen::UpAheadScreen) because the sheet that edits it (#1515 D4a)
@@ -214,20 +194,8 @@ impl AppState {
             ble_forget_requested: false,
             bond_status: crate::ble::BondStatus::Idle,
             has_nav_graph: false,
-            rain_step: 0,
-            up_ahead_filter: obc_reader::PoiCategorySet::ALL,
-        }
-    }
 
-    /// Clamp the camera to the rain map's zoom-out `floor` — the smallest zoom at which the active
-    /// product's raster still renders, derived by
-    /// [`WeatherDomain`](crate::weather::WeatherDomain) and passed in by the caller that has it.
-    /// Applied by the UI's rain-view reconciliation and after each Inspect zoom step.
-    /// A disengaged floor (`0.0`) is a no-op, and zooming
-    /// *in* is never touched.
-    pub fn clamp_rain_zoom(&mut self, floor: f32) {
-        if floor > 0.0 && self.zoom < floor {
-            self.zoom = floor;
+            up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
     }
 
@@ -459,49 +427,6 @@ pub(crate) fn step_zoom(mut zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
 /// plus the single per-frame long-press, so this never overflows.
 pub const GESTURE_BUF: usize = 16;
 
-/// The whole device application, ready to run a frame.
-///
-/// The single entry point both hosts share: each constructs one `App`, then per frame
-/// [`tick`](App::tick)s it with their [`LocationSource`], feeds raw controls through
-/// [`handle_input`](App::handle_input), and [`render_frame`](App::render_frame)s to their display.
-/// `App` owns the screen stack, the input + overlay plane ([`InputPlane`]), the camera
-/// [`AppState`] and the ride [`Activity`]. It does **not** own the render path's scratch: the host
-/// keeps a [`RenderScratch`] and lends it to each render call (#1146).
-///
-/// The firmware can split the two planes across executors — recognising gestures on a
-/// high-priority [`InputPlane`] that preempts the map render and feeding them back through
-/// [`apply_gesture`](App::apply_gesture); [`handle_input`](App::handle_input) is those halves fused
-/// for the single-loop hosts.
-///
-/// ```ignore
-/// let mut app = App::new(AppState::new(cx, cy, zoom));
-/// let mut scratch = RenderScratch::new(); // the host's, lent per frame
-/// loop {
-///     // GPS + barometer + compass + active route → camera, map-match, ride stats.
-///     // Only the capabilities this host has; `Sensors::new` leaves the rest (here: the BLE
-///     // strap's heart rate / power / cadence) absent.
-///     let sensors = Sensors {
-///         altimeter: Some(&mut baro),
-///         temperature: Some(&mut thermometer),
-///         clock: Some(&mut gps_clock),
-///         compass: Some(&mut compass),
-///         track: Some(&mut track_log),
-///         fuel: Some(&mut fuel_gauge),
-///         ..Sensors::new(&mut location_source)
-///     };
-///     app.tick(RideClock(now_ms), sensors, route.as_ref());
-///     app.handle_input(InputClock(now_ms), &mut input_source); // Select + Back → gestures
-///     app.render_frame(Some(&mut scratch), &mut display, &reader, route.as_ref(), w, h, color_policy);
-/// }
-/// ```
-/// Whether — and by which source — the wall clock has been established from a **real time source
-/// this boot**. The safety core of the auto-expiry epic (#638): the device has no RTC, so at boot
-/// the clock resumes from a persisted set-point that is stale by the powered-off span. That stale
-/// clock is [`Untrusted`](ClockTrust::Untrusted); it advances to [`Gps`](ClockTrust::Gps) or
-/// [`Ble`](ClockTrust::Ble) **only** when that source stamps the clock this boot (via
-/// [`App::stamp_clock`]). The expiry sweep (S3) refuses to stamp or delete anything while untrusted,
-/// so a stale or fat-fingered clock can never drive a deletion. **Never persisted** — every power
-/// cycle resets it to `Untrusted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockTrust {
     /// No real time source has stamped the clock this boot: it is the stale persisted set-point (or
@@ -513,7 +438,6 @@ pub enum ClockTrust {
     Ble,
 }
 
-/// Maximum age of a position reused by Peak View or a weather request.
 pub const POSITION_FIX_FRESH_MS: u32 = 30_000;
 
 const NO_FIX_FLOOR_MS: u32 = 5_000;
@@ -586,27 +510,9 @@ pub struct App {
     /// the set-point changes in [`set_settings`](App::set_settings) /
     /// [`apply_gesture`](App::apply_gesture). See [`WallClock`].
     wall_clock: WallClock,
-    /// Whether the wall clock has been established from a real time source **this boot** (see
-    /// [`ClockTrust`]). Starts [`Untrusted`](ClockTrust::Untrusted) at every boot — the persisted
-    /// set-point is display-only — and only [`stamp_clock`](App::stamp_clock) (GPS now, BLE in S2)
-    /// advances it. Read through [`clock_trusted`](App::clock_trusted); the auto-expiry sweep (#638
-    /// S3) gates every stamp and deletion on it. **Never persisted.**
     clock_trust: ClockTrust,
-    /// The retention domain (epic #638 S3, #1437): the whole auto-expiry policy — the trusted-clock
-    /// and hourly gates, the usage and sync stamps, expiry discovery, live revalidation, and the
-    /// delete retry pacing. Advanced from [`tick`](App::tick); it emits typed metadata effects and
-    /// catalog expiry intents.
-    pub(crate) retention: crate::retention::RetentionMachine,
-    /// The **Recorder** domain (#1398 R1/R2): the ride session identity, whether a ride is open,
-    /// the rider's undelivered close, the checkpoint deadline, the boot-recovery decision, and the
-    /// two per-session buffers a new ride restarts. The only thing in the app that decides a ride
-    /// is open or closed.
     pub recorder: crate::recorder::RecorderMachine,
-    /// The weather domain (#1437): the installed data's identity and revision, visible freshness,
-    /// the refresh request and its in-flight operation, the last terminal result, and the alert
-    /// decision. The bundle itself stays in the platform's store — this owns what the rider is
-    /// *told*, never the frames.
-    pub(crate) weather: crate::weather::WeatherDomain,
+
     /// The **Navigator** domain: active-route following and caches, plus the rider's undelivered
     /// plan requests, per-family phase, and operation token. It is the only writer of route
     /// guidance and of [`mode`](App::mode)'s two search levels.
@@ -620,11 +526,7 @@ pub struct App {
     /// The **settings-persistence** machine (#810, #1397 S2): the dirty revision, the subtree
     /// debounce, the retry backoff and the stale-answer rule.
     pub(crate) settings_ops: crate::settings::SettingsMachine,
-    /// The same machine again (#1542), for the **alert-marks record**. A second record needs a
-    /// second *instance*, not a second policy: it inherits the revision guard, the backoff and the
-    /// stale-ack rule verbatim, and differs only in what stage 9 hands it — a storm is not a rider
-    /// edit, so its write is never subtree-gated.
-    pub(crate) alert_marks_ops: crate::settings::SettingsMachine,
+
     /// The **DFU** domain (#1397 S2): the single most-recent-wins update phase and its token.
     pub(crate) dfu: DfuState,
     pub(crate) bond: crate::ble::BondMachine,
@@ -654,18 +556,6 @@ pub struct App {
     /// `false` removes the quick drawer's brightness control altogether. Defaults to `false`, so a
     /// platform that says nothing does not offer a control it has no port for.
     backlight_available: bool,
-}
-
-/// Where a boot seed of the weather alert-mark anchors came from — the one thing
-/// [`App::set_alert_marks`] cannot work out for itself, and the whole of what decides whether the
-/// seed still owes a write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarksProvenance {
-    /// The marks record answered (or held nothing) — already persisted.
-    Record,
-    /// The one-time fallback read the anchors out of a stored v16 preferences blob's frozen span.
-    /// The update must not cost the rider their anchors, so they are rehomed into the record.
-    LegacyBlob,
 }
 
 /// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
@@ -714,13 +604,10 @@ impl App {
             wall_clock: WallClock::new(Settings::default().local_clock()),
             // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
             clock_trust: ClockTrust::Untrusted,
-            retention: crate::retention::RetentionMachine::new(),
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
-            weather: crate::weather::WeatherDomain::new(),
             navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
-            alert_marks_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
             bond: crate::ble::BondMachine::new(),
             storage: StorageInfo::new(),
@@ -752,7 +639,6 @@ impl App {
     /// to the plan must state its boot value here too.
     #[cfg(test)]
     fn assert_idle_boot_state(&self, state: AppState) {
-        use crate::retention::SweepKind;
         let App {
             state: camera,
             activity,
@@ -763,13 +649,12 @@ impl App {
             settings,
             wall_clock,
             clock_trust,
-            retention,
             recorder,
-            weather,
+
             navigator,
             mode,
             settings_ops,
-            alert_marks_ops,
+
             dfu,
             bond,
             storage,
@@ -788,19 +673,9 @@ impl App {
         assert_eq!(*settings, Settings::default(), "the defaults until the store answers");
         assert_eq!(*wall_clock, WallClock::new(Settings::default().local_clock()), "the default set-point");
         assert_eq!(*clock_trust, ClockTrust::Untrusted, "a persisted set-point is display-only this boot");
-        assert!(
-            [SweepKind::DeleteRoute, SweepKind::StampRoute, SweepKind::DeleteRide, SweepKind::StampRide]
-                .iter()
-                .all(|k| !retention.has(*k)),
-            "no retention sweep in flight"
-        );
-        assert!(
-            weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
-            "no weather installed, none requested, nothing completed this boot"
-        );
-        assert_eq!(weather.alert_marks(), &[None; crate::weather_alerts::ALERT_CLASSES], "no alert anchors at boot");
+
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
-        assert!(alert_marks_ops.is_empty(), "the marks record Clean at revision 0");
+
         navigator.assert_boot_state();
         recorder.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
@@ -813,27 +688,8 @@ impl App {
         assert!(!*backlight_available, "no host has claimed a panel light yet");
     }
 
-    /// Advance one tick from the sensors.
-    ///
-    /// Polls the GPS [`LocationSource`] (recenters the camera in Follow mode) and, with a route
-    /// loaded, snaps the fix onto it via [`RouteMatch`] and integrates ridden distance / moving
-    /// time. Separately polls the barometer for climb — the streams are asynchronous, so each
-    /// accumulates on its own cadence.
-    ///
-    /// `clock` is the [`RideClock`] (fix-consistent millis) so moving-time isn't scaled by the sim's
-    /// replay multiplier; button holds use [`InputClock`] in [`handle_input`](App::handle_input).
-    /// Loading or swapping a route resets the matcher and ride totals here, once per load.
-    ///
-    /// Two things happen, and the DeviceCore pass runs them at different stages: the world is
-    /// applied ([`advance_inputs`](App::advance_inputs), stage 3) and then the retention domain
-    /// advances ([`retention_tick`](App::retention_tick), stage 5). One implementation of each,
-    /// reached by both compositions.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         self.advance_inputs(clock, sensors, route);
-        // Auto-expiry (epic #638, S3): stamp the active route's `last_used` on activation, then run
-        // the roughly-hourly sweep — both gated on a trusted clock and no ride recording. Deletes +
-        // stamps leave here as typed host commands.
-        self.retention_tick();
     }
 
     /// Apply the world to the app: the sensor ports, the fix and its derived readouts, and the
@@ -921,11 +777,7 @@ impl App {
                 self.recorder.record_cadence(rpm, now_ms);
             }
         }
-        // GPS UTC time → the wall clock. GPS **always** stamps now (manual date/time was removed in
-        // #641, so a fat-fingered clock can't feed the expiry sweep). The receiver resolves time
-        // before a 3D position, so this lands during acquisition — the clock can be right while the
-        // "No GPS Fix" banner is still up. Funnels through `stamp_clock`, the one entry point that
-        // owns the trusted-clock invariant (BLE `setClock` joins it in epic #638 S2).
+        // GPS can establish UTC before a position fix is available.
         if let Some(t) = clock.and_then(|c| c.poll()) {
             // GPS carries no timezone — pass `None` to leave the persisted offset untouched (BLE
             // `setClock` is the only source that sets it).
@@ -973,17 +825,7 @@ impl App {
                 // re-windows a truncated table forward as the rider advances (see below).
                 self.update_next_waypoint(route);
             }
-            // The WX12 ride-weather inputs, from the same fresh fix: the recent moving-speed
-            // window (the projection's pace) and the travel direction (the wind arrows' frame of
-            // reference — the route's general heading at the fresh match, else neutral). A freeze
-            // holds the previous direction like it holds the matcher: the progress on glass hasn't
-            // moved, so neither has the heading derived from it.
-            if let Some(speed) = fix.speed_mps {
-                self.recorder.speed_win.push_mps(speed);
-            }
-            if !frozen {
-                self.navigator.update_travel(route);
-            }
+
             // The fix into the ride: the totals, the trail and the sample the ride log owes. No
             // write happens here — the staged sample leaves as a
             // [`RecorderEffect::Append`](crate::recorder::RecorderEffect) at stage 7, so nothing on
@@ -1048,58 +890,6 @@ impl App {
         }
         true
     }
-
-    /// Advance [`RetentionMachine`](crate::retention::RetentionMachine) one pass (epic #638 S3,
-    /// #1437). The whole policy — the trusted-clock and recording gates included — lives in the
-    /// domain; all this does is assemble the [`RetentionView`](crate::retention::RetentionView) of
-    /// the catalogs, the clocks and the live gates that the domain reads.
-    pub(crate) fn retention_tick(&mut self) {
-        self.with_retention(|retention, view| retention.advance(view));
-    }
-
-    /// Run `f` against the retention domain and the read-only [`RetentionView`] of the rest of the
-    /// app it decides from — disjoint field borrows, so the machine mutates its own queue while it
-    /// reads the catalogs.
-    ///
-    /// The view is assembled fresh at every call site (the tick *and* each drain), so discovery and
-    /// the just-in-time recheck can never read two different pictures.
-    ///
-    /// [`RetentionView`]: crate::retention::RetentionView
-    pub(crate) fn with_retention<T>(
-        &mut self,
-        f: impl FnOnce(&mut crate::retention::RetentionMachine, &crate::retention::RetentionView) -> T,
-    ) -> T {
-        // A `None` clock is invariant 1: no real time source established it this boot, so the
-        // domain stamps nothing, deletes nothing and sweeps nothing.
-        let now_utc = self.clock_trusted().then(|| self.wall_unix_now());
-        let now_ms = self.ui.now_ms;
-        let recording = self.recorder.recording();
-        let App { retention, catalogs, navigator, settings, .. } = self;
-        let view = crate::retention::RetentionView {
-            now_utc,
-            now_ms,
-            recording,
-            route_ids: catalogs.route_ids(),
-            route_metas: catalogs.route_metas(),
-            active_route: navigator.route_state().active_route,
-            ride_records: catalogs.ride_records(),
-            ride_retention: settings.ride_retention,
-        };
-        f(retention, &view)
-    }
-
-    /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
-    /// #638, S3) — a **test and simulator seam** with no production caller. The simulator's "+1 day"
-    /// control uses it so a fast-forwarded clock sweeps immediately instead of waiting for the
-    /// wall-clock hour to roll.
-    ///
-    /// The production path to the same fact is
-    /// [`note_catalog_changed`](crate::retention::RetentionMachine::note_catalog_changed), which
-    /// stage 5 calls when the catalog's identity set moves.
-    pub fn force_retention_sweep(&mut self) {
-        self.retention.note_catalog_changed();
-    }
-
     /// Recompute Navigator's active climb from the freshly-matched progress — its hysteresis and
     /// once-per-entry detail refill — then apply the App-plane consequences of a
     /// transition: one repaint, and the C5 host auto-switch off the same edge.
@@ -1170,13 +960,6 @@ impl App {
     /// chrome with zero map I/O.
     pub fn base_draws_map(&self) -> bool {
         self.ui.base_draws_map()
-    }
-
-    /// Whether the current base screen consumes a rain-raster lease. Hosts use this before
-    /// constructing [`RainOverlayAdapter`](crate::RainOverlayAdapter), so its header/frame reads
-    /// never happen on Home, menus, or the ordinary Map where the lease would be discarded.
-    pub fn base_wants_rain(&self) -> bool {
-        self.ui.base_wants_rain()
     }
 
     /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
@@ -1345,38 +1128,6 @@ impl App {
         self.remap_route_indices(&old_ids);
         self.ui.map_dirty = true;
     }
-
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) **plus** the host's fresh per-route
-    /// retention metadata loaded from the card, pairwise with
-    /// `ids`. The base call remaps held indices and carries surviving routes' metas across by
-    /// identity; this then overlays the host's device-durable retention values so the sweep reads
-    /// device truth. Retention-aware hosts (the board, the simulator) call this; plain
-    /// [`set_routes_with_ids`](App::set_routes_with_ids) callers leave every route at the safe
-    /// default ([`Never`](crate::Retention::Never) — nothing expires).
-    pub fn set_routes_with_meta(
-        &mut self,
-        summaries: &[RouteSummary],
-        ids: &[crate::CatalogObjectId],
-        metas: &[crate::retention::RouteRetentionMeta],
-    ) {
-        self.set_routes_with_ids(summaries, ids);
-        self.catalogs.set_route_meta(metas);
-    }
-
-    /// Each resident route's retention meta, pairwise with [`route_ids`](App::route_ids) (epic #638
-    /// S3) — the host's read-back (e.g. to keep a sidecar row aligned) and the sweep tests' probe.
-    pub fn route_metas(&self) -> &[crate::retention::RouteRetentionMeta] {
-        self.catalogs.route_metas()
-    }
-
-    /// Overlay the host's fresh per-route retention metas (from the SD sidecar), pairwise with the
-    /// **current** [`route_ids`](App::route_ids) — the standalone meta feed a host calls when it
-    /// re-reads the sidecar without replacing the catalog (the sim re-pushes it each frame so the
-    /// sweep always mirrors device truth). No catalog replacement, no remap. Excess metas are ignored.
-    pub fn set_route_meta(&mut self, metas: &[crate::retention::RouteRetentionMeta]) {
-        self.catalogs.set_route_meta(metas);
-    }
-
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
@@ -1494,14 +1245,6 @@ impl App {
         self.activity.viewed_ride = self.activity.viewed_ride.and_then(remap);
         self.ui.map_dirty = true;
     }
-
-    /// Replace the full compact ride-retention inventory, up to [`MAX_RIDES`](crate::MAX_RIDES).
-    /// Hosts that supply only visible summaries to [`set_rides`](App::set_rides), such as the board,
-    /// call this afterwards with every stored ride's metadata so expiry also reaches older rides.
-    pub fn set_ride_retention_inventory(&mut self, records: &[crate::retention::RideRetentionRecord]) {
-        self.catalogs.set_ride_retention_inventory(records);
-    }
-
     /// Apply an exact durable archive row after the complete catalog and metadata reads succeed.
     /// The caller must finish the refresh under its unchanged store scope before policy can run.
     pub fn set_ride_archive_proof(&mut self, id: crate::CatalogObjectId, timestamp: u32) {
@@ -1620,130 +1363,6 @@ impl App {
     pub fn debug_set_plan_live(&mut self, live: bool) {
         if self.navigator.debug_set_plan_live(live, &mut self.mode) {
             self.ui.map_dirty = true;
-        }
-    }
-
-    /// Host-push the **weather alert card** (WX11, epic #1185): RAIN AHEAD / STORM AHEAD with the
-    /// locked VIEW RAIN MAP + DISMISS actions. An alert already on the stack is *updated* in
-    /// place (re-fires never stack cards); the passkey card outranks it (the pairing prompt is
-    /// never covered — the upload-popup family's rule). Alert *generation* — thresholds, dedup,
-    /// cooldown persistence — is WX12's; this is only the presentation seam it (and the sim's
-    /// injection flag) drives.
-    ///
-    /// **Returns whether the alert actually reached the rider** — updated in place, or pushed.
-    /// `false` means it was refused (a passkey prompt on top, or a screen stack already at
-    /// [`MAX_DEPTH`](crate::screen::MAX_DEPTH)), and the caller must *not* record it as fired:
-    /// writing a dedup mark for a card nobody saw would sit on the storm for a whole persisted
-    /// cooldown in silence (review F4).
-    pub fn show_weather_alert(&mut self, kind: crate::screen::WeatherAlertKind, minutes: u16) -> bool {
-        for scr in self.ui.stack.iter_mut() {
-            if let Screen::WeatherAlert(alert) = scr {
-                if alert.update(kind, minutes) {
-                    self.ui.map_dirty = true;
-                }
-                return true;
-            }
-        }
-        if matches!(self.ui.stack.last(), Some(Screen::Passkey(_))) {
-            return false;
-        }
-        // The stack's own capacity, checked here rather than left to `apply`'s push: an overflow
-        // there no-ops silently in release (and trips a debug assert in test builds), so the one
-        // caller that must *know* asks first.
-        if self.ui.stack.len() >= crate::screen::MAX_DEPTH {
-            return false;
-        }
-        // Whether the card lands over an already-open rain map — its VIEW RAIN MAP action then
-        // pops back to it instead of stacking a second one (review F4).
-        let over_rain_map = matches!(self.ui.stack.last(), Some(Screen::WeatherRainMap(_)));
-        crate::screen::apply(
-            &mut self.ui.stack,
-            crate::screen::Transition::Push(Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
-                kind,
-                minutes,
-                over_rain_map,
-            ))),
-        );
-        self.ui.map_dirty = true;
-        true
-    }
-
-    /// The rider's current travel direction (degrees CW from north) for route-relative wind — the
-    /// WX12 chain: the active route's general heading ahead of the matched progress while
-    /// on-route, else `None` (neutral arrows, never a fabricated head/tail — a momentary GPS
-    /// course is not a direction the rider is committed to).
-    pub fn travel_deg(&self) -> Option<f32> {
-        self.navigator.travel_deg()
-    }
-
-    /// The WX12 ride projection for [`WeatherSnapshot::sample_along`](crate::weather::WeatherSnapshot::sample_along),
-    /// or `None` when there is no matched active route (the host then samples at the fixed rider
-    /// position — WX11's behaviour). Pace = the recent moving median, capped, with the documented
-    /// touring fallback while stopped; anchored at this instant's wall clock.
-    ///
-    /// **Off-route is `None`**, for the same reason [`travel_deg`](Self::travel_deg) switches to
-    /// the GPS course there: `progress_m` is the last match on a line the rider has left, so
-    /// projecting along it would answer the two-hour question about a route they aren't riding —
-    /// 20 km away, in the wrong weather. Falling back to rider-position sampling is the honest,
-    /// less-informative answer (review F1).
-    pub fn ride_projection(&self) -> Option<crate::weather::RideProjection> {
-        let route = self.navigator.route_state();
-        if route.active_route.is_none() || !self.navigator.started() || route.off_route {
-            return None;
-        }
-        let speed_cms = self
-            .recorder
-            .speed_win
-            .median_cms()
-            .unwrap_or(crate::weather::TOURING_FALLBACK_CMS)
-            .min(crate::weather::SPEED_CAP_CMS);
-        Some(crate::weather::RideProjection {
-            progress_m: route.progress_m,
-            speed_cms,
-            now: self.wall_unix_now() as i64,
-        })
-    }
-
-    /// Run the WX12 **alert engine** against the pass's snapshot: evaluate the centralized
-    /// threshold table, dedup against the persisted per-class marks, and drive the WX11 card seam —
-    /// a new (or materially escalated) event pushes/re-fires the card and persists its mark through
-    /// the #810 settings handshake; the same suppressed event only refreshes an already-open card's
-    /// countdown in place. Cheap (a bounded scan), idempotent, deterministic. `None` (no snapshot)
-    /// never alerts, and neither does expired data (the engine's law).
-    ///
-    /// **The production caller is stage 10** ([`stage_weather`](crate::device_core::PassStage::Weather)),
-    /// once per pass. This stays a named method so tests and the simulator's `--weather-decide`
-    /// still-frame path can drive the decision directly — an executor must not, or *when* the
-    /// honesty law runs becomes its choice again.
-    ///
-    /// **A mark is written only for a card the rider actually saw.** `show_weather_alert` can
-    /// refuse — a passkey prompt outranks it, and so does a screen stack already at `MAX_DEPTH` —
-    /// and marking a refused alert would suppress that storm for a whole *persisted* cooldown with
-    /// no card ever shown. So the refusal is read back, not assumed away (review F4); the next
-    /// tick, once the stack has room again, re-fires.
-    pub fn weather_alert_tick(&mut self, snap: Option<&crate::weather::WeatherSnapshot>) {
-        use crate::weather_alerts::AlertAction;
-        let now = self.wall_unix_now() as i64;
-        let open_card = self.ui.stack.iter().find_map(|s| match s {
-            Screen::WeatherAlert(alert) => Some(alert.kind()),
-            _ => None,
-        });
-        // The decision is [`WeatherDomain`]'s (#1437): thresholds, dedup and cooldown all live
-        // there. What is left here is the presentation seam and the persistence handshake.
-        match self.weather.alert_action(snap, now, open_card) {
-            AlertAction::Fire(c) => {
-                if self.show_weather_alert(c.class.kind(), c.minutes) {
-                    self.weather.mark_fired(&c);
-                    // The mark must survive the next boot: arm the marks record's own handshake.
-                    // Not the preferences one — a storm is not a rider edit, so it neither rewrites
-                    // the preferences blob nor waits for the rider to leave a settings screen.
-                    self.alert_marks_ops.note_edited();
-                }
-            }
-            AlertAction::Update(c) => {
-                self.show_weather_alert(c.class.kind(), c.minutes);
-            }
-            AlertAction::None => {}
         }
     }
 
@@ -2088,29 +1707,20 @@ impl App {
 
     // ==================== map-transfer seam (issue #927) ====================
 
-    /// Feed the board's live **map-transfer** state and reconcile the host-pushed card to it — the
-    /// map twin of [`set_ble_status`](App::set_ble_status)'s passkey handling, and the only thing
-    /// on glass during a write that runs for minutes.
-    ///
-    /// A map upload is unlike every other object the device accepts: hundreds of megabytes at the
-    /// card's proven throughput saturate the SD bus for minutes, and the map plane's own reads queue
-    /// behind it. Left unexplained that reads as a device that has gone sluggish or wedged, so the
-    /// board publishes progress (through atomics the ride loop polls, hence a `Copy` value fed every
-    /// pass rather than an event) and this raises the card.
-    ///
-    /// Idempotent: an unchanged state repaints nothing. `None` closes the card — which is also how
-    /// an abort or an unplug ends it, deliberately: the rider caused those, and a red card
-    /// explaining what they just did is noise. Only outcomes they can act on
-    /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
-    /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
-    /// **The card only.** This seam used to also drive [`CoreMode`]'s transfer level, and that was
-    /// the level's whole source — so a route, trip or weather upload streamed without admission ever
-    /// seeing it, and a map upload paced to the card's own throttle reported the level at that pace.
-    /// Since #1397 S6b the level comes from the store engine's own live transfer, through
-    /// [`ExternalFacts::note_transfer`](crate::device_core::ExternalFacts::note_transfer), and this
-    /// is a screen feeder like every other.
-    ///
-    /// [`CoreMode`]: crate::device_core::core_mode::CoreMode
+    /// Offer explicit cleanup after a route upload ran out of storage.
+    pub fn offer_route_cleanup(&mut self, store: crate::device_core::StoreIdentity) {
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::RouteCleanup(_))) {
+            return;
+        }
+        let utc = self.clock_trusted().then(|| self.wall_unix_now());
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
+        );
+        self.ui.hold_cancel_pending = true;
+        self.ui.map_dirty = true;
+    }
+
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
         self.ui.cards.set_map_transfer(state);
         self.sweep_cards();
@@ -2185,11 +1795,6 @@ impl App {
         }
         self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
         self.sweep_cards();
-        // Anchor the route's retention clock at upload time (auto-expiry epic #638 S4): a fresh or
-        // replace upload is a "use", so its expiry clock anchors here rather than at the next hourly
-        // sweep. Whether the clock may be trusted is the domain's rule, applied inside
-        // `note_route_uploaded` — the same place its sibling `note_route_activated` applies it.
-        self.with_retention(|retention, view| retention.note_route_uploaded(id, view));
     }
 
     /// A committed trip upload: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
@@ -2216,10 +1821,6 @@ impl App {
         self.sweep_cards();
     }
 
-    /// The screen currently on top of the stack (receiving input). Always present — the Home root is
-    /// never popped. A read-only handle for a host/test that needs to know which screen is up.
-    /// The visible screen-stack depth — test/diagnostic observability (the WX11 alert tests pin
-    /// "update in place, never stack" through it).
     pub fn debug_stack_len(&self) -> usize {
         self.ui.stack.len()
     }
@@ -2535,38 +2136,6 @@ impl App {
         self.settings_ops.note_seeded();
     }
 
-    /// Seed the weather **alert-mark record** from the host's durable storage at boot — the twin of
-    /// [`set_settings`](App::set_settings) for the anchors, called once after construction.
-    ///
-    /// `provenance` is what decides whether the seed owes a write:
-    ///
-    /// - [`Record`](MarksProvenance::Record) — the marks came from the marks record (or there were
-    ///   none). Already persisted, so the handshake resets to Clean.
-    /// - [`LegacyBlob`](MarksProvenance::LegacyBlob) — the marks came out of the frozen v16 span of
-    ///   a stored preferences blob. They are the rider's real anchors and nothing has written them
-    ///   to the record yet, so this arms the handshake and the next pass rehomes them. Once a
-    ///   record exists, the fallback can never fire again.
-    pub fn set_alert_marks(&mut self, marks: crate::weather_alerts::AlertMarks, provenance: MarksProvenance) {
-        self.weather.set_alert_marks(marks);
-        match provenance {
-            MarksProvenance::Record => self.alert_marks_ops.note_seeded(),
-            MarksProvenance::LegacyBlob => self.alert_marks_ops.note_edited(),
-        }
-    }
-
-    /// The weather domain, read-only — what the rider may be told about weather, in one place.
-    /// Executors and tests observe through it; every *change* goes in as a fact, an intent or an
-    /// outcome, which is why this hands out `&` and not `&mut`.
-    pub fn weather(&self) -> &crate::weather::WeatherDomain {
-        &self.weather
-    }
-
-    /// The live weather alert-mark anchors — what an executor writes when it serves
-    /// [`SettingsEffect::PersistAlertMarks`](crate::settings::SettingsEffect).
-    pub fn alert_marks(&self) -> &crate::weather_alerts::AlertMarks {
-        self.weather.alert_marks()
-    }
-
     /// Merge the BLE-owned fields (units + device name) of a phone Config write into the live
     /// settings, **preserving** any pending device-edit persistence (#456 + #810). The phone's write
     /// is persisted to the same store by the BLE plane directly (`ObjectStore::apply_config`), so this
@@ -2595,21 +2164,11 @@ impl App {
         self.wall_clock.now(self.ui.now_ms)
     }
 
-    /// Whether the wall clock has an **established** set-point — a persisted/GPS/BLE time has been
-    /// applied, versus a fresh clock that has never been told the time (see
-    /// [`WallClock::is_established`](crate::wall_clock::WallClock::is_established)). The Home date
-    /// line gates on this so it never shows a date with no origin at all. This is the *coarse*
-    /// "do we know a date?" gate — a **stale persisted** set-point is established but **not**
-    /// [`trusted`](App::clock_trusted); the auto-expiry sweep uses the finer trust gate.
     pub fn clock_is_set(&self) -> bool {
         self.wall_clock.is_established()
     }
 
-    /// Whether the wall clock was established from a **real time source this boot** — GPS now, BLE in
-    /// epic #638 S2 (see [`ClockTrust`]). `false` from every boot until the first
-    /// [`stamp_clock`](App::stamp_clock), regardless of any stale persisted set-point. S3's expiry
-    /// sweep gates every timestamp write and deletion on this: no trusted clock → nothing is stamped
-    /// or deleted.
+    /// Whether GPS or BLE established the wall clock during this boot.
     pub fn clock_trusted(&self) -> bool {
         self.clock_trust != ClockTrust::Untrusted
     }
@@ -2651,16 +2210,6 @@ impl App {
         self.clock_trust = source;
     }
 
-    /// Stamp the wall clock from a BLE `setClock` (auto-expiry epic #638 S2, #642): the phone's UTC
-    /// **unix seconds** + its live local offset, arriving over the encrypted link on every connect.
-    /// The board crate's BLE plane validates the wire (spec §4.4) and hands the two decoded values
-    /// straight here, so the unix→`DateTime` split (and the seconds-into-the-minute back-date) stays
-    /// in `obc-app` beside [`stamp_clock`](App::stamp_clock), the one owner of that arithmetic — the
-    /// GPS path already carries a split `DateTime`+`second`, so only BLE needs the conversion.
-    ///
-    /// Passes the offset as `Some`, so a changed offset persists even when the clock is already
-    /// trusted this boot (a same-boot reconnect after a flight); records trust as
-    /// [`Ble`](ClockTrust::Ble).
     pub fn stamp_clock_ble(&mut self, utc_unix: u32, offset_min: i16) {
         let utc = DateTime::from_unix(utc_unix);
         let second = (utc_unix % 60) as u8;
@@ -2672,70 +2221,6 @@ impl App {
     pub fn wall_unix_now(&self) -> u32 {
         let local = self.wall_clock.unix_now(self.ui.now_ms);
         (local as i64 - self.settings.utc_offset_min as i64 * 60) as u32
-    }
-
-    /// The app-side half of the §11.4 weather request context (WX8, #1193), distilled to the
-    /// [`WeatherRequestInputs`](crate::ble::WeatherRequestInputs) the host's weather plane reads each pass —
-    /// the reverse direction of [`set_ble_status`](App::set_ble_status), and like it free of any
-    /// wire type.
-    ///
-    /// Honesty rules (the spec's flags-not-sentinels discipline):
-    /// - **position** is served only while the last fix is *fresh* (≤ [`POSITION_FIX_FRESH_MS`])
-    ///   **and** the wall clock was established from a real source this boot — a fix the app can't
-    ///   date has no `fix_utc` to give, and the spec guards all three fields with one bit. The
-    ///   fix's UTC is the wall clock read back by the fix's age, exact to the second at the 1 Hz
-    ///   cadence the receiver runs at.
-    /// - **bearing** is the GPS course only while actually *moving* (≥ 1 m/s): a stationary
-    ///   receiver's course is noise, not a travel bearing the device believes. The compass is
-    ///   deliberately not substituted — it says where the *device* points, not where the rider
-    ///   travels.
-    /// - **route id** is the active route's durable object id — the id the phone's route list
-    ///   already knows — and absent for a route that has none resident.
-    pub fn weather_request_inputs(&self) -> crate::ble::WeatherRequestInputs {
-        let now_utc = if self.clock_trusted() { Some(self.wall_unix_now()) } else { None };
-        // The fresh fix + its age on the map-plane clock (the same timebase `last_fix_ms` stamps).
-        let fresh = self
-            .fresh_position()
-            .zip(self.tick_state.last_fix_ms)
-            .map(|(fix, at)| (fix, self.ui.now_ms.wrapping_sub(at)));
-        let position = match (fresh, now_utc) {
-            (Some((fix, age_ms)), Some(now)) => Some(crate::ble::WeatherFix {
-                lat_udeg: fix.lat,
-                lon_udeg: fix.lon,
-                fix_utc: now as i64 - (age_ms / 1000) as i64,
-            }),
-            _ => None,
-        };
-        let speed_mps = fresh.and_then(|(fix, _)| fix.speed_mps);
-        let moving = speed_mps.is_some_and(|s| s >= 1.0);
-        let bearing_deg = if moving {
-            fresh.and_then(|(fix, _)| fix.course).map(|c| {
-                // Wrap into `0..360` with core-only float ops (`rem_euclid` needs libm here).
-                let mut deg = c % 360.0;
-                if deg < 0.0 {
-                    deg += 360.0;
-                }
-                deg as u16 % 360
-            })
-        } else {
-            None
-        };
-        let speed_deci_ms = speed_mps.map(|s| (s.max(0.0) * 10.0).min(u16::MAX as f32) as u16);
-        crate::ble::WeatherRequestInputs {
-            ride_active: self.recorder.recording(),
-            position,
-            bearing_deg,
-            speed_deci_ms,
-            // The weather request's legacy compact route id remains optional until that protocol
-            // moves to the flat store's full-width ObjectId. Never truncate a valid catalog id.
-            route_id: self
-                .navigator
-                .route_state()
-                .active_route
-                .and_then(|i| self.catalogs.route_id_at(i))
-                .and_then(|id| u16::try_from(id).ok()),
-            now_utc,
-        }
     }
 
     /// The footer's wall-clock anchor for this pass: what the *device* knows about the time of day,
@@ -2981,7 +2466,6 @@ impl App {
     /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
     /// drop rule without consuming the hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
-        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
         // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
@@ -2994,7 +2478,7 @@ impl App {
         // resolved here, above screen dispatch, and no screen binds it any more.
         if g == Gesture::BackHold {
             let changed = self.escape_to_menu();
-            self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
+
             return changed;
         }
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
@@ -3004,20 +2488,7 @@ impl App {
         // preview polyline with it (see `sync_detour_preview`).
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
-        let App {
-            state,
-            activity,
-            settings,
-            catalogs,
-            nav_profiles,
-            recorder,
-            ui,
-            navigator,
-            dfu,
-            storage,
-            weather,
-            ..
-        } = self;
+        let App { state, activity, settings, catalogs, nav_profiles, recorder, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
             state,
             activity,
@@ -3026,7 +2497,7 @@ impl App {
             recorder,
             dfu,
             storage,
-            weather,
+
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
@@ -3098,7 +2569,7 @@ impl App {
                 self.wall_clock.set(local_now, self.ui.now_ms);
             }
         }
-        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
+
         stack_changed
     }
 
@@ -3131,7 +2602,7 @@ impl App {
         // The idle-return sweep (fire the return if we're past the deadline) and its residual wake,
         // folded into the deadline the event-driven host arms so a parked device wakes to return.
         self.ui.apply_idle_return(&self.settings, tracking);
-        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
+
         if let Some(rem) = self.ui.idle_return_remaining_ms(&self.settings, tracking) {
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(rem, |w| w.min(rem)));
         }
@@ -3199,44 +2670,6 @@ impl App {
         stats
     }
 
-    /// [`render_frame`](App::render_frame) plus the optional **rain overlay lease** (WX10) — the
-    /// frame-level entry a host with a mounted weather store uses; `None` is byte-identical to
-    /// [`render_frame`](App::render_frame).
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_frame_with_rain<D, F>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        reader: &Reader,
-        route: Option<&RouteReader>,
-        rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: Option<&crate::weather::WeatherSnapshot>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        let stats = self.render_scene_map_rain_timed(
-            scratch,
-            target,
-            Some(reader),
-            Some(reader),
-            route,
-            rain,
-            weather,
-            None,
-            w,
-            h,
-            &color_fn,
-            &NoopClock,
-        );
-        self.render_overlay(target, w, h, &color_fn);
-        stats
-    }
-
     /// Render **only the map plane** — the screen stack from the topmost opaque screen upward, but
     /// **excluding** the global hold-hint chrome. Returns the map [`RenderStats`].
     ///
@@ -3260,7 +2693,18 @@ impl App {
     {
         // Untimed: `NoopClock` leaves the per-stage `*_us` fields at 0 (the device uses
         // `render_map_timed` with a real clock for the benchmark). Always draws the map, so `Some`.
-        self.render_scene_map_timed(scratch, target, Some(reader), Some(reader), route, w, h, color_fn, &NoopClock)
+        self.render_scene_map_timed(
+            scratch,
+            target,
+            Some(reader),
+            Some(reader),
+            route,
+            None,
+            w,
+            h,
+            color_fn,
+            &NoopClock,
+        )
     }
 
     /// Like [`render_map`](App::render_map) but threads `clock` to the Map screen's
@@ -3283,90 +2727,20 @@ impl App {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        self.render_scene_map_timed(scratch, target, reader, reader, route, w, h, color_fn, clock)
-    }
-
-    /// Timed single-map render with the weather feed/rain lease used by the board. This is the
-    /// weather-aware twin of [`render_map_timed`](App::render_map_timed); keeping the wrapper here
-    /// avoids making a host name `Reader` as the generic scene type just to pass an optional map.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_map_rain_timed<D, F>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        reader: Option<&Reader>,
-        route: Option<&RouteReader>,
-        rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: Option<&crate::weather::WeatherSnapshot>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        self.render_scene_map_rain_timed(
-            scratch, target, reader, reader, route, rain, weather, None, w, h, color_fn, clock,
-        )
+        self.render_scene_map_timed(scratch, target, reader, reader, route, None, w, h, color_fn, clock)
     }
 
     /// Generic timed map-plane render. `scene` drives geometry through [`MapScene`];
     /// `core_reader` drives the core-only POI/hours preparation. They are independently optional
     /// so chrome-only frames can skip every map source.
     #[allow(clippy::too_many_arguments)]
-    fn render_scene_map_timed<D, F, S>(
+    pub fn render_scene_map_timed<D, F, S>(
         &mut self,
         scratch: Option<&mut RenderScratch>,
         target: &mut D,
         scene: Option<&S>,
         core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
-        w: f32,
-        h: f32,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        self.render_scene_map_rain_timed(
-            scratch,
-            target,
-            scene,
-            core_reader,
-            route,
-            None,
-            None,
-            None,
-            w,
-            h,
-            color_fn,
-            clock,
-        )
-    }
-
-    /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
-    /// that mounted a weather store passes the frame's
-    /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (or any [`RainOverlaySource`]) every
-    /// frame and the base screen renders precipitation below the road band **if its
-    /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay) says it wants it** — today only
-    /// the WX11 rain map. On any other screen the lease is dropped here, so a mounted weather store
-    /// never tints the ordinary Map; `None` is byte-identical to the plain call. This is the single
-    /// production hook — firmware and simulator both land here.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_scene_map_rain_timed<D, F, S>(
-        &mut self,
-        scratch: Option<&mut RenderScratch>,
-        target: &mut D,
-        scene: Option<&S>,
-        core_reader: Option<&Reader>,
-        route: Option<&RouteReader>,
-        rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: Option<&crate::weather::WeatherSnapshot>,
         peak_view: Option<&crate::peak_view::Panorama>,
         w: f32,
         h: f32,
@@ -3417,35 +2791,14 @@ impl App {
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
-        // The UTC instant the Route overview's expiry row counts down from. Display-only, so
-        // (unlike the sweep) it isn't gated on the clock being trusted — a stale set-point just
-        // yields a stale readout.
-        let now_utc = self.wall_unix_now();
         let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        // The rain overlay is the **base screen's** declared capability
-        // ([`Caps::rain_overlay`](crate::screen::Caps::rain_overlay)), not the host's: a host mounts
-        // a weather store once and then leases a frame unconditionally, so this is the one place
-        // that decides whether the frame's rain may be drawn at all. Dropped here — before any
-        // screen can `take` it — the ordinary Map, the Detour pair, and every map base added later
-        // are rain-free by construction rather than by an exit hook a screen transition could
-        // forget. It also keeps the *per-tile* decodes off every frame no screen would have painted
-        // rain on — which will matter once the board renders rain (today only `obc-sim` leases;
-        // `obc-fw-nrf54l` still renders through `render_map_timed` and builds no adapter). Note it
-        // is only the `tile` reads that are skipped: the adapter's own header/frame reads happen in
-        // `RainOverlayAdapter::at_step`, upstream of this gate.
-        let rain = if self.ui.base_wants_rain() { rain } else { None };
+
         // The in-screen confirm fill's hold-progress. Prefer a host-supplied value (the two-plane
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
-        // The one cue the weather screens raise over cached content, read from its owner — the same
-        // shape as `card_free_bytes: storage.free_bytes()` below. A `refreshing` bool crossing a
-        // render signature is what let the platform's copy and the domain's answer disagree.
-        let weather_refreshing = self.weather.refreshing();
-        // The wider level the weather sheet's *Refresh now* row draws off (#1515 D4b) — read from
-        // the same owner, on the same line, so the drawn row and the pressed row cannot part.
-        let weather_request_outstanding = self.weather.request_outstanding();
+
         let App {
             state,
             activity,
@@ -3479,16 +2832,13 @@ impl App {
         let rx = Render {
             peak_view,
             scratch,
-            // Reborrow so the lease's trait-object lifetime shrinks to this frame's `Render`
-            // borrow (a `&mut dyn` is invariant without the explicit coercion).
-            rain: rain.map(|r| &mut *r as &mut dyn obc_render::RainOverlaySource),
+
             state,
             activity,
             navigation,
             recorder,
             settings,
             routes: catalogs.routes(),
-            route_metas: catalogs.route_metas(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
@@ -3511,7 +2861,6 @@ impl App {
             w: w as i32,
             h: h as i32,
             now_ms: ui.now_ms,
-            now_utc,
             now,
             clock_set,
             hold_progress,
@@ -3522,10 +2871,7 @@ impl App {
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: storage.free_bytes(),
-            weather,
-            weather_refreshing,
-            weather_request_outstanding,
-            travel_deg: navigator.travel_deg(),
+
             backlight: backlight_available,
         };
         let mut rx = RenderFrame { scene, render: rx };
@@ -3866,11 +3212,8 @@ mod tests {
     impl SettingsHost {
         fn drain(&mut self, app: &mut App) -> Option<u16> {
             let (in_subtree, now_ms) = (app.ui.top_is_settings(), app.ui.now_ms);
-            let effect =
-                app.settings_ops.next_effect(crate::settings::SettingsRecord::Preferences, in_subtree, now_ms)?;
-            let crate::settings::SettingsEffect::PersistRevision { token, revision } = effect else {
-                panic!("the preferences instance emits its own record, not {effect:?}");
-            };
+            let effect = app.settings_ops.next_effect(in_subtree, now_ms)?;
+            let crate::settings::SettingsEffect::PersistRevision { token, revision } = effect;
             self.token = Some(token);
             Some(revision)
         }
@@ -3902,25 +3245,6 @@ mod tests {
     /// Whether leaving the settings subtree emitted a persist this pass (`take_settings_dirty`).
     fn settings_dirty(app: &mut App) -> bool {
         drain_persist(app).is_some()
-    }
-
-    /// Stage 9's offer this pass, whichever record wins the one slot — through the stage's own
-    /// seam, since "which record is written, and when" is exactly the question.
-    fn drain_settings_effect(app: &mut App) -> Option<crate::settings::SettingsEffect> {
-        app.next_settings_effect()
-    }
-
-    /// Serve one marks write end to end: take stage 9's offer, "persist" it, and answer it. Returns
-    /// the bytes the executor would have written, so a test can round-trip the record.
-    fn serve_marks_write(app: &mut App) -> Option<[u8; crate::weather_alerts::ALERT_MARKS_LEN]> {
-        let effect = drain_settings_effect(app)?;
-        let crate::settings::SettingsEffect::PersistAlertMarks { token, revision } = effect else {
-            return None;
-        };
-        let bytes = crate::weather_alerts::encode_alert_marks(app.alert_marks());
-        let outcome = crate::settings::SettingsOutcome::MarksPersisted { token, revision };
-        assert!(!app.apply_settings_outcome(outcome), "a durable marks write raises no warning");
-        Some(bytes)
     }
 
     /// The Home root's current backdrop seed.
@@ -4193,7 +3517,7 @@ mod tests {
             gestures: &[],
             sensors: Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) },
             route: None,
-            weather: None,
+
             support: crate::harness::support::EVERY_CAPABILITY,
             outcomes: &mut outcomes,
             facts: &mut facts,
@@ -6604,1260 +5928,6 @@ mod tests {
         assert_eq!(drain_nav(&mut app), None, "B never runs");
     }
 
-    // ==================== Auto-expiry sweep (epic #638, S3) — the safety invariants ====================
-
-    use crate::retention::{Retention, RideRetention, RouteRetentionMeta, DAY_SECS};
-
-    /// A known UTC set-point for the trusted-clock helper — mid-2026, offset 0.
-    fn sweep_dt() -> DateTime {
-        DateTime { year: 2026, month: 7, day: 14, hour: 12, minute: 0 }
-    }
-
-    /// A fresh app with a **trusted** GPS-stamped clock; returns it and the UTC `now` it reads.
-    fn trusted_app() -> (App, u32) {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now();
-        (app, now)
-    }
-
-    /// Re-stamp the trusted clock `days` days later than `sweep_dt` (advancing `now`) and force the
-    /// next sweep to run regardless of the hourly gate. Returns the new UTC `now`.
-    fn advance_days(app: &mut App, days: u32) -> u32 {
-        // The set-point is minute-resolution; advance via a fresh `stamp_clock` at a later date.
-        let mut dt = sweep_dt();
-        dt.day += days as u8; // stays within July for the small offsets these tests use
-        app.stamp_clock(dt, 0, None, ClockTrust::Gps);
-        app.force_retention_sweep();
-        app.wall_unix_now()
-    }
-
-    fn synced_ride(name: &str, synced: bool, synced_at_utc: u32) -> crate::ride::RideSummary {
-        crate::ride::RideSummary {
-            name: heapless::String::try_from(name).unwrap(),
-            start_time: 1_720_000_000,
-            distance_m: 1_000,
-            moving_time_s: 600,
-            climb_m: 10,
-            synced,
-            synced_at_utc,
-        }
-    }
-
-    /// What one pass asked the platform to do about retention.
-    ///
-    /// The old drain spelled these `DeleteRoute` / `DeleteRide` / `StampRouteUsed` /
-    /// `StampRideSynced`. The pass emits `CatalogEffect::RemoveObject`, which names the *object* and
-    /// not its namespace because the store removes by identity, and `RetentionEffect::Write*Metadata`
-    /// for the sidecar writes.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum SweepOp {
-        Remove(crate::CatalogObjectId),
-        StampRoute(crate::CatalogObjectId),
-        StampRide(crate::CatalogObjectId),
-    }
-
-    /// The retention executor these tests run: one pass at a time, serving whatever it asks for and
-    /// reporting the ops it asked for. Its outcome slots are its own, exactly like a host's — an
-    /// answer it deposits is read by the *next* pass, which is what makes "one operation in flight"
-    /// observable.
-    /// Every capability the test platform implements.
-    const EVERY_CAPABILITY: crate::device_core::PlatformSupport = crate::device_core::PlatformSupport {
-        detour: true,
-        settings_persistence: true,
-        dfu: true,
-        weather: true,
-        bonding: true,
-        storage_space_report: true,
-        retention_metadata: true,
-    };
-
-    /// A location source with nothing to say.
-    struct NoFix;
-    impl LocationSource for NoFix {
-        fn poll(&mut self) -> Option<obc_ports::Fix> {
-            None
-        }
-    }
-
-    struct Sweeper {
-        outcomes: crate::device_core::OutcomeSlots,
-        ms: u32,
-        /// What the store reports for a removal. `false` is a transient failure the domain retries.
-        store_ok: bool,
-        started: bool,
-        written: Option<crate::retention::RetentionEffect>,
-        removed: heapless::Vec<crate::CatalogObjectId, 192>,
-    }
-
-    impl Sweeper {
-        fn new() -> Self {
-            Sweeper {
-                outcomes: crate::device_core::OutcomeSlots::new(),
-                ms: 0,
-                store_ok: true,
-                started: false,
-                written: None,
-                removed: heapless::Vec::new(),
-            }
-        }
-
-        /// One pass: run it, record what it asked for, and answer it for the next one.
-        fn pass(&mut self, app: &mut App) -> heapless::Vec<SweepOp, 8> {
-            use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
-            use crate::retention::{RetentionEffect, RetentionOutcome};
-            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
-            if !self.started {
-                app.test_mount_store();
-                self.started = true;
-            }
-            self.ms += 1;
-            let ms = self.ms.max(app.ui.now_ms);
-            let mut loc = NoFix;
-            let mut facts = crate::device_core::ExternalFacts::NONE;
-            let mut plan = app.run_pass(crate::device_core::PassInputs {
-                now: crate::device_core::PassClock { ride: RideClock(ms), ui: obc_ports::InputClock(ms) },
-                gestures: &[],
-                sensors: Sensors::new(&mut loc),
-                route: None,
-                weather: None,
-                support: EVERY_CAPABILITY,
-                outcomes: &mut self.outcomes,
-                facts: &mut facts,
-                derived: crate::device_core::DerivedInputs::NONE,
-                targets: crate::device_core::DerivedTargets::NONE,
-            });
-            if let Some(effect) = plan.effects.retention.take() {
-                self.written = Some(effect);
-                let token = effect.token();
-                let outcome = match effect {
-                    RetentionEffect::WriteRouteMetadata { id, .. } => {
-                        let _ = out.push(SweepOp::StampRoute(id));
-                        RetentionOutcome::RouteMetadataWritten { token, id }
-                    }
-                    RetentionEffect::WriteRideMetadata { id, .. } => {
-                        let _ = out.push(SweepOp::StampRide(id));
-                        RetentionOutcome::RideMetadataWritten { token, id }
-                    }
-                };
-                let _ = self.outcomes.retention.try_put(outcome);
-            }
-            if let Some(effect) = plan.effects.catalog.take() {
-                let token = effect.token();
-                match effect {
-                    CatalogEffect::RemoveObject { object, .. } | CatalogEffect::ExpireObject { object, .. } => {
-                        let _ = out.push(SweepOp::Remove(object));
-                        if self.store_ok {
-                            self.removed.push(object).unwrap();
-                        }
-                        let _ = self.outcomes.catalog.try_put(if self.store_ok {
-                            CatalogOutcome::ObjectRemoved { token, object, existed: true }
-                        } else {
-                            CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed }
-                        });
-                    }
-                    // Publish the fake store changes through the same catalog feeders as a host.
-                    CatalogEffect::ReadCatalog { .. } => {
-                        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::MAX_ROUTES }> =
-                            heapless::Vec::new();
-                        let mut routes = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
-                        let mut metas = heapless::Vec::<_, { crate::MAX_ROUTES }>::new();
-                        for (i, &id) in app.route_ids().iter().enumerate() {
-                            if !self.removed.contains(&id) {
-                                ids.push(id).unwrap();
-                                routes.push(app.catalogs.routes()[i].clone()).unwrap();
-                                metas.push(app.route_metas()[i]).unwrap();
-                            }
-                        }
-                        app.set_routes_with_meta(&routes, &ids, &metas);
-                        let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
-                            heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
-                        inventory.retain(|ride| !self.removed.contains(&ride.id));
-                        let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
-                        rides.retain(|ride| !self.removed.contains(&ride.id));
-                        app.set_rides(&rides);
-                        app.set_ride_retention_inventory(&inventory);
-                        if let Some(effect) = self.written.take() {
-                            match effect {
-                                RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
-                                    let mut metas: heapless::Vec<RouteRetentionMeta, { crate::MAX_ROUTES }> =
-                                        heapless::Vec::from_slice(app.route_metas()).unwrap();
-                                    if let Some(index) = app.route_ids().iter().position(|&candidate| candidate == id) {
-                                        metas[index] = meta;
-                                    }
-                                    app.set_route_meta(&metas);
-                                }
-                                RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
-                                    let mut rides = crate::RideCatalog::from_slice(app.catalogs.rides()).unwrap();
-                                    for ride in rides.iter_mut().filter(|ride| ride.id == id) {
-                                        ride.summary.synced_at_utc = synced_at;
-                                    }
-                                    app.set_rides(&rides);
-                                    let mut inventory: heapless::Vec<crate::RideRetentionRecord, { crate::MAX_RIDES }> =
-                                        heapless::Vec::from_slice(app.catalogs.ride_records()).unwrap();
-                                    for ride in inventory.iter_mut().filter(|ride| ride.id == id) {
-                                        ride.synced_at_utc = synced_at;
-                                    }
-                                    app.set_ride_retention_inventory(&inventory);
-                                }
-                            }
-                        }
-                        let _ = self.outcomes.catalog.try_put(CatalogOutcome::CatalogRead {
-                            token,
-                            scope: app.catalogs.loaded_scope.or(Some(crate::device_core::StoreRevision {
-                                store: crate::device_core::StoreIdentity::new(1),
-                                revision: crate::device_core::Revision::new(1),
-                            })),
-                        });
-                    }
-                }
-            }
-            out
-        }
-
-        /// `n` passes, with everything they ask for served.
-        fn rounds(&mut self, app: &mut App, n: usize) -> heapless::Vec<SweepOp, 8> {
-            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
-            for _ in 0..n {
-                for op in self.pass(app) {
-                    let _ = out.push(op);
-                }
-            }
-            out
-        }
-    }
-
-    /// Drive several retention-tick + pass rounds and collect every op produced. Multiple rounds are
-    /// needed because a domain performs one bounded operation at a time and the once-per-activation
-    /// stamp defers the batch sweep a tick; a round that produces nothing new ends the drive.
-    fn sweep_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
-        let mut host = Sweeper::new();
-        let mut out: heapless::Vec<SweepOp, 128> = heapless::Vec::new();
-        for _ in 0..24 {
-            let before = out.len();
-            app.retention_tick();
-            for _ in 0..4 {
-                for op in host.pass(app) {
-                    let _ = out.push(op);
-                }
-            }
-            if out.len() == before {
-                break; // a full round produced nothing new
-            }
-        }
-        out
-    }
-
-    fn n_deletes(ops: &[SweepOp]) -> usize {
-        ops.iter().filter(|op| matches!(op, SweepOp::Remove(_))).count()
-    }
-
-    /// Invariant 1: no trusted clock this boot → the sweep does nothing and stamps nothing, even
-    /// with data that *looks* long expired.
-    #[test]
-    fn sweep_does_nothing_without_a_trusted_clock() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
-        app.set_routes_with_meta(
-            &[summary("Old")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, 1)], // "used" at unix 1 → ancient
-        );
-        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("R", true, 1) }]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.is_empty(), "untrusted clock → no deletes, no stamps: {cmds:?}");
-    }
-
-    /// Invariant 6 + the delete happy-path: a trusted sweep deletes an expired route, keeps a fresh
-    /// one, and never touches a `Never` route.
-    #[test]
-    fn sweep_deletes_expired_keeps_fresh_and_never() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Expired"), summary("Fresh"), summary("Forever")],
-            &[10, 11, 12],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS),
-                RouteRetentionMeta::new(Retention::Week1, now - DAY_SECS),
-                RouteRetentionMeta::new(Retention::Never, 1),
-            ],
-        );
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&SweepOp::Remove(10)), "expired route deleted");
-        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(11 | 12))), "fresh + Never kept");
-    }
-
-    /// Invariant 2: a retention-set route with an **unknown** `last_used` is stamped (the clock
-    /// starts) — never deleted on sight — and only deletes after the full period from that stamp.
-    #[test]
-    fn sweep_starts_the_clock_then_deletes_after_the_period() {
-        let (mut app, _now) = trusted_app();
-        app.set_routes_with_meta(&[summary("New")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 0)]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "clock started");
-        assert_eq!(n_deletes(&cmds), 0, "unknown last_used is never deleted on sight");
-        // The stamp's optimistic mirror set last_used = now; a forced re-sweep at the same instant
-        // finds it freshly stamped and well within the 1-day window — nothing deletes.
-        app.force_retention_sweep();
-        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "freshly stamped — not expired");
-        // Days past the 1-day window it deletes.
-        advance_days(&mut app, 5);
-        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "deletes after the period");
-    }
-
-    /// Invariant 3: the active navigation route is never deleted — it re-stamps when it would expire.
-    #[test]
-    fn sweep_never_deletes_the_active_route() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Active"), summary("Idle")],
-            &[10, 11],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // active + long expired
-                RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // inactive + long expired
-            ],
-        );
-        app.activate_route(0); // route 10 is the active nav route
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "active re-stamped");
-        assert!(!cmds.contains(&SweepOp::Remove(10)), "the active route is never deleted");
-        assert!(cmds.contains(&SweepOp::Remove(11)), "the idle expired route is deleted");
-    }
-
-    /// The route-upload `last_used` stamp (epic #638 S4): a committed upload under a **trusted** clock
-    /// enqueues a `StampRouteUsed` for the route — anchoring its expiry clock at upload time — while an
-    /// upload under an **untrusted** clock stamps nothing (the sweep starts the clock later, invariant
-    /// 2). A fresh route is `Never` at upload (the app sets real retention via a later
-    /// `setRouteRetention`), yet the upload still anchors `last_used` so the eventual expiry counts
-    /// from upload time.
-    #[test]
-    fn route_upload_stamps_last_used_only_when_trusted() {
-        fn upload_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
-            app.on_route_uploaded(10, false, None);
-            sweep_and_drain(app)
-        }
-
-        // Trusted: an upload commit stamps the route used (anchoring the expiry clock at upload time).
-        let (mut app, _now) = trusted_app();
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        let cmds = upload_and_drain(&mut app);
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
-            "a trusted upload stamps last_used: {cmds:?}"
-        );
-
-        // Untrusted (never stamped this boot): the same upload stamps nothing — the safe fallback.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        let cmds = upload_and_drain(&mut app);
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(_))),
-            "an untrusted upload stamps nothing: {cmds:?}"
-        );
-    }
-
-    /// #1548: the upload stamp does **not** take its sibling's expiring-route filter. Every fresh
-    /// route is `Never` at upload — the app sets the level in a separate command that never touches
-    /// `last_used` — so filtering `Never` here would slip the anchor to the next hourly sweep, which
-    /// is the imprecision this stamp exists to remove.
-    #[test]
-    fn a_never_route_uploaded_and_levelled_later_anchors_at_upload() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
-        app.on_route_uploaded(10, false, None);
-        sweep_and_drain(&mut app);
-        let anchored = app.route_metas()[0].last_used_utc;
-        assert_eq!(anchored, now, "the upload anchored `last_used`, not the next sweep");
-
-        // The phone's `setRouteRetention` sets the level and leaves `last_used` alone.
-        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Day1, anchored)]);
-        assert_eq!(app.route_metas()[0].expires_at(), Some(now + DAY_SECS), "the countdown runs from the upload");
-    }
-
-    /// Invariant 4: no sweep (no deletions) while a ride is recording — even with an expired route.
-    #[test]
-    fn sweep_suppressed_while_recording() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(
-            &[summary("Expired")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)],
-        );
-        app.test_start_ride(); // recording in progress
-        let cmds = sweep_and_drain(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "recording suppresses the sweep — nothing deleted");
-    }
-
-    /// A ride acked synced under a **trusted clock while recording** gets its `synced_at` stamped
-    /// **at ack-time** (its countdown starts) — the eager stamp is *not* deferred to the
-    /// recording-gated delete sweep. A metadata stamp is safe mid-ride; only deletions wait for
-    /// recording to end (invariant 4). (Regression guard for the S3 review fix.)
-    #[test]
-    fn ride_synced_at_stamped_eagerly_even_while_recording() {
-        let (mut app, _now) = trusted_app();
-        app.test_start_ride(); // recording a multi-day tour
-                               // The phone acks a ride synced (synced_at not yet set) mid-recording.
-        app.set_rides(&[crate::RideEntry { id: 7, summary: synced_ride("Acked", true, 0) }]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
-            "the countdown starts at ack-time, not deferred to recording-end: {cmds:?}"
-        );
-        assert_eq!(n_deletes(&cmds), 0, "but nothing is deleted while recording");
-        // The stamp mirrored synced_at = now, so it isn't re-enqueued on the next tick.
-        app.force_retention_sweep();
-        let again = sweep_and_drain(&mut app);
-        assert!(
-            !again.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
-            "a stamped ride is not re-stamped: {again:?}"
-        );
-    }
-
-    /// Invariant 5: rides — unsynced is untouched at any age; synced + aged deletes; synced +
-    /// `synced_at == 0` (legacy) is stamped then later deletes; `ride_retention = Never` deletes
-    /// nothing.
-    #[test]
-    fn sweep_ride_rules_end_to_end() {
-        let (mut app, now) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
-        // Re-stamp trust (set_settings re-stamped the wall clock from the persisted set-point).
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now().max(now);
-        app.set_rides(&[
-            crate::RideEntry { id: 1, summary: synced_ride("Aged", true, now - 8 * DAY_SECS) },
-            crate::RideEntry { id: 2, summary: synced_ride("Recent", true, now - DAY_SECS) },
-            crate::RideEntry { id: 3, summary: synced_ride("Legacy", true, 0) },
-            crate::RideEntry { id: 4, summary: synced_ride("Unsynced", false, 0) },
-        ]);
-        let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&SweepOp::Remove(1)), "aged synced ride deleted");
-        assert!(!cmds.contains(&SweepOp::Remove(2)), "recent synced ride kept");
-        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRide(3))), "legacy ride stamped");
-        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(3))), "legacy ride not deleted on sight");
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(4) | SweepOp::StampRide(4))),
-            "the unsynced ride is never touched"
-        );
-    }
-
-    /// A full host feed keeps older synced rides eligible for expiry beyond the visible menu.
-    #[test]
-    fn ride_expiry_reaches_beyond_the_menu_cap() {
-        let (mut app, _) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Week1, ..Settings::default() });
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let now = app.wall_unix_now();
-        let mut rides: [RideEntry; 33] =
-            core::array::from_fn(|i| RideEntry { id: i as u64 + 1, summary: synced_ride("Unsynced", false, 0) });
-        rides[32].summary = synced_ride("Older synced ride", true, now - 8 * DAY_SECS);
-        app.set_rides(&rides);
-
-        assert_eq!(app.rides(), &rides[..32], "the menu still holds only its first 32 summaries");
-        let cmds = sweep_and_drain(&mut app);
-        assert_eq!(cmds.as_slice(), &[SweepOp::Remove(33)], "only the older synced ride expires");
-    }
-
-    /// `ride_retention = Never` deletes no ride, however long ago it synced.
-    #[test]
-    fn sweep_ride_retention_never_deletes_nothing() {
-        let (mut app, _now) = trusted_app();
-        app.set_settings(Settings { ride_retention: RideRetention::Never, ..Settings::default() });
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        app.set_rides(&[crate::RideEntry { id: 1, summary: synced_ride("Aged", true, 1) }]); // synced at unix 1 → ancient
-        assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "ride_retention Never → nothing");
-    }
-
-    /// Exact boundary: `now == expires_at` deletes (the `>=` in the policy).
-    #[test]
-    fn sweep_deletes_on_the_exact_boundary() {
-        let (mut app, now) = trusted_app();
-        // last_used = now - 1 day, retention 1 day → expires_at == now exactly.
-        app.set_routes_with_meta(
-            &[summary("Boundary")],
-            &[10],
-            &[RouteRetentionMeta::new(Retention::Day1, now - DAY_SECS)],
-        );
-        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "now == expires_at deletes");
-    }
-
-    /// Remap coherence: a route delete mid-session keeps each surviving route's retention meta
-    /// aligned with its id across the rescan.
-    #[test]
-    fn route_meta_stays_aligned_across_a_rescan() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_routes_with_meta(
-            &[summary("A"), summary("B"), summary("C")],
-            &[10, 11, 12],
-            &[
-                RouteRetentionMeta::new(Retention::Day1, 100),
-                RouteRetentionMeta::new(Retention::Week1, 200),
-                RouteRetentionMeta::new(Retention::Month1, 300),
-            ],
-        );
-        // A rescan drops the middle route (id 11) — B is gone, A and C survive in a new order.
-        app.set_routes_with_ids(&[summary("C"), summary("A")], &[12, 10]);
-        assert_eq!(app.route_ids(), &[12, 10]);
-        let metas = app.route_metas();
-        assert_eq!(metas[0], RouteRetentionMeta::new(Retention::Month1, 300), "C's meta followed its id");
-        assert_eq!(metas[1], RouteRetentionMeta::new(Retention::Day1, 100), "A's meta followed its id");
-    }
-
-    // ==================== finding #876: just-in-time execution guards ====================
-    //
-    // The tests above collect *and* dispatch in one `sweep_and_drain`, so a decision never goes
-    // stale between the two. These drive the race the issue is about: fill the candidate queue with
-    // one `retention_tick`, mutate live state, and prove the **drain** re-derives the decision.
-
-    use crate::retention::{RideRetentionRecord, SweepKind, RETENTION_DELETE_BACKOFF_MS};
-
-    /// One executor round, collecting the ops it produced. A domain performs one bounded
-    /// operation at a time, so a route delete and a ride delete are two catalog operations and
-    /// leave on consecutive passes.
-    /// Three passes, because that is one whole catalog operation from this executor's side: the
-    /// effect goes out, its answer comes back, and the re-read the answer orders (#1541) is served
-    /// too. Each call builds a fresh [`Sweeper`], so an answer left unconsumed at the last pass
-    /// would be dropped with it and the domain would stay in flight for the rest of the test.
-    fn drain_once(app: &mut App) -> heapless::Vec<SweepOp, 8> {
-        Sweeper::new().rounds(app, 3)
-    }
-
-    /// The same round against a store that **refuses** every removal — the one case the backstop
-    /// still covers, now that a completed removal is retired by the catalog's verdict.
-    fn drain_once_refusing(app: &mut App) -> heapless::Vec<SweepOp, 8> {
-        Sweeper { store_ok: false, ..Sweeper::new() }.rounds(app, 3)
-    }
-
-    fn expired(now: u32) -> RouteRetentionMeta {
-        RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)
-    }
-
-    /// Finding #876-1: a route **activated after the sweep discovered it** as a delete candidate but
-    /// **before the delete drains** is never deleted — the live drain recheck converts it to a
-    /// re-stamp, and the still-idle expired route deletes as normal.
-    #[test]
-    fn activation_after_discovery_cancels_the_queued_delete() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // the sweep queues DeleteRoute(10) + DeleteRoute(11)
-        assert!(app.retention.has(SweepKind::DeleteRoute), "both routes are delete candidates");
-        // The rider opens route 10 and starts navigating it before that item drains.
-        app.activate_route(0);
-        let cmds = drain_once(&mut app);
-        assert!(!cmds.contains(&SweepOp::Remove(10)), "the activated route is never deleted");
-        assert!(
-            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
-            "the activated route is re-stamped instead: {cmds:?}"
-        );
-        assert!(cmds.contains(&SweepOp::Remove(11)), "the still-idle expired route deletes");
-    }
-
-    /// Finding #876-1 (invariant 4): deletes discovered while idle and **then** interrupted by a
-    /// recording are deferred — not dropped — and dispatch once recording ends.
-    #[test]
-    fn recording_after_discovery_defers_deletes_without_losing_them() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick(); // discovers DeleteRoute(10) + DeleteRide(7) while idle
-        assert!(app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide));
-        // Recording begins *after* discovery, on a later frame.
-        app.test_start_ride();
-        let while_recording = drain_once(&mut app);
-        assert_eq!(n_deletes(&while_recording), 0, "no auto-delete dispatches while recording");
-        assert!(
-            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
-            "the candidates are retained, not dropped"
-        );
-        // Recording ends → the same candidates dispatch (route + ride are separate classes → one pass).
-        app.test_end_ride();
-        let after = drain_once(&mut app);
-        assert!(after.contains(&SweepOp::Remove(10)), "the route delete dispatches after recording");
-        assert!(after.contains(&SweepOp::Remove(7)), "the ride delete dispatches after recording");
-    }
-
-    /// Finding #876-1: retention/metadata changed **between discovery and dispatch** — the live state
-    /// wins. A route lengthened to `Never` after the sweep queued its delete is not deleted.
-    #[test]
-    fn metadata_change_between_discovery_and_dispatch_wins() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.retention_tick(); // queues DeleteRoute(10)
-        assert!(app.retention.has(SweepKind::DeleteRoute));
-        // The phone sets this route to Never (or re-stamps it) before the delete drains.
-        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Never, now - 3 * DAY_SECS)]);
-        let cmds = drain_once(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "the live Never wins — the stale delete candidate is cancelled");
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "the cancelled candidate is retired");
-    }
-
-    /// Finding #876-3: multiple expired objects are drained **one in flight at a time**, and every id
-    /// is executed exactly once (or resolved already-absent) — none is overwritten or dropped, the
-    /// exact failure the coalescing delete `Signal` had. The host "applies" each delete by rescanning
-    /// the store without the id (as the real store-changed edge does).
-    #[test]
-    fn batched_deletes_all_execute_exactly_once() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B"), summary("C")], &[10, 11, 12], &[expired(now); 3]);
-        let mut host = Sweeper::new();
-        let deleted: heapless::Vec<crate::CatalogObjectId, 8> = host
-            .rounds(&mut app, 16)
-            .iter()
-            .filter_map(|op| if let SweepOp::Remove(id) = op { Some(*id) } else { None })
-            .collect();
-        assert_eq!(deleted.len(), 3, "every expired route was deleted: {deleted:?}");
-        for id in [10u64, 11, 12] {
-            assert_eq!(deleted.iter().filter(|&&x| x == id).count(), 1, "id {id} executed exactly once");
-        }
-    }
-
-    /// Finding #876-3, now the backstop's own case (#1548): a **refused** removal keeps its
-    /// candidate and retries it — no second hourly sweep is needed — paced by the bounded window so
-    /// a dead card is not hammered every frame.
-    #[test]
-    fn a_refused_removal_keeps_its_candidate_and_retries_after_the_backoff() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "first dispatch");
-        // The store refused: route 10 is still there, and nothing retired the candidate.
-        assert!(
-            !drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
-            "the backstop paces the retry — no per-frame hammering"
-        );
-        // Past the window, the *same* candidate re-dispatches — no new sweep ran in between.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        assert!(
-            drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
-            "the retained candidate retries itself, without another hourly discovery"
-        );
-    }
-
-    /// One in-flight slot, not one per class (#1548): the backstop belongs to the **store**, so a
-    /// ride removal does not walk into a card that refused a route removal a frame ago. It follows
-    /// once the window has passed, or — on the ordinary path — in the pass the route's verdict lands.
-    #[test]
-    fn a_refused_removal_paces_the_next_delete_of_either_kind() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick();
-        let first = drain_once_refusing(&mut app);
-        assert!(first.contains(&SweepOp::Remove(10)), "the route removal goes out first: {first:?}");
-        assert_eq!(n_deletes(&first), 1, "the card just refused — the ride does not walk into it: {first:?}");
-
-        let blocked = drain_once_refusing(&mut app);
-        assert_eq!(n_deletes(&blocked), 0, "and it still waits inside the window: {blocked:?}");
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "past the window the head retries");
-    }
-
-    /// The class order is the domain's, not the stage's (#1548): a route expiry is offered before a
-    /// ride expiry, which is the order the sweep discovers them in.
-    #[test]
-    fn an_expiry_offers_a_route_before_a_ride() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord {
-            id: 7,
-            synced: true,
-            synced_at_utc: now - 8 * DAY_SECS,
-        }]);
-        app.retention_tick();
-        let mut host = Sweeper::new();
-        assert_eq!(host.pass(&mut app).first(), Some(&SweepOp::Remove(10)), "the route class goes first");
-        assert!(host.rounds(&mut app, 2).contains(&SweepOp::Remove(7)), "and the ride follows it");
-    }
-
-    /// #1548: a **completed** removal retires the expiry candidate in the pass its answer lands —
-    /// while the resident catalogs are still the pre-removal picture, because the re-read the
-    /// removal ordered has not run yet.
-    #[test]
-    fn a_completed_removal_retires_its_expiry_candidate_in_the_same_pass() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        let mut host = Sweeper::new();
-        assert!(host.pass(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches");
-
-        host.pass(&mut app); // the answer lands at stage 1 of this pass
-        assert!(app.route_ids().is_empty(), "the executor has served the removal’s re-read");
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "and the candidate is already retired");
-    }
-
-    /// #1548: every producer of a deletion converges on the same verdict. A route the **rider**
-    /// deletes retires the expiry candidate the sweep had for it, so the object is removed once.
-    #[test]
-    fn a_riders_delete_retires_the_expiry_candidate_for_the_same_object() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // both routes are expiry candidates, and 10 is the head
-        app.activity.request_route_delete(1); // the rider deletes 11 by hand, so the sweep never did
-
-        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
-        for _ in 0..4 {
-            for op in drain_once(&mut app) {
-                let _ = ops.push(op);
-            }
-        }
-        for id in [10u64, 11] {
-            let n = ops.iter().filter(|op| **op == SweepOp::Remove(id)).count();
-            assert_eq!(n, 1, "{id} removed once, whoever ordered it: {ops:?}");
-        }
-        assert!(!app.retention.has(SweepKind::DeleteRoute), "both candidates were retired by their verdicts");
-    }
-
-    /// #1548: the same race one pass tighter. The rider deletes the route the sweep's **head**
-    /// candidate names, so both reach the catalog in one pass: the rider's is admitted and the
-    /// expiry is refused and parked. When the verdict lands, the parked intent is a copy of a
-    /// candidate that is already retired — admitting it would remove an object that has gone.
-    #[test]
-    fn a_riders_delete_of_the_head_candidate_orders_one_removal() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        app.activity.request_route_delete(0);
-
-        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
-        for _ in 0..3 {
-            for op in drain_once(&mut app) {
-                let _ = ops.push(op);
-            }
-        }
-        assert_eq!(n_deletes(&ops), 1, "the rider's removal is the only one: {ops:?}");
-    }
-
-    /// #1548 finding 2: the store **answered `ObjectRemoved`**, and the re-read that answer ordered
-    /// has not re-fed the catalogs yet — the object is still a resident row. That is the ordinary
-    /// board cadence, not a fault: the pass clock is real monotonic millis and the device sleeps
-    /// between wakes, so more than [`RETENTION_DELETE_BACKOFF_MS`] routinely elapses between the
-    /// answer and the read landing. A second removal for an object the store has already removed is
-    /// a second `ObjectRemoved`, a second armed re-read and a second wake, and it breaks #1541's
-    /// "one read per delete".
-    #[test]
-    fn an_expiry_answered_removed_is_not_dispatched_twice_when_the_re_read_is_slow() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
-        app.retention_tick();
-        assert!(drain_once(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches once");
-
-        // The removal was answered `ObjectRemoved`. The catalogs are still the pre-removal picture
-        // until the owed read lands, and the device slept past the backoff in the meantime.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        let later = drain_once(&mut app);
-        assert!(
-            !later.contains(&SweepOp::Remove(10)),
-            "the verdict retired the candidate — a slow re-read must not order a second removal: {later:?}"
-        );
-    }
-
-    /// Review fix (#886): cancelling a queued-but-never-dispatched candidate must NOT re-open the
-    /// dispatch window while a *different* id's removal is outstanding. Interleaving:
-    /// `DeleteRoute(10)` is dispatched and refused, `DeleteRoute(11)` is queued behind it; the
-    /// rider activates route 11 → `note_active_route` cancels 11's candidate. The same-pass drain
-    /// must not re-emit `DeleteRoute(10)` mid-flight, and 10 must stay retained for its own retry.
-    #[test]
-    fn cancel_of_a_queued_candidate_does_not_reopen_the_inflight_window() {
-        let (mut app, now) = trusted_app();
-        app.set_routes_with_meta(&[summary("X"), summary("A")], &[10, 11], &[expired(now), expired(now)]);
-        app.retention_tick(); // queues DeleteRoute(10) + DeleteRoute(11)
-                              // The store refuses, so 10 stays in flight instead of being retired by its own verdict.
-        let first = drain_once_refusing(&mut app);
-        assert!(first.contains(&SweepOp::Remove(10)), "10 dispatches first and is in flight");
-        assert!(!first.contains(&SweepOp::Remove(11)), "one delete in flight at a time");
-
-        // The rider activates route 11 (catalog index 1) — the next tick's `note_active_route`
-        // cancels 11's queued (never-dispatched) delete candidate.
-        app.activate_route(1);
-        app.retention_tick();
-        assert!(!app.retention.has(SweepKind::StampRide), "sanity: only route work is queued");
-        let cmds = drain_once_refusing(&mut app);
-        assert!(
-            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(_))),
-            "cancelling 11 must not re-emit the in-flight 10 mid-backoff: {cmds:?}"
-        );
-        assert_eq!(app.retention.peek(SweepKind::DeleteRoute), Some(10), "10 stays retained for its own retry");
-
-        // 10's own backoff still governs its retry: past the window, 10 (and only 10) re-dispatches.
-        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
-        let retry = drain_once(&mut app);
-        assert!(retry.contains(&SweepOp::Remove(10)), "10 retries after its backoff");
-        assert!(!retry.contains(&SweepOp::Remove(11)), "the activated 11 is never deleted");
-    }
-
-    /// Review fix (#886): the drain-time trust guard. Delete candidates that are already queued
-    /// (collected under a trusted clock) are **retained and nothing dispatches** when the clock is
-    /// not trusted at drain time — invariant 1 holds at execution time, not only at collection time.
-    /// (Production trust never reverts within a boot; the guard is belt-and-braces, exercised here
-    /// by seeding candidates directly into an untrusted app.)
-    #[test]
-    fn untrusted_clock_at_drain_time_defers_queued_deletes() {
-        use crate::retention::SweepAction;
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // never stamped → Untrusted
-        app.set_routes_with_meta(&[summary("Old")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 1)]);
-        app.set_ride_retention_inventory(&[RideRetentionRecord { id: 7, synced: true, synced_at_utc: 1 }]);
-        // Candidates as an earlier trusted sweep would have queued them.
-        app.retention.test_push(SweepAction::DeleteRoute(10));
-        app.retention.test_push(SweepAction::DeleteRide(7));
-
-        let cmds = drain_once(&mut app);
-        assert_eq!(n_deletes(&cmds), 0, "no trusted clock at drain time → nothing dispatches: {cmds:?}");
-        assert!(
-            app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide),
-            "the candidates are retained (deferred), not dropped"
-        );
-
-        // Trust arrives → the same candidates dispatch (their live recheck still holds them due).
-        app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
-        let after = drain_once(&mut app);
-        assert!(after.contains(&SweepOp::Remove(10)), "route delete dispatches once trusted");
-        assert!(after.contains(&SweepOp::Remove(7)), "ride delete dispatches once trusted");
-    }
-
-    // ==================== WX12 (#1197): travel direction, ride projection, alert engine ====================
-
-    /// One tick with `fix` against the Grimsel fixture route (map-plane clock = `now_ms`).
-    fn tick_route_fix(app: &mut App, route: &RouteReader, fix: Fix, now_ms: u32) {
-        app.ui.now_ms = now_ms;
-        let mut loc = OneFix(Some(fix));
-        app.tick(RideClock(now_ms), Sensors::new(&mut loc), Some(route));
-    }
-
-    /// The WX12 travel-direction chain end to end: on-route fixes yield the route's general
-    /// heading ahead of the matched progress (held while stopped — a rest stop still knows the
-    /// ride's direction), and everything else is neutral, never a fabricated head/tail. Off-route
-    /// the GPS course does **not** stand in, however fast the rider is moving (owner tuning round):
-    /// the momentary heading is arbitrary the moment they stop or turn the bars.
-    #[test]
-    fn travel_direction_follows_the_route_heading_else_neutral() {
-        let idx = grimsel_index();
-        let src = SliceSource(GRIMSEL);
-        let route = RouteReader::new(&idx, &src);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.navigator.route_state_mut().active_route = Some(0);
-        assert_eq!(app.travel_deg(), None, "no fix yet → neutral");
-
-        // A moving on-route fix: the travel direction is the route heading, not the (deliberately
-        // contradictory) GPS course.
-        let p = route.position_at(1_000).unwrap();
-        let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
-        tick_route_fix(&mut app, &route, on_route, 1_000);
-        assert!(!app.navigator.route_state_mut().off_route);
-        let heading = crate::weather::route_heading_deg(&route, app.navigator.route_state_mut().progress_m).unwrap();
-        let travel = app.travel_deg().expect("on-route: the route heading");
-        assert!((travel - heading).abs() < 0.01, "travel {travel} == heading {heading}");
-
-        // Stopped on the route (no course, no speed): the heading is *held* — the wind question
-        // at a rest stop is about the ride ahead.
-        tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: None }, 2_000);
-        assert_eq!(app.travel_deg(), Some(travel), "held while stopped");
-
-        // Far off the route, moving with a course: neutral. The GPS course used to stand in here,
-        // and it is exactly the claim a rider standing at a junction can't trust.
-        let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
-        tick_route_fix(&mut app, &route, far, 3_000);
-        assert!(app.navigator.route_state_mut().off_route);
-        assert_eq!(app.travel_deg(), None, "off-route → neutral, course or no course");
-
-        // Off the route and stationary: still neutral.
-        let parked = Fix { lat: p.lat + 200_000, lon: p.lon, course: None, speed_mps: Some(0.0) };
-        tick_route_fix(&mut app, &route, parked, 4_000);
-        assert_eq!(app.travel_deg(), None, "off-route stopped → neutral");
-
-        // Unloading the route drops the heading with the rest of the derived state.
-        tick_route_fix(&mut app, &route, on_route, 5_000);
-        assert!(app.travel_deg().is_some());
-        app.navigator.route_state_mut().active_route = None;
-        app.drop_route_derived_state();
-        assert_eq!(app.travel_deg(), None, "route unload → neutral until re-derived");
-    }
-
-    /// The other half of the same off-route switch (review F1): when `travel_deg` stops trusting
-    /// the route tangent, `ride_projection` must stop trusting the route *position* too. A rider
-    /// 20 km off the line still has a `progress_m` — the last match — and projecting the two-hour
-    /// decision along it would answer for a route they aren't on. `None` there falls the host back
-    /// to WX11's rider-position sampling, and re-matching restores the projection.
-    #[test]
-    fn ride_projection_refuses_to_project_along_a_route_the_rider_left() {
-        let idx = grimsel_index();
-        let src = SliceSource(GRIMSEL);
-        let route = RouteReader::new(&idx, &src);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.navigator.route_state_mut().active_route = Some(0);
-
-        // On the route: a projection, anchored at the matched progress.
-        let p = route.position_at(1_000).unwrap();
-        let on_route = Fix { lat: p.lat, lon: p.lon, course: Some(275.0), speed_mps: Some(4.0) };
-        tick_route_fix(&mut app, &route, on_route, 1_000);
-        assert!(!app.navigator.route_state_mut().off_route);
-        let progress = app.navigator.route_state_mut().progress_m;
-        assert_eq!(app.ride_projection().map(|p| p.progress_m), Some(progress));
-
-        // 20 km off it: the matcher keeps the stale progress, the projection refuses to use it.
-        let far = Fix { lat: p.lat + 200_000, lon: p.lon, course: Some(123.0), speed_mps: Some(5.0) };
-        tick_route_fix(&mut app, &route, far, 2_000);
-        assert!(app.navigator.route_state_mut().off_route);
-        assert_eq!(app.travel_deg(), None, "the wind arrows already went neutral off the line…");
-        assert_eq!(app.ride_projection(), None, "…and the ride decision must switch off the route too");
-
-        // Back on the line: the projection returns.
-        tick_route_fix(&mut app, &route, on_route, 3_000);
-        assert!(!app.navigator.route_state_mut().off_route);
-        assert!(app.ride_projection().is_some(), "re-matching restores the projection");
-    }
-
-    /// `ride_projection` bundles the matched progress with the recent moving **median** pace —
-    /// capped against GPS teleports, with the documented touring fallback while stopped — and
-    /// exists only once the matcher has locked onto an active route.
-    #[test]
-    fn ride_projection_pace_median_cap_and_fallback() {
-        let idx = grimsel_index();
-        let src = SliceSource(GRIMSEL);
-        let route = RouteReader::new(&idx, &src);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        assert_eq!(app.ride_projection(), None, "no active route → no projection");
-        app.navigator.route_state_mut().active_route = Some(0);
-        assert_eq!(app.ride_projection(), None, "route not matched yet → no projection");
-
-        // A stationary lock: no moving sample yet → the touring fallback pace.
-        let p = route.position_at(500).unwrap();
-        tick_route_fix(&mut app, &route, Fix { lat: p.lat, lon: p.lon, course: None, speed_mps: Some(0.0) }, 1_000);
-        let proj = app.ride_projection().expect("matched route → projection");
-        assert_eq!(proj.speed_cms, crate::weather::TOURING_FALLBACK_CMS, "stopped → touring fallback");
-        assert_eq!(proj.progress_m, app.navigator.route_state_mut().progress_m);
-
-        // Moving samples: the median of 3/5/60 m/s — the 60 m/s teleport is capped to 15, and the
-        // median (5 m/s) is immune to it anyway.
-        for (i, mps) in [3.0f32, 5.0, 60.0].into_iter().enumerate() {
-            let q = route.position_at(500 + i as u32 * 10).unwrap();
-            tick_route_fix(
-                &mut app,
-                &route,
-                Fix { lat: q.lat, lon: q.lon, course: None, speed_mps: Some(mps) },
-                2_000 + i as u32 * 1_000,
-            );
-        }
-        assert_eq!(app.ride_projection().unwrap().speed_cms, 500, "median of {{300, 500, 1500(capped)}}");
-    }
-
-    /// One rendered Hourly frame: `travel` is the WX12 travel direction the wind arrows classify
-    /// against, `precip_tenth_mm` the amount every row carries (the rows are otherwise the
-    /// [`alert_snap`] hourlies — wind from 200° at 4 m/s, condition RAIN).
-    fn hourly_frame(travel: Option<f32>, precip_tenth_mm: u16) -> crate::harness::support::Buf {
-        use crate::harness::support::{build_min_obcm, Buf};
-        use embedded_graphics::pixelcolor::Rgb888;
-        use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
-
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let mut snap = alert_snap(&app, &[0; 9]);
-        for record in snap.hourly.iter_mut() {
-            record.precipitation_tenth_mm = precip_tenth_mm;
-        }
-        app.navigator.set_travel_deg_for_test(travel);
-        let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
-        let bytes = build_min_obcm(1);
-        let cache = MapCache::new();
-        let src = obc_reader::SliceSource(&bytes);
-        let tables = MapTables::parse(&src).unwrap();
-        let reader = Reader::new(&src, &tables, &cache);
-        let mut buf = Buf::new(240, 320);
-        let mut scratch = std::boxed::Box::new(obc_render::RenderScratch::new());
-        app.render_frame_with_rain(Some(&mut scratch), &mut buf, &reader, None, None, Some(&snap), 240.0, 320.0, |c| {
-            let (r, g, b) = rgb565_to_rgb888(c);
-            Rgb888::new(r, g, b)
-        });
-        buf
-    }
-
-    /// A synthetic ride snapshot for the alert engine: nine 15-min frames of `intensities`
-    /// anchored at the app's own wall clock, dry hourly rows.
-    fn alert_snap(app: &App, intensities: &[u8]) -> crate::weather::WeatherSnapshot {
-        crate::harness::support::weather_snapshot(app.wall_unix_now() as i64, intensities, None)
-    }
-
-    /// The alert engine end to end through `weather_alert_tick`: a heavy-rain snapshot fires the
-    /// RAIN AHEAD card once (update-in-place on re-ticks, never a second card), persists the mark
-    /// as **its own record**, stays suppressed after DISMISS, re-fires on a material escalation —
-    /// and that record, round-tripped through its codec, suppresses the same storm across a boot.
-    #[test]
-    fn the_persisted_mark_suppresses_the_same_storm_across_a_boot() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]); // band 10 at +15 min
-
-        // No snapshot → nothing; the engine never invents.
-        app.weather_alert_tick(None);
-        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)));
-
-        app.weather_alert_tick(Some(&snap));
-        let Screen::WeatherAlert(card) = app.top_screen() else { panic!("heavy rain fires the card") };
-        assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Rain, "≥10 mm/h = the RAIN AHEAD face");
-        assert!(serve_marks_write(&mut app).is_some(), "the fired mark is written as its own record");
-        let depth = app.ui.stack.len();
-
-        // Re-ticks with the same event: the one card updates in place, no stack growth, no
-        // second persist.
-        app.weather_alert_tick(Some(&snap));
-        app.weather_alert_tick(Some(&snap));
-        assert_eq!(app.ui.stack.len(), depth, "update-in-place, never a second card");
-        assert!(drain_settings_effect(&mut app).is_none(), "a suppressed duplicate rewrites no mark");
-
-        // DISMISS (Back pops the card): the cooldown mark keeps the same storm down.
-        app.apply_gesture(Gesture::Back);
-        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)));
-        app.weather_alert_tick(Some(&snap));
-        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "same event inside cooldown stays down");
-
-        // Material escalation (+2 bands) breaks the cooldown and re-fires.
-        let escalated = alert_snap(&app, &[0, 12, 0, 0, 0, 0, 0, 0, 0]);
-        app.weather_alert_tick(Some(&escalated));
-        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "a materially stronger storm re-fires");
-        let record = serve_marks_write(&mut app).expect("the escalated mark is written too");
-        app.apply_gesture(Gesture::Back);
-
-        // Reboot: the anchors ride their own record, so the same storm stays down on a new App.
-        let restored = crate::weather_alerts::decode_alert_marks(&record).expect("the record round-trips");
-        let mut rebooted = App::new(AppState::new(0, 0, 1.0));
-        rebooted.set_alert_marks(restored, MarksProvenance::Record);
-        assert!(drain_settings_effect(&mut rebooted).is_none(), "a seed out of the record owes no write");
-        rebooted.weather_alert_tick(Some(&escalated));
-        assert!(
-            !matches!(rebooted.top_screen(), Screen::WeatherAlert(_)),
-            "the persisted mark suppresses the same storm across a boot"
-        );
-
-        // A genuinely new event fires on the rebooted device: age the persisted mark past the
-        // cooldown (the equivalent of the storm having been hours ago) and the same-shaped
-        // candidate is a new encounter.
-        let mut aged = *rebooted.weather.alert_marks();
-        aged[crate::weather_alerts::AlertClass::HeavyRain.slot()] = Some(crate::weather_alerts::AlertMark {
-            onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
-            pos: Some((47_000_000, 8_000_000)),
-            severity: 12,
-        });
-        rebooted.weather.set_alert_marks(aged);
-        rebooted.weather_alert_tick(Some(&escalated));
-        assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
-    }
-
-    /// A stored **v16** preferences blob carrying `marks` in its frozen span — what a device holds
-    /// at the moment of this update. Built by doctoring the committed v16 golden, because `encode`
-    /// writes v17 now and those bytes may never be re-captured.
-    fn v16_blob_with(marks: crate::weather_alerts::AlertMarks) -> [u8; crate::settings::ENCODED_LEN] {
-        let mut b = crate::settings::V16_FULL_BLOB;
-        b[114..168].fill(0);
-        crate::weather_alerts::pack_marks(&marks, &mut b[114..168]);
-        let crc = crate::store_meta::crc16(&b[0..168]);
-        b[168..170].copy_from_slice(&crc.to_le_bytes());
-        b
-    }
-
-    /// The update does not cost the rider their anchors. A device holding a v16 blob and **no**
-    /// marks record carries the blob's anchors across, rehomes them into the record once, and the
-    /// storm it was already suppressing stays suppressed.
-    #[test]
-    fn an_upgrade_from_v16_keeps_the_anchors() {
-        let mut old = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&old, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
-        // The last ride on the old firmware: the storm fires, and its anchor lands in the blob.
-        old.weather_alert_tick(Some(&snap));
-        let anchors = *old.alert_marks();
-        assert!(anchors.iter().any(Option::is_some), "the old firmware really did anchor something");
-        let blob = v16_blob_with(anchors);
-
-        // The update boots: a v16 blob, and nothing in the marks record.
-        let mut updated = App::new(AppState::new(0, 0, 1.0));
-        updated.set_settings(crate::settings::decode(&blob).expect("the v16 blob still reads"));
-        let carried = crate::settings::legacy_alert_marks(&blob).expect("the frozen span answers");
-        updated.set_alert_marks(carried, MarksProvenance::LegacyBlob);
-        assert_eq!(updated.alert_marks(), &anchors, "the rider's anchors came across");
-
-        // They are rehomed into the record — once.
-        let record = serve_marks_write(&mut updated).expect("the carried anchors are written to the record");
-        assert_eq!(crate::weather_alerts::decode_alert_marks(&record), Some(anchors));
-        assert!(drain_settings_effect(&mut updated).is_none(), "…and nothing more is owed");
-
-        // And the same storm stays down: no duplicate card bought by the update.
-        updated.weather_alert_tick(Some(&snap));
-        assert!(!matches!(updated.top_screen(), Screen::WeatherAlert(_)), "the same storm stays down");
-    }
-
-    /// A storm costs 64 bytes of anchors, not 176 bytes of the rider's preferences. One firing
-    /// alert offers `PersistAlertMarks` and **nothing else**: the preferences handshake is not
-    /// armed, so a week of weather no longer rewrites the settings blob once per alert.
-    #[test]
-    fn a_firing_alert_persists_the_marks_record_and_not_the_settings_blob() {
-        use crate::settings::SettingsEffect;
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
-        let before = *app.settings();
-
-        app.weather_alert_tick(Some(&snap));
-        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the card fires");
-        assert_eq!(app.settings(), &before, "the preferences value is untouched");
-
-        let effect = drain_settings_effect(&mut app).expect("the mark is owed a write");
-        assert!(
-            matches!(effect, SettingsEffect::PersistAlertMarks { .. }),
-            "the marks record, not the blob: {effect:?}"
-        );
-        assert!(drain_settings_effect(&mut app).is_none(), "and no preferences write behind it");
-    }
-
-    /// An anchor never waits behind an open settings screen. The preferences debounce exists
-    /// because the rider is mid-edit; a storm is not an edit, and holding its mark while a settings
-    /// screen happens to be up is the behaviour this record exists to end.
-    #[test]
-    fn a_mark_persists_while_the_rider_is_in_the_settings_subtree() {
-        use crate::settings::SettingsEffect;
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
-        // The rider is standing in a settings screen with an edit still owed.
-        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
-        app.settings_ops.arm_save();
-
-        // A storm fires its card over the settings screen; dismissing it lands the rider back
-        // inside the subtree they never left.
-        app.weather_alert_tick(Some(&snap));
-        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the card fires over the settings screen");
-        app.apply_gesture(Gesture::Back);
-        assert!(app.ui.top_is_settings(), "…and the rider is back in the subtree");
-
-        let effect = drain_settings_effect(&mut app).expect("the mark leaves anyway");
-        assert!(matches!(effect, SettingsEffect::PersistAlertMarks { .. }), "not debounced: {effect:?}");
-        // The rider's own edit is still held, which is the debounce doing exactly its job.
-        assert!(app.settings_ops.wants_write(false, app.ui.now_ms), "the preferences edit is owed");
-        assert!(!app.settings_ops.wants_write(true, app.ui.now_ms), "…and still debounced inside the subtree");
-    }
-
-    /// The two instances mint from independent token sources, so their generations collide by
-    /// construction. An answer is routed by the **record** it names, not by its token: a
-    /// preferences ack carrying the marks record's own token must not clear a mark that is owed.
-    #[test]
-    fn a_stale_marks_outcome_cannot_clear_a_newer_mark() {
-        use crate::settings::{SettingsEffect, SettingsOutcome};
-        use obc_ports::SettingsSaveError;
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
-
-        // A preferences write goes out first, so that source is at generation 1…
-        app.settings_ops.arm_save();
-        let pref = drain_settings_effect(&mut app).expect("the preferences write is owed");
-        assert!(matches!(pref, SettingsEffect::PersistRevision { .. }), "preferences first: {pref:?}");
-        // …and so is the marks source when the storm's write follows it. Same token by value.
-        app.weather_alert_tick(Some(&snap));
-        let marks = drain_settings_effect(&mut app).expect("the mark is owed a write");
-        let SettingsEffect::PersistAlertMarks { token, revision } = marks else { panic!("the marks write: {marks:?}") };
-        assert_eq!(token, pref.token(), "the two sources really do collide — that is the trap");
-
-        // A *preferences*-named ack carrying that token clears the preferences write and nothing
-        // else. Routed by token alone it would land on the marks record instead.
-        assert!(!app.apply_settings_outcome(SettingsOutcome::Persisted { token, revision }));
-        assert!(!app.settings_ops.wants_write(false, app.ui.now_ms), "the preferences write is answered");
-
-        // The mark is still in flight: its own machine still holds the operation, so its own
-        // failure is accepted and told to the rider — which a cleared machine could not do.
-        let failed = SettingsOutcome::MarksPersistFailed { token, revision, error: SettingsSaveError::Backend };
-        assert!(app.apply_settings_outcome(failed), "the marks write was still live and its failure is shown");
-        let due = app.ui.now_ms + crate::settings::SETTINGS_RETRY_BACKOFF_MS;
-        assert!(app.alert_marks_ops.wants_write(false, due), "and the anchor is still owed after the backoff");
-    }
-
-    /// A card the rider never saw is never marked as fired (review F4). `show_weather_alert`
-    /// refuses at two seams — a passkey prompt on top, and a screen stack already at `MAX_DEPTH` —
-    /// and either refusal used to still write the persisted dedup mark, sitting on the storm for a
-    /// whole cooldown *across reboots* with nothing ever shown.
-    #[test]
-    fn a_refused_alert_card_writes_no_cooldown_mark() {
-        use crate::weather_alerts::AlertClass;
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]); // band 10 at +15 min
-
-        // Seam 1 — the pairing prompt outranks the card (the check `weather_alert_tick` used to
-        // duplicate, now read back from the one place that decides).
-        let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
-        app.weather_alert_tick(Some(&snap));
-        assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the passkey prompt is never covered");
-        assert!(drain_settings_effect(&mut app).is_none());
-        assert_eq!(app.alert_marks()[AlertClass::HeavyRain.slot()], None, "unseen ⇒ unmarked");
-        app.ui.stack.pop();
-
-        // Seam 2 — a full screen stack. The push has nowhere to go, so the card silently doesn't
-        // open; the mark must not be written behind it.
-        while app.ui.stack.len() < crate::screen::MAX_DEPTH {
-            let _ = app.ui.stack.push(Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new()));
-        }
-        app.weather_alert_tick(Some(&snap));
-        assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "no room on the stack: no card");
-        assert!(drain_settings_effect(&mut app).is_none(), "and no persist for it");
-        assert_eq!(app.alert_marks()[AlertClass::HeavyRain.slot()], None);
-
-        // Room again: the very same storm still fires — it was never recorded as delivered.
-        app.ui.stack.pop();
-        app.weather_alert_tick(Some(&snap));
-        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the storm re-fires once there is room");
-        assert!(serve_marks_write(&mut app).is_some(), "…and only now does it cost a mark");
-        assert!(app.alert_marks()[AlertClass::HeavyRain.slot()].is_some());
-    }
-
-    /// The travel direction reaches the hourly rows' ink: with a tailwind-making `travel_deg`
-    /// the wind arrows pick up the green tail color that the neutral (no-direction) render has
-    /// nowhere on screen — the `Render::travel_deg` wiring, pinned at the pixel level.
-    #[test]
-    fn hourly_wind_arrows_color_route_relatively() {
-        use embedded_graphics::pixelcolor::Rgb888;
-        use obc_reader::rgb565_to_rgb888;
-
-        let (r, g, b) = rgb565_to_rgb888(crate::screen::palette::ON);
-        let tail_green = Rgb888::new(r, g, b);
-        // Wind FROM 200° blows toward 20°; travelling at 20° that's a dead tailwind → green.
-        let colored = hourly_frame(Some(20.0), 0);
-        let neutral = hourly_frame(None, 0);
-        assert!(colored.count(tail_green) > 0, "a tailwind row inks the arrow green");
-        assert_eq!(neutral.count(tail_green), 0, "no travel direction → no head/tail claim anywhere");
-    }
-
-    /// A wet hour's millimetres are inked rain-blue, a dry hour's stay muted — counted inside the
-    /// precipitation column only, since the WX17 rain icon paints its streaks in the same blue two
-    /// columns to the left.
-    #[test]
-    fn hourly_rain_amount_is_inked_rain_blue() {
-        use embedded_graphics::pixelcolor::Rgb888;
-        use obc_reader::rgb565_to_rgb888;
-
-        let (r, g, b) = rgb565_to_rgb888(crate::screen::palette::RAIN);
-        let rain_blue = Rgb888::new(r, g, b);
-        let blue_in_precip_column = |buf: &crate::harness::support::Buf| {
-            let mut n = 0;
-            for y in 0..buf.h {
-                for x in 84..156 {
-                    n += usize::from(buf.get(x, y) == rain_blue);
-                }
-            }
-            n
-        };
-
-        assert!(blue_in_precip_column(&hourly_frame(None, 42)) > 0, "4.2mm reads as water");
-        assert_eq!(blue_in_precip_column(&hourly_frame(None, 0)), 0, "a dry hour's 0.0mm stays muted");
-    }
-
-    /// The gust class drives the new STRONG WIND card face through the same seam.
-    #[test]
-    fn gust_forecast_fires_the_gust_card() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let mut snap = alert_snap(&app, &[0; 9]);
-        let now = app.wall_unix_now() as i64;
-        let hour = ((now - snap.valid_from) / 3_600) as usize;
-        snap.hourly[hour].wind_gust_deci_ms = 220; // 22 m/s
-        app.weather_alert_tick(Some(&snap));
-        let Screen::WeatherAlert(card) = app.top_screen() else { panic!("dangerous gusts fire the card") };
-        assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Gust);
-    }
     // ==================== keyed derived data (#1437) ====================
     //
     // The four rules the epic locks for a level-triggered read, exercised through the real seam:

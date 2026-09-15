@@ -13,9 +13,7 @@ public struct SettingsView: View {
     /// navigation path; `nil` keeps the Firmware row a coming-soon placeholder
     /// (previews / any wiring that doesn't host the update screen).
     private let onOpenFirmwareUpdate: (() -> Void)?
-    /// Push the Weather screen (WX13). `nil` keeps the row out entirely — a
-    /// wiring that hosts no weather screen must not show a row that goes nowhere.
-    private let onOpenWeather: (() -> Void)?
+
     /// Debug-only: the hidden second entry into the mock dev panel (B1P's
     /// deferral) — five taps on the App version row. `nil` in Release wiring,
     /// where the gesture goes nowhere.
@@ -32,12 +30,11 @@ public struct SettingsView: View {
     public init(
         model: SettingsModel,
         onOpenFirmwareUpdate: (() -> Void)? = nil,
-        onOpenWeather: (() -> Void)? = nil,
         onOpenDevPanel: (() -> Void)? = nil
     ) {
         self.model = model
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
-        self.onOpenWeather = onOpenWeather
+
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -45,8 +42,6 @@ public struct SettingsView: View {
         ScrollView {
             VStack(spacing: 26) {
                 deviceGroup
-                routesGroup
-                if onOpenWeather != nil { weatherGroup }
                 firmwareGroup
                 servicesGroup
                 aboutGroup
@@ -147,47 +142,6 @@ public struct SettingsView: View {
             OBCTheme.screenLine.frame(height: 1).padding(.leading, 56)
         }
     }
-
-    // MARK: Routes — default retention (epic #638 S7)
-
-    private var routesGroup: some View {
-        OBCGroupedSection(
-            "Routes",
-            footer: "New routes you upload auto-delete on the device after this long "
-                + "without use. Routes stay in your library — re-upload is one tap."
-        ) {
-            OBCRetentionRow(
-                icon: "trash",
-                iconColor: OBCTheme.wood,
-                label: "Auto-delete new routes",
-                selection: model.defaultRetention,
-                showsDivider: false,
-                accessibilityID: "settings.autoDelete",
-                onSelect: { model.setDefaultRetention($0) }
-            )
-        }
-    }
-
-    // MARK: Weather (WX13)
-
-    private var weatherGroup: some View {
-        OBCGroupedSection(
-            "Weather",
-            footer: "How often your OBC asks for weather, what this phone does in the background, "
-                + "and where the data comes from."
-        ) {
-            OBCListRow(
-                icon: "cloud.sun",
-                iconColor: OBCTheme.water,
-                label: "Weather",
-                showsChevron: true,
-                showsDivider: false,
-                action: onOpenWeather
-            )
-            .accessibilityIdentifier("settings.weather")
-        }
-    }
-
     // MARK: Firmware (coming soon)
 
     private var firmwareGroup: some View {

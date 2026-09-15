@@ -8,7 +8,7 @@ copy: ai
 
 The companion link moves stored objects between OpenBikeComputer and a client.
 BLE and USB use the same protocol-v4 frames.
-BLE also supplies pairing, settings, clock, bond removal, and weather-refresh controls.
+BLE also supplies pairing, settings, clock, and bond removal controls.
 USB supplies object transfer and device information only.
 
 The normative contracts are:
@@ -111,7 +111,6 @@ A changed commit sequence tells the client to read the catalog again.
 | 1 | Route | OBCR route |
 | 2 | Trip | Ordered route membership |
 | 3 | Ride | Device-produced recording |
-| 4 | Weather bundle | OBCW weather data |
 | 5 | Map | One OBCM file with embedded terrain |
 | 6 | Retired | Map-set manifest; producers must not write it |
 | 7 | Update package | OBCU firmware package |
@@ -296,8 +295,7 @@ A failed save reports no success. A different revision or missing archive remain
 
 Protocol v4 can persist proof that a client holds the exact finalized ride. The device checks the
 card, object, revision, length and CRC, then commits and reads back the proof. A duplicate keeps
-the original timestamp. A lost reply can be retried from the durable archive without starting a
-new countdown.
+the existing proof. A lost reply can be retried from the durable archive.
 
 The companion sends proof after saving a ride and after revalidating an existing archive.
 Reconnect retries these confirmations without downloading missing rides. Manual sync can download
@@ -305,26 +303,11 @@ missing rides. If confirmation fails, the phone keeps its archive and shows the 
 warning with the Resume action. A lost reply can mean the device already saved the proof; retry
 is safe. Local save counts do not establish device confirmation.
 
-This proof initially has no expiry timestamp. The board validates it before the retention policy
-starts the countdown on a trusted clock. Only an existing exact proof can receive that first stamp;
-a duplicate cannot reset it. A successful write becomes visible through a complete catalog reload.
-The policy covers up to 128 ride inventory records, including rides outside the 32-entry menu.
-Unknown clock, recording, missing proof and failed reads protect rides from automatic expiry.
-The [archive contract](src:specs/Ride_Archive_Contract.md) defines both persistence boundaries and
-the remaining physical acceptance.
+Archive proof controls the device's synced indicator. Routes and rides remain on the device
+until the rider deletes them. A storage-full route upload offers explicit age-based cleanup
+on the device; the rider confirms deletion and then retries the upload.
 
-The board and flat-store host persist route-use stamps in a card metadata object.
-Each row binds to the card and the exact source revision, length, and CRC. The store replaces
-metadata atomically and checks the committed bytes before it reports success. Clients can list
-and read this object but cannot upload or remove it. A card without metadata gives routes no
-automatic expiry period; this path does not add a remote retention setting.
-
-Retention uses a complete loaded catalog scope. A successful stamp orders a reload before further
-policy decisions. Automatic route deletion checks that scope and the current active-route and
-recording protections before the card operation. Unsupported ride work does not block route work.
-Write and read failures wait before retry. An uncertain catalog commit or failed metadata readback
-stops card writes and policy reads until restart and a fresh mount. See the
-[metadata contract](src:specs/Retention_Metadata.md).
+The exact durable format is in the [metadata contract](src:specs/Ride_Archive_Metadata.md).
 
 ## Pairing and BLE controls
 
@@ -444,24 +427,12 @@ The device also refuses an unencrypted CoC.
 </figure>
 
 BLE keeps a device-local command and configuration surface beside protocol v4.
-It supports clock setting, bond removal, weather refresh, and settings.
+It supports clock setting, bond removal, and settings.
 These controls are not flat-store objects.
 They do not exist in USB binding v5.
 
 The phone sets UTC and local offset after encryption.
 A GPS fix can also establish trusted UTC.
-
-## Weather position requests
-
-Before a weather request contacts the phone, the device checks its position. It can reuse a GPS
-fix from the last 30 seconds. Otherwise, it wakes GPS and waits for a new fix, even when no ride
-is recording. The same check occurs before it decides that a stored forecast still covers the
-current location. There is no fallback to an old fix or the phone's position.
-
-Weather and Peak View share receiver demand. After a fix arrives, GPS can sleep when neither
-feature nor a recording needs it. A weather acquisition attempt stops after 150 seconds without
-a fix. Opening Weather again can retry; automatic requests wait for their normal cadence. GPS
-acquisition does not start a phone fetch or show the UPDATING cue.
 
 ## Sensors: the device as BLE central
 

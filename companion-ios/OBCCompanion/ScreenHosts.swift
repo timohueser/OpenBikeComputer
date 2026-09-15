@@ -2,7 +2,6 @@ import SwiftUI
 import OBCDomain
 import OBCTransport
 import OBCUI
-import OBCWeather
 
 /// The pushed/presented screen hosts `RootView` composes: each owns a stable
 /// model for its screen (a model created inline in `navigationDestination` or
@@ -15,30 +14,28 @@ import OBCWeather
 struct SettingsScreen: View {
     @State private var model: SettingsModel
     private let onOpenFirmwareUpdate: () -> Void
-    private let onOpenWeather: () -> Void
+
     private let onOpenDevPanel: (() -> Void)?
 
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
-        retentionDefaults: any RetentionDefaultsStore,
         updateSurface: any UpdateSurfaceStore,
         onDeviceRenamed: @escaping (String) -> Void,
         onForget: @escaping () -> Void,
         onOpenFirmwareUpdate: @escaping () -> Void,
-        onOpenWeather: @escaping () -> Void,
+
         onOpenDevPanel: (() -> Void)?
     ) {
         _model = State(initialValue: SettingsModel(
             transport: transport,
             bondStore: bondStore,
-            retentionDefaults: retentionDefaults,
             updateSurface: updateSurface,
             onDeviceRenamed: onDeviceRenamed,
             onForget: onForget
         ))
         self.onOpenFirmwareUpdate = onOpenFirmwareUpdate
-        self.onOpenWeather = onOpenWeather
+
         self.onOpenDevPanel = onOpenDevPanel
     }
 
@@ -46,78 +43,9 @@ struct SettingsScreen: View {
         SettingsView(
             model: model,
             onOpenFirmwareUpdate: onOpenFirmwareUpdate,
-            onOpenWeather: onOpenWeather,
+
             onOpenDevPanel: onOpenDevPanel
         )
-    }
-}
-
-/// The concrete pieces the WX13 Weather screens read, chosen by the composition root (#1198).
-///
-/// A value rather than four parameters threaded through `RootView` because they travel together
-/// and because two of them are legitimately absent: a mock run has no engine to retry with, and a
-/// build that never reached the service has no status provider. Absent is rendered as absent —
-/// there is no stand-in that would let the screen imply a job or a manifest that does not exist.
-struct WeatherScreenSeams {
-    var history: any WeatherJobHistoryStore
-    var jobs: (any WeatherJobControlling)?
-    var status: (any WeatherServiceStatusProviding)?
-    var preferences: any WeatherPreferencesStore
-
-    init(
-        history: any WeatherJobHistoryStore = FileWeatherJobHistoryStore.standard(),
-        jobs: (any WeatherJobControlling)? = nil,
-        status: (any WeatherServiceStatusProviding)? = nil,
-        preferences: any WeatherPreferencesStore = InMemoryWeatherPreferencesStore()
-    ) {
-        self.history = history
-        self.jobs = jobs
-        self.status = status
-        self.preferences = preferences
-    }
-}
-
-/// Owns a stable `WeatherSettingsModel` for the pushed WX13 screen — same rule as the other hosts.
-struct WeatherSettingsScreen: View {
-    @State private var model: WeatherSettingsModel
-    private let onOpenDiagnostics: () -> Void
-    private let onOpenPrivacy: () -> Void
-
-    init(
-        transport: any DeviceTransport,
-        seams: WeatherScreenSeams,
-        onOpenDiagnostics: @escaping () -> Void,
-        onOpenPrivacy: @escaping () -> Void
-    ) {
-        _model = State(initialValue: WeatherSettingsModel(
-            transport: transport,
-            historyStore: seams.history,
-            jobs: seams.jobs,
-            statusProvider: seams.status,
-            preferences: seams.preferences
-        ))
-        self.onOpenDiagnostics = onOpenDiagnostics
-        self.onOpenPrivacy = onOpenPrivacy
-    }
-
-    var body: some View {
-        WeatherSettingsView(
-            model: model,
-            onOpenDiagnostics: onOpenDiagnostics,
-            onOpenPrivacy: onOpenPrivacy
-        )
-    }
-}
-
-/// The pushed diagnostics page. Reads the ring once, at push time: the rows are finished exchanges,
-/// so a live-updating list would only ever redraw itself identically.
-struct WeatherDiagnosticsScreen: View {
-    let history: any WeatherJobHistoryStore
-    @State private var entries: [WeatherJobHistoryEntry] = []
-
-    var body: some View {
-        WeatherDiagnosticsView(entries: entries)
-            .task { entries = history.entries() }
     }
 }
 
@@ -178,12 +106,7 @@ struct RouteDetailScreen: View {
     /// Reverse the route (#503, planned dressing only) — creates the flipped copy
     /// and navigates to it; `nil` on rides / imports.
     private let onReverse: (() -> Void)?
-    private let onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)?
-    /// Retention (epic #638 S7): the level the upload sheet seeds from, whether the
-    /// device is capable (hides the row/skips the confirm), and the detail-edit sink.
-    private let uploadRetentionSeed: Retention
-    private let supportsRetention: Bool
-    private let onEditRetention: ((Retention) -> Void)?
+    private let onUploaded: ((DeviceObjectID?, UInt32) -> Void)?
     private let isRide: Bool
     /// TR7 trip filing (planned only): the existing trips, this route's current
     /// trip (nil = loose → Add; non-nil → Move + Remove), and the two edits.
@@ -203,16 +126,10 @@ struct RouteDetailScreen: View {
         deviceObjectID: DeviceObjectID? = nil,
         provenCommittedCRC: UInt32? = nil,
         deviceName: String,
-        retention: Retention? = nil,
-        deviceRetention: Retention? = nil,
-        deviceExpiresAt: Date? = nil,
-        uploadRetentionSeed: Retention = .appDefault,
-        supportsRetention: Bool = false,
-        onEditRetention: ((Retention) -> Void)? = nil,
         onDelete: (() -> Void)? = nil,
         onRename: ((String) -> Void)? = nil,
         onReverse: (() -> Void)? = nil,
-        onUploaded: ((DeviceObjectID?, UInt32, Retention) -> Void)? = nil,
+        onUploaded: ((DeviceObjectID?, UInt32) -> Void)? = nil,
         tripPickerItems: [TripPickerItem] = [],
         currentTripID: TripID? = nil,
         onAddToTrip: ((TripSelection) -> Void)? = nil,
@@ -222,17 +139,11 @@ struct RouteDetailScreen: View {
             transport: transport, dressing: dressing,
             preloadedDetail: preloadedDetail, plannedGeometry: plannedGeometry,
             deviceObjectID: deviceObjectID, provenCommittedCRC: provenCommittedCRC,
-            retention: retention, deviceRetention: deviceRetention,
-            deviceExpiresAt: deviceExpiresAt,
-            supportsRetention: supportsRetention, onEditRetention: onEditRetention,
             rideGeometry: rideGeometry
         ))
         self.transport = transport
         self.activity = activity
         self.deviceName = deviceName
-        self.uploadRetentionSeed = uploadRetentionSeed
-        self.supportsRetention = supportsRetention
-        self.onEditRetention = onEditRetention
         self.onDelete = onDelete
         self.onRename = onRename
         self.onReverse = onReverse
@@ -253,18 +164,16 @@ struct RouteDetailScreen: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
-                    retention: uploadRetentionSeed,
-                    supportsRetention: supportsRetention,
                     // Normally the shipped 2.6 s self-dismiss; parked under
                     // `-OBCHoldConfirmations` so a capture can't lose the sheet (#1212).
                     timing: OBCCompanionApp.launchUploadTiming(),
                     activity: activity,
-                    onCompleted: { [model] objectID, crc, retention in
+                    onCompleted: { [model] objectID, crc in
                         // Pin the committed id + fingerprint on the live model
                         // too — a second Upload on this same screen must
                         // replace, never duplicate.
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded?(objectID, crc, retention)
+                        onUploaded?(objectID, crc)
                     }
                 ))
             },
@@ -346,12 +255,8 @@ struct ImportLandingHost: View {
     /// Existing trips for the TR7 import row's picker (empty = no trips yet, so
     /// the row still offers New trip…).
     private let tripPickerItems: [TripPickerItem]
-    /// Retention (epic #638 S7): the level a fresh upload's Auto-delete row seeds
-    /// from, and whether the device honours it.
-    private let uploadRetentionSeed: Retention
-    private let supportsRetention: Bool
     private let onSave: (RouteDetail, TripSelection) -> Void
-    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32, Retention) -> Void
+    private let onUploaded: (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void
     private let onPair: (RouteDetail, TripSelection) -> Void
     private let onCancel: () -> Void
 
@@ -378,10 +283,8 @@ struct ImportLandingHost: View {
         // reads "up to date" only on the same proof the list badge uses, never
         // on a stale link.
         replacingProvenCRC: UInt32? = nil,
-        uploadRetentionSeed: Retention = .appDefault,
-        supportsRetention: Bool = false,
         onSave: @escaping (RouteDetail, TripSelection) -> Void,
-        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32, Retention) -> Void,
+        onUploaded: @escaping (RouteDetail, TripSelection, DeviceObjectID?, UInt32) -> Void,
         onPair: @escaping (RouteDetail, TripSelection) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -397,8 +300,6 @@ struct ImportLandingHost: View {
         self.deviceName = deviceName
         self.noDevicePaired = noDevicePaired
         self.tripPickerItems = tripPickerItems
-        self.uploadRetentionSeed = uploadRetentionSeed
-        self.supportsRetention = supportsRetention
         self.onSave = onSave
         self.onUploaded = onUploaded
         self.onPair = onPair
@@ -414,16 +315,14 @@ struct ImportLandingHost: View {
                     transport: transport,
                     blob: model.makeUploadBlob(),
                     deviceName: deviceName,
-                    retention: uploadRetentionSeed,
-                    supportsRetention: supportsRetention,
                     // Normally the shipped 2.6 s self-dismiss; parked under
                     // `-OBCHoldConfirmations` so a capture can't lose the sheet (#1212).
                     timing: OBCCompanionApp.launchUploadTiming(),
                     activity: activity,
-                    onCompleted: { [model] objectID, crc, retention in
+                    onCompleted: { [model] objectID, crc in
                         uploadCompleted = true
                         if let objectID { model.recordUploaded(objectID: objectID, crc32: crc) }
-                        onUploaded(model.makeDetail(), tripSelection, objectID, crc, retention)
+                        onUploaded(model.makeDetail(), tripSelection, objectID, crc)
                     }
                 ))
             },

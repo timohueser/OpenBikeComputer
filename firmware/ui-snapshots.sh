@@ -28,11 +28,7 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
-# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count was unchanged; D4a moved the
-# Up-ahead filter onto that same `ContextDrawer`, adding frames rather than rows; D4b deleted the
-# Weather settings screen outright, so both counts drop by one; D4d deleted the Bike type screen
-# the same way.)
+# The sweep covers the screens reachable through simulator fixtures.
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -259,22 +255,14 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
 # --- Settings ------------------------------------------------------------------------------------
-# The Settings list is six themed GROUP rows — Ride / Display / Weather / Connections / Power /
 # System — so every settings screen sits two levels down. The shape of every script below is:
 #   B u p        open the Menu, one Up step to the Settings station, press -> the Settings list
-#   d × G        step to group row G (0 Ride, 1 Display, 2 Weather, 3 Connections, 4 Power,
 #                5 System)
 #   p            press into the group
 #   d × R  [p]   step to row R inside it, and press if that row opens a page / cycles a value
-# The old flat list (Date & Time, Auto-delete, Units, Bike type, Stats, Display, Power, Bluetooth,
-# Sensors, Language, System, Reset, all straight off the top level) is gone — a leading `d` count is
-# now a *group* index, so the pre-group scripts landed several screens off their frame's name.
 "$SIM" "$MAP" --boot --script "B u p w"      --expect-screen Settings --png "$OUT/settings.png"
 
-# Ride (group 0) — everything you tune for a ride, in one scrolling five-row group: Data fields,
-# Pages, Climb, Waypoints, Auto-delete. It absorbed the old standalone Stats and Auto-delete
-# screens, so those two names are gone from the sweep. Only four rows fit the panel; the cursor
-# drives the window, so the frames below past row 3 show it scrolled.
+# Ride settings: Data fields, Pages, Climb, and Waypoints.
 "$SIM" "$MAP" --boot --script "B u p p w"    --expect-screen Ride --png "$OUT/ride-settings.png"
 # The Bike type row is **gone** from this group (#1515 D4d): it is the one row of the create-route
 # confirm card's own context sheet now — see `route-plan-context.png` below, which is its only home.
@@ -297,14 +285,6 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # The Waypoints mode row (epic #523): the group's 4th row, under Climb. Three steps park the amber
 # cursor on it, showing the default `Approach` mode.
 "$SIM" "$MAP" --boot --script "B u p p d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
-# The "Up ahead shows" source row is **gone** from this group (#1515 D4a): it is a row of the
-# timeline's own context sheet now — see `up-ahead-context.png` below, which is its only home. Its
-# three frames left with it, and the group's remaining rows shift up one slot.
-# The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
-# synced-ride retention ring on the last row, defaulting to 1 week. Four steps park the cursor on it;
-# one press cycles to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p p d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
 # Display (group 1): the idle-return picker, alone. The three Map-overlay switches left this page in
 # #1515 D4c — they are rows of the map's own sheet now, see `map-display-sheet.png`, their only home
@@ -313,8 +293,6 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --script "B u p d p"   --expect-screen Display --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B u p d p p" --expect-screen Display --png "$OUT/display-idle-return.png"
 
-# The Weather group is **gone** (#1515 D4b): the refresh interval is a row of the weather screens'
-# own context sheet now — see `weather-context.png` below, its only home — and every recipe below
 # lost one `d` because the list is five rows.
 #
 # Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
@@ -405,32 +383,9 @@ DFU_PRE="B u p d d d d p d d d p p"
 # Entry shows the content-paired pager's page A (owner review round 3): the route's track-shape
 # preview (host-decimated, start disc + destination diamond) over its DISTANCE row.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p"     --expect-screen RouteOverview --png "$OUT/routeoverview.png"
-# The Auto-delete expiry row (epic #638 S5). It is a "this route is about to be deleted" heads-up,
-# shown ONLY when a *started* deadline is ≤ 5 days out; `routeoverview.png` above is the absent
-# state (every route defaults to retention Never — byte-unchanged). `--route-retention LEVEL:AGE`
-# stamps every route's meta off the (--clock-pinned) wall clock. The three ≤5-day states — the row
-# tucks under the title in the smallest (Label) font, muted label + ink value, and the media band
-# starts lower to make room: level 2 = 1 week used 2 days ago → "in 5 d"; level 1 = 1 day used 19 h
-# ago → "in 5 h"; level 1 used 25 h ago (past due, before the sweep) → "soon".
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:19h \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-hours.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 1:25h \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-soon.png"
-# The gate's two "absent" cases must render exactly like `routeoverview.png` (no row, full band):
-# a started deadline MORE than 5 days out (level 4 = 1 month used 20 days ago → 10 days left), and a
-# route whose clock never started (`unknown` → no deadline).
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 4:20d \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-far-absent.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:unknown \
-    --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-unstarted-absent.png"
 # Page B after the 5 s dwell (each `w` elapses ~800 ms; seven cross the flip): the elevation band
 # over CLIMB + DESCENT — the same band slot, so nothing jumps.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p w w w w w w w" --expect-screen RouteOverview --png "$OUT/routeoverview-elevation.png"
-# The expiry row on the elevation page: the band's lowered top applies on both pager pages.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-    --script "p p p w w w w w w w" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-elevation.png"
 # The cursor on the Delete row (idle): `d` moves the selection onto it, nothing charging.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p d"   --expect-screen RouteOverview --png "$OUT/routeoverview-delete-selected.png"
 # The Delete row charging: `p p p d H` selects it, then partial-holds Select, so the
@@ -473,95 +428,6 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --boot --routes-dir "$ETAFLAT"  --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-est-time-flat.png"
 # The low-battery cue (issue: < 10 %): a warning-red battery glyph in the map's top-left corner.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --battery 5 --script "p p p p" --gpx "$GPX" --at 30 --expect-screen Map --png "$OUT/map-lowbatt.png"
-# Rain overlay (WX10, epic #1185): the deterministic `--weather demo` scenarios over the map's own
-# bbox, through the production adapter -> renderer path, on the one screen the raster belongs to --
-# the WX11 rain map ("$WXRAIN" walks Home -> Menu -> Weather -> RAIN MAP). Two scenes the WX11 block
-# below doesn't already cover: a frontal edge (rendered heading-up so the rotated fixed-point walk
-# is pinned too) and a violet storm core (the high-coverage end; roads/route stay above the rain).
-# The scattered-shower scene lives there as `weather-rainmap.png` -- same screen, same scenario --
-# so it isn't shot twice here. Byte-stable: the demo bundle, the Bayer matrix and the sampler are
-# all deterministic -- but the frames move whenever `RAIN_SAMPLING` does (bilinear since #1250).
-WXRAIN="p d d d d w p d p"
-"$SIM" "$MAP" --boot --weather demo:frontal --heading 35 --zoom 4 --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --expect-screen WeatherRainMap --png "$OUT/map-rain-frontal-heading.png"
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "$WXRAIN" --expect-screen WeatherRainMap --png "$OUT/map-rain-storm.png"
-# ...and the same bundle mounted while the rider is on the *ordinary* Map: rain-free, because the
-# overlay is the rain map's declared content (`Caps::rain_overlay`), not a property of the frame.
-# This is the state-leak regression surface -- it must stay a plain map however heavy the weather.
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800000000 --clock "2025-06-29T14:40" --script "p d d d w p" --expect-screen Map --png "$OUT/map-rain-free.png"
-
-# Weather screens (WX11, epic #1185): the production dashboard / hourly / rain-map / alert /
-# settings surfaces over the deterministic demo bundles. The script prefix "p d d d d w p" walks
-# Home -> Menu -> (4 steps to the Weather station, needle settled) -> dashboard; the demo clock
-# anchors on the bundle's first frame (no --clock), so every derivation is byte-stable.
-WXNAV="p d d d d w p"
-"$SIM" "$MAP" --boot --weather demo:dry --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-dry.png"
-"$SIM" "$MAP" --boot --weather demo:dry --weather-now 1800002400 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-partial.png"
-"$SIM" "$MAP" --boot --weather demo:dry --weather-now 1800012000 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-hourly-fallback.png"
-"$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-rain.png"
-# A *current* storm is a storm the alert engine fires on, on every host, from stage 10 (#1549):
-# two classes trip, the rider dismisses both, and what is left underneath is the dashboard this
-# frame has always photographed — byte-identical, with the cards the device really shows named.
-"$SIM" "$MAP" --boot --weather demo:storm --script "d p f d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-storm.png"
-# Rain frames expired with hourly data still valid, a frameless hourly-only bundle,
-# no store at all, and the non-blocking refresh cue over cached content.
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale.png"
-"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-hourly-only.png"
-"$SIM" "$MAP" --boot --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-nodata.png"
-"$SIM" "$MAP" --boot --weather demo:incoming --weather-refreshing --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-refreshing.png"
-# Hourly rows (no separators; icons/temp/precip/wind columns), fresh + scrolled.
-"$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p" --expect-screen WeatherHourly --png "$OUT/weather-hourly.png"
-"$SIM" "$MAP" --boot --weather demo:incoming --script "$WXNAV p d d d d d d" --expect-screen WeatherHourly --png "$OUT/weather-hourly-scrolled.png"
-# Rain map: NOW frame, two time-steps ahead, the honest banners (stale / hourly-only), and the
-# zoom clamp — entering from a far-out camera snaps to the product's regime floor (round 2:
-# riders never see the out-of-regime state; the banner remains a defensive fallback only).
-"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap.png"
-"$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-step2.png"
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
-"$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-hourly-only.png"
-"$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-zoom-clamped.png"
-# The alert card (locked VIEW RAIN MAP + DISMISS).
-# The pushed card is the *presentation* seam, so the bundle under it must not alert on its own:
-# with the engine live on every host (#1549) a `demo:storm` bundle fires its own card and updates
-# this one's minutes in place, which is the seam working, not the seam being tested. A dry bundle
-# leaves `--weather-alert` the only writer — byte-identical, because the card is full-screen.
-"$SIM" "$MAP" --boot --weather demo:dry --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm.png"
-"$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --expect-screen WeatherAlert --png "$OUT/weather-alert-rain.png"
-# The weather context sheet (#1515 D4b) — the only home either control has. `$WXNAV C w` squeezes
-# it up over the dashboard and lets the open land: two rows, Refresh now and Interval.
-#
-# `--ble connected+paired` is what makes the **Refresh row live**, and it is the honest reason
-# rather than a decoration. Opening the dashboard from the Menu raises the entry refresh; with no
-# link that request can never go out, so it stays outstanding and the row draws recessed for the
-# rest of the session. A link lets the request leave, the headless companion answers it, and the
-# row is free again — which is the state a rider with a phone is in.
-"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context.png"
-# The honest inert state: with a fetch already running the Refresh row loses its chevron, draws in
-# the recessed ink and a press does nothing — the row is live exactly where its action can act.
-# The only difference from the frame above is that row and the title's UPDATING cue.
-"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --weather-refreshing --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-refreshing.png"
-# The nested Interval editor, staged one notch off the committed 30 min — so the tick that marks
-# what the device is set to sits under a different notch from the knob.
-"$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor.png"
-# WX12 (#1197): the two-hour *ride* decision + engine-fired alerts. `stormahead`/`rainahead` are
-# stationary rings around the grid centre: parked at the centre the dashboard honestly reads DRY,
-# while `--weather-decide` samples the bundle **route-projected** (the app's own matched progress +
-# recent pace) and runs the production alert engine on the final frame — the ride crosses the ring.
-# ETAROUTE holds just the Grimsel route, so `p p p p` rides it and the replay locks the matcher;
-# WXRIDE then walks the global Back-hold escape -> Weather station -> dashboard.
-WXRIDE="p p p p B d d d d w p"
-"$SIM" "$MAP" --boot --weather demo:stormahead --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-parked-dry.png"
-"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
-    --script "$WXRIDE" --expect-screen Weather --png "$OUT/weather-dash-ride-rain-ahead.png"
-"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:stormahead --weather-decide \
-    --script "$WXRIDE" --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-engine.png"
-# The gust card needs no walk to the dashboard any more: the engine runs at stage 10 on the very
-# first settle (#1549), so the card is up before a gesture is recognised. Byte-identical — the
-# card is a full-screen surface and never depended on what it covered.
-"$SIM" "$MAP" --boot --weather demo:gusty --weather-decide --expect-screen WeatherAlert --png "$OUT/weather-alert-gust.png"
-# Route-relative wind: the hourly rows' arrows pick up tail/cross/head ink from the ride's travel
-# direction (the same replay-locked tangent), where the routeless sweep above stays neutral.
-"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
-    --script "$WXRIDE p" --expect-screen WeatherHourly --png "$OUT/weather-hourly-wind-route.png"
 # Waypoint UI (epic #523). specs/vectors holds two routes in filename order: id 0 = route-plain,
 # id 1 = route-waypoints ("Vector Loop": named waypoints Brunnen @ ~0 m and Pass Summit @ ~1.70 km on
 # a 2.20 km track). The default `p p p p` rides id 0, so the extra `d` after the Route-menu press
@@ -859,12 +725,6 @@ for lang in de fr es; do
     # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
-    # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
-    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Four** steps: the
-    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a) and its Bike type row to
-    # the create-route sheet (#1515 D4d), and one step too many here wraps the cursor back to row 0 and
-    # quietly re-shoots `ride-settings-$lang.png` under this name.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption
@@ -889,10 +749,6 @@ for lang in de fr es; do
     "$SIM" "$MONACO" --boot --lang "$lang" --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 \
         --clock "2025-01-06T12:00" --script "$NAVCONFIRM C" \
         --expect-screen ContextDrawer --png "$OUT/route-plan-context-$lang.png"
-    # The Route overview's Auto-delete expiry row per-language (epic #638 S5) — a ≤5-day heads-up;
-    # eyeball the label ("Auto-Lösch" / "Suppr. auto" / "Autoborrado") beside the ink "in 5 d".
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --clock "2025-07-10T09:41" --route-retention 2:2d \
-        --script "p p p" --expect-screen RouteOverview --png "$OUT/routeoverview-expiry-$lang.png"
     # The trip cascade-delete confirm (epic #526, TR3), per-language — the wrapped warning line + the
     # shortened "Delete all" button are the copy to eyeball for clipping in the longer translations.
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$TRIPDIR" --script "p p h" --expect-screen TripDelete --png "$OUT/trip-delete-confirm-$lang.png"
@@ -927,18 +783,8 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu installing=normal --expect-screen DfuInstalling --png "$OUT/dfu-installing-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "$DFU_PRE" --dfu error=fragmented --expect-screen DfuError --png "$OUT/dfu-error-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --dfu confirmed=v1.0.0-14-g0a1b2c3-dirty --expect-screen DfuUpdated --png "$OUT/dfu-updated-$lang.png"
-  # Weather screens (WX11): the text-heavy surfaces re-shot per language.
   WXNAV="p d d d d w p"
-  "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --lang "$lang" --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-rain-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --lang "$lang" --script "d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:incoming --lang "$lang" --script "$WXNAV p" --expect-screen WeatherHourly --png "$OUT/weather-hourly-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:dry --lang "$lang" --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-$lang.png"
-  # WX12: the new STRONG WIND card copy, per language.
-  "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --expect-screen WeatherAlert --png "$OUT/weather-alert-gust-$lang.png"
-  # The weather sheet per language (#1515 D4b): its two row labels, then the Interval editor's
   # title + the choice it stages. `Jetzt laden` is the width constraint on the row.
-  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w" --expect-screen ContextDrawer --png "$OUT/weather-context-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:incoming --ble connected+paired --lang "$lang" --script "$WXNAV C w d p w d" --expect-screen ContextDrawer --png "$OUT/weather-interval-editor-$lang.png"
   # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
   # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
   # each of which has to fit the sheet's width in the longer translations.
@@ -957,6 +803,11 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold-$lang.png"
 
+done
+
+"$SIM" "$MAP" --boot --route-cleanup --clock "2025-07-10T09:41" --expect-screen RouteCleanup --png "$OUT/route-cleanup.png"
+for lang in de fr es; do
+    "$SIM" "$MAP" --boot --lang "$lang" --route-cleanup --clock "2025-07-10T09:41" --expect-screen RouteCleanup --png "$OUT/route-cleanup-$lang.png"
 done
 
 # Counted from the directory rather than hand-maintained — the literal that used to live here had

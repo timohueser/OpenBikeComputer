@@ -65,11 +65,10 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     detour: true,
     settings_persistence: true,
     dfu: true,
-    weather: true,
+
     bonding: true,
     storage_space_report: true,
     // The shared memory card holds metadata for this page session.
-    retention_metadata: true,
 };
 
 /// One queued page command, drained per [`Demo::tick`]. Gestures are injected through the app's
@@ -430,14 +429,12 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            self.app.render_scene_map_rain_timed(
+            self.app.render_scene_map_timed(
                 Some(&mut self.scratch),
                 &mut self.frame,
                 Some(&reader),
                 Some(&reader),
                 route.as_ref(),
-                None,
-                None,
                 self.peaks.panorama(),
                 FRAME_W as f32,
                 FRAME_H as f32,
@@ -499,7 +496,6 @@ impl Demo {
                 gestures,
                 sensors,
                 route.as_ref(),
-                None, // the landing demo mounts no weather store
                 SUPPORT,
             )
         };
@@ -618,9 +614,6 @@ impl Demo {
         app.set_map_nav_graph(self.map.tables().has_nav_graph());
         app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
         app.set_rides(self.rides.catalog());
-        if let Some(records) = self.rides.retention_inventory() {
-            app.set_ride_retention_inventory(records);
-        }
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
         //

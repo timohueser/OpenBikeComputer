@@ -84,17 +84,6 @@ public struct RouteEntry: Sendable {
     /// copy's committed CRC is); a real upload pins the committed payload's CRC
     /// here so a re-listed copy proves against the same fingerprint.
     public var crc32: UInt32?
-    /// The retention level the (mock) **device** reports for this copy in its v2
-    /// route catalog (epic #638), when the device holds it (`deviceObjectID != nil`).
-    /// `nil` → the device serves `.never` (invariant 6 — a pre-existing route
-    /// migrates as Never). Only meaningful with a `deviceObjectID`.
-    public var deviceRetention: Retention?
-    /// How long ago (in days) the device last used this route — the `last_used`
-    /// anchor the `expires_at` countdown runs from. `nil` → no anchor (the device
-    /// reports `expires_at = 0`). A near-expiry fixture pairs a short retention
-    /// with a `lastUsedDaysAgo` close to it (`oneWeek` + `5` → expires in ~2 d) so
-    /// S7 can exercise the ≤ 3-day list badge.
-    public var lastUsedDaysAgo: Double?
 
     public init(
         summary: RouteSummary,
@@ -105,8 +94,6 @@ public struct RouteEntry: Sendable {
         payloadByteCount: Int,
         deviceObjectID: DeviceObjectID? = nil,
         crc32: UInt32? = nil,
-        deviceRetention: Retention? = nil,
-        lastUsedDaysAgo: Double? = nil
     ) {
         self.summary = summary
         self.points = points
@@ -116,8 +103,6 @@ public struct RouteEntry: Sendable {
         self.payloadByteCount = payloadByteCount
         self.deviceObjectID = deviceObjectID
         self.crc32 = crc32
-        self.deviceRetention = deviceRetention
-        self.lastUsedDaysAgo = lastUsedDaysAgo
     }
 
     /// The full uploadable route, with a deterministic synthesized payload.
@@ -220,17 +205,12 @@ extension FixtureSet {
     /// one rather than serving the pre-E1 short read by default.
     public static let defaultObcmVersion: UInt8 = 14
 
-    /// The optional contracts a mock device announces unless a fixture overrides them (WX3 §11):
-    /// current firmware implements weather, so the mock does too — otherwise every mock run would
-    /// show the weather screen's "this OBC has no weather support" state and nothing else.
-    public static let defaultFeatureBits: UInt32 = OBCProtocol.featureWeather
-
     /// Minimal safety net when no JSON is present (keeps the mock alive without resources).
     public static let builtIn = FixtureSet(
         deviceInfo: DeviceInfo(
             name: "OBC (mock)", firmwareVersion: "0.0.0-mock",
             serial: "OBC-MOCK-000000", storeID: defaultStoreID,
-            obcmVersion: defaultObcmVersion, featureBits: defaultFeatureBits),
+            obcmVersion: defaultObcmVersion),
         config: DeviceConfig(name: "OBC (mock)"),
         battery: 72, routes: [], rides: [],
         diagnostics: Data("OBC diagnostics — built-in fallback\n".utf8)
@@ -372,18 +352,13 @@ private struct DeviceInfoDTO: Decodable {
     /// Optional in the JSON; defaults to `FixtureSet.defaultObcmVersion` so a
     /// mock device states the map format it reads, the way a real one does.
     let obcmVersion: UInt8?
-    /// Optional in the JSON; defaults to `FixtureSet.defaultFeatureBits` — a mock device is a
-    /// *current* device, so it announces the optional contracts current firmware implements
-    /// (weather, WX3). `-OBCWeatherDemo unsupported` is how a run models an older one.
-    let featureBits: UInt32?
 
     var domain: DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion,
                    hardwareVersion: hardwareVersion ?? "", serial: serial ?? "",
                    protocolVersion: protocolVersion ?? OBCProtocol.version,
                    storeID: storeID,
-                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion,
-                   featureBits: featureBits ?? FixtureSet.defaultFeatureBits)
+                   obcmVersion: obcmVersion ?? FixtureSet.defaultObcmVersion)
     }
 }
 
@@ -425,12 +400,6 @@ private struct RouteDTO: Decodable {
     /// badge and puts the route in `listRoutes()`. Absent = phone-library only.
     /// A bare number in the JSON, wrapped into the domain's `DeviceObjectID`.
     let deviceObjectID: DeviceObjectID?
-    /// The device's retention level for this copy (epic #638) — the wire byte
-    /// (`0` never … `5` two months). Absent → the device serves `.never`.
-    let deviceRetention: UInt8?
-    /// The `last_used` anchor as "days ago" — a near-expiry fixture pairs it with
-    /// a short `deviceRetention`. Absent → no anchor (`expires_at = 0`).
-    let lastUsedDaysAgo: Double?
     let track: [GeoDTO]
     let waypoints: [WaypointDTO]?
 
@@ -460,9 +429,7 @@ private struct RouteDTO: Decodable {
                           elevationProfile: track.compactMap(\.ele),
                           maxGradePercent: maxGradePercent,
                           payloadByteCount: payloadBytes ?? max(1, Int(distanceMeters)),
-                          deviceObjectID: deviceObjectID,
-                          deviceRetention: deviceRetention.map(Retention.init(safeRawValue:)),
-                          lastUsedDaysAgo: lastUsedDaysAgo)
+                          deviceObjectID: deviceObjectID)
     }
 }
 

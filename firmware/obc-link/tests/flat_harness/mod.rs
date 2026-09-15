@@ -314,6 +314,7 @@ impl<D: BlockDevice> Device<D> {
         let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the seed allocates");
         Store::write(&self.store, &mut allocation, bytes).expect("the seed writes");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: seam_kind(kind),
@@ -332,6 +333,7 @@ impl<D: BlockDevice> Device<D> {
         let id = FlatStore::next_object_id(&self.store);
         let allocation = Store::allocate(&self.store, reserve).expect("the ride reserves");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision: Revision(1),
             kind: obc_storage::flat::ObjectKind::Ride,
@@ -362,6 +364,7 @@ impl<D: BlockDevice> Device<D> {
         )
         .expect("the final ride bytes journal");
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(id),
             revision: Revision(revision),
             kind: obc_storage::flat::ObjectKind::Ride,
@@ -472,14 +475,13 @@ pub mod client {
     }
 
     /// §3.6.
-    pub fn put(request: u32, id: u64, expected: u64, bytes: &[u8], kind: u16, retain: bool, name: &str) -> Vec<u8> {
+    pub fn put(request: u32, id: u64, expected: u64, bytes: &[u8], kind: u16, name: &str) -> Vec<u8> {
         let mut body = vec![0u8; 84];
         body[0..8].copy_from_slice(&id.to_le_bytes());
         body[8..16].copy_from_slice(&expected.to_le_bytes());
         body[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
         body[24..28].copy_from_slice(&crc32(bytes).to_le_bytes());
         body[28..30].copy_from_slice(&kind.to_le_bytes());
-        body[30..32].copy_from_slice(&u16::from(retain).to_le_bytes());
         body[32] = name.len() as u8;
         body[36..36 + name.len()].copy_from_slice(name.as_bytes());
         frame(0x04, request, &body)

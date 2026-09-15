@@ -38,18 +38,12 @@ SNAPSHOT_SUFFIX = ".png"
 # Two names over one image is normally a recipe rendering the wrong state under the right name,
 # which every other check passes. Where identity is the assertion instead, declare it here.
 IDENTICAL_BY_DESIGN: list[set[str]] = [
-    # Both states have usable hourly data and no current rain overlay.
-    {"weather-rainmap-hourly-only.png", "weather-rainmap-stale.png"},
-    # The expiry row is absent in both cases, so both frames are the plain overview (epic #638 S3).
-    {"routeoverview-expiry-far-absent.png", "routeoverview-expiry-unstarted-absent.png", "routeoverview.png"},
     # Pan mode owns the Map's chrome, not the Statistics grid's: entering it changes no pixel here.
     {"statistics-pan.png", "statistics.png"},
 ]
 
-
 class ManifestError(Exception):
     """A manifest that cannot be read, or a sweep that disagrees with one."""
-
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -57,7 +51,6 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: fh.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
-
 
 def read_manifest(path: Path) -> dict[str, str]:
     """Parse a manifest into ``{basename: digest}``.
@@ -87,7 +80,6 @@ def read_manifest(path: Path) -> dict[str, str]:
         rows[name] = digest
     return rows
 
-
 def scan_snapshots(directory: Path) -> dict[str, str]:
     """Digest every PNG in a sweep's output directory, keyed by basename."""
     if not directory.is_dir():
@@ -97,10 +89,8 @@ def scan_snapshots(directory: Path) -> dict[str, str]:
         raise ManifestError(f"{directory} holds no {SNAPSHOT_SUFFIX} files — the sweep produced nothing")
     return found
 
-
 def render_manifest(rows: dict[str, str]) -> str:
     return "".join(f"{rows[name]}  {name}\n" for name in sorted(rows))
-
 
 def diff(expected: dict[str, str], actual: dict[str, str]) -> tuple[list[str], list[str], list[str]]:
     """``(changed, missing, extra)`` basenames, each sorted."""
@@ -108,7 +98,6 @@ def diff(expected: dict[str, str], actual: dict[str, str]) -> tuple[list[str], l
     missing = sorted(expected.keys() - actual.keys())
     extra = sorted(actual.keys() - expected.keys())
     return changed, missing, extra
-
 
 def undeclared_twins(rows: dict[str, str]) -> list[list[str]]:
     """Name groups that share one digest and are not declared in [`IDENTICAL_BY_DESIGN`]."""
@@ -118,7 +107,6 @@ def undeclared_twins(rows: dict[str, str]) -> list[list[str]]:
     return sorted(
         sorted(names) for names in by_digest.values() if len(names) > 1 and set(names) not in IDENTICAL_BY_DESIGN
     )
-
 
 def check(manifest: Path, directory: Path) -> int:
     expected = read_manifest(manifest)
@@ -153,7 +141,6 @@ def check(manifest: Path, directory: Path) -> int:
     )
     return 1
 
-
 def update(manifest: Path, directory: Path) -> int:
     actual = scan_snapshots(directory)
     expected = read_manifest(manifest) if manifest.exists() else {}
@@ -171,7 +158,6 @@ def update(manifest: Path, directory: Path) -> int:
     print(f"\nui-snapshots: wrote {len(actual)} rows to {manifest}")
     return 0
 
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -188,7 +174,6 @@ def main(argv: list[str] | None = None) -> int:
     except ManifestError as exc:
         print(f"ui-snapshots: {exc}", file=sys.stderr)
         return 2
-
 
 if __name__ == "__main__":
     sys.exit(main())

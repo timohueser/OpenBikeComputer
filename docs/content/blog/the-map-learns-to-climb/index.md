@@ -190,8 +190,8 @@ whole time.
 
 A barometer measures pressure, not height, and turning one into the other needs a
 sea-level reference that nobody on a bicycle has. So the altitude reading drifts by
-metres per hour as weather moves through, and only *differences* were ever
-trustworthy. The terrain raster is the exact opposite: absolute and weather-immune,
+metres per hour as air pressure changes, and only *differences* were ever
+trustworthy. The terrain raster is the exact opposite: absolute and unaffected by air pressure,
 but coarse and knowing nothing about the bridge you're standing on.
 
 Each is precisely the other's calibration. Subtract them at every GPS fix, low-pass
@@ -208,7 +208,7 @@ before: altimeter-fused.png
 after: altimeter-raw.png
 label-before: with terrain
 label-after: without
-caption: The same drifting ride, 25 minutes in. The raw reading carries the full injected drift and keeps growing; the fused one plateaus at 5 m of lag — exactly what the filter's time constant predicts against a continuously moving reference. Real weather leaves under a metre.
+caption: The same drifting ride, 25 minutes in. The raw reading carries the full injected drift and keeps growing; the fused one plateaus at 5 m of lag — exactly what the filter's time constant predicts against a continuously moving reference. Real pressure changes leave under a metre.
 ```
 
 Two deliberate non-changes, while I was in there. The **recorded ride is never fused**

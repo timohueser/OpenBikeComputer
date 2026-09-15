@@ -88,11 +88,15 @@ fn every_source_component_and_current_finalized_head_are_required() {
         .store
         .commit(&[
             Mutation::Put {
-                meta: obc_storage::flat::EntryMeta { flags: EntryFlags::RETAINED, ..old },
+                meta: obc_storage::flat::EntryMeta { added_at_utc: 0, flags: EntryFlags::RETAINED, ..old },
                 source: PutSource::Amend,
             },
             Mutation::Put {
-                meta: obc_storage::flat::EntryMeta { revision: obc_storage::flat::Revision(rev + 1), ..old },
+                meta: obc_storage::flat::EntryMeta {
+                    added_at_utc: 0,
+                    revision: obc_storage::flat::Revision(rev + 1),
+                    ..old
+                },
                 source: PutSource::Fresh(allocation),
             },
         ])
@@ -114,7 +118,7 @@ fn busy_and_unreadable_metadata_never_acknowledge_a_receipt() {
     let mut device = boot(&disk);
     let (id, rev) = device.seed(ObjectKind::Ride, b"ride", "ride");
     let receipt = receipt(2, id, rev, b"ride");
-    device.control(&client::put(1, 0, 0, b"route", ROUTE, false, "route"));
+    device.control(&client::put(1, 0, 0, b"route", ROUTE, "route"));
     let busy = Answer::of(device.control(&receipt).answer());
     expect_error(&busy, ErrorCode::Busy, detail::busy::TRANSFER);
     device.link_lost();

@@ -189,18 +189,6 @@ ownership = [{ kind = "rust-package", name = "obc-render" }]
 cadence_conflict = { reason = "The ignored exhaustive 172,000-frame derivation shares the library harness with fast render tests.", issue = "#1449" }
 
 [[suite]]
-id = "rust.obc-weather"
-surface = "weather"
-level = "component"
-command = "cargo test -p obc-weather --locked"
-fixtures = []
-pull_request = "affected"
-scheduled = "none"
-extra_triggers = ["ops/weather/**"]
-coverage_component = "weather"
-ownership = [{ kind = "rust-package", name = "obc-weather" }]
-
-[[suite]]
 id = "rust.obc-elevation"
 surface = "maps"
 level = "contract"
@@ -426,40 +414,6 @@ coverage_component = "host-tools"
 ownership = [{ kind = "rust-package", name = "obc-usb" }]
 
 [[suite]]
-id = "rust.obc-wx-bake"
-surface = "weather"
-level = "fixture"
-command = "cargo test -p obc-wx-bake --locked --features external-fixtures"
-fixtures = ["test", "captured-opera", "weather-event-packs"]
-pull_request = "affected"
-scheduled = "weekly"
-extra_triggers = ["ops/weather/**"]
-coverage_component = "weather"
-# The second owner is what makes `pull_request = "affected"` above reach the workflow. The
-# `test-weather` matrix runs this package and nothing else, but its legs compile `--workspace`, so
-# Cargo coverage alone would route every package in the tree to it and start four bakery runners
-# for any Rust change at all. The matrix therefore carries its own argument list and this suite
-# claims the run line, so the bakery is a route for the bakery.
-ownership = [
-  { kind = "rust-package", name = "obc-wx-bake" },
-  { kind = "workflow", pattern = "cargo nextest run ${{ matrix.args }}" },
-]
-budget_exception = { reason = "The repeated bake work is gone; one bake per assertion still puts the canonical-mosaic and event-pack binaries over the per-binary cap.", issue = "#1496" }
-cadence_conflict = { reason = "Fast codec tests, captured fixtures, expensive bakes, and ignored generators still share this package.", issue = "#1449" }
-
-[[suite]]
-id = "rust.obc-wx-client"
-surface = "weather"
-level = "component"
-command = "cargo test -p obc-wx-client --locked"
-fixtures = ["captured-met"]
-pull_request = "affected"
-scheduled = "none"
-extra_triggers = ["ops/weather/**"]
-coverage_component = "weather"
-ownership = [{ kind = "rust-package", name = "obc-wx-client" }]
-
-[[suite]]
 id = "rust.obc-sim"
 surface = "simulator"
 level = "component"
@@ -596,21 +550,6 @@ ownership = [
 ]
 
 [[suite]]
-id = "python.weather-probe"
-surface = "weather"
-level = "unit"
-command = "rm -rf .artifacts/python/weather-probe && python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe"
-fixtures = []
-pull_request = "affected"
-scheduled = "none"
-extra_triggers = ["tools/requirements-test.txt", "ops/weather/*.py", "ops/weather/**/*.py"]
-coverage_component = "dev-tools"
-ownership = [
-  { kind = "path", source = "python-test", pattern = "ops/weather/tests/test_*.py" },
-  { kind = "workflow", pattern = "python3 -m xmlrunner discover -s ops/weather/tests -v -o .artifacts/python/weather-probe" },
-]
-
-[[suite]]
 id = "python.builder"
 surface = "map-tools"
 level = "fixture"
@@ -623,21 +562,6 @@ coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "builder/tests/test_*.py" },
   { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml" },
-]
-
-[[suite]]
-id = "web.rain-radar-demo"
-surface = "weather"
-level = "component"
-command = "cd tools/rain-radar-demo && npm test"
-fixtures = []
-pull_request = "affected"
-scheduled = "none"
-extra_triggers = ["tools/rain-radar-demo/**"]
-coverage_component = "web"
-ownership = [
-  { kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" },
-  { kind = "workflow", pattern = 'npm ci && npm test -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-rain-radar-junit.xml"' },
 ]
 
 [[suite]]
@@ -654,8 +578,6 @@ coverage_component = "ios"
 ownership = [
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCTransportTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCProtocolV4Tests" },
-  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherWireTests" },
-  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCFormatsTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCMockTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCUITests" },
@@ -878,17 +800,6 @@ pull_request = "always"
 scheduled = "none"
 extra_triggers = ["tools/check_catalog_ownership.py"]
 ownership = [{ kind = "workflow", pattern = "python3 tools/check_catalog_ownership.py" }]
-
-[[suite]]
-id = "ci.retention-ownership-guard"
-surface = "firmware-app"
-level = "contract"
-command = "python3 tools/check_retention_ownership.py"
-fixtures = []
-pull_request = "always"
-scheduled = "none"
-extra_triggers = ["tools/check_retention_ownership.py"]
-ownership = [{ kind = "workflow", pattern = "python3 tools/check_retention_ownership.py" }]
 
 [[suite]]
 id = "ci.one-home-guard"
