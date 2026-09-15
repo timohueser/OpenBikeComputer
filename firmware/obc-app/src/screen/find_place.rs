@@ -40,7 +40,7 @@ impl FindPlaceScreen {
             let len = cx.find.results.len().max(1);
             match g {
                 Gesture::Step(n) => {
-                    self.selected = list::step_selection(self.selected, n, len + 2);
+                    self.selected = list::step_selection(self.selected, n, len + 1);
                 }
                 Gesture::Back => {
                     self.category = None;
@@ -49,19 +49,13 @@ impl FindPlaceScreen {
                 Gesture::Press if self.selected == len => {
                     cx.find.action = Action::More;
                 }
-                Gesture::Press if self.selected == len + 1 => {
-                    cx.find.action = Action::Refresh;
-                    self.selected = 0;
-                }
                 Gesture::Press if cx.find.state == State::Ready => {
-                    if let Some(poi) = cx
+                    if cx
                         .find
                         .selected(self.selected, cx.poi_scratch, cx.corridor)
-                        .filter(|p| p.opening != obc_reader::hours::OpeningStatus::Closed)
+                        .is_some_and(|p| p.opening != obc_reader::hours::OpeningStatus::Closed)
                     {
-                        let mut poi = poi.clone();
-                        poi.distance_m = obc_map_scene::ground_dist_m(cx.find.origin, (poi.lon, poi.lat)) as u32;
-                        return Transition::Push(Screen::PoiDetail(super::PoiDetailScreen::new(poi)));
+                        cx.find.action = Action::Preview(self.selected as u8);
                     }
                 }
                 _ => {}
@@ -90,7 +84,8 @@ impl FindPlaceScreen {
         S: obc_map_scene::MapScene,
     {
         let Some(category) = self.category else {
-            title_frame(cv, rx.w, rx.h, rx.t(Msg::AssistantFind), "");
+            title_frame(cv, rx.w, rx.h, "", "");
+            cv.text(rx.t(Msg::AssistantFind), Point::new(14, 10), Font::Label, TextAlign::Left, PARCHMENT);
             let first = list::window_start(self.selected, 6, PoiCategory::ALL.len());
             for (slot, cat) in PoiCategory::ALL.iter().skip(first).take(6).enumerate() {
                 let y = 43 + slot as i32 * 44;
@@ -137,31 +132,14 @@ impl FindPlaceScreen {
         cv.round(rect(10, 210, rx.w - 20, 104), 6, AMBER);
         let count = rx.find.results.len();
         if self.selected >= count.max(1) {
-            let more = self.selected == count.max(1);
+            cv.text(rx.t(Msg::AssistantMorePlaces), Point::new(rx.w / 2, 232), Font::Body, TextAlign::Center, INK);
             cv.text(
-                if more { rx.t(Msg::AssistantMorePlaces) } else { rx.t(Msg::AssistantRefresh) },
-                Point::new(18, 236),
-                Font::Body,
-                TextAlign::Left,
-                INK,
+                rx.t(Msg::AssistantBrowsePlaces),
+                Point::new(rx.w / 2, 270),
+                Font::Label,
+                TextAlign::Center,
+                SUBTEXT,
             );
-            let mut scope = heapless::String::<40>::new();
-            if more {
-                super::vocab::fmt::write_distance_coarse(&mut scope, "", 10_000, rx.settings.units);
-                if rx.route.is_some() {
-                    let _ = scope.push_str(" / ");
-                    super::vocab::fmt::write_distance_coarse(&mut scope, "", 20_000, rx.settings.units);
-                }
-            } else {
-                let _ = scope.push_str(rx.t(Msg::AssistantSearchAgain));
-            }
-            cv.text(&scope, Point::new(18, 264), Font::Label, TextAlign::Left, SUBTEXT);
-            if more {
-                scope.clear();
-                super::vocab::fmt::write_distance_coarse(&mut scope, "", 50_000, rx.settings.units);
-                let _ = write!(scope, " {}", rx.t(Msg::AssistantPartialScope));
-                cv.text(&scope, Point::new(18, 288), Font::Label, TextAlign::Left, SUBTEXT);
-            }
             return;
         }
         let Some(poi) =
@@ -172,7 +150,7 @@ impl FindPlaceScreen {
                 State::NoMap => rx.t(Msg::AssistantNoMap),
                 State::NoAccess => rx.t(Msg::AssistantNoGraph),
                 State::Failed => rx.t(Msg::AssistantDataError),
-                State::Stale => rx.t(Msg::AssistantRefreshNeeded),
+                State::Stale => rx.t(Msg::AssistantSearchChanged),
                 State::Ready => rx.t(Msg::AssistantNoChoices),
                 State::Empty => rx.t(Msg::AssistantNoneFound),
                 _ => rx.t(Msg::AssistantFinding),
@@ -182,7 +160,7 @@ impl FindPlaceScreen {
                 if matches!(rx.find.state, State::Empty | State::Ready) {
                     rx.t(Msg::AssistantPartial)
                 } else {
-                    rx.t(Msg::AssistantMoreRefresh)
+                    rx.t(Msg::AssistantMorePlaces)
                 },
                 Point::new(18, 270),
                 Font::Label,
