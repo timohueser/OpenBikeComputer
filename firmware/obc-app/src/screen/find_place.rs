@@ -210,6 +210,7 @@ pub struct VisitReviewScreen {
     cancel_selected: bool,
     route_choices: bool,
     pub(crate) destination: bool,
+    pub(crate) pending_target: Option<obc_route::visit::VisitTarget>,
     name: heapless::String<32>,
 }
 impl VisitReviewScreen {
@@ -228,6 +229,7 @@ impl VisitReviewScreen {
             cancel_selected: false,
             route_choices: false,
             destination: false,
+            pending_target: None,
         }
     }
     pub(crate) fn route_choices(mut self, available: bool) -> Self {

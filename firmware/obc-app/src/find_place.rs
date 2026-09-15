@@ -102,7 +102,6 @@ pub struct FindState {
     profile: u8,
     local: Option<(u8, u16)>,
     selected_review: bool,
-    pending_target: Option<VisitTarget>,
     invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
     pub(crate) resume_offer: bool,
     pub review: ReviewStatus,
@@ -131,7 +130,6 @@ impl FindState {
             profile: 0,
             local: None,
             selected_review: false,
-            pending_target: None,
             invalid_visit: None,
             resume_offer: false,
             review: ReviewStatus::Idle,
@@ -252,7 +250,6 @@ impl crate::App {
         self.ui.find.bound_map
     }
     pub fn open_find_place(&mut self) {
-        self.ui.find.pending_target = None;
         crate::screen::apply(
             &mut self.ui.stack,
             crate::screen::Transition::Push(Screen::FindPlace(FindPlaceScreen::new())),
@@ -356,7 +353,6 @@ impl crate::App {
         }
         match core::mem::replace(&mut self.ui.find.action, Action::None) {
             Action::Refresh => {
-                self.ui.find.pending_target = None;
                 self.cancel_assistant();
                 self.ui.find.state = State::Start;
                 self.ui.find.results.clear();
@@ -400,15 +396,14 @@ impl crate::App {
                         self.cancel_assistant();
                         if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
                             screen.destination = destination;
+                            screen.pending_target = Some(target);
                         }
-                        self.ui.find.pending_target = Some(target);
                         self.ui.find.review_costs = None;
                         self.ui.find.review = ReviewStatus::Planning;
                     }
                 }
             }
             Action::OpenAccepted => {
-                self.ui.find.pending_target = None;
                 if let Some(index) = self.current_visit_index() {
                     let screen = VisitReviewScreen::accepted(self.routes()[index].name.as_str());
                     self.ui.find.selected_review = false;
@@ -431,9 +426,6 @@ impl crate::App {
         self.ui.map_dirty = true;
     }
     fn handle_find_exit(&mut self) {
-        if !self.ui.stack.iter().any(|screen| matches!(screen, Screen::VisitReview(_))) {
-            self.ui.find.pending_target = None;
-        }
         if self.ui.find.selected_review && !self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_))) {
             self.ui.find.selected_review = false;
             if !matches!(
@@ -454,7 +446,6 @@ impl crate::App {
     }
     pub(crate) fn activate_place_detail(&mut self) -> bool {
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
-        self.ui.find.pending_target = None;
         let poi = detail.poi().clone();
         if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
             || (detail.is_landmark() && poi.metadata.approach.is_none())
@@ -494,7 +485,6 @@ impl crate::App {
         }
     }
     fn preview_find_result(&mut self, reader: &Reader, selected: usize) {
-        self.ui.find.pending_target = None;
         if !self.catalogs.can_admit_intent() {
             self.ui.next_wake_ms = Some(1);
             return;
@@ -569,11 +559,13 @@ impl crate::App {
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
         if let Some(Screen::VisitReview(screen)) = self.ui.stack.last() {
-            if let Some(target) = self.ui.find.pending_target {
+            if let Some(target) = screen.pending_target {
                 let status = self.assistant_review_status();
                 if matches!(status, ReviewStatus::Failed(_) | ReviewStatus::Unresolved | ReviewStatus::ResumeAvailable)
                 {
-                    self.ui.find.pending_target = None;
+                    if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                        screen.pending_target = None;
+                    }
                     self.ui.find.review = status;
                     return;
                 }
@@ -589,8 +581,8 @@ impl crate::App {
                 } else {
                     self.request_visit(target, "Visit")
                 };
-                self.ui.find.pending_target = None;
                 if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                    screen.pending_target = None;
                     screen.error = result.err();
                 }
             }
@@ -981,8 +973,8 @@ mod tests {
         use crate::navigator::NavigatorError;
         for error in [NavigatorError::Store, NavigatorError::DurabilityUnknown] {
             let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
-            let screen = VisitReviewScreen::new("Water").route_choices(true);
-            app.ui.find.pending_target = Some(VisitTarget {
+            let mut screen = VisitReviewScreen::new("Water").route_choices(true);
+            screen.pending_target = Some(VisitTarget {
                 map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
                 metadata: obc_formats::obcm::PoiMetadata {
                     source: obc_formats::obcm::SourceId::osm(1, 1),
@@ -996,7 +988,7 @@ mod tests {
             let expected = app.assistant_review_status();
             app.prepare_find(None, None);
             assert_eq!(app.ui.find.review, expected);
-            assert!(app.ui.find.pending_target.is_none());
+            assert!(matches!(app.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_none()));
             assert!(app.assistant_planner_released());
             assert!(app.assistant_review_context().is_none());
         }

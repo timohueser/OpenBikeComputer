@@ -1700,13 +1700,11 @@ mod tests {
         );
     }
 
-    /// The capability additions compile to `const` tables and generated matches, never to fields on
-    /// the enum — so `size_of::<Screen>()` (and thus every `.bss` screen-stack slot) is unchanged.
-    /// The board's resident-RAM guard is the ELF authority; this pins the host measurement (the
-    /// pre-#803 baseline: 104 B on the 64-bit host) so a variant-widening regression fails in CI.
+    /// Pin the host stack-slot size, including the pending target owned by a place preview.
+    /// Capability metadata remains in const tables. The board resource guard measures the ARM layout.
     #[test]
     #[cfg(target_pointer_width = "64")]
-    fn screen_enum_size_is_unchanged() {
-        assert_eq!(core::mem::size_of::<Screen>(), 104, "capability metadata must not inflate the Screen enum");
+    fn screen_enum_size_is_bounded() {
+        assert_eq!(core::mem::size_of::<Screen>(), 128, "review screen-stack growth explicitly");
     }
 }
