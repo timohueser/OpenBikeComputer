@@ -2914,11 +2914,13 @@ pub(crate) async fn run_app(
             let find_can_prepare = nav_guard.is_none();
             #[cfg(not(has_nav))]
             let find_can_prepare = true;
-            if find_loading_painted && find_can_prepare {
+            let review_pending = app.assistant_route_pending();
+            if (find_loading_painted || review_pending) && find_can_prepare {
                 let reader = Reader::new(flat_map, map_tables, map_cache);
                 app.prepare_find(Some(&reader), route.as_ref());
-                if !app.find_preparing() {
-                    if app.find_place_state() == obc_app::find_place::State::Ready {
+                if (find_loading_painted && !app.find_preparing()) || (review_pending && !app.assistant_route_pending())
+                {
+                    if find_loading_painted && app.find_place_state() == obc_app::find_place::State::Ready {
                         defmt::info!("find: ready results={=usize}", app.find_place_result_count());
                     }
                     find_loading_painted = false;

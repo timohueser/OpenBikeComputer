@@ -993,10 +993,16 @@ impl App {
                 || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning | State::Releasing))
     }
 
+    /// A preview mode change waiting for the previous planner and catalog owners.
+    pub fn assistant_route_pending(&self) -> bool {
+        matches!(self.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_some())
+    }
+
     fn planning_banner(&self) -> Option<Msg> {
         if self.find_preparing() {
             Some(Msg::AssistantFinding)
-        } else if self.reroute_freeze_active()
+        } else if self.assistant_route_pending()
+            || self.reroute_freeze_active()
             || (matches!(self.top_screen(), Screen::VisitReview(_))
                 && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
         {
@@ -2870,6 +2876,7 @@ impl App {
         if self.photo_pending()
             || self.landmarks_pending()
             || self.find_preparing()
+            || self.assistant_route_pending()
             || (matches!(self.top_screen(), Screen::VisitReview(_))
                 && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
         {
