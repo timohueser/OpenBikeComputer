@@ -90,6 +90,8 @@ The boot component measures the actual shared boot policy in `obc-dfu` (`engine.
 explicit exclusions. The boot build and resource guards give static replacement evidence;
 physical install, rollback and power-cut acceptance remain separate obligations. A host percentage
 does not establish MMIO execution coverage.
+The separate informational board-image row lists all nRF54L image source as excluded from host
+execution, with board build/resource guards and the remaining physical obligations as evidence.
 
 Generated bridges, test sources and test-support packages are excluded. A pinned Rust syntax parser
 identifies `#[cfg(test)]` and `#[test]` item ranges and external test modules; it removes these lines
