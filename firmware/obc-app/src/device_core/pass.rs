@@ -1,63 +1,3 @@
-//! The **pass** — DeviceCore's one deterministic frame (#1438, epic #1433 §6).
-//!
-//! One entry point, [`App::run_pass`], runs fourteen named stages **once each, in a fixed order**,
-//! and returns a bounded [`PassPlan`]. There is no loop that drains mailboxes until they empty, no
-//! re-entry, and no component that calls another: the same inputs produce the same stages, the same
-//! deliveries and the same plan, on the board, in the simulator and in the web demo.
-//!
-//! ## The order, and why it is this order
-//!
-//! | # | Stage | What it is for |
-//! |---|---|---|
-//! | 1 | [`Outcomes`](PassStage::Outcomes) | Answers to work *we* asked for come first: a domain must know what completed before it decides anything else. |
-//! | 2 | [`Facts`](PassStage::Facts) | What changed underneath us that nobody asked for, plus the keyed derived reads that answer a need. |
-//! | 3 | [`Input`](PassStage::Input) | The rider and the world: gestures, sensors, time. |
-//! | 4 | [`Ui`](PassStage::Ui) | `UiRuntime` advances and turns what the rider did into **typed intents** for their owning domain. It runs before every domain so an intent lands in the same pass. |
-//! | 5 | [`Retention`](PassStage::Retention) | Before the catalog, so an expiry it decides reaches `CatalogMachine` in this pass rather than the next. |
-//! | 6 | [`Catalog`](PassStage::Catalog) | Before Navigator, so a route being deleted reaches the component following it in this pass. |
-//! | 7 | [`Recorder`](PassStage::Recorder) | |
-//! | 8 | [`Navigator`](PassStage::Navigator) | |
-//! | 9 | [`Settings`](PassStage::Settings) | |
-//! | 10 | [`Weather`](PassStage::Weather) | |
-//! | 11 | [`Platform`](PassStage::Platform) | DFU, bond and storage information — the domains whose work is purely physical. |
-//! | 12 | [`Admission`](PassStage::Admission) | `CoreMode` recalculates what this device can do at all, from what the platform implements and what is currently true. |
-//! | 13 | [`Faults`](PassStage::Faults) | Every domain has spoken, so every fault notice raised this pass reaches the rider together. |
-//! | 14 | [`Plan`](PassStage::Plan) | What the executor must do: render, wake, read, and the bounded effects. |
-//!
-//! ## The two delivery rules
-//!
-//! Both follow from the order rather than from a policy each connection chooses:
-//!
-//! - **Earlier → later is same-pass.** The producer fills a named slot; the consumer's stage takes
-//!   it a few stages on.
-//! - **Later → earlier is next-pass.** It cannot reach backwards, so it waits in a `Deferred` slot,
-//!   which `Connections::promote_deferred` makes visible at the top of the next pass — *before* any
-//!   new gesture, sensor reading or fact. A deferred value still in flight at the end of a pass
-//!   folds into an **immediate** next wake, so decided work never waits for the next rider input.
-//!
-//! The crate-private `connections` module lists every connection, its type, its capacity and its
-//! merge rule. It stays private: it is wiring *between* stages, and only a stage may touch it.
-//!
-//! ## What is deliberately not here
-//!
-//! **Hold cancellation.** A stack change invalidates a hold that is charging *right now* on the
-//! board's high-priority input plane, and that plane runs between passes. It stays the direct
-//! one-shot latch [`App::take_hold_cancel`], drained by the board before it cancels its recognizer.
-//! Routing it through a plan the board reads at the end of a pass would make a rider's finger wait
-//! for a frame — see [`host`](crate::host) for the seam.
-//!
-//! **Callbacks.** Nothing in [`PassInputs`] can call back into DeviceCore: the sensor ports are
-//! *pull* ports that return values and hold no path to the `App`, and the two push doors an
-//! executor answers through (the pass's fact stage, [`App::apply_derived`]) refuse while a pass is in
-//! flight. The next pass consumes what an executor completed; nothing mutates mid-pass.
-//!
-//! **The rider's own requests do not wait for a stage.** A screen names what it wants to the domain
-//! that owns it as the gesture happens (`Ctx::recorder`, `Ctx::navigator`, `Ctx::dfu`,
-//! `Ctx::storage`), so a ride close, a plan, an update phase or a free-space refresh is already with
-//! its owner before stage 1 — earlier than a same-pass slot could deliver it, in exactly one place,
-//! and by the one path that also serves the seams that run between two passes. A connection
-//! into those domains would be a second copy of the pending state this slice exists to remove.
-
 use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
@@ -76,7 +16,7 @@ use super::{
     StoreRevision, TransferState, UpdateResult,
 };
 
-/// The fourteen stages, in the order [`App::run_pass`] runs them. Each runs exactly once, and each
+/// The thirteen stages, in the order [`App::run_pass`] runs them. Each runs exactly once, and each
 /// advances exactly one component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassStage {
@@ -98,8 +38,7 @@ pub enum PassStage {
     Navigator,
     /// Advance `SettingsMachine`.
     Settings,
-    /// Advance `WeatherDomain`.
-    Weather,
+
     /// Advance `DfuState`, `BondState` and `StorageInfo`.
     Platform,
     /// Admit heavy work through `CoreMode` and recalculate [`Capabilities`].
@@ -113,7 +52,7 @@ pub enum PassStage {
 impl PassStage {
     /// The fixed order, as one value — what the order test compares against, and the only place the
     /// sequence is written down besides [`App::run_pass`] itself.
-    pub const ORDER: [PassStage; 14] = [
+    pub const ORDER: [PassStage; 13] = [
         PassStage::Outcomes,
         PassStage::Facts,
         PassStage::Input,
@@ -123,7 +62,6 @@ impl PassStage {
         PassStage::Recorder,
         PassStage::Navigator,
         PassStage::Settings,
-        PassStage::Weather,
         PassStage::Platform,
         PassStage::Admission,
         PassStage::Faults,
@@ -158,11 +96,7 @@ pub struct PassInputs<'a> {
     pub sensors: Sensors<'a>,
     /// The active route's reader, when the platform has one open.
     pub route: Option<&'a RouteReader<'a>>,
-    /// The host's freshly-sampled weather snapshot, when it has a bundle open — the same borrow the
-    /// frame renders from. A *source*, exactly like [`route`](Self::route): stage 10 derives the
-    /// rain map's view state and the alert decision from it and keeps nothing, so the bundle never
-    /// becomes resident App state.
-    pub weather: Option<&'a crate::weather::WeatherSnapshot>,
+
     /// What this firmware image and its hardware implement at all — constant for a boot.
     pub support: PlatformSupport,
     /// What the platform finished since the last pass.
@@ -326,7 +260,7 @@ impl PassState {
 const _: () = assert!(core::mem::size_of::<PassState>() <= 344, "connections, a few levels, the test recorder");
 
 impl App {
-    /// Run one DeviceCore pass: fourteen stages, once each, in [`PassStage::ORDER`].
+    /// Run one DeviceCore pass: thirteen stages, once each, in [`PassStage::ORDER`].
     ///
     /// The whole product frame in one call — what completed, what changed, what the rider did, and
     /// what every domain decides about it — returning the bounded work the platform must perform.
@@ -336,7 +270,7 @@ impl App {
     /// them; both compositions call the same per-domain entry points, so there is one implementation
     /// of each and only the order differs.
     pub fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
-        let PassInputs { now, gestures, sensors, route, weather, support, outcomes, facts, derived, targets } = inputs;
+        let PassInputs { now, gestures, sensors, route, support, outcomes, facts, derived, targets } = inputs;
         self.pass.enter();
         // The visible screens' exact facts, as they are *before* any stage runs (#1447). Held on
         // this frame's stack and nowhere else: a resident copy would be one more mirror of the state
@@ -357,7 +291,7 @@ impl App {
         self.stage_recorder(&mut effects);
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
-        self.stage_weather(&mut effects, weather);
+
         self.stage_platform(&mut effects, support);
         self.stage_admission(support);
         self.stage_faults();
@@ -444,9 +378,7 @@ impl App {
                 crate::recorder::RecorderVerdict::Nothing => {}
             }
         }
-        if let Some(outcome) = outcomes.weather.take() {
-            self.weather.apply_outcome(outcome);
-        }
+
         if let Some(outcome) = outcomes.navigator.take() {
             self.apply_navigator_outcome(outcome);
         }
@@ -474,14 +406,6 @@ impl App {
         }
     }
 
-    /// Stage 2 — consume external facts and the derived inputs that answer a need.
-    ///
-    /// Levels ([`store_revision`](ExternalFacts::store_revision), transfer, link, and the three
-    /// weather levels — installed data, the resample revision, whether a fetch is running)
-    /// are read and compared against what the coordinator last saw, so one commit is one intent. The
-    /// one-shots (uploads, warnings, this boot's update result) are taken. A warning goes to the
-    /// fault connection rather than straight to a card: every fault raised in a pass reaches the
-    /// rider together at stage 13.
     fn stage_facts(&mut self, facts: &mut ExternalFacts, derived: DerivedInputs, targets: DerivedTargets<'_>) {
         self.pass.record(PassStage::Facts);
         if let Some(store) = facts.store_revision() {
@@ -513,15 +437,7 @@ impl App {
                 self.set_ble_status(link);
             }
         }
-        if let Some(installed) = facts.weather_data() {
-            self.weather.note_installed(installed);
-        }
-        if let Some(sample) = facts.weather_sample() {
-            self.weather.note_sample(sample);
-        }
-        if let Some(fetching) = facts.weather_refreshing() {
-            self.weather.note_refreshing(fetching);
-        }
+
         if let Some(upload) = facts.take_route_upload() {
             self.on_route_uploaded(upload.id, upload.replaced, upload.elevation);
         }
@@ -842,18 +758,6 @@ impl App {
         }
     }
 
-    /// Stage 9 — advance the two [`SettingsMachine`](crate::settings::SettingsMachine) instances:
-    /// the rider's preferences blob first, then the weather alert-mark record.
-    ///
-    /// The dirty revision, the subtree debounce, the retry backoff and the stale-answer rule are the
-    /// domain's; what the stage supplies is the two *levels* the decision is made against — where
-    /// the rider is standing, and the frame clock stage 3 set. A preferences write owed while the
-    /// rider is still inside the settings subtree simply is not offered: they are mid-edit.
-    ///
-    /// **The marks write is not subtree-gated.** A storm is not a rider edit, and holding a dedup
-    /// anchor because the rider happens to have a settings screen open is the behaviour #1542
-    /// exists to end. Both records share the one slot — one operation per pass per domain is the
-    /// slot's contract — so the loser simply re-offers next pass.
     fn stage_settings(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Settings);
         if effects.settings.is_empty() {
@@ -863,63 +767,16 @@ impl App {
         }
     }
 
-    /// Stage 9's offer, as a named seam so the tests assert through the real order rather than a
-    /// copy of it: preferences first, debounced on where the rider is standing; then the marks
-    /// record, which is not debounced at all.
+    /// Offer the pending settings write after the rider leaves the settings subtree.
     pub(crate) fn next_settings_effect(&mut self) -> Option<crate::settings::SettingsEffect> {
-        use crate::settings::SettingsRecord;
         let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
-        self.settings_ops
-            .next_effect(SettingsRecord::Preferences, in_subtree, now_ms)
-            .or_else(|| self.alert_marks_ops.next_effect(SettingsRecord::AlertMarks, false, now_ms))
+        self.settings_ops.next_effect(in_subtree, now_ms)
     }
 
-    /// Route one settings answer to the instance that owns its record, and report whether the rider
-    /// must be told a save failed.
-    ///
-    /// **By record first, token second.** The two instances mint from independent
-    /// [`TokenSource`](crate::device_core::TokenSource)s, so their generations collide freely; the
-    /// record is what keeps a preferences ack from clearing a newer mark.
+    /// Consume a settings write result and report whether the rider must see a failure.
     pub(crate) fn apply_settings_outcome(&mut self, outcome: crate::settings::SettingsOutcome) -> bool {
-        use crate::settings::SettingsRecord;
         let now_ms = self.ui.now_ms;
-        match outcome.record() {
-            SettingsRecord::Preferences => self.settings_ops.apply_outcome(outcome, now_ms),
-            SettingsRecord::AlertMarks => self.alert_marks_ops.apply_outcome(outcome, now_ms),
-        }
-    }
-
-    /// Stage 10 — advance `WeatherDomain`: derive what the rain map may show from this pass's
-    /// snapshot, run the alert decision, and offer one refresh.
-    ///
-    /// **Once per pass, not once per resample.** The derivation and the alert decision used to be
-    /// called by each host from inside its own resample branch, which made *when* the honesty law
-    /// runs the executor's choice — a host that resampled twice between passes evaluated twice, and
-    /// one that never resampled never evaluated at all. Here they run exactly once, in an order the
-    /// stage owns: view state first (the alert engine and the rain-map clamp read the same figures),
-    /// then the card, then the request.
-    ///
-    /// After `UiRuntime`, so the open alert card the decision governs against is this pass's, and
-    /// after stage 3, so the camera the zoom floor is derived at is this frame's.
-    ///
-    /// A refresh goes out one at a time and only while the device can actually reach a companion.
-    /// The capability is the level stage 12 calculated last pass — a refresh the link cannot serve
-    /// is not started at all rather than failing.
-    fn stage_weather(&mut self, effects: &mut EffectSlots, snapshot: Option<&crate::weather::WeatherSnapshot>) {
-        self.pass.record(PassStage::Weather);
-        let now = self.wall_unix_now() as i64;
-        self.weather.note_sampled(snapshot, now, self.state.cam_lat);
-        // The rider's cursor clamps against the range the domain just derived, and the rain map's
-        // camera is re-clamped into the product's regime while it is the base screen — a denser
-        // product committing mid-session, or a pan that raised the floor, must not leave the screen
-        // out of regime until the next gesture. Both are UI-plane work over a weather figure, which
-        // is why they sit at this stage's tail rather than inside the domain.
-        self.state.rain_step = self.state.rain_step.min(self.weather.steps_ahead());
-        self.ui.reconcile_rain_zoom(&mut self.state, self.weather.zoom_floor());
-        self.weather_alert_tick(snapshot);
-        if let Some(effect) = self.weather.next_effect(self.pass.capabilities.weather) {
-            let _ = effects.weather.try_put(effect);
-        }
+        self.settings_ops.apply_outcome(outcome, now_ms)
     }
 
     /// Stage 11 — advance `DfuState`, `BondState` and `StorageInfo`.
@@ -966,7 +823,7 @@ impl App {
         let facts = DeviceFacts {
             store_writable: self.pass.store.is_some(),
             nav_graph: self.state.has_nav_graph,
-            weather_data: self.weather.installed().is_some(),
+
             link_connected: matches!(self.state.device.ble_link, crate::ble::BleLink::Connected),
             ride_recording: self.recorder.recording(),
             heavy_operations: self.mode.admits_heavy(),
@@ -1052,12 +909,12 @@ mod tests {
     use crate::activity::Mode;
     use crate::app::AppState;
     use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
-    use crate::device_core::{DataIdentity, StoreIdentity, TokenSource, WeatherData};
+    use crate::device_core::{StoreIdentity, TokenSource};
     use crate::retention::SweepKind;
     use crate::retention::{Retention, RouteRetentionMeta};
     use crate::route::RouteSummary;
     use crate::screen::WarningFlags;
-    use crate::weather::WeatherOutcome;
+
     use crate::Screen;
     use obc_ports::{Fix, LocationSource};
 
@@ -1112,7 +969,7 @@ mod tests {
         detour: true,
         settings_persistence: true,
         dfu: true,
-        weather: true,
+
         bonding: true,
         storage_space_report: true,
         retention_metadata: true,
@@ -1135,7 +992,7 @@ mod tests {
             gestures,
             sensors: Sensors::new(&mut loc),
             route: None,
-            weather: None,
+
             support,
             outcomes,
             facts,
@@ -1519,23 +1376,22 @@ mod tests {
         app.activity.mode = Mode::Riding;
         app.test_start_ride();
         app.recorder.breadcrumb.push(1_000, 2_000);
-        app.recorder.speed_win.push_mps(5.0);
+
         app.recorder.record_fix(obc_ports::Fix::at(0, 0), 0, true);
         app.recorder.record_fix(obc_ports::Fix::at(100, 0), 1_000, true);
-        assert!(!app.recorder.breadcrumb.is_empty() && app.recorder.speed_win.median_cms().is_some());
+        assert!(!app.recorder.breadcrumb.is_empty());
         assert!(app.recorder.ridden_m() > 0.0 && !app.recorder.staged().is_empty(), "the ride accumulated");
 
         app.test_end_ride();
         assert!(app.recorder.breadcrumb.is_empty(), "the ride the trail belonged to is over");
-        assert!(app.recorder.speed_win.median_cms().is_none());
 
         // …and the open edge restarts them too, which is what a recovered continuation needs: it
         // keeps the totals the journal restored and still opens on a clean trail.
         app.recorder.breadcrumb.push(1_000, 2_000);
-        app.recorder.speed_win.push_mps(5.0);
+
         app.test_start_ride();
         assert!(app.recorder.breadcrumb.is_empty(), "a new ride starts with an empty trail");
-        assert!(app.recorder.speed_win.median_cms().is_none(), "and a new pace");
+
         app.recorder.assert_totals_are_zero(); // a fresh ride starts at zero
         assert!(app.recorder.staged().is_empty(), "and owes no sample the previous ride never wrote");
     }
@@ -1780,11 +1636,7 @@ mod tests {
         quiet(&mut app, 10);
 
         let mut outcomes = OutcomeSlots::new();
-        let mut stale: TokenSource<crate::device_core::WeatherTag> = TokenSource::new();
-        outcomes
-            .weather
-            .try_put(WeatherOutcome::Failed { token: stale.issue(), error: crate::weather::WeatherError::NoData })
-            .unwrap();
+
         // Recorder owns a token source too, so its answer is consumed — and refused, because the
         // token is one it never issued.
         let mut recorder_ops: TokenSource<crate::device_core::RecorderTag> = TokenSource::new();
@@ -1801,7 +1653,7 @@ mod tests {
 
         let mut none = ExternalFacts::NONE;
         pass_with(&mut app, 20, &[], &mut outcomes, &mut none);
-        assert!(app.weather.installed().is_none(), "a token the domain never issued is not an answer");
+
         assert!(app.recording(), "and neither is a recorder token Recorder never issued");
         assert!(outcomes.recorder.is_empty(), "the owner consumed it, which is what refusing it means");
         assert!(outcomes.bond.is_empty(), "the bond owner rejects an unissued result");
@@ -1996,10 +1848,10 @@ mod tests {
 
         let connected =
             crate::ble::BleStatus { link: crate::ble::BleLink::Connected, ..crate::ble::BleStatus::DISCONNECTED };
-        let installed = WeatherData { data: DataIdentity::new(7), revision: Revision::new(2) };
+
         let mut facts = committed(9);
         facts.note_link(connected);
-        facts.note_weather_data(installed);
+
         facts.note_route_upload(crate::device_core::RouteUpload { id: 33, replaced: false, elevation: None });
         facts.note_trip_upload(crate::device_core::TripUpload { id: 44, replaced: false });
         facts.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v9"))).unwrap();
@@ -2014,8 +1866,6 @@ mod tests {
             DerivedTargets { ride_preview: &[(1, 2), (3, 4)], nav_preview: &[] },
         );
 
-        // Levels reached their owners.
-        assert_eq!(app.weather.installed(), Some(installed), "the installed data reached WeatherDomain");
         assert_eq!(app.state.device.ble_link, crate::ble::BleLink::Connected, "the link state reached the UI");
 
         // One-shots were consumed rather than left for a second delivery.

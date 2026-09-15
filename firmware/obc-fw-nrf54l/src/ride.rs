@@ -75,16 +75,6 @@ const WDT_FEED_CAP_MS: u32 = 12_000;
 /// fresh, not as a wrapped ~u32::MAX staleness.
 const INPUT_HB_STALE_MS: u32 = 65_000;
 
-/// Inputs that make the resident weather snapshot materially different. Keeping this named makes
-/// the retry/cache rule below readable and avoids hiding its four independent invalidation axes
-/// inside a nested tuple type at the use site.
-type WeatherSampleKey = (crate::flat_store::FlatWeather, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
-/// Fixed-position weather has no clock input. This impossible minute bucket keeps the compact
-/// `i64` cache-key field (an `Option<i64>` costs another eight resident bytes on Thumb). It cannot
-/// collide with the projected key: dividing any cast `i64` wall time by 60 is strictly greater
-/// than `i64::MIN`.
-const WEATHER_TIME_INDEPENDENT: i64 = i64::MIN;
-
 /// Synthetic-walk advance cadence (ms) on the `synth` build: the stand-in GPS publishes no `Signal`,
 /// so the event-driven loop has no sensor event to wake on and falls back to this timer to step the
 /// square-loop walk. The walk position is time-based, so a slower tick just lowers the demo frame rate.
@@ -101,6 +91,7 @@ const SYNTH_TICK_MS: u64 = 250;
 async fn wait_sensor_event(consumer: SensorConsumer<'static>) {
     consumer.wait_event().await
 }
+
 #[cfg(feature = "debug-uart")]
 async fn wait_sensor_event() {
     obc_platform::debug_link::wait_event().await
@@ -165,24 +156,11 @@ fn note_catalog_uploads(app: &App, facts: &mut obc_app::device_core::ExternalFac
     }
 }
 
-/// **`CatalogEffect::ReadCatalog`'s whole body**: re-read the object store into the resident
-/// catalogs and re-point the weather bundle at whatever the read found.
-///
-/// Returns whether the read was *complete*. A partial one — a transient listing or object I/O
-/// failure — deliberately keeps the previous whole snapshot, so a flaky card shows a stale menu
-/// rather than an empty one; the caller answers `Failed { Unreadable }` and owns the retry.
-///
-/// The upload facts are drained **after** the catalogs are re-fed, and only on a complete read: the
-/// identity the next pass resolves has to be the one that was just read, which is what lets a
-/// same-id route replacement reach `on_route_uploaded` and drop every piece of geometry-derived
-/// state from the displaced revision before rendering resumes.
 #[inline(never)]
 async fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
-    weather_bundle: &mut Option<crate::flat_store::FlatWeather>,
-    weather_sample_key: &mut Option<WeatherSampleKey>,
 ) -> Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError> {
     use obc_app::catalog_state::CatalogError;
     app.begin_catalog_refresh();
@@ -193,22 +171,6 @@ async fn read_catalogs(
     crate::flat_store::reconcile_route(flat, None);
     let routes_loaded = crate::flat_store::load_routes(flat, app);
     let trips_loaded = crate::flat_store::load_trips(flat, app);
-    if let Ok(next) = crate::flat_store::active_weather(flat) {
-        if next != *weather_bundle {
-            *weather_bundle = next;
-            *weather_sample_key = None;
-        }
-    }
-    // The installed-data fact (#1437, #1549): the selected head's object id and revision, reported
-    // as a level. This is what makes `WeatherDomain::installed()` non-`None` on a real device, and
-    // a *move* of it is what records `RefreshResult::Installed`.
-    if let Some(weather) = *weather_bundle {
-        facts.note_weather_data(obc_app::device_core::WeatherData {
-            data: obc_app::device_core::DataIdentity::new(weather.id.0),
-            revision: obc_app::device_core::Revision::new(weather.revision.0),
-        });
-    }
-    crate::flat_store::reconcile_weather(flat, *weather_bundle);
     let rides_loaded = crate::flat_store::load_rides(flat, app);
     if routes_loaded && trips_loaded {
         note_catalog_uploads(app, facts);
@@ -623,7 +585,7 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
     detour: cfg!(has_nav),
     settings_persistence: true,
     dfu: true,
-    weather: true,
+
     bonding: true,
     storage_space_report: true,
     retention_metadata: true,
@@ -730,15 +692,12 @@ impl RideExec {
     }
 }
 
-/// GPS serves recordings and one-fix position requests from Peak View or Weather. Recomputed each frame in
-/// [`run_app`] and pushed to the sensor task (via [`SensorControl::set_power`]) only on a change.
-/// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 fn desired_sensor_power(app: &App) -> SensorDemand {
     SensorDemand::for_demand(
         app.recording(),
         app.settings().power_saver,
-        app.peak_view_needs_position() || crate::ble::weather_needs_position(),
+        app.peak_view_needs_position(),
         app.peak_view_is_base(),
     )
 }
@@ -845,18 +804,7 @@ pub(crate) async fn run_app(
     // Battery: a fixed 75 % stand-in until the nPM1300 PMIC fuel gauge is wired in. Polled in `Sensors`
     // like any other sensor.
     let mut fuel = StubFuelGauge::new(75);
-    // WX7's fixed one-tile cache is the board's resident half of weather streaming. The snapshot
-    // is host-owned by design (~0.8 KiB) and refreshed only when the selected bundle or sample
-    // position changes; neither object is rebuilt per rendered frame.
-    let mut weather_cache = obc_weather::WeatherCache::new();
-    let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
-    let mut weather_sample_key: Option<WeatherSampleKey> = None;
-    // The resample counter reported as `ExternalFacts::note_weather_sample` — the weather screens'
-    // repaint edge, which no stack-local render key can see (a resample changes the card under an
-    // unchanged installed revision).
-    let mut weather_sample = obc_app::device_core::Revision::ZERO;
-    let mut weather_bundle = crate::flat_store::active_weather(flat).ok().flatten();
-    crate::flat_store::reconcile_weather(flat, weather_bundle);
+
     // **The board's typed effect executor** (#1397 S6b) — the outcomes, facts and staged effects
     // that live between two `App::run_pass` calls. Built here, beside the other loop-lifetime state,
     // because it is exactly that: one per boot, owned by the one task that touches the `App`.
@@ -982,13 +930,6 @@ pub(crate) async fn run_app(
     // `PanelBacklight::new` armed it with until the first render finished, so a rider who set a dim
     // panel would watch it start bright and then drop.
     apply_backlight(&mut backlight, &mut backlight_level, app.backlight_level());
-    // The weather alert-mark record (#1542), seeded the same way. A seed that came out of a stored
-    // v16 blob's frozen span arms the record's write, so the next pass rehomes the rider's anchors.
-    {
-        let mut store = shared.lock().await;
-        let (marks, provenance) = store.settings.load_alert_marks();
-        app.set_alert_marks(marks, provenance);
-    }
 
     // The DFU boot-outcome reconcile: boot-state page + the armer's breadcrumb → the one-time
     // post-update verdict card ("UPDATE FAILED" / the accepted-trial toast). A `Trial` boot is
@@ -1081,26 +1022,12 @@ pub(crate) async fn run_app(
         // and could land or close a host-pushed screen mid-charge.
         app.set_hold_progress(display.hold_progress());
 
-        // ── The levels this frame reports, ahead of the pass that reads them (stage 2) ──
-        //
-        // The **store revision is not one of them here.** It is reported immediately before
-        // `run_pass`, after this frame's store phase — see there for why.
-        //
-        // `CoreMode`'s transfer level, from the flat engine's own live transfer (#1397 S6b, closing
-        // S5 open question 2). Every kind counts: a route, trip or weather upload holds the store
-        // exactly as a map does, and none of those three raises the #927 progress card this level
-        // used to be derived from.
         let transferring = crate::flat_store::transfer_active();
         exec.facts.note_transfer(if transferring {
             obc_app::device_core::TransferState::Active
         } else {
             obc_app::device_core::TransferState::Idle
         });
-        // The level's own edge, on RTT. `debug-uart` only, exactly like the freeze banner's line:
-        // the soak rig is its only reader and the shipping image should not carry the string. It is
-        // the *only* witness a route/trip/weather upload now moves this level — none of those three
-        // raises the #927 card the level used to be derived from, so without this line the closing
-        // of S5 open question 2 is unobservable on glass.
         #[cfg(feature = "debug-uart")]
         if transferring != prev_transferring {
             prev_transferring = transferring;
@@ -1133,11 +1060,7 @@ pub(crate) async fn run_app(
             // what it last saw and calls `set_ble_status` only on a change, so a steady state
             // dirties nothing.
             exec.facts.note_link(crate::ble::app_ble_status());
-            // The weather due plane's IN_FLIGHT level (#1549). A level and not an operation's
-            // answer: the `weather_refresh` cadence raises fetches nobody ordered, and the rider is
-            // owed the UPDATING cue for those too. Read once per pass, so both edges reach the
-            // domain — the plane sets it on a raise and clears it on a commit or a lapse.
-            exec.facts.note_weather_refreshing(crate::ble::weather_refreshing());
+
             // Mirror the ride-recording state to the BLE plane's `installFw` busy-gate (S6, #621), and
             // drain a BLE-initiated install request into the on-glass flow: `open_remote_dfu_check`
             // pushes the "Checking card..." wait and posts `DfuAction::Scan` — the System menu's press
@@ -1167,11 +1090,6 @@ pub(crate) async fn run_app(
             // this loop never blocks on the radio winding down, so no wake source here can go dead
             // with the radio off (#438's lesson).
             crate::ble::set_radio_enabled(app.settings().ble_enabled);
-            // The weather due plane's inputs (WX8, #1193): the app-side half of the §11.4 request
-            // context — ride state, fresh fix + its UTC, bearing/speed, active route id, trusted
-            // "now". One small `Cell` store per pass; the scheduler task wakes only on the edges
-            // it keys on (ride state, route), never at the fix cadence.
-            crate::ble::set_weather_inputs(app.weather_request_inputs());
         }
 
         // ── Map-transfer card (issue #927): the on-glass half of a write that runs for minutes ──
@@ -1406,9 +1324,7 @@ pub(crate) async fn run_app(
                     // The rescan block: rebuild the flat route/trip/ride identities and remap the
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
-                        let read =
-                            read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key)
-                                .await;
+                        let read = read_catalogs(flat, app, &mut exec.facts).await;
                         prev_active = None; // force reconcile_route/track to re-run against the new indexing
                         index_route = None; // and the chunk index to rebuild off the freshly-opened file
 
@@ -2182,33 +2098,10 @@ pub(crate) async fn run_app(
                         }
                         Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
                     },
-                    // The alert-mark record (#1542): its own 64-byte line, at alert-fire rate. No
-                    // BLE cache to invalidate and no GPS rate to re-push — the phone never reads
-                    // these bytes and no screen edits them.
-                    SettingsEffect::PersistAlertMarks { token, revision } => {
-                        match settings_store.save_alert_marks(app.alert_marks()) {
-                            Ok(()) => SettingsOutcome::MarksPersisted { token, revision },
-                            Err(error) => SettingsOutcome::MarksPersistFailed { token, revision, error },
-                        }
-                    }
                 };
                 RideExec::deliver(&mut exec.outcomes.settings, outcome, "settings");
             }
-            // The weather refresh (#1549): **raise** a request with the due plane, and answer that
-            // and nothing more. What comes back is reported as the installed-data fact when
-            // `read_catalogs` next sees a new head; whether a fetch is running is the plane's own
-            // level. Without a companion there is nothing to raise it with — but the capability
-            // gate means this arm is only reached while one is connected, so a raise here always
-            // lands and `Failed { LinkLost }` stays the shape a host with no radio answers with.
-            if let Some(obc_app::weather::WeatherEffect::RequestRefresh { token }) = exec.effects.weather.take() {
-                crate::ble::request_weather_now();
-                defmt::info!("weather: the dashboard was opened — urgent phone fetch raised");
-                RideExec::deliver(
-                    &mut exec.outcomes.weather,
-                    obc_app::weather::WeatherOutcome::Raised { token },
-                    "weather",
-                );
-            }
+
             // Every effect this frame carried has now been offered a home. Anything left is a
             // domain with no board executor at all, and saying so loudly is what stops it becoming a
             // silent wedge.
@@ -2474,7 +2367,7 @@ pub(crate) async fn run_app(
                         ..Sensors::new(&mut debug_loc)
                     },
                     route: route.as_ref(),
-                    weather: weather_snapshot.as_ref(),
+
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2498,7 +2391,7 @@ pub(crate) async fn run_app(
                         ..Sensors::new(&mut consumer.location())
                     },
                     route: route.as_ref(),
-                    weather: weather_snapshot.as_ref(),
+
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2512,7 +2405,7 @@ pub(crate) async fn run_app(
                     // The synthetic loop has no sensors at all — not even a clock source.
                     sensors: Sensors { fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                     route: route.as_ref(),
-                    weather: weather_snapshot.as_ref(),
+
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2597,75 +2490,20 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // The **map-referenced altimeter** (elevation epic #1068, EL8): one terrain sample per
-            // fresh fix, feeding the offset estimator that turns the BMP581's weather-drifting
-            // relative altitude into a trustworthy absolute one on the Elevation tile. The request
-            // is a one-shot armed by `tick`, so this is at most one 512 B tile read per fix — and
-            // usually none at all, since consecutive fixes sit in the same tile and the four-slot
-            // cache holds it. `nav.elev` is the very same `.bss` source the emit path samples;
-            // nothing is borrowed across a planner step, so the shared `&'static mut` is fine here.
-            #[cfg(has_nav)]
             if app.sample_terrain(&mut *nav.elev) {
-                // The `altfuse:` RTT line (grep it) — the board half of the simulator's Altimeter
-                // panel, and the inspection hook #529 was waiting on: `p_ref` is the sea-level-
-                // reduced pressure with the ride's own climbing already subtracted out, so its
-                // *trend* is weather and nothing else. Throttled to one line per 64 fixes so a long
-                // ride doesn't flood the transport.
                 elev_fixes = elev_fixes.wrapping_add(1);
                 if elev_fixes.is_multiple_of(64) {
                     let a = app.recorder.altitude();
                     let baro = app.recorder.baro_elevation_m().unwrap_or(f32::NAN);
                     defmt::debug!(
-                        "altfuse: raw={=f32} m offset={=f32} m fused={=f32} m p_ref={=f32} hPa acc={=u32} gated={=u32} reseeds={=u16}",
+                        "altfuse: raw={=f32} m offset={=f32} m fused={=f32} m acc={=u32} gated={=u32} reseeds={=u16}",
                         baro,
                         a.offset_m().unwrap_or(f32::NAN),
                         a.fused_m(baro).unwrap_or(f32::NAN),
-                        a.reference_pressure_hpa(baro).unwrap_or(f32::NAN),
                         a.accepted(),
                         a.gated(),
                         a.reseeds()
                     );
-                }
-            }
-
-            // Stream the selected OBCW into the host-owned resident snapshot. Keying on the fully
-            // validated flat revision plus the live fix keeps this off ordinary redraws while still
-            // resampling at movement cadence; a replacement changes the key even if an OBCW producer
-            // reuses its generation. With no fix the hourly half remains useful and every rain
-            // sample is honestly no-data (the companion likewise refuses to build a *new* local
-            // bundle without a device position).
-            let weather_pos = app.has_live_fix(now).then(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).flatten();
-            let weather_projection = app.ride_projection();
-            let weather_projection_key = weather_projection
-                .map(|projection| (app.active_route_index(), projection.progress_m, projection.speed_cms));
-            // A route projection moves with time even while the GPS coordinate/progress is
-            // unchanged, so it gets a minute bucket matching the dashboard's timer resolution.
-            // Fixed-position sampling has no time input at all: giving it a minute key would
-            // reread the same hourly block and rain cells forever while the device is parked (and
-            // before the first fix), with byte-identical output.
-            let weather_projection_minute =
-                weather_projection.map_or(WEATHER_TIME_INDEPENDENT, |_| app.wall_unix_now() as i64 / 60);
-            let next_weather_key =
-                weather_bundle.map(|bundle| (bundle, weather_pos, weather_projection_key, weather_projection_minute));
-            if next_weather_key != weather_sample_key {
-                let next_snapshot = weather_bundle.and_then(|bundle| {
-                    let source = crate::flat_store::reconcile_weather(flat, Some(bundle))?;
-                    let reader = bundle.validated.reader(source).ok()?;
-                    let projection = route.as_ref().zip(weather_projection);
-                    obc_app::WeatherSnapshot::sample_along(&reader, &mut weather_cache, weather_pos, projection).ok()
-                });
-                // A transient SD read must retry on the next pass, not pin a failed sample until
-                // the next minute bucket. No active candidate is a settled `None` and may key.
-                weather_sample_key =
-                    if next_weather_key.is_none() || next_snapshot.is_some() { next_weather_key } else { None };
-                if next_snapshot != weather_snapshot {
-                    weather_snapshot = next_snapshot;
-                    // The resample is a *fact* — a monotone level the domain holds, and the repaint
-                    // edge a stack-local render key can otherwise never see. What the new sample
-                    // means (the rain map's step range and zoom floor, and whether an alert is
-                    // owed) is decided at stage 10 of the next pass, from this very borrow.
-                    weather_sample = weather_sample.next();
-                    exec.facts.note_weather_sample(weather_sample);
                 }
             }
 
@@ -2758,9 +2596,10 @@ pub(crate) async fn run_app(
                 dirty.map = false;
                 dirty.region = None;
             }
-            // Build this pass's frame — **render only**, still under the guard: the map render reads
-            // the `reader`/`route` built just below, whose borrows of the open SD handles live here.
-            // The push to glass happens after the store phase closes, guard-free (#809).
+
+            // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
+            // the closing brace — every reader/source/track borrow of the card ended above, and the
+            // present await below *cannot* hold the guard, by construction. ═══
             let rendered: Option<RenderedFrame> = if frozen {
                 // The banner rides the overlay plane, which on this board means: draw it straight
                 // into the resident framebuffer and let the self-diffing present push the handful of
@@ -2873,34 +2712,8 @@ pub(crate) async fn run_app(
                         // Sampled before the render closure borrows `app`; nothing between here and the log
                         // below moves the screen stack.
                         let sheet_only = app.sheet_only();
-                        // Construct the rain lease only for the WX11 rain-map base. The dashboard
-                        // and hourly screens still receive the resident snapshot, but pay zero SD
-                        // header/frame/tile reads during draw; the ordinary Map never receives a
-                        // lease and therefore cannot be tinted by weather accidentally.
-                        let weather_source = if app.base_wants_rain() {
-                            weather_bundle.and_then(|bundle| crate::flat_store::reconcile_weather(flat, Some(bundle)))
-                        } else {
-                            None
-                        };
-                        let weather_reader =
-                            weather_source.and_then(|source| weather_bundle?.validated.reader(source).ok());
-                        let weather_bind_failed =
-                            app.base_wants_rain() && weather_bundle.is_some() && weather_reader.is_none();
-                        if weather_bind_failed {
-                            // A transient header read is not evidence of a dry map. Keep the last
-                            // complete glass and retry rather than flashing a misleading rain-free
-                            // frame. A valid reader with no current frame remains a truthful None.
-                            pending_map_redraw = true;
-                            drop(render_guard);
-                            defmt::warn!("weather: active bundle bind failed — kept frame, retrying redraw next frame");
-                            None
-                        } else {
-                            let wall_now = app.wall_unix_now() as i64;
-                            let rain_step = app.state.rain_step;
-                            let mut rain_adapter = weather_reader.as_ref().and_then(|reader| {
-                                obc_app::RainOverlayAdapter::at_step(reader, &mut weather_cache, wall_now, rain_step)
-                            });
-                            let weather_snapshot_ref = weather_snapshot.as_ref();
+
+                        {
                             #[cfg(feature = "sd-bench")]
                             let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
@@ -2910,20 +2723,16 @@ pub(crate) async fn run_app(
                                 }
                                 // One scene, because there is one map file: the `Reader` is both the
                                 // geometry source and the POI/hours/nav one. The volume-set arm that
-                                // used to sit beside this — `render_scene_map_rain_timed` with a
+                                // used to sit beside this — `render_scene_map_timed` with a
                                 // `MountedSet` as the scene and the core `Reader` for everything else
                                 // — is gone with the set mount (FS7.5-c2, #1420).
                                 let panorama = peak_view.panorama();
-                                app.render_scene_map_rain_timed(
+                                app.render_scene_map_timed(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
                                     reader.as_ref(),
                                     route.as_ref(),
-                                    rain_adapter
-                                        .as_mut()
-                                        .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
-                                    weather_snapshot_ref,
                                     panorama,
                                     FRAME_W as f32,
                                     FRAME_H as f32,
@@ -2955,10 +2764,6 @@ pub(crate) async fn run_app(
             } else {
                 None
             };
-
-            // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
-            // the closing brace — every reader/source/track borrow of the card ended above, and the
-            // present await below *cannot* hold the guard, by construction. ═══
             (rendered, dirty.map, hold_p, next_wake_ms, immediate, t_store.elapsed().as_micros())
         };
 

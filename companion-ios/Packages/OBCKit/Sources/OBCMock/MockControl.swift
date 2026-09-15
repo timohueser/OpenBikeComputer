@@ -81,10 +81,7 @@ public final class MockControl: @unchecked Sendable {
     /// How many `forgetBond` commands (#756) the transport sent — the forget
     /// tests assert a connected forget reaches the device before clearing.
     private var _forgetBondCount = 0
-    /// The standing weather watch's armed state as the app last set it (WX13). The mock has no
-    /// radio to scan with, so the recorded flag *is* the observable effect — it is what pins that
-    /// the Background weather switch reaches the transport rather than only the preference store.
-    private var _weatherWatchArmed = false
+
     /// Test-only evidence that a catalog read was abandoned by its caller. A
     /// store-change burst must coalesce behind a live read instead of cancelling
     /// it halfway through the real transport's CoC exchange.
@@ -501,16 +498,6 @@ public final class MockControl: @unchecked Sendable {
         lock.withLocked { _forgetBondCount }
     }
 
-    /// Record the standing weather watch's armed state (WX13).
-    func recordWeatherWatch(_ armed: Bool) {
-        lock.withLocked { _weatherWatchArmed = armed }
-    }
-
-    /// Whether the app currently wants the standing weather watch armed (test hook).
-    public var weatherWatchArmed: Bool {
-        lock.withLocked { _weatherWatchArmed }
-    }
-
     public var cancelledRouteCatalogReadCount: Int {
         lock.withLocked { _cancelledRouteCatalogReadCount }
     }
@@ -819,7 +806,7 @@ public final class MockControl: @unchecked Sendable {
                 protocolVersion: current.protocolVersion,
                 // Firmware replacement keeps the mounted store's identity.
                 storeID: current.storeID,
-                obcmVersion: current.obcmVersion, featureBits: current.featureBits
+                obcmVersion: current.obcmVersion
             )
             connection = .connecting
             try? await Task.sleep(for: .seconds(1))
@@ -926,7 +913,7 @@ extension DeviceInfo {
     fileprivate func renamed(_ name: String) -> DeviceInfo {
         DeviceInfo(name: name, firmwareVersion: firmwareVersion, hardwareVersion: hardwareVersion,
                    serial: serial, protocolVersion: protocolVersion, storeID: storeID,
-                   obcmVersion: obcmVersion, featureBits: featureBits)
+                   obcmVersion: obcmVersion)
     }
 }
 #endif

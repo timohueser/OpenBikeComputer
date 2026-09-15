@@ -68,14 +68,7 @@ targets:
         CFBundleDisplayName: OBC
         # H7 copy — do not reword without updating the design source.
         NSBluetoothAlwaysUsageDescription: "OBC uses Bluetooth to connect to your bike computer. It never leaves your phone."
-        # Keep BLE alive with the screen off / app backgrounded (#754). Without
-        # this iOS suspends the app seconds after backgrounding, CoreBluetooth
-        # callbacks stop, and a multi-minute L2CAP transfer (a ~900 KB firmware
-        # image, a route upload, a ride sync) dies when the phone locks. L2CAP
-        # CoC streaming continues under bluetooth-central, so those transfers
-        # genuinely keep running. The same mode also permits the transport-only
-        # Weather Request state-restoration spike (WX3 / #1188) to resume one bounded,
-        # service-filtered context read for the previously authenticated peripheral.
+        # Keep object transfers active when the phone locks or the app enters the background.
         UIBackgroundModes:
           - bluetooth-central
           # The periodic "has firmware been published?" check (#773 U5). BGAppRefreshTask needs

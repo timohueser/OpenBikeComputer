@@ -267,7 +267,7 @@ phase:
 cargo run --release --bin flat_store_bench --features flat-store-reset
 ```
 
-This destroys every card object (maps, routes, trips, rides, weather, and
+This destroys every card object (maps, routes, trips, rides, and
 updates), not only benchmark routes. Wait for RTT to print `RESET ONLY complete`,
 then stop the runner and flash the normal `obc-fw-nrf54l` app image. The normal
 image can receive the desired map and routes over its protocol-v4 USB Device
@@ -674,26 +674,12 @@ path rather than a branch:
 
 Three client-visible facts worth knowing before you debug a client against this:
 
-- **Open the CoC before writing `objectControl`** (BLE only). The driver owns the channel, so a
-  control write arriving with no channel up is refused at the ATT layer
-  (`PROCEDURE_ALREADY_IN_PROGRESS`) rather than staged for an answer that would arrive whenever a
-  channel happened to open. Lifting this needs the driver split from the channel owner and is a
-  named follow-up.
-- **Ride recording is flat-store native.** Samples are their final served bytes, checkpointed by
-  the tail-in-slot journal and completed by one footer plus one commit clearing `RECORDING`.
-- **On-glass map-transfer progress survived the cutover, and it no longer comes from a transport.**
-  The card the rider watches during an upload is fed from the engine
-  (`obc_link::flat::Engine::live_upload` / `take_upload_end`, published beside the engine in
-  `flat_store::publish_upload`), because §5 forbids an adapter from parsing a payload and the kind
-  and declared length are payload. A rider sees a card for a **map** and nothing else: a route lands
-  in a second and a weather bundle is invisible by design.
-
 On-glass checks this section is waiting for: a real phone and a real cable each completing a `PUT`
 and a `GET`, the admission race (stream record ahead of its control record) surviving a ride-loop
 render pass, and a `CANCEL` landing mid-download.
 
 This section is the **transport cutover only**. It does not close FS6 or FS7: the remaining
-on-device map, route, trip, and weather consumers and their legacy FAT removal stay tracked by
+on-device map, route, trip consumers and their legacy FAT removal stay tracked by
 #1388 and #1389.
 
 ## The USB device plane (issue #889) — **in every build; cable-gated since #936**
@@ -876,14 +862,6 @@ obc uart                              # or: obc uart path/to/ride.gpx
 # One command to flash and then open the feeder:
 obc debug
 ```
-
-`obc-usb-host` can stream the `.gpx` as fake GPS fixes, or keep a stationary fix fresh at decimal
-latitude/longitude entered in its **Fixed GPS location** panel. That panel also has a user-triggered
-place search (for example `Munich` or `Sydney`) whose result fills the coordinates; it uses the
-public OpenStreetMap Nominatim service only when **Search** is pressed, caches repeated queries for
-the session, and can be pointed at another compatible endpoint with `OBC_GEOCODER_URL`. Enable
-**Send stationary fix every second** to keep the device's normal GPS freshness gate satisfied —
-useful for weather tests anywhere in the world without manufacturing a GPX.
 
 The feeder also provides a baro/compass slider and an on-screen button row that injects the four
 buttons' presses, and shows the device's render-stats telemetry coming back. It's the same

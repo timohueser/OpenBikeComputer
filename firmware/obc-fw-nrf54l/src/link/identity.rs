@@ -138,11 +138,7 @@ pub(crate) const HARDWARE_REVISION: &str = "nrf54lm20-dk";
 pub(crate) fn config_bytes(store: &ObjectStore) -> ([u8; Config::MAX_ENCODED], usize) {
     let name = resolved_name(store);
     let units = if store.settings().units.is_imperial() { 1 } else { 0 };
-    // The stored §11.8 interval, served verbatim (WX8, #1193). The persisted byte is always a
-    // validated discriminant — every writer goes through `refresh_to_apply`, and the settings
-    // codec sanitises corruption to the default — so this read never carries a value this build
-    // could not have stored.
-    let cfg = Config { name: name.as_bytes(), units, weather_refresh: Some(store.settings().weather_refresh as u8) };
+    let cfg = Config { name: name.as_bytes(), units };
     let mut buf = [0u8; Config::MAX_ENCODED];
     let len = cfg.encode(&mut buf).unwrap_or(0); // both name sources are ≤ 48 by construction
     (buf, len)
@@ -163,10 +159,7 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
                 // is written for it. That is what keeps an old app's rename from resetting a rider
                 // who deliberately chose `Off` back to 30-minute wakeups (§7.3's absent-on-write
                 // rule); `apply_config` leaves the stored interval untouched for `None`.
-                let Ok(refresh) = cfg.refresh_to_apply() else {
-                    return false;
-                };
-                store.borrow_mut().apply_config(shared, name, cfg.units, refresh.map(|r| r.as_u8()));
+                store.borrow_mut().apply_config(shared, name, cfg.units);
                 true
             }
             Err(_) => false,
