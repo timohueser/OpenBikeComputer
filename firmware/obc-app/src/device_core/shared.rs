@@ -31,16 +31,13 @@ use crate::CatalogObjectId;
 
 /// Catalog revisions, refresh, deletion, and the trip cascade.
 pub enum CatalogTag {}
-/// Route-use and ride-sync stamps, and expiry metadata writes.
-pub enum RetentionTag {}
 /// Ride samples, checkpoints, finalize and discard.
 pub enum RecorderTag {}
 /// Route planning, detour planning, preview and commit.
 pub enum NavigatorTag {}
 /// The settings persist handshake.
 pub enum SettingsTag {}
-/// Weather refresh and installed weather data.
-pub enum WeatherTag {}
+
 /// Firmware-update scan and install arming.
 pub enum DfuTag {}
 /// Bond removal.
@@ -178,18 +175,11 @@ pub struct PlatformSupport {
     pub settings_persistence: bool,
     /// A firmware-update path exists.
     pub dfu: bool,
-    /// Weather data can be requested and installed.
-    pub weather: bool,
+
     /// A radio with a bond store exists.
     pub bonding: bool,
     /// Free space on the storage medium can be measured.
     pub storage_space_report: bool,
-    /// A durable place to keep per-object retention metadata exists — the route-use stamp and the
-    /// ride-sync stamp.
-    ///
-    /// True only for a checked durable executor. Unsupported repository families refuse their
-    /// writes explicitly; a success must come from storage and trigger a fresh catalog read.
-    pub retention_metadata: bool,
 }
 
 /// The live facts capabilities depend on — mounted data and heavy-operation admission.
@@ -215,17 +205,8 @@ pub struct DeviceFacts {
     pub store_writable: bool,
     /// The mounted map carries a routing graph.
     pub nav_graph: bool,
-    /// Weather data is installed on the device.
-    pub weather_data: bool,
-    /// A companion link is connected — the only weather-refresh source.
+
     pub link_connected: bool,
-    /// A ride is being recorded. Arming an install ends in a reboot, which would lose the live ride
-    /// — the shipping refusal in [`DfuInstallError`](crate::dfu::DfuInstallError) and the remote-DFU
-    /// door in [`App::open_remote_dfu_check`](crate::App::open_remote_dfu_check).
-    ///
-    /// `RetentionMachine` also defers its expiry deletes while a ride records (together with the
-    /// trusted-clock gate). That stays a domain policy rather than a capability: the device *can*
-    /// delete, it simply waits — and a dimmed menu entry would be the wrong way to say so.
     pub ride_recording: bool,
     /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s verdict on heavy work — a transfer
     /// holding the store, or a planner run holding the nav arm. This field carries the verdict, not
@@ -267,15 +248,6 @@ pub struct SettingsCapabilities {
     pub persist: bool,
 }
 
-/// What the weather domain can offer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeatherCapabilities {
-    /// A refresh can be requested.
-    pub refresh: bool,
-    /// Installed weather data can be shown.
-    pub installed_data: bool,
-}
-
 /// What the firmware-update domain can offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DfuCapabilities {
@@ -314,7 +286,7 @@ pub struct Capabilities {
     pub recorder: RecorderCapabilities,
     pub navigator: NavigatorCapabilities,
     pub settings: SettingsCapabilities,
-    pub weather: WeatherCapabilities,
+
     pub dfu: DfuCapabilities,
     pub bond: BondCapabilities,
     pub storage_info: StorageInfoCapabilities,
@@ -327,25 +299,12 @@ impl Capabilities {
         recorder: RecorderCapabilities { record: false },
         navigator: NavigatorCapabilities { plan_route: false, plan_detour: false, commit_detour: false },
         settings: SettingsCapabilities { persist: false },
-        weather: WeatherCapabilities { refresh: false, installed_data: false },
+
         dfu: DfuCapabilities { scan: false, install: false },
         bond: BondCapabilities { remove: false },
         storage_info: StorageInfoCapabilities { report_free_space: false },
     };
 
-    /// Recalculate every capability from what the platform implements and what is currently true of
-    /// the device. Pure: identical inputs give identical output, on every platform.
-    ///
-    /// The rules, and why each precondition is real:
-    ///
-    /// - Catalog mutation and ride recording need a writable store — see
-    ///   [`DeviceFacts::store_writable`] for the limit of what that fact can currently prove.
-    /// - Route planning needs a routing graph, a store to commit into, and admission.
-    /// - Detour planning needs the detour planner, a graph and admission; committing one needs the
-    ///   planner and a writable store (the commit itself is not heavy).
-    /// - Weather refresh needs a connected companion; installed weather data needs data installed.
-    /// - An install is heavy *and* reboots, so it also needs no ride recording; a scan is neither,
-    ///   so it rests on the image alone.
     pub const fn calculate(support: PlatformSupport, facts: DeviceFacts) -> Capabilities {
         Capabilities {
             catalog: CatalogCapabilities { mutate: facts.store_writable },
@@ -356,10 +315,7 @@ impl Capabilities {
                 commit_detour: support.detour && facts.store_writable,
             },
             settings: SettingsCapabilities { persist: support.settings_persistence },
-            weather: WeatherCapabilities {
-                refresh: support.weather && facts.link_connected,
-                installed_data: support.weather && facts.weather_data,
-            },
+
             dfu: DfuCapabilities {
                 scan: support.dfu,
                 install: support.dfu && facts.heavy_operations && !facts.ride_recording,
@@ -400,17 +356,6 @@ impl StoreIdentity {
     }
 }
 
-/// The opaque identity of an installed data set (currently weather products).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataIdentity(u64);
-
-impl DataIdentity {
-    /// Name a data set. The executor mints this from its own product identity.
-    pub const fn new(raw: u64) -> Self {
-        DataIdentity(raw)
-    }
-}
-
 /// A monotonic revision of a store or data set — the flat store's `u64` width, so no identity has
 /// to be narrowed to reach DeviceCore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -448,27 +393,6 @@ pub struct StoreRevision {
     pub revision: Revision,
 }
 
-/// Installed weather data. Producer: the platform weather task after it installs a product.
-/// Consumer: `WeatherDomain`, which owns visible freshness and alert policy — never the task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WeatherData {
-    /// Which product set is installed.
-    pub data: DataIdentity,
-    /// Its revision.
-    pub revision: Revision,
-}
-
-/// Whether a bulk transfer is streaming. Producer: the link and USB control planes. Consumer:
-/// [`CoreMode`](crate::device_core::core_mode::CoreMode), which withdraws heavy-operation admission
-/// while one is in flight.
-///
-/// **The known gap, stated rather than papered over:** today the only transfer that reports itself
-/// is the **map** upload, through
-/// [`App::set_map_transfer`](crate::App::set_map_transfer)'s card level. A route, trip or weather
-/// upload streams without one, so `CoreMode`'s transfer level does not see it. That is a gap in the
-/// *fact* — the flat engine knows the truth — and #1397 S6 closes it by feeding
-/// [`note_transfer`](ExternalFacts::note_transfer) from the engine. A fourth derivation here would
-/// be a second copy of the level, which is exactly what S5 deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferState {
     /// No transfer holds the store.
@@ -519,38 +443,12 @@ pub enum FactMergeError {
     UpdateResultUnconsumed,
 }
 
-/// Everything that changed underneath DeviceCore without anyone asking — never an answer to an
-/// effect, so no field carries an [`OperationToken`].
-///
-/// The same type serves as the executor's per-pass batch and as DeviceCore's accumulator: an
-/// executor fills a [`NONE`](Self::NONE) batch through the `note_*` methods, and DeviceCore folds
-/// it in with [`merge`](Self::merge), which applies exactly those same per-field rules.
-///
-/// Field shapes and merge rules:
-///
-/// | Field | Shape | Merge rule |
-/// |---|---|---|
-/// | [`store_revision`](Self::store_revision) | latest level | newest identity and revision wins |
-/// | [`transfer`](Self::transfer) | latest level | newest state replaces |
-/// | [`link`](Self::link) | latest level | newest state replaces |
-/// | [`warnings`](Self::take_warnings) | bit set | OR until DeviceCore consumes them |
-/// | [`route_upload`](Self::take_route_upload) | bounded latest slot | most recent commit wins |
-/// | [`trip_upload`](Self::take_trip_upload) | bounded latest slot | most recent commit wins |
-/// | [`update_result`](Self::take_update_result) | one-shot slot | a second unconsumed one is rejected |
-/// | [`weather_data`](Self::weather_data) | latest level | newest identity and revision wins |
-/// | [`weather_sample`](Self::weather_sample) | latest level | newest revision wins |
-/// | [`weather_refreshing`](Self::weather_refreshing) | latest level | newest state replaces |
-///
-/// Levels are *read* (they describe the world and stay true); the bit set and the slots are
-/// *taken* (they describe something that happened once). Consuming one never touches another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalFacts {
     store_revision: Option<StoreRevision>,
     transfer: Option<TransferState>,
     link: Option<BleStatus>,
-    weather_data: Option<WeatherData>,
-    weather_sample: Option<Revision>,
-    weather_refreshing: Option<bool>,
+
     warnings: WarningFlags,
     route_upload: Option<RouteUpload>,
     trip_upload: Option<TripUpload>,
@@ -564,9 +462,7 @@ impl ExternalFacts {
         store_revision: None,
         transfer: None,
         link: None,
-        weather_data: None,
-        weather_sample: None,
-        weather_refreshing: None,
+
         warnings: WarningFlags::NONE,
         route_upload: None,
         trip_upload: None,
@@ -586,15 +482,7 @@ impl ExternalFacts {
         if let Some(status) = incoming.link {
             self.note_link(status);
         }
-        if let Some(fact) = incoming.weather_data {
-            self.note_weather_data(fact);
-        }
-        if let Some(sample) = incoming.weather_sample {
-            self.note_weather_sample(sample);
-        }
-        if let Some(fetching) = incoming.weather_refreshing {
-            self.note_weather_refreshing(fetching);
-        }
+
         self.raise_warnings(incoming.warnings);
         if let Some(upload) = incoming.route_upload {
             self.note_route_upload(upload);
@@ -624,34 +512,6 @@ impl ExternalFacts {
         if !keep {
             self.store_revision = Some(fact);
         }
-    }
-
-    /// Weather data was installed. Same identity/newer revision rule as
-    /// [`note_store_revision`](Self::note_store_revision).
-    pub fn note_weather_data(&mut self, fact: WeatherData) {
-        let keep = matches!(self.weather_data, Some(have) if have.data == fact.data && have.revision > fact.revision);
-        if !keep {
-            self.weather_data = Some(fact);
-        }
-    }
-
-    /// The host resampled the weather snapshot at this revision — the repaint edge for the screens
-    /// that draw it. A monotone level, so a reordered report cannot walk it backwards.
-    ///
-    /// **Why it is not folded into [`weather_data`](Self::weather_data).** A resample at a new rider
-    /// position, or a new minute of the route projection, changes what the card says under an
-    /// entirely unchanged installed revision. One counter cannot carry both.
-    pub fn note_weather_sample(&mut self, sample: Revision) {
-        if self.weather_sample.is_none_or(|have| sample > have) {
-            self.weather_sample = Some(sample);
-        }
-    }
-
-    /// The provider plane started or stopped fetching; the newest report is the truth. Reported as
-    /// a level and not as an operation's answer, because its own cadence raises fetches nobody
-    /// ordered — and the rider is owed the UPDATING cue for those too.
-    pub fn note_weather_refreshing(&mut self, fetching: bool) {
-        self.weather_refreshing = Some(fetching);
     }
 
     /// The transfer state changed; the newest report is the truth.
@@ -706,21 +566,6 @@ impl ExternalFacts {
         self.link
     }
 
-    /// The installed weather data, or `None` when none is installed.
-    pub fn weather_data(&self) -> Option<WeatherData> {
-        self.weather_data
-    }
-
-    /// The newest weather-sample revision, or `None` when the host has not resampled yet.
-    pub fn weather_sample(&self) -> Option<Revision> {
-        self.weather_sample
-    }
-
-    /// Whether the provider plane is fetching, or `None` when it has not reported yet.
-    pub fn weather_refreshing(&self) -> Option<bool> {
-        self.weather_refreshing
-    }
-
     /// Take the accumulated warning flags, clearing them.
     pub fn take_warnings(&mut self) -> WarningFlags {
         core::mem::replace(&mut self.warnings, WarningFlags::NONE)
@@ -759,10 +604,10 @@ const _: () = assert!(core::mem::size_of::<PlatformSupport>() <= 8, "platform su
 const _: () = assert!(core::mem::size_of::<DeviceFacts>() <= 8, "device facts are a handful of bools");
 const _: () = assert!(core::mem::size_of::<Capabilities>() <= 16, "capabilities are bools, never payloads");
 const _: () = assert!(core::mem::size_of::<StoreIdentity>() <= 16, "an opaque identity, nothing more");
-const _: () = assert!(core::mem::size_of::<DataIdentity>() <= 8, "an opaque identity, nothing more");
+
 const _: () = assert!(core::mem::size_of::<Revision>() <= 8, "the flat store's revision width");
 const _: () = assert!(core::mem::size_of::<StoreRevision>() <= 24, "an identity and a revision");
-const _: () = assert!(core::mem::size_of::<WeatherData>() <= 16, "an identity and a revision");
+
 const _: () = assert!(core::mem::size_of::<FactMergeError>() <= 1, "a fieldless reason");
 const _: () = assert!(core::mem::size_of::<TransferState>() <= 1, "a two-state level");
 const _: () = assert!(core::mem::size_of::<RouteUpload>() <= 80, "id + flag + the fixed sparkline");
@@ -857,11 +702,6 @@ mod tests {
         let connected = BleStatus { link: crate::ble::BleLink::Connected, ..BleStatus::DISCONNECTED };
         facts.note_link(connected);
         assert_eq!(facts.link(), Some(connected));
-
-        let installed = WeatherData { data: DataIdentity::new(9), revision: Revision::new(3) };
-        facts.note_weather_data(installed);
-        facts.note_weather_data(WeatherData { revision: Revision::new(2), ..installed });
-        assert_eq!(facts.weather_data(), Some(installed));
     }
 
     /// There is one boot per boot. A second unconsumed result is a producer bug and says so.
@@ -884,12 +724,11 @@ mod tests {
     /// level it knows nothing about.
     #[test]
     fn merge_folds_every_field_and_leaves_absent_ones_alone() {
-        let installed = WeatherData { data: DataIdentity::new(4), revision: Revision::new(2) };
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(store(5));
         facts.note_transfer(TransferState::Idle);
         facts.note_link(BleStatus::DISCONNECTED);
-        facts.note_weather_data(installed);
+
         facts.raise_warnings(WarningFlags::NO_GPS);
 
         let connected = BleStatus { link: crate::ble::BleLink::Connected, ..BleStatus::DISCONNECTED };
@@ -899,7 +738,7 @@ mod tests {
         batch.note_store_revision(store(9));
         batch.note_transfer(TransferState::Active);
         batch.note_link(connected);
-        batch.note_weather_data(WeatherData { revision: Revision::new(7), ..installed });
+
         batch.raise_warnings(WarningFlags::MAP_SLOW);
         batch.note_route_upload(route);
         batch.note_trip_upload(trip);
@@ -910,7 +749,7 @@ mod tests {
         assert_eq!(facts.store_revision(), Some(store(9)));
         assert_eq!(facts.transfer(), Some(TransferState::Active));
         assert_eq!(facts.link(), Some(connected));
-        assert_eq!(facts.weather_data().unwrap().revision, Revision::new(7));
+
         assert_eq!(facts.take_route_upload(), Some(route));
         assert_eq!(facts.take_trip_upload(), Some(trip));
         assert!(facts.take_update_result().is_some());
@@ -975,10 +814,9 @@ mod tests {
             detour: true,
             settings_persistence: true,
             dfu: true,
-            weather: true,
+
             bonding: true,
             storage_space_report: true,
-            retention_metadata: true,
         }
     }
 
@@ -986,7 +824,7 @@ mod tests {
         DeviceFacts {
             store_writable: true,
             nav_graph: true,
-            weather_data: true,
+
             link_connected: true,
             ride_recording: false,
             heavy_operations: true,
@@ -1004,14 +842,12 @@ mod tests {
                 recorder: RecorderCapabilities { record: true },
                 navigator: NavigatorCapabilities { plan_route: true, plan_detour: true, commit_detour: true },
                 settings: SettingsCapabilities { persist: true },
-                weather: WeatherCapabilities { refresh: true, installed_data: true },
                 dfu: DfuCapabilities { scan: true, install: true },
                 bond: BondCapabilities { remove: true },
                 storage_info: StorageInfoCapabilities { report_free_space: true },
             }
         );
 
-        // The web demo: no durable store, no radio, no update path, no weather.
         assert_eq!(
             Capabilities::calculate(PlatformSupport { detour: true, ..PlatformSupport::default() }, mounted()),
             Capabilities {
@@ -1061,7 +897,7 @@ mod tests {
             let facts = DeviceFacts {
                 store_writable: bits & 1 != 0,
                 nav_graph: bits & 2 != 0,
-                weather_data: bits & 4 != 0,
+
                 link_connected: bits & 8 != 0,
                 ride_recording: bits & 16 != 0,
                 heavy_operations: bits & 32 != 0,

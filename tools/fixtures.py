@@ -28,17 +28,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-
 CATALOG_SCHEMA = 1
 PACKAGE_SCHEMA = 1
 MANIFEST_NAME = ".obc-package.json"
 BUFFER_BYTES = 1024 * 1024
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 
-
 class FixtureError(RuntimeError):
     pass
-
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -47,10 +44,8 @@ def sha256_file(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
-
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
 
 def cache_root() -> Path:
     override = os.environ.get("OBC_FIXTURE_CACHE")
@@ -60,13 +55,11 @@ def cache_root() -> Path:
     base = Path(xdg).expanduser() if xdg else Path.home() / ".cache"
     return (base / "openbikecomputer" / "fixtures").resolve()
 
-
 def _table(document: dict, key: str) -> dict:
     value = document.get(key, {})
     if not isinstance(value, dict):
         raise FixtureError(f"catalog {key!r} must be a table")
     return value
-
 
 class Catalog:
     def __init__(self, path: Path):
@@ -141,7 +134,7 @@ class Catalog:
                     raise FixtureError(f"scenario {scenario_id!r} names unknown package {package_id!r}")
             if "map" not in scenario:
                 raise FixtureError(f"scenario {scenario_id!r} requires a map")
-            for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
+            for field in ("map", "gpx", "routes_dir", "tracks_dir"):
                 if field in scenario:
                     self.resolve_ref_shape(scenario_id, package_ids, field, scenario[field])
             args = scenario.get("args", [])
@@ -202,16 +195,13 @@ class Catalog:
                 raise FixtureError(f"unknown fixture package, scenario, or profile: {target}")
         return result
 
-
 def _identifier(kind: str, value: str) -> None:
     if not value or not value.isascii() or any(not ("a" <= c <= "z" or "0" <= c <= "9" or c in "-_") for c in value):
         raise FixtureError(f"{kind} id {value!r} must use lowercase letters, digits, '-' or '_'")
 
-
 def _unsafe_relpath(value: str) -> bool:
     path = PurePosixPath(value)
     return not value or "\\" in value or path.is_absolute() or ".." in path.parts or "." in path.parts
-
 
 class Store:
     def __init__(self, catalog: Catalog, root: Path):
@@ -384,7 +374,6 @@ class Store:
                         shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink(missing_ok=True)
         return stale, total
 
-
 def verify_package_tree(root: Path, expected_package: str) -> None:
     try:
         manifest = json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -418,7 +407,6 @@ def verify_package_tree(root: Path, expected_package: str) -> None:
         missing = sorted((expected_paths - {".obc-ready.json"}) - actual_paths)
         raise FixtureError(f"{expected_package}: package file set differs (extra={extra}, missing={missing})")
 
-
 def extract_package_archive(archive: Path, destination: Path, expected_package: str) -> None:
     try:
         with tarfile.open(archive, "r:gz") as package_tar:
@@ -430,7 +418,6 @@ def extract_package_archive(archive: Path, destination: Path, expected_package: 
     except (OSError, tarfile.TarError) as error:
         raise FixtureError(f"cannot read package archive {archive}: {error}") from error
     verify_package_tree(destination, expected_package)
-
 
 def build_package(package_id: str, source: Path, output: Path) -> tuple[int, str]:
     if not source.is_dir():
@@ -475,19 +462,16 @@ def build_package(package_id: str, source: Path, output: Path) -> tuple[int, str
         raise
     return output.stat().st_size, sha256_file(output)
 
-
 def _normalize_tar_info(info: tarfile.TarInfo) -> None:
     info.uid = info.gid = 0
     info.uname = info.gname = ""
     info.mtime = 0
     info.mode = 0o644
 
-
 def _disk_bytes(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
-
 
 def _human_bytes(value: int) -> str:
     for unit in ("B", "KiB", "MiB", "GiB"):
@@ -495,7 +479,6 @@ def _human_bytes(value: int) -> str:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     raise AssertionError
-
 
 def resolve_path(catalog: Catalog, store: Store, reference: str, field: str) -> Path:
     package_id, relative = reference.split(":", 1)
@@ -506,7 +489,6 @@ def resolve_path(catalog: Catalog, store: Store, reference: str, field: str) -> 
     if not wants_directory and not path.is_file():
         raise FixtureError(f"resolved fixture {field} is not a file: {reference} ({path})")
     return path
-
 
 def command_list(catalog: Catalog, store: Store, _args: argparse.Namespace) -> None:
     print("SCENARIOS\nID                           STATE      DOWNLOAD  DESCRIPTION")
@@ -525,7 +507,6 @@ def command_list(catalog: Catalog, store: Store, _args: argparse.Namespace) -> N
         state = "ready" if store.package_ready(package_id) else "missing"
         print(f"{package_id:<28} {state:<10} {_human_bytes(package['bytes']):>9}  {package['summary']}")
 
-
 def command_show(catalog: Catalog, store: Store, args: argparse.Namespace) -> None:
     target = args.target
     if target in catalog.scenarios:
@@ -537,7 +518,7 @@ def command_show(catalog: Catalog, store: Store, args: argparse.Namespace) -> No
             state = "ready" if store.package_ready(package_id) else "missing"
             print(f"  {package_id:<24} {_human_bytes(package['bytes']):>9}  {state:<7}  {package['summary']}")
         print("\ninputs:")
-        for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
+        for field in ("map", "gpx", "routes_dir", "tracks_dir"):
             if field in scenario:
                 print(f"  {field:<12} {scenario[field]}")
         for value in scenario.get("args", []):
@@ -556,7 +537,6 @@ def command_show(catalog: Catalog, store: Store, args: argparse.Namespace) -> No
     else:
         raise FixtureError(f"unknown fixture package, scenario, or profile: {target}")
 
-
 def command_sync(catalog: Catalog, store: Store, args: argparse.Namespace) -> None:
     package_ids = catalog.package_ids_for(args.targets)
     for package_id in package_ids:
@@ -567,14 +547,12 @@ def command_sync(catalog: Catalog, store: Store, args: argparse.Namespace) -> No
         changed = store.sync(package_id)
         print(f"✓ {package_id}{'' if changed else ' (cached, verified)'}")
 
-
 def command_verify(catalog: Catalog, store: Store, args: argparse.Namespace) -> None:
     targets = args.targets or ["all"]
     package_ids = list(catalog.packages) if targets == ["all"] else catalog.package_ids_for(targets)
     for package_id in package_ids:
         store.verify(package_id)
         print(f"✓ {package_id}")
-
 
 def command_resolve(catalog: Catalog, store: Store, args: argparse.Namespace) -> None:
     scenario = catalog.scenarios.get(args.scenario)
@@ -583,12 +561,11 @@ def command_resolve(catalog: Catalog, store: Store, args: argparse.Namespace) ->
     if not args.no_sync:
         for package_id in scenario["packages"]:
             store.sync(package_id)
-    for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
+    for field in ("map", "gpx", "routes_dir", "tracks_dir"):
         if field in scenario:
             print(f"{field}\t{resolve_path(catalog, store, scenario[field], field)}")
     for value in scenario.get("args", []):
         print(f"arg\t{value}")
-
 
 def command_pack(_catalog: Catalog, _store: Store, args: argparse.Namespace) -> None:
     _identifier("package", args.package)
@@ -596,14 +573,12 @@ def command_pack(_catalog: Catalog, _store: Store, args: argparse.Namespace) -> 
     size, digest = build_package(args.package, args.source.resolve(), output.resolve())
     print(f"wrote {output.resolve()}\nbytes = {size}\nsha256 = \"{digest}\"")
 
-
 def command_prune(_catalog: Catalog, store: Store, args: argparse.Namespace) -> None:
     stale, total = store.prune(args.apply)
     for path in stale:
         print(("deleted " if args.apply else "would delete ") + str(path))
     suffix = "removed" if args.apply else "reclaimable (repeat with --apply)"
     print(f"{_human_bytes(total)} {suffix}")
-
 
 def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -> None:
     package = catalog.packages.get(args.package)
@@ -672,7 +647,6 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     _verify_public_object(public_url, actual_bytes, actual_digest)
     print(f"✓ {args.package} uploaded and verified through {catalog.base_url}")
 
-
 def _verify_public_object(url: str, expected_bytes: int, expected_digest: str) -> None:
     digest = hashlib.sha256()
     received = 0
@@ -686,15 +660,12 @@ def _verify_public_object(url: str, expected_bytes: int, expected_digest: str) -
     if received != expected_bytes or digest.hexdigest() != expected_digest:
         raise FixtureError(f"public object failed verification: {url}")
 
-
 def command_exists(catalog: Catalog, _store: Store, args: argparse.Namespace) -> None:
     if args.scenario not in catalog.scenarios:
         raise SystemExit(1)
 
-
 def command_root(_catalog: Catalog, store: Store, _args: argparse.Namespace) -> None:
     print(store.by_id)
-
 
 def command_complete(catalog: Catalog, _store: Store, args: argparse.Namespace) -> None:
     values = {
@@ -704,7 +675,6 @@ def command_complete(catalog: Catalog, _store: Store, args: argparse.Namespace) 
         "targets": {**catalog.scenarios, **catalog.profiles, **catalog.packages},
     }[args.kind]
     print("\n".join(values))
-
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="obc fixtures", description=__doc__)
@@ -737,7 +707,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     publish.add_argument("archive", type=Path)
     return parser.parse_args(argv)
 
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     try:
@@ -763,7 +732,6 @@ def main(argv: list[str] | None = None) -> int:
     except FixtureError as error:
         print(f"obc fixtures: {error}", file=sys.stderr)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

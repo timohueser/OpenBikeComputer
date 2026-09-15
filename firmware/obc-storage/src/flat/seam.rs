@@ -34,7 +34,7 @@ pub enum ObjectKind {
     Route = 1,
     Trip = 2,
     Ride = 3,
-    WeatherBundle = 4,
+
     MapShard = 5,
     MapSetManifest = 6,
     UpdatePackage = 7,
@@ -51,7 +51,7 @@ impl ObjectKind {
             1 => ObjectKind::Route,
             2 => ObjectKind::Trip,
             3 => ObjectKind::Ride,
-            4 => ObjectKind::WeatherBundle,
+
             5 => ObjectKind::MapShard,
             6 => ObjectKind::MapSetManifest,
             7 => ObjectKind::UpdatePackage,
@@ -172,6 +172,8 @@ impl DisplayName {
 /// The metadata half of a catalog entry, and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryMeta {
+    /// UTC seconds when the current route payload was added; zero means unknown.
+    pub added_at_utc: u32,
     pub id: ObjectId,
     pub revision: Revision,
     pub kind: ObjectKind,
@@ -317,7 +319,6 @@ mod tests {
             (1u16, ObjectKind::Route),
             (2, ObjectKind::Trip),
             (3, ObjectKind::Ride),
-            (4, ObjectKind::WeatherBundle),
             (5, ObjectKind::MapShard),
             (6, ObjectKind::MapSetManifest),
             (7, ObjectKind::UpdatePackage),
@@ -327,7 +328,7 @@ mod tests {
             assert_eq!(ObjectKind::decode(value).unwrap(), kind);
             assert_eq!(kind as u16, value);
         }
-        for value in [0u16, 10, 255, 0xFFFF] {
+        for value in [0u16, 4, 10, 255, 0xFFFF] {
             assert_eq!(ObjectKind::decode(value).unwrap_err().reason, Reason::UnknownEnum);
         }
     }

@@ -1,29 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// The device's answer to a `setClock` write (spec §4.4 cmd 5, epic #638). Not an
-/// error type — a device that predates expiry (`unsupported`) is a **supported
-/// peer**; the app degrades gracefully (hides expiry UI, sends no retention).
 public enum ClockSyncOutcome: Equatable, Sendable {
-    /// The device stamped its trusted clock — it understands expiry (`commandResult(ok)`).
+    /// The device stamped its trusted clock (`commandResult(ok)`).
     case stamped
-    /// The device answered `unknownCommand` — it predates expiry support. S7 hides
-    /// the expiry UI behind this and the app sends no `setRouteRetention`.
     case unsupported
 }
-
-/// The device's answer to a `setRouteRetention` write (spec §4.4 cmd 6, epic #638).
-public enum RetentionWriteOutcome: Equatable, Sendable {
-    /// The level was written (`commandResult(ok)`) — the device bumps its route
-    /// store revision only on a real change (idempotent re-set is also `ok`).
-    case applied
-    /// The device holds no route under that id (`commandResult(notFound)`) — the
-    /// id raced a device-side delete; reconcile clears the stale link.
-    case notFound
-    /// The device answered `unknownCommand` — it predates expiry support.
-    case unsupported
-}
-
 /// The device link lifecycle and identity handshake, without unrelated capabilities.
 public protocol DeviceLink: Sendable {
     /// Link lifecycle. **Replays the latest** value to late subscribers (a fresh
@@ -101,26 +83,8 @@ public protocol DeviceBonding: Sendable {
     func forgetBond() async throws
 }
 
-/// Device clock and route-retention control, without unrelated configuration,
-/// diagnostics, firmware-update, or weather authority.
-public protocol DeviceRetention: Sendable {
-    /// Stamp the device's **trusted wall clock** (`setClock`, spec §4.4 cmd 5,
-    /// epic #638). Sent on **every connect, after encryption and before the first
-    /// reconcile write** — the device has no RTC, and this (or a GPS
-    /// fix) is what marks its clock trusted for the boot, the retention sweep's
-    /// safety gate. Returns ``ClockSyncOutcome/unsupported`` for a device that
-    /// predates expiry (`commandResult(unknownCommand)`): a supported peer, not an
-    /// error — the app hides expiry UI and sends no retention. Throws only on a
-    /// link/write failure.
+public protocol DeviceClock: Sendable {
     func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome
-    /// Set a stored route's **retention level** (`setRouteRetention`, spec §4.4
-    /// cmd 6, epic #638) without re-uploading it — sent after an upload commit and
-    /// whenever the desired level diverges from the device's at reconcile. The
-    /// device writes the level without touching `last_used`. Returns
-    /// ``RetentionWriteOutcome/notFound`` for an id the device no longer holds and
-    /// ``RetentionWriteOutcome/unsupported`` for a pre-expiry device. Throws only
-    /// on a link/write failure.
-    func setRouteRetention(_ id: DeviceObjectID, _ retention: Retention) async throws -> RetentionWriteOutcome
 }
 
 /// An in-process catalog invalidation cue used by mocks and preview transports. Protocol v4 has no
@@ -140,8 +104,6 @@ public struct CatalogChange: Equatable, Sendable {
     }
 }
 
-/// Stored route, trip, and ride operations, without link lifecycle, device
-/// configuration, diagnostics, weather discovery, or firmware update authority.
 public protocol DeviceObjects: Sendable {
     /// Optional local invalidation edges. The BLE implementation is a finished stream because v4
     /// removed the v2 notification; consumers reconcile on connect and audit while connected.
@@ -200,8 +162,6 @@ public protocol DeviceObjects: Sendable {
     func confirmRideArchive(_ receipt: RideArchiveReceipt) async throws -> RideArchiveConfirmation
 }
 
-/// Firmware delivery and install requests, without link lifecycle, device
-/// configuration, stored-object, diagnostics, or weather authority.
 public protocol DeviceUpdates: Sendable {
     // MARK: Firmware update (S7 — DFU delivery)
 
@@ -220,37 +180,12 @@ public protocol DeviceUpdates: Sendable {
     func installFirmware() async throws -> FirmwareInstallResult
 }
 
-/// The aggregate device boundary (Tier 1 — semantic), composed from the
-/// capability protocols that focused policies and view models use directly.
-/// No caller reaches through it to CoreBluetooth. Two aggregate conformers:
-///
-///   • `BLETransport`  (real, this module) — CoreBluetooth + the `BLEChannel` byte layer.
-///   • `MockTransport` (fake, `#if DEBUG`) — fixtures + fault injection (B1M).
-///
-/// Everything a screen (B2–B11) needs must be expressible through these
-/// capabilities. `Sendable` lets conformers cross concurrency domains.
-/// The two requirements declared directly below are deliberate exceptions:
-/// diagnostics has no production feature consumer to narrow, while the weather
-/// watch still spans the aggregate discovery owner (AR1/#1259). Extract either
-/// only when a real focused consumer exists.
 public protocol DeviceTransport: DeviceLink, DeviceBattery, DeviceConfiguration,
-    DeviceBonding, DeviceObjects, DeviceRetention, DeviceUpdates {
+    DeviceBonding, DeviceObjects, DeviceClock, DeviceUpdates {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
 
-    // MARK: Weather (spec §11 — the standing watch)
-
-    /// Arm or disarm the **standing weather watch** (WX9): a UUID-filtered scan for the bonded
-    /// device's Weather Request advertisement whenever nothing else needs the radio, so a device
-    /// raising a request wakes the app — foregrounded, backgrounded, or after the process was
-    /// killed (CoreBluetooth state restoration). The flag persists across relaunches.
-    ///
-    /// On the protocol rather than only on `BLETransport` because the rider owns it now: WX13's
-    /// *Background weather* switch is the first caller that ever passes `false`, and a view model
-    /// may not reach past `DeviceTransport` to find one (the golden rule). Stand-ins that model no
-    /// radio ignore it, which is the truthful stand-in behaviour — there is no scan to arm.
-    func setWeatherWatch(_ enabled: Bool)
 }
 
 extension DeviceLink {
@@ -303,27 +238,12 @@ extension DeviceBonding {
     public func forgetBond() async throws {}
 }
 
-extension DeviceRetention {
-    /// Default: the device can't stamp its clock — for preview/test stand-ins that
-    /// don't model expiry (a device predating `setClock` reads the same way, spec
-    /// §4.4 compat). Reads as `unsupported` so S7 hides expiry UI and no retention
-    /// is sent. `BLETransport` sends the real command; `MockTransport` records it.
+extension DeviceClock {
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome { .unsupported }
-
-    /// Default: retention can't be set — the same pre-expiry stand-in posture as
-    /// `setClock`. Safe as `unsupported`: the reconcile/upload push gate on the
-    /// capability, so a stand-in simply pushes nothing.
-    public func setRouteRetention(
-        _ id: DeviceObjectID, _ retention: Retention
-    ) async throws -> RetentionWriteOutcome { .unsupported }
 }
 
 extension DeviceTransport {
-    /// Default: no radio, so no watch to arm — for preview/test stand-ins. Safe as a no-op in a
-    /// way the other defaults are not merely conveniently: the watch *is* a scan, and a transport
-    /// that does not scan has nothing to turn off. The rider's preference is stored by
-    /// ``WeatherPreferencesStore`` either way, so the setting survives a stand-in run.
-    public func setWeatherWatch(_ enabled: Bool) {}
+
 }
 
 extension DeviceObjects {

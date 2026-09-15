@@ -624,33 +624,7 @@ pub fn fixtures() -> Vec<Fixture> {
             .big("payloadLength", ROUTE_LEN)
             .num("payloadCrc32", i64::from(ROUTE_CRC))
             .num("kind", 1)
-            .bool("retainPrevious", false)
             .str("displayName", "Grimsel Loop"),
-    ));
-
-    let mut put_retaining = header(0x04, 0, 84, UPLOAD_REQUEST);
-    u64_at(&mut put_retaining, HEADER_LEN, 4);
-    u64_at(&mut put_retaining, HEADER_LEN + 8, 2);
-    u64_at(&mut put_retaining, HEADER_LEN + 16, 8_192);
-    u32_at(&mut put_retaining, HEADER_LEN + 24, 0x1234_5678);
-    u16_at(&mut put_retaining, HEADER_LEN + 28, 4);
-    u16_at(&mut put_retaining, HEADER_LEN + 30, 1);
-    put_retaining[HEADER_LEN + 32] = 7;
-    bytes_at(&mut put_retaining, HEADER_LEN + 36, b"weather");
-    all.push(control(
-        "put-replace-retaining-request",
-        "A weather bundle replacing revision 2 and asking the same commit to leave it RETAINED.",
-        "request",
-        ("PUT", 0x04),
-        put_retaining,
-        Json::new()
-            .big("objectId", 4)
-            .big("expectedRevision", 2)
-            .big("payloadLength", 8_192)
-            .num("payloadCrc32", 0x1234_5678)
-            .num("kind", 4)
-            .bool("retainPrevious", true)
-            .str("displayName", "weather"),
     ));
 
     let mut put_response = header(0x04, 0b1, 32, UPLOAD_REQUEST);
@@ -1104,7 +1078,7 @@ pub fn fixtures() -> Vec<Fixture> {
     ));
     all.push(bad_put(
         "put-undefined-request-flag",
-        "Bit 0 is retain-previous and the other fifteen are zero.",
+        "The request flags are reserved and must be zero.",
         ("reservedBits", 1),
         |bytes| u16_at(bytes, HEADER_LEN + 30, 2),
     ));

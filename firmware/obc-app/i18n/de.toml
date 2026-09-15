@@ -14,7 +14,6 @@ rides = "Fahrten"
 pois = "POIs"
 map = "Karte"
 peaks = "Gipfel"
-weather = "Wetter"
 settings = "Einstellungen"
 
 [peak_view]
@@ -201,15 +200,7 @@ local_time = "Ortszeit"
 offset = "Offset"
 utc = "UTC "
 
-# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
-[autodelete]
-never = "Nie"
-day1 = "1 Tag"
-week1 = "1 Woche"
-month1 = "1 Monat"
-
-# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
-# --- onto the route-plan sheet in #1515 D4d) ---
+# --- Ride settings ---
 [ride]
 title = "FAHRT"
 fields = "Datenfelder"
@@ -220,8 +211,6 @@ climb = "Anstieg"
 climb_sub = "Panel"
 waypoints = "Wegpunkte"
 waypoints_sub = "Chip"
-autodelete = "Auto-Löschen"
-autodelete_sub = "Fahrten"
 
 # --- Display settings screen ---
 [display]
@@ -389,7 +378,6 @@ start_ride = "LOSFAHREN"
 loading_profile = "Lade Profil"
 delete = "Route löschen"
 new_route = "NEUE ROUTE"
-auto_delete = "Auto-Lösch"
 
 # --- Route-received / route-updated popups ---
 [route_received]
@@ -557,53 +545,9 @@ cardtype_fix = "SDHC- oder SDXC-Karte verwenden"
 storagefault_what = "Leser gestört"
 storagefault_fix = "Gerät neu starten"
 
-# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
-[weather]
-title = "WETTER"
-hourly = "STÜNDLICH"
-rain_map = "REGENKARTE"
-updating = "UPDATE"
-dry_1 = "TROCKEN"
-rain = "REGEN"
-storm = "STURM"
-rain_in = "REGEN IN"
-storm_in = "STURM IN"
-now = "JETZT"
-min = "MIN"
-in = "IN"
-update_needed = "WETTER-UPDATE NÖTIG"
-hourly_only = "KEINE REGENDETAILS"
-hourly_only_sub = "Stündlich"
-no_data = "KEINE WETTERDATEN"
-no_data_sub = "Telefon koppeln"
-zoom_for_rain = "ZOOM FÜR REGEN"
-alert_rain = "REGEN VORAUS"
-alert_storm = "STURM VORAUS"
-alert_rain_body = "Starker Regen auf der Route."
-alert_storm_body = "Gewitter auf der Route."
-alert_gust = "STARKER WIND"
-alert_gust_body = "Gefährliche Böen voraus."
-view_rain_map = "REGENKARTE"
-dismiss = "SCHLIESSEN"
-
-# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
 [route_context]
 bike_type = "Fahrradtyp"
 
-# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
-[weather_context]
-refresh_now = "Jetzt laden"
-interval = "Intervall"
-
-# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
-[weather_refresh]
-off = "Aus"
-m15 = "15 min"
-m30 = "30 min"
-m60 = "60 min"
-m120 = "120 min"
-
-# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]
 n = "N"
 ne = "NO"
@@ -624,3 +568,19 @@ power = "AUSSCHALTEN"
 power_confirm = "AUSSCHALTEN?"
 power_hold = "AUSWAHL HALTEN"
 powering_off = "SCHALTET AUS..."
+
+[route_cleanup]
+title = "SPEICHER VOLL"
+body = "Routen löschen, die länger auf dem Gerät sind als:"
+unknown_clock = "Das Datum ist unbekannt. Routen im Routenmenü löschen, dann erneut senden."
+delete = "Routen löschen"
+age_1 = "1 Woche"
+age_2 = "2 Wochen"
+age_4 = "4 Wochen"
+age_8 = "8 Wochen"
+age_12 = "12 Wochen"
+age_26 = "26 Wochen"
+working = "Alte Routen werden gelöscht..."
+failed = "Bereinigung gestoppt. Einige Routen wurden eventuell gelöscht. Speicher prüfen und erneut versuchen."
+no_matches = "Keine passenden Routen. Kürzeres Alter wählen oder Routen im Routenmenü löschen."
+done = "Alte Routen gelöscht. Upload erneut versuchen. Zum Schließen drücken."

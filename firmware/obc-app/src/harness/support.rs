@@ -345,15 +345,8 @@ pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoin
 // The DeviceCore pass.
 
 /// Every capability the test platform implements. A suite that needs a device without one names it.
-pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-    weather: true,
-    bonding: true,
-    storage_space_report: true,
-    retention_metadata: true,
-};
+pub const EVERY_CAPABILITY: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// Run one DeviceCore pass at `ms` with the executor's answers — the production frame every host
 /// drives. The ports these suites do not exercise (a fix, keyed derived answers) stay empty; a
@@ -371,7 +364,7 @@ pub fn pass(
         gestures: &[],
         sensors: Sensors::new(&mut loc),
         route,
-        weather: None,
+
         support: EVERY_CAPABILITY,
         outcomes,
         facts,
@@ -402,78 +395,6 @@ pub fn mount_store(app: &mut App) {
     pass_with_fact(app, 0, |facts| {
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) })
     });
-}
-
-/// A synthetic weather snapshot: one frame per entry of `intensities`, 15 minutes apart from `now`,
-/// over rainy hourly rows. `rain_grid` is the zoom-floor input; `None` leaves the clamp disengaged.
-pub fn weather_snapshot(
-    now: i64,
-    intensities: &[u8],
-    rain_grid: Option<obc_render::RainGrid>,
-) -> obc_app::WeatherSnapshot {
-    let mut frames = heapless::Vec::new();
-    for (i, &intensity) in intensities.iter().enumerate() {
-        frames
-            .push(obc_app::weather::FrameSample {
-                valid_at: now + i as i64 * 900,
-                intensity,
-                lat: 47_000_000,
-                lon: 8_000_000,
-                past_route_end: false,
-                spread_uncertain: false,
-            })
-            .expect("the synthetic table fits the snapshot bound");
-    }
-    obc_app::WeatherSnapshot {
-        generated_at: now,
-        valid_from: now - 3_600,
-        valid_until: now + 24 * 3_600,
-        hourly: [obc_formats::obcw::HourlyRecord {
-            valid_time_offset_s: 0,
-            temperature_deci_c: 150,
-            precipitation_tenth_mm: 0,
-            precipitation_probability_pct: 0,
-            condition: obc_formats::obcw::CONDITION_RAIN,
-            wind_from_deg: 200,
-            wind_speed_deci_ms: 40,
-            wind_gust_deci_ms: 80,
-            flags: 0,
-        }; obc_formats::obcw::HOURLY_COUNT],
-        frames,
-        frame_cap_s: 900,
-        sampled_at: Some((47_000_000, 8_000_000)),
-        pos_in_grid: true,
-        current_pos_in_grid: true,
-        projected: true,
-        frames_truncated: false,
-        rain_grid,
-    }
-}
-
-/// One pass with the host's sampled weather snapshot open, plus whatever facts this frame reports —
-/// the exact shape the board and the simulator drive. The weather domain's view state and its alert
-/// decision move at stage 10 and nowhere else, so nothing weather-related happens without one.
-pub fn weather_pass(
-    app: &mut App,
-    ms: u32,
-    snapshot: Option<&obc_app::WeatherSnapshot>,
-    note: impl FnOnce(&mut ExternalFacts),
-) -> PassPlan {
-    let mut facts = ExternalFacts::NONE;
-    note(&mut facts);
-    let mut loc = NoFix;
-    app.run_pass(PassInputs {
-        now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
-        gestures: &[],
-        sensors: Sensors::new(&mut loc),
-        route: None,
-        weather: snapshot,
-        support: EVERY_CAPABILITY,
-        outcomes: &mut OutcomeSlots::new(),
-        facts: &mut facts,
-        derived: DerivedInputs::NONE,
-        targets: DerivedTargets::NONE,
-    })
 }
 
 /// **A runtime host in miniature.** Each [`frame`](Frames::frame) recognises raw button events
@@ -521,7 +442,7 @@ impl Frames {
             gestures: &batch,
             sensors: Sensors { fuel: Some(&mut gauge), ..Sensors::new(&mut loc) },
             route: None,
-            weather: None,
+
             support: EVERY_CAPABILITY,
             outcomes: &mut self.outcomes,
             facts: &mut facts,

@@ -4,7 +4,7 @@
 
 use eframe::egui;
 use obc_app::CameraMode;
-use obc_host_core::{RouteRepository, TripCatalog};
+use obc_host_core::TripCatalog;
 
 use super::housing::Colorway;
 use super::units::{format_clock, format_distance, mpp_to_zoom, zoom_to_mpp, MAX_ZOOM, MIN_ZOOM, MPP_MAX, MPP_MIN};
@@ -19,20 +19,6 @@ fn separator_above(ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui.separator();
 }
-
-/// A short human label for a [`Retention`](obc_app::Retention) level — the retention combo's text.
-fn retention_label(r: obc_app::Retention) -> &'static str {
-    use obc_app::Retention;
-    match r {
-        Retention::Never => "Never",
-        Retention::Day1 => "1 day",
-        Retention::Week1 => "1 week",
-        Retention::Week2 => "2 weeks",
-        Retention::Month1 => "1 month",
-        Retention::Month2 => "2 months",
-    }
-}
-
 // The two render paths, colored the same in the legend and the stacked bars below.
 const KIND_LINE: egui::Color32 = egui::Color32::from_rgb(80, 150, 235); // lines = blue
 const KIND_POLY: egui::Color32 = egui::Color32::from_rgb(227, 165, 43); // polygons = amber
@@ -215,10 +201,6 @@ impl SimGui {
 
                         separator_above(ui);
 
-                        egui::CollapsingHeader::new("Auto-delete (retention)")
-                            .default_open(false)
-                            .show(ui, |ui| self.show_retention_controls(ui));
-
                         separator_above(ui);
 
                         self.show_display_controls(ui);
@@ -234,13 +216,6 @@ impl SimGui {
                         egui::CollapsingHeader::new("Altimeter")
                             .default_open(false)
                             .show(ui, |ui| self.show_altimeter(ui));
-
-                        if self.live_weather.is_some() {
-                            separator_above(ui);
-                            egui::CollapsingHeader::new("Weather (live)")
-                                .default_open(true)
-                                .show(ui, |ui| self.show_live_weather(ui));
-                        }
                     });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -408,101 +383,6 @@ impl SimGui {
             }
         }
     }
-
-    /// The **auto-delete / retention** controls (auto-expiry epic #638, S3) — the sim's face of the
-    /// self-cleaning storage feature, so route/ride expiry is eyeball-testable without hardware:
-    ///
-    /// - **GPS time** toggles the trusted-clock feed ([`SimClock`](super::SimClock)); off is the
-    ///   fresh-device untrusted state where nothing auto-deletes.
-    /// - **+1 day** fast-forwards the fed clock 24 h and forces the next sweep, so a 1-day-retention
-    ///   route or an aged synced ride disappears in seconds.
-    /// - **Set route retention** stands in for the phone's `setRouteRetention` (until S4 gives it a
-    ///   wire): pick a route + level and the sweep will delete it once it's been unused that long.
-    fn show_retention_controls(&mut self, ui: &mut egui::Ui) {
-        use obc_app::Retention;
-
-        ui.checkbox(&mut self.panel.gps_time, "GPS time (trusted clock)");
-        ui.weak("feeds host UTC as a GPS fix — off = untrusted, nothing auto-deletes");
-
-        ui.horizontal(|ui| {
-            if ui.button("+1 day").clicked() {
-                self.panel.clock_offset_secs = self.panel.clock_offset_secs.saturating_add(86_400);
-                // Force the next tick's sweep regardless of the (fast-forwarded) wall-clock hour, so
-                // an expiry is visible immediately instead of on the next hour boundary.
-                self.app.force_retention_sweep();
-            }
-            if ui.button("reset clock").clicked() {
-                self.panel.clock_offset_secs = 0;
-            }
-            ui.weak(format!("+{} d", self.panel.clock_offset_secs / 86_400));
-        });
-
-        ui.separator();
-
-        // Set a route's retention level (the setRouteRetention stand-in until S4).
-        let mut apply: Option<(obc_app::CatalogObjectId, Retention)> = None;
-        {
-            let routes = self.app.routes();
-            if routes.is_empty() {
-                ui.weak("no routes — import a GPX or start with route fixtures");
-            } else {
-                self.panel.retention_route_sel = self.panel.retention_route_sel.min(routes.len() - 1);
-                let ids = self.app.route_ids();
-                let sel_id = ids[self.panel.retention_route_sel];
-                egui::ComboBox::from_id_salt("retention-route")
-                    .selected_text(routes[self.panel.retention_route_sel].name.as_str())
-                    .show_ui(ui, |ui| {
-                        for (i, r) in routes.iter().enumerate() {
-                            ui.selectable_value(&mut self.panel.retention_route_sel, i, r.name.as_str());
-                        }
-                    });
-                egui::ComboBox::from_id_salt("retention-level")
-                    .selected_text(retention_label(self.panel.retention_level))
-                    .show_ui(ui, |ui| {
-                        for lvl in [
-                            Retention::Never,
-                            Retention::Day1,
-                            Retention::Week1,
-                            Retention::Week2,
-                            Retention::Month1,
-                            Retention::Month2,
-                        ] {
-                            ui.selectable_value(&mut self.panel.retention_level, lvl, retention_label(lvl));
-                        }
-                    });
-                if ui.button("Set route retention").clicked() {
-                    apply = Some((sel_id, self.panel.retention_level));
-                }
-                let meta = self
-                    .store
-                    .ids()
-                    .iter()
-                    .position(|&id| id == sel_id)
-                    .and_then(|i| self.store.retention_metas().get(i).copied())
-                    .unwrap_or_default();
-                ui.weak(format!(
-                    "route id {sel_id}: {} · last_used {}",
-                    retention_label(meta.retention),
-                    if meta.last_used_utc == 0 { "unset".to_string() } else { meta.last_used_utc.to_string() }
-                ));
-            }
-        }
-        if let Some((id, level)) = apply {
-            let last_used = self
-                .store
-                .ids()
-                .iter()
-                .position(|&current| current == id)
-                .and_then(|i| self.store.retention_metas().get(i).copied())
-                .unwrap_or_default()
-                .last_used_utc;
-            match crate::routes::seed_retention(&mut self.store, id, level, last_used) {
-                Ok(()) => self.note_card_commit(),
-                Err(error) => eprintln!("retention write: {error}"),
-            }
-        }
-    }
-
     /// Commit a fixture copy or exact replacement, then report its real object identity.
     fn inject_upload(&mut self, sel: usize, replace: bool) {
         let id = match crate::routes::import_copy(&mut self.store, sel, replace) {
@@ -608,12 +488,10 @@ impl SimGui {
     }
 
     /// The **map-referenced altimeter** readout (elevation epic #1068, EL8) — the simulator half of
-    /// the device's `altfuse:` RTT line, and the inspection surface #529 was waiting on.
+    /// the device's `altfuse:` RTT line.
     ///
     /// Raw vs. fused is the whole story: when replay conditions move the raw row away from the
     /// terrain, the fused row stays on it, and `Offset` is the number doing the work.
-    /// `Reference P` is the sea-level-reduced pressure — the trend a storm heuristic would read,
-    /// with the ride's own climbing already subtracted out. Nothing here is drawn on the device.
     fn show_altimeter(&self, ui: &mut egui::Ui) {
         let a = self.app.recorder.altitude();
         let baro = self.app.recorder.baro_elevation_m();
@@ -639,11 +517,6 @@ impl SimGui {
                 }
                 None => ui.label("—"),
             };
-            ui.end_row();
-
-            ui.label("Reference P");
-            let p = baro.and_then(|b| a.reference_pressure_hpa(b));
-            ui.label(p.map_or_else(|| "—".to_string(), |hpa| format!("{hpa:.2} hPa")));
             ui.end_row();
 
             ui.label("Samples");
@@ -760,88 +633,4 @@ impl SimGui {
     }
 }
 
-impl SimGui {
-    /// The live-weather diagnostics (WX14): which generation answered, how many bytes it cost, and
-    /// where the §11 request/upload machine currently is.
-    ///
-    /// This lives **outside** the emulated device pixels on purpose. The device is forbidden any
-    /// provenance badge — how fresh the data is may reach the rider only through real frame
-    /// timestamps — so every such fact belongs here, in the developer's window, and nowhere on the
-    /// glass. There is no product and no tier to name any more: one dataset, one lattice, and the
-    /// only identity worth printing is the generation the objects came from.
-    fn show_live_weather(&mut self, ui: &mut egui::Ui) {
-        let Some(live) = self.live_weather.as_ref() else { return };
-        let report = &live.report;
-        match (&report.generation, &report.error) {
-            (_, Some(error)) => {
-                ui.colored_label(ERROR_RED, format!("fetch failed: {error}"));
-                ui.weak("The previous bundle stays in place and keeps aging — an outage never blanks the screen.");
-            }
-            (Some(generation), None) => {
-                ui.label(format!("dataset   generation {generation}"));
-            }
-            (None, None) => {
-                ui.label("dataset   none — hourly only");
-            }
-        }
-        if let Some(why) = &report.no_rain_map {
-            ui.weak(format!("no rain map: {why}"));
-        }
-        if report.dry_shards > 0 {
-            ui.weak(format!("{} shard(s) measured dry — no object to fetch, and not a failure", report.dry_shards));
-        }
-        if let Some((width_km, height_km)) = report.corridor_km {
-            ui.label(format!(
-                "corridor  {width_km:.0} x {height_km:.0} km disc{}",
-                if report.corridor_clamped { " (cut at the date line or a pole)" } else { "" }
-            ));
-        }
-        // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
-        // is one document that carries the rider's position. Both are *this fetch* — mixing a
-        // cumulative request count with a per-fetch byte count is how "21 requests, 146 KB" came
-        // to describe two different things at once.
-        ui.label(format!(
-            "last      {} B bundle · service {} req / {} B · MET {} req / {} B",
-            report.bundle_bytes, report.service_requests, report.service_bytes, report.met_requests, report.met_bytes
-        ));
-        if report.cached_frames > 0 {
-            ui.weak(format!(
-                "{} frame(s) came from the crop cache — immutable objects are never re-read",
-                report.cached_frames
-            ));
-        }
-        ui.weak(format!("{} request(s) since the simulator started", live.total_requests()));
-        if report.failed_frames > 0 {
-            ui.weak(format!(
-                "{} shard(s) the manifest promised failed to fetch or verify — an error, never dry",
-                report.failed_frames
-            ));
-        }
-        if report.fetched_at > 0 {
-            let age = (self.app.wall_unix_now() as i64 - report.fetched_at).max(0);
-            ui.weak(format!("fetched {age} s ago"));
-        }
-        ui.separator();
-        let state = &self.companion.state;
-        ui.label(format!(
-            "request   {} · {}",
-            state.pending_request_id.map_or("none pending".to_string(), |id| format!("#{id}")),
-            state.reason_text()
-        ));
-        ui.label(format!(
-            "uploads   {} committed, {} refused{}",
-            state.commits,
-            state.rejected,
-            state.last_disposition.map_or(String::new(), |d| format!(" (last: {d})"))
-        ));
-        if let Some(wake) = state.next_wake_s {
-            let now = self.app.wall_unix_now() as u64;
-            ui.weak(format!("next due in {} s", wake.saturating_sub(now)));
-        } else {
-            ui.weak("nothing scheduled (refresh Off, or no ride in progress)");
-        }
-        for line in &report.attribution {
-            ui.weak(line);
-        }
-    }
-}
+impl SimGui {}

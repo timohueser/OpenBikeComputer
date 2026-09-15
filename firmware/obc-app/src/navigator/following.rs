@@ -173,12 +173,6 @@ fn resolve_next_waypoint(wpts: &Waypoints, progress_m: u32, prev: Option<usize>)
     }
 }
 
-/// Progress the rider must cover before the route heading is re-derived (two chunk decodes).
-/// Sized against [`TRAVEL_CHORD_M`](crate::weather::TRAVEL_CHORD_M): a kilometre-long chord cannot
-/// swing within a few tens of metres, so anything finer only re-reads the card — and a stationary
-/// rider's GPS jitter must never do that at all.
-pub(crate) const HEADING_MOVE_M: u32 = 50;
-
 impl NavigatorMachine {
     /// The live route-following view screens render.
     pub(crate) fn route_state(&self) -> &RouteState {
@@ -203,11 +197,6 @@ impl NavigatorMachine {
     #[cfg(test)]
     pub(crate) fn cache_keys(&self) -> (Option<usize>, Option<usize>) {
         (self.climbs_route, self.waypoints_route)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_travel_deg_for_test(&mut self, travel_deg: Option<f32>) {
-        self.travel_deg = travel_deg;
     }
 
     /// Select or clear the active catalog route. Route-keyed caches reconcile on the next tick.
@@ -251,10 +240,6 @@ impl NavigatorMachine {
         &mut self.waypoints
     }
 
-    pub(crate) fn travel_deg(&self) -> Option<f32> {
-        self.travel_deg
-    }
-
     /// Start a fresh route-following pass for a new ride session while keeping the selected route.
     pub(crate) fn reset_ride(&mut self) {
         self.route_match.reset();
@@ -296,10 +281,6 @@ impl NavigatorMachine {
             // it must survive into. Stale seams die on the request's own route-key check.
             self.route_match.reset();
             self.matched_route = self.following.active_route;
-            // The old route's tangent means nothing on the new line (WX12) — neutral until the
-            // next fix matches.
-            self.travel_deg = None;
-            self.travel_at_m = None;
             dirty = true; // route load / swap repaints the route line + recenters
         }
         let route_total_before = self.following.route_total_m;
@@ -519,42 +500,6 @@ impl NavigatorMachine {
         self.following.off_route = false;
         self.following.dist_to_route_m = 0;
         self.following.seam_request = None;
-        // The route tangent was measured on the old geometry — neutral until the next fix
-        // re-derives it (WX12). The speed window survives: the rider's pace is route-agnostic.
-        self.travel_deg = None;
-        self.travel_at_m = None;
-    }
-
-    /// Update the WX12 travel direction from this tick's fresh fix (see
-    /// [`travel_deg`](NavigatorMachine::travel_deg) — the route's general heading, or neutral). Runs
-    /// after the matcher, so [`RouteState`] carries this fix's match. The heading recomputes only when
-    /// the rider moved ≥ [`HEADING_MOVE_M`] along the route (two `position_at` chunk decodes,
-    /// fix-cadence-bounded).
-    pub(crate) fn update_travel(&mut self, route: Option<&RouteReader>) {
-        let on_route =
-            route.is_some() && self.following.active_route.is_some() && self.started() && !self.following.off_route;
-        if on_route {
-            let route = route.unwrap();
-            let moved = self.travel_at_m.is_none_or(|at| self.following.progress_m.abs_diff(at) >= HEADING_MOVE_M);
-            if !moved && self.travel_deg.is_some() {
-                return; // held heading (stopped, or sub-hysteresis creep)
-            }
-            if let Some(deg) = crate::weather::route_heading_deg(route, self.following.progress_m) {
-                self.travel_deg = Some(deg);
-                self.travel_at_m = Some(self.following.progress_m);
-                return;
-            }
-            // Undecodable geometry: neutral, like having no route at all.
-        }
-        // Off-route, no route, or no readable geometry: neutral — the momentary heading is not a
-        // direction the panel can stand behind (see `travel_deg`).
-        self.travel_deg = None;
-        self.travel_at_m = None;
-    }
-
-    /// Whether the route matcher has locked onto the active route at least once this load.
-    pub(crate) fn started(&self) -> bool {
-        self.route_match.started()
     }
 
     /// Re-point every route-keyed cache after a catalog replacement (#450): each build key follows

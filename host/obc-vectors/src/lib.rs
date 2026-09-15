@@ -24,10 +24,6 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
-pub mod obcg;
-pub mod obcw;
-pub mod weather_request;
-
 /// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors")
@@ -506,27 +502,6 @@ pub fn command_set_clock(utc: u32, offset_min: i16) -> Vec<u8> {
     v
 }
 
-/// The `setRouteRetention` command write (spec §4.4, cmd 6, epic #638 S4): `cmd u8 = 6 · object_id
-/// u16 LE · retention u8`. 4 bytes.
-pub fn command_set_route_retention(object_id: u16, retention: u8) -> Vec<u8> {
-    let mut v = vec![6u8];
-    v.extend_from_slice(&le16(object_id));
-    v.push(retention);
-    v
-}
-
-/// The `route-list.bin` entries' auto-expiry spread (epic #638 S4, spec §7.4): id 7 is a **live
-/// countdown** (Week2 = `3`, a nonzero `expires_at`), id 8 has a **not-yet-started** clock (Day1 =
-/// `1`, `expires_at 0` because `last_used == 0`), and id 9 is **Never** (retention `0`, `expires_at
-/// 0`). `EXPIRES_AT_LIVE` is `command-set-clock.bin`'s UTC + a 2-week window, so the fixtures agree.
-pub const ROUTE_EXPIRES_AT_LIVE: u32 = 1_783_598_400 + 14 * 86_400;
-/// `(expires_at, retention)` per `route-list.bin` entry, in id order (7, 8, 9) — see [`route_list`].
-pub const ROUTE_RETENTION_SPREAD: [(u32, u8); 3] = [(ROUTE_EXPIRES_AT_LIVE, 3), (0, 1), (0, 0)];
-
-/// One `routeList` entry (spec §7.4): **84 bytes** — the 76-byte protocol-v2 core (name zero-padded to
-/// 48, trailing whole-object content `crc32`, `0` = unknown) + the auto-expiry tail `expires_at u32 ·
-/// retention u8 · reserved u8[3]` (epic #638 S4). The tail sits **after** the content `crc32` — it is
-/// device-computed volatile state, not route-content identity — so the 76-byte core is byte-identical.
 #[allow(clippy::too_many_arguments)] // mirrors the spec's field list one-to-one
 pub fn route_list_entry(
     object_id: u16,
@@ -537,8 +512,6 @@ pub fn route_list_entry(
     waypoint_count: u16,
     name: &str,
     crc: u32,
-    expires_at: u32,
-    retention: u8,
 ) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&le16(object_id));
@@ -554,10 +527,7 @@ pub fn route_list_entry(
     v.extend_from_slice(&padded);
     v.push(0); // reserved
     v.extend_from_slice(&le32(crc)); // whole-object content CRC-32 (offset 72)
-    v.extend_from_slice(&le32(expires_at)); // auto-expiry tail (offset 76) — outside the content crc32
-    v.push(retention); // offset 80
-    v.extend_from_slice(&[0u8; 3]); // reserved (offset 81)
-    assert_eq!(v.len(), 84);
+    assert_eq!(v.len(), 76);
     v
 }
 
@@ -565,7 +535,7 @@ pub fn route_list_entry(
 /// (`version 2 · entry_len 84 · count · total`) + packed 84-byte entries. `total` = the full catalog
 /// size before the `MAX_ROUTES` cap (equal to `count` when nothing was dropped).
 pub fn route_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
-    let mut v = vec![2u8, 84];
+    let mut v = vec![2u8, 76];
     v.extend_from_slice(&le16(entries.len() as u16));
     v.extend_from_slice(&le16(total));
     for e in entries {
@@ -663,7 +633,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
     let (trip_len, trip_crc) = (trip.len() as u32, crc32(&trip));
     let terrain = terrain_shard();
-    let mut fixtures = vec![
+    let fixtures = vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
         // The sample-codec fixture remains a codec vector only. GPX export is pinned from the
@@ -678,36 +648,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("terrain-shard.obcd", terrain.clone()),
         ("ride-v3.bin", ride_v3()),
         ("config-v1.bin", config_v1()),
-        // The same object with the WX3 (#1188) refresh byte appended — the *pair* is the fixture.
-        // Config is append-only, so the only thing that can go wrong is the offset: a reader that
-        // takes `units` for the refresh (or looks one byte past the end) passes `config-v1.bin` and
-        // fails this one. Imperial units and a 10-byte name, both different from the file above, so
-        // the trailing byte is not merely where it was last time.
-        (
-            "config-weather-refresh.bin",
-            weather_request::config_weather_refresh(
-                weather_request::CONFIG_NAME,
-                weather_request::CONFIG_UNITS,
-                weather_request::REFRESH_EVERY_60,
-            ),
-        ),
-        // The same object again with a refresh byte **no version of this enum defines** (#1214).
-        // Config is the one direction §11.8 makes strict, so this file is read twice and must give
-        // two different answers: a device applying it as a *write* refuses (it cannot honour an
-        // interval it does not know, and storing anything else would report a setting the rider
-        // never chose), while a host *reading* it sees "unknown" and carries on — because the same
-        // blob is what a newer firmware serves, and a host that rejected it could no longer read
-        // Config even to rename the device. Metric here, unlike the file above: an off-by-one reader
-        // then lands on that zero and decodes a *known* `Off`, so the misalignment is a wrong answer
-        // rather than another "unknown" the tolerant path would have swallowed.
-        (
-            "config-weather-refresh-unknown.bin",
-            weather_request::config_weather_refresh(
-                weather_request::CONFIG_UNKNOWN_NAME,
-                weather_request::CONFIG_UNKNOWN_UNITS,
-                weather_request::CONFIG_UNKNOWN_REFRESH,
-            ),
-        ),
         // The full protocolVersion read (spec §1): version 2 + a store epoch nonce + the OBCM
         // map-format version the reader reads. The last one is **self-sourced** from
         // `obc_formats::obcm::VERSION` rather than written out as a literal: the fixture's whole
@@ -721,22 +661,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The version-only protocolVersion read (spec §1, #776): a device with no mounted store
         // serves just the 2-byte version — the app treats the absent epoch as a failed identity read.
         ("version-read-nostore.bin", version_read_nostore(2)),
-        // The **11-byte** read a weather-capable device serves (WX3, #1188): the seven bytes above
-        // plus `feature_bits`, with `FEATURE_WEATHER` set. Kept as a fourth file rather than by
-        // re-cutting `version-read.bin`, because the three lengths are all still real firmware —
-        // this one is the *only* read that entitles a phone to look for the secondary service, and
-        // the fixture set has to hold both sides of that gate. The `obcm_version` byte is
-        // self-sourced like its shorter siblings'; the epoch deliberately is not `0xA1B2C3D4`, so a
-        // consumer reading the wrong file fails on the epoch rather than on the feature word alone.
-        (
-            "version-read-features.bin",
-            weather_request::version_read_features(
-                2,
-                weather_request::FEATURES_STORE_EPOCH,
-                obc_formats::obcm::VERSION,
-                weather_request::FEATURE_WEATHER,
-            ),
-        ),
         // op=1 upload, type=1 route, id 0xFFFF (new) — 12 bytes (no offset in v2).
         ("transfer-upload-start.bin", transfer_control(1, 1, 0xFFFF, len, crc)),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.
@@ -759,13 +683,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // The phone's clock stamp (cmd 5, epic #638 S2): 2026-07-09T12:00:00Z (unix 1783598400),
         // +02:00 (offset 120 min). 7 bytes.
         ("command-set-clock.bin", command_set_clock(1_783_598_400, 120)),
-        // The phone's route-retention set (cmd 6, epic #638 S4): route id 7 → retention 3 (2 weeks).
-        // 4 bytes. Answered with a bare commandResult(ok) + a companion storeChanged(route) on a real
-        // change (no storeChanged / no bump when the value is unchanged — the idempotence pin).
-        ("command-set-route-retention.bin", command_set_route_retention(7, 3)),
-        // The OBCU firmware-update container (spec §1) — a `fwImage` payload (spec
-        // §7.6, id 0): 64-byte header + a 128-byte raw image. Pinned on the device
-        // side by `obc-dfu` and on the app side by the iOS `OBCUHeader` decoder.
         ("update-container-v1.bin", update_container_v1()),
         // The **signed** OBCU v2 container (spec §1, epic #773 / #997): the same header table and the
         // same 128-byte image, plus the scheme marker in v1's reserved bytes and a 64-byte Ed25519
@@ -773,53 +690,13 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // still what a fielded bootloader and the device's own ROLLBACK.BIN look like, and the pair
         // is what pins the offset-compatibility guarantee across implementations.
         ("update-container-v2.bin", update_container_v2()),
-        // Catalog for the stored route fixtures + a synthetic third entry: fields from their OBCR
-        // headers (distance 2207 m, ascent 76 m, 9 points), ids continuing from 7, each with its
-        // whole-object content CRC-32, and the epic #638 S4 auto-expiry tail spanning a spread of
-        // retention states (`ROUTE_RETENTION_SPREAD`): id 7 a live countdown (Week2, nonzero
-        // expires_at), id 8 a not-yet-started clock (Day1, expires_at 0), id 9 a Never route
-        // (retention 0, expires_at 0). Id 9 is synthetic (no `.obcr` file — reuses the plain route's
-        // size/CRC), present only to pin the Never state on the wire. total = count (nothing truncated).
         (
             "route-list.bin",
             route_list(
                 &[
-                    route_list_entry(
-                        7,
-                        len,
-                        2207,
-                        76,
-                        9,
-                        2,
-                        ROUTE_NAME,
-                        crc,
-                        ROUTE_RETENTION_SPREAD[0].0,
-                        ROUTE_RETENTION_SPREAD[0].1,
-                    ),
-                    route_list_entry(
-                        8,
-                        plain_len,
-                        2207,
-                        76,
-                        9,
-                        0,
-                        ROUTE_NAME,
-                        plain_crc,
-                        ROUTE_RETENTION_SPREAD[1].0,
-                        ROUTE_RETENTION_SPREAD[1].1,
-                    ),
-                    route_list_entry(
-                        9,
-                        plain_len,
-                        2207,
-                        76,
-                        9,
-                        0,
-                        ROUTE_NAME,
-                        plain_crc,
-                        ROUTE_RETENTION_SPREAD[2].0,
-                        ROUTE_RETENTION_SPREAD[2].1,
-                    ),
+                    route_list_entry(7, len, 2207, 76, 9, 2, ROUTE_NAME, crc),
+                    route_list_entry(8, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
+                    route_list_entry(9, plain_len, 2207, 76, 9, 0, ROUTE_NAME, plain_crc),
                 ],
                 3,
             ),
@@ -834,39 +711,6 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
             "trip-list.bin",
             trip_list(&[trip_list_entry(TRIP_ID, trip_len, 2 * 2207, 2 * 76, 3, TRIP_NAME, trip_crc)], 1),
         ),
-        // The three `weatherRequestContext` reads (§11, WX3 #1188) — the whole of what the device
-        // says before the companion disconnects and goes to the network. Three files because the
-        // characteristic has three genuinely different states and the difference between them is
-        // *which flags are clear*, which is exactly the kind of thing a mirror implementation
-        // reproduces by encoding zeros and calling it agreement.
-        //
-        // Everything present: a fix, a bearing, a speed, an active route (id 7, the route the rest
-        // of these fixtures catalog) and a bundle whose generation/time/CRC are read back out of
-        // `weather-dwd-96x96-9f.obcw`, so the "bundle I hold" claim names a bundle that exists.
-        ("weather-request-context-full.bin", weather_request::full()),
-        // The resting value the attribute holds between requests. Not all-zeroes: version 1 and the
-        // default 30-minute refresh are still stated, because a device with nothing to ask is not a
-        // device speaking layout version 0 with weather switched off.
-        ("weather-request-context-empty.bin", weather_request::empty()),
-        // The opposite corner: an urgent request with no fix and no bundle, raised on a device whose
-        // *scheduled* refresh is Off. Absence is carried by cleared validity bits, never by sentinel
-        // coordinates — a phone must not read this as a rider at 0°N 0°E holding bundle generation 0.
-        ("weather-request-context-no-fix.bin", weather_request::no_fix()),
-        // The forward-compatibility file (#1214): the full context with a refresh byte this enum
-        // does not define. It is `weather-request-context-full.bin` at every other offset on
-        // purpose, so the rule it pins is checkable by byte comparison — an interval a build does
-        // not recognise costs it the schedule and nothing else. A reader that rejected this read
-        // would turn appending a fifth interval, an ordinary enum append, into the day weather went
-        // dead on every phone in the field.
-        ("weather-request-context-unknown-refresh.bin", weather_request::unknown_refresh()),
-        // Sign coverage (#1214), which nothing else in the set had: a rider in Patagonia with a
-        // pre-1970 clock — negative lat, negative lon, and both i64 timestamps negative — plus a
-        // bundle generation and CRC with their top bits set. Four fields that a mirror reading them
-        // unsigned gets visibly wrong, and two that a mirror reading them *signed* gets wrong the
-        // other way. Shaped for coverage rather than plausibility, like `track-log.obct`.
-        ("weather-request-context-southern.bin", weather_request::southern()),
     ];
-    fixtures.extend(obcw::all());
-    fixtures.extend(obcg::all());
     fixtures
 }

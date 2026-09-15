@@ -217,10 +217,7 @@ struct Step {
     feed: Option<fn(&mut App)>,
     /// An external fact the pass consumes at stage 2 — the door a runtime's own facts come through.
     fact: Option<fn(&mut ExternalFacts)>,
-    /// The host's sampled weather snapshot for this frame, built at the pass's own wall instant —
-    /// the source stage 10 derives the rain view state and the alert decision from. `None` is a
-    /// host with no bundle open, which is every step that does not name one.
-    weather: Option<fn(i64) -> obc_app::WeatherSnapshot>,
+
     /// What must be true of the device after this step. The replay's own coverage check: a segment
     /// that silently stopped exercising its category (a route that is no longer active, a heading
     /// that never went up) fails here rather than passing as a comparison of two identical
@@ -234,47 +231,6 @@ struct Step {
 
 fn step(what: &'static str, at_ms: u32) -> Step {
     Step { what, at_ms, ..Step::default() }
-}
-
-/// A synthetic sampled bundle: `frames` dry rain frames 15 minutes apart from `now`, no rain grid.
-fn dry_bundle(now: i64, frames: usize) -> obc_app::WeatherSnapshot {
-    let mut table = heapless::Vec::new();
-    for index in 0..frames {
-        table
-            .push(obc_app::weather::FrameSample {
-                valid_at: now + index as i64 * 900,
-                intensity: 0,
-                lat: 0,
-                lon: 0,
-                past_route_end: false,
-                spread_uncertain: false,
-            })
-            .expect("the synthetic table fits");
-    }
-    obc_app::WeatherSnapshot {
-        generated_at: now,
-        valid_from: now - 3_600,
-        valid_until: now + 24 * 3_600,
-        hourly: [obc_formats::obcw::HourlyRecord {
-            valid_time_offset_s: 0,
-            temperature_deci_c: 150,
-            precipitation_tenth_mm: 0,
-            precipitation_probability_pct: 0,
-            condition: obc_formats::obcw::CONDITION_CLEAR,
-            wind_from_deg: 200,
-            wind_speed_deci_ms: 20,
-            wind_gust_deci_ms: 30,
-            flags: 0,
-        }; obc_formats::obcw::HOURLY_COUNT],
-        frames: table,
-        frame_cap_s: 900,
-        sampled_at: Some((0, 0)),
-        pos_in_grid: true,
-        current_pos_in_grid: true,
-        projected: false,
-        frames_truncated: false,
-        rain_grid: None,
-    }
 }
 
 impl Step {
@@ -321,10 +277,7 @@ impl Step {
         self.fact = Some(f);
         self
     }
-    fn weather(mut self, build: fn(i64) -> obc_app::WeatherSnapshot) -> Step {
-        self.weather = Some(build);
-        self
-    }
+
     fn expect(mut self, screen: &'static str) -> Step {
         self.expect = Some(screen);
         self
@@ -365,15 +318,8 @@ fn squeeze(a: Button, b: Button) -> [InputEvent; 2] {
 // The two instances.
 // ---------------------------------------------------------------------------------------------
 
-const SUPPORT: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-    weather: true,
-    bonding: true,
-    storage_space_report: true,
-    retention_metadata: true,
-};
+const SUPPORT: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// What one map repaint cost and what it moved — the record the sheet-only open is judged on.
 #[derive(Debug)]
@@ -445,7 +391,6 @@ impl Instance {
         if let Some(note) = s.fact {
             note(&mut facts);
         }
-        let sampled = s.weather.map(|build| build(self.app.wall_unix_now() as i64));
         let plan = self.app.run_pass(PassInputs {
             now: PassClock { ride: RideClock(s.at_ms), ui: InputClock(s.at_ms) },
             gestures: &gestures,
@@ -458,7 +403,7 @@ impl Instance {
                 ..Sensors::new(&mut loc)
             },
             route,
-            weather: sampled.as_ref(),
+
             support: SUPPORT,
             outcomes: &mut self.outcomes,
             facts: &mut facts,
@@ -591,14 +536,6 @@ fn poi_map_bytes() -> Vec<u8> {
 fn climb_summary() -> RouteSummary {
     static SUMMARY: std::sync::OnceLock<RouteSummary> = std::sync::OnceLock::new();
     SUMMARY.get_or_init(|| RouteSummary::read(&SliceSource(&climb_route_bytes())).expect("its header reads")).clone()
-}
-
-/// One installed weather product at `revision` — the external fact the dashboard's key names.
-fn weather_data(product: u64, revision: u64) -> obc_app::device_core::WeatherData {
-    obc_app::device_core::WeatherData {
-        data: obc_app::device_core::DataIdentity::new(product),
-        revision: obc_app::device_core::Revision::new(revision),
-    }
 }
 
 /// A saved, connected heart-rate sensor — the Sensors page's status row.
@@ -761,23 +698,12 @@ fn replay() -> Vec<Step> {
     );
     steps.push(step("the transfer ends", 83_000).feed(|app| app.set_map_transfer(None)).expect("Map"));
 
-    // --- the sensor settings and weather seams ----------------------------------------------------
     steps.push(step("a saved sensor connects", 84_000).feed(|app| app.set_sensor_status(&connected_hr())));
     steps
         .push(step("a scan hit appears", 85_000).feed(|app| {
             app.set_sensor_scan_hits(&[obc_app::SensorScanHit::new(0, 0, [1, 2, 3, 4, 5, 6], "HRM", -55)])
         }));
     steps.push(step("the scan list clears", 86_000).feed(|app| app.set_sensor_scan_hits(&[])));
-    // A resample is an external fact now, and the domain's own revision is what a stack-local key
-    // compares — the seventh hand-written repaint mirror, deleted (#1549).
-    steps.push(
-        step("weather freshness moves", 87_000)
-            .fact(|f| f.note_weather_sample(obc_app::device_core::Revision::new(1)))
-            .weather(|now| dry_bundle(now, 5)),
-    );
-    steps.push(step("the rain step count changes", 88_000).weather(|now| dry_bundle(now, 5)));
-    steps.push(step("the rain step count is unchanged", 89_000).weather(|now| dry_bundle(now, 5)));
-
     // --- an upload card, left to time out ----------------------------------------------------------
     // Mid-ride the same upload lands as the **swap prompt** instead — same family, same 30 s
     // auto-close, and the replay leaves this one alone so the timeout dismissal is exercised too.
@@ -851,10 +777,6 @@ fn climb_replay() -> Vec<Step> {
     steps
 }
 
-/// The settings-and-weather replay: the three screens whose keys the other two replays declare but
-/// never build, because the device is on the Map or on Home while their seams fire.
-///
-/// The idle return is off, so the walk into the settings tree has as long as it needs.
 fn pages_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on Home", 0).expect("Home"),
@@ -924,59 +846,13 @@ fn pages_replay() -> Vec<Step> {
             .expect("SensorScan"),
     );
 
-    // Out of the settings tree and into the weather pages.
     for (ms, what) in [(7_200, "leave the scan list"), (7_400, "leave Sensors"), (7_600, "leave Connections")] {
         steps.push(step(what, ms).keys(&tap(Button::Back)));
     }
     steps.push(step("leave Settings", 7_800).keys(&tap(Button::Back)).expect("Menu"));
-    // The dial is still on Settings, where it was left; one step back is Weather.
-    steps.push(step("step to Weather", 8_000).keys(&[InputEvent::Step(-1)]));
-    steps.push(step("the needle settles", 8_400).expect("Menu"));
-    steps.push(step("open the weather dashboard", 8_800).keys(&tap(Button::Select)).expect("Weather"));
-    // The installed-data identity is an **external fact**, consumed at the pass's stage 2 — inside
-    // the pass, so the dashboard's key is what carries it to the frame.
-    steps.push(step("weather data is installed", 9_200).fact(|f| f.note_weather_data(weather_data(1, 4))));
-    steps.push(step("the same data again", 9_400).fact(|f| f.note_weather_data(weather_data(1, 4))));
-    steps.push(step("a newer bundle lands", 9_800).fact(|f| f.note_weather_data(weather_data(1, 9))));
-    steps.push(step("quiet on the dashboard", 10_000).expect("Weather"));
 
-    // The rain map, whose selected step is the one weather fact drawn through a map scene — which is
-    // why it sits in the Map key beside the camera rather than in the dashboard's.
-    steps.push(
-        step("the host samples five frames", 10_200)
-            .fact(|f| f.note_weather_sample(obc_app::device_core::Revision::new(1)))
-            .weather(|now| dry_bundle(now, 5))
-            .probe(|app| assert_eq!(app.weather().steps_ahead(), 4, "four frames lie ahead of NOW")),
-    );
-    // From here the host keeps the bundle open every pass, as both production hosts do. The sample
-    // revision does not move, so none of these frames repaints for weather.
-    steps.push(
-        step("step to the rain map action", 10_400).keys(&[InputEvent::Step(1)]).weather(|now| dry_bundle(now, 5)),
-    );
-    steps.push(
-        step("open the rain map", 10_800)
-            .keys(&tap(Button::Select))
-            .weather(|now| dry_bundle(now, 5))
-            .expect("WeatherRainMap"),
-    );
-    steps.push(
-        step("select the next rain frame", 11_200)
-            .keys(&[InputEvent::Step(1)])
-            .weather(|now| dry_bundle(now, 5))
-            .expect("WeatherRainMap")
-            .probe(|app| assert_eq!(app.state.rain_step, 1, "the Step arm moved the selection")),
-    );
-    steps.push(
-        step("and the one after it", 11_600)
-            .keys(&[InputEvent::Step(1)])
-            .weather(|now| dry_bundle(now, 5))
-            .expect("WeatherRainMap")
-            .probe(|app| assert_eq!(app.state.rain_step, 2, "…and again")),
-    );
-    steps.push(step("quiet on the rain map", 11_800).weather(|now| dry_bundle(now, 5)).expect("WeatherRainMap"));
-    for i in 0..5 {
-        steps.push(step("quiet tail", 12_000 + i * 200).weather(|now| dry_bundle(now, 5)));
-    }
+    steps.push(step("the needle settles", 8_400).expect("Menu"));
+
     steps
 }
 
@@ -1192,35 +1068,6 @@ fn on_demand_rendering_is_pixel_identical_to_rendering_every_pass() {
         steps.len()
     );
     assert!(overlay <= ref_overlay, "candidate overlay repaints {overlay} exceeded the reference's {ref_overlay}");
-}
-
-/// **The settings and weather pages.** Two render keys the other replays declare but never build,
-/// because the device is elsewhere while their seams fire — plus the passkey card's in-place digit
-/// rewrite and the rain map's selected frame.
-#[test]
-fn the_settings_and_weather_pages_stay_in_parity() {
-    let map = map_bytes();
-    let map_src = SliceSource(&map);
-    let tables = MapTables::parse(&map_src).expect("the replay map parses");
-    let cache = MapCache::new();
-    let reader = Reader::new(&map_src, &tables, &cache);
-
-    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
-    let steps = pages_replay();
-    let ((map_repaints, _), _) = run_replay(
-        "pages",
-        || {
-            let mut app = App::new_idle(camera);
-            // The walk into the settings tree takes longer than the 30 s default, and a return to
-            // Home mid-replay would repaint for a reason that is not the one under test.
-            app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
-            app
-        },
-        &steps,
-        None,
-        &reader,
-    );
-    assert!(map_repaints < steps.len(), "the pages do not repaint every pass");
 }
 
 /// **The Climb view.** The last declared kind, and the only one whose screen the rider never opens:
@@ -1698,4 +1545,30 @@ fn a_sheet_over_a_chrome_base_keeps_the_recess() {
         let (_, hi, _) = r.pixels.expect("a step that changed no pixel is a whole render spent on nothing");
         assert!(hi < 110, "after the first frame dims the page, a step at {} ms moves only the sheet", r.at_ms);
     }
+}
+
+#[test]
+fn sensor_pages_replay_keeps_render_parity() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = pages_replay();
+    let ((map_repaints, _), _) = run_replay(
+        "pages",
+        || {
+            let mut app = App::new_idle(camera);
+            // The walk into the settings tree takes longer than the 30 s default, and a return to
+            // Home mid-replay would repaint for a reason that is not the one under test.
+            app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
+            app
+        },
+        &steps,
+        None,
+        &reader,
+    );
+    assert!(map_repaints < steps.len(), "the pages do not repaint every pass");
 }

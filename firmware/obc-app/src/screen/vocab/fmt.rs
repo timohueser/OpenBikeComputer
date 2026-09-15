@@ -259,26 +259,6 @@ pub(crate) fn duration_hms(secs: f32) -> heapless::String<8> {
     let _ = write!(s, "{}:{:02}", total_min / 60, total_min % 60);
     s
 }
-
-/// The time left until `deadline` from `now_utc`, in the locked expiry format (epic #638 S5):
-/// `≥ 2 days → "in N d"`, `≥ 1 hour (and < 48 h) → "in N h"`, anything sooner — the sub-hour tail
-/// or an already-past deadline the hourly sweep hasn't collected yet — `"soon"`. Whole units
-/// (floor); the sub-hour fold avoids an "in 0 h" readout in the final hour. Not localised — the
-/// format is pinned by the issue.
-pub(crate) fn expiry_short(deadline: u32, now_utc: u32) -> heapless::String<12> {
-    use crate::retention::DAY_SECS;
-    let mut s = heapless::String::new();
-    let secs = deadline.saturating_sub(now_utc);
-    if secs >= 2 * DAY_SECS {
-        let _ = write!(s, "in {} d", secs / DAY_SECS);
-    } else if secs >= 3600 {
-        let _ = write!(s, "in {} h", secs / 3600);
-    } else {
-        let _ = s.push_str("soon");
-    }
-    s
-}
-
 /// The 12 uppercase month-abbreviation catalog keys (the `[date]` section) in calendar order — the
 /// short-date table the Home date line and the rides rows share. Distinct from the Date & Time
 /// stepper's mixed-case `[month]` table.
@@ -323,22 +303,6 @@ pub(crate) fn utc_offset(min: i16) -> heapless::String<8> {
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Weather, storage, addresses
-// ---------------------------------------------------------------------------------------------
-
-/// The temperature as a compact `14°` readout, or `None` on the wire sentinel — shared by the
-/// weather dashboard card and the hourly rows so the two can never round differently.
-pub(crate) fn temperature_short(deci_c: i16) -> Option<heapless::String<8>> {
-    if deci_c == obc_formats::obcw::TEMP_UNAVAILABLE {
-        return None;
-    }
-    let deg = ((deci_c as i32) + if deci_c >= 0 { 5 } else { -5 }) / 10;
-    let mut s: heapless::String<8> = heapless::String::new();
-    let _ = write!(s, "{}°", deg.clamp(-99, 99));
-    Some(s)
-}
-
 /// Append a byte count as a compact `N.N GB` / `NNN MB` / `NNN KB` — GB with one decimal at or
 /// above 1 GiB, whole MB / KB below (rounded). Binary units throughout.
 pub(crate) fn write_bytes_short(s: &mut heapless::String<16>, bytes: u64) {
@@ -369,7 +333,6 @@ pub(crate) fn write_ble_address(buf: &mut heapless::String<24>, addr: &[u8; 6]) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retention::DAY_SECS;
 
     /// Metres below 1 km, one-decimal km up to 100 km, whole km above — pinned across both
     /// crossovers.
@@ -571,27 +534,6 @@ mod tests {
         assert_eq!(duration_hms(35_999.0).as_str(), "9:59");
         assert_eq!(duration_hms(360_000.0).as_str(), "100:00", "hours are uncapped");
     }
-
-    /// The locked expiry format at every boundary: the day/hour cutover at exactly 48 h, the hour
-    /// band, the sub-hour fold to "soon", and past-due.
-    #[test]
-    fn expiry_short_boundaries() {
-        let now = 1_000_000;
-        let at = |secs: u32| expiry_short(now + secs, now);
-        // ≥ 2 days → whole days. 48 h *exactly* is the first day-grain tick (not "in 47 h").
-        assert_eq!(at(2 * DAY_SECS).as_str(), "in 2 d", "48 h exactly reads as 2 days");
-        assert_eq!(at(12 * DAY_SECS).as_str(), "in 12 d");
-        assert_eq!(at(2 * DAY_SECS - 1).as_str(), "in 47 h", "one second under 48 h is still the hour band");
-        // < 48 h → whole hours, down to the last full hour.
-        assert_eq!(at(5 * 3600).as_str(), "in 5 h");
-        assert_eq!(at(3600).as_str(), "in 1 h", "exactly one hour left");
-        // The final sub-hour tail folds to "soon" rather than "in 0 h".
-        assert_eq!(at(3599).as_str(), "soon", "under an hour → soon, never \"in 0 h\"");
-        // Past-due (the sweep hasn't collected it yet): now == deadline, and now > deadline.
-        assert_eq!(expiry_short(now, now).as_str(), "soon", "exactly due → soon");
-        assert_eq!(expiry_short(now - DAY_SECS, now).as_str(), "soon", "past-due → soon (saturating)");
-    }
-
     /// Both date shapes off the same instant: day-first `D MON` for a row, ISO for the detail.
     #[test]
     fn date_shapes() {
@@ -612,19 +554,6 @@ mod tests {
         assert_eq!(utc_offset(330).as_str(), "+05:30");
         assert_eq!(utc_offset(-60).as_str(), "-01:00");
         assert_eq!(utc_offset(-570).as_str(), "-09:30");
-    }
-
-    /// Temperature rounds half away from zero, clamps to two digits, and reports the wire sentinel
-    /// as absent rather than as a number.
-    #[test]
-    fn temperature_short_rounds_and_clamps() {
-        assert_eq!(temperature_short(0).unwrap().as_str(), "0°");
-        assert_eq!(temperature_short(145).unwrap().as_str(), "15°", "half rounds away from zero");
-        assert_eq!(temperature_short(-145).unwrap().as_str(), "-15°");
-        assert_eq!(temperature_short(-55).unwrap().as_str(), "-6°");
-        assert_eq!(temperature_short(-54).unwrap().as_str(), "-5°");
-        assert_eq!(temperature_short(1500).unwrap().as_str(), "99°", "clamped to two digits");
-        assert_eq!(temperature_short(obc_formats::obcw::TEMP_UNAVAILABLE), None);
     }
 
     /// Each displayed byte-unit boundary, and the rounding at it.

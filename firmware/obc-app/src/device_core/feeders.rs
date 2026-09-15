@@ -41,16 +41,13 @@
 pub enum LegacyOwner {
     /// `CatalogMachine` — revisions, identities, refresh, deletion, the trip cascade.
     Catalog,
-    /// `RetentionMachine` — usage stamps, expiry deadlines, sidecar metadata.
-    Retention,
     /// `Recorder` — the ride session and its persistence lifecycle.
     Recorder,
     /// `Navigator` — route and detour planning, preview, and commit.
     Navigator,
     /// `SettingsMachine` — the dirty revision and the persist handshake.
     Settings,
-    /// `WeatherDomain` — visible freshness, alerts, and installed-data identity.
-    Weather,
+
     /// `DfuState` — update scan, install admission, and terminal state.
     Dfu,
     /// The bond domain in `ble.rs` — bond removal.
@@ -70,11 +67,6 @@ pub enum LegacyOwner {
 /// be invisible to every test in this file.
 macro_rules! feeders {
     ($( $(#[$meta:meta])* $variant:ident ),+ $(,)?) => {
-        /// One public bulk feeder on `App`, named after the method.
-        ///
-        /// The list is the complete public feeding surface: every `App::set_*`, plus the in-place
-        /// ride profile fill pair and the weather snapshot pulse, which feed data without being
-        /// named `set_`.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Feeder {
             $( $(#[$meta])* $variant, )+
@@ -104,16 +96,10 @@ feeders! {
     MapNavGraph,
     /// `App::set_routes_with_ids`
     RoutesWithIds,
-    /// `App::set_routes_with_meta`
-    RoutesWithMeta,
-    /// `App::set_route_meta`
-    RouteMeta,
     /// `App::set_trips`
     Trips,
     /// `App::set_rides`
     Rides,
-    /// `App::set_ride_retention_inventory`
-    RideRetentionInventory,
     /// `App::begin_ride_profile_fill`
     RideProfileFillBegin,
     /// `App::set_nav_preview`
@@ -131,7 +117,7 @@ feeders! {
     /// `App::set_sensor_scan_hits`
     SensorScanHits,
     /// `AppState::clamp_rain_zoom` — what is left of `App::set_rain_view` (#1549).
-    RainView,
+
     /// `App::set_hold_progress`
     HoldProgress,
     /// `App::set_render_clip`
@@ -198,38 +184,13 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
     use FeederKind as Kind;
     use LegacyOwner as Own;
     match feeder {
-        // ---- catalog refresh outcomes: the executor fills the resident catalogs, the outcome
-        // reports only that the read is over. Three route feeders exist because the id column and
-        // the retention column were added one at a time; they collapse into one refresh.
-        //
-        // These four are **not** waiting on refresh ownership (#1541): fill *order* is not policy.
-        // `CatalogState::replace_routes` re-resolves every trip's stage ids on either ordering —
-        // pinned by `a_catalog_re_feed_mid_cascade_does_not_move_the_cursor` — which is why the
-        // board and the host already read in different orders and both are correct. What retires
-        // them is the day a bulk fill arrives as `PassInputs` rather than as a `set_*` call.
         Feeder::RoutesWithIds => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        Feeder::RoutesWithMeta => row(
-            Kind::RefreshOutcome,
-            Own::Catalog,
-            "CatalogOutcome::CatalogRead + RetentionMachine metadata",
-            When::BootAndFacts,
-        ),
+
         Feeder::Trips | Feeder::Rides => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        // Retention metadata is part of a catalog read's fill, so these two retire with the four
-        // above and for the same reason. Where the column itself lives is #1398 R4's question.
-        Feeder::RouteMeta => {
-            row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::BootAndFacts)
-        }
-        Feeder::RideRetentionInventory => row(
-            Kind::RefreshOutcome,
-            Own::Retention,
-            "CatalogMachine inventory + RetentionMachine input",
-            When::BootAndFacts,
-        ),
 
         // ---- keyed derived data: one need, one key, one answer. What is left is the in-place fill
         // the executor borrows: the answer itself is a `DerivedInput` already.
@@ -255,16 +216,6 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::SensorStatus | Feeder::SensorScanHits => {
             row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::BootAndFacts)
         }
-        // What #1549 left behind. The step range and the zoom floor are `WeatherDomain`'s now,
-        // derived at stage 10 from the pass's own snapshot; what survives is the camera re-clamp,
-        // a runtime UI seam over a weather figure rather than weather ownership — so this retires
-        // with the rest of the fact-shaped setters.
-        Feeder::RainView => row(
-            Kind::ExternalFact,
-            Own::Weather,
-            "ExternalFacts::weather_sample + a UiRuntime rain-zoom clamp",
-            When::BootAndFacts,
-        ),
 
         // ---- boot inputs: supplied once, before any pass.
         Feeder::Settings => row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::BootAndFacts),
@@ -315,9 +266,6 @@ mod tests {
         // The detour preview looks like the nav preview and is not: it answers an operation.
         assert_eq!(feeder_migration(Feeder::DetourPreview).kind, FeederKind::BoundedTarget);
         assert_eq!(feeder_migration(Feeder::NavPreview).kind, FeederKind::DerivedInput);
-
-        // #1549 moved the weather decisions; the camera re-clamp is what is left of this row.
-        assert_eq!(feeder_migration(Feeder::RainView).deletes_in, DeletingSlice::BootAndFacts);
 
         // Nothing a domain owns survives the migration.
         let kept = Feeder::ALL.iter().filter(|&&f| feeder_migration(f).deletes_in == DeletingSlice::Kept).count();

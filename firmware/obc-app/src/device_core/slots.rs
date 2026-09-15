@@ -1,84 +1,10 @@
-//! The bounded effect and outcome slots — DeviceCore's whole output and input surface for physical
-//! work (#1436, epic #1433 §5).
-//!
-//! ## One operation per domain
-//!
-//! A pass hands the executor an [`EffectSlots`] and gets an [`OutcomeSlots`] back. Each has **one
-//! named field per domain**, each field holds **at most one** value, and that single capacity *is*
-//! the concurrency rule: a domain has at most one admitted physical operation in flight. Later work
-//! is not queued here — it stays in the domain's own bounded state, where the domain can still
-//! cancel it, replace it, or decide it no longer applies.
-//!
-//! ## A full slot never loses anything
-//!
-//! [`Slot::try_put`] refuses rather than overwrites, and hands the rejected value back in the
-//! `Err`. The owner puts it back in its pending state and tries again next pass:
-//!
-//! ```
-//! # use obc_app::catalog_state::CatalogEffect;
-//! # use obc_app::device_core::{EffectSlots, TokenSource};
-//! # let mut tokens = TokenSource::new();
-//! # let mut pending = Some(CatalogEffect::ReadCatalog { token: tokens.issue() });
-//! # let mut slots = EffectSlots::new();
-//! if let Some(effect) = pending.take() {
-//!     if let Err(full) = slots.catalog.try_put(effect) {
-//!         pending = Some(full.rejected); // the slot was busy — keep it, retry next pass
-//!     }
-//! }
-//! ```
-//!
-//! This is backpressure, not a failure: `Busy` is an admission result, never an outcome. Nothing
-//! reports a fake operation failure because a slot happened to be occupied.
-//!
-//! ## Domains do not cross
-//!
-//! A slot is typed by its domain, and so is the token inside it. Neither confusion is a runtime
-//! check — a foreign token cannot reach an outcome constructor at all:
-//!
-//! ```compile_fail
-//! use obc_app::catalog_state::CatalogOutcome;
-//! use obc_app::device_core::{NavigatorTag, TokenSource};
-//!
-//! let mut navigator: TokenSource<NavigatorTag> = TokenSource::new();
-//! // A navigator token can never answer a catalog operation.
-//! let outcome = CatalogOutcome::Cancelled { token: navigator.issue() };
-//! ```
-//!
-//! …and neither can a foreign effect reach a slot:
-//!
-//! ```compile_fail
-//! use obc_app::device_core::{EffectSlots, TokenSource};
-//! use obc_app::recorder::RecorderEffect;
-//!
-//! let mut tokens = TokenSource::new();
-//! let mut slots = EffectSlots::new();
-//! slots.catalog.try_put(RecorderEffect::Checkpoint { token: tokens.issue() }).unwrap();
-//! ```
-//!
-//! ## What may not enter
-//!
-//! Catalogs, route bytes, ride profiles, previews, track batches and weather bundles stay out.
-//! Bulk reaches DeviceCore as a *keyed derived input* against a bounded target the domain owns; a
-//! slot carries an identity, a revision, a count or a handful of figures. The whole of both structs
-//! is smaller than a single resident catalog — pinned below, so a payload that starts to grow here
-//! fails the build rather than the board's RAM budget.
-//!
-//! ## The executor's obligations
-//!
-//! 1. Consume each effect **at most once**.
-//! 2. Return exactly one *terminal* outcome per consumed effect, through the matching domain field.
-//! 3. Carry the effect's [`OperationToken`](super::OperationToken) back unchanged — the domain, not
-//!    the executor, decides whether a late answer still counts.
-
 use crate::ble::{BondEffect, BondOutcome};
 use crate::catalog_state::{CatalogEffect, CatalogOutcome};
 use crate::device_core::storage_info::{StorageInfoEffect, StorageInfoOutcome};
 use crate::dfu::{DfuEffect, DfuOutcome};
 use crate::navigator::{NavigatorEffect, NavigatorOutcome};
 use crate::recorder::{RecorderEffect, RecorderOutcome};
-use crate::retention::{RetentionEffect, RetentionOutcome};
 use crate::settings::{SettingsEffect, SettingsOutcome};
-use crate::weather::{WeatherEffect, WeatherOutcome};
 
 /// A [`Slot::try_put`] that found the slot occupied, carrying the rejected value back to its owner.
 ///
@@ -136,9 +62,9 @@ impl<T> Default for Slot<T> {
     }
 }
 
-/// Macro for the two nine-field slot structs. They differ only in which types their fields hold,
-/// and writing `new`, `Default` and `has_pending` twice by hand would be nine near-identical lines
-/// each with nine places to forget a domain.
+/// Macro for the two eight-field slot structs. They differ only in which types their fields hold,
+/// and writing `new`, `Default` and `has_pending` twice by hand would be eight near-identical lines
+/// each with eight places to forget a domain.
 macro_rules! domain_slots {
     ($(#[$meta:meta])* $name:ident { $( $(#[$field_meta:meta])* $field:ident : $ty:ty ),+ $(,)? }) => {
         $(#[$meta])*
@@ -171,16 +97,11 @@ domain_slots! {
     EffectSlots {
         /// Catalog reads, trip-member reads, and object removals.
         catalog: CatalogEffect,
-        /// Route and ride retention sidecar writes.
-        retention: RetentionEffect,
-        /// Ride appends, checkpoints, finalize and discard.
         recorder: RecorderEffect,
         /// Planner acquire, step, commit and release.
         navigator: NavigatorEffect,
         /// The settings-revision write.
         settings: SettingsEffect,
-        /// Weather refresh and opening installed data.
-        weather: WeatherEffect,
         /// Firmware package scan and install arming.
         dfu: DfuEffect,
         /// Bond removal.
@@ -198,16 +119,11 @@ domain_slots! {
     OutcomeSlots {
         /// The answer to a [`CatalogEffect`].
         catalog: CatalogOutcome,
-        /// The answer to a [`RetentionEffect`].
-        retention: RetentionOutcome,
-        /// The answer to a [`RecorderEffect`].
         recorder: RecorderOutcome,
         /// The answer to a [`NavigatorEffect`].
         navigator: NavigatorOutcome,
         /// The answer to a [`SettingsEffect`].
         settings: SettingsOutcome,
-        /// The answer to a [`WeatherEffect`].
-        weather: WeatherOutcome,
         /// The answer to a [`DfuEffect`].
         dfu: DfuOutcome,
         /// The answer to a [`BondEffect`].
@@ -224,8 +140,8 @@ domain_slots! {
 // every pass and a growth here means a payload crept into a message. `OutcomeSlots` is dominated by
 // `DfuOutcome`'s two fixed 32-byte version strings — see `dfu.rs` for why that one is allowed to be
 // the biggest thing in the protocol.
-const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 216, "nine bounded effects, no payloads");
-const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 248, "nine bounded outcomes, no payloads");
+const _: () = assert!(core::mem::size_of::<EffectSlots>() <= 216, "eight bounded effects, no payloads");
+const _: () = assert!(core::mem::size_of::<OutcomeSlots>() <= 248, "eight bounded outcomes, no payloads");
 
 #[cfg(test)]
 mod tests {
@@ -234,14 +150,12 @@ mod tests {
     use crate::catalog_state::CatalogError;
     use crate::device_core::storage_info::StorageInfoError;
     use crate::device_core::{
-        BondTag, CatalogTag, DfuTag, NavigatorTag, OperationToken, RecorderTag, RetentionTag, SettingsTag,
-        StorageInfoTag, TokenSource, WeatherTag,
+        BondTag, CatalogTag, DfuTag, NavigatorTag, OperationToken, RecorderTag, SettingsTag, StorageInfoTag,
+        TokenSource,
     };
     use crate::dfu::DfuScanError;
     use crate::navigator::{NavigatorError, PlannerWork};
     use crate::recorder::RecorderError;
-    use crate::retention::{Retention, RouteRetentionMeta};
-    use crate::weather::WeatherError;
 
     /// The token rule, exercised through one domain's real outcome constructor: the domain accepts
     /// its own live token, and rejects it the moment the operation is superseded.
@@ -266,11 +180,9 @@ mod tests {
     #[test]
     fn every_domain_accepts_its_own_token_and_rejects_a_stale_one() {
         token_rules(|token| CatalogOutcome::Cancelled { token }, CatalogOutcome::token);
-        token_rules(|token| RetentionOutcome::Cancelled { token }, RetentionOutcome::token);
         token_rules(|token| RecorderOutcome::Cancelled { token }, RecorderOutcome::token);
         token_rules(|token| NavigatorOutcome::Cancelled { token }, NavigatorOutcome::token);
         token_rules(|token| SettingsOutcome::Cancelled { token }, SettingsOutcome::token);
-        token_rules(|token| WeatherOutcome::Cancelled { token }, WeatherOutcome::token);
         token_rules(|token| DfuOutcome::Cancelled { token }, DfuOutcome::token);
         token_rules(|token| BondOutcome::Cancelled { token }, BondOutcome::token);
         token_rules(|token| StorageInfoOutcome::Cancelled { token }, StorageInfoOutcome::token);
@@ -291,26 +203,20 @@ mod tests {
 
     fn effects() -> (EffectSlots, EffectSlots) {
         let mut catalog_ops: TokenSource<CatalogTag> = TokenSource::new();
-        let mut retention_ops: TokenSource<RetentionTag> = TokenSource::new();
         let mut recorder_ops: TokenSource<RecorderTag> = TokenSource::new();
         let mut navigator_ops: TokenSource<NavigatorTag> = TokenSource::new();
         let mut settings_ops: TokenSource<SettingsTag> = TokenSource::new();
-        let mut weather_ops: TokenSource<WeatherTag> = TokenSource::new();
+
         let mut dfu_ops: TokenSource<DfuTag> = TokenSource::new();
         let mut bond_ops: TokenSource<BondTag> = TokenSource::new();
         let mut storage_ops: TokenSource<StorageInfoTag> = TokenSource::new();
-        let meta = RouteRetentionMeta::new(Retention::Week1, 100);
 
         let mut first = EffectSlots::new();
         first.catalog.try_put(CatalogEffect::ReadCatalog { token: catalog_ops.issue() }).unwrap();
-        first
-            .retention
-            .try_put(RetentionEffect::WriteRouteMetadata { token: retention_ops.issue(), scope: None, id: 1, meta })
-            .unwrap();
         first.recorder.try_put(RecorderEffect::Checkpoint { token: recorder_ops.issue() }).unwrap();
         first.navigator.try_put(NavigatorEffect::Step { token: navigator_ops.issue() }).unwrap();
         first.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 3 }).unwrap();
-        first.weather.try_put(WeatherEffect::RequestRefresh { token: weather_ops.issue() }).unwrap();
+
         first.dfu.try_put(DfuEffect::Scan { token: dfu_ops.issue() }).unwrap();
         first.bond.try_put(BondEffect::Forget { token: bond_ops.issue() }).unwrap();
         first.storage_info.try_put(StorageInfoEffect::MeasureFreeSpace { token: storage_ops.issue() }).unwrap();
@@ -325,20 +231,11 @@ mod tests {
                 kind: crate::catalog_state::CatalogObjectKind::Route,
             })
             .unwrap();
-        second
-            .retention
-            .try_put(RetentionEffect::WriteRideMetadata {
-                token: retention_ops.issue(),
-                scope: None,
-                id: 2,
-                synced_at: 5,
-            })
-            .unwrap();
         second.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
         let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
         second.navigator.try_put(NavigatorEffect::Acquire { token: navigator_ops.issue(), work }).unwrap();
         second.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 4 }).unwrap();
-        second.weather.try_put(WeatherEffect::RequestRefresh { token: weather_ops.issue() }).unwrap();
+
         second.dfu.try_put(DfuEffect::ArmInstall { token: dfu_ops.issue() }).unwrap();
         second.bond.try_put(BondEffect::Forget { token: bond_ops.issue() }).unwrap();
         second.storage_info.try_put(StorageInfoEffect::MeasureFreeSpace { token: storage_ops.issue() }).unwrap();
@@ -348,21 +245,16 @@ mod tests {
 
     fn outcomes() -> (OutcomeSlots, OutcomeSlots) {
         let mut catalog_ops: TokenSource<CatalogTag> = TokenSource::new();
-        let mut retention_ops: TokenSource<RetentionTag> = TokenSource::new();
         let mut recorder_ops: TokenSource<RecorderTag> = TokenSource::new();
         let mut navigator_ops: TokenSource<NavigatorTag> = TokenSource::new();
         let mut settings_ops: TokenSource<SettingsTag> = TokenSource::new();
-        let mut weather_ops: TokenSource<WeatherTag> = TokenSource::new();
+
         let mut dfu_ops: TokenSource<DfuTag> = TokenSource::new();
         let mut bond_ops: TokenSource<BondTag> = TokenSource::new();
         let mut storage_ops: TokenSource<StorageInfoTag> = TokenSource::new();
 
         let mut first = OutcomeSlots::new();
         first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue(), scope: None }).unwrap();
-        first
-            .retention
-            .try_put(RetentionOutcome::RouteMetadataWritten { token: retention_ops.issue(), id: 1 })
-            .unwrap();
         first
             .recorder
             .try_put(RecorderOutcome::Checkpointed {
@@ -372,7 +264,7 @@ mod tests {
             .unwrap();
         first.navigator.try_put(NavigatorOutcome::Acquired { token: navigator_ops.issue() }).unwrap();
         first.settings.try_put(SettingsOutcome::Persisted { token: settings_ops.issue(), revision: 3 }).unwrap();
-        first.weather.try_put(WeatherOutcome::Raised { token: weather_ops.issue() }).unwrap();
+
         first.dfu.try_put(DfuOutcome::InstallBegan { token: dfu_ops.issue() }).unwrap();
         first
             .bond
@@ -389,8 +281,6 @@ mod tests {
         let mut second = OutcomeSlots::new();
         let error = CatalogError::Unreadable;
         second.catalog.try_put(CatalogOutcome::Failed { token: catalog_ops.issue(), error }).unwrap();
-        let error = crate::retention::RetentionError::WriteFailed;
-        second.retention.try_put(RetentionOutcome::Failed { token: retention_ops.issue(), error }).unwrap();
         second
             .recorder
             .try_put(RecorderOutcome::Failed { token: recorder_ops.issue(), error: RecorderError::Write })
@@ -398,10 +288,7 @@ mod tests {
         let error = NavigatorError::Workspace;
         second.navigator.try_put(NavigatorOutcome::Failed { token: navigator_ops.issue(), error }).unwrap();
         second.settings.try_put(SettingsOutcome::Cancelled { token: settings_ops.issue() }).unwrap();
-        second
-            .weather
-            .try_put(WeatherOutcome::Failed { token: weather_ops.issue(), error: WeatherError::LinkLost })
-            .unwrap();
+
         let error = DfuScanError::NotFound;
         second.dfu.try_put(DfuOutcome::ScanFailed { token: dfu_ops.issue(), error }).unwrap();
         let error = crate::ble::BondError::StoreWriteFailed;
@@ -434,10 +321,21 @@ mod tests {
         let (mut expected, mut refused) = effects();
         assert!(slots.has_pending());
 
-        check_full_slot!(slots, other, expected, refused, catalog, retention, recorder, navigator, settings);
-        check_full_slot!(slots, other, expected, refused, weather, dfu, bond, storage_info);
+        check_full_slot!(
+            slots,
+            other,
+            expected,
+            refused,
+            catalog,
+            recorder,
+            navigator,
+            settings,
+            dfu,
+            bond,
+            storage_info
+        );
 
-        assert!(!slots.has_pending(), "all nine fields drained");
+        assert!(!slots.has_pending(), "all eight fields drained");
     }
 
     /// The outcome twin: an executor that answered twice cannot displace the terminal result the
@@ -448,10 +346,21 @@ mod tests {
         let (mut expected, mut refused) = outcomes();
         assert!(slots.has_pending());
 
-        check_full_slot!(slots, other, expected, refused, catalog, retention, recorder, navigator, settings);
-        check_full_slot!(slots, other, expected, refused, weather, dfu, bond, storage_info);
+        check_full_slot!(
+            slots,
+            other,
+            expected,
+            refused,
+            catalog,
+            recorder,
+            navigator,
+            settings,
+            dfu,
+            bond,
+            storage_info
+        );
 
-        assert!(!slots.has_pending(), "all nine fields drained");
+        assert!(!slots.has_pending(), "all eight fields drained");
     }
 
     /// The backpressure contract in the shape a domain owner actually uses it: one operation is in

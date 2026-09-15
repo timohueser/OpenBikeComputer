@@ -14,7 +14,6 @@ rides = "Sorties"
 pois = "POIs"
 map = "Carte"
 peaks = "Sommets"
-weather = "Météo"
 settings = "Réglages"
 
 [peak_view]
@@ -201,15 +200,7 @@ local_time = "Heure locale"
 offset = "Décalage"
 utc = "UTC "
 
-# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
-[autodelete]
-never = "Jamais"
-day1 = "1 jour"
-week1 = "1 sem."
-month1 = "1 mois"
-
-# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
-# --- onto the route-plan sheet in #1515 D4d) ---
+# --- Ride settings ---
 [ride]
 title = "SORTIE"
 fields = "Champs"
@@ -220,8 +211,6 @@ climb = "Montée"
 climb_sub = "panneau"
 waypoints = "Points"
 waypoints_sub = "puce"
-autodelete = "Suppr. auto"
-autodelete_sub = "sorties"
 
 # --- Display settings screen ---
 [display]
@@ -388,7 +377,6 @@ start_ride = "DÉMARRER"
 loading_profile = "Chargement"
 delete = "Supprimer"
 new_route = "NOUV. PARCOURS"
-auto_delete = "Suppr. auto"
 
 # --- Route-received / route-updated popups ---
 [route_received]
@@ -556,53 +544,9 @@ cardtype_fix = "Utilisez une carte SDHC ou SDXC"
 storagefault_what = "Lecteur en panne"
 storagefault_fix = "Redémarrez l'appareil"
 
-# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
-[weather]
-title = "MÉTÉO"
-hourly = "HORAIRE"
-rain_map = "CARTE PLUIE"
-updating = "MISE À JOUR"
-dry_1 = "SEC POUR"
-rain = "PLUIE"
-storm = "ORAGE"
-rain_in = "PLUIE DANS"
-storm_in = "ORAGE DANS"
-now = "MAINT."
-min = "MIN"
-in = "DANS"
-update_needed = "MISE À JOUR MÉTÉO REQUISE"
-hourly_only = "PLUIE SANS DÉTAIL"
-hourly_only_sub = "Par heure"
-no_data = "PAS DE DONNÉES MÉTÉO"
-no_data_sub = "Via téléphone"
-zoom_for_rain = "ZOOM POUR PLUIE"
-alert_rain = "PLUIE DEVANT"
-alert_storm = "ORAGE DEVANT"
-alert_rain_body = "Pluie forte sur le parcours."
-alert_storm_body = "Orage sur le parcours."
-alert_gust = "VENT FORT"
-alert_gust_body = "Rafales dangereuses devant."
-view_rain_map = "CARTE PLUIE"
-dismiss = "FERMER"
-
-# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
 [route_context]
 bike_type = "Type de vélo"
 
-# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
-[weather_context]
-refresh_now = "Actualiser"
-interval = "Intervalle"
-
-# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
-[weather_refresh]
-off = "Non"
-m15 = "15 min"
-m30 = "30 min"
-m60 = "60 min"
-m120 = "120 min"
-
-# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]
 n = "N"
 ne = "NE"
@@ -623,3 +567,19 @@ power = "ETEINDRE"
 power_confirm = "ETEINDRE ?"
 power_hold = "MAINTENIR SELECT."
 powering_off = "EXTINCTION..."
+
+[route_cleanup]
+title = "STOCKAGE PLEIN"
+body = "Supprimer les parcours sur cet appareil depuis plus de :"
+unknown_clock = "Date inconnue. Supprimez des parcours dans le menu Parcours, puis réessayez."
+delete = "Supprimer"
+age_1 = "1 semaine"
+age_2 = "2 semaines"
+age_4 = "4 semaines"
+age_8 = "8 semaines"
+age_12 = "12 semaines"
+age_26 = "26 semaines"
+working = "Suppression en cours..."
+failed = "Suppression arrêtée. Des parcours ont pu être supprimés. Vérifiez le stockage et réessayez."
+no_matches = "Aucun parcours trouvé. Choisissez un âge plus court ou utilisez le menu Parcours."
+done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."

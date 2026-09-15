@@ -6,13 +6,6 @@ it. The catalog is tracked; large generated and captured bytes are not.
 
 ## Mental model
 
-- A **package** is an immutable, checksummed archive stored outside Git. Keep it
-  cohesive and reusable: one map region, or one weather-source capture.
-- A **scenario** is everything needed for one simulator run. It names packages
-  and resolves semantic inputs such as `map`, `gpx`, `weather`, and route dirs.
-- A **profile** is a convenience set for a workflow. `sim`, `weather`, and
-  `test` are the standard profiles.
-
 The catalog at [`catalog.toml`](catalog.toml) is authoritative. Consumers must
 not know bucket paths or reach into another crate's `assets/` directory.
 
@@ -57,11 +50,6 @@ For the two initial map packages, `fixtures/build-map-package.sh` preserves the
 canonical bboxes and source URLs and writes its staging trees/archives under
 `fixtures/build/`. Build Grimsel terrain before its map, or use the `all` target.
 
-Never replace an object at an existing digest key. Never put fixture objects in
-the production maps bucket: that bucket has an independent publication and
-cleanup lifecycle. A larger Freiburg map is just another package; a scenario
-can combine it with the existing historical weather package.
-
 ## What remains in Git
 
 Small authored format vectors, parser corpora, and pixel goldens stay beside
@@ -76,24 +64,6 @@ is a backstop, not a target size; use the smallest input that covers the scenari
 Generated design-review screenshots belong in PRs or project documentation, not a runtime asset folder.
 
 ## Package provenance
-
-- `sim-grimsel`: an **OBCM v14** file packed from the 2026-08-17 Switzerland
-  snapshot; its OBCT terrain is derived from Copernicus GLO-30 tile
-  `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
-  The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
-  `tracked_sources` originals.
-- `sim-monaco`: an **OBCM v14** file from the 2026-08-17 Monaco snapshot plus the
-  project-authored up-ahead GPX.
-- `weather-dwd-icon`: the exact DWD captures formerly documented under
-  `host/obc-wx-bake/tests/fixtures`.
-- `weather-noaa`: the exact NOAA captures formerly documented in that same
-  directory. Source files are preserved byte-for-byte inside the archive; the
-  current revision contains both the original APCP spans and the corrected
-  point-valid PRATE spans so the source-semantics PR can land independently.
-- `weather-event-derecho` and `weather-event-airmass`: complete, reproducible
-  MRMS/HRRR event packs. Their small `event.json` manifests remain tracked and
-  are matched byte-for-byte through `tracked_sources`; upstream, baked, and
-  truth bytes live only in the immutable packages.
 
 ### Revision log: repacked at OBCM v14 (FS7.5b, #1420)
 

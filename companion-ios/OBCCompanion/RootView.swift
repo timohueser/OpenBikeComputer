@@ -3,7 +3,6 @@ import OBCDomain
 import OBCTransport
 import OBCFormats
 import OBCUI
-import OBCWeather
 
 /// The app's root: the B2 launch gate (bond check → quiet reconnect, or the
 /// D1–D5 pairing flow) in front of the main screen (B3), which pushes the B4
@@ -35,10 +34,6 @@ struct RootView: View {
 
     private let transport: any DeviceTransport
     private let bondStore: any BondStore
-    /// The app-local default-retention preference (epic #638) — shared by the main
-    /// model (upload seeding) and the Settings model (the Auto-delete picker), so a
-    /// change in Settings seeds the next upload.
-    private let retentionDefaults: any RetentionDefaultsStore
     /// The proactive-update preferences (#773 U5) — the auto-check toggle, the answered ledger and
     /// the last-seen device. Shared by the launch surface here and the Settings toggle, so the switch
     /// silences the surface it names.
@@ -58,16 +53,11 @@ struct RootView: View {
     /// pushes the S7 screen straight to its staged state (the Files picker can't
     /// be driven from automation), optionally auto-sending. `nil` in normal runs.
     private let firmwareDemoAtLaunch: (data: Data, autoSend: Bool)?
-    /// The WX13 Weather screens' seams (#1198): the job history ring, the engine (as the retry
-    /// control), the service-status provider and the standing-watch preference. Chosen by the
-    /// composition root exactly like the transport is.
-    private let weather: WeatherScreenSeams
 
     init(
         transport: any DeviceTransport,
         bondStore: any BondStore,
         library: any LibraryStore = InMemoryLibraryStore(),
-        retentionDefaults: any RetentionDefaultsStore = InMemoryRetentionDefaultsStore(),
         reachability: any NetworkReachability = PathMonitorReachability(),
         backgroundTasks: any BackgroundTaskRunner = UIKitBackgroundTaskRunner(),
         updateSurface: any UpdateSurfaceStore = InMemoryUpdateSurfaceStore(),
@@ -77,16 +67,14 @@ struct RootView: View {
         // The sync coordinator's own timing seam, threaded so the composition root can park the
         // post-sync confirmation for an automated capture (`-OBCHoldSyncConfirmation`, #1212).
         // Untouched in every ordinary run.
-        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing(),
-        weather: WeatherScreenSeams = WeatherScreenSeams()
+        syncTiming: RideSyncCoordinator.Timing = RideSyncCoordinator.Timing()
     ) {
         self.transport = transport
         self.bondStore = bondStore
-        self.retentionDefaults = retentionDefaults
         self.updateSurface = updateSurface
         self.importAtLaunch = importAtLaunch
         self.firmwareDemoAtLaunch = firmwareDemoAtLaunch
-        self.weather = weather
+
         let importer = RouteImporter(decoders: [GPXRouteDecoder(), TCXRouteDecoder()])
         self.importer = importer
         let transferActivity = TransferActivity()
@@ -97,7 +85,6 @@ struct RootView: View {
         ))
         _mainModel = State(initialValue: MainScreenModel(
             transport: transport, library: library,
-            retentionDefaults: retentionDefaults,
             syncTiming: syncTiming,
             // The rename self-heal (#361): once per established connection,
             // push the bond record's desired name if the device config
@@ -229,9 +216,7 @@ struct RootView: View {
             switch newPhase {
             case .active:
                 updateSurfaceModel.appBecameActive()
-                // WX9 (#1194): finish whatever the weather checkpoint still owes. Cooldown-honouring
-                // and a no-op with nothing persisted, so a user who checked a text pays nothing.
-                OBCCompanionApp.weatherJobDidEnterForeground()
+
             case .background: BackgroundUpdateRefresh.schedule()
             default: break
             }
@@ -322,12 +307,6 @@ struct RootView: View {
             replacingProvenCRC: pending.replacing.flatMap {
                 mainModel.plannedProvenCommittedCRC(for: $0.id)
             },
-            // Retention (epic #638 S7): a fresh import's upload sheet seeds its
-            // Auto-delete row from the app default (a replace keeps the replaced
-            // route's level); the capability gate hides the row on old firmware.
-            uploadRetentionSeed: pending.replacing.flatMap { mainModel.plannedRetention(for: $0.id) }
-                ?? mainModel.defaultRetention,
-            supportsRetention: mainModel.supportsRetention,
             onSave: { detail, tripSelection in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 // File into the chosen trip as its last stage (TR7); `.none`
@@ -341,12 +320,12 @@ struct RootView: View {
             // after F₂. The link is recorded through `markRouteUploaded` —
             // the model scopes it to the connected device's (serial, epoch)
             // identity (#769); `record(for:)` itself never mints links.
-            onUploaded: { detail, tripSelection, objectID, crc, retention in
+            onUploaded: { detail, tripSelection, objectID, crc in
                 mainModel.addImportedRoute(pending.record(for: detail))
                 mainModel.fileRoute(detail.summary.id, into: tripSelection)
                 if let objectID {
                     mainModel.markRouteUploaded(
-                        detail.summary.id, objectID: objectID, crc32: crc, retention: retention)
+                        detail.summary.id, objectID: objectID, crc32: crc)
                 }
             },
             // H4 "Pair a device": save first (a pairing detour must not
@@ -406,16 +385,6 @@ struct RootView: View {
                     deviceObjectID: mainModel.plannedDeviceObjectID(for: id),
                     provenCommittedCRC: mainModel.plannedProvenCommittedCRC(for: id),
                     deviceName: mainModel.deviceName,
-                    // Retention (epic #638 S7): the desired level + the device's
-                    // expiry truth for the detail row, the seed for the upload
-                    // sheet, the capability gate, and the edit sink (pushes live
-                    // or at the next reconcile).
-                    retention: mainModel.plannedRetention(for: id),
-                    deviceRetention: mainModel.plannedDeviceRetention(for: id),
-                    deviceExpiresAt: mainModel.plannedDeviceExpiresAt(for: id),
-                    uploadRetentionSeed: mainModel.plannedRetention(for: id) ?? mainModel.defaultRetention,
-                    supportsRetention: mainModel.supportsRetention,
-                    onEditRetention: { mainModel.setRouteRetention(id, $0) },
                     onDelete: {
                         mainModel.deleteRoute(id)
                         path.removeAll()
@@ -428,13 +397,10 @@ struct RootView: View {
                             path.append(.route(id: reversedID))
                         }
                     },
-                    // A completed upload: record the device object id +
-                    // fingerprint it landed under (the badge + in-place replace),
-                    // and the rider's chosen retention (S6 pushes it post-commit).
-                    onUploaded: { objectID, crc, retention in
+                    onUploaded: { objectID, crc in
                         if let objectID {
                             mainModel.markRouteUploaded(
-                                id, objectID: objectID, crc32: crc, retention: retention)
+                                id, objectID: objectID, crc32: crc)
                         }
                     },
                     // TR7 route menu (detail overflow): Add to trip… on a loose
@@ -485,7 +451,6 @@ struct RootView: View {
             SettingsScreen(
                 transport: transport,
                 bondStore: bondStore,
-                retentionDefaults: retentionDefaults,
                 // #773 U5: the same store the launch surface reads, so the toggle it hosts silences
                 // both proactive surfaces at once.
                 updateSurface: updateSurface,
@@ -500,22 +465,9 @@ struct RootView: View {
                 // the host owns a stable model — an in-flight transfer survives
                 // Settings body passes).
                 onOpenFirmwareUpdate: { path.append(.firmwareUpdate) },
-                // WX13: the Weather screen is its own destination for the same reason — the model
-                // reads the device, the ring and the service, and must survive Settings body passes.
-                onOpenWeather: { path.append(.weather) },
+
                 onOpenDevPanel: devPanelOpener
             )
-        case .weather:
-            WeatherSettingsScreen(
-                transport: transport,
-                seams: weather,
-                onOpenDiagnostics: { path.append(.weatherDiagnostics) },
-                onOpenPrivacy: { path.append(.weatherPrivacy) }
-            )
-        case .weatherDiagnostics:
-            WeatherDiagnosticsScreen(history: weather.history)
-        case .weatherPrivacy:
-            WeatherPrivacyView()
         case .firmwareUpdate:
             FirmwareUpdateScreen(
                 transport: transport,
@@ -548,9 +500,7 @@ enum MainDestination: Hashable {
     case ride(id: RideID)
     case trash
     case settings
-    case weather
-    case weatherDiagnostics
-    case weatherPrivacy
+
     case firmwareUpdate
 }
 

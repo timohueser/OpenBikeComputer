@@ -1,20 +1,3 @@
-//! The control-plane descriptor codecs — small, typed, fixed-shape messages that ride GATT while
-//! the CoC stays raw payload bytes:
-//!
-//! - [`TransferControl`]: the fixed **12-byte** descriptor the app writes to open / abort a transfer
-//!   (protocol v2: `transferControl` is **write-only** — a download's announce rides the `status`
-//!   envelope as [`StatusMessage::DownloadAnnounce`], not a notify on this characteristic).
-//! - [`StatusMessage`]: the device → app `status` notification envelope — a `u8` discriminator +
-//!   fixed body. In v2 it is the **sole** device → app control channel, so the download announce
-//!   (`msg = 4`) shares its one subscription / one ordering domain.
-//! - [`VersionRead`]: the widened `protocolVersion` read — `version u16 · store_epoch u32 ·
-//!   obcm_version u8` (§1), a **length-driven** read served at 7, 6 or 2 bytes.
-//! - [`Config`]: the whole-blob Config object that crosses GATT (not the CoC).
-//!
-//! Every layout mirrors the app's Swift codecs field-for-field. All integers little-endian.
-
-use crate::weather_request::WeatherRefresh;
-
 /// Why a control-plane descriptor failed to decode. Mirrors the app's `DescriptorError` so a
 /// firmware reject and an app reject classify the same wire byte the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,12 +10,6 @@ pub enum DescriptorError {
     UnknownType(u8),
     /// A status/discriminator byte is not a known value.
     UnknownStatus(u8),
-    /// A `weather_refresh` byte names an interval this build does not know (§11.8). Its own variant
-    /// rather than a `UnknownStatus`, because it is the one decode failure whose *correct handling
-    /// depends on the direction of travel*: fatal on a phone → device Config write, ignorable on
-    /// either device → phone read. A caller that cannot tell the two apart cannot implement §11.8,
-    /// and sharing a discriminant with every other unknown byte is exactly what would hide that.
-    UnknownRefresh(u8),
     /// A fixed-width field decoded correctly but names a value outside the command's contract.
     Bounds,
 }
@@ -73,22 +50,6 @@ pub enum ObjectType {
     ///
     /// The transfer layer stays format-blind, as it is for `FwImage`: the payload is opaque bytes.
     Map = 16,
-    /// The singleton **weather bundle** — one OBCW v1 file (`OBCW_Spec.md`), app → device, upload
-    /// only, over the ordinary reliable CoC (WX3, #1188).
-    ///
-    /// **Why 20 and not 11:** `11`–`15` remain reserved for the sensor work (M4) and `16`–`19` are
-    /// the USB-introduced map types, so `20` is simply the next free value. (The WX3 issue text
-    /// said `11`; the epic's handover comment on #1185 supersedes it for exactly this reason.)
-    ///
-    /// **Singleton.** `object_id` MUST be `0`: there is one weather bundle and an upload always
-    /// targets it. Any other id is answered `notFound`. It is not `0xFFFF`/new-only like a map —
-    /// "new-only" exists because a map cannot be replaced in place, whereas a bundle is *always* a
-    /// replacement. Flat-store publication retains the old immutable revision until the new
-    /// object commits, so an interrupted upload leaves the old one intact.
-    ///
-    /// Unlike the map types this one is **BLE-first**: ~46 KiB is a couple of seconds on the CoC,
-    /// which is the whole reason the intermittent lifecycle is affordable.
-    WeatherBundle = 20,
 }
 
 impl ObjectType {
@@ -111,10 +72,7 @@ impl ObjectType {
             10 => Self::TripList,
             // 11–15 stay reserved (sensors, M4) and keep rejecting.
             16 => Self::Map,
-            // 17–19 were the volume set's `mapShard` / `mapSet` / `terrainShard` (retired with
-            // OBCM v14, #1420: a map is one file). Not re-issued — same no-reuse discipline as a
-            // retired GATT UUID, so a stale host's announce is refused rather than misread.
-            20 => Self::WeatherBundle,
+
             other => return Err(DescriptorError::UnknownType(other)),
         })
     }
@@ -443,100 +401,11 @@ pub const CMD_INSTALL_FW: u8 = 3;
 /// posture. The device answers `commandResult(ok)` first, then clears the bond + drops the link and
 /// returns to open-pairing advertising.
 pub const CMD_FORGET_BOND: u8 = 4;
-/// `command` byte: `setClock` (§4.4, cmd 5) — `utc u32 LE · offset_min i16 LE`; see [`SetClock`].
-/// Auto-expiry epic #638 S2 (#642): the phone stamps the device's UTC clock + local offset on every
-/// connect, the second trusted clock source after GPS. The epic's draft table numbered it `3`; that
-/// predates `installFw`/`forgetBond` taking `3`/`4`, so it lands at `5` (the next-free command, §4.4).
 pub const CMD_SET_CLOCK: u8 = 5;
-/// `command` byte: `setRouteRetention` (§4.4, cmd 6) — `object_id u16 LE · retention u8`; see
-/// [`SetRouteRetention`]. Auto-expiry epic #638 S4 (#644): the phone sets a stored route's retention
-/// level without re-uploading it — right after an upload's `transferResult` commits (the result
-/// carries the assigned id) and on any user retention edit. The epic's draft table numbered it `4`;
-/// that predates `forgetBond`/`setClock` taking `4`/`5`, so it lands at `6` (the next-free command).
-pub const CMD_SET_ROUTE_RETENTION: u8 = 6;
-/// `command` byte: `weatherUnchanged` (§4.4, cmd 7) — `request_id u32 LE · retry_after_s u16 LE`.
-/// The bonded phone has conditionally checked both providers and proved that the selected bundle is
-/// still current, so the device can finish the request without receiving the bundle again.
-pub const CMD_WEATHER_UNCHANGED: u8 = 7;
-/// Bound a peer-provided manual-probe deferral. The ordinary configured refresh cadence remains the
-/// scheduled ceiling; this only prevents repeated dashboard opens during publication lag.
-pub const WEATHER_UNCHANGED_MAX_RETRY_S: u16 = 60 * 60;
-
-/// The largest valid `setRouteRetention` retention byte: `5` (2 months). A write above it is an
-/// out-of-range level (§4.4), rejected `error` — decoded here, mirrored by the iOS codec, and pinned
-/// by the `command-set-route-retention.bin` vector.
-pub const SET_ROUTE_RETENTION_MAX: u8 = 5;
-
-/// The earliest UTC a `setClock` will accept: `2020-01-01T00:00:00Z` (unix `1577836800`). An earlier
-/// stamp is an obviously-bogus phone clock (§4.4) and is rejected `error`, so it can never seed a
-/// stale set-point that the auto-expiry sweep (#638) would then treat as trusted.
 pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
 /// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
 pub const SET_CLOCK_MAX_OFFSET_MIN: i16 = 14 * 60;
-
-/// The compact acknowledgement that replaces an unchanged OBCW upload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WeatherUnchanged {
-    pub request_id: u32,
-    pub retry_after_s: u16,
-}
-
-impl WeatherUnchanged {
-    pub const ENCODED_LEN: usize = 7;
-
-    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
-        if bytes[0] != CMD_WEATHER_UNCHANGED {
-            return Err(DescriptorError::UnknownOp(bytes[0]));
-        }
-        let request_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        let retry_after_s = u16::from_le_bytes([bytes[5], bytes[6]]);
-        if request_id == 0 || retry_after_s > WEATHER_UNCHANGED_MAX_RETRY_S {
-            return Err(DescriptorError::Bounds);
-        }
-        Ok(Self { request_id, retry_after_s })
-    }
-
-    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0; Self::ENCODED_LEN];
-        out[0] = CMD_WEATHER_UNCHANGED;
-        out[1..5].copy_from_slice(&self.request_id.to_le_bytes());
-        out[5..7].copy_from_slice(&self.retry_after_s.to_le_bytes());
-        out
-    }
-}
-
-/// Report phone work without satisfying the request or changing retry pacing.
-pub const CMD_WEATHER_ATTEMPT: u8 = 8;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WeatherAttempt {
-    pub request_id: u32,
-    pub started: bool,
-}
-
-impl WeatherAttempt {
-    pub const ENCODED_LEN: usize = 6;
-    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
-        if bytes[0] != CMD_WEATHER_ATTEMPT {
-            return Err(DescriptorError::UnknownOp(bytes[0]));
-        }
-        let request_id = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        if request_id == 0 || bytes[5] > 1 {
-            return Err(DescriptorError::Bounds);
-        }
-        Ok(Self { request_id, started: bytes[5] == 1 })
-    }
-    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0; Self::ENCODED_LEN];
-        out[0] = CMD_WEATHER_ATTEMPT;
-        out[1..5].copy_from_slice(&self.request_id.to_le_bytes());
-        out[5] = self.started as u8;
-        out
-    }
-}
 
 /// Map the cheaply-knowable device state at the BLE edge to the `installFw` `commandResult.status`
 /// (§4.4 cmd 3). The four documented outcomes reuse the existing status vocabulary — **no new status
@@ -635,20 +504,6 @@ impl<'a> AckRides<'a> {
     }
 }
 
-/// The `setClock` command (§4.4, cmd `5`): `cmd u8 = 5 · utc u32 LE · offset_min i16 LE` — the
-/// phone stamps the device's wall clock on every connect (auto-expiry epic #638 S2, #642).
-///
-/// `utc` is the phone's current time in unix seconds; `offset_min` is its local UTC offset in
-/// minutes with **DST already applied** (the phone is the timezone oracle — the device carries no tz
-/// tables). The device sets its UTC wall-clock set-point, persists the offset, and becomes *trusted*
-/// for the boot — the safety gate the retention sweep reads. The app sends it immediately after
-/// encryption and **before** `ackRides`, so ride `synced_at` stamping (S3) can assume a trusted clock.
-///
-/// [`decode`](Self::decode) checks the fixed 7-byte structure **and** the two plausibility gates a
-/// bogus phone clock would fail — `utc` no earlier than 2020-01-01 ([`SET_CLOCK_MIN_UTC`]) and
-/// `|offset|` within ±14 h ([`SET_CLOCK_MAX_OFFSET_MIN`]) — so a caller answers `error` (§4.3) on any
-/// `Err` and `ok` on success. Keeping both checks here (not only the length) means the firmware and
-/// the iOS mirror share one definition of "valid", pinned by the `command-set-clock.bin` vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetClock {
     /// The phone's current UTC time, unix seconds.
@@ -695,69 +550,6 @@ impl SetClock {
         Some(Self::ENCODED_LEN)
     }
 }
-
-/// The `setRouteRetention` command (§4.4, cmd `6`): `cmd u8 = 6 · object_id u16 LE · retention u8` —
-/// the phone sets a stored route's retention level (auto-expiry epic #638 S4, #644).
-///
-/// `object_id` names a stored route; `retention` is the retention enum byte (`0` never · `1` 1 day ·
-/// `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months), mirroring `obc_app::Retention`. The device
-/// writes the level into its route-retention sidecar **without touching `last_used`** — changing
-/// retention never resets the usage clock — and bumps the **route** store revision only on a real
-/// change (setting the same value twice is `ok` with no bump). An unknown `object_id` answers
-/// `notFound`; a `retention` above [`SET_ROUTE_RETENTION_MAX`] or a wrong-length write answers `error`.
-/// The command is **additive** on protocol v2 — no `protocolVersion` bump.
-///
-/// [`decode`](Self::decode) folds the §4.4 validation (exact 4-byte length, cmd byte, `retention` in
-/// range) so a caller answers `error` on any `Err`, and checks the id against the catalog separately
-/// (that needs store state). Keeping the range check here — not only in the handler — means the
-/// firmware and the iOS mirror share one definition of "valid", pinned by the
-/// `command-set-route-retention.bin` vector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SetRouteRetention {
-    /// The stored route object id whose retention to set.
-    pub object_id: u16,
-    /// The retention enum byte (`0..=`[`SET_ROUTE_RETENTION_MAX`]); mirrors `obc_app::Retention`.
-    pub retention: u8,
-}
-
-impl SetRouteRetention {
-    /// The wire length: `cmd u8 · object_id u16 · retention u8`.
-    pub const ENCODED_LEN: usize = 4;
-
-    /// Decode a full `command` write (starting at the command byte). Errors — each answered `error`
-    /// (§4.4) — are a wrong length or command byte ([`Truncated`](DescriptorError::Truncated) /
-    /// [`UnknownOp`](DescriptorError::UnknownOp)) or a `retention` above [`SET_ROUTE_RETENTION_MAX`].
-    /// The write must be **exactly** 4 bytes (like `setClock`, it carries no variable tail, so
-    /// trailing bytes are malformed). An out-of-range `retention` reuses `Truncated` — the caller maps
-    /// every `Err` to `error` regardless of variant, matching the `setClock` precedent.
-    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
-        if bytes[0] != CMD_SET_ROUTE_RETENTION {
-            return Err(DescriptorError::UnknownOp(bytes[0]));
-        }
-        let object_id = u16::from_le_bytes([bytes[1], bytes[2]]);
-        let retention = bytes[3];
-        if retention > SET_ROUTE_RETENTION_MAX {
-            return Err(DescriptorError::Truncated);
-        }
-        Ok(Self { object_id, retention })
-    }
-
-    /// Encode into `out` (≥ [`ENCODED_LEN`](Self::ENCODED_LEN)); returns the written length or `None`
-    /// for a too-small buffer. The app side encodes (its Swift codec mirrors this); the firmware only
-    /// decodes — this exists for the shared-vector and round-trip tests. It does **not** range-check
-    /// `retention`, so a negative test can encode an out-of-range byte for [`decode`](Self::decode).
-    pub fn encode(object_id: u16, retention: u8, out: &mut [u8]) -> Option<usize> {
-        if out.len() < Self::ENCODED_LEN {
-            return None;
-        }
-        out[0] = CMD_SET_ROUTE_RETENTION;
-        out[1..3].copy_from_slice(&object_id.to_le_bytes());
-        out[3] = retention;
-        Some(Self::ENCODED_LEN)
-    }
-}
-
 /// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores
 /// unknown discriminators** (forward compatibility), never failing the link over one. In protocol
 /// v2 this is the **sole** device → app control channel, so every message — including a download's
@@ -775,9 +567,6 @@ pub enum StatusMessage {
     /// announce off `transferControl` and onto this envelope so all device → app control traffic is
     /// one notify characteristic.
     DownloadAnnounce(TransferControl),
-    /// `msg = 5`, 1 byte: a request is ready on the authenticated Weather Request context.
-    /// The app acknowledges by reading that characteristic; this status message is only a hint.
-    WeatherRequest,
 }
 
 impl StatusMessage {
@@ -813,10 +602,6 @@ impl StatusMessage {
                 b[0] = 4;
                 b[1..1 + TransferControl::ENCODED_LEN].copy_from_slice(&d.encode());
                 1 + TransferControl::ENCODED_LEN
-            }
-            Self::WeatherRequest => {
-                b[0] = 5;
-                1
             }
         };
         (b, len)
@@ -864,7 +649,7 @@ impl StatusMessage {
                 }
                 Self::DownloadAnnounce(TransferControl::decode(&data[1..])?)
             }
-            5 => Self::WeatherRequest,
+
             _ => return Ok(None),
         }))
     }
@@ -932,44 +717,15 @@ pub struct VersionRead {
     /// The OBCM map-format version the device's reader reads; `None` when the read carried no such
     /// byte (a firmware predating E1). Never `Some(0)` from a decode of a short read.
     pub obcm_version: Option<u8>,
-    /// The optional capability word (WX3, #1188) — `None` when the read carried no such field, i.e.
-    /// any firmware predating it. Never `Some(0)` from a decode of a short read: absent means *this
-    /// device never told us*, and while both absent and `Some(0)` currently lead to the same
-    /// behaviour (no weather), fabricating a zero would make a diagnostic lie about which firmware
-    /// generation answered.
-    pub feature_bits: Option<u32>,
 }
 
-/// The device implements the Weather Request contract (§11): the secondary service, the request
-/// context, object type 20 and the Config refresh field.
-///
-/// One bit covers all four because they are useless apart — a phone that can read a request but
-/// cannot upload the answer has nothing to offer. Later, genuinely separable capabilities take
-/// their own bits; this word is append-only in the same sense the read is, and **unknown bits are
-/// ignored**.
-pub const FEATURE_WEATHER: u32 = 1 << 0;
-
 impl VersionRead {
-    /// The full read: `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32`. Also
-    /// the buffer size a caller reserves — [`encode`](Self::encode) reports how much of it is live.
-    pub const ENCODED_LEN: usize = 11;
-    /// The pre-WX3 read: everything but the trailing `feature_bits`.
-    pub const ENCODED_LEN_NO_FEATURES: usize = 7;
-    /// The pre-E1 read: everything but `obcm_version` and `feature_bits`. Still decoded (both
-    /// `None`), and still the shortest length a full [`decode`](Self::decode) accepts.
+    /// Version, store epoch, and map-format version.
+    pub const ENCODED_LEN: usize = 7;
+    /// Version and store epoch without a map-format byte.
     pub const ENCODED_LEN_NO_OBCM: usize = 6;
 
-    /// Encode into a fixed buffer; the returned length is the slice to serve (`&buf[..len]`) — 11
-    /// bytes with a `feature_bits`, 7 with only an `obcm_version`, 6 with neither. The 2-byte
-    /// no-store form is **not** produced here: it carries no `store_epoch`, so it is not a
-    /// `VersionRead` at all (the board writes the bare `PROTOCOL_VERSION` bytes for it).
-    ///
-    /// The fields are positional, so `feature_bits` can only be served when `obcm_version` is: a
-    /// value with features but no map version encodes as the 6-byte form rather than fabricating a
-    /// byte 6 that would read as "this device supports OBCM v0" and refuse every real map. A device
-    /// that has features to announce always has a reader version to announce with them, so this
-    /// combination does not arise in the firmware — it is defined here so it cannot become a
-    /// silent corruption if it ever does.
+    /// Encode the identity and return the number of bytes written.
     pub fn encode(&self) -> ([u8; Self::ENCODED_LEN], usize) {
         let mut b = [0u8; Self::ENCODED_LEN];
         b[0..2].copy_from_slice(&self.version.to_le_bytes());
@@ -978,49 +734,18 @@ impl VersionRead {
             return (b, Self::ENCODED_LEN_NO_OBCM);
         };
         b[6] = obcm;
-        match self.feature_bits {
-            Some(features) => {
-                b[7..11].copy_from_slice(&features.to_le_bytes());
-                (b, Self::ENCODED_LEN)
-            }
-            None => (b, Self::ENCODED_LEN_NO_FEATURES),
-        }
+        (b, Self::ENCODED_LEN)
     }
 
-    /// Whether the peer announced the Weather Request contract. An absent capability word is a
-    /// firmware that predates it, which is exactly a device without weather — so this is `false`,
-    /// and the old-client path is preserved without a special case at every call site.
-    pub const fn has_weather(&self) -> bool {
-        match self.feature_bits {
-            Some(bits) => bits & FEATURE_WEATHER != 0,
-            None => false,
-        }
-    }
-
-    /// Decode an identity read. Accepts 6 bytes (`obcm_version` and `feature_bits` both `None`) and
-    /// any longer read, taking each trailing field on "did at least this many bytes arrive" and
-    /// ignoring anything past the fields it knows — the append-only rule that lets both trailing
-    /// fields land without a `PROTOCOL_VERSION` bump. A read shorter than 6 bytes — including the
-    /// 2-byte no-store form — is [`Truncated`](DescriptorError::Truncated): there is no epoch in
-    /// it, and inventing one is precisely what the ack fail-closed contract forbids.
-    ///
-    /// A **partial** capability word (7 < len < 11) decodes as absent rather than as the bytes that
-    /// did arrive: three bytes of a `u32` are not a small capability set, they are a broken read,
-    /// and treating them as data could claim a feature the device never announced.
+    /// Decode the identity. A read without a store epoch is truncated.
     pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
         if data.len() < Self::ENCODED_LEN_NO_OBCM {
             return Err(DescriptorError::Truncated);
         }
-        let feature_bits = if data.len() >= Self::ENCODED_LEN {
-            Some(u32::from_le_bytes([data[7], data[8], data[9], data[10]]))
-        } else {
-            None
-        };
         Ok(Self {
             version: u16::from_le_bytes([data[0], data[1]]),
             store_epoch: u32::from_le_bytes([data[2], data[3], data[4], data[5]]),
             obcm_version: data.get(6).copied(),
-            feature_bits,
         })
     }
 }
@@ -1035,22 +760,6 @@ pub struct Config<'a> {
     pub name: &'a [u8],
     /// `0 = metric · 1 = imperial`.
     pub units: u8,
-    /// How often the device raises a scheduled weather request (WX3, #1188) — the trailing,
-    /// optional field, held **as the raw byte** so an unrecognised value survives a round-trip and
-    /// each direction can apply its own rule (§11.8). `None` means the blob carried no such byte.
-    ///
-    /// **Absent is not `Off`, and what absent *means* depends on the direction:**
-    ///
-    /// - **Reading** a device's Config, absent means the device is on its **default**
-    ///   ([`WeatherRefresh::DEFAULT`], 30 minutes).
-    /// - **Writing** a device's Config, absent means **leave the stored value untouched** — it is
-    ///   not a request to reset anything. This is the load-bearing one: an old app that renames the
-    ///   device writes a 3-byte blob, and a device that took that as "the rider chose the default"
-    ///   would reset a rider who had deliberately chosen `Off` back to 30-minute wakeups.
-    ///
-    /// Use [`known_refresh`](Self::known_refresh) to read it and
-    /// [`refresh_to_apply`](Self::refresh_to_apply) to apply a write.
-    pub weather_refresh: Option<u8>,
 }
 
 impl<'a> Config<'a> {
@@ -1060,35 +769,17 @@ impl<'a> Config<'a> {
     /// The smallest well-formed blob: `name_len` (2) + empty name + `units` (1).
     pub const MIN_ENCODED: usize = 3;
 
-    /// Encode into `out`, returning the written length. `None` if the name is over-long or the
-    /// buffer is too small. A `weather_refresh` of `None` encodes as the 3-byte-plus-name v1 blob —
-    /// byte-identical to what a pre-WX3 build produced, which is what keeps the vector for it
-    /// meaningful.
     pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
-        let len = 2 + self.name.len() + 1 + usize::from(self.weather_refresh.is_some());
+        let len = 2 + self.name.len() + 1;
         if self.name.len() > Self::MAX_NAME || len > Self::MAX_ENCODED || out.len() < len {
             return None;
         }
         out[0..2].copy_from_slice(&(self.name.len() as u16).to_le_bytes());
         out[2..2 + self.name.len()].copy_from_slice(self.name);
         out[2 + self.name.len()] = self.units;
-        if let Some(refresh) = self.weather_refresh {
-            out[3 + self.name.len()] = refresh;
-        }
         Some(len)
     }
 
-    /// Decode + validate a written Config blob: a `name_len` ≤ 48 that fits, whole blob in
-    /// `[MIN_ENCODED, MAX_ENCODED]`. Trailing bytes after the fields this build knows are tolerated
-    /// (append-only rule). `None` = malformed (the board rejects it with an ATT error rather than
-    /// silently storing it).
-    ///
-    /// The `weather_refresh` byte is **never** validated here, whichever value it carries: decoding
-    /// is direction-blind, and §11.8 makes an unknown interval fatal in exactly one direction. A
-    /// device applying a write calls [`refresh_to_apply`](Self::refresh_to_apply) and refuses; a
-    /// peer reading a device calls [`known_refresh`](Self::known_refresh) and sees `None`. Rejecting
-    /// the whole blob here would take the strict rule to both, which is how appending a fifth
-    /// interval would one day stop a shipped app from so much as renaming its device.
     pub fn decode(data: &'a [u8]) -> Option<Self> {
         if data.len() < Self::MIN_ENCODED || data.len() > Self::MAX_ENCODED {
             return None;
@@ -1097,30 +788,6 @@ impl<'a> Config<'a> {
         if name_len > Self::MAX_NAME || 2 + name_len + 1 > data.len() {
             return None;
         }
-        Some(Self {
-            name: &data[2..2 + name_len],
-            units: data[2 + name_len],
-            weather_refresh: data.get(3 + name_len).copied(),
-        })
-    }
-
-    /// The refresh interval **as a reader sees it**: `None` when the field was absent *or* names an
-    /// interval this build does not know (§11.8). Both collapse to "nothing this build can show",
-    /// and neither is `Off`.
-    pub fn known_refresh(&self) -> Option<WeatherRefresh> {
-        self.weather_refresh.and_then(|byte| WeatherRefresh::from_u8(byte).ok())
-    }
-
-    /// The refresh interval **a device must store for this write**, or a refusal.
-    ///
-    /// `Ok(None)` means the writer said nothing about refresh, and the device MUST leave whatever
-    /// it has stored alone rather than reset it to the default. `Err` means the writer named an
-    /// interval this device cannot honour — the one place §11.8 is strict, because silently
-    /// substituting anything would report a setting the rider never chose.
-    pub fn refresh_to_apply(&self) -> Result<Option<WeatherRefresh>, DescriptorError> {
-        match self.weather_refresh {
-            None => Ok(None),
-            Some(byte) => WeatherRefresh::from_u8(byte).map(Some),
-        }
+        Some(Self { name: &data[2..2 + name_len], units: data[2 + name_len] })
     }
 }

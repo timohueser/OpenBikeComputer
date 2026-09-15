@@ -1,30 +1,4 @@
-//! The shared **typed executor** for the frame-stepped hosts (the desktop sim GUI, the sim's
-//! headless driver, and the web demo) — #1397 S6a.
-//!
-//! One [`HostLoop`] owns everything a host needs between two DeviceCore passes: the outcomes and
-//! facts the next pass reads, the in-flight resumable planner, a planned-but-uncommitted detour,
-//! and the resident active-route parse. A frame is two calls:
-//!
-//! ```text
-//!   let plan = host.pass(app, now, gestures, sensors, route, weather, support); // one App::run_pass
-//!   host.execute(app, &mut plan, routes, rides, tracks, trips, map, elev, platform);
-//! ```
-//!
-//! [`pass`](HostLoop::pass) hands `App` this frame's inputs and returns its [`PassPlan`];
-//! [`execute`](HostLoop::execute) performs the plan's **bounded effects** against the caller's
-//! repositories and leaves token-carrying outcomes for the next pass. There is one arm per domain
-//! effect, and the executor performs no product policy: no ordering decision, no cascade, no
-//! replacement rule — those belong to the domain that decided the effect.
-//!
-//! ## What stays with the caller
-//!
-//! Input recognition, rendering, the frame's own clock — and the [`ActiveRouteSession`]. The
-//! resident route parse lives with the *host*, not in this struct, because the
-//! [`RouteReader`](obc_route::RouteReader) built over it is borrowed **across** the pass and the
-//! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
-//! [`ActiveRouteSession::sync`] and lends it to both.
-
-use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogObjectKind, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -34,10 +8,8 @@ use obc_app::device_core::{
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlanFamily, PlannerProgress, PlannerWork};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
-use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
-use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
-use obc_app::weather_alerts::AlertMarks;
+
 use obc_app::{App, Gesture};
 use obc_ports::{Sensors, SettingsSaveError};
 
@@ -45,24 +17,13 @@ use crate::nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan
 use crate::trace::{DataKey, FeederCall, FeederKind, NoTrace, TraceSink};
 use crate::{ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog};
 
-/// Feed the app the route catalog **with** its retention metas (epic #638, S3) — the shared re-feed
-/// after a scan/delete so the auto-expiry sweep always reads device-truth retention alongside the
-/// summaries. A retention-less repository returns empty metas → every route reads `Never`.
-///
-/// Bulk enters neither protocol: the executor fills the resident catalogs through the feeders they
-/// always used, and the *outcome* reports only that the operation is over.
 pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
-    let metas = routes.retention_metas();
-    app.set_routes_with_meta(routes.catalog(), routes.ids(), &metas);
+    app.set_routes_with_ids(routes.catalog(), routes.ids());
     trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), routes.catalog().len()));
-    trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
 }
 
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
     app.set_rides(rides.catalog());
-    if let Some(records) = rides.retention_inventory() {
-        app.set_ride_retention_inventory(records);
-    }
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
 }
 
@@ -156,15 +117,6 @@ pub trait HostPlatform {
         Ok(())
     }
 
-    /// Persist the weather alert-mark record as `revision` — the second durable record (#1542), on
-    /// the same terms as [`persist_settings`](HostPlatform::persist_settings) and defaulted for the
-    /// same reason: a host with no durable store has nothing that can fail, and an unanswered write
-    /// would park the handshake.
-    fn persist_alert_marks(&mut self, marks: &AlertMarks, revision: u16) -> Result<(), SettingsSaveError> {
-        let _ = (marks, revision);
-        Ok(())
-    }
-
     /// Bytes still free on the mounted medium, or the reason there is no figure.
     fn measure_free_space(&mut self) -> Result<u64, StorageInfoError> {
         Err(StorageInfoError::NotMounted)
@@ -187,21 +139,11 @@ pub trait HostPlatform {
     fn arm_install(&mut self) -> Option<Result<(), DfuInstallError>> {
         None
     }
-
-    /// **Raise** a weather refresh with whatever plane schedules the radio, and report whether
-    /// there was anything to raise it with. `false` — the default, because a host with no companion
-    /// has nothing to ask — is answered as [`WeatherError::LinkLost`]. What comes back, and when,
-    /// arrives as the installed-data fact; this call never waits for a bundle.
-    fn request_weather_refresh(&mut self) -> bool {
-        false
-    }
 }
 
 /// A host with no platform work of its own.
 impl HostPlatform for () {}
 
-/// Legacy folder repositories use a session-local fallback. FlatRouteStore supplies the complete
-/// physical card scope and is the only repository that admits durable retention work.
 const REPOSITORY_STORE: StoreIdentity = StoreIdentity::new(1);
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
@@ -331,16 +273,6 @@ impl HostLoop {
             .note_store_revision(StoreRevision { store: REPOSITORY_STORE, revision: Revision::new(self.revision) });
     }
 
-    /// Run **one** DeviceCore pass: whatever the executor handed back, this frame's input, and the
-    /// fourteen stages.
-    ///
-    /// `route` is the active route opened over the host's [`ActiveRouteSession`] — the same reader
-    /// the caller's render uses, so the map-matcher and the map draw agree about the geometry;
-    /// `weather` is the frame's sampled weather snapshot on the same terms.
-    /// The lifetime is one region covering the whole frame: `Sensors` is invariant, so the pass's
-    /// borrows — this loop's inbox, the frame's gestures, the sensor ports and the open route —
-    /// have to be the *same* region. Every host already holds them as sibling fields, which is what
-    /// makes that free.
     #[allow(clippy::too_many_arguments)]
     pub fn pass<'a>(
         &'a mut self,
@@ -349,7 +281,7 @@ impl HostLoop {
         gestures: &'a [Gesture],
         sensors: Sensors<'a>,
         route: Option<&'a obc_route::RouteReader<'a>>,
-        weather: Option<&'a obc_app::WeatherSnapshot>,
+
         support: PlatformSupport,
     ) -> PassPlan {
         let Inbox { outcomes, facts, derived, ride_preview, nav_preview } = &mut self.inbox;
@@ -358,7 +290,7 @@ impl HostLoop {
             gestures,
             sensors,
             route,
-            weather,
+
             support,
             outcomes,
             facts,
@@ -420,13 +352,10 @@ impl HostLoop {
         tracks: &mut dyn TrackRepository,
         platform: &mut dyn HostPlatform,
     ) {
+        routes.set_route_clock(app.clock_trusted().then(|| app.wall_unix_now()));
         if let Some(effect) = plan.effects.catalog.take() {
             let outcome = self.serve_catalog(app, effect, routes, rides, trips);
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
-        }
-        if let Some(effect) = plan.effects.retention.take() {
-            let outcome = serve_retention(effect, routes, rides);
-            deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
             let opened = app.recorder.object_owed(self.opened_session).is_none();
@@ -439,12 +368,6 @@ impl HostLoop {
                     match platform.persist_settings(app.settings(), revision) {
                         Ok(()) => SettingsOutcome::Persisted { token, revision },
                         Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
-                    }
-                }
-                SettingsEffect::PersistAlertMarks { token, revision } => {
-                    match platform.persist_alert_marks(app.alert_marks(), revision) {
-                        Ok(()) => SettingsOutcome::MarksPersisted { token, revision },
-                        Err(error) => SettingsOutcome::MarksPersistFailed { token, revision, error },
                     }
                 }
             };
@@ -472,13 +395,7 @@ impl HostLoop {
             };
             deliver(&mut self.inbox.outcomes.storage_info, outcome, "storage");
         }
-        if let Some(WeatherEffect::RequestRefresh { token }) = plan.effects.weather.take() {
-            let outcome = match platform.request_weather_refresh() {
-                true => WeatherOutcome::Raised { token },
-                false => WeatherOutcome::Failed { token, error: WeatherError::LinkLost },
-            };
-            deliver(&mut self.inbox.outcomes.weather, outcome, "weather");
-        }
+
         if let Some(obc_app::ble::BondEffect::Forget { token }) = plan.effects.bond.take() {
             let outcome = obc_app::ble::BondOutcome::from_result(token, platform.forget_bond());
             deliver(&mut self.inbox.outcomes.bond, outcome, "bond");
@@ -503,6 +420,14 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
     ) -> CatalogOutcome {
         match effect {
+            CatalogEffect::CleanupRoute { token, before_utc, store } => {
+                let active = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
+                match routes.cleanup_route(before_utc, store, active) {
+                    Ok(Some(object)) => CatalogOutcome::ObjectRemoved { token, object, existed: true },
+                    Ok(None) => CatalogOutcome::CleanupFinished { token },
+                    Err(error) => CatalogOutcome::Failed { token, error },
+                }
+            }
             CatalogEffect::ReadCatalog { token } => {
                 app.begin_catalog_refresh();
                 let scope = match routes.refresh_metadata() {
@@ -510,7 +435,7 @@ impl HostLoop {
                     Err(error) => {
                         return CatalogOutcome::Failed {
                             token,
-                            error: if error == obc_app::retention::RetentionError::RemountRequired {
+                            error: if error == obc_app::metadata::MetadataError::RemountRequired {
                                 CatalogError::RemountRequired
                             } else {
                                 CatalogError::Unreadable
@@ -537,20 +462,6 @@ impl HostLoop {
                 trips.refeed(app);
                 feed_rides(app, rides, &mut NoTrace);
                 CatalogOutcome::CatalogRead { token, scope }
-            }
-            CatalogEffect::ExpireObject { token, object, kind, scope } => {
-                if !app.retention_expiry_due(object, kind, scope) {
-                    return CatalogOutcome::Failed { token, error: CatalogError::Stale };
-                }
-                let result = match kind {
-                    CatalogObjectKind::Route => routes.expire_route(object, scope),
-                    CatalogObjectKind::Ride => rides.expire_ride(object, scope),
-                    CatalogObjectKind::Trip => Err(CatalogError::Unsupported),
-                };
-                match result {
-                    Ok(existed) => CatalogOutcome::ObjectRemoved { token, object, existed },
-                    Err(error) => CatalogOutcome::Failed { token, error },
-                }
             }
             CatalogEffect::RemoveObject { token, object, kind } => {
                 remove_object(token, object, kind, routes, rides, trips)
@@ -810,39 +721,13 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
 }
 
 /// Report only the repository's typed persistence result.
-fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> CatalogError {
-    if error == obc_app::retention::RetentionError::RemountRequired {
+fn catalog_metadata_error(error: obc_app::metadata::MetadataError) -> CatalogError {
+    if error == obc_app::metadata::MetadataError::RemountRequired {
         CatalogError::RemountRequired
     } else {
         CatalogError::Unreadable
     }
 }
-
-fn serve_retention(
-    effect: RetentionEffect,
-    routes: &mut dyn RouteRepository,
-    rides: &mut dyn RideRepository,
-) -> RetentionOutcome {
-    let token = effect.token();
-    let result = match effect {
-        RetentionEffect::WriteRouteMetadata { .. } => routes.write_metadata(effect),
-        RetentionEffect::WriteRideMetadata { .. } => rides.write_metadata(effect),
-    };
-    match (effect, result) {
-        (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
-            RetentionOutcome::RouteMetadataWritten { token, id }
-        }
-        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => RetentionOutcome::RideMetadataWritten { token, id },
-        (_, Err(error)) => RetentionOutcome::Failed { token, error },
-    }
-}
-
-/// One recording operation, beside [`serve_retention`].
-///
-/// **Nothing is re-fed here.** A committed ride is a store change, and the re-read it implies is
-/// `CatalogMachine`'s to order — Recorder tells it through the `RideFinalized` connection, so one
-/// saved ride is one catalog read (#1541's rule, applied to the last producer that kept its own copy
-/// of it).
 fn serve_recorder(
     app: &App,
     effect: RecorderEffect,
@@ -936,7 +821,6 @@ mod tests {
                 PassClock { ride: RideClock(0), ui: InputClock(0) },
                 &[],
                 Sensors::new(&mut loc),
-                None,
                 None,
                 SUPPORT,
             );
@@ -1046,10 +930,9 @@ mod tests {
         detour: true,
         settings_persistence: true,
         dfu: true,
-        weather: true,
+
         bonding: true,
         storage_space_report: true,
-        retention_metadata: true,
     };
 
     /// One scripted fix, taken once — the pass's location port.
@@ -1150,7 +1033,6 @@ mod tests {
                 &[],
                 Sensors::new(&mut loc),
                 None,
-                None,
                 SUPPORT,
             );
             // Refuse every append, so the samples stay staged. A refusal is a delay, not a loss.
@@ -1192,7 +1074,6 @@ mod tests {
                     PassClock { ride: RideClock(now), ui: InputClock(now) },
                     &[],
                     Sensors::new(&mut loc),
-                    None,
                     None,
                     SUPPORT,
                 );
@@ -1266,7 +1147,6 @@ mod tests {
                     &[],
                     Sensors::new(&mut loc),
                     None,
-                    None,
                     SUPPORT,
                 );
                 let Some(effect) = plan.effects.recorder.take() else { continue };
@@ -1311,7 +1191,3 @@ mod tests {
 
 #[cfg(test)]
 mod planner_tests;
-
-#[cfg(test)]
-#[path = "dispatch_ride_retention_tests.rs"]
-mod ride_retention_tests;
