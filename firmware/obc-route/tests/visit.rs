@@ -103,6 +103,10 @@ fn missing_access_wrong_map_and_profile_are_unavailable() {
     assert_eq!(target.approach(key(1), 0), Some((0, 0)));
     assert!(target.approach(key(2), 0).is_none());
     assert!(target.approach(key(1), 1).is_none());
+    let nearby = route(vec![(0, 1000, 0), (100, 0, 0)], &[], 111);
+    assert!(target.validate_destination(&SliceSource(&nearby), 0).is_err());
+    let exact = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
+    assert!(target.validate_destination(&SliceSource(&exact), 0).is_ok());
 }
 #[test]
 fn disconnected_return_is_not_joined_with_a_straight_segment() {

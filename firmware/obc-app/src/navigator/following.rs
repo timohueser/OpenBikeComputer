@@ -332,7 +332,7 @@ impl NavigatorMachine {
         }
         self.following.waypoint_count = self.waypoints.len();
         if let Some(route) = route {
-            self.reconcile_visit(route);
+            dirty |= self.reconcile_visit(route);
         }
         dirty
     }
