@@ -1628,7 +1628,7 @@ pub(crate) async fn run_app(
                             .and_then(Result::ok)
                             .unwrap_or(true)
                         });
-                        !app.bind_visit_sources(crate::flat_store::retention_scope(flat), original, avoidance)
+                        !app.bind_visit_sources(crate::flat_store::catalog_scope(flat), original, avoidance)
                     } else {
                         false
                     };

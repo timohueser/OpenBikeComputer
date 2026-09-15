@@ -1035,6 +1035,12 @@ The Up-ahead view merges route waypoints with map POIs near the route.
 </figure>
 
 The corridor query sorts results by distance along the route. It excludes POIs behind the snapshot anchor.
+A continuous pass within the configured radius of a place produces one encounter, at the nearest
+point on that pass. Equal distances keep the earlier route position and its side. Small bends
+within a pass do not add rows. Leaving the radius and returning produces a later encounter.
+Passes can cross route-chunk and page boundaries. The query completes the nearest-point calculation
+before it publishes the encounter, so changing pages does not change its identity or position.
+
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
