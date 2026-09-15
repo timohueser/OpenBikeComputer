@@ -4,7 +4,7 @@ use crate::flat_store::HostStore;
 use obc_app::device_core::TokenSource;
 use obc_storage::flat::{DisplayName, ObjectId, ObjectKind, Revision, Store};
 
-fn map_bytes() -> Vec<u8> {
+pub(super) fn map_bytes() -> Vec<u8> {
     use obc_pack::nav::{Edge, NavGraph, Node};
     let coords = [(500_000, 500_000), (520_000, 500_000), (510_000, 510_000)];
     let nodes = coords.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect();
