@@ -31,6 +31,8 @@ use crate::CatalogObjectId;
 
 /// Catalog revisions, refresh, deletion, and the trip cascade.
 pub enum CatalogTag {}
+/// Assistant checkpoint writes.
+pub enum MetadataTag {}
 /// Ride samples, checkpoints, finalize and discard.
 pub enum RecorderTag {}
 /// Route planning, detour planning, preview and commit.

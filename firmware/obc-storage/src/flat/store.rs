@@ -918,7 +918,14 @@ impl<D: BlockDevice> FlatStore<D> {
         if !self.mode().readable() {
             return Err(StoreError::ReadOnly);
         }
-        Ok(self.find(id)?.1.filter(|entry| entry.meta.flags == EntryFlags::NONE).map(|entry| entry.meta.revision))
+        Ok(self
+            .find(id)?
+            .1
+            .filter(|entry| {
+                entry.meta.flags == EntryFlags::NONE
+                    || (entry.meta.kind == super::ObjectKind::Route && entry.meta.flags.is_route_head())
+            })
+            .map(|entry| entry.meta.revision))
     }
 
     /// Entries the catalog holds.
@@ -1556,7 +1563,11 @@ impl<D: BlockDevice> FlatStore<D> {
                 match source {
                     PutSource::Amend => {
                         let existing = existing.ok_or(StoreError::NotFound)?;
-                        if meta.kind != existing.meta.kind {
+                        if meta.kind != existing.meta.kind
+                            || (meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+                                && (meta.payload_len != existing.meta.payload_len
+                                    || meta.payload_crc != existing.meta.payload_crc))
+                        {
                             return Err(StoreError::Invalid);
                         }
                         let mut entry = Entry { meta: *meta, ranges: existing.ranges };
@@ -1572,6 +1583,9 @@ impl<D: BlockDevice> FlatStore<D> {
                         Ok(Resolved { key: meta.key(), entry: Some(entry), creates: false, freed, reservation: None })
                     }
                     PutSource::Fresh(allocation) => {
+                        if meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
+                            return Err(StoreError::Invalid);
+                        }
                         // §5.2's cursor never rewinds, so an id below it named an object once and may
                         // never name another. Without this the compare-and-swap below would wave a
                         // retired identity through — `find` comes back empty, so the expected revision

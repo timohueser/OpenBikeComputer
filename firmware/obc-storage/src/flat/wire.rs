@@ -57,6 +57,7 @@ fn flags_out(flags: EntryFlags) -> v4::EntryFlags {
         (EntryFlags::RECORDING, v4::EntryFlags::RECORDING),
         (EntryFlags::RETAINED, v4::EntryFlags::RETAINED),
         (EntryFlags::RESERVED, v4::EntryFlags::RESERVED),
+        (EntryFlags::ASSISTANT_ACCEPTED, v4::EntryFlags::ASSISTANT_ACCEPTED),
     ] {
         if flags.has(mine) {
             out = out.with(theirs);
@@ -71,6 +72,7 @@ fn flags_in(flags: v4::EntryFlags) -> EntryFlags {
         (EntryFlags::RECORDING, v4::EntryFlags::RECORDING),
         (EntryFlags::RETAINED, v4::EntryFlags::RETAINED),
         (EntryFlags::RESERVED, v4::EntryFlags::RESERVED),
+        (EntryFlags::ASSISTANT_ACCEPTED, v4::EntryFlags::ASSISTANT_ACCEPTED),
     ] {
         if flags.has(theirs) {
             out = EntryFlags::decode(out.bits() | mine.bits()).unwrap_or(out);
@@ -190,6 +192,14 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         }
         let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
         for mutation in mutations {
+            let id = match mutation {
+                v4::Mutation::Put { meta, .. } => meta.id,
+                v4::Mutation::Remove { id, .. } => *id,
+            };
+            super::metadata::check_route_change(self, ObjectId(id.0)).map_err(|error| match error {
+                super::metadata::Error::Store(error) => error_out(error),
+                _ => v4::StoreError::Media,
+            })?;
             if batch.push(mutation_in(mutation)).is_err() {
                 return Err(v4::StoreError::Invalid);
             }
@@ -257,7 +267,7 @@ mod tests {
             assert_eq!(kind_in(theirs), mine);
             assert_eq!(theirs.value(), mine as u16);
         }
-        for bits in 0..=0b111u16 {
+        for bits in 0..=0b1111u16 {
             let mine = EntryFlags::decode(bits).unwrap();
             let theirs = v4::EntryFlags::decode(bits).unwrap();
             assert_eq!(flags_out(mine).bits(), bits);

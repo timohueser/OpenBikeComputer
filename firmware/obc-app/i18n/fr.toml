@@ -354,6 +354,7 @@ delete_ride = "Supprimer"
 
 # --- Route menu screen ---
 [route_menu]
+unaccepted = "Aperçu non accepté"
 title = "PARCOURS"
 no_routes = "Aucun parcours"
 no_routes_sub = "Importez un GPX"

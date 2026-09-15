@@ -18,7 +18,7 @@ pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, S
 
 pub use shared::{
     BondCapabilities, BondTag, Capabilities, CatalogCapabilities, CatalogTag, DeviceFacts, DfuCapabilities, DfuTag,
-    ExternalFacts, FactMergeError, NavigatorCapabilities, NavigatorTag, OperationToken, PlatformSupport,
+    ExternalFacts, FactMergeError, MetadataTag, NavigatorCapabilities, NavigatorTag, OperationToken, PlatformSupport,
     RecorderCapabilities, RecorderTag, Revision, RouteUpload, SettingsCapabilities, SettingsTag,
     StorageInfoCapabilities, StorageInfoTag, StoreIdentity, StoreRevision, TokenSource, TransferState, TripUpload,
     UpdateResult,

@@ -384,6 +384,7 @@ delete_ride = "Delete ride"
 
 # --- Route menu screen ---
 [route_menu]
+unaccepted = "Preview not accepted"
 title = "ROUTES"
 no_routes = "No routes yet"
 no_routes_sub = "Import a GPX file"

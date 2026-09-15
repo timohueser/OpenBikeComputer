@@ -517,6 +517,7 @@ pub struct App {
     /// plan requests, per-family phase, and operation token. It is the only writer of route
     /// guidance and of [`mode`](App::mode)'s two search levels.
     pub(crate) navigator: NavigatorMachine,
+    pub(crate) metadata: crate::metadata::MetadataMachine,
     /// **`CoreMode`** (#1397 S5): the one owner of "what heavy work may run now, and what the rider
     /// is looking at" — the two search levels Navigator writes, the transfer level
     /// [`set_map_transfer`](App::set_map_transfer) writes, and the Recalculating banner's
@@ -606,6 +607,7 @@ impl App {
             clock_trust: ClockTrust::Untrusted,
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
+            metadata: crate::metadata::MetadataMachine::new(),
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
@@ -652,6 +654,7 @@ impl App {
             recorder,
 
             navigator,
+            metadata,
             mode,
             settings_ops,
 
@@ -677,6 +680,7 @@ impl App {
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
 
         navigator.assert_boot_state();
+        metadata.assert_boot_state();
         recorder.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
         dfu.assert_boot_state();
@@ -1130,6 +1134,14 @@ impl App {
         self.remap_route_indices(&old_ids);
         self.ui.map_dirty = true;
     }
+    /// Mark unaccepted immutable candidates in the current complete catalog projection.
+    pub fn route_unaccepted(&self, index: usize) -> bool {
+        self.navigator.route_unaccepted(index)
+    }
+
+    pub fn set_unaccepted_routes(&mut self, mask: u64) {
+        self.navigator.set_unaccepted_routes(mask);
+    }
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
@@ -1141,6 +1153,7 @@ impl App {
         // request follow the same durable identity in Navigator.
         navigator.remap_route_keys(&remap);
         navigator.remap_detour_route(&remap);
+        navigator.remap_review_keys(&remap);
 
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
         // re-resolved trips (`replace_routes` re-filed them before returning) + the new route count
@@ -1417,18 +1430,33 @@ impl App {
             return;
         }
         match outcome {
+            NavigatorOutcome::ReviewReady { .. } => {
+                let Some(preview) = self.assistant_preview() else { return };
+                let index = self.route_ids().iter().position(|&id| id == preview.source.object);
+                self.navigator.review_index(index);
+                self.navigator.reviewed(preview);
+                self.end_plan(PlanFamily::Route, PlanPhase::PreviewReady);
+            }
             NavigatorOutcome::PlanFinished { route, .. } => self.land_route_plan(Ok(route)),
             NavigatorOutcome::DetourFinished { preview, .. } => self.land_detour_plan(Ok(preview)),
             NavigatorOutcome::DetourCommitted { route, .. } => self.land_detour_commit(Ok(route)),
             NavigatorOutcome::Failed { error, .. } => {
+                if self.assistant_review_context().is_some() {
+                    self.navigator.review_failed(error);
+                    self.end_plan(PlanFamily::Route, PlanPhase::Failed);
+                    return;
+                }
                 // The planner's own verdict is the one the rider is shown; the two resource
                 // failures have no tier of their own and land on the generic card, which is what
                 // the legacy protocol has always done with them.
                 let error = match error {
                     NavigatorError::Plan(error) => error,
-                    NavigatorError::Workspace | NavigatorError::Store | NavigatorError::SourceChanged => {
-                        obc_route::nav::NavError::NoPath
-                    }
+                    NavigatorError::Workspace
+                    | NavigatorError::Store
+                    | NavigatorError::SourceChanged
+                    | NavigatorError::Movement
+                    | NavigatorError::Unavailable
+                    | NavigatorError::DurabilityUnknown => obc_route::nav::NavError::NoPath,
                 };
                 match self.navigator.live_family() {
                     Some(PlanFamily::Detour) if self.navigator.detour_committing() => {
@@ -1437,6 +1465,11 @@ impl App {
                     Some(PlanFamily::Detour) => self.land_detour_plan(Err(error)),
                     _ => self.land_route_plan(Err(error)),
                 }
+            }
+            NavigatorOutcome::ReleaseUnresolved { .. } => {
+                self.navigator.review_failed(NavigatorError::DurabilityUnknown);
+                self.navigator.released_unresolved(&mut self.mode);
+                self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
                 if self.navigator.released(&mut self.mode) {
@@ -2879,6 +2912,7 @@ impl App {
             recorder,
             settings,
             routes: catalogs.routes(),
+            unaccepted_routes: navigator.unaccepted_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,

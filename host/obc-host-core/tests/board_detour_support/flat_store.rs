@@ -199,7 +199,7 @@ pub fn planner_original(
 pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     let mut summaries = Vec::new();
     let mut ids = Vec::new();
-    for meta in store.entries().filter(|m| m.kind == ObjectKind::Route && m.flags == EntryFlags::NONE) {
+    for meta in store.entries().filter(|m| m.kind == ObjectKind::Route && m.flags.is_route_head()) {
         summaries.push(
             store
                 .with_source(meta.id, Some(meta.revision), |source| obc_route::RouteSummary::read(source))

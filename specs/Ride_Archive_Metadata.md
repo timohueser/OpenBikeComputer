@@ -5,17 +5,18 @@ controls the synced indicator. It does not authorize deletion. The device never 
 routes or rides automatically.
 
 One current Metadata object stores the proof rows. Its object identity and revision follow
-the flat-store contract. The private payload is `OBRM`, version 1, with a 32-byte header
+the flat-store contract. The private payload is `OBRM`, version 2, with a 32-byte header
 and 40-byte rows. Integers use little-endian encoding.
 
 | Header offset | Bytes | Value |
 | --: | --: | :-- |
 | 0 | 4 | ASCII `OBRM` |
-| 4 | 2 | version `1` |
+| 4 | 2 | version `2` |
 | 6 | 2 | header length `32` |
 | 8 | 2 | row length `40` |
 | 10 | 2 | row count, at most `128` |
-| 12 | 4 | zero |
+| 12 | 2 | checkpoint version: `0` when absent, otherwise `1` |
+| 14 | 2 | checkpoint length: `0` when absent, otherwise `96` |
 | 16 | 16 | physical StoreId |
 
 | Row offset | Bytes | Value |
@@ -35,6 +36,58 @@ There is no background timestamp update.
 
 The [two-ride vector](vectors/ride-archive-metadata/two-rides.bin) binds two exact source tuples
 on StoreId `42` repeated 16 times. The codec tests verify the complete bytes and malformed rows.
+
+## Navigator checkpoint
+
+The checkpoint starts at `32 + row_count * 40`. The Metadata header StoreId binds
+both route fingerprints to the same card. This is only a recovery offer for the
+most recently accepted Assistant journey; it does not restore ordinary navigation
+or start Recorder. Absence preserves ordinary boot behavior.
+
+| Checkpoint offset | Bytes | Value |
+| --: | --: | :-- |
+| 0 | 8 | accepted Route ObjectId, nonzero |
+| 8 | 8 | accepted Route Revision, nonzero |
+| 16 | 8 | accepted payload length, nonzero |
+| 24 | 4 | accepted payload CRC-32 |
+| 28 | 4 | matched progress, metres |
+| 32 | 28 | optional original Route ObjectId/Revision/length/CRC; all zero when absent |
+| 60 | 4 | route occurrence anchor |
+| 64 | 4 | signed longitude, microdegrees |
+| 68 | 4 | signed latitude, microdegrees |
+| 72 | 1 | phase: `0` Following, `1` Outbound, `2` AtStop, `3` Returning |
+| 73 | 1 | unresolved avoidance: `0` or `1` |
+| 74 | 2 | zero |
+| 76 | 4 | lower progress bound, metres |
+| 80 | 4 | upper progress bound, metres |
+| 84 | 12 | zero |
+
+Progress must be within the stored bounds. Coordinates must be geographic.
+Visit phases require an original fingerprint. An absent original must have all
+28 bytes zero. Unknown phases or nonzero reserved bytes are invalid.
+
+Checkpoint edits validate their exact current Route targets separately from
+ride proof rows. They use the current complete image and the same Metadata-head
+CAS, allocation, publication, and verified readback. Archive mutations
+preserve the checkpoint bytes; checkpoint mutations preserve all valid proof rows.
+A stale draft cannot refresh its authority through another writer's load.
+
+Recovery checks the exact current source heads, lengths, and CRCs. It reads and
+checks source payload CRCs with bounded block scratch, closes temporary holds, and
+completes the media sync barrier before offering Resume. Route removal or
+replacement must refuse while the checkpoint depends on that exact object.
+Clearing or completing the journey releases its original dependency.
+
+The image holds all 128 ride proof rows and the optional checkpoint: at most 5,248 bytes.
+It has no route proof rows. Acceptance adds a route-only `ASSISTANT_ACCEPTED` catalog amendment
+to the same batch that replaces Metadata. The amendment preserves the exact source tuple and
+payload extents. Readback checks both the Metadata bytes and the accepted catalog entry.
+The commit is atomic: recovery cannot expose a checkpoint without its acceptance flag.
+Clear preserves the flag; a new route payload cannot inherit it.
+
+Explicit cleanup skips both checkpoint source IDs and the live active route. Explicit removal
+or replacement of either checkpoint source is refused. Invalid Metadata makes cleanup fail
+closed. It does not prevent unrelated Ride payload mutations. No automatic expiry is added.
 
 ## Load, reconcile, and publish
 

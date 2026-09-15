@@ -16,6 +16,7 @@ pub struct FlatRouteStore {
     revisions: Vec<Revision>,
     active: Option<ObjectSource>,
     nav_id: Option<ObjectId>,
+    unaccepted: u64,
 }
 
 impl FlatRouteStore {
@@ -25,16 +26,24 @@ impl FlatRouteStore {
 
     /// Seed a session's routes. All subsequent route mutations go through this repository.
     pub fn new(owner: HostStore, routes: &[&[u8]]) -> Result<Self, ImportError> {
-        let mut repo =
-            Self { owner, catalog: Vec::new(), ids: Vec::new(), revisions: Vec::new(), active: None, nav_id: None };
+        let mut repo = Self {
+            owner,
+            catalog: Vec::new(),
+            ids: Vec::new(),
+            revisions: Vec::new(),
+            active: None,
+            nav_id: None,
+            unaccepted: 0,
+        };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
                 if repo.ids.len() == obc_app::MAX_ROUTES {
                     break;
                 }
                 let source = repo.owner.open(meta.id, meta.revision)?;
-                let summary = RouteSummary::read(&source).map_err(|_| StoreError::Invalid)?;
-                repo.publish(meta, summary);
+                let (summary, candidate) =
+                    RouteSummary::read_with_candidate(&source).map_err(|_| StoreError::Invalid)?;
+                repo.publish(meta, summary, candidate);
             }
         }
         for bytes in routes {
@@ -60,7 +69,8 @@ impl FlatRouteStore {
     }
 
     fn write(&mut self, bytes: &[u8], previous: Option<(ObjectId, Revision)>) -> Result<ObjectId, ImportError> {
-        let summary = RouteSummary::read(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
+        let (summary, candidate) =
+            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
         let meta = self.owner.import(
             ObjectKind::Route,
             previous,
@@ -69,18 +79,27 @@ impl FlatRouteStore {
             DisplayName::default(),
         )?;
         // No read or open can turn a committed write into a reported failure.
-        self.publish(meta, summary);
+        self.publish(meta, summary, candidate);
         Ok(meta.id)
     }
 
-    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary) {
-        if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
+    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, candidate: bool) {
+        let i = if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
             self.revisions[i] = meta.revision;
             self.catalog[i] = summary;
+            i
         } else {
+            let i = self.ids.len();
             self.ids.push(meta.id.0);
             self.revisions.push(meta.revision);
             self.catalog.push(summary);
+            i
+        };
+        if i < 64 {
+            self.unaccepted &= !(1 << i);
+            if candidate && !meta.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
+                self.unaccepted |= 1 << i;
+            }
         }
     }
 }
@@ -116,6 +135,10 @@ impl RouteRepository for FlatRouteStore {
     fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
+    fn unaccepted_routes(&self) -> u64 {
+        self.unaccepted
+    }
+
     fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
     }
@@ -137,17 +160,18 @@ impl RouteRepository for FlatRouteStore {
         let mut catalog = Vec::new();
         let mut ids = Vec::new();
         let mut revisions = Vec::new();
-        for entry in store
-            .entries()
-            .filter(|entry| entry.kind == ObjectKind::Route && entry.flags == obc_storage::flat::EntryFlags::NONE)
-        {
+        let mut unaccepted = 0u64;
+        for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
             if ids.len() == obc_app::MAX_ROUTES {
                 break;
             }
-            let summary = store
-                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read(source))
+            let (summary, candidate) = store
+                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_candidate(source))
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
                 .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+            if candidate && !entry.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
+                unaccepted |= 1 << ids.len();
+            }
             catalog.push(summary);
             ids.push(entry.id.0);
             revisions.push(entry.revision);
@@ -158,8 +182,27 @@ impl RouteRepository for FlatRouteStore {
         self.catalog = catalog;
         self.ids = ids;
         self.revisions = revisions;
+        self.unaccepted = unaccepted;
         Ok(Some(start))
     }
+    fn write_checkpoint(
+        &mut self,
+        scope: obc_app::device_core::StoreRevision,
+        change: obc_app::navigator::CheckpointChange,
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        use obc_app::metadata::MetadataError;
+        let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;
+        obc_storage::flat::metadata::write_checkpoint(
+            store,
+            obc_storage::flat::StoreId(scope.store.bytes()),
+            scope.revision.raw(),
+            change.expected,
+            change.next,
+        )
+        .map_err(metadata_error)
+    }
+
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
         let entries = self.owner.entries().map_err(|error| catalog_error(&self.owner, error))?;
         let Some(meta) = entries.into_iter().find(|meta| meta.id.0 == id) else { return Ok(false) };
@@ -175,6 +218,10 @@ impl RouteRepository for FlatRouteStore {
         self.revisions.remove(i);
         self.ids.remove(i);
         self.catalog.remove(i);
+        if i < 64 {
+            self.unaccepted =
+                (self.unaccepted & ((1u64 << i) - 1)) | if i < 63 { (self.unaccepted >> (i + 1)) << i } else { 0 };
+        }
         if self.active.as_ref().is_some_and(|source| source.id().0 == id) {
             self.active = None;
         }
@@ -185,14 +232,59 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<crate::RoutePublication> {
-        let summary = RouteSummary::read(&SliceSource(bytes)).ok()?;
+        let (summary, candidate) = RouteSummary::read_with_candidate(&SliceSource(bytes)).ok()?;
         let meta = self.owner.import_computed_route(bytes).ok()?;
-        self.publish(meta, summary);
+        self.publish(meta, summary, candidate);
         Some(crate::RoutePublication {
             id: meta.id.0,
             revision: meta.revision.0,
             store: self.store_scope().map(|scope| scope.store),
         })
+    }
+
+    fn publish_review_route(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<crate::RoutePublication, obc_app::navigator::NavigatorError> {
+        use obc_app::navigator::NavigatorError;
+        let (summary, candidate) =
+            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| NavigatorError::Unavailable)?;
+        let meta = self.owner.import_computed_route(bytes).map_err(|error| match error {
+            crate::flat_store::ImportError::Storage(StoreError::Media | StoreError::ReadOnly)
+            | crate::flat_store::ImportError::RemountRequired => NavigatorError::DurabilityUnknown,
+            _ => NavigatorError::Store,
+        })?;
+        self.publish(meta, summary, candidate);
+        Ok(crate::RoutePublication {
+            id: meta.id.0,
+            revision: meta.revision.0,
+            store: self.store_scope().map(|scope| scope.store),
+        })
+    }
+    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
+        self.owner
+            .entries()
+            .ok()?
+            .into_iter()
+            .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id)
+            .map(obc_storage::flat::metadata::fingerprint)
+    }
+    fn resume_map_matches(&self, map: obc_formats::obcr::RouteSourceKey) -> bool {
+        let Ok(Some(checkpoint)) = self.read_checkpoint() else {
+            return false;
+        };
+        let Ok(source) = self.owner.open(ObjectId(checkpoint.route.object), Revision(checkpoint.route.revision)) else {
+            return false;
+        };
+        obc_route::RouteObjectInfo::read(&source).is_ok_and(|info| info.attribution_map == Some(map))
+    }
+    fn read_checkpoint(
+        &self,
+    ) -> Result<Option<obc_formats::assistant::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
+        use obc_app::metadata::MetadataError;
+        let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;
+        obc_storage::flat::metadata::read_checkpoint(store).map_err(metadata_error)
     }
 
     fn retract_nav_route(&mut self, publication: crate::RoutePublication) -> Result<(), CatalogError> {

@@ -140,6 +140,11 @@ impl Entry {
     /// forbids. What an extent is worth is the card's, so the covering rule takes its geometry.
     fn check(&self, geometry: Geometry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
+        if self.meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+            && (self.meta.kind != ObjectKind::Route || self.meta.flags.holds_slack())
+        {
+            return Err(err(Reason::UnknownEnum));
+        }
         let needed = geometry.extents_for(self.meta.payload_len);
         let owned = self.ranges.extents() as u64;
         if owned < needed || (owned > needed && !self.meta.flags.holds_slack()) {

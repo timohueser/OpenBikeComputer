@@ -78,6 +78,16 @@ pub trait RouteRepository {
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
+    fn unaccepted_routes(&self) -> u64 {
+        0
+    }
+    fn write_checkpoint(
+        &mut self,
+        _scope: obc_app::device_core::StoreRevision,
+        _change: obc_app::navigator::CheckpointChange,
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        Err(obc_app::metadata::MetadataError::Unsupported)
+    }
     /// Remove the route: `Ok(true)` = removed, `Ok(false)` = already absent. A storage failure
     /// returns `Err`, so the executor cannot publish successful absence or probe another family.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError>;
@@ -87,6 +97,20 @@ pub trait RouteRepository {
     /// Publish with a compensation key. A store without exact observed revisions refuses it.
     fn publish_nav_route(&mut self, _bytes: &[u8]) -> Option<RoutePublication> {
         None
+    }
+    fn publish_review_route(&mut self, _bytes: &[u8]) -> Result<RoutePublication, obc_app::navigator::NavigatorError> {
+        Err(obc_app::navigator::NavigatorError::Unavailable)
+    }
+    fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
+        None
+    }
+    fn resume_map_matches(&self, _map: obc_formats::obcr::RouteSourceKey) -> bool {
+        false
+    }
+    fn read_checkpoint(
+        &self,
+    ) -> Result<Option<obc_formats::assistant::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
+        Err(obc_app::metadata::MetadataError::Unsupported)
     }
     /// Remove only this publication. A replacement is already outside this operation's authority.
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {

@@ -111,15 +111,22 @@ impl RouteSummary {
     /// Read just the header into a summary — cheap enough to call per file when building
     /// the Route-menu catalog.
     pub fn read(src: &dyn ByteSource) -> Result<RouteSummary, Error> {
+        Self::read_with_candidate(src).map(|(summary, _)| summary)
+    }
+    pub fn read_with_candidate(src: &dyn ByteSource) -> Result<(RouteSummary, bool), Error> {
         let h = read_header(src)?;
-        Ok(RouteSummary {
-            name: h.name,
-            distance_km: (h.total_distance_m + 500) / 1000,
-            climb_m: h.total_ascent_m,
-            bbox: h.bbox,
-            start_lon: h.start_lon,
-            start_lat: h.start_lat,
-        })
+        let candidate = h.flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+        Ok((
+            RouteSummary {
+                name: h.name,
+                distance_km: (h.total_distance_m + 500) / 1000,
+                climb_m: h.total_ascent_m,
+                bbox: h.bbox,
+                start_lon: h.start_lon,
+                start_lat: h.start_lat,
+            },
+            candidate,
+        ))
     }
 }
 
@@ -131,6 +138,11 @@ pub struct RouteObjectInfo {
     pub name: String<NAME_CAP>,
     pub distance_m: u32,
     pub ascent_m: u32,
+    pub descent_m: u32,
+    pub attribution_map: Option<obc_formats::obcr::RouteSourceKey>,
+    pub visit: Option<obc_formats::obcr::VisitDescriptor>,
+    pub unresolved_avoidance: bool,
+    pub assistant_candidate: bool,
     pub point_count: u32,
     pub waypoint_count: u16,
 }
@@ -146,10 +158,33 @@ impl RouteObjectInfo {
             src.read_at(HEADER_LEN as u64, &mut ext).map_err(|_| Error::BadOffset)?;
             rd_u16(&ext, 4)
         };
+        let mut tail = [0; 48];
+        src.read_at(112, &mut tail)?;
+        let attribution_map = if h.flags & obc_formats::obcr::FLAG_ATTRIBUTION_MAP != 0 {
+            Some(obc_formats::obcr::RouteSourceKey::decode(&tail[16..48]).map_err(|_| Error::BadOffset)?)
+        } else {
+            None
+        };
+        let visit = if tail[6] != 0 {
+            let mut bytes = [0; obc_formats::obcr::VISIT_DESCRIPTOR_LEN];
+            src.read_at(rd_u32(&tail, 8) as u64, &mut bytes)?;
+            let descriptor = obc_formats::obcr::VisitDescriptor::decode(&bytes).map_err(|_| Error::BadOffset)?;
+            if descriptor.accepted_anchors_m[2] > h.total_distance_m {
+                return Err(Error::BadOffset);
+            }
+            Some(descriptor)
+        } else {
+            None
+        };
         Ok(RouteObjectInfo {
             name: h.name,
             distance_m: h.total_distance_m,
             ascent_m: h.total_ascent_m,
+            descent_m: h.total_descent_m,
+            attribution_map,
+            visit,
+            unresolved_avoidance: h.flags & obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE != 0,
+            assistant_candidate: h.flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0,
             point_count: h.point_count,
             waypoint_count,
         })
@@ -342,6 +377,10 @@ impl RouteIndex {
     /// At least one retained point has a valid elevation. Flat sea-level routes remain valid.
     pub fn has_elevation(&self) -> bool {
         self.flags & obc_formats::obcr::FLAG_HAS_ELEVATION != 0
+    }
+
+    pub fn is_assistant_candidate(&self) -> bool {
+        self.flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0
     }
 
     pub fn has_unresolved_avoidance(&self) -> bool {
@@ -1082,7 +1121,7 @@ pub(crate) fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
         Err(DecodeError::Version) => return Err(Error::BadVersion),
         Err(_) => return Err(Error::BadMagic),
     }
-    if h[5] & !7 != 0 || h[7] != 0 || h[119] != 0 {
+    if h[5] & !15 != 0 || h[7] != 0 || h[119] != 0 {
         return Err(Error::BadOffset);
     }
     if h[5] & obc_formats::obcr::FLAG_ATTRIBUTION_MAP == 0 && h[128..160].iter().any(|b| *b != 0) {

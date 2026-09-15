@@ -36,6 +36,18 @@ impl NavPlan {
         }
     }
 
+    pub fn set_assistant_candidate(&mut self) {
+        self.planner.set_assistant_candidate();
+    }
+
+    pub fn set_unresolved_avoidance(&mut self) {
+        self.planner.set_unresolved_avoidance();
+    }
+
+    pub fn set_attribution_map(&mut self, map: obc_formats::obcr::RouteSourceKey) {
+        self.planner.set_attribution_map(map);
+    }
+
     /// Run **one bounded planner step** (the frame loop's per-frame unit). `Running` = keep going
     /// next frame; a terminal outcome is handed to [`finish_nav_plan`].
     ///
