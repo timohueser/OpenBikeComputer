@@ -41,8 +41,6 @@
 pub enum LegacyOwner {
     /// `CatalogMachine` — revisions, identities, refresh, deletion, the trip cascade.
     Catalog,
-    /// `RetentionMachine` — usage stamps, expiry deadlines, sidecar metadata.
-    Retention,
     /// `Recorder` — the ride session and its persistence lifecycle.
     Recorder,
     /// `Navigator` — route and detour planning, preview, and commit.
@@ -98,16 +96,10 @@ feeders! {
     MapNavGraph,
     /// `App::set_routes_with_ids`
     RoutesWithIds,
-    /// `App::set_routes_with_meta`
-    RoutesWithMeta,
-    /// `App::set_route_meta`
-    RouteMeta,
     /// `App::set_trips`
     Trips,
     /// `App::set_rides`
     Rides,
-    /// `App::set_ride_retention_inventory`
-    RideRetentionInventory,
     /// `App::begin_ride_profile_fill`
     RideProfileFillBegin,
     /// `App::set_nav_preview`
@@ -192,38 +184,13 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
     use FeederKind as Kind;
     use LegacyOwner as Own;
     match feeder {
-        // ---- catalog refresh outcomes: the executor fills the resident catalogs, the outcome
-        // reports only that the read is over. Three route feeders exist because the id column and
-        // the retention column were added one at a time; they collapse into one refresh.
-        //
-        // These four are **not** waiting on refresh ownership (#1541): fill *order* is not policy.
-        // `CatalogState::replace_routes` re-resolves every trip's stage ids on either ordering —
-        // pinned by `a_catalog_re_feed_mid_cascade_does_not_move_the_cursor` — which is why the
-        // board and the host already read in different orders and both are correct. What retires
-        // them is the day a bulk fill arrives as `PassInputs` rather than as a `set_*` call.
         Feeder::RoutesWithIds => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        Feeder::RoutesWithMeta => row(
-            Kind::RefreshOutcome,
-            Own::Catalog,
-            "CatalogOutcome::CatalogRead + RetentionMachine metadata",
-            When::BootAndFacts,
-        ),
+
         Feeder::Trips | Feeder::Rides => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        // Retention metadata is part of a catalog read's fill, so these two retire with the four
-        // above and for the same reason. Where the column itself lives is #1398 R4's question.
-        Feeder::RouteMeta => {
-            row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::BootAndFacts)
-        }
-        Feeder::RideRetentionInventory => row(
-            Kind::RefreshOutcome,
-            Own::Retention,
-            "CatalogMachine inventory + RetentionMachine input",
-            When::BootAndFacts,
-        ),
 
         // ---- keyed derived data: one need, one key, one answer. What is left is the in-place fill
         // the executor borrows: the answer itself is a `DerivedInput` already.

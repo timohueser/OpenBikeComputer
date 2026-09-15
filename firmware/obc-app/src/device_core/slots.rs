@@ -2,9 +2,9 @@ use crate::ble::{BondEffect, BondOutcome};
 use crate::catalog_state::{CatalogEffect, CatalogOutcome};
 use crate::device_core::storage_info::{StorageInfoEffect, StorageInfoOutcome};
 use crate::dfu::{DfuEffect, DfuOutcome};
+use crate::metadata::{MetadataEffect, MetadataOutcome};
 use crate::navigator::{NavigatorEffect, NavigatorOutcome};
 use crate::recorder::{RecorderEffect, RecorderOutcome};
-use crate::retention::{RetentionEffect, RetentionOutcome};
 use crate::settings::{SettingsEffect, SettingsOutcome};
 
 /// A [`Slot::try_put`] that found the slot occupied, carrying the rejected value back to its owner.
@@ -98,12 +98,10 @@ domain_slots! {
     EffectSlots {
         /// Catalog reads, trip-member reads, and object removals.
         catalog: CatalogEffect,
-        /// Route and ride retention sidecar writes.
-        retention: RetentionEffect,
-        /// Ride appends, checkpoints, finalize and discard.
         recorder: RecorderEffect,
         /// Planner acquire, step, commit and release.
         navigator: NavigatorEffect,
+        metadata: MetadataEffect,
         /// The settings-revision write.
         settings: SettingsEffect,
         /// Firmware package scan and install arming.
@@ -123,12 +121,10 @@ domain_slots! {
     OutcomeSlots {
         /// The answer to a [`CatalogEffect`].
         catalog: CatalogOutcome,
-        /// The answer to a [`RetentionEffect`].
-        retention: RetentionOutcome,
-        /// The answer to a [`RecorderEffect`].
         recorder: RecorderOutcome,
         /// The answer to a [`NavigatorEffect`].
         navigator: NavigatorOutcome,
+        metadata: MetadataOutcome,
         /// The answer to a [`SettingsEffect`].
         settings: SettingsOutcome,
         /// The answer to a [`DfuEffect`].
@@ -157,13 +153,12 @@ mod tests {
     use crate::catalog_state::CatalogError;
     use crate::device_core::storage_info::StorageInfoError;
     use crate::device_core::{
-        BondTag, CatalogTag, DfuTag, NavigatorTag, OperationToken, RecorderTag, RetentionTag, SettingsTag,
-        StorageInfoTag, TokenSource,
+        BondTag, CatalogTag, DfuTag, NavigatorTag, OperationToken, RecorderTag, SettingsTag, StorageInfoTag,
+        TokenSource,
     };
     use crate::dfu::DfuScanError;
     use crate::navigator::{NavigatorError, PlannerWork};
     use crate::recorder::RecorderError;
-    use crate::retention::{Retention, RouteRetentionMeta};
 
     /// The token rule, exercised through one domain's real outcome constructor: the domain accepts
     /// its own live token, and rejects it the moment the operation is superseded.
@@ -188,7 +183,6 @@ mod tests {
     #[test]
     fn every_domain_accepts_its_own_token_and_rejects_a_stale_one() {
         token_rules(|token| CatalogOutcome::Cancelled { token }, CatalogOutcome::token);
-        token_rules(|token| RetentionOutcome::Cancelled { token }, RetentionOutcome::token);
         token_rules(|token| RecorderOutcome::Cancelled { token }, RecorderOutcome::token);
         token_rules(|token| NavigatorOutcome::Cancelled { token }, NavigatorOutcome::token);
         token_rules(|token| SettingsOutcome::Cancelled { token }, SettingsOutcome::token);
@@ -212,7 +206,6 @@ mod tests {
 
     fn effects() -> (EffectSlots, EffectSlots) {
         let mut catalog_ops: TokenSource<CatalogTag> = TokenSource::new();
-        let mut retention_ops: TokenSource<RetentionTag> = TokenSource::new();
         let mut recorder_ops: TokenSource<RecorderTag> = TokenSource::new();
         let mut navigator_ops: TokenSource<NavigatorTag> = TokenSource::new();
         let mut settings_ops: TokenSource<SettingsTag> = TokenSource::new();
@@ -220,14 +213,9 @@ mod tests {
         let mut dfu_ops: TokenSource<DfuTag> = TokenSource::new();
         let mut bond_ops: TokenSource<BondTag> = TokenSource::new();
         let mut storage_ops: TokenSource<StorageInfoTag> = TokenSource::new();
-        let meta = RouteRetentionMeta::new(Retention::Week1, 100);
 
         let mut first = EffectSlots::new();
         first.catalog.try_put(CatalogEffect::ReadCatalog { token: catalog_ops.issue() }).unwrap();
-        first
-            .retention
-            .try_put(RetentionEffect::WriteRouteMetadata { token: retention_ops.issue(), scope: None, id: 1, meta })
-            .unwrap();
         first.recorder.try_put(RecorderEffect::Checkpoint { token: recorder_ops.issue() }).unwrap();
         first.navigator.try_put(NavigatorEffect::Step { token: navigator_ops.issue() }).unwrap();
         first.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 3 }).unwrap();
@@ -246,15 +234,6 @@ mod tests {
                 kind: crate::catalog_state::CatalogObjectKind::Route,
             })
             .unwrap();
-        second
-            .retention
-            .try_put(RetentionEffect::WriteRideMetadata {
-                token: retention_ops.issue(),
-                scope: None,
-                id: 2,
-                synced_at: 5,
-            })
-            .unwrap();
         second.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
         let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
         second.navigator.try_put(NavigatorEffect::Acquire { token: navigator_ops.issue(), work }).unwrap();
@@ -269,7 +248,6 @@ mod tests {
 
     fn outcomes() -> (OutcomeSlots, OutcomeSlots) {
         let mut catalog_ops: TokenSource<CatalogTag> = TokenSource::new();
-        let mut retention_ops: TokenSource<RetentionTag> = TokenSource::new();
         let mut recorder_ops: TokenSource<RecorderTag> = TokenSource::new();
         let mut navigator_ops: TokenSource<NavigatorTag> = TokenSource::new();
         let mut settings_ops: TokenSource<SettingsTag> = TokenSource::new();
@@ -280,10 +258,6 @@ mod tests {
 
         let mut first = OutcomeSlots::new();
         first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue(), scope: None }).unwrap();
-        first
-            .retention
-            .try_put(RetentionOutcome::RouteMetadataWritten { token: retention_ops.issue(), id: 1 })
-            .unwrap();
         first
             .recorder
             .try_put(RecorderOutcome::Checkpointed {
@@ -310,8 +284,6 @@ mod tests {
         let mut second = OutcomeSlots::new();
         let error = CatalogError::Unreadable;
         second.catalog.try_put(CatalogOutcome::Failed { token: catalog_ops.issue(), error }).unwrap();
-        let error = crate::retention::RetentionError::WriteFailed;
-        second.retention.try_put(RetentionOutcome::Failed { token: retention_ops.issue(), error }).unwrap();
         second
             .recorder
             .try_put(RecorderOutcome::Failed { token: recorder_ops.issue(), error: RecorderError::Write })
@@ -358,7 +330,6 @@ mod tests {
             expected,
             refused,
             catalog,
-            retention,
             recorder,
             navigator,
             settings,
@@ -384,7 +355,6 @@ mod tests {
             expected,
             refused,
             catalog,
-            retention,
             recorder,
             navigator,
             settings,

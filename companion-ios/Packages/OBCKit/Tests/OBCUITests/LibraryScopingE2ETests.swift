@@ -12,7 +12,7 @@ import OBCTransport
     /// A device with a mutable identity (serial, storeID) and ride store; its
     /// `listRides()` mints ids scoped to the identity the *last `deviceInfo()`
     /// read* returned — the same order-of-truth as the real transport.
-    final class ScopedStubDevice: DeviceLink, DeviceBattery, DeviceObjects, DeviceRetention,
+    final class ScopedStubDevice: DeviceLink, DeviceBattery, DeviceObjects, DeviceClock,
         @unchecked Sendable {
         private let stateMulticast = AsyncMulticast<ConnectionState>(.connected)
         private let lock = NSLock()

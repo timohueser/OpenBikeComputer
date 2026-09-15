@@ -9,6 +9,7 @@ fn publish<D: BlockDevice>(store: &FlatStore<D>, kind: ObjectKind, bytes: &[u8])
     let mut allocation = store.allocate(bytes.len() as u64).unwrap();
     store.write(&mut allocation, bytes).unwrap();
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: store.next_object_id(),
         revision: Revision(1),
         kind,
@@ -29,14 +30,12 @@ fn row(meta: EntryMeta) -> Row {
         payload_crc: meta.payload_crc,
         timestamp: 1234,
         kind: meta.kind,
-        retention: 0,
-        assistant_accepted: false,
     }
 }
 
 #[test]
 fn normative_vector_is_exact_and_hostile_records_are_refused() {
-    let vector = include_bytes!("../../../../../specs/vectors/retention-metadata/route-and-ride.bin");
+    let vector = include_bytes!("../../../../../specs/vectors/ride-archive-metadata/two-rides.bin");
     let mut bytes = [0; MAX_LEN];
     let mut image = Image::empty(CARD, &mut bytes).unwrap();
     image
@@ -46,9 +45,7 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
             payload_len: 0x300000004,
             payload_crc: 0x12345678,
             timestamp: 0x65000000,
-            kind: ObjectKind::Route,
-            retention: 5,
-            assistant_accepted: false,
+            kind: ObjectKind::Ride,
         })
         .unwrap();
     image
@@ -59,8 +56,6 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
             payload_crc: 0xabcdef01,
             timestamp: 0x66000000,
             kind: ObjectKind::Ride,
-            retention: 0,
-            assistant_accepted: false,
         })
         .unwrap();
     assert_eq!(image.bytes(), vector);
@@ -71,8 +66,8 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
         (10, 3),
         (HEADER_LEN + 34, 6),
         (HEADER_LEN + ROW_LEN + 34, 1),
-        (HEADER_LEN + 35, 2),
-        (HEADER_LEN + 32, 2),
+        (HEADER_LEN + 35, 1),
+        (HEADER_LEN + 32, 1),
     ] {
         let mut bad = vector.to_vec();
         bad[offset] = value;
@@ -93,7 +88,7 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
 fn capacity_refuses_without_losing_any_existing_record() {
     let mut bytes = [0; MAX_LEN];
     let mut image = Image::empty(CARD, &mut bytes).unwrap();
-    for id in 1..=(MAX_ROUTES + MAX_RIDES) as u64 {
+    for id in 1..=(MAX_RIDES) as u64 {
         image
             .set(Row {
                 id: ObjectId(id),
@@ -101,9 +96,7 @@ fn capacity_refuses_without_losing_any_existing_record() {
                 payload_len: 1,
                 payload_crc: 0,
                 timestamp: 0,
-                kind: if id <= MAX_ROUTES as u64 { ObjectKind::Route } else { ObjectKind::Ride },
-                retention: 0,
-                assistant_accepted: false,
+                kind: ObjectKind::Ride,
             })
             .unwrap();
     }
@@ -118,7 +111,7 @@ fn capacity_refuses_without_losing_any_existing_record() {
 fn actual_store_replace_reopen_reconcile_and_identity_guards() {
     let disk = SparseDisk::blank(BLOCKS, 1);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
-    let route = publish(&store, ObjectKind::Route, b"route");
+    let route = publish(&store, ObjectKind::Ride, b"route");
     let ride = publish(&store, ObjectKind::Ride, b"ride");
     let mut owner = Metadata::new(&store);
     let mut bytes = [0; MAX_LEN];
@@ -177,7 +170,7 @@ fn malformed_duplicate_and_failed_catalog_reads_never_become_empty_defaults() {
     assert!(matches!(owner.load(&store, &mut bytes), Err(Error::Store(StoreError::Media))));
     assert!(store.device().fired());
     let mut image = Image::empty(CARD, &mut bytes).unwrap();
-    let route = publish(&store, ObjectKind::Route, b"route");
+    let route = publish(&store, ObjectKind::Ride, b"route");
     image.set(row(route)).unwrap();
     store.device().fault_next(MediaOp::Read);
     assert_eq!(image.reconcile(&store), Err(Error::Store(StoreError::Media)));
@@ -243,7 +236,7 @@ fn power_cut_at_final_gate_sync_recovers_a_complete_generation() {
 fn leases_preserve_old_bytes_without_admitting_old_source_or_metadata_heads() {
     let disk = SparseDisk::blank(BLOCKS, 6);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
-    let route = publish(&store, ObjectKind::Route, b"route");
+    let route = publish(&store, ObjectKind::Ride, b"route");
     let route_lease = store.open(route.id, Some(route.revision)).unwrap();
     let mut owner = Metadata::new(&store);
     let mut bytes = [0; MAX_LEN];
@@ -300,7 +293,7 @@ fn precommit_payload_failure_can_retry_without_leaking_a_reservation() {
 fn reloading_the_writer_does_not_refresh_an_older_images_publication_authority() {
     let disk = SparseDisk::blank(BLOCKS, 8);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
-    let route = publish(&store, ObjectKind::Route, b"route");
+    let route = publish(&store, ObjectKind::Ride, b"route");
     let ride = publish(&store, ObjectKind::Ride, b"ride");
     let mut owner = Metadata::new(&store);
     let mut bytes = [0; MAX_LEN];
@@ -323,18 +316,18 @@ fn reloading_the_writer_does_not_refresh_an_older_images_publication_authority()
 fn a_full_read_handle_table_refuses_before_publication_and_retries_after_close() {
     let disk = SparseDisk::blank(BLOCKS, 9);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
-    let route = publish(&store, ObjectKind::Route, b"route");
+    let route = publish(&store, ObjectKind::Ride, b"route");
     let mut handles = Vec::new();
     for _ in 0..crate::flat::store::MAX_OPEN_OBJECTS {
         let object = publish(&store, ObjectKind::Ride, b"ride");
         handles.push(store.open(object.id, Some(object.revision)).unwrap());
     }
     let sequence = store.sequence();
-    assert_eq!(write_route(&store, CARD, sequence, route.id, 1, 1234), Err(Error::Store(StoreError::Busy)));
+    assert_eq!(write_proof(&store, route), Err(Error::Store(StoreError::Busy)));
     assert_eq!(store.sequence(), sequence);
     assert!(store.mode().writable());
     store.close(handles.pop().unwrap());
-    write_route(&store, CARD, sequence, route.id, 1, 1234).unwrap();
+    write_proof(&store, route).unwrap();
     for handle in handles {
         store.close(handle);
     }
@@ -346,13 +339,13 @@ fn committed_readback_failure_fences_every_writer_until_remount() {
         let disk = SparseDisk::blank(BLOCKS, 10);
         let device = FaultOnce::new(&disk);
         let store = FlatStore::initialize(&device, CARD).unwrap();
-        let target = publish(&store, ObjectKind::Route, b"route");
+        let target = publish(&store, ObjectKind::Ride, b"route");
         let sequence = store.sequence();
         let before = disk.ledger().len();
         if let Some(skip) = fail_read {
             device.fault_after(MediaOp::Read, skip);
         }
-        let result = write_route(&store, CARD, sequence, target.id, 1, 1234);
+        let result = write_proof(&store, target);
         let ledger = disk.ledger();
         let writes = &ledger[before..];
         let published = writes.iter().rposition(|(_, op, _)| *op == MediaOp::Sync).unwrap();
@@ -372,162 +365,12 @@ fn committed_readback_failure_fences_every_writer_until_remount() {
     run(Some(reads));
 }
 
-#[test]
-fn uncertain_expiry_reports_remount_before_policy_can_retry() {
-    fn run(fail_sync: Option<u32>) -> u32 {
-        let disk = SparseDisk::blank(BLOCKS, 11);
-        let device = FaultOnce::new(&disk);
-        let store = FlatStore::initialize(&device, CARD).unwrap();
-        let target = publish(&store, ObjectKind::Route, b"route");
-        let sequence = store.sequence();
-        let before = disk.ledger().len();
-        if let Some(skip) = fail_sync {
-            device.fault_after(MediaOp::Sync, skip);
-        }
-        let result = remove_route(&store, CARD, sequence, target.id);
-        let syncs = disk.ledger()[before..].iter().filter(|(_, op, _)| *op == MediaOp::Sync).count() as u32;
-        if fail_sync.is_some() {
-            assert!(device.fired());
-            assert_eq!(result, Err(Error::RemountRequired));
-            assert_eq!(store.mode(), super::super::Mode::RemountRequired);
-            let mut bytes = [0; MAX_LEN];
-            assert!(matches!(Metadata::new(&store).load(&store, &mut bytes), Err(Error::RemountRequired)));
-        } else {
-            result.unwrap();
-        }
-        syncs
-    }
-    let syncs = run(None);
-    run(Some(syncs - 1));
-}
-
-#[test]
-fn ride_clock_requires_exact_proof_and_never_restarts_or_creates_it() {
-    let disk = SparseDisk::blank(BLOCKS, 12);
-    let device = FaultOnce::new(&disk);
-    let store = FlatStore::initialize(&device, CARD).unwrap();
-    let ride = publish(&store, ObjectKind::Ride, b"ride");
-    assert_eq!(write_ride(&store, CARD, store.sequence(), ride.id, 1234), Err(Error::Stale));
-    archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
-    let unstamped = store.sequence();
-    assert_eq!(remove_ride(&store, CARD, unstamped, ride.id), Err(Error::Stale));
-    assert_eq!(write_ride(&store, CARD, unstamped, ride.id, 0), Err(Error::Invalid));
-    device.fault_next(MediaOp::Write);
-    assert_eq!(write_ride(&store, CARD, unstamped, ride.id, 1234), Err(Error::Store(StoreError::Media)));
-    assert!(store.mode().writable());
-    write_ride(&store, CARD, unstamped, ride.id, 1234).unwrap();
-    let stamped = store.sequence();
-    assert_eq!(write_ride(&store, CARD, unstamped, ride.id, 9999), Err(Error::Stale));
-    write_ride(&store, CARD, stamped, ride.id, 9999).unwrap();
-    assert_eq!(archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc), Ok(1234));
-    assert_eq!(store.sequence(), stamped);
-    assert_eq!(write_ride(&store, StoreId([1; 16]), stamped, ride.id, 9999), Err(Error::WrongStore));
-    let mut rows = Vec::new();
-    read_rows(&store, |row| rows.push(row)).unwrap();
-    assert_eq!(rows[0].timestamp, 1234);
-    // Retaining the old revision cannot transfer its proof to a replacement head.
-    let mut allocation = store.allocate(4).unwrap();
-    store.write(&mut allocation, b"next").unwrap();
-    store
-        .commit(&[
-            Mutation::Put { meta: EntryMeta { flags: EntryFlags::RETAINED, ..ride }, source: PutSource::Amend },
-            Mutation::Put {
-                meta: EntryMeta { revision: Revision(2), payload_crc: obc_crc::crc32(b"next"), ..ride },
-                source: PutSource::Fresh(allocation),
-            },
-        ])
-        .unwrap();
-    assert_eq!(write_ride(&store, CARD, store.sequence(), ride.id, 9999), Err(Error::Stale));
-    assert_eq!(remove_ride(&store, CARD, store.sequence(), ride.id), Err(Error::Stale));
-    reconcile(&store).unwrap();
-    assert_eq!(write_ride(&store, CARD, store.sequence(), ride.id, 9999), Err(Error::Stale));
-    rows.clear();
-    read_rows(&store, |row| rows.push(row)).unwrap();
-    assert!(rows.is_empty());
-}
-
-#[test]
-fn policy_read_barrier_reconciles_live_remount_without_exposing_uncertain_stamps() {
-    fn run(fail_sync: Option<u32>) -> u32 {
-        let disk = SparseDisk::blank(BLOCKS, 13);
-        let device = FaultOnce::new(&disk);
-        let store = FlatStore::initialize(&device, CARD).unwrap();
-        let ride = publish(&store, ObjectKind::Ride, b"ride");
-        archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
-        let before = disk.ledger().len();
-        if let Some(skip) = fail_sync {
-            device.fault_after(MediaOp::Sync, skip);
-        }
-        let result = write_ride(&store, CARD, store.sequence(), ride.id, 1234);
-        let syncs = disk.ledger()[before..].iter().filter(|(_, op, _)| *op == MediaOp::Sync).count() as u32;
-        if fail_sync.is_none() {
-            result.unwrap();
-            return syncs;
-        }
-        assert_eq!(result, Err(Error::RemountRequired));
-        assert!(device.fired());
-        // Do not reboot: the live device still exposes the gate whose sync was refused.
-        let mounted = FlatStore::mount(&device);
-        let mut bytes = [0; MAX_LEN];
-        let mut metadata = Metadata::new(&mounted);
-        assert_eq!(metadata.load(&mounted, &mut bytes).unwrap().rows().next().unwrap().timestamp, 1234);
-        device.fault_next(MediaOp::Sync);
-        let mut seen = 0;
-        assert_eq!(read_rows(&mounted, |_| seen += 1), Err(Error::RemountRequired));
-        assert_eq!(seen, 0);
-        assert!(matches!(mounted.allocate(1), Err(StoreError::ReadOnly)));
-        let mounted = FlatStore::mount(&device);
-        read_rows(&mounted, |row| {
-            seen += 1;
-            assert_eq!(row.timestamp, 1234);
-        })
-        .unwrap();
-        assert_eq!(seen, 1);
-        disk.reboot();
-        let mounted = FlatStore::mount(&device);
-        // Verify before another policy-read barrier can conceal loss.
-        assert_eq!(Metadata::new(&mounted).load(&mounted, &mut bytes).unwrap().rows().next().unwrap().timestamp, 1234);
-        remove_ride(&mounted, CARD, mounted.sequence(), ride.id).unwrap();
-        assert!(matches!(mounted.open(ride.id, None), Err(StoreError::NotFound)));
-        syncs
-    }
-    let syncs = run(None);
-    run(Some(syncs - 1));
-}
-
-#[test]
-fn invalid_metadata_or_nonfinal_heads_never_authorize_ride_policy() {
-    let disk = SparseDisk::blank(BLOCKS, 14);
-    let store = FlatStore::initialize(&disk, CARD).unwrap();
-    let ride = publish(&store, ObjectKind::Ride, b"ride");
-    archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
-    let allocation = store.allocate(1024).unwrap();
-    store
-        .commit(&[
-            Mutation::Put { meta: EntryMeta { flags: EntryFlags::RETAINED, ..ride }, source: PutSource::Amend },
-            Mutation::Put {
-                meta: EntryMeta {
-                    revision: Revision(2),
-                    flags: EntryFlags::RECORDING,
-                    payload_len: 0,
-                    payload_crc: 0,
-                    ..ride
-                },
-                source: PutSource::Fresh(allocation),
-            },
-        ])
-        .unwrap();
-    assert_eq!(write_ride(&store, CARD, store.sequence(), ride.id, 1234), Err(Error::Stale));
-    assert_eq!(remove_ride(&store, CARD, store.sequence(), ride.id), Err(Error::Stale));
-    let target = publish(&store, ObjectKind::Ride, b"finalized");
-    let head = store.entries().find(|entry| entry.kind == ObjectKind::Metadata).unwrap();
-    store.commit(&[Mutation::Remove { id: head.id, revision: head.revision }]).unwrap();
-    publish(&store, ObjectKind::Metadata, b"corrupt");
-    let mut seen = 0;
-    assert_eq!(read_rows(&store, |_| seen += 1), Err(Error::Invalid));
-    assert_eq!(seen, 0);
-    assert_eq!(write_ride(&store, CARD, store.sequence(), target.id, 1234), Err(Error::Invalid));
-    assert_eq!(remove_ride(&store, CARD, store.sequence(), target.id), Err(Error::Invalid));
+fn write_proof<D: BlockDevice>(store: &FlatStore<D>, source: EntryMeta) -> Result<EntryMeta, Error> {
+    let mut owner = Metadata::new(store);
+    let mut bytes = [0; MAX_LEN];
+    let mut image = owner.load(store, &mut bytes)?;
+    image.set(row(source))?;
+    owner.replace(store, &mut image, Some(source))
 }
 
 fn checkpoint(route: EntryMeta, original: Option<EntryMeta>) -> NavigatorCheckpoint {
@@ -538,7 +381,7 @@ fn checkpoint(route: EntryMeta, original: Option<EntryMeta>) -> NavigatorCheckpo
         occurrence: 2,
         lon: 8_000_000,
         lat: 47_000_000,
-        phase: obc_formats::retention::JourneyPhase::Following,
+        phase: obc_formats::assistant::JourneyPhase::Following,
         unresolved_avoidance: false,
         lower_m: 0,
         upper_m: 100,
@@ -556,13 +399,13 @@ fn checkpoint_rows_reconcile_and_capacity_preserve_each_other() {
         occurrence: 0,
         lon: 0,
         lat: 0,
-        phase: obc_formats::retention::JourneyPhase::Following,
+        phase: obc_formats::assistant::JourneyPhase::Following,
         unresolved_avoidance: false,
         lower_m: 0,
         upper_m: 1,
     };
     image.set_checkpoint(Some(cp)).unwrap();
-    for id in 1..=(MAX_ROUTES + MAX_RIDES) as u64 {
+    for id in 1..=MAX_RIDES as u64 {
         image
             .set(Row {
                 id: ObjectId(id),
@@ -570,19 +413,17 @@ fn checkpoint_rows_reconcile_and_capacity_preserve_each_other() {
                 payload_len: 1,
                 payload_crc: 0,
                 timestamp: 0,
-                kind: if id <= MAX_ROUTES as u64 { ObjectKind::Route } else { ObjectKind::Ride },
-                retention: 0,
-                assistant_accepted: false,
+                kind: ObjectKind::Ride,
             })
             .unwrap();
     }
-    assert_eq!(image.bytes().len(), 7808);
+    assert_eq!(image.bytes().len(), 5248);
     assert_eq!(image.checkpoint(), Some(cp));
     let len = image.bytes().len();
     assert_eq!(Image::decode(&mut bytes, len).unwrap().checkpoint(), Some(cp));
     let mut image = Image::decode(&mut bytes, len).unwrap();
     image.set_checkpoint(None).unwrap();
-    assert_eq!(image.bytes().len(), 7712);
+    assert_eq!(image.bytes().len(), 5152);
     assert_eq!(image.rows().filter(|r| r.kind == ObjectKind::Ride).count(), 128);
 }
 
@@ -590,6 +431,7 @@ fn checkpoint_rows_reconcile_and_capacity_preserve_each_other() {
 fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation() {
     let disk = SparseDisk::blank(BLOCKS, 30);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
+    store.set_route_added_at(Some(10));
     let route = publish(&store, ObjectKind::Route, b"derived route");
     let original = publish(&store, ObjectKind::Route, b"original route");
     let ride = publish(&store, ObjectKind::Ride, b"archived ride");
@@ -601,28 +443,34 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
     assert_eq!(owner.replace_checkpoint(&store, &mut stale), Err(Error::Stale));
     write_checkpoint(&store, CARD, store.sequence(), None, Some(cp)).unwrap();
-    write_ride(&store, CARD, store.sequence(), ride.id, 123).unwrap();
-    write_route(&store, CARD, store.sequence(), original.id, 1, 456).unwrap();
+    archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
     assert_eq!(read_checkpoint(&store), Ok(Some(cp)));
     assert_eq!(check_route_change(&store, original.id), Err(Error::Store(StoreError::Busy)));
-    assert_eq!(remove_route(&store, CARD, store.sequence(), route.id), Err(Error::Store(StoreError::Busy)));
+    assert!(crate::flat::route_cleanup::next(&store, 20, None).unwrap().is_none());
+    let accepted = store.entries().find(|entry| entry.id == route.id).unwrap();
+    assert_eq!(
+        store.commit(&[Mutation::Put {
+            meta: EntryMeta { payload_crc: accepted.payload_crc ^ 1, ..accepted },
+            source: PutSource::Amend
+        }]),
+        Err(StoreError::Invalid)
+    );
+    assert_eq!(check_route_change(&store, route.id), Err(Error::Store(StoreError::Busy)));
     let mut rows = Vec::new();
     read_rows(&store, |row| rows.push(row)).unwrap();
-    assert_eq!(rows.len(), 3);
-    assert!(rows.iter().find(|r| r.id == route.id).unwrap().assistant_accepted);
-    assert_eq!(rows.iter().find(|r| r.id == ride.id).unwrap().timestamp, 123);
+    assert_eq!(rows.len(), 1);
+    assert!(store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED));
+    assert_eq!(rows.iter().find(|r| r.id == ride.id).unwrap().timestamp, 0);
     let changed = NavigatorCheckpoint { route: PayloadFingerprint { crc: cp.route.crc ^ 1, ..cp.route }, ..cp };
     assert_eq!(write_checkpoint(&store, CARD, store.sequence(), Some(cp), Some(changed)), Err(Error::Stale));
     write_checkpoint(&store, CARD, store.sequence(), Some(cp), None).unwrap();
     assert_eq!(read_checkpoint(&store), Ok(None));
     assert_eq!(check_route_change(&store, original.id), Ok(()));
+    assert!(crate::flat::route_cleanup::next(&store, 20, Some(original.id)).unwrap().is_some());
     let mut after = Vec::new();
     read_rows(&store, |row| after.push(row)).unwrap();
     assert_eq!(after, rows);
-    write_route(&store, CARD, store.sequence(), route.id, 2, 789).unwrap();
-    let mut stamped = Vec::new();
-    read_rows(&store, |row| stamped.push(row)).unwrap();
-    assert!(stamped.iter().find(|row| row.id == route.id).unwrap().assistant_accepted);
+    assert!(store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED));
     let mut allocation = store.allocate(3).unwrap();
     store.write(&mut allocation, b"new").unwrap();
     let replacement = EntryMeta {
@@ -637,11 +485,8 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
             Mutation::Put { meta: replacement, source: PutSource::Fresh(allocation) },
         ])
         .unwrap();
-    write_route(&store, CARD, store.sequence(), route.id, 2, 900).unwrap();
-    let mut replaced = Vec::new();
-    read_rows(&store, |row| replaced.push(row)).unwrap();
     assert!(
-        !replaced.iter().find(|row| row.id == route.id).unwrap().assistant_accepted,
+        !store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED),
         "a new fingerprint never inherits acceptance"
     );
 }
@@ -679,7 +524,8 @@ fn every_checkpoint_publication_cut_recovers_a_complete_prior_or_accepted_image(
         let mut rows = Vec::new();
         read_rows(&reopened, |row| rows.push(row)).unwrap();
         assert_eq!(rows.iter().find(|row| row.id == ride.id).unwrap().timestamp, 0);
-        let accepted = rows.iter().find(|row| row.id == route.id).is_some_and(|row| row.assistant_accepted);
+        let accepted =
+            reopened.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED);
         assert_eq!(
             accepted,
             clear || recovered.is_some(),
@@ -695,4 +541,16 @@ fn every_checkpoint_publication_cut_recovers_a_complete_prior_or_accepted_image(
             }
         }
     }
+}
+
+#[test]
+fn corrupt_checkpoint_metadata_does_not_block_unrelated_ride_mutations() {
+    let disk = SparseDisk::blank(BLOCKS, 32);
+    let store = FlatStore::initialize(&disk, CARD).unwrap();
+    let route = publish(&store, ObjectKind::Route, b"route");
+    let ride = publish(&store, ObjectKind::Ride, b"ride");
+    publish(&store, ObjectKind::Metadata, b"invalid image");
+    assert_eq!(check_route_change(&store, ride.id), Ok(()));
+    assert_eq!(check_route_change(&store, route.id), Err(Error::Invalid));
+    assert!(crate::flat::route_cleanup::next(&store, 20, None).is_err());
 }
