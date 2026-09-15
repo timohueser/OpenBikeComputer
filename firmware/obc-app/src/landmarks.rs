@@ -147,7 +147,7 @@ impl Landmarks {
         if self.loaded == Some(requested) {
             return Ok(());
         }
-        let record = directory.record(&section, row.index)?;
+        let mut record = directory.record(&section, row.index)?;
         if record.qid != row.key.qid {
             self.invalidate();
             return Ok(());
@@ -155,14 +155,21 @@ impl Landmarks {
         self.name.clear();
         let mut name = [0; MAX_NAME_BYTES as usize];
         self.name.push_str(directory.name(&section, &record, &mut name)?).map_err(|_| Error::BadOffset)?;
+        if !self.name.chars().all(|c| matches!(c,' '..='~'|'\u{a0}'..='\u{17f}')) {
+            return Err(Error::BadOffset);
+        }
         self.text.clear();
         self.article_pages = credit_count(&directory, &section, record.article)?;
-        self.source_pages = self.article_pages
-            + if record.photo_attribution.is_absent() {
-                0
-            } else {
-                credit_count(&directory, &section, record.photo_attribution)?
-            };
+        let photo_credits = if record.photo_attribution.is_absent() {
+            None
+        } else {
+            credit_count(&directory, &section, record.photo_attribution).ok()
+        };
+        if photo_credits.is_none() {
+            record.photo = ContentRef::default();
+            record.photo_attribution = ContentRef::default();
+        }
+        self.source_pages = self.article_pages + photo_credits.unwrap_or(0);
         let reference = if sources {
             if self.source_page < self.article_pages {
                 record.article
@@ -439,6 +446,30 @@ page."
         state.invalidate_selection();
         state.read_step(&reader, false).unwrap();
         assert!(state.record.is_some(), "returning selection reloads its identity");
+    }
+    #[test]
+    fn unreadable_photo_credit_does_not_erase_article_text() {
+        let mut bytes = map();
+        let start = obc_formats::io::rd_u32(&bytes, obcm::HEADER_LANDMARK_OFFSET_OFF) as usize
+            * (1 << bytes[obcm::HEADER_OFFSET_SCALE_OFF]);
+        let row = start + SECTION_HEADER_LEN;
+        let text_offset = obc_formats::io::rd_u32(&bytes, row + 60);
+        bytes[row + 76..row + 80].copy_from_slice(&text_offset.to_le_bytes());
+        bytes[row + 80..row + 84].copy_from_slice(&4u32.to_le_bytes());
+        bytes[row + 84..row + 88].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[row + 88..row + 92].copy_from_slice(&4u32.to_le_bytes());
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut state = Landmarks::new();
+        state.generation = Some(reader.generation());
+        state.restart(false);
+        state.read_step(&reader, false).unwrap();
+        assert_eq!(state.text.as_str(), "First source page.");
+        assert!(state.record.unwrap().photo.is_absent());
+        state.read_step(&reader, true).unwrap();
+        assert_eq!(state.text.as_str(), "Credit page one.");
     }
     #[test]
     fn represented_pages_reject_unsupported_glyphs_and_overflow_without_replacement() {
