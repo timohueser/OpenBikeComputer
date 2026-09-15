@@ -419,17 +419,21 @@ impl NavigatorMachine {
             return;
         };
         if !origin.trustworthy
-            || origin.occurrence != checkpoint.occurrence
             || origin.progress_m < checkpoint.lower_m
             || origin.progress_m > checkpoint.upper_m
-            || origin.progress_m.abs_diff(checkpoint.progress_m) > REVIEW_ALONG_TOLERANCE_M
             || origin.lateral_m > REVIEW_LATERAL_TOLERANCE_M
         {
             self.review.status = ReviewStatus::Failed(NavigatorError::Movement);
             return;
         }
         // Even explicit Resume rechecks the exact payloads through the same serialized operation.
-        self.review.change = Some(Some(checkpoint));
+        self.review.change = Some(Some(NavigatorCheckpoint {
+            progress_m: origin.progress_m,
+            occurrence: origin.occurrence,
+            lon: origin.fix.0,
+            lat: origin.fix.1,
+            ..checkpoint
+        }));
         self.review.after = AfterCheckpoint::Activate(checkpoint.route.object);
         self.review.latest_origin = Some(origin);
         self.review.status = ReviewStatus::Saving;
@@ -591,29 +595,25 @@ impl crate::App {
         self.ui.map_dirty = true;
         let fix = self.fresh_position();
         if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
-            screen.no_fix = fix.is_none();
+            screen.error = fix.is_none().then_some(crate::screen::JourneyError::NoFix);
         }
         let Some(fix) = fix else {
             return;
         };
         let Some(route) = route else {
-            self.navigator.review.status = ReviewStatus::Failed(NavigatorError::SourceChanged);
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
             return;
         };
         let checkpoint = self.assistant_checkpoint().unwrap();
         let matcher = &mut self.navigator.route_match;
-        matcher.reset();
-        let floor = checkpoint.lower_m.max(checkpoint.progress_m.saturating_sub(REVIEW_ALONG_TOLERANCE_M));
-        if matcher.set_progress_floor(route, floor).is_none() {
-            self.navigator.review.status = ReviewStatus::Failed(NavigatorError::SourceChanged);
+        let Some(matched) = matcher.recover(fix.lon, fix.lat, route, checkpoint.lower_m, checkpoint.upper_m) else {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::Unmatched);
+            }
             return;
-        }
-        let matched = matcher.update_to(
-            fix.lon,
-            fix.lat,
-            route,
-            checkpoint.upper_m.min(checkpoint.progress_m.saturating_add(REVIEW_ALONG_TOLERANCE_M)),
-        );
+        };
         let origin = ReviewOrigin {
             fix: (fix.lon, fix.lat),
             progress_m: matched.progress_m,
@@ -1051,7 +1051,7 @@ mod tests {
         nav.offer_checkpoint(context().store, Some(checkpoint));
         assert!(nav.following.active_route.is_none());
         let mut wrong = origin();
-        wrong.occurrence += 1;
+        wrong.progress_m = checkpoint.upper_m + 1;
         nav.resume_review(wrong);
         assert!(nav.review.change.is_none());
         let mut nav = NavigatorMachine::new();

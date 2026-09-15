@@ -15,15 +15,30 @@ use obc_render::{
     Surface,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JourneyError {
+    NoFix,
+    Unmatched,
+    SourceChanged,
+}
+impl JourneyError {
+    fn message(self) -> Msg {
+        match self {
+            Self::NoFix => Msg::AssistantNoFix,
+            Self::Unmatched => Msg::AssistantUnmatched,
+            Self::SourceChanged => Msg::AssistantUnavailable,
+        }
+    }
+}
 #[derive(Debug)]
 pub struct JourneyScreen {
     pub(crate) resume: bool,
     rows: ActionRows,
-    pub(crate) no_fix: bool,
+    pub(crate) error: Option<JourneyError>,
 }
 impl JourneyScreen {
     pub(crate) fn new(resume: bool) -> Self {
-        Self { resume, rows: ActionRows::new(0), no_fix: false }
+        Self { resume, rows: ActionRows::new(0), error: None }
     }
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match self.rows.handle(g, &[false]) {
@@ -51,13 +66,11 @@ impl JourneyScreen {
             "",
         );
         cv.text(
-            rx.t(if self.no_fix {
-                Msg::AssistantNoFix
-            } else if self.resume {
+            rx.t(self.error.map(JourneyError::message).unwrap_or(if self.resume {
                 Msg::AssistantSavedJourney
             } else {
                 Msg::AssistantGuidanceContinues
-            }),
+            })),
             Point::new(rx.w / 2, 112),
             Font::Label,
             TextAlign::Center,

@@ -1262,7 +1262,11 @@ mod tests {
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
         assert!(reboot.active_route_index().is_none());
         feed_routes(&mut reboot, &routes, &mut NoTrace);
-        reboot.tick(RideClock(0), Sensors::new(&mut OneFix(Some(Fix::at(points[0].1, points[0].0)))), None);
+        reboot.tick(
+            RideClock(0),
+            Sensors::new(&mut OneFix(Some(Fix::at(points[0].1, (points[0].0 + points[1].0) / 2)))),
+            None,
+        );
         reboot.advance_animations(InputClock(0));
         assert_eq!(reboot.top_screen().name(), "Journey");
         assert!(reboot.requested_assistant_resume().is_none());
@@ -1278,6 +1282,8 @@ mod tests {
         assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], preview.source.object);
         assert!(!reboot.recording());
         assert!(!reboot.visit_arrival_pending());
+        assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
+        assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());
         app = reboot;
         app.activate_route(usize::MAX);
         for _ in 0..12 {
