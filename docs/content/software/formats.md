@@ -80,7 +80,7 @@ Readers use checked arithmetic and reject unsupported versions.
 
 ## OBCM — the map
 
-OBCM v15 is the only supported map version.
+OBCM v16 is the only supported map version.
 One OBCM object contains all map data.
 Its global offsets are 32-bit values in scaled units.
 Current writers use 16-byte units.
@@ -89,13 +89,13 @@ This gives the file a 64 GiB address space.
 ### The file, front to back
 
 <figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 320" role="img" aria-label="A file ribbon shows the header, styles, LOD table, LOD regions, POIs and hours, navigation, and optional terrain. LOD 0 expands into its quadtree, chunk offsets, and geometry chunks.">
+<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 840px">
+<svg viewBox="0 0 840 320" role="img" aria-label="A file ribbon shows the header, styles, LOD table, LOD regions, POIs and hours, navigation, optional landmarks, and optional terrain. LOD 0 expands into its quadtree, chunk offsets, and geometry chunks.">
 <defs><marker id="r9arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
 <text class="d-tag" x="20" y="26" text-anchor="start">OBCM · follow the file, then open one LOD</text>
 <rect x="20" y="65" width="60" height="55" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
 <text class="d-label" x="50.0" y="87" text-anchor="middle">Header</text>
-<text class="d-sub" x="50.0" y="107" text-anchor="middle">49 B</text>
+<text class="d-sub" x="50.0" y="107" text-anchor="middle">57 B</text>
 <rect x="80" y="65" width="70" height="55" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
 <text class="d-label" x="115.0" y="87" text-anchor="middle">Styles</text>
 <text class="d-sub" x="115.0" y="107" text-anchor="middle">global</text>
@@ -117,9 +117,12 @@ This gives the file a 64 GiB address space.
 <rect x="515" y="65" width="70" height="55" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
 <text class="d-label" x="550.0" y="87" text-anchor="middle">Nav</text>
 <text class="d-sub" x="550.0" y="107" text-anchor="middle">graph</text>
-<rect x="585" y="65" width="115" height="55" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-label" x="642.5" y="87" text-anchor="middle">Terrain</text>
-<text class="d-sub" x="642.5" y="107" text-anchor="middle">OBCT · optional</text>
+<rect x="585" y="65" width="115" height="55" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="642.5" y="87" text-anchor="middle">Landmarks</text>
+<text class="d-sub" x="642.5" y="107" text-anchor="middle">optional</text>
+<rect x="700" y="65" width="115" height="55" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="757.5" y="87" text-anchor="middle">Terrain</text>
+<text class="d-sub" x="757.5" y="107" text-anchor="middle">OBCT · optional</text>
 <text class="d-sub" x="20" y="51" text-anchor="start">File order; region widths depend on the data.</text>
 <path d="M230 120 L110 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
 <path d="M305 120 L690 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
@@ -144,7 +147,7 @@ This gives the file a 64 GiB address space.
 <figcaption>Each LOD repeats the same index-and-chunks structure. The ribbon shows file order, not relative region sizes.</figcaption>
 </figure>
 
-The 49-byte header addresses the global sections.
+The 57-byte header addresses the global sections.
 The style table applies to all LODs.
 The LOD table orders detail levels from coarse to fine.
 Each LOD is independent.
@@ -168,10 +171,10 @@ A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 382" role="img" aria-label="Two byte rulers show all 49 bytes with equal byte widths: magic, version, four bounds, style offset, LOD count and table offset, marker color, POI and navigation offsets, scale, terrain offset and length.">
+<svg viewBox="0 0 720 502" role="img" aria-label="Three byte rulers show all 57 bytes with equal byte widths: magic, version, four bounds, style offset, LOD count and table offset, marker color, POI and navigation offsets, scale, terrain and landmark offsets and lengths.">
 <defs><marker id="r10arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
 <text class="d-tag" x="20" y="26" text-anchor="start">OBCM header · every byte in order and to scale</text>
-<text class="d-sub" x="20" y="53" text-anchor="start">49 bytes · two consecutive rows · equal width per byte</text>
+<text class="d-sub" x="20" y="53" text-anchor="start">57 bytes · three consecutive rows · equal width per byte</text>
 <rect x="40" y="102" width="96" height="36" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
 <path d="M64 102 L64 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
 <path d="M88 102 L88 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
@@ -179,7 +182,7 @@ A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
 <text class="d-sub" x="88.0" y="125" text-anchor="middle">OBCM</text>
 <text class="d-sub" x="88.0" y="157" text-anchor="middle">0–3</text>
 <rect x="136" y="102" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="148.0" y="125" text-anchor="middle">14</text>
+<text class="d-sub" x="148.0" y="125" text-anchor="middle">16</text>
 <text class="d-sub" x="148.0" y="157" text-anchor="middle">4</text>
 <rect x="160" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
 <path d="M184 102 L184 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
@@ -261,8 +264,20 @@ A table with `chunk_count + 1` scaled offsets addresses the unit-aligned chunks.
 <text class="d-sub" x="184" y="226" text-anchor="middle">RGB565</text>
 <text class="d-sub" x="412" y="207" text-anchor="middle">s: offset scale</text>
 <path d="M412 213 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
-<text class="d-sub" x="40" y="335" text-anchor="start">Bytes 0–24 above; 25–48 below. All multi-byte values are little-endian.</text>
-<text class="d-sub" x="40" y="357" text-anchor="start">Section address = stored offset × 2ˢ. Terrain length uses the same units; writers set s = 4.</text>
+<text class="d-sub" x="40" y="455" text-anchor="start">Rows: bytes 0–24, 25–48, then 49–56. All multi-byte values are little-endian.</text>
+<text class="d-sub" x="40" y="477" text-anchor="start">Section address = stored offset × 2ˢ. Region lengths use the same units; writers set s = 4.</text>
+<rect x="40" y="362" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M64 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M88 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="88" y="385" text-anchor="middle" style="font-size:12px">Landmark off</text>
+<text class="d-sub" x="88" y="417" text-anchor="middle">49–52</text>
+<rect x="136" y="362" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M160 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M184 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M208 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="184" y="385" text-anchor="middle" style="font-size:12px">Landmark len</text>
+<text class="d-sub" x="184" y="417" text-anchor="middle">53–56</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
@@ -274,7 +289,7 @@ The core header fields are:
 | Bytes | Field |
 | ---: | --- |
 | 0–3 | Magic `OBCM` |
-| 4 | Version `15` |
+| 4 | Version `16` |
 | 5–20 | Latitude/longitude bounding box |
 | 21–24 | Style-table offset |
 | 25 | LOD count |
@@ -285,10 +300,21 @@ The core header fields are:
 | 40 | Base-2 offset scale |
 | 41–44 | Optional terrain offset |
 | 45–48 | Optional terrain length |
+| 49–52 | Optional landmark offset |
+| 53–56 | Optional landmark length |
 
 The POI and navigation sections are always present.
 An empty section has a valid nonzero offset.
 A zero terrain offset and length mean that the map has no terrain.
+A zero landmark offset and length mean that it has no landmark section.
+
+Landmark records form a bounded latitude index. Each record holds its QID, category,
+actual article language, display coordinate and an optional explicit OSM approach.
+Text, source credits and independent compressed photos stay in the map object.
+The reader fetches these payloads only after selection. Each photo is a lossless
+216 × 240 RGB222 image with a 4 KiB DEFLATE history window. Decode steps write to
+the existing framebuffer; a bad photo leaves valid text and credits available.
+The exact bounds and corruption rules are in [OBCM §9](src:specs/OBCM_Spec.md).
 
 Each style record is 8 bytes.
 It contains the style identifier, z-index, RGB565 color, weight, flags, and optional secondary color.
@@ -1482,7 +1508,7 @@ It does not change geometry.
 
 ### One map, one file
 
-OBCM v15 uses scaled offsets, stores terrain in the map, and preserves place identities and mapped approaches.
+OBCM v16 uses scaled offsets, stores terrain in the map, preserves place identities and mapped approaches, and stores optional landmark content.
 The assembler produces one OBCM object.
 It does not produce map shards or a set manifest.
 
