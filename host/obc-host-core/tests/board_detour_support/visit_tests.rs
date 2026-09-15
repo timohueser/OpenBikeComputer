@@ -80,7 +80,6 @@ impl VisitHarness {
                 dfu: false,
                 bonding: false,
                 storage_space_report: false,
-                retention_metadata: true,
             },
             outcomes: &mut self.outcomes,
             facts: &mut self.facts,
