@@ -461,8 +461,8 @@ import sys
 
 source, output = map(Path, sys.argv[1:])
 map_bytes = bytearray(source.read_bytes())
-# OBCM §1.1/§1.3: v14 header, 16-byte units, terrain offset/length at bytes 41/45.
-assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0e" and map_bytes[40] == 4
+# OBCM §1.1/§1.3: v15 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0f" and map_bytes[40] == 4
 terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
 assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
 if not terrain_offset:
@@ -482,7 +482,7 @@ PYTERRAIN
 # the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
 # Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
 # the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
-ELEVPLAN="B d d w p d d p f d d d p p p f"
+ELEVPLAN="B d d w p d d p f d d d p f p p f"
 "$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
 # (a) The route list row for that saved plan: `6 km  ▲396 m` — the climb group is read straight off
