@@ -655,6 +655,10 @@ impl CatalogOutcome {
 /// may be in flight — plus the one ordering no single bounded operation can express: the **trip
 /// cascade**, member routes first and the folder last.
 impl CatalogState {
+    pub(crate) fn can_admit_intent(&self) -> bool {
+        self.pending.is_none() && !self.in_flight
+    }
+
     /// Admit `intent`, or refuse it and hand it back.
     ///
     /// One refusal, and it is backpressure rather than failure: something is already in the slot —
