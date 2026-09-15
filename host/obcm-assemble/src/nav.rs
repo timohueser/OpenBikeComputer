@@ -2497,11 +2497,12 @@ mod tests {
                 obcm_testkit::pack_nav_edge_record(100 + k as u32, 3, &[(hub_lat, SEAM_LON), far])
             })
             .collect();
-        let half = |from: usize, to: usize| {
-            let own: Vec<Vec<u8>> = recs[from..to].to_vec();
+        let half = |parity: usize| {
+            let indices: Vec<_> = (parity..SPOKES).step_by(2).collect();
+            let own: Vec<Vec<u8>> = indices.iter().map(|&k| recs[k].clone()).collect();
             let ids = pool_ids(&own);
             let mut nodes = vec![SrcNode { id: 0, lat: hub_lat, lon: SEAM_LON, nbrs: Vec::new() }];
-            for (n, k) in (from..to).enumerate() {
+            for (n, &k) in indices.iter().enumerate() {
                 let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: ids[n], cost: 100 + k as u16, kind: 3, ascent };
                 let spoke = k as u32 + 1;
                 nodes[0].nbrs.push(nbr(spoke, 7));
@@ -2514,25 +2515,30 @@ mod tests {
             }
             nav_bytes(&nodes, &own)
         };
-        let (b0, d0) = half(0, SPOKES / 2);
-        let (b1, d1) = half(SPOKES / 2, SPOKES);
+        let (b0, d0) = half(0);
+        let (b1, d1) = half(1);
         let (s0, s1) = (obc_formats::io::SliceSource(&b0), obc_formats::io::SliceSource(&b1));
         let (c0, c1) = (nav_cell(&s0, d0), nav_cell(&s1, d1));
-        let bbox = (SEAM_LON as i64 - 10, hub_lat as i64 - 10, SEAM_LON as i64 + 10, hub_lat as i64 + 100 * 27);
+        let bbox = (SEAM_LON as i64 - 2700, hub_lat as i64 - 2700, SEAM_LON as i64 + 2700, hub_lat as i64 + 2700);
         let nav = merged(&[&c0, &c1], 20, 0, bbox);
 
         assert_eq!(nav.stats.unified, 1, "the hub is the only coordinate both cells wrote");
         assert_eq!((nav.stats.nodes, nav.stats.edges), (SPOKES + 1, SPOKES));
         assert_eq!(nav.stats.degree_truncated, SPOKES - NAV_MAX_DEGREE, "two entries past the §8.3 cap");
         let nodes = merged_nodes(&nav);
-        // The hub sorts first (lowest latitude), so its spokes are dense ids 1..=26 in walk order.
-        let hub = &nodes[0].3;
+        let hub_node = nodes.iter().find(|node| node.0 == hub_lat).unwrap();
+        let hub = &hub_node.3;
         assert_eq!(hub.len(), NAV_MAX_DEGREE, "the junction is capped, not overfull");
-        assert_eq!(hub.iter().map(|n| n.0).collect::<Vec<_>>(), (1..=NAV_MAX_DEGREE as u32).collect::<Vec<_>>());
+        assert_eq!(nav.stats.dropped_nodes, 0);
+        assert_eq!(
+            hub.iter().map(|n| nodes[n.0 as usize].0).collect::<Vec<_>>(),
+            (1..=NAV_MAX_DEGREE as i32).map(|k| hub_lat + 100 * k).collect::<Vec<_>>(),
+            "the cap retains the same directed arcs across cell order"
+        );
         assert!(hub.windows(2).all(|w| w[0].1 < w[1].1), "and its entries are in emission order");
-        for (dense, n) in nodes.iter().enumerate().skip(1) {
+        for (dense, n) in nodes.iter().enumerate().filter(|(_, node)| node.2 != hub_node.2) {
             assert_eq!(n.3.len(), 1, "every spoke keeps its own arc back to the hub");
-            assert_eq!(n.3[0].0, 0, "node {dense}'s neighbour is the hub");
+            assert_eq!(n.3[0].0, hub_node.2, "node {dense}'s neighbour is the hub");
         }
     }
 

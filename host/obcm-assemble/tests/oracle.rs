@@ -1261,6 +1261,22 @@ impl Loaded {
     }
 }
 
+#[test]
+fn cell_input_order_does_not_change_the_connected_map() {
+    let cfg = config();
+    let dir = scratch("cell-order");
+    let (ing, ways) = fixture(&cfg);
+    let cut = cut(&dir, &cfg, &ing, &ways);
+    let cells = load(&dir, &cut);
+    let mut order: Vec<_> = (0..cells.cells.len()).collect();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (_, forward) = cells.assemble(&cfg, &order, &opts).unwrap();
+    order.reverse();
+    let (_, reverse) = cells.assemble(&cfg, &order, &opts).unwrap();
+    assert_eq!(forward.map.0, reverse.map.0);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// The degenerate and mis-stated selections. Each is a case a caller can actually produce — a
 /// catalog listing a cell twice, a one-cell corridor, a `network` cell with no roads in it, a band
 /// id that does not exist — and each has a specific right answer that is not "assemble something".
