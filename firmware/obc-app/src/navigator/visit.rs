@@ -546,6 +546,137 @@ mod tests {
         app.assistant_checkpoint_answer(MetadataOutcome::CheckpointWritten { token });
         app.navigator.reconcile_visit(route);
     }
+    fn live_fix(app: &mut crate::App, route: Option<&RouteReader>, lon: i32, lat: i32) {
+        struct Location(Option<obc_ports::Fix>);
+        impl obc_ports::LocationSource for Location {
+            fn poll(&mut self) -> Option<obc_ports::Fix> {
+                self.0.take()
+            }
+        }
+        app.tick(
+            obc_ports::RideClock(0),
+            obc_ports::Sensors::new(&mut Location(Some(obc_ports::Fix::at(lat, lon)))),
+            route,
+        );
+    }
+    fn open_current(app: &mut crate::App, route: &RouteReader) {
+        app.apply_chord(crate::input::Chord::Quick);
+        app.apply_gesture(crate::Gesture::Press);
+        app.apply_chord(crate::input::Chord::Context);
+        app.apply_gesture(crate::Gesture::Press);
+        app.prepare_find(None, Some(route));
+        assert!(matches!(app.top_screen(), crate::screen::Screen::VisitReview(s) if s.accepted));
+    }
+    #[test]
+    fn current_visit_cancel_waits_for_checkpoint_or_explicit_connector_acceptance() {
+        use crate::{
+            device_core::{Revision, StoreIdentity, StoreRevision},
+            Gesture,
+        };
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for departed in [false, true] {
+            let mut app = app();
+            app.set_routes_with_ids(&[route.summary(), route.summary()], &[8, 7]);
+            app.navigator.following.active_route = Some(0);
+            app.catalogs.loaded_scope =
+                Some(StoreRevision { store: StoreIdentity::from_bytes([1; 16]), revision: Revision::new(1) });
+            app.bind_place_map(Some(RouteSourceKey { store: [1; 16], object: 1, revision: 1 }));
+            live_fix(&mut app, Some(&route), 0, if departed { 600 } else { 0 });
+            app.navigator.visit.departed = departed;
+            let checkpoint = app.assistant_checkpoint();
+            let recording = app.ride_session();
+            open_current(&mut app, &route);
+            app.apply_gesture(Gesture::Step(1));
+            app.apply_gesture(Gesture::Press);
+            app.prepare_find(None, Some(&route));
+            assert_eq!(app.active_route_index(), Some(0));
+            assert_eq!(app.assistant_checkpoint(), checkpoint);
+            if departed {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Planning);
+                assert_eq!(app.assistant_review_context().unwrap().purpose, ReviewPurpose::ReturnToRoute);
+                assert!(app.assistant_preview().is_none());
+                app.apply_gesture(Gesture::Back);
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                assert_eq!(app.assistant_checkpoint(), checkpoint);
+            } else {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+                app.apply_gesture(Gesture::Back);
+                assert_eq!(app.navigator.review.change, Some(None), "Back cannot revoke the requested journey change");
+                ack(&mut app, &mut TokenSource::new(), &route);
+                assert_eq!(app.active_route_index(), Some(1));
+                assert!(app.assistant_checkpoint().is_none());
+            }
+            assert_eq!(app.ride_session(), recording);
+        }
+    }
+    #[test]
+    fn arrival_card_dismissal_and_rejoin_leave_guidance_and_recording_alone() {
+        use crate::{screen::Screen, Gesture};
+        for dismiss in [false, true] {
+            let bytes = route();
+            let source = SliceSource(&bytes.0);
+            let index = obc_route::RouteIndex::read(&source).unwrap();
+            let route = RouteReader::new(&index, &source);
+            let mut app = app();
+            let recording = app.ride_session();
+            for lat in [0, 300, 600, 900, 1000] {
+                fix(&mut app, &route, 0, lat);
+            }
+            let mut tokens = TokenSource::new();
+            ack(&mut app, &mut tokens, &route);
+            app.advance_animations(obc_ports::InputClock(0));
+            assert!(matches!(app.top_screen(), Screen::Journey(s) if !s.resume));
+            let checkpoint = app.assistant_checkpoint();
+            if dismiss {
+                app.apply_gesture(Gesture::Back);
+                assert!(!app.visit_arrival_pending());
+                assert_eq!(app.assistant_checkpoint(), checkpoint);
+                app.advance_animations(obc_ports::InputClock(0));
+                assert!(!matches!(app.top_screen(), Screen::Journey(_)));
+            }
+            fix(&mut app, &route, 0, 700);
+            ack(&mut app, &mut tokens, &route);
+            for lat in [500, 200, 0] {
+                fix(&mut app, &route, 0, lat);
+            }
+            ack(&mut app, &mut tokens, &route);
+            app.advance_animations(obc_ports::InputClock(0));
+            assert!(!matches!(app.top_screen(), Screen::Journey(_)));
+            assert!(!app.active_visit());
+            assert_eq!(app.ride_session(), recording);
+        }
+    }
+    #[test]
+    fn recovery_card_requires_a_fresh_phase_match_and_explicit_press() {
+        use crate::{screen::Screen, Gesture};
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let checkpoint = app().assistant_checkpoint();
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        app.offer_assistant_checkpoint(crate::device_core::StoreIdentity::from_bytes([1; 16]), checkpoint);
+        app.advance_animations(obc_ports::InputClock(0));
+        app.prepare_find(None, None);
+        assert!(matches!(app.top_screen(), Screen::Journey(s) if s.resume));
+        assert!(app.requested_assistant_resume().is_none());
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.requested_assistant_resume(), checkpoint.map(|c| c.route));
+        app.prepare_assistant_resume(Some(&route));
+        assert_eq!(app.assistant_review_status(), ReviewStatus::ResumeAvailable);
+        assert!(app.active_route_index().is_none());
+        live_fix(&mut app, None, 0, 0);
+        app.apply_gesture(Gesture::Press);
+        app.prepare_assistant_resume(Some(&route));
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+        assert_eq!(app.navigator.review.change, Some(checkpoint));
+        assert!(app.active_route_index().is_none());
+        assert!(!app.recording());
+        assert!(!app.visit_arrival_pending());
+    }
     #[test]
     fn accepted_visit_reopens_from_assistant_without_a_second_acceptance() {
         use crate::{input::Chord, screen::Screen, Gesture};

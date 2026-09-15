@@ -573,6 +573,57 @@ impl crate::App {
         self.admit_navigator_intent(super::NavigatorIntent::ResumeAssistant { origin });
     }
 
+    /// A rider-requested recovery read. Executors reuse their existing route index for this read.
+    pub fn requested_assistant_resume(&self) -> Option<PayloadFingerprint> {
+        (self.ui.find.action == crate::find_place::Action::Resume
+            && self.assistant_review_status() == ReviewStatus::ResumeAvailable
+            && self.active_route_index().is_none())
+        .then(|| self.assistant_checkpoint().map(|c| c.route))
+        .flatten()
+    }
+
+    /// Match only the accepted phase window before naming the existing durable Resume operation.
+    pub fn prepare_assistant_resume(&mut self, route: Option<&obc_route::RouteReader>) {
+        if self.requested_assistant_resume().is_none() {
+            return;
+        }
+        self.ui.find.action = crate::find_place::Action::None;
+        self.ui.map_dirty = true;
+        let fix = self.fresh_position();
+        if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+            screen.no_fix = fix.is_none();
+        }
+        let Some(fix) = fix else {
+            return;
+        };
+        let Some(route) = route else {
+            self.navigator.review.status = ReviewStatus::Failed(NavigatorError::SourceChanged);
+            return;
+        };
+        let checkpoint = self.assistant_checkpoint().unwrap();
+        let matcher = &mut self.navigator.route_match;
+        matcher.reset();
+        let floor = checkpoint.lower_m.max(checkpoint.progress_m.saturating_sub(REVIEW_ALONG_TOLERANCE_M));
+        if matcher.set_progress_floor(route, floor).is_none() {
+            self.navigator.review.status = ReviewStatus::Failed(NavigatorError::SourceChanged);
+            return;
+        }
+        let matched = matcher.update_to(
+            fix.lon,
+            fix.lat,
+            route,
+            checkpoint.upper_m.min(checkpoint.progress_m.saturating_add(REVIEW_ALONG_TOLERANCE_M)),
+        );
+        let origin = ReviewOrigin {
+            fix: (fix.lon, fix.lat),
+            progress_m: matched.progress_m,
+            occurrence: matcher.occurrence(),
+            lateral_m: matched.dist_m,
+            trustworthy: !matched.off_route,
+        };
+        self.resume_assistant(origin);
+    }
+
     pub fn assistant_needs_recovery(&self) -> bool {
         (!self.navigator.review.recovery_seen && self.navigator.review.status == ReviewStatus::Idle)
             || (self.navigator.review.status == ReviewStatus::Unresolved && self.navigator.review.change.is_some())
@@ -634,7 +685,10 @@ impl crate::App {
                 self.apply_assistant_checkpoint_action(after);
             }
         } else {
+            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            self.ui.find.resume_offer |= offer;
+            self.ui.map_dirty |= offer;
         }
     }
     /// A transient immutable edit, available only to the current MetadataMachine token.

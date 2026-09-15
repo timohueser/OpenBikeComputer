@@ -42,6 +42,10 @@ pub(crate) enum Action {
     Accept,
     Cancel,
     OpenAccepted,
+    CancelVisit,
+    Resume,
+    DismissArrival,
+    DismissResume,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Costs {
@@ -81,6 +85,7 @@ pub struct FindState {
     local: Option<(u8, u16)>,
     selected_review: bool,
     invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
+    pub(crate) resume_offer: bool,
     pub review: ReviewStatus,
     pub review_costs: Option<Costs>,
 }
@@ -105,6 +110,7 @@ impl FindState {
             local: None,
             selected_review: false,
             invalid_visit: None,
+            resume_offer: false,
             review: ReviewStatus::Idle,
             review_costs: None,
         }
@@ -235,6 +241,9 @@ impl crate::App {
         self.ui.find.results.len()
     }
     pub(crate) fn handle_find_action(&mut self) {
+        if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume) {
+            return;
+        }
         match core::mem::replace(&mut self.ui.find.action, Action::None) {
             Action::Refresh => {
                 self.cancel_assistant();
@@ -259,12 +268,15 @@ impl crate::App {
                 );
             }
             Action::Accept => {
-                if self.ui.poi_scratch.detail_valid
-                    && !self
-                        .ui
-                        .poi_scratch
-                        .detail_schedule
-                        .is_some_and(|s| s.status(self.place_local_time()) == OpeningStatus::Closed)
+                if self
+                    .assistant_review_context()
+                    .is_some_and(|c| c.purpose == crate::navigator::ReviewPurpose::ReturnToRoute)
+                    || self.ui.poi_scratch.detail_valid
+                        && !self
+                            .ui
+                            .poi_scratch
+                            .detail_schedule
+                            .is_some_and(|s| s.status(self.place_local_time()) == OpeningStatus::Closed)
                 {
                     if let Some(origin) = self.current_review_origin() {
                         self.accept_assistant(origin);
@@ -282,6 +294,11 @@ impl crate::App {
                     );
                 }
             }
+            Action::CancelVisit | Action::Resume => return,
+            Action::DismissArrival => self.dismiss_visit_arrival(),
+            Action::DismissResume => {
+                self.ui.find.resume_offer = false;
+            }
             Action::Cancel => self.cancel_assistant(),
             Action::None => {}
         }
@@ -291,7 +308,10 @@ impl crate::App {
     fn handle_find_exit(&mut self) {
         if self.ui.find.selected_review && !self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_))) {
             self.ui.find.selected_review = false;
-            if self.assistant_review_status() != ReviewStatus::Accepted {
+            if !matches!(
+                self.assistant_review_status(),
+                ReviewStatus::Accepted | ReviewStatus::Saving | ReviewStatus::Unresolved
+            ) {
                 self.cancel_assistant();
             }
         }
@@ -347,6 +367,23 @@ impl crate::App {
     }
     pub(crate) fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
+        if self.ui.find.action == Action::CancelVisit {
+            self.ui.find.action = Action::None;
+            let result = self
+                .current_visit_index()
+                .ok_or(crate::navigator::VisitUnavailable::SourceChanged)
+                .and_then(|_| route.zip(self.place_map_key()).ok_or(crate::navigator::VisitUnavailable::SourceChanged))
+                .and_then(|(route, map)| self.cancel_visit(route, map));
+            if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                screen.error = result.err();
+                if result.is_ok() {
+                    screen.accepted = false;
+                    screen.returning = true;
+                    self.ui.find.selected_review = true;
+                    self.ui.find.review_costs = None;
+                }
+            }
+        }
         self.handle_find_exit();
         self.ui.find.review = self.assistant_review_status();
         let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
@@ -366,7 +403,9 @@ impl crate::App {
                 });
                 return;
             }
-            if self.assistant_review_status() == ReviewStatus::Accepted {
+            if self.assistant_review_status() == ReviewStatus::Accepted
+                || (screen.returning && self.assistant_review_status() == ReviewStatus::Idle)
+            {
                 crate::screen::apply(
                     &mut self.ui.stack,
                     crate::screen::Transition::Root(Screen::Map(crate::screen::MapScreen::new())),
@@ -375,7 +414,9 @@ impl crate::App {
                 self.ui.map_dirty = true;
                 return;
             }
-            if self.ui.poi_scratch.detail_schedule.is_some_and(|s| s.status(local) == OpeningStatus::Closed) {
+            if !screen.returning
+                && self.ui.poi_scratch.detail_schedule.is_some_and(|s| s.status(local) == OpeningStatus::Closed)
+            {
                 self.invalidate_assistant_preview();
             }
             self.ui.find.review = self.assistant_review_status();
