@@ -480,8 +480,7 @@ impl ProfileMult {
 pub struct NavScratch<const N: usize = NAV_MAX_NODES> {
     entries: [NavEntry; N],
     heap: [u16; N],
-    /// Occupied table slots. Insertion fails ([`NavError::Exhausted`]) at `N`, so probe
-    /// loops always terminate: below `N` a free slot always exists.
+    /// Occupied table slots, also the bound for the emitted predecessor chain.
     used: u16,
     heap_len: u16,
     /// The current search's ε = `eps_num/eps_den` — the [`NAV_EPSILON_LADDER`] rung [`NavEntry::f`]
@@ -536,38 +535,32 @@ impl<const N: usize> NavScratch<N> {
         self.heap_len = 0;
     }
 
-    /// Linear-probe lookup. Bounded at `N` probes: with no deletions ever, an occupied
-    /// run can only end at a free slot — the full-table bound only guards corruption.
-    fn lookup(&self, id: u32) -> Option<usize> {
+    /// Find an existing entry or insert at the first free slot in one bounded probe.
+    /// The boolean is true only for a new entry. A full table still permits lookup
+    /// of every tracked node, so exhaustion does not prevent decrease-key or re-open.
+    fn entry(&mut self, id: u32, lon: i32, lat: i32) -> Result<(usize, bool), NavError> {
         let mut i = id as usize % N;
         for _ in 0..N {
-            let e = &self.entries[i];
-            if !e.occupied() {
-                return None;
+            if !self.entries[i].occupied() {
+                self.entries[i] = NavEntry {
+                    node_id: id,
+                    lon,
+                    lat,
+                    edge_used: 0,
+                    g: 0,
+                    h: 0,
+                    came_from: 0,
+                    meta: META_OCCUPIED | HEAP_NONE,
+                };
+                self.used += 1;
+                return Ok((i, true));
             }
-            if e.node_id == id {
-                return Some(i);
+            if self.entries[i].node_id == id {
+                return Ok((i, false));
             }
             i = (i + 1) % N;
         }
-        None
-    }
-
-    /// Insert a fresh entry for `id` (must not be present), un-queued. `Err(Exhausted)` when the
-    /// scratch is full — the caller ([`settle`]) latches `table_full` and drops the node rather than
-    /// aborting (N4 salvage); the seed insert in `SnapTo` is the one caller that still fails hard.
-    fn insert(&mut self, id: u32, lon: i32, lat: i32) -> Result<usize, NavError> {
-        if self.used as usize == N {
-            return Err(NavError::Exhausted);
-        }
-        let mut i = id as usize % N;
-        while self.entries[i].occupied() {
-            i = (i + 1) % N;
-        }
-        self.entries[i] =
-            NavEntry { node_id: id, lon, lat, edge_used: 0, g: 0, h: 0, came_from: 0, meta: META_OCCUPIED | HEAP_NONE };
-        self.used += 1;
-        Ok(i)
+        Err(NavError::Exhausted)
     }
 
     #[inline]
@@ -935,7 +928,7 @@ impl NavPlanner {
         scratch.eps_num = num as u16;
         scratch.eps_den = den as u16;
         self.table_full = false;
-        let si = scratch.insert(self.start_id, self.start_c.0, self.start_c.1)?;
+        let (si, _) = scratch.entry(self.start_id, self.start_c.0, self.start_c.1)?;
         scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
         scratch.entries[si].came_from = si as u16;
         scratch.heap_push(si);
@@ -1537,8 +1530,8 @@ fn relax_virtual_edge<const N: usize>(
 ) -> bool {
     let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind) else { return false };
     let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
-    match scratch.lookup(target_id) {
-        Some(j) => {
+    match scratch.entry(target_id, target_coord.0, target_coord.1) {
+        Ok((j, false)) => {
             if tentative < scratch.entries[j].g {
                 let entry = &mut scratch.entries[j];
                 entry.g = tentative;
@@ -1554,19 +1547,16 @@ fn relax_virtual_edge<const N: usize>(
             }
             false
         }
-        None => {
-            if let Ok(j) = scratch.insert(target_id, target_coord.0, target_coord.1) {
-                let entry = &mut scratch.entries[j];
-                entry.g = tentative;
-                entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
-                entry.came_from = from as u16;
-                entry.edge_used = edge_id;
-                scratch.heap_push(j);
-                false
-            } else {
-                true
-            }
+        Ok((j, true)) => {
+            let entry = &mut scratch.entries[j];
+            entry.g = tentative;
+            entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
+            entry.came_from = from as u16;
+            entry.edge_used = edge_id;
+            scratch.heap_push(j);
+            false
         }
+        Err(_) => true,
     }
 }
 
@@ -1623,8 +1613,8 @@ fn settle<const N: usize>(
                 // u16-saturating tentative cost: a saturated g is just maximally
                 // unattractive (see the layout note) — never wrapped, never mis-ordered.
                 let tentative = sat16((settled.g as u32).saturating_add(weighted));
-                match scratch.lookup(nb.id) {
-                    Some(j) => {
+                match scratch.entry(nb.id, nb.lon, nb.lat) {
+                    Ok((j, false)) => {
                         if tentative < scratch.entries[j].g {
                             let e = &mut scratch.entries[j];
                             e.g = tentative;
@@ -1646,17 +1636,15 @@ fn settle<const N: usize>(
                     // latch — the search continues, relaxing tracked nodes but adding no new ones
                     // (this is what makes the frontier provably drain: no new nodes, every re-open
                     // strictly lowers an integer g ≥ 0).
-                    None => match scratch.insert(nb.id, nb.lon, nb.lat) {
-                        Ok(j) => {
-                            let e = &mut scratch.entries[j];
-                            e.g = tentative;
-                            e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
-                            e.came_from = idx as u16;
-                            e.edge_used = nb.edge_id;
-                            scratch.heap_push(j);
-                        }
-                        Err(_) => *table_full = true,
-                    },
+                    Ok((j, true)) => {
+                        let e = &mut scratch.entries[j];
+                        e.g = tentative;
+                        e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
+                        e.came_from = idx as u16;
+                        e.edge_used = nb.edge_id;
+                        scratch.heap_push(j);
+                    }
+                    Err(_) => *table_full = true,
                 }
             }
         })
