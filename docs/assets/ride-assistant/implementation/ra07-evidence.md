@@ -51,3 +51,22 @@ Independent adversarial review, green CI, final Assistant entry composition, pro
 acceptance with the pinned offline ride scenarios, and the final resource measurement remain with
 the integration owner. No simulator binary, resource image, full UI snapshot sweep, or physical
 hardware check was run in this implementation worktree. Hardware acceptance remains pending.
+
+## Independent review fixes
+
+Commit `1f842095` addresses the three findings from the independent review:
+
+- Forward and reverse page availability is distinct. The existing scan direction and boundary
+  retain the known return page, including a reverse scan that reaches the first page exactly.
+  An App gesture test checks page 1 to page 2, back to page 1, and forward to page 2 again.
+- A window is published only after both route facts and the next authored waypoint read succeed.
+  Failed initialization retries these reads together. The source-failure test leaves waypoint
+  bytes readable while geometry reads fail, checks three preparation passes, then checks recovery.
+- The header range, unknown ascent label, and full climb gain use the configured units. The
+  physical query intervals remain 5 km and 10 km.
+
+Checks on this fix: the whole App library suite passed with 909 tests;
+`cargo clippy -p obc-app --lib --tests -- -D warnings` passed; `cargo fmt --all`,
+`git diff --check`, and `./tools/obc suites check` passed. The registry has 68 suites and
+320 execution units. Public conceptual documentation remains accurate. No resource build,
+snapshot sweep, simulator build, or physical test was repeated. The fix needs a delta review.
