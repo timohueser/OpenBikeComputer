@@ -386,6 +386,15 @@ impl crate::App {
         }
         self.handle_find_exit();
         self.ui.find.review = self.assistant_review_status();
+        if self.assistant_review_status() == ReviewStatus::Accepted && self.active_visit() {
+            if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                if screen.returning && !screen.accepted {
+                    screen.accepted = true;
+                    screen.error = Some(crate::navigator::VisitUnavailable::Busy);
+                    self.ui.find.selected_review = false;
+                }
+            }
+        }
         let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
         if let Some(Screen::VisitReview(screen)) = base {
             if screen.accepted {
