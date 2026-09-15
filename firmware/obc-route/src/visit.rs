@@ -210,6 +210,7 @@ impl VisitChoice {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Begin,
+    BeginPrefix,
     Prefix,
     Outbound,
     Return,
@@ -395,12 +396,12 @@ impl VisitBuilder {
     }
 
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
-        if self.phase != Phase::Begin {
+        if !matches!(self.phase, Phase::Begin | Phase::BeginPrefix) {
             return Err(Error::BadOffset);
         }
         ObcrEmitter::begin(sink)?;
         self.phase = if self.descriptor.is_some() {
-            if self.anchors[1] > self.anchors[0] {
+            if self.phase == Phase::BeginPrefix || self.anchors[1] > self.anchors[0] {
                 Phase::Prefix
             } else {
                 Phase::Outbound
@@ -419,6 +420,7 @@ impl VisitBuilder {
         self.anchors[1] = anchor_m;
         self.anchors[2] = anchor_m;
         descriptor.original_anchors_m = self.anchors;
+        self.phase = Phase::BeginPrefix;
         Ok(())
     }
     pub fn append_prefix_step(&mut self, original: &RouteReader, sink: &mut dyn ByteSink) -> Result<bool, Error> {
@@ -640,11 +642,11 @@ impl VisitBuilder {
             return Ok(true);
         }
         let seam = !self.segment_started && self.last.is_some();
-        if seam
-            && self.last.is_some_and(|last| {
-                points.first().is_none_or(|p| obc_map_scene::ground_dist_m(last, (p.lon, p.lat)) > APPROACH_TOLERANCE_M)
-            })
-        {
+        let gap =
+            self.last.zip(points.first()).map_or(0.0, |(last, p)| obc_map_scene::ground_dist_m(last, (p.lon, p.lat)));
+        let route_join = self.descriptor.is_some() && matches!(self.phase, Phase::Outbound | Phase::Tail);
+        let tolerance = if route_join { crate::nav::SNAP_RADIUS_M } else { APPROACH_TOLERANCE_M };
+        if seam && (points.is_empty() || gap > tolerance) {
             self.phase = Phase::RejectedGeometry;
             return Err(Error::BadOffset);
         }
@@ -652,14 +654,23 @@ impl VisitBuilder {
         let source_surface = route.attribution_map()? == self.em.attribution_map();
         for (i, p) in points.iter().enumerate() {
             let coord = (p.lon, p.lat);
-            if i == 0 && (seam || self.last == Some(coord)) {
+            let connector = i == 0 && seam && gap > APPROACH_TOLERANCE_M;
+            if i == 0 && ((seam && !connector) || self.last == Some(coord)) {
                 // Coalesce sub-metre quantization at the existing endpoint; add no connector.
                 self.seam_incomplete |= self.last != Some(coord) || self.last_ele != p.ele;
                 continue;
             }
-            self.em.set_surface(if source_surface { p.surface } else { 0 });
-            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete);
+            // Imported route geometry can differ from the normal graph snap. Retain both ends
+            // and charge the connection to the visit; it has no mapped surface or elevation.
+            self.em.set_surface(if source_surface && !connector { p.surface } else { 0 });
+            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete || connector);
             self.em.push_retained(sink, p.lon, p.lat, p.ele)?;
+            if connector && self.phase == Phase::Tail {
+                self.accepted_rejoin_m = self.em.distance_m();
+                if let Some(descriptor) = &mut self.descriptor {
+                    descriptor.accepted_anchors_m[2] = self.accepted_rejoin_m;
+                }
+            }
             self.last = Some(coord);
             self.last_ele = p.ele;
             self.seam_incomplete = false;

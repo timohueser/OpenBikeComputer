@@ -286,7 +286,7 @@ fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
     let stop = (end.0, end.1 + 1000);
     let outbound = route(vec![(end.0, end.1, 10), (stop.0, stop.1, 10)], &[], 111);
     let returning = route(vec![(stop.0, stop.1, 10), (end.0, end.1, 10)], &[], 111);
-    for (head, accepted) in [((8_337_021, 46_576_670), true), ((8_337_008, 46_576_670), false)] {
+    for (head, accepted) in [((8_337_021, 46_576_670), true), ((8_335_008, 46_576_670), false)] {
         let original = route(vec![(head.0, head.1, 10), (head.0 + 2000, head.1, 10)], &[], 153);
         let source = SliceSource(&original);
         let index = RouteIndex::read(&source).unwrap();
@@ -315,6 +315,50 @@ fn quantized_return_seam_is_coalesced_but_a_disconnected_tail_is_rejected() {
         let costs = VisitCosts::read(&emitted, [0, 111]).unwrap();
         assert!(costs.arrival_elevation_complete);
         assert!(!costs.complete_elevation);
+    }
+}
+
+#[test]
+fn imported_route_connections_are_retained_measured_and_bounded() {
+    let bytes = route(vec![(0, 0, 10), (3000, 0, 10)], &[], 333);
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    let original = RouteReader::new(&index, &source);
+    for anchor in [0, 111] {
+        let at = original.position_at(anchor).unwrap();
+        for gap in [20, 1000] {
+            let graph = (at.lon, at.lat + gap);
+            let stop = (at.lon, at.lat + 2000);
+            let outbound = route(vec![(graph.0, graph.1, 10), (stop.0, stop.1, 10)], &[], 222);
+            let returning = route(vec![(stop.0, stop.1, 10), (graph.0, graph.1, 10)], &[], 222);
+            let mut builder = VisitBuilder::new(key(1), key(2), 0, anchor, SourceId::osm(1, 9), stop).unwrap();
+            builder.keep_prefix(anchor).unwrap();
+            let mut sink = VecSink::default();
+            builder.begin(&mut sink).unwrap();
+            while !builder.append_prefix_step(&original, &mut sink).unwrap() {}
+            if gap == 1000 {
+                let source = SliceSource(&outbound);
+                let index = RouteIndex::read(&source).unwrap();
+                assert!(builder.append_leg_step(&RouteReader::new(&index, &source), &mut sink).is_err());
+                assert!(builder.rejected_geometry());
+                continue;
+            }
+            append(&mut builder, &outbound, &mut sink);
+            append(&mut builder, &returning, &mut sink);
+            while builder.finish_step(&original, &mut sink).unwrap().is_none() {}
+            let source = SliceSource(&sink.buf);
+            let index = RouteIndex::read(&source).unwrap();
+            let composed = RouteReader::new(&index, &source);
+            let shape = composed.preview_polyline::<16>();
+            assert!(shape.windows(2).any(|p| p == [(at.lon, at.lat), graph]));
+            assert!(shape.windows(2).any(|p| p == [graph, (at.lon, at.lat)]));
+            let descriptor = composed.visit_descriptor().unwrap().unwrap();
+            assert_eq!(descriptor.original_anchors_m, [0, anchor, anchor]);
+            assert!((anchor + 443..=anchor + 445).contains(&descriptor.accepted_anchors_m[2]));
+            assert!((776..=778).contains(&composed.total_distance_m));
+            let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+            assert!(!costs.arrival_elevation_complete && !costs.complete_elevation);
+        }
     }
 }
 
