@@ -13,7 +13,7 @@ use obc_route::{visit::VisitTarget, RouteReader};
 
 pub const NEARBY_M: u32 = 10_000;
 pub const FORWARD_M: u32 = 20_000;
-pub const SOURCE_LIMIT: usize = 8;
+pub const SOURCE_LIMIT: usize = 4;
 pub const PLAN_LIMIT: usize = SOURCE_LIMIT * 2;
 pub const RESULT_LIMIT: usize = 4;
 pub const ON_WAY_M: u32 = 400;
