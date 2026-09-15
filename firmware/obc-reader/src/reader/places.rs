@@ -50,7 +50,17 @@ impl Branch {
     }
 }
 
-/// One immutable browsing generation. Each step reads at most one index node or POI chunk.
+/// A suspended POI record and its nearest point; geometry and POI bytes stay in their sources.
+#[derive(Debug, Default)]
+struct EncounterScan {
+    record: usize,
+    chunk: Option<usize>,
+    backwards: bool,
+    best: Option<crate::corridor::PathProjection>,
+}
+
+/// One immutable browsing generation. Each step reads at most one index node or POI chunk and
+/// one route chunk. A pending encounter resumes before the spatial walk continues.
 /// A new page repeats the spatial walk with an exclusive identity/order boundary.
 #[derive(Debug)]
 pub struct PlaceQuery {
@@ -63,7 +73,8 @@ pub struct PlaceQuery {
     backwards: bool,
     category: usize,
     route_chunk: usize,
-    validated_route_chunk: Option<usize>,
+    route_validated: bool,
+    encounter: EncounterScan,
     stack: Vec<Branch, 33>,
     leaf: Option<u32>,
     started: bool,
@@ -84,7 +95,8 @@ impl PlaceQuery {
             backwards: false,
             category: 0,
             route_chunk: 0,
-            validated_route_chunk: None,
+            route_validated: false,
+            encounter: EncounterScan::default(),
             stack: Vec::new(),
             leaf: None,
             started: false,
@@ -120,7 +132,8 @@ impl PlaceQuery {
         self.after = Some(after);
         self.category = 0;
         self.route_chunk = 0;
-        self.validated_route_chunk = None;
+        self.route_validated = false;
+        self.encounter = EncounterScan::default();
         self.stack.clear();
         self.leaf = None;
         self.started = false;
@@ -191,15 +204,16 @@ impl PlaceQuery {
                 }
                 if self.route_chunk + 1 < route.chunk_count() && route.chunk_start_m(self.route_chunk + 1) < from_m {
                     self.route_chunk += 1;
+                    self.route_validated = false;
                     return Ok(());
                 }
-                if self.validated_route_chunk != Some(self.route_chunk) {
+                if !self.route_validated {
                     let mut valid = false;
                     route.visit_chunk_points(self.route_chunk, &mut |points| valid = points.len() >= 2);
                     if !valid {
                         return Err(Error::BadOffset);
                     }
-                    self.validated_route_chunk = Some(self.route_chunk);
+                    self.route_validated = true;
                 }
                 crate::corridor::inflate_bbox(route.chunk_bbox(self.route_chunk), half_width_m as f32)
             }
@@ -208,6 +222,7 @@ impl PlaceQuery {
         let Some(category) = self.categories.iter().nth(self.category) else {
             if matches!(self.window, PlaceWindow::Corridor { .. }) {
                 self.route_chunk += 1;
+                self.route_validated = false;
                 self.category = 0;
                 self.started = false;
             } else {
@@ -224,9 +239,12 @@ impl PlaceQuery {
             self.stack.push(Branch::new(0, 4)).map_err(|_| Error::BadOffset)?;
             self.started = true;
         }
-        if let Some(leaf) = self.leaf.take() {
-            self.read_leaf(reader, entry, leaf, route, out)?;
-            self.next_node();
+        if let Some(leaf) = self.leaf {
+            if self.read_leaf(reader, entry, leaf, route, out)? {
+                self.leaf = None;
+                self.encounter = EncounterScan::default();
+                self.next_node();
+            }
             return Ok(());
         }
         let Some(top) = self.stack.last() else {
@@ -302,30 +320,28 @@ impl PlaceQuery {
         leaf: u32,
         route: Option<&dyn RoutePath>,
         out: &mut Vec<CorridorPoi, N>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let size = reader.tables.pois.chunk_size;
         let (start, end) = entry.chunk_range(leaf, size).ok_or(Error::BadOffset)?;
         if end > reader.src.len() || size < POI_RECORD_LEN {
             return Err(Error::BadOffset);
         }
-        let (previous, following) = if let (PlaceWindow::Corridor { .. }, Some(path)) = (self.window, route) {
-            (
-                route_boundary(path, self.route_chunk.checked_sub(1), true)?,
-                route_boundary(
-                    path,
-                    (self.route_chunk + 1 < path.chunk_count()).then_some(self.route_chunk + 1),
-                    false,
-                )?,
-            )
-        } else {
-            (None, None)
-        };
         let route_chunk = self.route_chunk;
         let is_corridor = matches!(self.window, PlaceWindow::Corridor { .. });
+        let mut cursor = core::mem::take(&mut self.encounter);
+        let scan_chunk = cursor.chunk.unwrap_or(route_chunk);
+        let mut paused = false;
         let mut scan = |points: &[(i32, i32)]| -> Result<(), Error> {
             let mut record_error = None;
+            let mut record = 0;
             reader
                 .stream_poi_records(start, size / POI_RECORD_LEN, |bytes, off, lat, lon, subtype| {
+                    let index = record;
+                    record += 1;
+                    if paused || index < cursor.record {
+                        return;
+                    }
+
                     if poi_category_of(subtype).is_none_or(|c| c.id() != entry.category_id) {
                         record_error = Some(Error::BadOffset);
                         return;
@@ -343,6 +359,7 @@ impl PlaceQuery {
                         }
                     };
                     if opening == OpeningStatus::Closed {
+                        cursor.record += 1;
                         return;
                     }
                     let mut hit = CorridorPoi {
@@ -369,25 +386,74 @@ impl PlaceQuery {
                         }
                         PlaceWindow::Corridor { from_m, to_m, half_width_m } => {
                             let Some(route) = route else { return };
-                            route_encounters(
+                            let first_chunk = route_chunk == 0 || route.chunk_start_m(route_chunk) < from_m;
+                            let mut emit = |projection: crate::corridor::PathProjection| {
+                                let along = projection.dist_along_m.max(0.0) as u32;
+                                if along < from_m || along > to_m {
+                                    return;
+                                }
+                                hit.dist_along_m = along;
+                                hit.poi.distance_m = along - from_m;
+                                hit.offset_m = libm::roundf(projection.offset_m) as i32;
+                                self.consider(out, hit.clone());
+                            };
+                            let limit = half_width_m as f32;
+                            if cursor.backwards {
+                                let continues = preceding_pass(
+                                    points,
+                                    route.chunk_start_m(scan_chunk),
+                                    (lon, lat),
+                                    limit,
+                                    &mut cursor.best,
+                                );
+                                if continues && scan_chunk > 0 {
+                                    cursor.chunk = Some(scan_chunk - 1);
+                                } else {
+                                    cursor.chunk = None;
+                                    cursor.backwards = false;
+                                }
+                                paused = true;
+                                return;
+                            }
+                            // The anchor may start inside a pass owned by an earlier chunk. Resolve
+                            // that pass before filtering its canonical nearest point by the window.
+                            if cursor.chunk.is_none()
+                                && first_chunk
+                                && route_chunk > 0
+                                && cursor.best.is_none()
+                                && inside(points[0], (lon, lat), limit)
+                            {
+                                cursor.chunk = Some(route_chunk - 1);
+                                cursor.backwards = true;
+                                paused = true;
+                                return;
+                            }
+                            let continuation = cursor.chunk.is_some();
+                            let pending = pass_encounters(
                                 points,
-                                route.chunk_start_m(route_chunk),
+                                route.chunk_start_m(scan_chunk),
                                 (lon, lat),
-                                half_width_m as f32,
-                                previous,
-                                following,
-                                |along, offset| {
-                                    if along < from_m || along > to_m {
-                                        return;
-                                    }
-                                    hit.dist_along_m = along;
-                                    hit.poi.distance_m = along - from_m;
-                                    hit.offset_m = offset;
-                                    self.consider(out, hit.clone());
-                                },
+                                limit,
+                                !first_chunk && !continuation && inside(points[0], (lon, lat), limit),
+                                continuation,
+                                &mut cursor.best,
+                                &mut emit,
                             );
+                            if pending && scan_chunk + 1 < route.chunk_count() {
+                                cursor.chunk = Some(scan_chunk + 1);
+                                paused = true;
+                                return;
+                            }
+                            if let Some(best) = cursor.best.take() {
+                                emit(best);
+                            }
+                            cursor.chunk = None;
+                            if continuation {
+                                paused = true;
+                            }
                         }
                     }
+                    cursor.record += 1;
                 })
                 .map_err(Error::Source)?;
             if let Some(error) = record_error {
@@ -395,9 +461,9 @@ impl PlaceQuery {
             }
             Ok(())
         };
-        if let (true, Some(path)) = (is_corridor, route) {
+        let result = if let (true, Some(path)) = (is_corridor, route) {
             let mut result = Err(Error::BadOffset);
-            path.visit_chunk_points(route_chunk, &mut |points| {
+            path.visit_chunk_points(scan_chunk, &mut |points| {
                 if points.len() >= 2 {
                     result = scan(points);
                 }
@@ -405,7 +471,9 @@ impl PlaceQuery {
             result
         } else {
             scan(&[])
-        }
+        };
+        self.encounter = cursor;
+        result.map(|()| !paused)
     }
 
     fn consider<const N: usize>(&mut self, out: &mut Vec<CorridorPoi, N>, hit: CorridorPoi) {
@@ -458,54 +526,93 @@ impl Reader<'_> {
     }
 }
 
-type Segment = [(i32, i32); 2];
-
-fn route_boundary(path: &dyn RoutePath, index: Option<usize>, last: bool) -> Result<Option<Segment>, Error> {
-    let Some(index) = index else { return Ok(None) };
-    let mut segment = None;
-    path.visit_chunk_points(index, &mut |points| {
-        if points.len() >= 2 {
-            let at = if last { points.len() - 2 } else { 0 };
-            segment = Some([points[at], points[at + 1]]);
-        }
-    });
-    segment.map(Some).ok_or(Error::BadOffset)
+fn inside(point: (i32, i32), place: (i32, i32), limit: f32) -> bool {
+    ground_dist_m_cl(point, place, cos_lat(place.1)) <= limit
 }
 
-/// Each local minimum on the route is a distinct encounter. Adjacent equal minima retain
-/// the first segment, including across chunk seams; a later loop keeps its later route position.
-#[allow(clippy::too_many_arguments)]
-fn route_encounters(
+fn nearer(best: &mut Option<crate::corridor::PathProjection>, candidate: crate::corridor::PathProjection) {
+    if best.is_none_or(|old| candidate.offset_m.abs() < old.offset_m.abs()) {
+        *best = Some(candidate);
+    }
+}
+
+fn projections(
     points: &[(i32, i32)],
     start_m: u32,
     place: (i32, i32),
-    limit: f32,
-    previous: Option<Segment>,
-    following: Option<Segment>,
-    mut visit: impl FnMut(u32, i32),
+    mut visit: impl FnMut((i32, i32), (i32, i32), crate::corridor::PathProjection),
 ) {
-    if points.len() < 2 {
-        return;
-    }
-    let project = |segment: &[(i32, i32)]| crate::corridor::project_onto_chunk(segment, 0, place, f32::INFINITY);
-    let distance = |segment: &[(i32, i32)]| project(segment).map_or(f32::INFINITY, |p| p.offset_m.abs());
-    let mut prior = previous.as_ref().map_or(f32::INFINITY, |segment| distance(segment));
     let cl = cos_lat(points[0].1);
     let mut along = start_m as f32;
-    for (index, segment) in points.windows(2).enumerate() {
-        let next = if index + 2 < points.len() {
-            distance(&points[index + 1..index + 3])
-        } else {
-            following.as_ref().map_or(f32::INFINITY, |segment| distance(segment))
-        };
-        if let Some(projection) = project(segment) {
-            let offset = projection.offset_m.abs();
-            if offset <= limit && offset < prior && offset <= next {
-                visit((along + projection.dist_along_m).max(0.0) as u32, libm::roundf(projection.offset_m) as i32);
-            }
-            prior = offset;
+    for segment in points.windows(2) {
+        if let Some(mut projection) = crate::corridor::project_onto_chunk(segment, 0, place, f32::INFINITY) {
+            projection.dist_along_m += along;
+            visit(segment[0], segment[1], projection);
         }
         let (dx, dy) = delta_m(segment[0], segment[1], cl);
         along += libm::sqrtf(dx * dx + dy * dy);
     }
+}
+
+/// Only the trailing pass connects to the next chunk. Earlier passes in this chunk are unrelated.
+fn preceding_pass(
+    points: &[(i32, i32)],
+    start_m: u32,
+    place: (i32, i32),
+    limit: f32,
+    best: &mut Option<crate::corridor::PathProjection>,
+) -> bool {
+    let mut trailing = None;
+    let mut continues = inside(points[0], place, limit);
+    projections(points, start_m, place, |a, b, projection| {
+        if !inside(a, place, limit) {
+            trailing = None;
+            continues = false;
+        }
+        if projection.offset_m.abs() <= limit {
+            nearer(&mut trailing, projection);
+        }
+        if !inside(b, place, limit) {
+            trailing = None;
+            continues = false;
+        }
+    });
+    if let Some(projection) = trailing {
+        if best.is_none_or(|old| projection.offset_m.abs() <= old.offset_m.abs()) {
+            *best = Some(projection);
+        }
+    }
+    continues
+}
+
+/// One occurrence is one continuous pass inside the radius. Emit its nearest projection, with
+/// the earliest route position winning ties. A pass can continue through arbitrarily many chunks.
+#[allow(clippy::too_many_arguments)]
+fn pass_encounters(
+    points: &[(i32, i32)],
+    start_m: u32,
+    place: (i32, i32),
+    limit: f32,
+    mut skip: bool,
+    continuation: bool,
+    best: &mut Option<crate::corridor::PathProjection>,
+    mut emit: impl FnMut(crate::corridor::PathProjection),
+) -> bool {
+    let mut done = false;
+    projections(points, start_m, place, |_, b, projection| {
+        if done {
+            return;
+        }
+        if !skip && projection.offset_m.abs() <= limit {
+            nearer(best, projection);
+        }
+        if !inside(b, place, limit) {
+            if let Some(projection) = best.take() {
+                emit(projection);
+            }
+            skip = false;
+            done = continuation;
+        }
+    });
+    best.is_some()
 }

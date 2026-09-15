@@ -106,7 +106,8 @@ impl PoiCategorySet {
 /// are filled by nearer entries.
 ///
 /// Every method must be cheap off the resident chunk index except [`visit_chunk_points`], which is
-/// the one that may touch the card — the query calls it at most once per chunk it actually needs.
+/// the one that may touch the card. Each query step reads at most one route chunk; a pass that
+/// crosses a seam can revisit chunks across successive steps.
 ///
 /// [`visit_chunk_points`]: RoutePath::visit_chunk_points
 pub trait RoutePath {
@@ -121,8 +122,8 @@ pub trait RoutePath {
     fn chunk_bbox(&self, k: usize) -> BBox;
 
     /// Decode chunk `k` and hand its `(lon, lat)` microdegree points to `visit` **once**, in route
-    /// order. A chunk that fails to decode simply doesn't call `visit` (the corridor loses that
-    /// stretch, exactly like the map overlay loses a stroke). The slice is borrowed from the
+    /// order. A chunk that fails to decode does not call `visit`; the place query reports failure.
+    /// The slice is borrowed from the
     /// implementor's own scratch and must not outlive the call.
     // The `&mut dyn FnMut(&[…])` spelling *is* the seam (object-safe, alloc-free); a type alias
     // would only hide what implementors must write anyway — same call as `RouteOverlaySource`.
