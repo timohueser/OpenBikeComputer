@@ -170,10 +170,12 @@ export interface AssembleOptions {
     readonly acceptHoles?: boolean;
     /** Proceed although a cell is `partial` (OBCA §3.7). */
     readonly acceptPartial?: boolean;
-    /** How much of a source cell one {@link AssembleRead} brings back (default 64 KiB, clamped to
+    /** How much of a source cell one {@link AssembleRead} brings back (default 4 KiB, clamped to
      *  4 MiB). The cache holds sixteen of these, so it is also the input's whole residency ÷ 16.
      *
-     *  `1` turns the cache **off** — one call per engine read. Nothing but a measurement should ask
+     *  Sealed-output verification uses a separate fixed 64 KiB cache.
+     *
+     *  `1` turns the input cache **off** — one call per engine read. Nothing but a measurement should ask
      *  for that; it is here because "with the cache" only means something against "without". */
     readonly readBlockBytes?: number;
     /** The most memory the §4.6 nav merge's sorted passes may hold (default 64 MiB, floor 64 KiB).

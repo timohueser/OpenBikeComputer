@@ -13,11 +13,13 @@ const requireBuilder = createRequire(resolve(root, 'builder/app/package.json'));
 const requireBrowser = createRequire(resolve(root, 'apps/obc-web-demo/tests/browser/package.json'));
 const { createServer } = await import(requireBuilder.resolve('vite'));
 const { chromium } = requireBrowser('playwright');
-const [input, output, blockArg] = process.argv.slice(2);
-const readBlockBytes = blockArg === undefined ? 65536 : Number(blockArg);
-if (![4096, 65536].includes(readBlockBytes)) throw new Error("Expected 4096 or 65536 read block bytes");
-if (!input || !output) throw new Error('Usage: node browser.mjs INPUT_DIRECTORY OUTPUT.json [4096|65536]');
+const [input, output, blockArg = 'default', workload = 'pinned'] = process.argv.slice(2);
+const readBlockBytes = blockArg === 'default' ? undefined : Number(blockArg);
+if (readBlockBytes !== undefined && ![4096, 65536].includes(readBlockBytes)) throw new Error('Expected default, 4096 or 65536 read block bytes');
+if (!input || !output || !['pinned', 'sequential'].includes(workload)) throw new Error('Usage: node browser.mjs INPUT_DIRECTORY OUTPUT.json [default|4096|65536] [pinned|sequential]');
 const manifest = JSON.parse(readFileSync(resolve(here, 'inputs.json')));
+const knownEmpty = workload === 'sequential' ? manifest.objects.filter(e => e.band === 'network').map(({id, band}) => ({id, band})) : [];
+if (workload === 'sequential') manifest.objects = manifest.objects.filter(e => e.band !== 'network');
 const files = new Map(manifest.objects.map(e => [e.sha256, resolve(input, e.sha256 + (e.band === 'terrain' ? '.obcd' : '.obcm'))]));
 const wrapper = `
 const memories = [];
@@ -80,7 +82,9 @@ const server = await createServer({
 });
 await server.listen();
 let browser;
-const profile = mkdtempSync(resolve(os.tmpdir(), 'obc-ng-browser-'));
+const profileParent = resolve(process.env.OBC_BROWSER_PROFILE_ROOT || os.tmpdir());
+const profile = mkdtempSync(resolve(profileParent, 'obc-ng-browser-'));
+const profileFilesystem = execFileSync('findmnt', ['-T', profile, '-n', '-o', 'FSTYPE,SOURCE'], {encoding:'utf8'}).trim();
 try {
   browser = await chromium.launchPersistentContext(profile, { headless: true, executablePath: process.env.CHROME_BIN || '/usr/bin/google-chrome', args: ['--no-sandbox'] });
   const page = await browser.newPage();
@@ -88,7 +92,7 @@ try {
   page.on('pageerror', error => console.error(error));
   page.on('console', message => { if(message.text().startsWith('NG1 ')) console.log(message.text()); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/ng`);
-  const result = await page.evaluate(async ({manifest, readBlockBytes}) => {
+  const result = await page.evaluate(async ({manifest, readBlockBytes, knownEmpty}) => {
     const { openCellStore } = await import('/src/lib/cells/store.ts');
     const store = await openCellStore('ng1');
     if (!store) throw new Error('OPFS input unavailable');
@@ -126,9 +130,9 @@ try {
         if (e.data.type === 'done') ok(e.data);
       };
       worker.onerror = bad;
-      worker.postMessage({type:'assemble',requireDisk:true,cells:[],cellStore:'ng1',sourceCells,knownEmpty:[],
+      worker.postMessage({type:'assemble',requireDisk:true,cells:[],cellStore:'ng1',sourceCells,knownEmpty,
         schemaJson:JSON.stringify({schema:manifest.schema}),skinJson:JSON.stringify(manifest.skin),
-        options:{readBlockBytes,mergeBudgetBytes:manifest.options.merge_budget_bytes,acceptPartial:manifest.options.accept_partial,acceptHoles:manifest.options.accept_holes},
+        options:{...(readBlockBytes === undefined ? {} : {readBlockBytes}),mergeBudgetBytes:manifest.options.merge_budget_bytes,acceptPartial:manifest.options.accept_partial,acceptHoles:manifest.options.accept_holes},
         terrain:{postingLog2:manifest.terrain.posting_log2,cellLog2:manifest.terrain.cell_log2},terrainCells},
         terrainCells.map(e=>e.bytes.buffer));
     });
@@ -139,7 +143,7 @@ try {
     const stored = messages.find(m=>m.type==='stored-map');
     if (!stored || stored.byteLength !== globalThis.ngOutput.size) throw new Error('Missing or short sunk output');
     return {request_ms,estimate,done,stored,reading:messages.find(m=>m.type==='reading'),writing:messages.find(m=>m.type==='writing'),visibility:document.visibilityState};
-  }, {manifest, readBlockBytes});
+  }, {manifest, readBlockBytes, knownEmpty});
   console.log(JSON.stringify({stage:'assembled',request_ms:result.request_ms,...result.done.measurement}));
   // Read back in bounded chunks after the assembly timing and memory observation.
   const hash = createHash('sha256');
@@ -153,7 +157,10 @@ try {
   }
   result.readback_sha256 = hash.digest('hex');
   if (result.readback_sha256 !== result.stored.sha256) throw new Error('Independent output digest mismatch');
-  result.read_block_bytes = readBlockBytes;
+  result.read_block_bytes = readBlockBytes ?? 'default';
+  result.workload = workload;
+  result.profile_filesystem = profileFilesystem;
+  result.profile_parent = profileParent;
   result.measured_at_utc = new Date().toISOString();
   result.source_commit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
   result.wasm_sha256 = createHash('sha256').update(readFileSync(resolve(root,'builder/app/src/lib/assemble/pkg/obc_web_assemble_bg.wasm'))).digest('hex');

@@ -182,8 +182,7 @@ pub trait MapWrites {
     /// Append `bytes` to the map. A short write is a failure, not a partial success.
     fn write(&self, bytes: &[u8]) -> Result<(), String>;
     /// Fill `into` with `into.len()` bytes at `offset` of the **sealed** map, for the §4.8
-    /// read-back. Served through a [`BlockCache`], so this is called on the order of once per
-    /// [`DEFAULT_READ_BLOCK`] rather than once per engine read.
+    /// read-back. Small reads use a bounded [`BlockCache`] with [`VERIFY_READ_BLOCK`] windows.
     fn read_at(&self, offset: u64, into: &mut [u8]) -> Result<(), String>;
     /// No more bytes are coming. A host that buffers must flush here: the very next thing that
     /// happens is §4.8 reading the map back.
@@ -303,8 +302,8 @@ pub struct BridgeOptions {
     pub accept_holes: bool,
     /// Proceed although a cell is `partial` (OBCA §3.7).
     pub accept_partial: bool,
-    /// The block the read caches fetch and evict in (#1116 B2/D1). Clamped to
-    /// [`MIN_READ_BLOCK`]..=[`MAX_READ_BLOCK`]; each cache's whole residency is this times
+    /// The block the input cache fetches and evicts. Clamped to
+    /// [`MIN_READ_BLOCK`]..=[`MAX_READ_BLOCK`]; input cache residency is this times
     /// [`READ_CACHE_BLOCKS`].
     ///
     /// Exposed because it is the one number that trades host calls against read amplification, and
@@ -454,7 +453,9 @@ const PROGRESS_STEP: f64 = 0.01;
 
 /// Bytes fetched on a cache miss by default. Sequential reads can reuse the block;
 /// scattered record reads can amplify traffic. Reads at least this large bypass the cache.
-pub(crate) const DEFAULT_READ_BLOCK: usize = 64 * 1024;
+pub(crate) const DEFAULT_READ_BLOCK: usize = 4 * 1024;
+/// Sealed-output verification has its own access pattern and cache geometry.
+pub(crate) const VERIFY_READ_BLOCK: usize = 64 * 1024;
 /// The floor a caller can ask for: `1`, which is not a small cache but **no cache** — every read is
 /// at least one byte, so every read takes the bypass and becomes exactly one host call. That is the
 /// configuration the cache is measured against (`the_read_block_size_changes_the_call_count_and_not_
@@ -1298,7 +1299,7 @@ pub fn assemble(
     let map_slot = sink.map(MapSlot);
     let sink_cache = BlockCache::new(
         map_slot.as_ref().map_or(&no_reads as &dyn SlotReads, |s| s as &dyn SlotReads),
-        opts.read_block_bytes,
+        VERIFY_READ_BLOCK,
         vec!["the map".to_string()],
         "the map",
     );
@@ -1585,6 +1586,46 @@ fn summary_json(s: &obcm_assemble::Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequential_sources_trade_small_read_calls_for_bounded_cache_residency() {
+        struct SequentialReads {
+            calls: StdCell<usize>,
+            bytes: StdCell<usize>,
+        }
+        impl SlotReads for SequentialReads {
+            fn read_slot(&self, _slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+                self.calls.set(self.calls.get() + 1);
+                self.bytes.set(self.bytes.get() + buf.len());
+                for (i, byte) in buf.iter_mut().enumerate() {
+                    *byte = (offset + i as u64) as u8;
+                }
+                Ok(())
+            }
+        }
+        let source_len = 1024 * 1024;
+        for read_len in [17, 256 * 1024] {
+            let mut calls = Vec::new();
+            for block in [DEFAULT_READ_BLOCK, 64 * 1024] {
+                let source = SequentialReads { calls: StdCell::new(0), bytes: StdCell::new(0) };
+                let cache = BlockCache::new(&source, block, vec!["sequential".into()], "source");
+                let mut buf = vec![0; read_len];
+                for offset in (0..source_len).step_by(read_len) {
+                    let buf = &mut buf[..read_len.min(source_len - offset)];
+                    cache.read_at(0, offset as u64, source_len as u64, buf).expect("sequential read");
+                    assert!(buf.iter().enumerate().all(|(i, byte)| *byte == (offset + i) as u8));
+                }
+                assert_eq!(source.bytes.get(), source_len, "no sequential read amplification");
+                assert!(cache.slots.borrow().iter().map(|s| s.data.len()).sum::<usize>() <= READ_CACHE_BLOCKS * block);
+                calls.push(source.calls.get());
+            }
+            if read_len == 17 {
+                assert_eq!(calls, [256, 16], "smaller windows need more sequential record calls");
+            } else {
+                assert_eq!(calls, [4, 4], "bulk copies bypass both cache sizes");
+            }
+        }
+    }
 
     /// The four codes a caller actually branches on must be four different strings. The issue asks
     /// for exactly this: a §4.8 **verify** failure — the engine wrote a map the reader cannot read —
