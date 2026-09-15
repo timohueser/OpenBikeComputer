@@ -20,7 +20,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PlatformSupport};
 use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, CatalogObjectId, Screen};
-use obc_host_core::flat_map::FlatMap;
+use obc_host_core::flat_map::{FlatMap, MapError};
 use obc_host_core::flat_store::HostStore;
 use obc_host_core::{
     convert_gpx, initial_camera, ActiveRouteSession, DeviceInput, FileSettingsStore, FlatRideRecorder, FlatRideStore,
@@ -58,6 +58,31 @@ impl HostPlatform for PhonePlatform<'_> {
     }
 }
 
+/// What the shell finds at the card path. Asked before opening, so an empty phone offers the
+/// import screen instead of reading a reason out of an error string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardState {
+    /// No card file yet. The first [`import_map`] creates it.
+    Missing,
+    /// A card, but no map on it: nothing to show until one is imported.
+    NoMap,
+    /// A card with a map. [`Host::open`] mounts it.
+    Ready,
+}
+
+/// What is at `card` right now. An error means a card that exists but cannot be read.
+pub fn card_state(card: &Path) -> Result<CardState, String> {
+    if !card.exists() {
+        return Ok(CardState::Missing);
+    }
+    let owner = open_card(card)?;
+    match FlatMap::open_only_in(&owner) {
+        Ok(_) => Ok(CardState::Ready),
+        Err(error) if missing_map(&error) => Ok(CardState::NoMap),
+        Err(error) => Err(format!("card map: {error}")),
+    }
+}
+
 /// Put `obcm` on the card at `card`, creating the card when it does not exist yet.
 ///
 /// The only place a card is created, and it runs with **no [`Host`] open**: the map is the one
@@ -67,14 +92,22 @@ pub fn import_map(card: &Path, obcm: &Path) -> Result<(), String> {
     let owner = if card.exists() { HostStore::open_file(card) } else { HostStore::create_file(card) }
         .map_err(|error| format!("card {}: {error}", card.display()))?;
     let input = std::fs::File::open(obcm).map_err(|error| format!("read {}: {error}", obcm.display()))?;
-    match FlatMap::open_only_in(&owner) {
-        Ok(current) => current.replace_from_file(input).map(|_| ()),
-        Err(obc_host_core::flat_map::MapError::Storage(StoreError::NotFound)) => {
-            FlatMap::from_file_in(&owner, input).map(|_| ())
-        }
-        Err(error) => Err(error),
-    }
-    .map_err(|error| format!("import {}: {error}", obcm.display()))
+    let imported = match FlatMap::open_only_in(&owner) {
+        Ok(current) => current.replace_from_file(input),
+        Err(error) if missing_map(&error) => FlatMap::from_file_in(&owner, input),
+        // The card cannot be read at all, which is not the input file's fault.
+        Err(error) => return Err(format!("card {}: {error}", card.display())),
+    };
+    imported.map(|_| ()).map_err(|error| format!("import {}: {error}", obcm.display()))
+}
+
+/// A card that carries no map yet — the one map error that is a state rather than a failure.
+fn missing_map(error: &MapError) -> bool {
+    matches!(error, MapError::Storage(StoreError::NotFound))
+}
+
+fn open_card(card: &Path) -> Result<HostStore, String> {
+    HostStore::open_file(card).map_err(|error| format!("card {}: {error}", card.display()))
 }
 
 /// The resident active-route parse as a reader, when a route is active. A free function because a
@@ -123,7 +156,7 @@ impl Host {
     /// `settings` is the settings file (the device's RRAM stand-in) and `exports` the directory a
     /// committed ride's GPX is written into.
     pub fn open(card: &Path, settings: &Path, exports: &Path) -> Result<Box<Self>, String> {
-        let owner = HostStore::open_file(card).map_err(|error| format!("card {}: {error}", card.display()))?;
+        let owner = open_card(card)?;
         let map = FlatMap::open_only_in(&owner).map_err(|error| format!("card map: {error}"))?;
         let mut routes = FlatRouteStore::new(owner.clone(), &[]).map_err(|error| format!("routes: {error}"))?;
         routes.refresh_metadata().map_err(|error| format!("route metadata: {error:?}"))?;

@@ -10,11 +10,8 @@ description = "The iPhone host's device core: the shared firmware over a persist
 crate-type = ["rlib"]
 
 [dependencies]
-# `alloc` gives us `MapCache::new_boxed` — a zeroed heap allocation with no giant stack temporary.
-# The iOS main thread has the same 1 MiB stack as the wasm host.
-obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
-# `alloc` gives us `NavScratch::new_boxed` — same story for the ~39 KB A* table.
-obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
+obc-reader = { path = "../../firmware/obc-reader" }
+obc-route = { path = "../../firmware/obc-route" }
 # The host owns the boxed RenderScratch it lends App each frame.
 obc-render = { path = "../../firmware/obc-render" }
 obc-app = { path = "../../firmware/obc-app" }
