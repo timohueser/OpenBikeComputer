@@ -231,18 +231,10 @@ describe("assembleCells", () => {
         result.release();
     });
 
-    /**
-     * **What makes the seam affordable**, measured here rather than argued: `readBlockBytes: 1` is
-     * the cache switched off, so its call count is exactly the number of reads the engine makes, and
-     * the default's is what the host is actually asked for.
-     *
-     * The ratio is what matters at scale. §4.6.6 emits the merged edge pool one record at a time —
-     * 17.5 M records at country scale (#1116 C3) — and every one of those, uncached, would be a JS
-     * crossing (~0.4 µs, measured in Node by the PR that added this) *and* an OPFS syscall. Cached,
-     * the host sees about one call per 64 KiB of cell.
-     */
+    /** Cached and uncached inputs must produce the same bytes. The default must reduce host calls
+     *  on this fixture; large graphs can have a different access pattern. */
     it("serves the engine's reads from a block cache, without changing a byte", async () => {
-        const run = async (readBlockBytes: number) => {
+        const run = async (readBlockBytes?: number) => {
             const store = new Reads();
             const result = await assembleCells(
                 [],
@@ -259,7 +251,7 @@ describe("assembleCells", () => {
             return { bytes, calls: store.calls.length };
         };
         const uncached = await run(1);
-        const cached = await run(64 * 1024);
+        const cached = await run();
         expectSameBytes(uncached.bytes, cached.bytes, "the map with the read cache off");
         expect(cached.calls * 10).toBeLessThan(uncached.calls);
         // …and the reads it does make are whole blocks, not the engine's 30-byte records.
