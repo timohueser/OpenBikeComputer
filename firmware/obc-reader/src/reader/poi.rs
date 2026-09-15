@@ -215,7 +215,7 @@ impl<'a> Reader<'a> {
             super::places::PlaceWindow::Nearby { position: pos, radius_m },
             None,
         );
-        let mut page = Vec::new();
+        let mut page = Vec::<CorridorPoi, MAX_POI_RESULTS>::new();
         loop {
             match query.step(self, None, 0, &mut page) {
                 super::places::QueryProgress::Pending => {}
@@ -306,10 +306,6 @@ impl<'a> Reader<'a> {
                 let subtype = win[off + 8];
                 if subtype == CHUNK_END {
                     return Ok(()); // end-of-records sentinel — nothing valid follows in this chunk
-                }
-                // Skip an out-of-range subtype (0, or past the table) cleanly — never panic/UB.
-                if obc_formats::obcm::poi_directory_category_of(subtype).is_none() {
-                    continue;
                 }
                 visit(win, off, rd_i32(win, off), rd_i32(win, off + 4), subtype);
             }
