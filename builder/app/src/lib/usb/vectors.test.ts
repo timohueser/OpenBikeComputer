@@ -83,7 +83,7 @@ const SUITE = join(repoRoot(), "specs/vectors/flat-store-v4");
  * The manifest's own digest. Re-pin this **deliberately**, in the same commit that changes a
  * fixture and for the same stated reason — never because a test went red.
  */
-const MANIFEST_SHA256 = "31e3c81b06b0b10e09bc1b24b79d8b6aef09965a7374771714589a5bc4b1cdc7";
+const MANIFEST_SHA256 = "e4f6f525def24b3ad14d4a05735aef16d791686a6ca58ca2858c822dca21fab5";
 const read = (relative: string): string => readFileSync(join(SUITE, relative), "utf8");
 
 interface ManifestRow {
@@ -304,7 +304,6 @@ function semanticRequest(request: Request): Record<string, unknown> {
                 payloadLength: String(request.body.payloadLength),
                 payloadCrc32: request.body.payloadCrc32,
                 kind: request.body.kind,
-                retainPrevious: request.body.retainPrevious,
                 displayName: request.body.displayName,
             };
         case Opcode.Cancel:

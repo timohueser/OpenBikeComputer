@@ -4,7 +4,7 @@ import UserNotifications
 import OBCDomain
 import OBCTransport
 import OBCUI
-import OBCWeather
+
 #if DEBUG
 import OBCMock
 #endif
@@ -25,16 +25,7 @@ struct OBCCompanionApp: App {
         launchOptions.useBLETransport ? nil : launchOptions.makeControl()
     #endif
 
-    /// The one real radio owner for the process. SwiftUI may re-evaluate `body` many times; creating
-    /// the transport from `makeTransport()` on each evaluation produced multiple central managers
-    /// with the same restoration identifier. Worse, the static weather bridge remained attached to
-    /// the first instance while `RootView` could retain another — a split brain where the visible app
-    /// was connected but the weather listener never saw the device's request.
-    @MainActor private static let liveTransport: BLETransport = {
-        let transport = BLETransport()
-        startWeatherJob(for: transport)
-        return transport
-    }()
+    @MainActor private static let liveTransport = BLETransport()
 
     /// The notification tap router (#773 U5). Held here because
     /// `UNUserNotificationCenter.delegate` is a weak reference — a delegate created inline would be
@@ -77,9 +68,7 @@ struct OBCCompanionApp: App {
                 updateNotifier: SystemUpdateNotifier(),
                 importAtLaunch: Self.launchImport(),
                 firmwareDemoAtLaunch: Self.launchFirmwareDemo(),
-                syncTiming: Self.launchSyncTiming(),
-                weather: Self.makeWeatherSeams()
-            )
+                syncTiming: Self.launchSyncTiming())
             #if DEBUG
                 .devMockOverlay(
                     control: Self.mockControl,
@@ -127,149 +116,7 @@ struct OBCCompanionApp: App {
         #if DEBUG
         if let mockControl { return MockTransport(control: mockControl) }
         #endif
-        let transport = Self.liveTransport
-        #if DEBUG
-        // The WX3 Weather Request transport harness. Pair normally once so BLETransport has an
-        // authenticated peripheral UUID, then launch the real BLE path with
-        // `-OBCWeatherRequestHarness`. The paired launch flow is suppressed below so this one-shot
-        // owns the connection; logs report the request context plus discovery/connected latency.
-        // No UI, no scheduler, no bundle fetch — this exists to measure the background
-        // discovery→connect→read→disconnect beat on glass.
-        if Self.useWeatherRequestHarness {
-            Task {
-                do {
-                    let read = try await transport.readWeatherRequestContext()
-                    print("[OBC weather harness] \(read)")
-                } catch {
-                    print("[OBC weather harness] failed: \(error)")
-                }
-            }
-        }
-        #endif
-        return transport
-    }
-
-    // MARK: The WX9 background weather job (composition only — the machinery lives in OBCKit)
-
-    /// The bridge task that feeds transport read events into the job engine — retained here
-    /// because it must live as long as the app does.
-    @MainActor private static var weatherBridge: Task<Void, Never>?
-    /// The engine, retained so the foreground kick below can reach it — and so the WX13 screen can
-    /// ask it for the owed job and a retry.
-    @MainActor private static var weatherEngine: WeatherJobEngine?
-    /// The service client, retained for WX13's manifest-sourced provenance. The same instance the
-    /// job fetches with, so the screen rides its 60 s manifest cache instead of asking twice.
-    @MainActor private static var weatherStatusProvider: (any WeatherServiceStatusProviding)?
-    /// The rider's standing-watch preference. Read at launch (before any screen exists) and written
-    /// by the WX13 switch — mock runs stay in memory, the determinism rule the other stores keep.
-    static let weatherPreferences: any WeatherPreferencesStore = {
-        #if DEBUG
-        if mockControl != nil { return InMemoryWeatherPreferencesStore() }
-        #endif
-        return UserDefaultsWeatherPreferencesStore()
-    }()
-
-    /// The seams the WX13 Weather screens read (#1198).
-    ///
-    /// Real runs get the *live* pieces: the file-backed history ring the background job writes, the
-    /// engine itself, and the service client. A mock run gets fixture rings only when a
-    /// `-OBCWeatherDemo` state asks for them — otherwise it reads the same real, usually empty,
-    /// ring, because a screen that invented syncs would be the one lie this whole screen exists to
-    /// prevent.
-    @MainActor static func makeWeatherSeams() -> WeatherScreenSeams {
-        #if DEBUG
-        if mockControl != nil, let demo = launchOptions.weatherDemo {
-            let fixtures = MockWeatherFixtures.forState(demo)
-            let history = MockWeatherHistoryStore(fixtures.history)
-            return WeatherScreenSeams(
-                history: history,
-                jobs: MockWeatherJobControl(pending: fixtures.pending, history: history),
-                status: MockWeatherServiceStatus(status: fixtures.status),
-                preferences: weatherPreferences)
-        }
-        #endif
-        return WeatherScreenSeams(
-            history: FileWeatherJobHistoryStore.standard(),
-            jobs: weatherEngine,
-            status: weatherStatusProvider,
-            preferences: weatherPreferences)
-    }
-
-    /// The scene-phase foreground kick. The job's own recovery paths are the device's advertising
-    /// ladder and CoreBluetooth state restoration — both of which need the *device* to act. A job
-    /// that stalled on something neither will retry (radio off at the wrong moment, a checkpoint
-    /// written just before a suspend) would otherwise wait for the next ladder step; a user
-    /// opening the app is a perfectly good reason to try again. `.resume` honours the cooldown, so
-    /// this cannot become the retry storm the issue forbids.
-    @MainActor static func weatherJobDidEnterForeground() {
-        guard let engine = weatherEngine else { return }
-        Task { await engine.kick(.resume) }
-    }
-
-    /// Wire the durable two-connection WeatherJob (#1194) onto the real transport: the standing
-    /// discovery watch, the engine over its file checkpoints, and the event bridge. Everything
-    /// below the seams is host-tested in OBCKit; this is the one place the concrete pieces meet.
-    @MainActor private static func startWeatherJob(for transport: BLETransport) {
-        guard weatherBridge == nil else { return }
-        let appVersion =
-            Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0"
-        let http = URLSessionWeatherHTTPClient(
-            userAgent: METLocationforecastAdapter.userAgent(appVersion: appVersion))
-        let cacheDirectory = FileManager.default
-            .urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OBCWeatherFrames", isDirectory: true)
-        // One client instance, two readers: the job fetches corridors through it and the WX13
-        // screen asks it for the manifest's health + credits, so the screen rides the same 60 s
-        // manifest cache instead of costing a second read.
-        let serviceClient = OBCWeatherServiceClient(
-            baseURL: Self.weatherServiceURL(), client: http,
-            cache: FileWeatherFrameCache(directory: cacheDirectory))
-        let assembler = WeatherAssembler(
-            hourlyProvider: METLocationforecastAdapter(client: http),
-            precipitationProvider: serviceClient)
-        let engine = WeatherJobEngine(
-            link: WeatherBLEDeviceLink(transport: transport),
-            assembler: assembler,
-            store: FileWeatherJobStore.standard(),
-            history: FileWeatherJobHistoryStore.standard())
-        // The watch is what makes the device's request *reach* the phone in the background; it
-        // scans only for the known bonded peripheral's weather advertisement and is idle
-        // otherwise. A device without FEATURE_WEATHER simply never advertises the UUID. Since WX13
-        // the rider owns it: the stored preference decides, and this is the launch-time half of
-        // that switch (the screen's half writes the same store and calls the same method).
-        transport.setWeatherWatch(weatherPreferences.loadWeatherWatchEnabled())
-        weatherEngine = engine
-        weatherStatusProvider = serviceClient
-        weatherBridge = WeatherJobBLEBridge.start(transport: transport, engine: engine)
-        #if DEBUG
-        // The WX9 job harness: `-OBCTransport ble -OBCWeatherJobHarness` (paired once, like the
-        // WX3 harness) runs the *whole* job — discovery → context read → fetch/build → upload —
-        // against the live weather service, kicks it immediately, and dumps the diagnostics ring
-        // so an on-glass session has its evidence in the console.
-        if useWeatherJobHarness {
-            Task {
-                let history = FileWeatherJobHistoryStore.standard()
-                print("[OBC weather job harness] history at launch:")
-                for entry in history.entries().suffix(5) { print("  \(entry)") }
-                await engine.kick(.deviceRaisedRequest)
-                print("[OBC weather job harness] kick finished; history now:")
-                for entry in history.entries().suffix(5) { print("  \(entry)") }
-            }
-        }
-        #endif
-    }
-
-    /// The OBC weather service origin (WX18's `wx.` host). Debug builds may point elsewhere with
-    /// `-OBCWeatherServiceURL <origin>` (a staging bucket, a local server); Release always ships
-    /// the real one.
-    private static func weatherServiceURL() -> URL {
-        #if DEBUG
-        if let override = UserDefaults.standard.string(forKey: "OBCWeatherServiceURL"),
-           let url = URL(string: override) {
-            return url
-        }
-        #endif
-        return URL(string: "https://wx.openbikecomputer.com")!
+        return Self.liveTransport
     }
 
     /// The `-OBCImportSample [gpx|tcx|bad|grimsel]` hook: hand a bundled sample file to
@@ -368,20 +215,10 @@ struct OBCCompanionApp: App {
     static func makeBondStore() -> any BondStore {
         #if DEBUG
         if let mockControl { return MockBondStore(control: mockControl) }
-        if useWeatherRequestHarness || useWeatherJobHarness { return WeatherRequestHarnessBondStore() }
+
         #endif
         return UserDefaultsBondStore()
     }
-
-    #if DEBUG
-    private static var useWeatherRequestHarness: Bool {
-        ProcessInfo.processInfo.arguments.contains("-OBCWeatherRequestHarness")
-    }
-
-    private static var useWeatherJobHarness: Bool {
-        ProcessInfo.processInfo.arguments.contains("-OBCWeatherJobHarness")
-    }
-    #endif
 
     /// The default-retention preference (epic #638). Mock runs stay **in-memory**
     /// — every scenario-driven launch (XCUITests, previews, demos) starts from the
@@ -395,14 +232,3 @@ struct OBCCompanionApp: App {
         return UserDefaultsRetentionDefaultsStore()
     }
 }
-
-#if DEBUG
-/// Keeps the app's ordinary paired-launch flow from raising a competing foreground intent while
-/// the explicit weather-request harness runs. It does not clear the real bond record or the
-/// transport's authenticated peripheral UUID; it is process-local and Debug-only.
-private struct WeatherRequestHarnessBondStore: BondStore {
-    func load() -> BondRecord? { nil }
-    func save(_ record: BondRecord) {}
-    func clear() {}
-}
-#endif

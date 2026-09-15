@@ -18,7 +18,7 @@ A `screens!` table defines each variant and its `Caps`. The table generates the 
 and drawing dispatch, and capability metadata. A small manual `prepare` match delegates only the
 four reader-backed screens that need a one-shot operation before drawing.
 
-`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, rain, catalog remapping, and the render key.
+`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, catalog remapping, and the render key.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -319,8 +319,7 @@ A row can also hold a **value** in place of a screen. Such a row slides the shee
 editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
 and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
 becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
-two such rows, Filter and Sources; the three weather views declare one, Interval — the time between
-the weather requests the device makes on its own. The create-route card declares one, Bike type —
+two such rows, Filter and Sources. The create-route card declares one, Bike type —
 the routing profile the device plans with. These rows are the only place those controls are set.
 
 The bike-type row shows what a value row does when its choices come from the loaded map. The
@@ -337,11 +336,6 @@ change is not visible until the sheet closes, because the screen below a sheet i
 rider sets all three in one visit and the flips themselves cost no map render. The map is drawn once
 when the shorter display sheet replaces the taller sheet, and once more, with all three answers,
 when the sheet goes away.
-
-A row can also simply **act**. The weather views declare one such row, Refresh now. It asks for
-fresh weather and closes the sheet, because the answer and the cue for it are content of the screen
-below, which a sheet holds still. The row is drawn recessed while a request is already on its way,
-or while one waits for the phone to come back into range: a second request would change nothing.
 
 The drawer is the only home for a setting that belongs to one screen. A control that moves into a
 drawer is removed from the central settings tree in the same change. A check in the build fails if
@@ -385,7 +379,6 @@ A destructive or irreversible action can require `Hold`. The screen must also de
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
 <svg viewBox="0 0 720 278" role="img" aria-label="Top: a timeline showing Select pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit."><text class="d-tag" x="20" y="24">Hold to confirm — the guarded-action pattern</text><g transform="translate(0 28)">
-
 
   <!-- timeline -->
   <line x1="40" y1="70" x2="540" y2="70" stroke="#9aa884" stroke-width="1.5" />
@@ -682,11 +675,9 @@ Settings screens use two focus levels. The row cursor selects a setting. Edit fo
 
 The application marks settings dirty when a value changes. `SettingsMachine` waits until the user leaves the Settings subtree before it requests a write. The host writes the snapshot through `SettingsStore` and reports the result.
 
-The weather alert cooldown is not a setting. It is device state, and it has its own record with its own lifecycle. A firing alert writes only that record, and it writes it immediately: an open settings screen does not hold it back, and a change to a setting does not touch it.
-
 The settings blob is independent of the SD card. The current UI languages are English, German, French, and Spanish.
 
-A firmware update does not erase the stored settings. The blob format is append-only: a new setting is added at the end, and it carries the version that first wrote it. Stored fields never move. The device reads a stored blob at the blob's own version, and the fields added after that version take their defaults. Two cases reset the settings, and both are deliberate: a blob older than the oldest version whose exact bytes are committed as a reference, and a downgrade, where the stored blob is newer than the firmware and its layout is unknown.
+Settings use layout version 19. The device rejects older or newer layouts and uses defaults. A valid current layout preserves the rider’s settings across updates.
 
 The build generates a complete translation table from four TOML catalogs. The build fails if a catalog has missing or extra keys.
 
@@ -789,7 +780,7 @@ Each screen row **declares a render-key kind** — the name of the facts its dra
 returns their exact values.
 
 Each kind names what its screen draws. The Map names the camera, the fix, the pan mode, the
-route-relative chrome, the low-battery cue, and, on the rain map alone, the selected rain frame. The
+route-relative chrome and the low-battery cue. The
 riding grid names the ride readouts and the live sensor values of the fields the rider pinned. The
 Climb view names the climb and the cursor on it. The Up-ahead timeline names the progress its rows
 measure from. Home names the battery level, the connected indicator, and the screensaver backdrop. A
@@ -852,7 +843,7 @@ The overlay presenter reads the clean base frame, adds the overlay, and presents
 
 ## Screens the companion link pushes
 
-The companion can open modal cards for pairing, route updates, trip updates, warnings, and weather alerts.
+The companion can open modal cards for pairing, route updates, trip updates, and warnings.
 
 The card scheduler assigns a fixed priority to each card type. A new card does not replace a hold in progress.
 
@@ -1176,7 +1167,7 @@ layout. Cards compose the existing `chrome` helpers. There is no universal card-
 abstraction.
 
 `draw_rows` is for selected, actionable lists. A read-only timeline can compose `list_frame` and
-`scrollbar` without inventing a selection. Weather Hourly uses this composition.
+`scrollbar` without inventing a selection.
 
 Overlays and screen-specific drawing layers stay local. The Climb grade renderer is different from
 the shared elevation band.
@@ -1226,26 +1217,3 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Retention policy: [`retention.rs`](src:firmware/obc-app/src/retention.rs)
 
 See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.
-
-## Weather between phone connections
-
-The device shows stored forecasts without waiting for the phone. A refresh does not hide usable
-data. The rain card reports the continuous coverage ahead, up to two hours. For example, 95
-minutes of covered dry weather shows **DRY FOR 95 MIN**. Time passing reduces this duration.
-A gap, unknown cell, route-coverage limit, or expired frame ends the dry claim. Missing data does
-not mean dry weather.
-
-When detailed rain data cannot answer, the dashboard keeps the hourly forecast available for its
-remaining valid times. Open **Hourly** to see the forecast times. The hourly forecast covers
-24 hours from its first record and
-describes the location used for the request. It is not a forecast for every point on a long route.
-The rain map shows only valid rain frames; hourly data does not create a replacement rain map.
-
-**UPDATING** means the phone has started a weather attempt. Waiting for a phone or a retry does
-not show this cue. Success, a reported failure, or a bounded timeout clears it. A failed refresh
-leaves valid stored forecasts available. The device asks for an update when no forecast can answer
-for the current time.
-
-Sources: [src:firmware/obc-app/src/weather.rs],
-[src:firmware/obc-app/src/screen/weather_dash.rs],
-[src:firmware/obc-ble/src/weather_request.rs].

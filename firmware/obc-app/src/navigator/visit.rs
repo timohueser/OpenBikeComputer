@@ -58,21 +58,22 @@ impl NavigatorMachine {
     }
     /// Reconcile the newest raw fix when a durable phase acknowledgement changes the matching
     /// window. This does not feed Recorder, and is a no-op during unchanged dwell frames.
-    pub(crate) fn reconcile_visit(&mut self, route: &RouteReader) {
+    pub(crate) fn reconcile_visit(&mut self, route: &RouteReader) -> bool {
         let Some(c) = self.review.checkpoint else {
+            let changed = self.visit.phase.is_some() || self.visit.arrival;
             self.visit.phase = None;
             self.visit.arrival = false;
-            return;
+            return changed;
         };
         if self.review.status != ReviewStatus::Accepted || self.visit.phase == Some(c.phase) {
-            return;
+            return false;
         }
         let recovering = self.visit.phase.is_none() && self.visit.target.is_none();
         self.visit.phase = Some(c.phase);
         self.visit.target = None;
         if c.phase == JourneyPhase::Following {
             self.visit.arrival = false;
-            return;
+            return true;
         }
         if c.phase == JourneyPhase::AtStop && !recovering {
             self.visit.arrival = true;
@@ -85,6 +86,7 @@ impl NavigatorMachine {
             self.following.apply_match(matched);
             self.advance_visit((lon, lat), route);
         }
+        true
     }
     pub(crate) fn visit_ceiling(&self) -> Option<u32> {
         self.review.checkpoint.filter(|c| c.phase != JourneyPhase::Following).map(|c| c.upper_m)
@@ -414,6 +416,7 @@ impl crate::App {
         self.navigator.visit.arrival
     }
     pub fn dismiss_visit_arrival(&mut self) {
+        self.ui.map_dirty |= self.navigator.visit.arrival;
         self.navigator.visit.arrival = false;
     }
 }

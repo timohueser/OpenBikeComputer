@@ -19,6 +19,8 @@ mod detour;
 mod flat_store;
 #[path = "board_detour_support/ride.rs"]
 mod ride;
+#[path = "../../../firmware/obc-fw-nrf54l/src/visit.rs"]
+mod visit;
 
 use flat_store::{FlatCard, Kind, Writer};
 use obc_app::device_core::{NavigatorTag, TokenSource};
@@ -383,7 +385,7 @@ fn canceled_trim_replacement_preserves_both_sealed_owners_until_their_tickets_dr
 fn full_hold_table_shares_exact_original_reader_and_map_removal_cancels_publication() {
     let mut h = Harness::new();
     let mut holds = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..obc_storage::flat::store::MAX_OPEN_OBJECTS - 2 {
         let id = put(h.store, ObjectKind::Route, &route(), None);
         holds.push(h.store.open(id, None).unwrap());
     }
@@ -401,7 +403,10 @@ fn full_hold_table_shares_exact_original_reader_and_map_removal_cancels_publicat
     assert!(matches!(h.poll(), Some(Outcome::Failed { error: NavigatorError::SourceChanged, .. })));
     h.release(false);
     assert!(matches!(h.next_outcome(), Outcome::Released { .. }));
-    assert_eq!(h.store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags == EntryFlags::NONE).count(), 6);
+    assert_eq!(
+        h.store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags == EntryFlags::NONE).count(),
+        obc_storage::flat::store::MAX_OPEN_OBJECTS
+    );
 }
 
 #[test]
@@ -443,3 +448,6 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
         Some(id.0)
     ));
 }
+
+#[path = "board_detour_support/visit_tests.rs"]
+mod visit_tests;

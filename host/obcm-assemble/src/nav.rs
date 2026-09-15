@@ -2166,7 +2166,7 @@ mod tests {
                 ..obc_reader::NavDirectory::EMPTY
             },
             profile_table: Vec::new(),
-            style_bands: Vec::new(),
+            style_ids: Vec::new(),
             bytes: src.len(),
         }
     }
@@ -2378,7 +2378,7 @@ mod tests {
             pois: obc_reader::PoiDirectory::EMPTY,
             nav,
             profile_table: Vec::new(),
-            style_bands: Vec::new(),
+            style_ids: Vec::new(),
             bytes: src.len(),
         }
     }

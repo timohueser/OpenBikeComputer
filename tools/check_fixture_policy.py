@@ -7,7 +7,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-
 ROOT = Path(__file__).resolve().parent.parent
 LIMIT = 256 * 1024
 ALLOWED = {
@@ -32,14 +31,11 @@ FIXTURE_SUFFIXES = (
 )
 FIXTURE_AREAS = (
     "apps/obc-sim/assets/",
-    "host/obc-wx-bake/tests/events/",
 )
-
 
 def tracked_files() -> list[str]:
     output = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
     return [item.decode() for item in output.split(b"\0") if item]
-
 
 def main() -> int:
     violations = []
@@ -57,7 +53,6 @@ def main() -> int:
         return 1
     print("fixture policy: no unregistered large blobs")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -18,7 +18,7 @@
             title: "Format the device card?",
             body:
                 "This permanently deletes everything on the card: its map, routes, trips, rides, " +
-                "weather and update packages. The device will restart with an empty card; reconnect, " +
+                "update packages. The device will restart with an empty card; reconnect, " +
                 "then send it a map.",
             confirmLabel: "Delete everything and format",
             destructive: true,

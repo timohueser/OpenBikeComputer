@@ -22,7 +22,6 @@
 //! (`obc-storage`'s `flat::crash`), which cuts every media operation of every durable path. And the
 //! byte-image comparison sees the batch a commit applied, not the batch it was built from: a flow
 //! whose commit composition is wrong in a way that produces the same bytes would pass, which is why
-//! the retaining replace runs as a **stepped** flow with its `RETAINED` state produced inside the
 //! matrix rather than seeded ahead of it.
 
 mod flat_harness;
@@ -33,7 +32,6 @@ use obc_link::flat::{ObjectId, ObjectKind, Revision};
 use obc_storage::flat::sim::SparseDisk;
 
 const ROUTE: u16 = 1;
-const WEATHER: u16 = 4;
 
 /// One thing a client does, or one pump of a transfer the engine is driving.
 #[derive(Clone, Debug)]
@@ -218,7 +216,7 @@ fn stream_steps(request: u32, bytes: &[u8]) -> Vec<Step> {
 
 fn create(_device: &mut Plain<'_>) -> Plan {
     let bytes = payload(2_600);
-    let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, false, "created"))];
+    let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, "created"))];
     steps.extend(stream_steps(1, &bytes));
     Plan::new(steps, (1, 1), false, vec![(1, 1, false)])
 }
@@ -227,7 +225,7 @@ fn create(_device: &mut Plain<'_>) -> Plan {
 /// staging buffer either releases what it holds or does not.
 fn long_create(_device: &mut Plain<'_>) -> Plan {
     let bytes = payload(8_000);
-    let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, false, "long"))];
+    let mut steps = vec![Step::Control(client::put(1, 0, 0, &bytes, ROUTE, "long"))];
     steps.extend(stream_steps(1, &bytes));
     Plan::new(steps, (1, 1), false, vec![(1, 1, false)])
 }
@@ -235,55 +233,15 @@ fn long_create(_device: &mut Plain<'_>) -> Plan {
 fn replace(device: &mut Plain<'_>) -> Plan {
     let bytes = payload(1_200);
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "first");
-    let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, ROUTE, false, "second"))];
+    let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, ROUTE, "second"))];
     steps.extend(stream_steps(1, &bytes));
     // §3.6: an ordinary replace leaves the object with a head and nothing else.
     Plan::new(steps, (id, revision + 1), true, vec![(id, revision + 1, false)])
 }
 
-fn retaining_replace(device: &mut Plain<'_>) -> Plan {
-    let bytes = payload(1_200);
-    let (id, revision) = device.seed(ObjectKind::WeatherBundle, &payload(600), "yesterday");
-    let mut steps = vec![Step::Control(client::put(1, id, revision, &bytes, WEATHER, true, "today"))];
-    steps.extend(stream_steps(1, &bytes));
-    // §3.6: `retain-previous` asks the same commit to leave the displaced revision `RETAINED`, and
-    // `FLAT_Store_Format.md` §5.3 sorts it before the head.
-    Plan::new(steps, (id, revision + 1), true, vec![(id, revision, true), (id, revision + 1, false)])
-}
-
-/// Two retaining replaces in one flow, so the second one's **three**-mutation commit — publish the
-/// head, retain what it displaced, free what was retained before — is what the break points run
-/// through. The `RETAINED` state is produced inside the flow rather than seeded ahead of it: a batch
-/// missing its third mutation only shows up where the matrix can see the entry that should have gone.
-fn stepped_double_retention(device: &mut Plain<'_>) -> Plan {
-    let first = payload(1_200);
-    let second = payload(900);
-    let (id, revision) = device.seed(ObjectKind::WeatherBundle, &payload(600), "monday");
-    let mut steps = vec![Step::Control(client::put(1, id, revision, &first, WEATHER, true, "tuesday"))];
-    steps.extend(stream_steps(1, &first));
-    steps.push(Step::Control(client::put(2, id, revision + 1, &second, WEATHER, true, "wednesday")));
-    steps.extend(stream_steps(2, &second));
-    // §3.6: "a second retaining replace frees the first" — so two entries, not three.
-    Plan::new(steps, (id, revision + 2), true, vec![(id, revision + 1, true), (id, revision + 2, false)])
-}
-
 fn remove(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "doomed");
     Plan::new(vec![Step::Control(client::remove(1, id, revision))], (id, revision), false, vec![])
-}
-
-/// A remove of an object that also has a retained revision: one commit takes both.
-fn remove_with_retention(device: &mut Plain<'_>) -> Plan {
-    let bytes = payload(1_200);
-    let (id, revision) = device.seed(ObjectKind::WeatherBundle, &payload(600), "yesterday");
-    device.control(&client::put(9, id, revision, &bytes, WEATHER, true, "today"));
-    for record in client::stream_all(9, &bytes, 1_008) {
-        device.stream(&record);
-    }
-    assert_eq!(device.entries().len(), 2, "the setup left a retained revision");
-    // §3.7: "a retained previous revision of the same object goes with it" — one commit, no entries
-    // left, and the retained revision is not orphaned behind the head.
-    Plan::new(vec![Step::Control(client::remove(1, id, revision + 1))], (id, revision + 1), false, vec![])
 }
 
 fn download(device: &mut Plain<'_>) -> Plan {
@@ -298,7 +256,7 @@ fn cancelled_upload(device: &mut Plain<'_>) -> Plan {
     let (id, revision) = device.seed(ObjectKind::Route, &payload(600), "untouched");
     let records = client::stream_all(1, &bytes, 1_008);
     let steps = vec![
-        Step::Control(client::put(1, 0, 0, &bytes, ROUTE, false, "abandoned")),
+        Step::Control(client::put(1, 0, 0, &bytes, ROUTE, "abandoned")),
         Step::Stream(records[0].clone()),
         Step::Control(client::cancel(2, 1)),
         Step::Pump,
@@ -352,14 +310,11 @@ fn status_only(device: &mut Plain<'_>) -> Plan {
 
 #[test]
 fn every_flow_survives_a_break_at_every_step() {
-    let scenarios: [(&str, Build); 14] = [
+    let scenarios: [(&str, Build); 11] = [
         ("create", create),
         ("long create", long_create),
         ("replace", replace),
-        ("retaining replace", retaining_replace),
-        ("stepped double retention", stepped_double_retention),
         ("remove", remove),
-        ("remove with retention", remove_with_retention),
         ("download", download),
         ("cancelled upload", cancelled_upload),
         ("cancelled download", cancelled_download),
@@ -372,7 +327,7 @@ fn every_flow_survives_a_break_at_every_step() {
     for (seed, (name, build)) in scenarios.into_iter().enumerate() {
         points += matrix(name, 100 + seed as u64, build);
     }
-    assert_eq!(points, 57, "the matrix's own size, so a flow that stopped being covered is visible");
+    assert_eq!(points, 45, "the matrix's own size, so a flow that stopped being covered is visible");
 }
 
 /// The other half of §3.6's sentence: after a break the client restarts from zero, and the restart
@@ -384,7 +339,7 @@ fn a_client_restarts_from_zero_after_every_break() {
     for cut in 0..records.len() {
         let disk = formatted_card(7);
         let mut device = boot(&disk);
-        device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "attempt one"));
+        device.control(&client::put(1, 0, 0, &bytes, ROUTE, "attempt one"));
         for record in records.iter().take(cut) {
             device.stream(record);
         }
@@ -405,7 +360,7 @@ fn a_create_whose_answer_was_lost_costs_one_duplicate_and_no_more() {
     let disk = formatted_card(8);
     let mut device = boot(&disk);
     let bytes = payload(2_600);
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "attempt one"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "attempt one"));
     for record in client::stream_all(1, &bytes, 1_008) {
         device.stream(&record);
     }
@@ -420,7 +375,7 @@ fn a_create_whose_answer_was_lost_costs_one_duplicate_and_no_more() {
 }
 
 fn restart(device: &mut Plain<'_>, bytes: &[u8]) -> Answer {
-    device.control(&client::put(2, 0, 0, bytes, ROUTE, false, "attempt two"));
+    device.control(&client::put(2, 0, 0, bytes, ROUTE, "attempt two"));
     let mut answer = None;
     for record in client::stream_all(2, bytes, 1_008) {
         let wire = device.stream(&record);
@@ -439,7 +394,7 @@ fn a_remount_after_a_break_finds_the_card_the_break_left() {
     let free = {
         let mut device = boot(&disk);
         let bytes = payload(2_600);
-        device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "lost"));
+        device.control(&client::put(1, 0, 0, &bytes, ROUTE, "lost"));
         device.stream(&client::stream(1, 0, &bytes[..1_008]));
         device.link_lost();
         device.free_extents()

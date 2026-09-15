@@ -69,7 +69,7 @@ The device reads compact binary formats directly from storage. It does not conve
   <a class="doc-card" href="software/formats/">
     <span class="dc-tag">Software</span>
     <h3>Data formats</h3>
-    <p>The OBCM, OBCR, ride, terrain, weather, catalog, and cell formats.</p>
+    <p>The OBCM, OBCR, ride, terrain, catalog, and cell formats.</p>
   </a>
   <a class="doc-card" href="software/ui/">
     <span class="dc-tag">Software</span>
@@ -92,7 +92,6 @@ The device reads compact binary formats directly from storage. It does not conve
 | Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Combines OBCM and OBCD cells into one verified OBCM map. |
 | Elevation | [`obc-elevation`](src:firmware/obc-elevation) | Reads OBCT data and supplies shared elevation calculations. |
 | Map reader | [`obc-reader`](src:firmware/obc-reader) | Reads OBCM indexes, styles, features, POIs, and navigation data. |
-| Weather reader | [`obc-weather`](src:firmware/obc-weather) | Validates OBCW data and reads rain tiles. |
 | Route reader | [`obc-route`](src:firmware/obc-route) | Reads OBCR routes and provides conversion, matching, and profiles. |
 | Renderer | [`obc-render`](src:firmware/obc-render) | Draws maps without allocation. |
 | Application | [`obc-app`](src:firmware/obc-app) | Controls screens, input, navigation, and ride recording. |

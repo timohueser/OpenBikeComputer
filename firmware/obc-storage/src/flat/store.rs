@@ -91,22 +91,6 @@ pub const MAX_BATCH: usize = 4;
 /// its trim/splice output. A competing start or transfer is refused while both rows are occupied.
 pub const MAX_RESERVATIONS: usize = 2;
 
-/// Who holds an open object, and how many. The table is the whole argument for
-/// [`MAX_OPEN_OBJECTS`]; the constant is just its sum.
-///
-/// **The rule: every session-long open needs a named row here.** A consumer that opens an object and
-/// keeps it open across a render or a ride adds its row and raises [`MAX_OPEN_OBJECTS`] to match, or
-/// the `const` assertion below fails the build. That is the point — the previous constant was `12`,
-/// derived as "eleven shards plus one transfer", and it was short by three because terrain, the
-/// active route and the weather bundle each hold one too and none of them was written down. A table
-/// that has to be edited is harder to be wrong about than a sentence in a doc comment.
-///
-/// Rows are the *worst concurrent* case, not the typical one: a rider following a route, with
-/// weather mounted, while an upload runs.
-///
-/// **The recording ride is deliberately not a row.** It is not an open object at all: it lives in
-/// [`RideState`], reached through [`journal`](Store::journal) and its own reservation (see
-/// [`MAX_RESERVATIONS`]), and it never takes a hold. A `RIDE` row here would be double-counting.
 pub mod open_objects {
     /// **The map: one object, because a map is one file** (FS7.5, #1420).
     ///
@@ -118,36 +102,16 @@ pub mod open_objects {
     /// The active route's geometry, held from load until the ride ends. A detour retains another
     /// reference to this exact revision, sharing the row. Its sealed temporary leg takes no hold.
     pub const ROUTE: usize = 1;
-    /// The weather bundle, held for the session once mounted.
-    pub const WEATHER: usize = 1;
+
     /// The one transfer `FLAT_Store_Protocol.md` §1 admits at a time, which may run mid-ride.
     pub const TRANSFER: usize = 1;
     /// One row that belongs to nobody, so a short-lived open — a menu reading a trip's header, a
     /// `STATUS` resolving an object — never has to wait for a session-long holder to let go.
     pub const SPARE: usize = 1;
-    /// **The row a safe swap needs**: one extra hold so a session-long holder can acquire its
-    /// replacement *before* releasing what it has.
-    ///
-    /// The rows above are a census of what is held at the worst moment, and they are right — but a
-    /// census misses the moment a holder is being *changed*. Adopting a computed detour swaps the
-    /// active route; adopting a freshly published bundle swaps the weather. Release-first makes
-    /// those two operations fallible in the worst possible way: if the new open fails — a media
-    /// glitch, a revision that moved — the rider is mid-ride with **no** route, and the object that
-    /// was working a microsecond ago has already been let go. Acquire-before-release cannot lose
-    /// what it has, and it needs one row that the census does not.
-    ///
-    /// A detour can keep the old original revision alive after the active route changes; that
-    /// overlap also consumes this row. Further concurrent opens retain the same bounded refusal.
-    ///
-    /// **One row, not two.** A route swap and a weather swap overlapping is not budgeted: they are
-    /// both rider- or link-driven and neither is on a timer, so the second one to start finds the
-    /// table full and is refused [`Busy`](super::error::StoreError::Busy) — which is *ask again*,
-    /// and the honest answer for a device that is momentarily out of rows. Budgeting for two would
-    /// be provisioning for a coincidence nobody has measured.
     pub const SWAP: usize = 1;
 
     /// The sum every row above owes.
-    pub const ACCOUNTED: usize = MAP + ROUTE + WEATHER + TRANSFER + SPARE + SWAP;
+    pub const ACCOUNTED: usize = MAP + ROUTE + TRANSFER + SPARE + SWAP;
 }
 
 /// **Terrain is not a row, and its absence is the substantive half of this re-derivation.**
@@ -173,7 +137,7 @@ pub mod open_objects {
 /// 16-row array carried — measured, because the arithmetic alone would have under-claimed it.
 ///
 /// Open objects at once — the sum of [`open_objects`]'s rows, and nothing else.
-pub const MAX_OPEN_OBJECTS: usize = 6;
+pub const MAX_OPEN_OBJECTS: usize = 5;
 
 // Deliberately an anonymous module-level `const`, not an associated one: an associated `const` is
 // evaluated lazily, only when something names it, so a table that stopped adding up would compile
@@ -865,12 +829,6 @@ impl<D: BlockDevice> FlatStore<D> {
         }
     }
 
-    /// Destructively write a fresh empty flat store through this mounted store's device.
-    ///
-    /// This deliberately does not mutate resident state. The protocol command that calls it drains
-    /// its response and immediately reboots; the next mount is the only point at which the new
-    /// identity and geometry become observable. Keeping that transition boot-scoped avoids trying
-    /// to replace a shared `FlatStore` while map, route, and weather readers still hold references.
     pub fn format_media(&self, store: StoreId) -> Result<(), StoreError> {
         if self.mode() == Mode::RemountRequired {
             return Err(StoreError::ReadOnly);

@@ -10,7 +10,6 @@ use obc_host_core::{
 use std::path::{Path, PathBuf};
 
 pub struct Session {
-    pub owner: HostStore,
     pub map: LoadedMap,
     pub routes: FlatRouteStore,
     pub trips: FlatTripStore,
@@ -95,7 +94,7 @@ impl Session {
         }
         let tracks = crate::track::TrackStore::new(recorder, owner.clone(), args.tracks_dir());
         routes.refresh_metadata().map_err(|error| format!("route metadata: {error:?}"))?;
-        Ok(Self { owner, map, routes, trips, rides, tracks })
+        Ok(Self { map, routes, trips, rides, tracks })
     }
 }
 
