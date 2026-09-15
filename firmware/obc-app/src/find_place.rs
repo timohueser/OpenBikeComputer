@@ -18,6 +18,7 @@ pub const PLAN_LIMIT: usize = SOURCE_LIMIT * 2;
 pub const RESULT_LIMIT: usize = 4;
 pub const ON_WAY_M: u32 = 400;
 const QUERY_STEPS: usize = 64;
+const PREPARATION_BUDGET_MS: u32 = 8_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -93,6 +94,7 @@ pub struct FindState {
     retained: [RetainedReview; PLAN_LIMIT],
     retained_store: Option<crate::device_core::StoreIdentity>,
     next: u8,
+    started_ms: u32,
     context: Option<ReviewContext>,
     route: Option<u64>,
     remaining_m: Option<u32>,
@@ -121,6 +123,7 @@ impl FindState {
             retained: [RetainedReview::NONE; PLAN_LIMIT],
             retained_store: None,
             next: 0,
+            started_ms: 0,
             context: None,
             route: None,
             remaining_m: None,
@@ -346,6 +349,24 @@ impl crate::App {
             self.ui.next_wake_ms = Some(1);
         }
     }
+    /// Runs without a map reader so an active planner can be cancelled while it owns the arena.
+    pub(crate) fn advance_find_budget(&mut self, now_ms: u32) {
+        if !matches!(self.ui.find.state, State::Querying | State::Planning | State::Releasing)
+            || now_ms.wrapping_sub(self.ui.find.started_ms) < PREPARATION_BUDGET_MS
+            || !matches!(self.assistant_review_status(), ReviewStatus::Idle | ReviewStatus::Planning)
+            || self.ui.find.next as usize >= PLAN_LIMIT
+        {
+            return;
+        }
+        if self.ui.find.state == State::Querying {
+            self.ui.poi_scratch.invalidate();
+            self.ui.corridor_scratch.disarm();
+        }
+        self.ui.find.next = PLAN_LIMIT as u8;
+        self.cancel_assistant();
+        self.ui.find.state = State::Releasing;
+    }
+
     pub(crate) fn handle_find_action(&mut self) {
         if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
@@ -358,6 +379,7 @@ impl crate::App {
                 self.ui.find.costs.fill(None);
                 self.ui.find.context = None;
                 self.ui.find.next = 0;
+                self.ui.find.started_ms = self.ui.now_ms;
                 self.ui.poi_scratch.invalidate();
                 self.ui.corridor_scratch.disarm();
             }
@@ -748,7 +770,7 @@ impl crate::App {
             if !self.assistant_planner_released() || self.assistant_review_status() != ReviewStatus::Idle {
                 return;
             }
-            self.ui.find.next += 1;
+            self.ui.find.next = self.ui.find.next.saturating_add(1).min(PLAN_LIMIT as u8);
             self.ui.find.state = State::Planning;
         }
         if self.ui.find.state != State::Planning {
@@ -1206,6 +1228,98 @@ mod tests {
             assert!(matches!(app.ui.corridor_scratch.status(), QueryProgress::Failed(_)));
         }
     }
+    fn budget_app() -> crate::App {
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        app.open_find_place();
+        app.apply_gesture(crate::Gesture::Press);
+        app.ui.find.state = State::Planning;
+        app
+    }
+
+    #[test]
+    fn preparation_budget_cancels_without_reader_and_waits_for_release() {
+        use crate::navigator::{NavigatorEffect, NavigatorIntent, NavigatorOutcome};
+        let mut app = budget_app();
+        app.navigator.admit_intent(NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
+            (0, 0),
+            (1, 1),
+            "Water",
+        )));
+        let effect = app.navigator.next_effect(&mut app.mode).unwrap();
+        assert!(matches!(effect, NavigatorEffect::Acquire { .. }));
+        app.apply_navigator_outcome(NavigatorOutcome::Acquired { token: effect.token() });
+        assert!(!app.assistant_planner_released());
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS - 1));
+        assert_eq!(app.ui.find.state, State::Planning);
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        assert_eq!(app.ui.find.state, State::Releasing);
+        assert_eq!(app.ui.find.next as usize, PLAN_LIMIT);
+        let effect = app.navigator.next_effect(&mut app.mode).unwrap();
+        assert!(matches!(effect, NavigatorEffect::Release { retain_result: false, .. }));
+        app.prepare_find(None, None);
+        assert_eq!(app.ui.find.state, State::Releasing, "the arena is still held");
+        app.apply_navigator_outcome(NavigatorOutcome::Released { token: effect.token() });
+        app.prepare_find(None, None);
+        assert_eq!(app.ui.find.state, State::Ready);
+        assert!(app.ui.find.results.is_empty(), "unfinished work cannot become a measured choice");
+        assert!(app.navigator.next_effect(&mut app.mode).is_none(), "no next candidate starts");
+    }
+
+    #[test]
+    fn preparation_budget_preserves_completed_preview_and_failure() {
+        use crate::navigator::{NavigatorError, ReviewPurpose, ReviewedRoute};
+        let mut app = budget_app();
+        let context = ReviewContext {
+            purpose: ReviewPurpose::Destination,
+            map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
+            store: crate::device_core::StoreIdentity::from_bytes([1; 16]),
+            original: None,
+            origin: (0, 0),
+            progress_m: 0,
+            occurrence: 0,
+            required_anchors_m: [0; 3],
+            profile: 0,
+            facts_policy: crate::navigator::REVIEW_FACTS_POLICY,
+            unresolved_avoidance: false,
+        };
+        app.navigator.request_review(crate::activity::NavRequest::new((0, 0), (1, 1), "Water"), context);
+        app.navigator.reviewed(ReviewedRoute {
+            source: obc_formats::assistant::PayloadFingerprint { object: 5, revision: 1, length: 100, crc: 42 },
+            distance_m: 25,
+            ascent_m: 1,
+            descent_m: 0,
+            visit_anchors_m: None,
+            visit_costs: Some(obc_route::visit::VisitCosts {
+                arrival_ascent_m: 1,
+                rough_m: 0,
+                unknown_m: 0,
+                arrival_elevation_complete: true,
+                complete_elevation: true,
+            }),
+        });
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        assert_eq!(app.ui.find.state, State::Planning, "the complete preview must be harvested first");
+        app.prepare_find(None, None);
+        assert_eq!(app.ui.find.costs[0].unwrap().arrival_m, 25);
+        assert_eq!(app.ui.find.retained[0].object, 5);
+        assert_eq!(app.ui.find.state, State::Releasing);
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS + 1));
+        assert_eq!(app.ui.find.next as usize, PLAN_LIMIT);
+        assert_eq!(app.ui.find.retained[0].object, 5);
+
+        let mut app = budget_app();
+        app.navigator.review_failed(NavigatorError::SourceChanged);
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.prepare_find(None, None);
+        assert_eq!(app.ui.find.state, State::Stale, "timeout cannot mask a changed source");
+
+        let mut app = budget_app();
+        app.ui.find.state = State::Querying;
+        app.advance_animations(crate::InputClock(PREPARATION_BUDGET_MS));
+        app.prepare_find(None, None);
+        assert_eq!(app.ui.find.state, State::Ready, "a partial search cannot claim nothing exists");
+    }
+
     fn cost(arrival: u32, ascent: Option<u32>, added: u32) -> Option<Costs> {
         Some(Costs { arrival_m: arrival, arrival_ascent_m: ascent, added_m: Some(added), added_ascent_m: ascent })
     }
