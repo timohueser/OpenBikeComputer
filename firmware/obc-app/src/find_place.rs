@@ -271,6 +271,32 @@ impl crate::App {
         }
     }
 
+    fn cleanup_find_reviews(&mut self) {
+        let Some(map) = self.ui.find.map else { return };
+        let accepted = self.assistant_checkpoint().filter(|_| self.assistant_review_status() == ReviewStatus::Accepted);
+        if let Some(checkpoint) = accepted {
+            self.find_review_removed(RouteSourceKey {
+                store: map.store,
+                object: checkpoint.route.object,
+                revision: checkpoint.route.revision,
+            });
+        }
+        if self.ui.find.selected_review
+            || matches!(self.ui.find.state, State::Querying | State::Planning | State::Releasing)
+            || !self.catalogs.can_admit_intent()
+        {
+            return;
+        }
+        let keep_choices = self.ui.find.state == State::Ready
+            && self.ui.stack.iter().any(|screen| matches!(screen, Screen::FindPlace(screen) if screen.choices()));
+        if let Some(retained) = self.ui.find.retained.iter().enumerate().find_map(|(index, retained)| {
+            (retained.object != 0 && !(keep_choices && self.ui.find.results.contains(&(index as u8))))
+                .then_some(*retained)
+        }) {
+            let _ = self.catalogs.admit_intent(crate::CatalogIntent::RemoveReview { source: retained.source(map) });
+            self.ui.next_wake_ms = Some(1);
+        }
+    }
     pub(crate) fn handle_find_action(&mut self) {
         if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
@@ -398,6 +424,10 @@ impl crate::App {
         }
     }
     fn preview_find_result(&mut self, reader: &Reader, selected: usize) {
+        if !self.catalogs.can_admit_intent() {
+            self.ui.next_wake_ms = Some(1);
+            return;
+        }
         self.ui.find.action = Action::None;
         if self.ui.find.state != State::Ready
             || !matches!(self.ui.stack.last(), Some(Screen::FindPlace(screen)) if screen.choices())
@@ -434,8 +464,27 @@ impl crate::App {
         } else {
             poi.name.as_str()
         };
-        let error =
-            self.request_visit(VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) }, name).err();
+        let retained = self.ui.find.results.get(selected).map(|index| self.ui.find.retained[*index as usize]);
+        let error = match retained.zip(self.ui.find.context).filter(|(retained, _)| retained.object != 0) {
+            Some((retained, mut context)) => {
+                context.required_anchors_m[2] = retained.rejoin_m;
+                if self
+                    .current_review_origin()
+                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+                {
+                    Some(crate::navigator::VisitUnavailable::Unmatched)
+                } else if self.restore_visit(
+                    VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) },
+                    context,
+                    retained.source(map),
+                ) {
+                    None
+                } else {
+                    Some(crate::navigator::VisitUnavailable::Busy)
+                }
+            }
+            None => Some(crate::navigator::VisitUnavailable::SourceChanged),
+        };
         self.ui.find.selected_review = true;
         self.ui.find.review_costs = None;
         self.ui.find.review = self.assistant_review_status();
@@ -469,6 +518,7 @@ impl crate::App {
             }
         }
         self.handle_find_exit();
+        self.cleanup_find_reviews();
         self.ui.find.review = self.assistant_review_status();
         if self.assistant_review_status() == ReviewStatus::Accepted && self.active_visit() {
             if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
@@ -529,7 +579,7 @@ impl crate::App {
             return;
         }
         if self.ui.find.state == State::Start {
-            if !self.assistant_planner_released() {
+            if self.ui.find.retained.iter().any(|retained| retained.object != 0) || !self.assistant_planner_released() {
                 return;
             }
             let Some(fix) = self.fresh_position() else {
@@ -662,6 +712,13 @@ impl crate::App {
                 self.ui.find.context = Some(context);
             }
             self.ui.find.costs[self.ui.find.next as usize] = self.measured_place_costs();
+            if let (Some(preview), Some(context)) = (self.assistant_preview(), self.assistant_review_context()) {
+                self.ui.find.retained[self.ui.find.next as usize] = RetainedReview {
+                    object: preview.source.object,
+                    revision: preview.source.revision,
+                    rejoin_m: context.required_anchors_m[2],
+                };
+            }
             self.cancel_assistant();
             self.ui.find.state = State::Releasing;
             return;

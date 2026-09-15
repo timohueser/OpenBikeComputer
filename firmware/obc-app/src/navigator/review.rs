@@ -683,7 +683,7 @@ impl crate::App {
     pub fn requested_assistant_restore(&self) -> Option<RouteSourceKey> {
         self.navigator.review.restore
     }
-    pub(crate) fn restore_visit(
+    pub fn restore_visit(
         &mut self,
         target: obc_route::visit::VisitTarget,
         context: ReviewContext,
