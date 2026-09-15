@@ -122,6 +122,11 @@ python3 tools/coverage_report.py --scope rust --lcov .artifacts/coverage/rust/lc
   --output .artifacts/coverage/rust --tool cargo-llvm-cov=0.9.1 --tool "$(rustc --version)"
 ```
 
+For downloaded reports, `--source-prefix ORIGINAL_CHECKOUT` maps the original absolute paths to
+this checkout. Use `--measurement-sha ORIGINAL_SHA` to retain the measured source identity. Check
+out that production source before replaying a report; coverage line numbers belong to that source.
+The output records the reporting policy's SHA separately. Replaying reports runs no tests.
+
 A baseline change requires actual successful run evidence, its source SHA and tool versions, and
 review of its counts and exclusions. CI never writes or lowers the baseline. Collect a new measured
 proposal when source ownership or native tool versions change. Raw reports and CI test outcomes
@@ -249,6 +254,13 @@ log remain authoritative.
 The builder Vitest command keeps its default console output and also
 writes native JUnit XML. Each report records file and test identities, outcomes, and elapsed
 durations. Skipped tests retain their skipped status. V8 collects coverage in the same invocation.
+
+The same registered builder suite executes the unchanged whole `sha256.test.ts` file separately
+without V8 instrumentation. Its real 600 MB length-boundary assertion and 60-second timeout remain.
+`npm test` runs both native invocations once. CI runs `npm run test:components -- --coverage` and
+`npm run test:sha256` with separate native JUnit outputs; `web-sha256-ATTEMPT` contains all four SHA
+cases. Other instrumented production callers still contribute SHA coverage. There is no test-name
+filter, duplicate test execution, retry, or injected hash state.
 
 CI uploads the reports after test success or failure. Artifact names are `web-builder-ATTEMPT`
 where `ATTEMPT` is the GitHub run attempt. Download it with:
