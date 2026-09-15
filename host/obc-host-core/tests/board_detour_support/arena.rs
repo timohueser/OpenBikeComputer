@@ -124,22 +124,33 @@ impl NavGuard {
     pub fn begin_visit(
         &mut self,
         c: obc_app::navigator::ReviewContext,
-        target: obc_route::visit::VisitTarget,
+        target: Option<obc_route::visit::VisitTarget>,
         rejoin: u32,
     ) -> Result<(), Error> {
         let original = c.original.ok_or(Error::BadOffset)?;
-        self.visit = Some(Box::new(obc_route::visit::VisitBuilder::new(
-            obc_formats::obcr::RouteSourceKey {
-                store: c.store.bytes(),
-                object: original.object,
-                revision: original.revision,
-            },
-            c.map,
-            c.progress_m,
-            rejoin,
-            target.metadata.source,
-            target.approach(c.map, c.profile).ok_or(Error::BadOffset)?,
-        )?));
+        let key = obc_formats::obcr::RouteSourceKey {
+            store: c.store.bytes(),
+            object: original.object,
+            revision: original.revision,
+        };
+        let mut slot = Box::<obc_route::visit::VisitBuilder>::new_uninit();
+        unsafe {
+            if c.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
+                obc_route::visit::VisitBuilder::init_return_in_place(slot.as_mut_ptr(), key, c.map, rejoin)?;
+            } else {
+                let target = target.ok_or(Error::BadOffset)?;
+                obc_route::visit::VisitBuilder::init_in_place(
+                    slot.as_mut_ptr(),
+                    key,
+                    c.map,
+                    c.progress_m,
+                    rejoin,
+                    target.metadata.source,
+                    target.approach(c.map, c.profile).ok_or(Error::BadOffset)?,
+                )?;
+            }
+            self.visit = Some(slot.assume_init());
+        }
         self.begin_sources();
         Ok(())
     }

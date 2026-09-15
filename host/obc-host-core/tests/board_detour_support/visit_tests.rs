@@ -64,7 +64,7 @@ impl VisitHarness {
         self.visit.accepted(&self.h.app, self.h.store);
         self.facts.note_store_revision(StoreRevision {
             store: StoreIdentity::from_bytes(self.h.store.store_id().0),
-            revision: obc_app::device_core::Revision::new(self.h.store.sequence() as u64),
+            revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
         });
         let mut plan = self.h.app.run_pass(PassInputs {
             now: PassClock { ride: obc_ports::RideClock(self.now), ui: obc_ports::InputClock(self.now) },
@@ -127,6 +127,7 @@ impl VisitHarness {
             if self.h.app.assistant_review_status() == wanted
                 && self.h.guard.is_none()
                 && self.h.writer.pending().is_none()
+                && self.outcomes.navigator.is_empty()
                 && (matches!(wanted, ReviewStatus::Preview | ReviewStatus::Unresolved) || !self.visit.active())
             {
                 return;
@@ -192,4 +193,61 @@ fn visit_rejects_changed_sources_and_keeps_uncertain_publication_fenced() {
     assert_eq!(h.h.app.active_route_index(), Some(0));
     // The unresolved executor keeps its hold until remount; model the end of that mount.
     std::mem::forget(h.visit);
+}
+
+#[test]
+fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
+    let mut h = VisitHarness::new();
+    h.settle(ReviewStatus::Preview);
+    let preview = h.h.app.assistant_preview().unwrap();
+    let (bytes, rejoin) =
+        h.h.store
+            .with_source(ObjectId(preview.source.object), None, |source| {
+                let mut bytes = vec![0; source.len() as usize];
+                source.read_at(0, &mut bytes).unwrap();
+                (bytes, obc_route::RouteObjectInfo::read(source).unwrap().visit.unwrap().accepted_anchors_m[2])
+            })
+            .unwrap();
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    let original = h.h.original.take().unwrap();
+    let id = original.id();
+    let revision = original.revision();
+    h.h.store.close(original.release());
+    put(h.h.store, ObjectKind::Route, &bytes, Some((id, revision)));
+    h.h.original = Some(h.h.store.source(id, None).unwrap());
+    flat_store::mount_sources(h.h.store, h.h.original.as_ref().unwrap(), h.h.map.as_ref().unwrap());
+    flat_store::load_routes(h.h.store, &mut h.h.app);
+    h.h.app.activate_route(0);
+    h.pass();
+    let map = flat_store::planner_map_key(h.h.store);
+    let context = ReviewContext {
+        purpose: ReviewPurpose::ReturnToRoute,
+        map,
+        store: StoreIdentity::from_bytes(map.store),
+        original: flat_store::route_fingerprint(h.h.store, id.0),
+        origin: (500_000, 510_000),
+        progress_m: 500,
+        occurrence: 0,
+        required_anchors_m: [rejoin; 3],
+        profile: 0,
+        facts_policy: REVIEW_FACTS_POLICY,
+        unresolved_avoidance: false,
+    };
+    h.h.app.plan_assistant(obc_app::NavRequest::new(context.origin, (500_000, 500_000), "Return to route"), context);
+    let seals = h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count();
+    h.settle(ReviewStatus::Preview);
+    let result = h.h.app.assistant_preview().unwrap();
+    assert!(h
+        .h
+        .store
+        .with_source(ObjectId(result.source.object), None, |s| obc_route::RouteObjectInfo::read(s)
+            .unwrap()
+            .visit
+            .is_none())
+        .unwrap());
+    assert_eq!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count() - seals, 1);
+    assert_eq!(h.h.app.active_route_index(), Some(0));
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
 }

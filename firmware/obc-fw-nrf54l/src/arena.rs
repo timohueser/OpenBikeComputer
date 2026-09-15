@@ -399,25 +399,33 @@ impl NavGuard {
     pub(crate) fn begin_visit(
         &mut self,
         context: obc_app::navigator::ReviewContext,
-        target: obc_route::visit::VisitTarget,
+        target: Option<obc_route::visit::VisitTarget>,
         rejoin: u32,
     ) -> Result<(), obc_formats::io::Error> {
         let original = context.original.ok_or(obc_formats::io::Error::BadOffset)?;
-        let approach = target.approach(context.map, context.profile).ok_or(obc_formats::io::Error::BadOffset)?;
+        let key = obc_formats::obcr::RouteSourceKey {
+            store: context.store.bytes(),
+            object: original.object,
+            revision: original.revision,
+        };
         unsafe {
-            obc_route::visit::VisitBuilder::init_in_place(
-                (*(arena_ptr() as *mut VisitArm)).builder.as_mut_ptr(),
-                obc_formats::obcr::RouteSourceKey {
-                    store: context.store.bytes(),
-                    object: original.object,
-                    revision: original.revision,
-                },
-                context.map,
-                context.progress_m,
-                rejoin,
-                target.metadata.source,
-                approach,
-            )?;
+            let slot = (*(arena_ptr() as *mut VisitArm)).builder.as_mut_ptr();
+            if context.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
+                obc_route::visit::VisitBuilder::init_return_in_place(slot, key, context.map, rejoin)?;
+            } else {
+                let target = target.ok_or(obc_formats::io::Error::BadOffset)?;
+                let approach =
+                    target.approach(context.map, context.profile).ok_or(obc_formats::io::Error::BadOffset)?;
+                obc_route::visit::VisitBuilder::init_in_place(
+                    slot,
+                    key,
+                    context.map,
+                    context.progress_m,
+                    rejoin,
+                    target.metadata.source,
+                    approach,
+                )?;
+            }
         }
         self.visit_begin_sources();
         Ok(())
