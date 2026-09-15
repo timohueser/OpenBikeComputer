@@ -687,8 +687,7 @@ mod tests {
         app.set_routes_with_ids(&[route.summary()], &[7]);
         app.navigator.set_active_route(Some(0));
         app.navigator.sync_route_state(Some(&route));
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Assistant));
         app.apply_gesture(Gesture::Step(1));
         app.apply_gesture(Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
