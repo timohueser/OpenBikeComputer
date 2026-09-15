@@ -58,6 +58,8 @@ pub struct RideTrackKey {
 /// polyline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavPreviewKey {
+    /// Assistant reviews show a Visit through rejoin; ordinary overviews show the whole route.
+    pub assistant: bool,
     /// Which route — the durable object identity.
     pub route: CatalogObjectId,
     /// The store revision the route's bytes were last known to change at. A re-plan or a spliced
@@ -223,7 +225,7 @@ mod tests {
         assert_eq!(inputs.ride_track, Some(ride));
         assert!(inputs.nav_preview.is_none());
 
-        let route = NavPreviewKey { route: 2, source: Revision::ZERO, view: Revision::ZERO };
+        let route = NavPreviewKey { assistant: false, route: 2, source: Revision::ZERO, view: Revision::ZERO };
         let inputs = DerivedInputs::nav_preview(DerivedInput::failed(route));
         assert!(inputs.ride_track.is_none());
         assert_eq!(inputs.nav_preview.map(|i| i.result), Some(DerivedResult::Failed));

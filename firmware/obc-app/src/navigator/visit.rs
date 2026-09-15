@@ -213,7 +213,7 @@ impl crate::App {
             return false;
         }
         let Some(index) = self.route_ids().iter().position(|id| *id == source.object) else { return false };
-        let Some(key) = self.catalogs.nav_preview_key(Some(index)) else { return false };
+        let Some(key) = self.catalogs.nav_preview_key(Some(index), true) else { return false };
         self.catalogs.accept_nav_preview(Some(key), crate::device_core::DerivedInput::filled(key), points)
     }
 
@@ -226,7 +226,7 @@ impl crate::App {
         }
         let index =
             self.assistant_preview().and_then(|p| self.route_ids().iter().position(|id| *id == p.source.object));
-        self.catalogs.nav_preview_for(self.catalogs.nav_preview_key(index))
+        self.catalogs.nav_preview_for(self.catalogs.nav_preview_key(index, true))
     }
 
     pub fn current_review_origin(&self) -> Option<super::ReviewOrigin> {

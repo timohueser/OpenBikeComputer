@@ -56,6 +56,18 @@ fn composition_preserves_all_waypoints_and_measures_both_directions() {
     let index = RouteIndex::read(&emitted).unwrap();
     let visit = RouteReader::new(&index, &emitted).visit_descriptor().unwrap().unwrap();
     assert_eq!(visit.accepted_anchors_m, [0, 111, 222]);
+    let reader = RouteReader::new(&index, &emitted);
+    let preview = reader.assistant_preview_polyline::<64>().unwrap();
+    assert_eq!(preview.first(), Some(&(0, 0)));
+    assert!(preview.iter().any(|&(lon, lat)| lon == 0 && lat == 1000), "the stop remains visible");
+    assert!(preview.iter().all(|&(lon, _)| lon == 0), "the unrelated original tail is outside the preview");
+    assert!(preview.last().unwrap().1.abs() < 10, "the preview ends at rejoin");
+    assert_eq!(reader.preview_polyline::<64>().last(), Some(&(2000, 0)), "ordinary overview keeps the tail");
+    assert!(reader.assistant_preview_polyline::<0>().unwrap().is_empty());
+    assert_eq!(reader.assistant_preview_polyline::<1>().unwrap().as_slice(), &[(0, 0)]);
+    let original_preview =
+        RouteReader::new(&RouteIndex::read(&source).unwrap(), &source).assistant_preview_polyline::<64>().unwrap();
+    assert_eq!(original_preview.as_slice(), &[(0, 0), (2000, 0)], "non-Visit review keeps the full shape");
     let mut seen = 0;
     for_each_waypoint(&emitted, |w| {
         assert_eq!(w.name.as_str(), "same");

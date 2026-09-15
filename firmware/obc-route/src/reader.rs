@@ -595,6 +595,64 @@ impl<'a> RouteReader<'a> {
         }
     }
 
+    /// Assistant Visit shape from departure through rejoin; other reviews show the full route.
+    /// The stored continuation stays intact and ordinary route overviews still use `preview_polyline`.
+    pub fn assistant_preview_polyline<const N: usize>(&self) -> Result<Vec<(i32, i32), N>, Error> {
+        let Some(visit) = self.visit_descriptor()? else {
+            let shape = self.preview_polyline::<N>();
+            let count = if self.chunks().is_empty() { 0 } else { self.idx.segment_count() as usize + 1 };
+            return if shape.len() == count.min(N) { Ok(shape) } else { Err(Error::BadOffset) };
+        };
+        let [lo, _, hi] = visit.accepted_anchors_m;
+        let mut shape = Vec::new();
+        if N == 0 {
+            return Ok(shape);
+        }
+        let mut count = 0;
+        self.preview_span(lo, hi, |_| count += 1)?;
+        let keep = N.min(count);
+        let mut ordinal = 0;
+        self.preview_span(lo, hi, |point| {
+            let next = if keep > 1 { shape.len() * (count - 1) / (keep - 1) } else { 0 };
+            if shape.len() < keep && ordinal == next {
+                let _ = shape.push(point);
+            }
+            ordinal += 1;
+        })?;
+        Ok(shape)
+    }
+
+    #[inline(never)]
+    fn preview_span(&self, lo: u32, hi: u32, mut visit: impl FnMut((i32, i32))) -> Result<(), Error> {
+        let mut points = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
+        let mut previous = None;
+        for (k, chunk) in self.chunks().iter().enumerate() {
+            if chunk.cum_distance_m > hi {
+                break;
+            }
+            if self.chunks().get(k + 1).is_some_and(|next| next.cum_distance_m < lo) {
+                continue;
+            }
+            let upper = if hi == self.total_distance_m { u32::MAX } else { hi };
+            let found = if chunk.point_count == 1 {
+                self.decode_chunk(k, &mut points)?;
+                Some(points.len())
+            } else {
+                decode_route_points_between_checked(self, k, lo, upper, &mut points)?
+            };
+            if found.is_some() {
+                for point in &points {
+                    let point = (point.lon, point.lat);
+                    if previous != Some(point) {
+                        visit(point);
+                        previous = Some(point);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The route's polyline decimated to at most `N` points — uniform by point index, the first
     /// and last point always kept — the computed-route overview's shape-preview seam (#685 §4:
     /// the host hands the app this bounded copy; ≤ 64 points is plenty for a ~212×90 px sketch).

@@ -2645,9 +2645,18 @@ pub(crate) async fn run_app(
                     // the level forever.
                     derived.nav_preview = Some(match route.as_ref() {
                         Some(r) => {
-                            let _ =
-                                derived_pts.extend_from_slice(&r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>());
-                            obc_app::device_core::DerivedInput::filled(key)
+                            let points = if key.assistant {
+                                r.assistant_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
+                            } else {
+                                Ok(r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>())
+                            };
+                            match points {
+                                Ok(points) => {
+                                    let _ = derived_pts.extend_from_slice(&points);
+                                    obc_app::device_core::DerivedInput::filled(key)
+                                }
+                                Err(_) => obc_app::device_core::DerivedInput::failed(key),
+                            }
                         }
                         None => obc_app::device_core::DerivedInput::failed(key),
                     });

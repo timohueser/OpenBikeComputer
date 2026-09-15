@@ -1725,7 +1725,7 @@ impl App {
     /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
         use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
-        let Some(key) = self.catalogs.nav_preview_key(self.active_route_index()) else { return };
+        let Some(key) = self.derived_needs().nav_preview else { return };
         let input = DerivedInput::filled(key);
         self.apply_derived(
             DerivedInputs::nav_preview(input),
@@ -3119,7 +3119,7 @@ impl App {
         } else {
             navigation.active_route
         };
-        let nav_key = catalogs.nav_preview_key(preview_index);
+        let nav_key = catalogs.nav_preview_key(preview_index, assistant_preview.is_some());
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
@@ -3426,12 +3426,13 @@ impl App {
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level — is an overview up? — is the UI's; the data half is
         // the key's.
-        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
-            || self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
+        let assistant =
+            self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
                 |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
             );
+        let overview_open = assistant || self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
         let nav_preview = overview_open
-            .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
+            .then(|| self.catalogs.nav_preview_key(self.active_route_index(), assistant))
             .flatten()
             .filter(|&key| !self.catalogs.nav_preview_answered(key));
         DerivedNeeds { ride_track, nav_preview }
