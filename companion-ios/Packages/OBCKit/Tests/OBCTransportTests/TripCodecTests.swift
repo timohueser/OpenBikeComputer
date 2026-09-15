@@ -21,7 +21,7 @@ struct TripCodecTests {
         let url = Self.vectorsDir.appendingPathComponent(name)
         let data = try #require(
             FileManager.default.contents(atPath: url.path),
-            "fixture \(name) missing at \(url.path) — regenerate with `cargo test -p obc-vectors regenerate -- --ignored`")
+            "fixture \(name) missing at \(url.path) — regenerate with `cargo run -p obc-vectors --example regenerate --locked`")
         return data
     }
 

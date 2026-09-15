@@ -35,6 +35,9 @@ else
 fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/obc-companion-shots.XXXXXX")"
+result_bundle="${OBC_XCRESULT_PATH:-$work_dir/WebsiteScreenshots.xcresult}"
+rm -rf "$result_bundle"
+mkdir -p "$(dirname "$result_bundle")"
 simulator_id=""
 cleanup() {
   if [[ -n "$simulator_id" ]]; then
@@ -76,13 +79,13 @@ xcrun simctl status_bar "$simulator_id" override \
     -scheme OBCCompanion \
     -destination "platform=iOS Simulator,id=$simulator_id" \
     -derivedDataPath "$derived_data" \
-    -resultBundlePath "$work_dir/WebsiteScreenshots.xcresult" \
+    -resultBundlePath "$result_bundle" \
     -only-testing:OBCCompanionUITests/WebsiteScreenshotTests \
     CODE_SIGNING_ALLOWED=NO
 )
 
 xcrun xcresulttool export attachments \
-  --path "$work_dir/WebsiteScreenshots.xcresult" \
+  --path "$result_bundle" \
   --output-path "$work_dir/attachments"
 
 python3 - "$work_dir/attachments" "$work_dir/rendered" <<'PY'
