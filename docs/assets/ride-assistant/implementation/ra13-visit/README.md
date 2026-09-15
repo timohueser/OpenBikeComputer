@@ -146,3 +146,13 @@ FlatRideRecorder to save one segment with its final fix and clock. Independent r
 This work did not run a snapshot sweep or build a shipping board image. The orchestrator owns those
 final gates. Physical buttons, SD timing, sensor continuity, power loss and stack high-water
 acceptance remain pending on hardware.
+
+## Final title captures
+
+The lifecycle captures above retain their original source attribution. The final title fix
+`a8cf6684` shortens four values without changing layout or navigation behavior. Named captures
+from the actual saved Swiss cards show [English arrival](final-arrival-en.png),
+[French arrival](final-arrival-fr.png), [French Resume](final-resume-fr.png), and
+[Spanish Resume](final-resume-es.png). The other four language/state combinations were also
+measured and captured; all eight titles fit the existing 212-pixel title budget. The simulator
+SHA-256 for these captures is `e165c232d081ce3120aadfe79602a5103a6e815fa18c6e994b666ac46b550706`.
