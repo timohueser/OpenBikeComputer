@@ -323,7 +323,7 @@ impl NavigatorMachine {
         // The measured candidate axis is authoritative for its accepted phase.
         let next = NavigatorCheckpoint {
             route: preview.source,
-            original: if context.purpose == ReviewPurpose::ReturnToRoute
+            original: if matches!(context.purpose, ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute)
                 || context.purpose == ReviewPurpose::Visit && phase == JourneyPhase::Following
             {
                 None
@@ -962,6 +962,7 @@ mod tests {
             Some(AfterCheckpoint::Activate(5))
         );
         assert_eq!(nav.review.checkpoint.unwrap().route, source(5));
+        assert_eq!(nav.review.checkpoint.unwrap().original, None, "a destination replaces the previous goal");
         assert_eq!(nav.review.status, ReviewStatus::Accepted);
         assert!(nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }).is_none());
         assert_eq!(nav.review.preview_index, None);

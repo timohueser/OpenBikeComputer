@@ -208,6 +208,8 @@ pub struct VisitReviewScreen {
     pub(crate) returning: bool,
     pub(crate) error: Option<crate::navigator::VisitUnavailable>,
     cancel_selected: bool,
+    route_choices: bool,
+    pub(crate) destination: bool,
     name: heapless::String<32>,
 }
 impl VisitReviewScreen {
@@ -218,7 +220,19 @@ impl VisitReviewScreen {
                 break;
             }
         }
-        Self { name: title, accepted: false, returning: false, error: None, cancel_selected: false }
+        Self {
+            name: title,
+            accepted: false,
+            returning: false,
+            error: None,
+            cancel_selected: false,
+            route_choices: false,
+            destination: false,
+        }
+    }
+    pub(crate) fn route_choices(mut self, available: bool) -> Self {
+        self.route_choices = available;
+        self
     }
     pub(crate) fn accepted(name: &str) -> Self {
         let mut screen = Self::new(name);
@@ -232,6 +246,10 @@ impl VisitReviewScreen {
                 Transition::None
             }
             Gesture::Back if self.accepted => Transition::Pop,
+            Gesture::Step(n) if self.route_choices && cx.find.review == ReviewStatus::Preview && n % 2 != 0 => {
+                cx.find.action = Action::RouteMode(!self.destination);
+                Transition::None
+            }
             Gesture::Step(_) if self.accepted && cx.find.review == ReviewStatus::Accepted => {
                 self.cancel_selected = !self.cancel_selected;
                 Transition::None
@@ -377,6 +395,10 @@ impl VisitReviewScreen {
         };
         cv.round(rect(12, 280, 216, 32), 6, AMBER);
         cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
+        if self.route_choices && rx.find.review == ReviewStatus::Preview && self.error.is_none() {
+            cv.triangle(Point::new(18, 296), Point::new(24, 290), Point::new(24, 302), INK);
+            cv.triangle(Point::new(222, 296), Point::new(216, 290), Point::new(216, 302), INK);
+        }
     }
 }
 fn destination_pin(cv: &mut impl Surface, point: Point) {

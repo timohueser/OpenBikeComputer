@@ -41,6 +41,7 @@ pub(crate) enum Action {
     More,
     Preview(u8),
     Accept,
+    RouteMode(bool),
     Cancel,
     OpenAccepted,
     CancelVisit,
@@ -389,6 +390,24 @@ impl crate::App {
                     }
                 }
             }
+            Action::RouteMode(destination) => {
+                if self.assistant_review_status() == ReviewStatus::Preview && self.assistant_planner_released() {
+                    if let Some(target) = self.assistant_visit_target() {
+                        self.cancel_assistant();
+                        let result = if destination {
+                            self.request_destination(target, "Route to place")
+                        } else {
+                            self.request_visit(target, "Visit")
+                        };
+                        if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                            screen.destination = destination;
+                            screen.error = result.err();
+                        }
+                        self.ui.find.review_costs = None;
+                        self.ui.find.review = self.assistant_review_status();
+                    }
+                }
+            }
             Action::OpenAccepted => {
                 if let Some(index) = self.current_visit_index() {
                     let screen = VisitReviewScreen::accepted(self.routes()[index].name.as_str());
@@ -456,10 +475,8 @@ impl crate::App {
                 self.ui.find.selected_review = true;
                 self.ui.find.review_costs = None;
                 self.ui.find.review = ReviewStatus::Planning;
-                crate::screen::apply(
-                    &mut self.ui.stack,
-                    crate::screen::Transition::Push(Screen::VisitReview(VisitReviewScreen::new(name))),
-                );
+                let screen = VisitReviewScreen::new(name).route_choices(self.active_route_index().is_some());
+                crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
                 self.ui.map_dirty = true;
                 true
             }
@@ -538,7 +555,7 @@ impl crate::App {
         self.ui.find.selected_review = true;
         self.ui.find.review_costs = None;
         self.ui.find.review = self.assistant_review_status();
-        let mut screen = VisitReviewScreen::new(name);
+        let mut screen = VisitReviewScreen::new(name).route_choices(self.active_route_index().is_some());
         screen.error = error;
         crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
         self.ui.map_dirty = true;
@@ -864,12 +881,12 @@ impl crate::App {
         let context = self.assistant_review_context()?;
         let arrival_m = p.visit_anchors_m.map_or(p.distance_m, |a| a[1].saturating_sub(a[0]));
         let facts = self.assistant_visit_costs()?;
+        let original = context.original.filter(|_| context.purpose != crate::navigator::ReviewPurpose::Destination);
         Some(Costs {
             arrival_m,
             arrival_ascent_m: facts.arrival_elevation_complete.then_some(facts.arrival_ascent_m),
-            added_m: context.original.and(self.ui.find.remaining_m).map(|m| p.distance_m.saturating_sub(m)),
-            added_ascent_m: context
-                .original
+            added_m: original.and(self.ui.find.remaining_m).map(|m| p.distance_m.saturating_sub(m)),
+            added_ascent_m: original
                 .and(self.ui.find.remaining_ascent)
                 .filter(|_| facts.complete_elevation)
                 .map(|a| p.ascent_m.saturating_sub(a)),

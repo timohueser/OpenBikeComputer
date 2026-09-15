@@ -148,6 +148,10 @@ mod tests {
                 let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 216, "{language:?}: {text}");
             }
+            for message in [Msg::AssistantAddStop, Msg::AssistantGoHere] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 180, "{language:?}: {text}");
+            }
             for message in
                 [Msg::AssistantVisit, Msg::AssistantClosed, Msg::AssistantNoAccess, Msg::AssistantAccessUnavailable]
             {
