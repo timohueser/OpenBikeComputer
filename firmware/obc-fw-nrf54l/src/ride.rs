@@ -565,6 +565,7 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
 fn chord_name(c: obc_app::Chord) -> &'static str {
     match c {
         obc_app::Chord::Quick => "Quick",
+        obc_app::Chord::Assistant => "Assistant",
         obc_app::Chord::Context => "Context",
     }
 }

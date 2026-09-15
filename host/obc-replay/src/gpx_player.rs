@@ -52,12 +52,14 @@ pub struct GpxPlayer {
     /// Playback time of the last fix [`poll`](GpxPlayer::poll) emitted, to throttle to
     /// ~[`GPS_PERIOD_S`]. `None` forces the next poll to emit (set on new / seek / play).
     last_fix_t: Option<f64>,
+    /// Host time since the last fix while playback is paused.
+    paused_fix_elapsed: f64,
 }
 
 impl GpxPlayer {
     /// Build a player for `track`, paused at the start at real-time (1×) speed.
     pub fn new(track: Track) -> Self {
-        GpxPlayer { track, t: 0.0, playing: false, speed: 1.0, last_fix_t: None }
+        GpxPlayer { track, t: 0.0, playing: false, speed: 1.0, last_fix_t: None, paused_fix_elapsed: 0.0 }
     }
 
     /// Total track length in seconds.
@@ -120,9 +122,10 @@ impl GpxPlayer {
 
     /// Advance the playback cursor by `real_dt` seconds of wall-clock time, scaled
     /// by the speed multiplier. When the cursor reaches the end it stops there
-    /// (pause-at-last-fix). A no-op while paused.
+    /// (pause-at-last-fix). While paused, only the stationary GPS refresh cadence advances.
     pub fn advance(&mut self, real_dt: f64) {
         if !self.playing {
+            self.paused_fix_elapsed = (self.paused_fix_elapsed + real_dt.max(0.0)).min(GPS_PERIOD_S);
             return;
         }
         let d = self.duration();
@@ -232,11 +235,15 @@ impl LocationSource for GpxPlayer {
         // Throttle to ~GPS_PERIOD_S of playback time: real GPS delivers fixes on a fixed
         // cadence, so a 60 fps host (or a 10× replay) must not flood the matcher / recorder /
         // breadcrumb with a fix every frame. `None` between ticks = "no new fix yet".
-        if self.last_fix_t.is_some_and(|last| (self.t - last).abs() < GPS_PERIOD_S) {
+        // A paused cursor still supplies fresh receiver fixes on the host clock.
+        if self.last_fix_t.is_some_and(|last| (self.t - last).abs() < GPS_PERIOD_S)
+            && self.paused_fix_elapsed < GPS_PERIOD_S
+        {
             return None;
         }
         let fix = self.fix_at(self.t)?;
         self.last_fix_t = Some(self.t);
+        self.paused_fix_elapsed = 0.0;
         Some(fix)
     }
 }
@@ -361,6 +368,31 @@ mod tests {
             }
         }
         assert!((4..=6).contains(&fixes), "≈1 Hz over 5 s, got {fixes} fixes");
+    }
+
+    #[test]
+    fn paused_receiver_refreshes_at_host_cadence_without_advancing_the_track() {
+        let mut p = GpxPlayer::new(track(&[(1_000, 2_000, 0.0), (10_000, 20_000, 10.0)]));
+        p.set_speed(10.0);
+        for at in [0.0, 5.0, 10.0] {
+            p.seek(at);
+            let expected = p.poll().unwrap();
+            for _ in 0..3 {
+                assert!(p.poll().is_none());
+                p.advance(0.5);
+                assert!(p.poll().is_none());
+                p.advance(0.5);
+                let fix = p.poll().unwrap();
+                assert_eq!((fix.lat, fix.lon), (expected.lat, expected.lon));
+                assert_eq!(p.time(), at);
+                assert!(!p.is_playing());
+            }
+        }
+        p.play();
+        p.advance(0.1);
+        assert_eq!(p.time(), 1.0);
+        assert!(p.poll().is_some());
+        assert!(p.poll().is_none());
     }
 
     #[test]
