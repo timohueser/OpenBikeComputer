@@ -83,3 +83,20 @@ Both states are tested with an actual pooled schedule and an injected read error
 conceptual page changed. No snapshot sweep or resource image was run. These fixes
 require delta review; regional simulator, recording continuity, final entry and
 hardware acceptance remain pending.
+
+## Retained detail review fixes
+
+Commit `67810648` keeps a map-change error on the retained detail even after a
+new detail prepares. Commit `8547bf96` gives the shared hours cache a source key.
+When the rider returns from another place, the old detail requests its own
+schedule before it draws hours or permits Visit. A whole-App scenario opens a
+closed place, opens an open place through Menu, returns, and verifies the reload.
+
+`./tools/obc test -p obc-app` passes (904 library tests and all package suites).
+`cargo clippy -p obc-app --all-targets -- -D warnings`, `./tools/obc suites check`,
+`cargo fmt --all`, and `git diff --check` pass. The logs are
+`ra06-schedule-owner-tests.log`, `ra06-schedule-owner-clippy.log`, and
+`ra06-schedule-owner-registry.log` in the orchestrator artifact directory.
+No public conceptual page changed. No snapshot sweep or resource image ran.
+The Landmarks integration must also set this key when it writes the shared cache.
+CI, final regional acceptance, and physical-device acceptance remain pending.
