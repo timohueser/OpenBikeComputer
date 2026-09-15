@@ -1363,6 +1363,7 @@ impl App {
     ) {
         self.set_routes_with_ids(summaries, ids);
         self.catalogs.set_route_meta(metas);
+        self.navigator.set_review_meta(self.catalogs.route_metas());
     }
 
     /// Each resident route's retention meta, pairwise with [`route_ids`](App::route_ids) (epic #638
@@ -1375,8 +1376,16 @@ impl App {
     /// **current** [`route_ids`](App::route_ids) — the standalone meta feed a host calls when it
     /// re-reads the sidecar without replacing the catalog (the sim re-pushes it each frame so the
     /// sweep always mirrors device truth). No catalog replacement, no remap. Excess metas are ignored.
+    pub fn set_assistant_candidates(&mut self, mask: u64) {
+        self.catalogs.set_assistant_candidates(mask);
+        self.navigator.set_review_meta(self.catalogs.route_metas());
+    }
+    pub fn route_unaccepted(&self, index: usize) -> bool {
+        self.navigator.route_unaccepted(index)
+    }
     pub fn set_route_meta(&mut self, metas: &[crate::retention::RouteRetentionMeta]) {
         self.catalogs.set_route_meta(metas);
+        self.navigator.set_review_meta(self.catalogs.route_metas());
     }
 
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
@@ -1390,6 +1399,7 @@ impl App {
         // request follow the same durable identity in Navigator.
         navigator.remap_route_keys(&remap);
         navigator.remap_detour_route(&remap);
+        navigator.remap_review_keys(&remap);
 
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
         // re-resolved trips (`replace_routes` re-filed them before returning) + the new route count
@@ -1798,18 +1808,32 @@ impl App {
             return;
         }
         match outcome {
+            NavigatorOutcome::ReviewReady { preview, .. } => {
+                let index = self.route_ids().iter().position(|&id| id == preview.source.object);
+                self.navigator.review_index(index);
+                self.navigator.reviewed(preview);
+                self.end_plan(PlanFamily::Route, PlanPhase::PreviewReady);
+            }
             NavigatorOutcome::PlanFinished { route, .. } => self.land_route_plan(Ok(route)),
             NavigatorOutcome::DetourFinished { preview, .. } => self.land_detour_plan(Ok(preview)),
             NavigatorOutcome::DetourCommitted { route, .. } => self.land_detour_commit(Ok(route)),
             NavigatorOutcome::Failed { error, .. } => {
+                if self.assistant_review_context().is_some() {
+                    self.navigator.review_failed(error);
+                    self.end_plan(PlanFamily::Route, PlanPhase::Failed);
+                    return;
+                }
                 // The planner's own verdict is the one the rider is shown; the two resource
                 // failures have no tier of their own and land on the generic card, which is what
                 // the legacy protocol has always done with them.
                 let error = match error {
                     NavigatorError::Plan(error) => error,
-                    NavigatorError::Workspace | NavigatorError::Store | NavigatorError::SourceChanged => {
-                        obc_route::nav::NavError::NoPath
-                    }
+                    NavigatorError::Workspace
+                    | NavigatorError::Store
+                    | NavigatorError::SourceChanged
+                    | NavigatorError::Movement
+                    | NavigatorError::Unavailable
+                    | NavigatorError::DurabilityUnknown => obc_route::nav::NavError::NoPath,
                 };
                 match self.navigator.live_family() {
                     Some(PlanFamily::Detour) if self.navigator.detour_committing() => {
@@ -1818,6 +1842,11 @@ impl App {
                     Some(PlanFamily::Detour) => self.land_detour_plan(Err(error)),
                     _ => self.land_route_plan(Err(error)),
                 }
+            }
+            NavigatorOutcome::ReleaseUnresolved { .. } => {
+                self.navigator.review_failed(NavigatorError::DurabilityUnknown);
+                self.navigator.released_unresolved(&mut self.mode);
+                self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
                 if self.navigator.released(&mut self.mode) {
@@ -6793,6 +6822,7 @@ mod tests {
                 self.written = Some(effect);
                 let token = effect.token();
                 let outcome = match effect {
+                    RetentionEffect::WriteCheckpoint { .. } => panic!("no Assistant request"),
                     RetentionEffect::WriteRouteMetadata { id, .. } => {
                         let _ = out.push(SweepOp::StampRoute(id));
                         RetentionOutcome::RouteMetadataWritten { token, id }
@@ -6841,6 +6871,7 @@ mod tests {
                         app.set_ride_retention_inventory(&inventory);
                         if let Some(effect) = self.written.take() {
                             match effect {
+                                RetentionEffect::WriteCheckpoint { .. } => panic!("no Assistant request"),
                                 RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
                                     let mut metas: heapless::Vec<RouteRetentionMeta, { crate::MAX_ROUTES }> =
                                         heapless::Vec::from_slice(app.route_metas()).unwrap();

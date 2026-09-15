@@ -392,6 +392,49 @@ impl HostLoop {
         self.inbox.nav_preview.clear();
         self.sync_recorder(app, tracks);
         let navigation = plan.effects.navigator.take().or_else(|| self.releasing.take());
+        if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && self.plan.is_none() {
+            self.publication = None;
+            self.sources = None;
+        }
+        if app.assistant_needs_recovery() {
+            if let Ok(checkpoint) = routes.read_checkpoint() {
+                if let Some(scope) = routes.store_scope() {
+                    app.offer_assistant_checkpoint(scope.store, checkpoint);
+                }
+            }
+        }
+        if let Some(effect) = plan.effects.retention.take() {
+            if let RetentionEffect::WriteCheckpoint { token, scope } = effect {
+                let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
+                    && app.assistant_preview().is_none();
+                let current_map = map.source();
+                let current = scope.is_some_and(|scope| app.assistant_store_matches(scope.store))
+                    && (!resume
+                        || (current_map.is_current()
+                            && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
+                                store: current_map.store_id().0,
+                                object: current_map.id().0,
+                                revision: current_map.revision().0,
+                            })))
+                    && app.assistant_review_context().is_none_or(|context| {
+                        self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
+                            && context.profile == app.settings().bike_profile_idx
+                    });
+                if !current || !app.assistant_checkpoint_submission(token) {
+                    plan.effects.retention.take();
+                    let outcome = if current {
+                        RetentionOutcome::Cancelled { token }
+                    } else {
+                        RetentionOutcome::Failed { token, error: obc_app::retention::RetentionError::Stale }
+                    };
+                    deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
+                } else {
+                    let _ = plan.effects.retention.try_put(effect);
+                }
+            } else {
+                let _ = plan.effects.retention.try_put(effect);
+            }
+        }
         self.serve_effects(app, plan, routes, rides, trips, tracks, platform);
         if let Some(effect) = navigation {
             if let Some(outcome) = self.serve_navigator(app, effect, routes, map, elev) {
@@ -425,7 +468,17 @@ impl HostLoop {
             deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
         if let Some(effect) = plan.effects.retention.take() {
-            let outcome = serve_retention(effect, routes, rides);
+            let outcome = if let RetentionEffect::WriteCheckpoint { token, scope } = effect {
+                match scope.zip(app.assistant_checkpoint_payload(token)) {
+                    Some((scope, change)) => match routes.write_checkpoint(scope, change) {
+                        Ok(()) => RetentionOutcome::CheckpointWritten { token },
+                        Err(error) => RetentionOutcome::Failed { token, error },
+                    },
+                    None => RetentionOutcome::Cancelled { token },
+                }
+            } else {
+                serve_retention(effect, routes, rides)
+            };
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.recorder.take() {
@@ -586,6 +639,27 @@ impl HostLoop {
                 let Some(InflightPlan::Ready(plan, stats)) = self.plan.as_ref() else {
                     return failed(NavigatorError::Workspace);
                 };
+                if app.assistant_review_context().is_some() {
+                    return Some(match routes.publish_review_route(plan.bytes()) {
+                        Ok(publication) => {
+                            self.publication = Some(publication);
+                            let Some(source) = routes.fingerprint(publication.id) else {
+                                return failed(NavigatorError::DurabilityUnknown);
+                            };
+                            let preview = obc_app::navigator::ReviewedRoute::read(
+                                source,
+                                &obc_formats::io::SliceSource(plan.bytes()),
+                                app.assistant_review_context().unwrap(),
+                            );
+                            feed_routes(app, routes, &mut NoTrace);
+                            match preview {
+                                Ok(preview) => NavigatorOutcome::ReviewReady { token, preview },
+                                Err(error) => NavigatorOutcome::Failed { token, error },
+                            }
+                        }
+                        Err(error) => NavigatorOutcome::Failed { token, error },
+                    });
+                }
                 Some(match commit_nav_plan(app, routes, Ok(*stats), plan.bytes(), plan.tile_stats(), &mut NoTrace) {
                     Ok(publication) => {
                         self.publication = Some(publication);
@@ -618,13 +692,24 @@ impl HostLoop {
                                 self.releasing = Some(effect);
                                 return None;
                             }
-                            Err(error) => eprintln!("nav release: compensation stopped ({error:?})"),
+                            Err(CatalogError::Stale) => {}
+                            Err(error) => {
+                                eprintln!("nav release: unresolved publication ({error:?})");
+                                self.plan = None;
+                                return Some(NavigatorOutcome::ReleaseUnresolved { token });
+                            }
                         }
                     }
                 }
-                self.publication = None;
+                let keep_review = retain_result
+                    && family == PlanFamily::Route
+                    && (app.assistant_preview().is_some()
+                        || app.assistant_review_status() == obc_app::navigator::ReviewStatus::Unresolved);
+                if !keep_review {
+                    self.publication = None;
+                    self.sources = None;
+                }
                 self.plan = None;
-                self.sources = None;
                 if family == PlanFamily::Detour && !keep_preview {
                     self.detour_ready = None;
                 }
@@ -649,7 +734,7 @@ impl HostLoop {
             return failed(NavigatorError::Workspace);
         }
         if match work {
-            PlannerWork::Route(_) => self.hold.route,
+            PlannerWork::Route(_) | PlannerWork::AssistantRoute(_) => self.hold.route,
             PlannerWork::Detour(_) => self.hold.detour,
         } {
             return None;
@@ -662,6 +747,50 @@ impl HostLoop {
             PlannerWork::Route(request) => {
                 self.plan = Some(InflightPlan::Nav(NavPlan::start(&request, app.settings().bike_profile_idx)));
                 None
+            }
+            PlannerWork::AssistantRoute(request) => {
+                let Some(context) = app.assistant_review_context() else {
+                    return failed(NavigatorError::Unavailable);
+                };
+                if context.map.store != source.store_id().0
+                    || context.map.object != source.id().0
+                    || context.map.revision != source.revision().0
+                    || routes.store_scope().map(|scope| scope.store) != Some(context.store)
+                    || context.profile != app.settings().bike_profile_idx
+                {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                if app.active_route_index().is_some() && context.original.is_none() {
+                    return failed(NavigatorError::SourceChanged);
+                }
+                let original = if let Some(expected) = context.original {
+                    if routes.fingerprint(expected.object) != Some(expected) {
+                        return failed(NavigatorError::SourceChanged);
+                    }
+                    let Some(held) = routes.pin_active() else {
+                        return failed(NavigatorError::SourceChanged);
+                    };
+                    if held.id() != expected.object {
+                        return failed(NavigatorError::SourceChanged);
+                    }
+                    let Ok(index) = obc_route::RouteIndex::read(&held) else {
+                        return failed(NavigatorError::Unavailable);
+                    };
+                    if index.has_unresolved_avoidance() {
+                        return failed(NavigatorError::Unavailable);
+                    }
+                    Some((held, Box::new(index)))
+                } else {
+                    None
+                };
+                let mut plan = NavPlan::start(&request, context.profile);
+                plan.set_attribution_map(context.map);
+                plan.set_assistant_candidate();
+                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
+                    plan.set_unresolved_avoidance();
+                }
+                self.plan = Some(InflightPlan::Nav(plan));
+                original
             }
             PlannerWork::Detour(request) => {
                 let Some(source) = routes.pin_active() else { return failed(NavigatorError::Workspace) };
@@ -825,10 +954,13 @@ fn serve_retention(
 ) -> RetentionOutcome {
     let token = effect.token();
     let result = match effect {
-        RetentionEffect::WriteRouteMetadata { .. } => routes.write_metadata(effect),
+        RetentionEffect::WriteCheckpoint { .. } | RetentionEffect::WriteRouteMetadata { .. } => {
+            routes.write_metadata(effect)
+        }
         RetentionEffect::WriteRideMetadata { .. } => rides.write_metadata(effect),
     };
     match (effect, result) {
+        (RetentionEffect::WriteCheckpoint { .. }, Ok(())) => RetentionOutcome::CheckpointWritten { token },
         (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
             RetentionOutcome::RouteMetadataWritten { token, id }
         }
@@ -905,6 +1037,148 @@ mod tests {
     use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, TrackPoint};
     use obc_route::RideStats;
 
+    #[test]
+    fn assistant_plans_reviews_and_accepts_exact_immutable_bytes_through_the_host_executor() {
+        use obc_app::navigator::{ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, REVIEW_FACTS_POLICY};
+        use obc_pack::nav::{Edge, NavGraph, Node};
+        let bbox = (0, 0, 1_000_000, 1_000_000);
+        let points = [(500_000, 500_000), (502_000, 500_000), (504_000, 500_000)];
+        let graph = NavGraph {
+            nodes: points.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect(),
+            edges: points
+                .windows(2)
+                .enumerate()
+                .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 222, kind: 0 })
+                .collect(),
+        };
+        let lods = [obc_pack::LodLayer {
+            max_mpp: None,
+            chunk_size: 2048,
+            root: obc_pack::Node::Leaf { bbox, features: vec![] },
+        }];
+        let profiles =
+            [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
+        let map_bytes =
+            obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &graph, &profiles, &mut obc_elevation::NullElevation).0;
+        let owner = crate::flat_store::HostStore::memory().unwrap();
+        let map = crate::flat_map::FlatMap::from_bytes_in(&owner, &map_bytes).unwrap();
+        let mut sink = crate::VecSink::default();
+        let gpx = b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.504\" lat=\"0.500\"/></trkseg></trk></gpx>";
+        obc_route::gpx_to_obcr(&obc_formats::io::SliceSource(gpx), "Original", &mut sink).unwrap();
+        let mut routes = crate::FlatRouteStore::new(owner.clone(), &[sink.bytes()]).unwrap();
+        let original = routes.ids()[0];
+        let mut app = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        feed_routes(&mut app, &routes, &mut NoTrace);
+        app.activate_route(0);
+        routes.sync_active(Some(0));
+        let mut host = HostLoop::new();
+        let mut rides = crate::MemRideStore::new(vec![]);
+        let mut tracks = RecordingTrackStore::default();
+        let mut session = ActiveRouteSession::new();
+        let mut now = 0;
+        let mut frame = |host: &mut HostLoop, app: &mut App, routes: &mut crate::FlatRouteStore| {
+            now += 100;
+            let mut loc = OneFix(None);
+            let mut plan = host.pass(
+                app,
+                PassClock { ride: RideClock(now), ui: InputClock(now) },
+                &[],
+                Sensors::new(&mut loc),
+                None,
+                None,
+                SUPPORT,
+            );
+            host.execute(
+                app,
+                &mut plan,
+                &mut session,
+                routes,
+                &mut rides,
+                &mut tracks,
+                &mut (),
+                &map,
+                &mut obc_route::NullElevation,
+                &mut (),
+            );
+        };
+        for _ in 0..4 {
+            frame(&mut host, &mut app, &mut routes);
+        }
+        let map_source = map.source();
+        let context = ReviewContext {
+            purpose: ReviewPurpose::Destination,
+            map: obc_formats::obcr::RouteSourceKey {
+                store: map_source.store_id().0,
+                object: map_source.id().0,
+                revision: map_source.revision().0,
+            },
+            store: routes.store_scope().unwrap().store,
+            original: routes.fingerprint(original),
+            origin: points[0],
+            progress_m: 0,
+            occurrence: 0,
+            required_anchors_m: [0; 3],
+            profile: app.settings().bike_profile_idx,
+            facts_policy: REVIEW_FACTS_POLICY,
+            unresolved_avoidance: false,
+        };
+        app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
+        for _ in 0..200 {
+            frame(&mut host, &mut app, &mut routes);
+            if app.assistant_review_status() == ReviewStatus::Preview && !host.is_planning() {
+                break;
+            }
+        }
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
+        let preview = app.assistant_preview().unwrap();
+        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        assert!(routes.read_checkpoint().unwrap().is_none());
+        assert!(app.route_unaccepted(app.route_ids().iter().position(|id| *id == preview.source.object).unwrap()));
+        let mut orphan_boot = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        feed_routes(&mut orphan_boot, &routes, &mut NoTrace);
+        let orphan = orphan_boot.route_ids().iter().position(|id| *id == preview.source.object).unwrap();
+        assert!(orphan_boot.route_unaccepted(orphan));
+        orphan_boot.set_active_route(Some(orphan));
+        assert!(orphan_boot.active_route_index().is_none());
+        let bytes = owner
+            .open(
+                obc_storage::flat::ObjectId(preview.source.object),
+                obc_storage::flat::Revision(preview.source.revision),
+            )
+            .unwrap();
+        let info = obc_route::RouteObjectInfo::read(&bytes).unwrap();
+        assert_eq!(
+            (preview.distance_m, preview.ascent_m, preview.descent_m),
+            (info.distance_m, info.ascent_m, info.descent_m)
+        );
+        drop(bytes);
+        // Consume the arena-release ACK before accepting the immutable candidate.
+        frame(&mut host, &mut app, &mut routes);
+        app.accept_assistant(ReviewOrigin {
+            fix: context.origin,
+            progress_m: 0,
+            occurrence: 0,
+            lateral_m: 0,
+            trustworthy: true,
+        });
+        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        for _ in 0..12 {
+            frame(&mut host, &mut app, &mut routes);
+            if app.assistant_review_status() == ReviewStatus::Accepted {
+                break;
+            }
+        }
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
+        assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, preview.source);
+        assert!(!host.owns_navigation());
+        assert!(!app.route_unaccepted(app.active_route_index().unwrap()));
+        assert!(routes.delete_by_id(original).is_err(), "accepted original remains protected without a reader hold");
+        let mut reboot = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        reboot.offer_assistant_checkpoint(routes.store_scope().unwrap().store, routes.read_checkpoint().unwrap());
+        assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
+        assert!(reboot.active_route_index().is_none());
+    }
     #[test]
     fn bond_platform_results_return_once_with_the_admitted_token() {
         use obc_app::ble::{BondError, BondOutcome, ControllerClearance};

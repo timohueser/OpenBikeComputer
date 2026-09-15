@@ -30,6 +30,7 @@ fn row(meta: EntryMeta) -> Row {
         timestamp: 1234,
         kind: meta.kind,
         retention: 0,
+        assistant_accepted: false,
     }
 }
 
@@ -47,6 +48,7 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
             timestamp: 0x65000000,
             kind: ObjectKind::Route,
             retention: 5,
+            assistant_accepted: false,
         })
         .unwrap();
     image
@@ -58,17 +60,18 @@ fn normative_vector_is_exact_and_hostile_records_are_refused() {
             timestamp: 0x66000000,
             kind: ObjectKind::Ride,
             retention: 0,
+            assistant_accepted: false,
         })
         .unwrap();
     assert_eq!(image.bytes(), vector);
     for (offset, value) in [
-        (4, 2),
+        (4, 1),
         (8, 41),
         (12, 1),
         (10, 3),
         (HEADER_LEN + 34, 6),
         (HEADER_LEN + ROW_LEN + 34, 1),
-        (HEADER_LEN + 35, 1),
+        (HEADER_LEN + 35, 2),
         (HEADER_LEN + 32, 2),
     ] {
         let mut bad = vector.to_vec();
@@ -100,6 +103,7 @@ fn capacity_refuses_without_losing_any_existing_record() {
                 timestamp: 0,
                 kind: if id <= MAX_ROUTES as u64 { ObjectKind::Route } else { ObjectKind::Ride },
                 retention: 0,
+                assistant_accepted: false,
             })
             .unwrap();
     }
@@ -524,4 +528,171 @@ fn invalid_metadata_or_nonfinal_heads_never_authorize_ride_policy() {
     assert_eq!(seen, 0);
     assert_eq!(write_ride(&store, CARD, store.sequence(), target.id, 1234), Err(Error::Invalid));
     assert_eq!(remove_ride(&store, CARD, store.sequence(), target.id), Err(Error::Invalid));
+}
+
+fn checkpoint(route: EntryMeta, original: Option<EntryMeta>) -> NavigatorCheckpoint {
+    NavigatorCheckpoint {
+        route: fingerprint(route),
+        original: original.map(fingerprint),
+        progress_m: 10,
+        occurrence: 2,
+        lon: 8_000_000,
+        lat: 47_000_000,
+        phase: obc_formats::retention::JourneyPhase::Following,
+        unresolved_avoidance: false,
+        lower_m: 0,
+        upper_m: 100,
+    }
+}
+
+#[test]
+fn checkpoint_rows_reconcile_and_capacity_preserve_each_other() {
+    let mut bytes = [0; MAX_LEN];
+    let mut image = Image::empty(CARD, &mut bytes).unwrap();
+    let cp = NavigatorCheckpoint {
+        route: PayloadFingerprint { object: 1, revision: 1, length: 1, crc: 0 },
+        original: None,
+        progress_m: 0,
+        occurrence: 0,
+        lon: 0,
+        lat: 0,
+        phase: obc_formats::retention::JourneyPhase::Following,
+        unresolved_avoidance: false,
+        lower_m: 0,
+        upper_m: 1,
+    };
+    image.set_checkpoint(Some(cp)).unwrap();
+    for id in 1..=(MAX_ROUTES + MAX_RIDES) as u64 {
+        image
+            .set(Row {
+                id: ObjectId(id),
+                revision: Revision(1),
+                payload_len: 1,
+                payload_crc: 0,
+                timestamp: 0,
+                kind: if id <= MAX_ROUTES as u64 { ObjectKind::Route } else { ObjectKind::Ride },
+                retention: 0,
+                assistant_accepted: false,
+            })
+            .unwrap();
+    }
+    assert_eq!(image.bytes().len(), 7808);
+    assert_eq!(image.checkpoint(), Some(cp));
+    let len = image.bytes().len();
+    assert_eq!(Image::decode(&mut bytes, len).unwrap().checkpoint(), Some(cp));
+    let mut image = Image::decode(&mut bytes, len).unwrap();
+    image.set_checkpoint(None).unwrap();
+    assert_eq!(image.bytes().len(), 7712);
+    assert_eq!(image.rows().filter(|r| r.kind == ObjectKind::Ride).count(), 128);
+}
+
+#[test]
+fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation() {
+    let disk = SparseDisk::blank(BLOCKS, 30);
+    let store = FlatStore::initialize(&disk, CARD).unwrap();
+    let route = publish(&store, ObjectKind::Route, b"derived route");
+    let original = publish(&store, ObjectKind::Route, b"original route");
+    let ride = publish(&store, ObjectKind::Ride, b"archived ride");
+    let cp = checkpoint(route, Some(original));
+    let mut owner = Metadata::new(&store);
+    let mut draft_bytes = [0; MAX_LEN];
+    let mut stale = owner.load(&store, &mut draft_bytes).unwrap();
+    stale.set_checkpoint(Some(cp)).unwrap();
+    archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
+    assert_eq!(owner.replace_checkpoint(&store, &mut stale), Err(Error::Stale));
+    write_checkpoint(&store, CARD, store.sequence(), None, Some(cp)).unwrap();
+    write_ride(&store, CARD, store.sequence(), ride.id, 123).unwrap();
+    write_route(&store, CARD, store.sequence(), original.id, 1, 456).unwrap();
+    assert_eq!(read_checkpoint(&store), Ok(Some(cp)));
+    assert_eq!(check_route_change(&store, original.id), Err(Error::Store(StoreError::Busy)));
+    assert_eq!(remove_route(&store, CARD, store.sequence(), route.id), Err(Error::Store(StoreError::Busy)));
+    let mut rows = Vec::new();
+    read_rows(&store, |row| rows.push(row)).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().find(|r| r.id == route.id).unwrap().assistant_accepted);
+    assert_eq!(rows.iter().find(|r| r.id == ride.id).unwrap().timestamp, 123);
+    let changed = NavigatorCheckpoint { route: PayloadFingerprint { crc: cp.route.crc ^ 1, ..cp.route }, ..cp };
+    assert_eq!(write_checkpoint(&store, CARD, store.sequence(), Some(cp), Some(changed)), Err(Error::Stale));
+    write_checkpoint(&store, CARD, store.sequence(), Some(cp), None).unwrap();
+    assert_eq!(read_checkpoint(&store), Ok(None));
+    assert_eq!(check_route_change(&store, original.id), Ok(()));
+    let mut after = Vec::new();
+    read_rows(&store, |row| after.push(row)).unwrap();
+    assert_eq!(after, rows);
+    write_route(&store, CARD, store.sequence(), route.id, 2, 789).unwrap();
+    let mut stamped = Vec::new();
+    read_rows(&store, |row| stamped.push(row)).unwrap();
+    assert!(stamped.iter().find(|row| row.id == route.id).unwrap().assistant_accepted);
+    let mut allocation = store.allocate(3).unwrap();
+    store.write(&mut allocation, b"new").unwrap();
+    let replacement = EntryMeta {
+        revision: Revision(route.revision.0 + 1),
+        payload_len: 3,
+        payload_crc: store.allocation_crc(&allocation).unwrap(),
+        ..route
+    };
+    store
+        .commit(&[
+            Mutation::Remove { id: route.id, revision: route.revision },
+            Mutation::Put { meta: replacement, source: PutSource::Fresh(allocation) },
+        ])
+        .unwrap();
+    write_route(&store, CARD, store.sequence(), route.id, 2, 900).unwrap();
+    let mut replaced = Vec::new();
+    read_rows(&store, |row| replaced.push(row)).unwrap();
+    assert!(
+        !replaced.iter().find(|row| row.id == route.id).unwrap().assistant_accepted,
+        "a new fingerprint never inherits acceptance"
+    );
+}
+
+#[test]
+fn every_checkpoint_publication_cut_recovers_a_complete_prior_or_accepted_image() {
+    fn run(cut: Option<(u32, When)>, clear: bool) -> Vec<(u32, MediaOp, u64)> {
+        let disk = SparseDisk::blank(BLOCKS, 31);
+        let store = FlatStore::initialize(&disk, CARD).unwrap();
+        let route = publish(&store, ObjectKind::Route, b"accepted bytes");
+        let ride = publish(&store, ObjectKind::Ride, b"archive proof");
+        archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc).unwrap();
+        let cp = checkpoint(route, None);
+        if clear {
+            write_checkpoint(&store, CARD, store.sequence(), None, Some(cp)).unwrap();
+        }
+        let expected = clear.then_some(cp);
+        let next = (!clear).then_some(cp);
+        let before = disk.ledger().last().map_or(0, |row| row.0);
+        if let Some((op, when)) = cut {
+            disk.plan(FaultPlan { op, when });
+        }
+        let result = write_checkpoint(&store, CARD, store.sequence(), expected, next);
+        let operations = disk.ledger().into_iter().filter(|row| row.0 > before).collect::<Vec<_>>();
+        if matches!(result, Err(Error::RemountRequired)) {
+            assert_eq!(write_checkpoint(&store, CARD, store.sequence(), None, Some(cp)), Err(Error::RemountRequired));
+        }
+        disk.reboot();
+        let reopened = FlatStore::mount(&disk);
+        let recovered = read_checkpoint(&reopened).unwrap();
+        assert!(recovered.is_none() || recovered == Some(cp));
+        if result.is_ok() {
+            assert_eq!(recovered, next);
+        }
+        let mut rows = Vec::new();
+        read_rows(&reopened, |row| rows.push(row)).unwrap();
+        assert_eq!(rows.iter().find(|row| row.id == ride.id).unwrap().timestamp, 0);
+        let accepted = rows.iter().find(|row| row.id == route.id).is_some_and(|row| row.assistant_accepted);
+        assert_eq!(
+            accepted,
+            clear || recovered.is_some(),
+            "acceptance marker and checkpoint publish atomically; clear preserves acceptance"
+        );
+        operations
+    }
+    for clear in [false, true] {
+        let operations = run(None, clear);
+        for (op, _, _) in operations {
+            for when in [When::Before, When::After] {
+                run(Some((op, when)), clear);
+            }
+        }
+    }
 }

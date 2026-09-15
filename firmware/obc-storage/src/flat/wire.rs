@@ -189,6 +189,14 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         }
         let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
         for mutation in mutations {
+            let id = match mutation {
+                v4::Mutation::Put { meta, .. } => meta.id,
+                v4::Mutation::Remove { id, .. } => *id,
+            };
+            super::metadata::check_route_change(self, ObjectId(id.0)).map_err(|error| match error {
+                super::metadata::Error::Store(error) => error_out(error),
+                _ => v4::StoreError::Media,
+            })?;
             if batch.push(mutation_in(mutation)).is_err() {
                 return Err(v4::StoreError::Invalid);
             }

@@ -270,6 +270,17 @@ impl CatalogState {
     /// [`replace_routes`](CatalogState::replace_routes) so the app mirrors device-durable retention.
     /// Excess metas (a host that fed more than the catalog holds) are ignored; a short slice leaves
     /// the remaining routes at their remap-carried value.
+    pub(crate) fn mark_route_accepted(&mut self, index: usize) {
+        if let Some(meta) = self.route_meta.get_mut(index) {
+            meta.assistant_accepted = true;
+        }
+    }
+    pub(crate) fn set_assistant_candidates(&mut self, mask: u64) {
+        for (i, meta) in self.route_meta.iter_mut().enumerate() {
+            meta.assistant_candidate = mask & (1 << i) != 0;
+            meta.assistant_accepted = false;
+        }
+    }
     pub(crate) fn set_route_meta(&mut self, metas: &[RouteRetentionMeta]) {
         for (slot, &m) in self.route_meta.iter_mut().zip(metas) {
             *slot = m;

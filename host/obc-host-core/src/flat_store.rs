@@ -404,6 +404,12 @@ impl HostStore {
         if head.revision != revision {
             return Err(StoreError::RevisionConflict { current: head.revision });
         }
+        if kind == ObjectKind::Route {
+            obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                obc_storage::flat::metadata::Error::Store(StoreError::Busy) => StoreError::Busy,
+                _ => StoreError::Media,
+            })?;
+        }
         let result = store.commit(&[Mutation::Remove { id, revision }]);
         if result == Err(StoreError::Media) {
             owner.remount_required = true;
@@ -448,6 +454,14 @@ impl HostStore {
             return Err(ImportError::RemountRequired);
         }
         let store = &owner.card;
+        if kind == ObjectKind::Route {
+            if let Some((id, _)) = previous {
+                obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+                    obc_storage::flat::metadata::Error::Store(error) => ImportError::Storage(error),
+                    _ => ImportError::RemountRequired,
+                })?;
+            }
+        }
         // A computed route needs one later commit to retract an abandoned publication.
         if !store.has_commit_capacity(commits) {
             return Err(StoreError::ReadOnly.into());

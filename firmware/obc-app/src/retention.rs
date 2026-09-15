@@ -154,6 +154,8 @@ impl RideRetention {
 /// (stamps `now`) instead of ever treating it as "used at the epoch" and deleting on sight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RouteRetentionMeta {
+    pub assistant_candidate: bool,
+    pub assistant_accepted: bool,
     /// This route's retention level (default [`Never`](Retention::Never) — never expires).
     pub retention: Retention,
     /// When the route was last *used* — a route becoming the active nav route, an upload commit, or
@@ -164,7 +166,7 @@ pub struct RouteRetentionMeta {
 impl RouteRetentionMeta {
     /// A route with an explicit retention level and last-used stamp.
     pub const fn new(retention: Retention, last_used_utc: u32) -> Self {
-        RouteRetentionMeta { retention, last_used_utc }
+        RouteRetentionMeta { retention, last_used_utc, assistant_candidate: false, assistant_accepted: false }
     }
 
     /// The UTC-seconds instant this route expires (`last_used + days · DAY_SECS`), or `None` when it
@@ -447,6 +449,7 @@ pub(crate) struct RetentionMachine {
     /// happen: the adapter answers synchronously in the same call. The real executor owes either an
     /// outcome on every path or a bound here.
     inflight_write: Option<(SweepKind, crate::CatalogObjectId)>,
+    checkpoint_inflight: bool,
     retry_at: Option<u32>,
     parked: bool,
     unsupported: u8,
@@ -462,6 +465,7 @@ impl RetentionMachine {
             delete_inflight: None,
             ops: crate::device_core::TokenSource::new(),
             inflight_write: None,
+            checkpoint_inflight: false,
             retry_at: None,
             parked: false,
             unsupported: 0,
@@ -519,6 +523,7 @@ impl RetentionMachine {
         if self.parked
             || self.retry_at.is_some_and(|at| view.now_ms.wrapping_sub(at) >= (1 << 31))
             || self.inflight_write.is_some()
+            || self.checkpoint_inflight
         {
             return None; // one metadata write at a time
         }
@@ -533,7 +538,7 @@ impl RetentionMachine {
                     token: self.ops.issue(),
                     scope: None,
                     id,
-                    meta: RouteRetentionMeta { retention, last_used_utc: now },
+                    meta: RouteRetentionMeta::new(retention, now),
                 }
             } else {
                 RetentionEffect::WriteRideMetadata { token: self.ops.issue(), scope: None, id, synced_at: now }
@@ -545,6 +550,15 @@ impl RetentionMachine {
         None
     }
 
+    /// Navigator edits the optional section through this same serialized publisher.
+    pub(crate) fn next_checkpoint_effect(&mut self) -> Option<RetentionEffect> {
+        if self.parked || self.inflight_write.is_some() || self.checkpoint_inflight {
+            return None;
+        }
+        self.checkpoint_inflight = true;
+        Some(RetentionEffect::WriteCheckpoint { token: self.ops.issue(), scope: None })
+    }
+
     /// Consume the answer to a [`RetentionEffect`]. A stale token (the write was superseded or
     /// already accounted for) changes nothing.
     ///
@@ -553,6 +567,26 @@ impl RetentionMachine {
     /// costs one pass rather than waiting for the next hourly sweep to rediscover it.
     pub(crate) fn apply_outcome(&mut self, outcome: RetentionOutcome) -> bool {
         if !self.ops.is_current(outcome.token()) {
+            return false;
+        }
+        if self.checkpoint_inflight {
+            if !matches!(
+                outcome,
+                RetentionOutcome::CheckpointWritten { .. }
+                    | RetentionOutcome::Failed { .. }
+                    | RetentionOutcome::Cancelled { .. }
+            ) {
+                return false;
+            }
+            self.ops.invalidate();
+            self.checkpoint_inflight = false;
+            if matches!(outcome, RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. }) {
+                self.parked = true;
+                self.queue.clear();
+            }
+            return true;
+        }
+        if matches!(outcome, RetentionOutcome::CheckpointWritten { .. }) {
             return false;
         }
         if let Some((kind, id)) = self.inflight_write {
@@ -646,6 +680,7 @@ impl RetentionMachine {
     pub(crate) fn next_expiry(&mut self, view: &RetentionView) -> Option<CatalogIntent> {
         if self.parked
             || self.inflight_write.is_some()
+            || self.checkpoint_inflight
             || self.retry_at.is_some_and(|at| view.now_ms.wrapping_sub(at) >= (1 << 31))
             || view.now_utc.is_none()
             || view.recording
@@ -1263,6 +1298,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn checkpoint_serializes_with_stamps_and_uncertainty_parks_the_same_owner() {
+        let ids = [10];
+        let metas = [RouteRetentionMeta::new(Retention::Day1, 0)];
+        let view = view(Some(1000), &ids, &metas, &[]);
+        let mut rt = RetentionMachine::new();
+        rt.advance(&view);
+        let stamp = rt.next_metadata_effect(&view).unwrap();
+        assert!(rt.next_checkpoint_effect().is_none());
+        assert!(rt.apply_outcome(RetentionOutcome::RouteMetadataWritten { token: stamp.token(), id: 10 }));
+        let checkpoint = rt.next_checkpoint_effect().unwrap();
+        assert!(rt.next_metadata_effect(&view).is_none());
+        assert!(rt.next_checkpoint_effect().is_none());
+        assert!(!rt.apply_outcome(RetentionOutcome::CheckpointWritten { token: stamp.token() }));
+        assert!(rt.apply_outcome(RetentionOutcome::Failed {
+            token: checkpoint.token(),
+            error: RetentionError::RemountRequired,
+        }));
+        rt.advance(&view);
+        assert!(rt.next_checkpoint_effect().is_none());
+        assert!(rt.next_metadata_effect(&view).is_none());
+        assert!(rt.next_expiry(&view).is_none());
+    }
+
     /// The safety core is the domain's, not the caller's: without a clock established this boot,
     /// `advance` stamps nothing, sweeps nothing and discovers nothing — however expired the data
     /// looks (invariant 1).
@@ -1454,6 +1513,10 @@ pub enum RetentionIntent {
 /// One bounded metadata write, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionEffect {
+    WriteCheckpoint {
+        token: OperationToken<RetentionTag>,
+        scope: Option<StoreRevision>,
+    },
     /// Write route `id`'s retention level and last-used stamp to the card metadata.
     WriteRouteMetadata {
         token: OperationToken<RetentionTag>,
@@ -1473,21 +1536,25 @@ pub enum RetentionEffect {
 impl RetentionEffect {
     pub fn scope(&self) -> Option<StoreRevision> {
         match self {
-            Self::WriteRouteMetadata { scope, .. } | Self::WriteRideMetadata { scope, .. } => *scope,
+            Self::WriteCheckpoint { scope, .. }
+            | Self::WriteRouteMetadata { scope, .. }
+            | Self::WriteRideMetadata { scope, .. } => *scope,
         }
     }
     pub(crate) fn bind(&mut self, value: StoreRevision) {
         match self {
-            Self::WriteRouteMetadata { scope, .. } | Self::WriteRideMetadata { scope, .. } => *scope = Some(value),
+            Self::WriteCheckpoint { scope, .. }
+            | Self::WriteRouteMetadata { scope, .. }
+            | Self::WriteRideMetadata { scope, .. } => *scope = Some(value),
         }
     }
 
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<RetentionTag> {
         match self {
-            RetentionEffect::WriteRouteMetadata { token, .. } | RetentionEffect::WriteRideMetadata { token, .. } => {
-                *token
-            }
+            RetentionEffect::WriteCheckpoint { token, .. }
+            | RetentionEffect::WriteRouteMetadata { token, .. }
+            | RetentionEffect::WriteRideMetadata { token, .. } => *token,
         }
     }
 }
@@ -1506,21 +1573,36 @@ pub enum RetentionError {
 /// The result of one [`RetentionEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionOutcome {
+    CheckpointWritten {
+        token: OperationToken<RetentionTag>,
+    },
     /// Route `id`'s metadata is durable.
-    RouteMetadataWritten { token: OperationToken<RetentionTag>, id: CatalogObjectId },
+    RouteMetadataWritten {
+        token: OperationToken<RetentionTag>,
+        id: CatalogObjectId,
+    },
     /// Ride `id`'s metadata is durable.
-    RideMetadataWritten { token: OperationToken<RetentionTag>, id: CatalogObjectId },
+    RideMetadataWritten {
+        token: OperationToken<RetentionTag>,
+        id: CatalogObjectId,
+    },
     /// The write failed.
-    Failed { token: OperationToken<RetentionTag>, error: RetentionError },
+    Failed {
+        token: OperationToken<RetentionTag>,
+        error: RetentionError,
+    },
     /// The executor abandoned the write without completing it.
-    Cancelled { token: OperationToken<RetentionTag> },
+    Cancelled {
+        token: OperationToken<RetentionTag>,
+    },
 }
 
 impl RetentionOutcome {
     /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<RetentionTag> {
         match self {
-            RetentionOutcome::RouteMetadataWritten { token, .. }
+            RetentionOutcome::CheckpointWritten { token }
+            | RetentionOutcome::RouteMetadataWritten { token, .. }
             | RetentionOutcome::RideMetadataWritten { token, .. }
             | RetentionOutcome::Failed { token, .. }
             | RetentionOutcome::Cancelled { token } => *token,
@@ -1530,6 +1612,7 @@ impl RetentionOutcome {
 
 // Layout tripwires: an identity and bounded metadata values, not a whole stored object.
 const _: () = assert!(core::mem::size_of::<RetentionIntent>() <= 24, "an identity and a stamp");
-const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 56, "a token, an identity and a stamp");
+const _: () =
+    assert!(core::mem::size_of::<RetentionEffect>() <= 56, "one token and scope, payload stays with Navigator");
 const _: () = assert!(core::mem::size_of::<RetentionOutcome>() <= 16, "a token and an identity");
 const _: () = assert!(core::mem::size_of::<RetentionError>() <= 1, "a verdict, not a report");

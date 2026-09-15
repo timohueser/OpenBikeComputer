@@ -366,6 +366,7 @@ delete_ride = "Fahrt löschen"
 
 # --- Route menu screen ---
 [route_menu]
+unaccepted = "Vorschau nicht bestätigt"
 title = "ROUTEN"
 no_routes = "Keine Routen"
 no_routes_sub = "GPX-Datei laden"

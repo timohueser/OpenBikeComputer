@@ -537,6 +537,7 @@ impl CoreHarness {
     /// Commit to the fake store. Resident metadata changes only when a catalog read delivers it.
     fn serve_retention(&mut self, effect: RetentionEffect) -> RetentionOutcome {
         match effect {
+            RetentionEffect::WriteCheckpoint { .. } => panic!("corpus has no Assistant request"),
             RetentionEffect::WriteRouteMetadata { token, id, meta, .. } => {
                 self.metadata.insert(id, meta);
                 RetentionOutcome::RouteMetadataWritten { token, id }

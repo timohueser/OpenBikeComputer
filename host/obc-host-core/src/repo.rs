@@ -78,6 +78,20 @@ pub trait RouteRepository {
     fn publish_nav_route(&mut self, _bytes: &[u8]) -> Option<RoutePublication> {
         None
     }
+    fn publish_review_route(&mut self, _bytes: &[u8]) -> Result<RoutePublication, obc_app::navigator::NavigatorError> {
+        Err(obc_app::navigator::NavigatorError::Unavailable)
+    }
+    fn fingerprint(&self, _id: CatalogObjectId) -> Option<obc_formats::retention::PayloadFingerprint> {
+        None
+    }
+    fn resume_map_matches(&self, _map: obc_formats::obcr::RouteSourceKey) -> bool {
+        false
+    }
+    fn read_checkpoint(
+        &self,
+    ) -> Result<Option<obc_formats::retention::NavigatorCheckpoint>, obc_app::retention::RetentionError> {
+        Err(obc_app::retention::RetentionError::Unsupported)
+    }
     /// Remove only this publication. A replacement is already outside this operation's authority.
     fn retract_nav_route(&mut self, _publication: RoutePublication) -> Result<(), CatalogError> {
         Err(CatalogError::Unsupported)
@@ -112,6 +126,13 @@ pub trait RouteRepository {
         &mut self,
     ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
         Ok(None)
+    }
+    fn write_checkpoint(
+        &mut self,
+        _scope: obc_app::device_core::StoreRevision,
+        _change: obc_app::navigator::CheckpointChange,
+    ) -> Result<(), obc_app::retention::RetentionError> {
+        Err(obc_app::retention::RetentionError::Unsupported)
     }
     fn write_metadata(
         &mut self,

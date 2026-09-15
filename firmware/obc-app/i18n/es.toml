@@ -365,6 +365,7 @@ delete_ride = "Borrar salida"
 
 # --- Route menu screen ---
 [route_menu]
+unaccepted = "Vista previa sin aceptar"
 title = "RUTAS"
 no_routes = "Sin rutas"
 no_routes_sub = "Importa un GPX"

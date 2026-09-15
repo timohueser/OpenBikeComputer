@@ -3,7 +3,8 @@
 This contract defines the payload of flat-store kind `9` (`Metadata`). The board and flat-store
 host use route rows for usage stamps and ride rows for archive proof and retention stamps.
 `RetentionMachine` remains the only retention policy owner. ARCHIVE_RIDE persists exact Ride
-archive proof; a later trusted-clock stamp starts the countdown.
+archive proof; a later trusted-clock stamp starts the countdown. Navigator owns the optional
+Assistant checkpoint policy. Both domains use the same serialized complete-image publisher.
 
 ## Ownership and identity
 
@@ -21,16 +22,17 @@ phone has an archive: ARCHIVE_RIDE admits only the exact archive receipt describ
 ## Bytes
 
 All integers are little-endian. The payload CRC is the catalog entry's standard CRC-32.
-There is no padding or trailing data after the last row.
+Rows are followed by the optional fixed Navigator checkpoint. There is no padding or trailing data.
 
 | Header offset | Bytes | Value |
 | --: | --: | :-- |
 | 0 | 4 | ASCII `OBRM` |
-| 4 | 2 | version `1` |
+| 4 | 2 | version `2` |
 | 6 | 2 | header length `32` |
 | 8 | 2 | row length `40` |
 | 10 | 2 | row count |
-| 12 | 4 | zero |
+| 12 | 2 | checkpoint version: `0` absent, `1` present |
+| 14 | 2 | checkpoint length: `0` absent, `96` present |
 | 16 | 16 | mounted `StoreId` |
 
 | Row offset | Bytes | Value |
@@ -42,15 +44,22 @@ There is no padding or trailing data after the last row.
 | 28 | 4 | UTC seconds: last route use or first trusted ride retention stamp |
 | 32 | 2 | source kind: route `1` or finalized ride `3` |
 | 34 | 1 | route retention selection; zero for a ride |
-| 35 | 5 | zero |
+| 35 | 1 | route acceptance flag: `1` accepted, `0` not accepted; zero for a ride |
+| 36 | 4 | zero |
 
 Route retention values are `0` forever, `1` one day, `2` one week, `3` two weeks,
 `4` one month, and `5` two months. Zero timestamps mean no recorded time; a zero ride
 time cannot authorize expiry. Absence of a ride row means unsynced. An existing zero ride
 row proves archive possession but has no running retention clock.
 
+The acceptance flag is bound to the full row fingerprint. Checkpoint acceptance sets it
+in the same Metadata publication. Ordinary route stamps preserve it only for the same
+fingerprint; reconciliation removes it after replacement. Checkpoint clear preserves
+it, so an accepted derived route remains available as an ordinary route.
+
 Rows have strictly increasing object IDs, with no duplicates. At most 64 route rows and
-128 ride rows fit in 7,712 bytes. The 32-entry ride menu does not limit reconciliation.
+128 ride rows use 7,712 bytes. A checkpoint adds 96 bytes, for a maximum of 7,808 bytes.
+The transient publisher workspace grows by those 96 bytes; no proof rows are removed. The 32-entry ride menu does not limit reconciliation.
 Unknown versions, kinds, selections, nonzero reserved bytes, invalid counts, duplicates,
 and trailing bytes are errors. Capacity refusal does not discard an existing row.
 
@@ -59,6 +68,47 @@ StoreId `42` repeated 16 times and two rows. The route has ID `0x100000001`, rev
 `0x200000003`, length `0x300000004`, CRC `0x12345678`, time `0x65000000`, selection `5`.
 The ride has ID `0x100000002`, revision `7`, length `123456`, CRC `0xabcdef01`, time
 `0x66000000`, selection `0`.
+
+## Navigator checkpoint
+
+The checkpoint starts at `32 + row_count * 40`. The Metadata header StoreId binds
+both route fingerprints to the same card. This is only a recovery offer for the
+most recently accepted Assistant journey; it does not restore ordinary navigation
+or start Recorder. Absence preserves ordinary boot behavior.
+
+| Checkpoint offset | Bytes | Value |
+| --: | --: | :-- |
+| 0 | 8 | accepted Route ObjectId, nonzero |
+| 8 | 8 | accepted Route Revision, nonzero |
+| 16 | 8 | accepted payload length, nonzero |
+| 24 | 4 | accepted payload CRC-32 |
+| 28 | 4 | matched progress, metres |
+| 32 | 28 | optional original Route ObjectId/Revision/length/CRC; all zero when absent |
+| 60 | 4 | route occurrence anchor |
+| 64 | 4 | signed longitude, microdegrees |
+| 68 | 4 | signed latitude, microdegrees |
+| 72 | 1 | phase: `0` Following, `1` Outbound, `2` AtStop, `3` Returning |
+| 73 | 1 | unresolved avoidance: `0` or `1` |
+| 74 | 2 | zero |
+| 76 | 4 | lower progress bound, metres |
+| 80 | 4 | upper progress bound, metres |
+| 84 | 12 | zero |
+
+Progress must be within the stored bounds. Coordinates must be geographic.
+Visit phases require an original fingerprint. An absent original must have all
+28 bytes zero. Unknown phases or nonzero reserved bytes are invalid.
+
+Checkpoint edits validate their exact current Route targets separately from
+retention rows. They use the current complete image and the same Metadata-head
+CAS, allocation, publication, and verified readback. Retention/archive mutations
+preserve the checkpoint bytes; checkpoint mutations preserve all valid proof rows.
+A stale draft cannot refresh its authority through another writer's load.
+
+Recovery checks the exact current source heads, lengths, and CRCs. It reads and
+checks source payload CRCs with bounded block scratch, closes temporary holds, and
+completes the media sync barrier before offering Resume. Route removal or
+replacement must refuse while the checkpoint depends on that exact object.
+Clearing or completing the journey releases its original dependency.
 
 ## Load, reconcile, and publish
 
