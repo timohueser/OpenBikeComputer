@@ -155,6 +155,7 @@ pub struct CutOptions {
     /// integral of their own geometry over one shared surface, and re-cutting a cell alone
     /// reproduces the identical bytes.
     pub terrain: Option<PathBuf>,
+    pub landmarks: Option<PathBuf>,
     /// Logical source extent used for land generation and the cut manifest.
     ///
     /// Ordinarily the ingest derives this from the retained features. Planet
@@ -174,6 +175,7 @@ impl Default for CutOptions {
             no_land: false,
             bbox: None,
             terrain: None,
+            landmarks: None,
             source_extent: None,
         }
     }
@@ -295,6 +297,12 @@ pub fn cut_ingested(
         }
     }
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(ing));
+    let landmarks = opts
+        .landmarks
+        .as_ref()
+        .map(|path| crate::landmark_map::load(path, &ing.landmark_links, extract))
+        .transpose()?
+        .unwrap_or_default();
     // Opened once for the whole run and shared by every cell: validating a hundred containers per
     // cell would dominate a cut. `sampler_for` is the per-cell part.
     let terrain_set = match &opts.terrain {
@@ -392,6 +400,15 @@ pub fn cut_ingested(
                     None => &mut null,
                 };
                 crate::poi::fill_summit_elevations(&mut pois, terrain);
+                let square = cell.square();
+                let cell_landmarks: Vec<_> = landmarks
+                    .iter()
+                    .filter(|landmark| {
+                        let (lon, lat) = (i64::from(landmark.record.lon), i64::from(landmark.record.lat));
+                        band.has_poi() && lon >= square.0 && lon < square.2 && lat >= square.1 && lat < square.3
+                    })
+                    .cloned()
+                    .collect();
                 write_cell(
                     cell,
                     band,
@@ -401,6 +418,7 @@ pub fn cut_ingested(
                     chunk_size,
                     trees,
                     &pois,
+                    &cell_landmarks,
                     &graph,
                     terrain,
                     &opts.sources,
@@ -948,6 +966,7 @@ fn write_cell(
     chunk_size: usize,
     trees: Vec<(usize, Node)>,
     pois: &[Poi],
+    landmarks: &[crate::landmark_map::Landmark],
     graph: &NavGraph,
     terrain: &mut dyn ElevationSource,
     sources: &[SourceExtent],
@@ -969,7 +988,7 @@ fn write_cell(
         config.marker_color,
         square,
         pois,
-        &[],
+        landmarks,
         graph,
         &config.routing.profiles,
         terrain,

@@ -2,26 +2,41 @@
 
 use obc_formats::io::SliceSource;
 use obc_host_core::{FlatRouteStore, VecSink};
-use obc_route::{gpx_to_obcr, RouteStats};
+use obc_reader::{NavTileCache, Reader};
+use obc_route::{gpx_to_obcr_attributed, RouteStats};
 use std::path::Path;
 
-pub fn convert_gpx(path: &Path) -> Result<(Vec<u8>, RouteStats), String> {
+pub fn convert_gpx(
+    path: &Path,
+    map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
+) -> Result<(Vec<u8>, RouteStats), String> {
     let gpx = std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("route");
     let mut sink = VecSink::default();
-    let stats = gpx_to_obcr(&SliceSource(&gpx), name, &mut sink)
-        .map_err(|error| format!("convert {}: {error:?}", path.display()))?;
+    let mut tiles = NavTileCache::new();
+    let stats = gpx_to_obcr_attributed(&SliceSource(&gpx), name, &mut sink, map.map(|(_, key)| key), |a, b| {
+        map.map_or(Ok(0), |(reader, _)| obc_route::attribution::attribute_segment(reader, &mut tiles, a, b))
+    })
+    .map_err(|error| format!("convert {}: {error:?}", path.display()))?;
     Ok((sink.bytes().to_vec(), stats))
 }
 
-pub fn import_gpx(store: &mut FlatRouteStore, path: &Path) -> Result<RouteStats, String> {
-    let (bytes, stats) = convert_gpx(path)?;
+pub fn import_gpx(
+    store: &mut FlatRouteStore,
+    path: &Path,
+    map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
+) -> Result<RouteStats, String> {
+    let (bytes, stats) = convert_gpx(path, map)?;
     store.import(&bytes).map_err(|error| error.to_string())?;
     Ok(stats)
 }
 
-pub fn export_gpx(path: &Path, directory: &Path) -> Result<RouteStats, String> {
-    let (bytes, stats) = convert_gpx(path)?;
+pub fn export_gpx(
+    path: &Path,
+    directory: &Path,
+    map: Option<(&Reader, obc_formats::obcr::RouteSourceKey)>,
+) -> Result<RouteStats, String> {
+    let (bytes, stats) = convert_gpx(path, map)?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let name = path.file_stem().unwrap_or_default();
     let output = directory.join(name).with_extension("obcr");
@@ -74,6 +89,6 @@ mod tests {
             "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
         ));
         let expected = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
-        assert_eq!(super::convert_gpx(source).unwrap().0, expected);
+        assert_eq!(super::convert_gpx(source, None).unwrap().0, expected);
     }
 }

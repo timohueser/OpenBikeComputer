@@ -56,6 +56,8 @@ pub struct PackOptions {
     /// per-direction `Ascent M` from. Absent ⇒ every adjacency entry gets `0`, which is a
     /// decode-valid v12 map that routes exactly as v11 did.
     pub terrain: Option<PathBuf>,
+    /// Offline compiler output embedded in the ordinary map.
+    pub landmarks: Option<PathBuf>,
 }
 
 /// What a finished run produced.
@@ -134,6 +136,12 @@ fn run(
     // — a deliberate asymmetry with the serializer's round-to-nearest. ---
     progress.stage(Phase::Bbox, "Calculating BBox...");
     let global_bbox = compute_bbox(&ingested);
+    let landmarks = opts
+        .landmarks
+        .as_ref()
+        .map(|path| crate::landmark_map::load(path, &ingested.landmark_links, global_bbox))
+        .transpose()?
+        .unwrap_or_default();
 
     // --- Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the
     // working set for semantic coverage; when it is the implicit backdrop, its complement is added
@@ -205,7 +213,7 @@ fn run(
         config.marker_color,
         global_bbox,
         &ingested.pois,
-        &[],
+        &landmarks,
         &ingested.nav_graph,
         &config.routing.profiles,
         terrain,

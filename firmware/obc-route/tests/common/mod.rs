@@ -190,6 +190,7 @@ pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
             body.extend_from_slice(&((b.0 - a.0) as i16).to_le_bytes());
             body.extend_from_slice(&((b.1 - a.1) as i16).to_le_bytes());
             body.extend_from_slice(&b.2.to_le_bytes());
+            body.push(0);
         }
         let body_len = body.len() as u32;
 
@@ -219,7 +220,7 @@ pub fn build_obcr(spec: &RouteSpec) -> (Vec<u8>, Vec<ChunkExtent>) {
     let mut h = [0u8; HEADER_FULL_LEN];
     h[0..4].copy_from_slice(b"OBCR");
     h[4] = VERSION;
-    h[5] = 0; // flags
+    h[5] = 2;
     h[6] = spec.name.len() as u8;
     h[7] = 0; // reserved
     put_i32(&mut h, 8, min_lon);
