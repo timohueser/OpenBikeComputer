@@ -59,3 +59,27 @@ The integrated CI resource gate remains required.
   cancel a review and change the map before acceptance. Do not connect or flash a device for this PR.
 
 No UI snapshot sweep, shipping resource image build, full CI mirror, or hardware run was made.
+
+
+## Adversarial review fixes
+
+Commit `ff8435ca` keeps selected Visit review ownership until its screen is gone.
+Back-hold cancels planning and published previews through the existing release
+handshake. Accepted routes remain active. The host journey now checks Back-hold
+at both phases, full release, absence of a checkpoint, and cleared preview shape.
+
+Map replacement invalidates every open POI detail, including a detail that has
+not prepared yet. A later successful hours read cannot bind that old metadata to
+the replacement map. The focused case removes the POI from the replacement map
+while retaining a readable hours pool, then exercises ordinary detail rendering
+and activation.
+
+Corridor hours-read failure during probing or after Ready now reports a data
+failure and cancels pending work. It cannot leave costs attached to missing rows.
+Both states are tested with an actual pooled schedule and an injected read error.
+
+`obc test -p obc-app -p obc-host-core`, all-target Clippy for both packages,
+`obc suites check`, all Rust formatters, and `git diff --check` pass. No public
+conceptual page changed. No snapshot sweep or resource image was run. These fixes
+require delta review; regional simulator, recording continuity, final entry and
+hardware acceptance remain pending.
