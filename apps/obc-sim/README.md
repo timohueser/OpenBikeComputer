@@ -162,7 +162,10 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
 
 ### Storage inputs
 
-- `--gpx PATH` replays a GPX track as the location source.
+- `--gpx PATH` replays a GPX track as the location source. The GUI loads it paused at the
+  first point. While paused, the GPS sensor refreshes that position once per second of host
+  time, so it remains usable in Assistant and other position-based views. Playback and ride
+  time stay paused. Loading a track does not start navigation or recording.
 - `--at SECONDS` chooses the GPX playback endpoint for a headless frame (default: midpoint).
 - `--script-at SECONDS` sets the GPX position during `--script`, including its `T` inputs.
   It requires `--gpx`, `--png`, and `--script`. After the script, replay advances from this
