@@ -1102,7 +1102,7 @@ mod tests {
             dwell(&mut d, &mut now, 420);
         }
         drive(&mut d, &mut now, "press", "FindPlace");
-        for _ in 0..6000 {
+        for _ in 0..750 {
             if d.find_ready() {
                 break;
             }
@@ -1124,7 +1124,7 @@ mod tests {
         assert_eq!(d.ui_offset_ms, offset);
         assert!(d.host.owns_navigation());
         assert!(!d.app.recorder.closing());
-        for _ in 0..6000 {
+        for _ in 0..750 {
             if d.visit_status() == ReviewStatus::Preview {
                 break;
             }
@@ -1150,6 +1150,15 @@ mod tests {
         assert_eq!(d.app.route_ids()[d.app.active_route_index().unwrap()], preview.source.object);
         assert!(d.app.recording() && !d.app.recorder.closing());
         assert_eq!(d.state(), "Map", "accepted Visit returns to the riding map");
+        let session = d.app.recorder.session();
+        d.cmd("exit");
+        d.cmd(&format!("seek:{}", d.player.duration() - 0.5));
+        now += 250.0;
+        d.tick(now);
+        assert!(!d.player.is_playing());
+        assert_eq!(d.reset_status(), ResetStatus::Failed);
+        assert!(d.queue.is_empty(), "playback end cannot clear a refused navigation reset");
+        assert_eq!(d.app.recorder.session(), session);
     }
 
     /// **The tour drift-guard** (epic #624 S3 / #628). The landing page's guided scenarios wait on
