@@ -1765,23 +1765,25 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         return false;
     }
 
+    let mut accepted = 0u64;
+    for meta in store.entries().filter(|meta| meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)) {
+        if let Some(index) = heads.iter().position(|head| head.id == meta.id && head.revision == meta.revision) {
+            accepted |= 1 << index;
+        }
+    }
+    if !store.entries_ok() {
+        return false;
+    }
+
     let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut candidates = 0u64;
-    for entry in heads {
+    for (index, entry) in heads.into_iter().enumerate() {
         match store
             .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
         {
             Ok(Ok((summary, candidate))) => {
-                let accepted = store.entries().any(|meta| {
-                    meta.id == entry.id
-                        && meta.revision == entry.revision
-                        && meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
-                });
-                if !store.entries_ok() {
-                    return false;
-                }
-                if candidate && !accepted {
+                if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
                     let source = obc_formats::obcr::RouteSourceKey {
                         store: store.store_id().0,

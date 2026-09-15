@@ -694,7 +694,10 @@ impl Executor {
                 self.published = Some((id, Revision(1)));
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    crate::flat_store::load_routes(store, app);
+                    // Ranked candidates use the catalog owner's refresh; selecting one restores its binding.
+                    if app.find_place_state() != obc_app::find_place::State::Planning {
+                        crate::flat_store::load_routes(store, app);
+                    }
                     let context = app.assistant_review_context()?;
                     let Some(fingerprint) = crate::flat_store::route_fingerprint(store, id.0) else {
                         self.uncertain = true;
