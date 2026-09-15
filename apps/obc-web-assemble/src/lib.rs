@@ -48,8 +48,9 @@ pub use driver::{
     SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
-    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, OUTPUT_PER_CELL_BYTE,
-    PRACTICAL_BUDGET, READ_CACHE_BYTES, SPILL_PER_NAV_BYTE, WASM32_ADDRESS_SPACE, WASM_ALLOC_MARGIN,
+    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, INPUT_READ_CACHE_BYTES,
+    OUTPUT_PER_CELL_BYTE, PRACTICAL_BUDGET, SPILL_PER_NAV_BYTE, VERIFY_READ_CACHE_BYTES, WASM32_ADDRESS_SPACE,
+    WASM_ALLOC_MARGIN,
 };
 
 #[cfg(target_arch = "wasm32")]

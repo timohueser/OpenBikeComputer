@@ -557,8 +557,7 @@ export interface MapSink {
     /** Append to the map. A short write is a failure. */
     write(bytes: Uint8Array): boolean;
     /** Fill `into` from `offset` of the sealed map — the §4.8 read-back. Served
-     *  through the wasm side's block cache, so this runs about once per 64 KiB
-     *  rather than once per engine read. */
+     *  through the wasm side's separate 64 KiB verification cache. */
     readAt(offset: number, into: Uint8Array): boolean;
     /** No more bytes: flush, because §4.8 reads it back next. */
     seal(): boolean;
