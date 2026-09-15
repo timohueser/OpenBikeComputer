@@ -678,6 +678,50 @@ mod tests {
         assert!(!app.visit_arrival_pending());
     }
     #[test]
+    fn resume_records_current_progress_inside_outbound_and_return_phases_and_retries_ambiguity() {
+        use crate::{screen::Screen, Gesture};
+        let bytes = visit_route(b"<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"0.01\"/><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0.02\" lat=\"0\"/></trkseg></trk></gpx>", [0, 1111, 2222], 10000);
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for (phase, lower_m, upper_m) in [
+            (JourneyPhase::Outbound, 0, 1111),
+            (JourneyPhase::Returning, 1111, 2222),
+            (JourneyPhase::Following, 0, route.total_distance_m),
+        ] {
+            let checkpoint = NavigatorCheckpoint {
+                phase,
+                lower_m,
+                upper_m,
+                progress_m: lower_m,
+                ..app().assistant_checkpoint().unwrap()
+            };
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.offer_assistant_checkpoint(crate::device_core::StoreIdentity::from_bytes([1; 16]), Some(checkpoint));
+            live_fix(&mut app, None, 0, 5000);
+            app.advance_animations(obc_ports::InputClock(0));
+            app.apply_gesture(Gesture::Press);
+            app.prepare_assistant_resume(Some(&route));
+            if phase == JourneyPhase::Following {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::ResumeAvailable);
+                assert!(
+                    matches!(app.top_screen(), Screen::Journey(s) if s.error == Some(crate::screen::JourneyError::Unmatched))
+                );
+                assert!(app.navigator.review.change.is_none());
+                live_fix(&mut app, None, 10000, 0);
+                app.apply_gesture(Gesture::Press);
+                app.prepare_assistant_resume(Some(&route));
+            }
+            assert_eq!(app.assistant_review_status(), ReviewStatus::Saving);
+            let next = app.navigator.review.change.unwrap().unwrap();
+            assert!(next.progress_m > checkpoint.progress_m + 50);
+            assert_eq!(next.phase, checkpoint.phase);
+            assert_eq!(next.occurrence, app.navigator.route_match.occurrence());
+            assert!(app.active_route_index().is_none());
+            assert!(!app.recording());
+        }
+    }
+    #[test]
     fn accepted_visit_reopens_from_assistant_without_a_second_acceptance() {
         use crate::{input::Chord, screen::Screen, Gesture};
         let bytes = route();
@@ -843,7 +887,10 @@ mod tests {
             trustworthy: true,
         });
         assert_eq!(resumed.review.status, ReviewStatus::Saving);
-        assert_eq!(resumed.review.change, Some(Some(checkpoint)));
+        assert_eq!(
+            resumed.review.change,
+            Some(Some(NavigatorCheckpoint { lon: position.lon, lat: position.lat, ..checkpoint }))
+        );
     }
 
     #[test]

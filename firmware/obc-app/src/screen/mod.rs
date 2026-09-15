@@ -77,6 +77,7 @@ pub use dfu::{
 };
 pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
+pub(crate) use journey::JourneyError;
 pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};

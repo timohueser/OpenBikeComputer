@@ -656,3 +656,33 @@ fn missing_or_unreadable_segments_report_unavailable_cross_track_distance() {
         assert_eq!(result, obc_route::Match { progress_m: 0, off_route: true, dist_m: u32::MAX });
     }
 }
+
+#[test]
+fn recovery_scans_the_phase_and_refuses_repeated_occurrences() {
+    let bytes = convert("Return", &gpx_from(&[(0.0, 0.0, 0.0), (0.01, 0.0, 0.0), (0.0, 0.0, 0.0)]));
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let stop = route.total_distance_m / 2;
+    let mut matcher = RouteMatch::new();
+    let outbound = matcher.recover(0, 5_000, &route, 0, stop).unwrap();
+    assert!(outbound.progress_m > 500 && outbound.progress_m < stop);
+    let outbound_occurrence = matcher.occurrence();
+    let returning = matcher.recover(0, 5_000, &route, stop, route.total_distance_m).unwrap();
+    assert!(returning.progress_m > stop + 500);
+    assert_ne!(matcher.occurrence(), outbound_occurrence);
+    assert!(
+        matcher.recover(0, 5_000, &route, 0, route.total_distance_m).is_none(),
+        "the coordinate alone cannot choose an occurrence"
+    );
+    assert!(matcher.recover(1_000, 5_000, &route, 0, stop).is_none());
+    assert!(matcher.recover(0, 5_000, &route, 0, stop).is_some(), "a refused match remains retryable");
+
+    let points: Vec<_> = (0..150).map(|i| (i as f64 * 0.001, (i % 2) as f64 * 0.001, 0.0)).collect();
+    let bytes = convert("Long phase", &gpx_from(&points));
+    let src = SliceSource(&bytes);
+    let index = RouteIndex::read(&src).unwrap();
+    let route = RouteReader::new(&index, &src);
+    let matched = matcher.recover(0, 100_000, &route, 0, route.total_distance_m).unwrap();
+    assert!(matched.progress_m > 10_000, "recovery is not limited to the live forward segment window");
+}
