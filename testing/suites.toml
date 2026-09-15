@@ -563,6 +563,22 @@ ownership = [
 ]
 
 [[suite]]
+id = "rust.obc-ios-host"
+surface = "ios"
+level = "component"
+command = "cargo test -p obc-ios-host --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = [
+  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr",
+  "fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx",
+]
+coverage_component = "ios"
+ownership = [{ kind = "rust-package", name = "obc-ios-host" }]
+
+[[suite]]
 id = "swift.obckit-host"
 surface = "ios"
 level = "component"

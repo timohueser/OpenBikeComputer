@@ -1,3 +1,5 @@
+//! The host's persisted-settings file — the device's settings RRAM stand-in.
+
 use std::path::PathBuf;
 
 use obc_app::Settings;

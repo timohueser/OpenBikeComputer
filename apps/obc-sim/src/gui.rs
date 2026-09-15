@@ -30,13 +30,11 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
-use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
-use crate::settings_store::FileSettingsStore;
 use crate::sim_compass::SimCompass;
 use crate::sim_location::SimLocationSource;
-use crate::track::TrackStore;
+use obc_host_core::{DeviceInput, FileSettingsStore, TrackStore};
 use obc_host_core::{FlatRideStore as RideStore, RideRepository};
 use obc_host_core::{FlatRouteStore as RouteStore, FlatTripStore as TripStore, RouteRepository};
 
