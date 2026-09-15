@@ -73,12 +73,13 @@ screenshots belong in PRs or project documentation, not a runtime asset folder.
 
 ## Package provenance
 
-- `sim-grimsel`: an **OBCM v14** file packed from the 2026-08-17 Switzerland
-  snapshot; its OBCT terrain is derived from Copernicus GLO-30 tile
+- `sim-grimsel`: an **OBCM v15** file packed from the pinned `assistant-osm`
+  Switzerland snapshot dated 2026-09-13, on the canonical fixture bbox; its OBCT terrain is derived from Copernicus GLO-30 tile
   `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
   The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
-  `tracked_sources` originals.
-- `sim-monaco`: an **OBCM v14** file from the 2026-08-17 Monaco snapshot plus the
+  `tracked_sources` originals. The routes use OBCR v3.
+- `sim-monaco`: an **OBCM v15** file from the pinned `assistant-osm` Monaco
+  snapshot dated 2026-09-13, on the canonical fixture bbox, plus the unchanged
   project-authored up-ahead GPX.
 - `weather-dwd-icon`: the exact DWD captures formerly documented under
   `host/obc-wx-bake/tests/fixtures`.

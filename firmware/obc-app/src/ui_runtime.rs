@@ -429,7 +429,10 @@ impl UiRuntime {
                 detour_preview,
             };
             scr.prepare(&mut px);
-            if matches!(scr, Screen::PoiList(s) if s.pending(&self.poi_scratch)) || self.corridor_scratch.pending() {
+            if reader.is_some()
+                && ((user_fix.is_some() && matches!(scr, Screen::PoiList(s) if s.pending(&self.poi_scratch)))
+                    || (route.is_some() && self.corridor_scratch.pending()))
+            {
                 self.map_dirty = true;
                 self.next_wake_ms = Some(1);
             }
