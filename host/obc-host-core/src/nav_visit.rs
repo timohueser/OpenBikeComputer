@@ -1,6 +1,6 @@
 //! Host adapter for the shared visit compositor. Only one candidate and one leg exist at a time.
 use crate::{NavPlan, VecSink};
-use obc_app::navigator::{NavigatorError, ReviewContext};
+use obc_app::navigator::{NavigatorError, ReviewContext, ReviewPurpose};
 use obc_formats::io::SliceSource;
 use obc_formats::obcr::RouteSourceKey;
 use obc_route::visit::{forward_rejoin, VisitBuilder, VisitChoice, VisitTarget};
@@ -22,7 +22,7 @@ enum Variant {
 
 pub struct VisitPlan {
     context: ReviewContext,
-    target: VisitTarget,
+    target: Option<VisitTarget>,
     approach: (i32, i32),
     choice: VisitChoice,
     rejoin_m: u32,
@@ -37,29 +37,49 @@ pub struct VisitPlan {
 }
 impl VisitPlan {
     #[inline(never)]
-    pub fn start(context: ReviewContext, target: VisitTarget, original: &RouteReader) -> Result<Self, NavigatorError> {
-        let approach = target.approach(context.map, context.profile).ok_or(NavigatorError::Unavailable)?;
-        if original.has_unresolved_avoidance()
-            || original
-                .visit_descriptor()
-                .map_err(|_| NavigatorError::Unavailable)?
-                .is_some_and(|v| context.progress_m < v.accepted_anchors_m[2])
-        {
+    pub fn start(
+        context: ReviewContext,
+        target: Option<VisitTarget>,
+        original: &RouteReader,
+    ) -> Result<Self, NavigatorError> {
+        let returning = context.purpose == ReviewPurpose::ReturnToRoute;
+        let descriptor = original.visit_descriptor().map_err(|_| NavigatorError::Unavailable)?;
+        if original.has_unresolved_avoidance() {
             return Err(NavigatorError::Unavailable);
         }
-        let forward = forward_rejoin(original, context.progress_m).map_err(|_| NavigatorError::Unavailable)?;
-        let builder = Self::builder(context, target, approach, context.progress_m)?;
+        let (approach, rejoin_m, forward) = if returning {
+            let visit = descriptor.ok_or(NavigatorError::Unavailable)?;
+            let rejoin = visit.accepted_anchors_m[2];
+            if context.required_anchors_m != [rejoin; 3] {
+                return Err(NavigatorError::SourceChanged);
+            }
+            let at = original.position_at(rejoin).ok_or(NavigatorError::Unavailable)?;
+            ((at.lon, at.lat), rejoin, None)
+        } else {
+            if descriptor.is_some_and(|v| context.progress_m < v.accepted_anchors_m[2]) {
+                return Err(NavigatorError::Unavailable);
+            }
+            let approach = target
+                .and_then(|target| target.approach(context.map, context.profile))
+                .ok_or(NavigatorError::Unavailable)?;
+            (
+                approach,
+                context.progress_m,
+                forward_rejoin(original, context.progress_m).map_err(|_| NavigatorError::Unavailable)?,
+            )
+        };
+        let builder = Self::builder(context, target, approach, rejoin_m)?;
         let mut plan = Self {
             context,
             target,
             approach,
             choice: VisitChoice::new(context.progress_m, forward),
-            rejoin_m: context.progress_m,
+            rejoin_m,
             builder,
             output: VecSink::default(),
             leg: None,
             index: None,
-            returning: false,
+            returning,
             stage: Stage::Plan,
             variant: Variant::OutAndBack,
             stats: None,
@@ -71,21 +91,43 @@ impl VisitPlan {
     #[inline(never)]
     fn builder(
         context: ReviewContext,
-        target: VisitTarget,
+        target: Option<VisitTarget>,
         approach: (i32, i32),
         rejoin: u32,
     ) -> Result<Box<VisitBuilder>, NavigatorError> {
+        let mut slot = Box::<VisitBuilder>::new_uninit();
+        unsafe {
+            Self::init_builder(slot.as_mut_ptr(), context, target, approach, rejoin)?;
+            Ok(slot.assume_init())
+        }
+    }
+    unsafe fn init_builder(
+        slot: *mut VisitBuilder,
+        context: ReviewContext,
+        target: Option<VisitTarget>,
+        approach: (i32, i32),
+        rejoin: u32,
+    ) -> Result<(), NavigatorError> {
         let original = context.original.ok_or(NavigatorError::Unavailable)?;
-        VisitBuilder::new(
-            RouteSourceKey { store: context.store.bytes(), object: original.object, revision: original.revision },
-            context.map,
-            context.progress_m,
-            rejoin,
-            target.metadata.source,
-            approach,
-        )
-        .map(Box::new)
-        .map_err(|_| NavigatorError::Unavailable)
+        let source =
+            RouteSourceKey { store: context.store.bytes(), object: original.object, revision: original.revision };
+        unsafe {
+            if context.purpose == ReviewPurpose::ReturnToRoute {
+                VisitBuilder::init_return_in_place(slot, source, context.map, rejoin)
+            } else {
+                let target = target.ok_or(NavigatorError::Unavailable)?;
+                VisitBuilder::init_in_place(
+                    slot,
+                    source,
+                    context.map,
+                    context.progress_m,
+                    rejoin,
+                    target.metadata.source,
+                    approach,
+                )
+            }
+            .map_err(|_| NavigatorError::Unavailable)
+        }
     }
     fn start_leg(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), NavigatorError> {
         self.choice.search().map_err(|_| NavigatorError::Unavailable)?;
@@ -104,7 +146,9 @@ impl VisitPlan {
         self.rejoin_m = rejoin;
         self.variant = variant;
         self.returning = false;
-        self.builder = Self::builder(self.context, self.target, self.approach, rejoin)?;
+        unsafe {
+            Self::init_builder(&mut *self.builder, self.context, self.target, self.approach, rejoin)?;
+        }
         self.builder.begin(&mut self.output).map_err(|_| NavigatorError::Store)?;
         self.start_leg(self.context.origin, self.approach)
     }
@@ -174,7 +218,7 @@ impl VisitPlan {
         self.output.bytes()
     }
     pub fn original_anchors(&self) -> [u32; 3] {
-        self.builder.descriptor().original_anchors_m
+        self.builder.original_anchors()
     }
     pub fn searches(&self) -> u8 {
         self.choice.searches()

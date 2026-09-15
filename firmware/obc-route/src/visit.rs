@@ -168,7 +168,10 @@ enum Phase {
 /// route index or reservation is owned here. Each step writes one chunk or one waypoint record.
 pub struct VisitBuilder {
     em: ObcrEmitter,
-    descriptor: VisitDescriptor,
+    descriptor: Option<VisitDescriptor>,
+    original: RouteSourceKey,
+    anchors: [u32; 3],
+    accepted_rejoin_m: u32,
     phase: Phase,
     chunk: usize,
     segment_started: bool,
@@ -226,10 +229,34 @@ impl VisitBuilder {
             target_lat: approach.1,
         };
         descriptor.encode().map_err(|_| Error::BadOffset)?;
+        unsafe { Self::init(slot, original, map, Some(descriptor), [departure_m, departure_m, rejoin_m]) }
+    }
+    /// Initialize a single real connector followed by the existing accepted tail. No visit remains.
+    ///
+    /// # Safety
+    /// The same placement and output ownership requirements as `init_in_place` apply.
+    pub unsafe fn init_return_in_place(
+        slot: *mut Self,
+        original: RouteSourceKey,
+        map: RouteSourceKey,
+        rejoin_m: u32,
+    ) -> Result<(), Error> {
+        unsafe { Self::init(slot, original, map, None, [rejoin_m; 3]) }
+    }
+    unsafe fn init(
+        slot: *mut Self,
+        original: RouteSourceKey,
+        map: RouteSourceKey,
+        descriptor: Option<VisitDescriptor>,
+        anchors: [u32; 3],
+    ) -> Result<(), Error> {
         use core::ptr::addr_of_mut;
         unsafe {
             ObcrEmitter::init_in_place(addr_of_mut!((*slot).em));
             addr_of_mut!((*slot).descriptor).write(descriptor);
+            addr_of_mut!((*slot).original).write(original);
+            addr_of_mut!((*slot).anchors).write(anchors);
+            addr_of_mut!((*slot).accepted_rejoin_m).write(0);
             addr_of_mut!((*slot).phase).write(Phase::Begin);
             addr_of_mut!((*slot).chunk).write(0);
             addr_of_mut!((*slot).segment_started).write(false);
@@ -245,6 +272,9 @@ impl VisitBuilder {
             let Self {
                 em: _,
                 descriptor: _,
+                original: _,
+                anchors: _,
+                accepted_rejoin_m: _,
                 phase: _,
                 chunk: _,
                 segment_started: _,
@@ -269,11 +299,11 @@ impl VisitBuilder {
             return Err(Error::BadOffset);
         }
         ObcrEmitter::begin(sink)?;
-        self.phase = Phase::Outbound;
+        self.phase = if self.descriptor.is_some() { Phase::Outbound } else { Phase::Return };
         Ok(())
     }
-    pub fn descriptor(&self) -> VisitDescriptor {
-        self.descriptor
+    pub fn original_anchors(&self) -> [u32; 3] {
+        self.anchors
     }
 
     /// Append the sealed outbound or return B. `true` releases B before the next leg starts.
@@ -285,16 +315,19 @@ impl VisitBuilder {
             return Ok(false);
         }
         if self.phase == Phase::Outbound {
+            let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
             if self.last.is_none_or(|p| {
-                obc_map_scene::ground_dist_m(p, (self.descriptor.target_lon, self.descriptor.target_lat))
-                    > APPROACH_TOLERANCE_M
+                obc_map_scene::ground_dist_m(p, (descriptor.target_lon, descriptor.target_lat)) > APPROACH_TOLERANCE_M
             }) {
                 return Err(Error::BadOffset);
             }
-            self.descriptor.accepted_anchors_m[1] = self.em.distance_m();
+            descriptor.accepted_anchors_m[1] = self.em.distance_m();
             self.phase = Phase::Return;
         } else {
-            self.descriptor.accepted_anchors_m[2] = self.em.distance_m();
+            self.accepted_rejoin_m = self.em.distance_m();
+            if let Some(descriptor) = &mut self.descriptor {
+                descriptor.accepted_anchors_m[2] = self.accepted_rejoin_m;
+            }
             self.phase = Phase::Tail;
         }
         self.chunk = 0;
@@ -309,12 +342,10 @@ impl VisitBuilder {
         original: &RouteReader,
         sink: &mut dyn ByteSink,
     ) -> Result<Option<RouteStats>, Error> {
-        let rejoin = self.descriptor.original_anchors_m[2];
+        let rejoin = self.anchors[2];
         match self.phase {
             Phase::Tail => {
-                if original
-                    .visit_descriptor()?
-                    .is_some_and(|v| self.descriptor.original_anchors_m[0] < v.accepted_anchors_m[2])
+                if original.visit_descriptor()?.is_some_and(|v| self.anchors[0] < v.accepted_anchors_m[2])
                     || original.has_unresolved_avoidance()
                     || rejoin > original.total_distance_m
                 {
@@ -338,20 +369,18 @@ impl VisitBuilder {
                 };
                 let ordinal = self.ordinal;
                 self.ordinal = self.ordinal.checked_add(1).ok_or(Error::TooLarge)?;
-                let departure = self.descriptor.original_anchors_m[0];
+                let departure = self.anchors[0];
                 if w.dist_along_m < departure {
                     return Ok(None);
                 }
                 if w.dist_along_m < rejoin || w.dist_along_m > original.total_distance_m {
                     return Err(Error::BadOffset);
                 }
-                w.provenance.get_or_insert(WaypointProvenance { source: self.descriptor.original, ordinal });
+                w.provenance.get_or_insert(WaypointProvenance { source: self.original, ordinal });
                 w.dist_along_m = if w.dist_along_m == original.total_distance_m {
                     self.em.distance_m()
                 } else {
-                    self.descriptor.accepted_anchors_m[2]
-                        .saturating_add(w.dist_along_m - rejoin)
-                        .min(self.em.distance_m())
+                    self.accepted_rejoin_m.saturating_add(w.dist_along_m - rejoin).min(self.em.distance_m())
                 };
                 // The retained tail has the same orientation and access geometry, so its signed
                 // lateral offset is unchanged. The annotation's display coordinate is never routed to.
@@ -373,12 +402,14 @@ impl VisitBuilder {
                     .waypoint_offset
                     .checked_add(u32::from(self.count) * WAYPOINT_LEN as u32)
                     .ok_or(Error::TooLarge)?;
-                sink.write(&self.descriptor.encode().map_err(|_| Error::BadOffset)?)?;
+                if let Some(descriptor) = self.descriptor {
+                    sink.write(&descriptor.encode().map_err(|_| Error::BadOffset)?)?;
+                    self.header[118] = 1;
+                    put_u32(&mut self.header, 120, offset);
+                    put_u32(&mut self.header, 124, 80);
+                }
                 put_u32(&mut self.header, 112, if self.count == 0 { 0 } else { self.waypoint_offset });
                 put_u16(&mut self.header, 116, self.count);
-                self.header[118] = 1;
-                put_u32(&mut self.header, 120, offset);
-                put_u32(&mut self.header, 124, 80);
                 sink.patch_at(0, &self.header)?;
                 self.stats.as_mut().ok_or(Error::BadOffset)?.waypoint_count = self.count;
                 self.phase = Phase::Done;
