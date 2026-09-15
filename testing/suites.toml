@@ -855,11 +855,13 @@ surface = "ios"
 level = "contract"
 command = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked"
 fixtures = []
-pull_request = "affected"
+# Only a Mac can link or run the iOS host, so Linux type-checks it instead. The host composes nine
+# crates and no build graph carries the iOS target edge, so naming a few of them as triggers would
+# miss the change most likely to break the port. It rides every run of the job it sits in, which
+# already lints the whole workspace; the check itself is seconds of metadata work.
+pull_request = "always"
 scheduled = "none"
-# Only a Mac can link or run the iOS host, so Linux type-checks it instead. No build graph carries
-# the target edge: the crate and the shared host modules it composes trigger the check directly.
-extra_triggers = ["apps/obc-ios-host/**", "host/obc-host-core/**"]
+extra_triggers = []
 ownership = [{ kind = "workflow", pattern = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked" }]
 
 [[suite]]

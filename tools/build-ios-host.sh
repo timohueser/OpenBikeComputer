@@ -7,12 +7,15 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+usage() { echo "usage: $(basename "$0") [--sim-only]" >&2; exit 2; }
+
 targets=(aarch64-apple-ios aarch64-apple-ios-sim)
 case "${1:-}" in
   --sim-only) targets=(aarch64-apple-ios-sim) ;;
   "") ;;
-  *) echo "usage: $(basename "$0") [--sim-only]" >&2; exit 2 ;;
+  *) usage ;;
 esac
+(( $# <= 1 )) || usage
 
 slices=()
 for target in "${targets[@]}"; do
