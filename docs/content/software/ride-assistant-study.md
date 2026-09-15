@@ -110,7 +110,9 @@ waypoints, route order, route distance and climbing, lateral offsets, and stable
 An authored waypoint is information from the route; its detail cannot add it as a new stop.
 Place details and accepted visit previews use the same owner across all questions. During a visit,
 **Assistant → Down + Back → Current visit** reopens its route and current-leg distance. Back
-returns to the questions without cancelling the visit or changing the recording.
+returns to the questions without cancelling the visit or changing the recording. If the accepted
+route bytes are replaced, this view becomes unavailable. A covered visit view does not block a new
+question. Large comparison totals use compact units so both columns fit at the normal font size.
 
 The overview uses actual route positions and elevation. Unknown elevation does not become flat
 terrain. During an accepted visit, the route includes the return leg and remaining journey; arrival
