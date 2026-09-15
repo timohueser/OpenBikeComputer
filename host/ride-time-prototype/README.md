@@ -52,6 +52,7 @@ integration remain separate work.
 | `endurance.py`, `endurance_report.py` | Exploratory one-coefficient gradient, sustained-climb, and duration comparisons |
 | `komoot_data.py`, `komoot_protocol.py` | Private GPX preparation, gap audit, and frozen chronological evaluation plan |
 | `komoot_replay.py`, `komoot_report.py` | Frozen recorded-motion replay, paired history budgets, and private HTML report |
+| `komoot_explore.py`, `komoot_explore_report.py` | Private speed distributions, matched-gradient changes within rides, and two controlled live-pace probes |
 
 ## Private Komoot preparation
 
@@ -117,6 +118,26 @@ The report verifies the frozen inputs and result hashes. It writes private `summ
 without repeating the replay. It reports excluded distance/time, source-summary disagreement,
 duration and bike support, and conditional range coverage. A single rider cannot establish
 population accuracy. No personal ride results are published by these commands.
+
+After the frozen replay, run the separate exploratory analysis:
+
+```sh
+python3 host/ride-time-prototype/komoot_explore.py
+python3 host/ride-time-prototype/komoot_explore_report.py
+```
+
+The default output is `.artifacts/ride-time-komoot-exploration`. The computation records
+its methods and source hashes before it writes results, and refuses to replace an existing
+plan. It checks that the original baseline forecasts reproduce. The two probes retain the
+live factor across unknown gaps or use the aggregate pace observed since departure. These
+are diagnostics on inspected data, not a new validation set or a change to the baseline.
+The plots use 200 m movement windows and compare ride phases within gradient bins. Their
+10th–90th percentile bands describe observed distributions, not ETA confidence intervals.
+
+Regenerate the report without repeating computation. Optional private `context.json`
+contains a `rider_context` string. Optional `interpretation.json` contains a `findings`
+list of strings and a `next_step` string. The report records hashes for these inputs and
+embeds all six figures for offline use. Keep these files and personal results local.
 
 ## Small long-ride corrections
 
