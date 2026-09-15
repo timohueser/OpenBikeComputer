@@ -60,6 +60,9 @@ The images are decoded captures of the device's actual 240 x 320 framebuffer:
   `tools/obc test -p obc-app -p obc-web-demo`; corrected web adapter: `tools/obc test -p obc-web-demo`;
   `cargo clippy -p obc-app -p obc-reader -p obc-route -p obc-host-core -p obc-web-demo --all-targets -- -D warnings`;
   `tools/obc suites check`; `python3 docs/build_docs.py --check-links`.
+- `tools/obc test fixtures -p obc-sim` passed: 16 utility tests and four captured-data presenter
+  tests. The presenter settle bound allows the serial candidate batch; readiness and frame
+  equality assertions remain unchanged. Its initial single-batch bound was too short.
 - Owner acceptance is pending: lodging/resupply choices, campsites, More places, preview Back,
   route activation/return, physical button feel, and timing on more demanding routes.
 - No performance change, wake isolation, full CI mirror, or destructive fault test was run.

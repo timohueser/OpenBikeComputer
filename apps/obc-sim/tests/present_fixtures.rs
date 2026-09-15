@@ -316,7 +316,8 @@ fn tour_screens_dwell_with_no_present_miss() {
         };
         ($app:expr, $label:expr, $pat:pat, $dwell:expr, $ready:expr) => {{
             let mut reached = false;
-            for _ in 0..1200 {
+            // Find measures a bounded batch of candidates through the serial planner.
+            for _ in 0..1200 * obc_app::find_place::PLAN_LIMIT {
                 tour_frame(
                     $app,
                     &mut scratch,
