@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from fractions import Fraction
+from functools import cache
+from importlib.metadata import version
 import fnmatch
 import json
 from pathlib import Path
@@ -55,14 +57,23 @@ def read_lcov(path: Path, root: Path, source_root: Path, source_prefix: Path | N
     return files
 
 
-def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
-    """Use Rust syntax nodes, never brace counting, to exclude test-only items."""
-    from tree_sitter import Language, Parser
+@cache
+def rust_language():
+    from tree_sitter import Language
     import tree_sitter_rust
 
+    for package, expected in (("tree-sitter", "0.25.2"), ("tree-sitter-rust", "0.24.2")):
+        if version(package) != expected:
+            raise ValueError(f"{package} must be {expected}; install tools/requirements-coverage.txt")
+    return Language(tree_sitter_rust.language())
+
+
+def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
+    """Use Rust syntax nodes, never brace counting, to exclude test-only items."""
+    from tree_sitter import Parser
+
     source = path.read_bytes()
-    language = Language(tree_sitter_rust.language())
-    parser = Parser(language)
+    parser = Parser(rust_language())
     tree = parser.parse(source)
     if tree.root_node.has_error:
         raise ValueError(f"cannot classify Rust source with syntax errors: {path}")
