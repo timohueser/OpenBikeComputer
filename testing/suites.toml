@@ -508,6 +508,20 @@ ownership = [
 ]
 
 [[suite]]
+id = "python.ride-time-prototype"
+surface = "host-tools"
+level = "component"
+command = "python3 -m unittest discover -s host/ride-time-prototype/tests -v"
+fixtures = []
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["host/ride-time-prototype/*.py", "host/ride-time-prototype/requirements.txt"]
+coverage_component = "host-tools"
+ownership = [
+  { kind = "path", source = "python-test", pattern = "host/ride-time-prototype/tests/test_*.py" },
+]
+
+[[suite]]
 id = "python.repository-tools"
 surface = "dev-tools"
 level = "contract"

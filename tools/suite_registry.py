@@ -252,6 +252,7 @@ def discover_paths(root: Path) -> list[Discovered]:
         ("python-test", "tools/tests", ("test_*.py",)),
         ("python-test", "firmware/tools/tests", ("test_*.py",)),
         ("python-test", "builder/tests", ("test_*.py",)),
+        ("python-test", "host/ride-time-prototype/tests", ("test_*.py",)),
         ("xcuitest", "companion-ios/OBCCompanionUITests", ("*.swift",)),
     )
     found: list[Discovered] = []

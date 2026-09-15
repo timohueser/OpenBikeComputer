@@ -1,0 +1,403 @@
+{
+  "protocol": {
+    "created_at_utc": "2026-09-15T13:13:06.572194+00:00",
+    "scope": "Exploratory comparison on the previously inspected single athlete. Not a new held-out test.",
+    "baseline": "Unchanged frozen scalar/live model; same prepared whole-ride cohort and 20 m blocks.",
+    "gradient": "One coefficient times clip(gradient/8%,0,1). Within-ride centered regression.",
+    "sustained": "Uphill weight times clip(accumulated ascent/300 m,0,1); ascent accumulates above 2%, resets after 200 m non-climbing distance.",
+    "duration": "One coefficient times clip((moving minutes-120)/240,0,1); zero prior; nonnegative coefficient.",
+    "learning": "Duration and sustained effects are centered within ride and nearest gradient-anchor group. Eligible baseline-learning blocks only.",
+    "bounds": {
+      "maximum_log_correction": 0.4054651081081644,
+      "maximum_step": 0.03,
+      "ridge": 0.1,
+      "history_half_evidence": 20,
+      "ride_cap_km": 10,
+      "eta": 0.25,
+      "minimum_feature_variance": 1e-06
+    },
+    "forecast": "Known future profile for gradient/sustained; forward integration with predicted future moving time for duration. Live residual removes modeled current fatigue.",
+    "analysis": "All long rides and all except longest; departure/10/30/60-minute checkpoints; descriptive paired errors, no population confidence interval.",
+    "uncertainty": "Point predictions only; old range references cannot establish coverage for new variants.",
+    "no_tuning": "No parameter search, combined model, or retrospective same-ride fitting."
+  },
+  "protocol_sha256": "0df9c3e49c9332a077a5594042ab23cf6505493494654b0a3f912c714eb79fdb",
+  "run": {
+    "runtime_seconds": 19.311946825000632,
+    "predictions_sha256": "69ee64349b7d10f428836397da57b4269f93292c2af2d930bb9997d582f380cd",
+    "states_sha256": "b4e47b8ad01c9ee7a3e048fc721acbc06bae5251f6ff6f0b45deb9812df98ffe"
+  },
+  "source_protocol_sha256": "6ec2f482ffbe69a2d8d38e6f5d533d7871d02bfe29f8ef3c87dd20fca8f2ad25",
+  "baseline_check": {
+    "targets": 2146,
+    "maximum_relative_difference": 3.774758283725532e-15
+  },
+  "riders": 1,
+  "rides": 234,
+  "long_rides": 26,
+  "modes": {
+    "baseline": {
+      "0": {
+        "n": 26,
+        "mape": 5.763008538387171,
+        "mae_minutes": 11.867746615299607,
+        "bias_minutes": -9.337116231721327
+      },
+      "10": {
+        "n": 26,
+        "mape": 6.041067158543261,
+        "mae_minutes": 13.895742411095888,
+        "bias_minutes": -9.428119002728767
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.601754909846072,
+        "mae_minutes": 10.351561475088138,
+        "bias_minutes": -7.321757951042078
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.55581316673087,
+        "mae_minutes": 4.577696293507607,
+        "bias_minutes": -0.30472877152362227
+      }
+    },
+    "gradient": {
+      "0": {
+        "n": 26,
+        "mape": 5.398811610039281,
+        "mae_minutes": 10.711941016068714,
+        "bias_minutes": -7.704582200841996
+      },
+      "10": {
+        "n": 26,
+        "mape": 5.733402929807914,
+        "mae_minutes": 12.963013910623847,
+        "bias_minutes": -8.23453937649388
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.3019709871695975,
+        "mae_minutes": 9.784784033732109,
+        "bias_minutes": -7.148386615762917
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.385305351362315,
+        "mae_minutes": 4.529179449598318,
+        "bias_minutes": -1.1910739074534182
+      }
+    },
+    "sustained": {
+      "0": {
+        "n": 26,
+        "mape": 5.754679103938799,
+        "mae_minutes": 11.829237695037337,
+        "bias_minutes": -9.299215289229117
+      },
+      "10": {
+        "n": 26,
+        "mape": 6.03479639757069,
+        "mae_minutes": 13.865001830314894,
+        "bias_minutes": -9.39229960016465
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.594903219658757,
+        "mae_minutes": 10.314061302526092,
+        "bias_minutes": -7.2872755987905915
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.540446381441833,
+        "mae_minutes": 4.513657536371676,
+        "bias_minutes": -0.36353193897962627
+      }
+    },
+    "duration": {
+      "0": {
+        "n": 26,
+        "mape": 5.760667671896588,
+        "mae_minutes": 11.865279021421259,
+        "bias_minutes": -9.292969627256637
+      },
+      "10": {
+        "n": 26,
+        "mape": 6.069547576515974,
+        "mae_minutes": 13.939534136241484,
+        "bias_minutes": -9.356040104972859
+      },
+      "30": {
+        "n": 26,
+        "mape": 6.573714339106754,
+        "mae_minutes": 10.309665327705629,
+        "bias_minutes": -7.277138273731747
+      },
+      "60": {
+        "n": 26,
+        "mape": 4.578330371807601,
+        "mae_minutes": 4.600538574982306,
+        "bias_minutes": -0.23918699686104716
+      }
+    }
+  },
+  "without_longest": {
+    "baseline": {
+      "0": {
+        "n": 25,
+        "mape": 5.129039441142327,
+        "mae_minutes": 7.262860619211383,
+        "bias_minutes": -4.631005020289973
+      },
+      "10": {
+        "n": 25,
+        "mape": 4.920294521367493,
+        "mae_minutes": 6.582942406564115,
+        "bias_minutes": -1.9366140618623104
+      },
+      "30": {
+        "n": 25,
+        "mape": 6.1750756885440605,
+        "mae_minutes": 6.914235430825271,
+        "bias_minutes": -3.763239765817369
+      },
+      "60": {
+        "n": 25,
+        "mape": 4.671730721095683,
+        "mae_minutes": 4.410948456360533,
+        "bias_minutes": -0.6667736112719453
+      }
+    },
+    "gradient": {
+      "0": {
+        "n": 25,
+        "mape": 4.88990398371199,
+        "mae_minutes": 6.881261573603705,
+        "bias_minutes": -3.7536084057679147
+      },
+      "10": {
+        "n": 25,
+        "mape": 4.7335065303836545,
+        "mae_minutes": 6.382102067329502,
+        "bias_minutes": -1.464488551834334
+      },
+      "30": {
+        "n": 25,
+        "mape": 5.912000056152653,
+        "mae_minutes": 6.596319891342571,
+        "bias_minutes": -3.8544665766546102
+      },
+      "60": {
+        "n": 25,
+        "mape": 4.454721856394316,
+        "mae_minutes": 4.15114859868256,
+        "bias_minutes": -0.6795188348518638
+      }
+    },
+    "sustained": {
+      "0": {
+        "n": 25,
+        "mape": 5.126365686373461,
+        "mae_minutes": 7.258000868065306,
+        "bias_minutes": -4.62677756602476
+      },
+      "10": {
+        "n": 25,
+        "mape": 4.919142257452117,
+        "mae_minutes": 6.581982753505592,
+        "bias_minutes": -1.9303724341493393
+      },
+      "30": {
+        "n": 25,
+        "mape": 6.174692999960335,
+        "mae_minutes": 6.912832357591998,
+        "bias_minutes": -3.7649752257070777
+      },
+      "60": {
+        "n": 25,
+        "mape": 4.667604174472287,
+        "mae_minutes": 4.406890702869786,
+        "bias_minutes": -0.6653863514955688
+      }
+    },
+    "duration": {
+      "0": {
+        "n": 25,
+        "mape": 5.126599660326006,
+        "mae_minutes": 7.260263299139765,
+        "bias_minutes": -4.585061529208559
+      },
+      "10": {
+        "n": 25,
+        "mape": 4.9499131341793765,
+        "mae_minutes": 6.628479898849111,
+        "bias_minutes": -1.8616461063297418
+      },
+      "30": {
+        "n": 25,
+        "mape": 6.145913421007656,
+        "mae_minutes": 6.8706630251292635,
+        "bias_minutes": -3.716834888996424
+      },
+      "60": {
+        "n": 25,
+        "mape": 4.695148553782669,
+        "mae_minutes": 4.434704109426722,
+        "bias_minutes": -0.5986104852903642
+      }
+    }
+  },
+  "support": {
+    "baseline": {
+      "coefficient_before_longest": 0.0,
+      "multiplier_before_longest": 1.0,
+      "identifiable_updates_before_longest": 0,
+      "feature_km_before_longest": 0.0,
+      "saturated_km_before_longest": 0.0,
+      "total_identifiable_updates": 0,
+      "final_coefficient": 0.0,
+      "longest_share_of_centered_variance": 0.0
+    },
+    "gradient": {
+      "coefficient_before_longest": 0.10237068832475811,
+      "multiplier_before_longest": 1.1077940419440244,
+      "identifiable_updates_before_longest": 81,
+      "feature_km_before_longest": 1437.06858,
+      "saturated_km_before_longest": 52.475750000000026,
+      "total_identifiable_updates": 234,
+      "final_coefficient": 0.0069098253877402024,
+      "longest_share_of_centered_variance": 0.08428402922972847
+    },
+    "sustained": {
+      "coefficient_before_longest": 0.005731827475618432,
+      "multiplier_before_longest": 1.0057482858291789,
+      "identifiable_updates_before_longest": 78,
+      "feature_km_before_longest": 371.85724999999996,
+      "saturated_km_before_longest": 0.7410000000000014,
+      "total_identifiable_updates": 227,
+      "final_coefficient": -0.003969906710704893,
+      "longest_share_of_centered_variance": 0.650196374043848
+    },
+    "duration": {
+      "coefficient_before_longest": 0.0,
+      "multiplier_before_longest": 1.0,
+      "identifiable_updates_before_longest": 8,
+      "feature_km_before_longest": 118.88600000000001,
+      "saturated_km_before_longest": 0.0,
+      "total_identifiable_updates": 21,
+      "final_coefficient": 0.044118838170033134,
+      "longest_share_of_centered_variance": 0.8603958384504826
+    }
+  },
+  "longest": {
+    "baseline": [
+      {
+        "checkpoint": 0.0,
+        "predicted_minutes": 460.59343681584056,
+        "actual_minutes": 587.5833333333458
+      },
+      {
+        "checkpoint": 10.0,
+        "predicted_minutes": 380.8342574756313,
+        "actual_minutes": 577.5500000000216
+      },
+      {
+        "checkpoint": 30.0,
+        "predicted_minutes": 461.28195408503717,
+        "actual_minutes": 557.566666666697
+      },
+      {
+        "checkpoint": 60.0,
+        "predicted_minutes": 536.313058888881,
+        "actual_minutes": 527.5666666666965
+      },
+      {
+        "checkpoint": 480.0,
+        "predicted_minutes": 57.87465365024623,
+        "actual_minutes": 107.5833333333342
+      }
+    ],
+    "gradient": [
+      {
+        "checkpoint": 0.0,
+        "predicted_minutes": 481.1044062556518,
+        "actual_minutes": 587.5833333333458
+      },
+      {
+        "checkpoint": 10.0,
+        "predicted_minutes": 400.0641900070391,
+        "actual_minutes": 577.5500000000216
+      },
+      {
+        "checkpoint": 30.0,
+        "predicted_minutes": 468.0702790732264,
+        "actual_minutes": 557.566666666697
+      },
+      {
+        "checkpoint": 60.0,
+        "predicted_minutes": 513.5867159442042,
+        "actual_minutes": 527.5666666666965
+      },
+      {
+        "checkpoint": 480.0,
+        "predicted_minutes": 63.24487116862549,
+        "actual_minutes": 107.5833333333342
+      }
+    ],
+    "sustained": [
+      {
+        "checkpoint": 0.0,
+        "predicted_minutes": 461.4731749640077,
+        "actual_minutes": 587.5833333333458
+      },
+      {
+        "checkpoint": 10.0,
+        "predicted_minutes": 381.60952124947414,
+        "actual_minutes": 577.5500000000216
+      },
+      {
+        "checkpoint": 30.0,
+        "predicted_minutes": 462.2218817408185,
+        "actual_minutes": 557.566666666697
+      },
+      {
+        "checkpoint": 60.0,
+        "predicted_minutes": 534.7494950406154,
+        "actual_minutes": 527.5666666666965
+      },
+      {
+        "checkpoint": 480.0,
+        "predicted_minutes": 58.13365705419739,
+        "actual_minutes": 107.5833333333342
+      }
+    ],
+    "duration": [
+      {
+        "checkpoint": 0.0,
+        "predicted_minutes": 460.59266125488716,
+        "actual_minutes": 587.5833333333458
+      },
+      {
+        "checkpoint": 10.0,
+        "predicted_minutes": 380.83410992897075,
+        "actual_minutes": 577.5500000000216
+      },
+      {
+        "checkpoint": 30.0,
+        "predicted_minutes": 461.28194377458215,
+        "actual_minutes": 557.566666666697
+      },
+      {
+        "checkpoint": 60.0,
+        "predicted_minutes": 536.3130668805684,
+        "actual_minutes": 527.5666666666965
+      },
+      {
+        "checkpoint": 480.0,
+        "predicted_minutes": 57.87465365024622,
+        "actual_minutes": 107.5833333333342
+      }
+    ]
+  },
+  "prior_maximum_minutes": 211.39999999999998
+}

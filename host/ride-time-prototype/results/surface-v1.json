@@ -1,0 +1,1059 @@
+{
+  "cohort": {
+    "development": {
+      "rides": 364,
+      "riders": 33,
+      "mtb_rides": 138,
+      "mtb_riders": 15
+    },
+    "calibration": {
+      "rides": 259,
+      "riders": 12,
+      "mtb_rides": 54,
+      "mtb_riders": 4
+    },
+    "test": {
+      "rides": 205,
+      "riders": 11,
+      "mtb_rides": 22,
+      "mtb_riders": 3
+    }
+  },
+  "fit": {
+    "coefficients": {
+      "gradient": [
+        -0.01219852119759357
+      ],
+      "bike": [
+        -0.10414953666292455,
+        0.31321904970432046
+      ],
+      "path": [
+        -0.10926368404137633,
+        0.30761536070875634,
+        -0.07711754994673652,
+        0.17230249112318335,
+        -0.009414857718767634
+      ],
+      "surface": [
+        -0.10861065834099339,
+        0.3134283248420234,
+        -0.04169753078037737,
+        0.17756806756600907,
+        -0.011180720331210293,
+        -0.07314280560862449,
+        -0.028400988380581443,
+        0.0005188364128947556,
+        -0.010875707766148704
+      ]
+    },
+    "policy": {
+      "ridge": 0.25,
+      "mean_weight": 0.25,
+      "sample_log_bound": 1.0986122886681098,
+      "correction_log_bound": 0.6931471805599453,
+      "regional_log_bound": 0.4054651081081644
+    },
+    "features": [
+      "regional_offset",
+      "mtb",
+      "track",
+      "path",
+      "cycleway",
+      "firm",
+      "soft",
+      "rough",
+      "unpaved"
+    ],
+    "training_riders": 33,
+    "training_rides": 364
+  },
+  "results": {
+    "calibration": {
+      "0:all": {
+        "models": {
+          "gradient": {
+            "riders": 11,
+            "targets": 346,
+            "mape": 13.743636579418835,
+            "bias": 0.3444515299502861,
+            "median_ape": 8.550278394706245,
+            "p90_ape": 23.930956684719522
+          },
+          "bike": {
+            "riders": 11,
+            "targets": 346,
+            "mape": 11.772706313269564,
+            "bias": -0.3189944468358099,
+            "median_ape": 8.082949371193383,
+            "p90_ape": 23.638036696032966
+          },
+          "path": {
+            "riders": 11,
+            "targets": 346,
+            "mape": 11.52752175032527,
+            "bias": -1.0171941684379975,
+            "median_ape": 8.132778112055828,
+            "p90_ape": 23.871997308425733
+          },
+          "surface": {
+            "riders": 11,
+            "targets": 346,
+            "mape": 11.720279496197476,
+            "bias": -0.8525420348578193,
+            "median_ape": 8.14613787933029,
+            "p90_ape": 24.205384947432872
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": -0.052426817072084415,
+          "bootstrap95_pp": [
+            -0.4387973685884912,
+            0.23531011892734238
+          ],
+          "riders": 11,
+          "improved_riders": 3
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.19275774587220634,
+          "bootstrap95_pp": [
+            -0.00818289693734271,
+            0.48539283140605266
+          ],
+          "riders": 11,
+          "improved_riders": 4
+        }
+      },
+      "0:MTB": {
+        "models": {
+          "gradient": {
+            "riders": 3,
+            "targets": 71,
+            "mape": 18.011982147866235,
+            "bias": -9.938515585758894,
+            "median_ape": 14.551636325236961,
+            "p90_ape": 27.97782429229654
+          },
+          "bike": {
+            "riders": 3,
+            "targets": 71,
+            "mape": 11.100035373933983,
+            "bias": 5.875195667167357,
+            "median_ape": 13.173268911931668,
+            "p90_ape": 29.220796493852696
+          },
+          "path": {
+            "riders": 3,
+            "targets": 71,
+            "mape": 9.931072421267357,
+            "bias": 4.489648035313697,
+            "median_ape": 13.024169698356559,
+            "p90_ape": 28.40095814867496
+          },
+          "surface": {
+            "riders": 3,
+            "targets": 71,
+            "mape": 10.681481319327029,
+            "bias": 5.087385542395924,
+            "median_ape": 14.005898728219869,
+            "p90_ape": 29.490259615616242
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": -0.4185540546069519,
+          "bootstrap95_pp": [
+            -1.6785664168381897,
+            0.42197435894768986
+          ],
+          "riders": 3,
+          "improved_riders": 1
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.7504088980596718,
+          "bootstrap95_pp": [
+            0.1462378869405132,
+            1.477985618487665
+          ],
+          "riders": 3,
+          "improved_riders": 0
+        }
+      },
+      "0:other": {
+        "models": {
+          "gradient": {
+            "riders": 9,
+            "targets": 275,
+            "mape": 13.091645095128948,
+            "bias": 1.7084927811370296,
+            "median_ape": 7.618604458093992,
+            "p90_ape": 20.156203953339364
+          },
+          "bike": {
+            "riders": 9,
+            "targets": 275,
+            "mape": 12.047557054517949,
+            "bias": -2.2911124768181685,
+            "median_ape": 7.372209790199347,
+            "p90_ape": 20.28424000656895
+          },
+          "path": {
+            "riders": 9,
+            "targets": 275,
+            "mape": 12.122822072871303,
+            "bias": -2.7121256702653636,
+            "median_ape": 7.485051177659918,
+            "p90_ape": 20.10954839540573
+          },
+          "surface": {
+            "riders": 9,
+            "targets": 275,
+            "mape": 12.121646220004141,
+            "bias": -2.685297767492646,
+            "median_ape": 7.450300646753716,
+            "p90_ape": 20.080474522174033
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.07408916548619265,
+          "bootstrap95_pp": [
+            -0.1352796699511141,
+            0.2636084904476034
+          ],
+          "riders": 9,
+          "improved_riders": 2
+        },
+        "surface_vs_path": {
+          "delta_pp": -0.0011758528671626462,
+          "bootstrap95_pp": [
+            -0.026803710043572772,
+            0.02556346565955768
+          ],
+          "riders": 9,
+          "improved_riders": 4
+        }
+      },
+      "1:all": {
+        "models": {
+          "gradient": {
+            "riders": 10,
+            "targets": 501,
+            "mape": 10.045459886939678,
+            "bias": 4.467276399544295,
+            "median_ape": 6.180703051356029,
+            "p90_ape": 20.688911458729777
+          },
+          "bike": {
+            "riders": 10,
+            "targets": 501,
+            "mape": 9.945561892127962,
+            "bias": 3.612186858211987,
+            "median_ape": 6.156621561849618,
+            "p90_ape": 20.47853978795031
+          },
+          "path": {
+            "riders": 10,
+            "targets": 501,
+            "mape": 9.929356719390203,
+            "bias": 4.315278675061681,
+            "median_ape": 6.240179419401626,
+            "p90_ape": 21.281926500569035
+          },
+          "surface": {
+            "riders": 10,
+            "targets": 501,
+            "mape": 10.052399311535888,
+            "bias": 4.268121066124895,
+            "median_ape": 6.288913857304879,
+            "p90_ape": 21.46016060891691
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.10683741940792606,
+          "bootstrap95_pp": [
+            -0.6338632454232728,
+            0.9602817353271516
+          ],
+          "riders": 10,
+          "improved_riders": 5
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.12304259214568539,
+          "bootstrap95_pp": [
+            0.002006224092244158,
+            0.3371261680023724
+          ],
+          "riders": 10,
+          "improved_riders": 3
+        }
+      },
+      "1:MTB": {
+        "models": {
+          "gradient": {
+            "riders": 2,
+            "targets": 71,
+            "mape": 15.360322837721295,
+            "bias": -0.9670992420599509,
+            "median_ape": 10.050618514252863,
+            "p90_ape": 36.4732517897736
+          },
+          "bike": {
+            "riders": 2,
+            "targets": 71,
+            "mape": 15.884706030886619,
+            "bias": 3.0885567286991025,
+            "median_ape": 10.889794150140908,
+            "p90_ape": 31.075609728659394
+          },
+          "path": {
+            "riders": 2,
+            "targets": 71,
+            "mape": 15.810981905906335,
+            "bias": 3.963378274884261,
+            "median_ape": 11.694903827414226,
+            "p90_ape": 30.442987689523626
+          },
+          "surface": {
+            "riders": 2,
+            "targets": 71,
+            "mape": 16.145501956313687,
+            "bias": 4.543848570600702,
+            "median_ape": 11.900931000331983,
+            "p90_ape": 28.2339253294589
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.2607959254270682,
+          "bootstrap95_pp": [
+            0.05515463396503506,
+            0.46643721688910134
+          ],
+          "riders": 2,
+          "improved_riders": 0
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.3345200504073542,
+          "bootstrap95_pp": [
+            -0.016084425713817296,
+            0.6851245265285257
+          ],
+          "riders": 2,
+          "improved_riders": 1
+        }
+      },
+      "1:other": {
+        "models": {
+          "gradient": {
+            "riders": 9,
+            "targets": 430,
+            "mape": 9.563094685954296,
+            "bias": 4.362517637266005,
+            "median_ape": 5.791943414430245,
+            "p90_ape": 18.182087030330802
+          },
+          "bike": {
+            "riders": 9,
+            "targets": 430,
+            "mape": 9.412554210917671,
+            "bias": 3.225351216654813,
+            "median_ape": 5.760576504634685,
+            "p90_ape": 18.10118828165413
+          },
+          "path": {
+            "riders": 9,
+            "targets": 430,
+            "mape": 9.38860141709027,
+            "bias": 3.8929919660781036,
+            "median_ape": 6.017355192634466,
+            "p90_ape": 19.9720505852433
+          },
+          "surface": {
+            "riders": 9,
+            "targets": 430,
+            "mape": 9.519398695094669,
+            "bias": 3.7931131227666524,
+            "median_ape": 5.995474643980414,
+            "p90_ape": 20.08871820863445
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.10684448417699628,
+          "bootstrap95_pp": [
+            -0.719158658605119,
+            1.056522334076532
+          ],
+          "riders": 9,
+          "improved_riders": 6
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.13079727800439653,
+          "bootstrap95_pp": [
+            0.0016675187079041463,
+            0.3661964102985648
+          ],
+          "riders": 9,
+          "improved_riders": 2
+        }
+      }
+    },
+    "test": {
+      "0:all": {
+        "models": {
+          "gradient": {
+            "riders": 10,
+            "targets": 324,
+            "mape": 15.992803139090602,
+            "bias": -2.4607074370399817,
+            "median_ape": 7.299169104310909,
+            "p90_ape": 19.384587638333134
+          },
+          "bike": {
+            "riders": 10,
+            "targets": 324,
+            "mape": 13.681006701361943,
+            "bias": -2.8702981008348716,
+            "median_ape": 7.127178627963571,
+            "p90_ape": 19.009990939220273
+          },
+          "path": {
+            "riders": 10,
+            "targets": 324,
+            "mape": 12.701581046783085,
+            "bias": -1.5084676445567868,
+            "median_ape": 6.643099953328674,
+            "p90_ape": 18.514821610875988
+          },
+          "surface": {
+            "riders": 10,
+            "targets": 324,
+            "mape": 12.768453011393213,
+            "bias": -1.4084527535047007,
+            "median_ape": 6.663756105214352,
+            "p90_ape": 18.518514273636768
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": -0.9125536899687289,
+          "bootstrap95_pp": [
+            -2.8016232946815305,
+            0.21435309753942344
+          ],
+          "riders": 10,
+          "improved_riders": 8
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.06687196461012848,
+          "bootstrap95_pp": [
+            -0.08054871577997108,
+            0.22904900179559698
+          ],
+          "riders": 10,
+          "improved_riders": 4
+        }
+      },
+      "0:MTB": {
+        "models": {
+          "gradient": {
+            "riders": 3,
+            "targets": 14,
+            "mape": 23.327025628949247,
+            "bias": -21.943321818430203,
+            "median_ape": 13.704229852939953,
+            "p90_ape": 28.36745831762841
+          },
+          "bike": {
+            "riders": 3,
+            "targets": 14,
+            "mape": 14.587352002532649,
+            "bias": -10.220376321087992,
+            "median_ape": 9.848842778981759,
+            "p90_ape": 19.282668010499755
+          },
+          "path": {
+            "riders": 3,
+            "targets": 14,
+            "mape": 14.290971953428832,
+            "bias": -9.069358227339757,
+            "median_ape": 9.212119735345603,
+            "p90_ape": 23.19618710313576
+          },
+          "surface": {
+            "riders": 3,
+            "targets": 14,
+            "mape": 14.621246890398366,
+            "bias": -8.846960960660786,
+            "median_ape": 9.50571061742377,
+            "p90_ape": 22.855310744496677
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.03389488786571615,
+          "bootstrap95_pp": [
+            -1.388186026164635,
+            1.0859565929305255
+          ],
+          "riders": 3,
+          "improved_riders": 1
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.33027493696953353,
+          "bootstrap95_pp": [
+            -0.39244086549379276,
+            0.9547305427648887
+          ],
+          "riders": 3,
+          "improved_riders": 1
+        }
+      },
+      "0:other": {
+        "models": {
+          "gradient": {
+            "riders": 8,
+            "targets": 310,
+            "mape": 12.519541103669482,
+            "bias": 4.8062390284824,
+            "median_ape": 7.244721838670326,
+            "p90_ape": 18.491295695156737
+          },
+          "bike": {
+            "riders": 8,
+            "targets": 310,
+            "mape": 12.321131159965297,
+            "bias": -0.07784372132423556,
+            "median_ape": 6.974750753125486,
+            "p90_ape": 18.599199727372543
+          },
+          "path": {
+            "riders": 8,
+            "targets": 310,
+            "mape": 11.208913056534831,
+            "bias": 1.5112193360408943,
+            "median_ape": 6.582013524446023,
+            "p90_ape": 18.449098281706696
+          },
+          "surface": {
+            "riders": 8,
+            "targets": 310,
+            "mape": 11.21863035515425,
+            "bias": 1.5906510935811031,
+            "median_ape": 6.584668510623171,
+            "p90_ape": 18.452679794352566
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": -1.1025008048110496,
+          "bootstrap95_pp": [
+            -3.5324714702085354,
+            0.42624827611658905
+          ],
+          "riders": 8,
+          "improved_riders": 7
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.00971729861941617,
+          "bootstrap95_pp": [
+            -0.00919124121450865,
+            0.034708420502699795
+          ],
+          "riders": 8,
+          "improved_riders": 3
+        }
+      },
+      "1:all": {
+        "models": {
+          "gradient": {
+            "riders": 9,
+            "targets": 472,
+            "mape": 7.68362137443688,
+            "bias": 1.1307061010176418,
+            "median_ape": 5.249451479609219,
+            "p90_ape": 15.27531376642678
+          },
+          "bike": {
+            "riders": 9,
+            "targets": 472,
+            "mape": 7.7634934368755735,
+            "bias": 0.8760056513093644,
+            "median_ape": 5.295937454527855,
+            "p90_ape": 15.543376600864319
+          },
+          "path": {
+            "riders": 9,
+            "targets": 472,
+            "mape": 8.70465654023993,
+            "bias": -0.587604459883913,
+            "median_ape": 5.4474377995636765,
+            "p90_ape": 15.445502435301396
+          },
+          "surface": {
+            "riders": 9,
+            "targets": 472,
+            "mape": 8.655580508985949,
+            "bias": -0.5256464259488707,
+            "median_ape": 5.438680426757298,
+            "p90_ape": 15.48316553274661
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.8920870721103762,
+          "bootstrap95_pp": [
+            -0.2870329942736414,
+            3.0045809175653337
+          ],
+          "riders": 9,
+          "improved_riders": 5
+        },
+        "surface_vs_path": {
+          "delta_pp": -0.04907603125398138,
+          "bootstrap95_pp": [
+            -0.32273353361834634,
+            0.14133703993114258
+          ],
+          "riders": 9,
+          "improved_riders": 3
+        }
+      },
+      "1:MTB": {
+        "models": {
+          "gradient": {
+            "riders": 2,
+            "targets": 37,
+            "mape": 13.343984718655395,
+            "bias": 0.30987497698167765,
+            "median_ape": 8.771279344297156,
+            "p90_ape": 32.195338097830465
+          },
+          "bike": {
+            "riders": 2,
+            "targets": 37,
+            "mape": 14.298933417248872,
+            "bias": 4.01309671961144,
+            "median_ape": 11.280850700173573,
+            "p90_ape": 33.13589515665993
+          },
+          "path": {
+            "riders": 2,
+            "targets": 37,
+            "mape": 14.03977845198052,
+            "bias": 3.0548106310426344,
+            "median_ape": 12.574644801209601,
+            "p90_ape": 30.326887122672055
+          },
+          "surface": {
+            "riders": 2,
+            "targets": 37,
+            "mape": 14.254252957488369,
+            "bias": 2.835816536273872,
+            "median_ape": 12.190567647447569,
+            "p90_ape": 29.642151963448303
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": -0.04468045976050394,
+          "bootstrap95_pp": [
+            -0.8510499894868069,
+            0.761689069965799
+          ],
+          "riders": 2,
+          "improved_riders": 1
+        },
+        "surface_vs_path": {
+          "delta_pp": 0.21447450550784897,
+          "bootstrap95_pp": [
+            0.08033641257228297,
+            0.34861259844341497
+          ],
+          "riders": 2,
+          "improved_riders": 0
+        }
+      },
+      "1:other": {
+        "models": {
+          "gradient": {
+            "riders": 8,
+            "targets": 435,
+            "mape": 6.559130985169655,
+            "bias": 1.945925685190757,
+            "median_ape": 5.030659126638581,
+            "p90_ape": 14.003543983999066
+          },
+          "bike": {
+            "riders": 8,
+            "targets": 435,
+            "mape": 6.266729098708753,
+            "bias": 0.7611527107549315,
+            "median_ape": 5.08977101743584,
+            "p90_ape": 13.97262091118011
+          },
+          "path": {
+            "riders": 8,
+            "targets": 435,
+            "mape": 7.2072096621380615,
+            "bias": -1.0143877943994741,
+            "median_ape": 5.08734018224194,
+            "p90_ape": 13.971595734746463
+          },
+          "surface": {
+            "riders": 8,
+            "targets": 435,
+            "mape": 7.102000737125932,
+            "bias": -0.9428286751781623,
+            "median_ape": 5.053024407552275,
+            "p90_ape": 14.068727601645291
+          }
+        },
+        "surface_vs_bike": {
+          "delta_pp": 0.8352716384171794,
+          "bootstrap95_pp": [
+            -0.9215697534539464,
+            3.407438954427131
+          ],
+          "riders": 8,
+          "improved_riders": 4
+        },
+        "surface_vs_path": {
+          "delta_pp": -0.10520892501212942,
+          "bootstrap95_pp": [
+            -0.4105890726197077,
+            0.11271219848009761
+          ],
+          "riders": 8,
+          "improved_riders": 4
+        }
+      }
+    }
+  },
+  "coverage": {
+    "development": {
+      "MTB": {
+        "raw_km": 2617.8869494199753,
+        "tag_km": {
+          "offline": {
+            "surface": 1264.2731150602276,
+            "highway": 1647.8250721821503
+          },
+          "causal": {
+            "surface": 1205.8473311824728,
+            "highway": 1562.5689149422124
+          }
+        },
+        "feature_km": {
+          "regional_offset": 2617.8869600648013,
+          "mtb": 2617.8869600648013,
+          "track": 501.93354885768855,
+          "path": 452.12393574270556,
+          "cycleway": 103.26582233070916,
+          "firm": 376.0672719184281,
+          "soft": 179.81634698417477,
+          "rough": 0.8627222461499837,
+          "unpaved": 7.073846621396438
+        },
+        "feature_riders": {
+          "regional_offset": 15,
+          "mtb": 15,
+          "track": 14,
+          "path": 14,
+          "cycleway": 8,
+          "firm": 14,
+          "soft": 13,
+          "rough": 1,
+          "unpaved": 5
+        }
+      },
+      "other": {
+        "raw_km": 7804.806875348091,
+        "tag_km": {
+          "offline": {
+            "surface": 6151.501812610883,
+            "highway": 5975.083900617535
+          },
+          "causal": {
+            "surface": 6019.079458392117,
+            "highway": 5778.025892258228
+          }
+        },
+        "feature_km": {
+          "regional_offset": 7804.806878706449,
+          "mtb": 0.0,
+          "track": 216.01463720765054,
+          "path": 227.87430201499777,
+          "cycleway": 152.65226230181023,
+          "firm": 158.90443534835742,
+          "soft": 66.46388773895166,
+          "rough": 2.4098487453238358,
+          "unpaved": 5.892394500179774
+        },
+        "feature_riders": {
+          "regional_offset": 27,
+          "mtb": 0,
+          "track": 9,
+          "path": 14,
+          "cycleway": 15,
+          "firm": 10,
+          "soft": 9,
+          "rough": 3,
+          "unpaved": 5
+        }
+      }
+    },
+    "calibration": {
+      "MTB": {
+        "raw_km": 1575.231201171875,
+        "tag_km": {
+          "offline": {
+            "surface": 973.4449397504401,
+            "highway": 1192.9235594227805
+          },
+          "causal": {
+            "surface": 945.2692684469462,
+            "highway": 1158.688638461566
+          }
+        },
+        "feature_km": {
+          "regional_offset": 1575.2311857509849,
+          "mtb": 1575.2311857509849,
+          "track": 438.0595014574037,
+          "path": 238.90807289800395,
+          "cycleway": 5.787716378087588,
+          "firm": 316.02627847630606,
+          "soft": 162.99661882646572,
+          "rough": 0.0,
+          "unpaved": 4.7520512730823725
+        },
+        "feature_riders": {
+          "regional_offset": 4,
+          "mtb": 4,
+          "track": 4,
+          "path": 4,
+          "cycleway": 3,
+          "firm": 4,
+          "soft": 4,
+          "rough": 0,
+          "unpaved": 4
+        }
+      },
+      "other": {
+        "raw_km": 6241.931645090401,
+        "tag_km": {
+          "offline": {
+            "surface": 5223.477546977285,
+            "highway": 4785.917778871275
+          },
+          "causal": {
+            "surface": 5103.568702222161,
+            "highway": 4602.637320333442
+          }
+        },
+        "feature_km": {
+          "regional_offset": 6241.931663082797,
+          "mtb": 0.0,
+          "track": 1.2666274753794575,
+          "path": 142.00060725609734,
+          "cycleway": 457.4557692982555,
+          "firm": 6.910941012245744,
+          "soft": 0.22361168361617828,
+          "rough": 0.6741450007010362,
+          "unpaved": 0.055206380784511566
+        },
+        "feature_riders": {
+          "regional_offset": 9,
+          "mtb": 0,
+          "track": 3,
+          "path": 6,
+          "cycleway": 7,
+          "firm": 5,
+          "soft": 1,
+          "rough": 3,
+          "unpaved": 1
+        }
+      }
+    },
+    "test": {
+      "MTB": {
+        "raw_km": 429.3693609237671,
+        "tag_km": {
+          "offline": {
+            "surface": 176.90172631242473,
+            "highway": 323.3604476488959
+          },
+          "causal": {
+            "surface": 170.76282146299351,
+            "highway": 314.65776875234076
+          }
+        },
+        "feature_km": {
+          "regional_offset": 429.3693529033335,
+          "mtb": 429.3693529033335,
+          "track": 139.9263729698231,
+          "path": 131.48535717529643,
+          "cycleway": 0.6766751562295495,
+          "firm": 108.6337719851148,
+          "soft": 30.388465872504383,
+          "rough": 0.0,
+          "unpaved": 0.2033409327585446
+        },
+        "feature_riders": {
+          "regional_offset": 3,
+          "mtb": 3,
+          "track": 3,
+          "path": 3,
+          "cycleway": 1,
+          "firm": 3,
+          "soft": 3,
+          "rough": 0,
+          "unpaved": 1
+        }
+      },
+      "other": {
+        "raw_km": 5546.956191517413,
+        "tag_km": {
+          "offline": {
+            "surface": 4956.290129411555,
+            "highway": 4543.676420777775
+          },
+          "causal": {
+            "surface": 4869.556754312907,
+            "highway": 4380.482105662173
+          }
+        },
+        "feature_km": {
+          "regional_offset": 5546.956198856942,
+          "mtb": 0.0,
+          "track": 4.503331721887933,
+          "path": 71.94428061933279,
+          "cycleway": 162.08055147135477,
+          "firm": 0.13982014027492665,
+          "soft": 0.7751463118119105,
+          "rough": 2.3270924139050537,
+          "unpaved": 0.009509899849945214
+        },
+        "feature_riders": {
+          "regional_offset": 10,
+          "mtb": 0,
+          "track": 3,
+          "path": 7,
+          "cycleway": 9,
+          "firm": 3,
+          "soft": 2,
+          "rough": 4,
+          "unpaved": 1
+        }
+      }
+    }
+  },
+  "posthoc_case": {
+    "targets": 3,
+    "bike_mape": 3.543009116780001,
+    "surface_mape": 12.59291852797791,
+    "observed_prefix": {
+      "path_fraction": 0.8496399084793405,
+      "asphalt_fraction": 0.910867058668505
+    },
+    "future_10km": {
+      "path_fraction": 0.01999575898403564,
+      "asphalt_fraction": 0.9479706612151411
+    }
+  },
+  "provenance": {
+    "fitrec": {
+      "source_url": "https://mcauleylab.ucsd.edu/public_datasets/gdrive/fitrec/endomondoHR.json.gz",
+      "source_sha256": "31a49f8ec2fa5d038983e7b3bfe35f5f7eabee581180c803023f011f046681b9",
+      "source_bytes": 1995378519
+    },
+    "osm": {
+      "source_url": "https://download.geofabrik.de/europe/denmark-260913.osm.pbf",
+      "source_sha256": "3a824f3aa2c41d41e91ff0a6c2164be5aeac742b157646ff79c0426f927e940f",
+      "source_bytes": 494296003,
+      "osm_timestamp": "2026-09-13T20:21:20Z",
+      "extracted_bbox": [
+        8.975,
+        55.975,
+        10.025,
+        57.025
+      ],
+      "ways": 177616,
+      "attribution": "\u00a9 OpenStreetMap contributors; ODbL 1.0. Extract by Geofabrik."
+    },
+    "python": "3.14.7",
+    "numpy": "2.3.4",
+    "platform": "Linux-7.2.5-200.fc44.x86_64-x86_64-with-glibc2.43"
+  },
+  "manifest_sha256": "2a873db3ecbf1ef8d7ced5cd9f3eed072abe0a8346faccc91700da646ff7eef5",
+  "targets": [
+    [
+      "Start",
+      1,
+      196,
+      124,
+      "2.4"
+    ],
+    [
+      "Start",
+      3,
+      195,
+      106,
+      "6.8"
+    ],
+    [
+      "Start",
+      10,
+      187,
+      78,
+      "22.1"
+    ],
+    [
+      "Start",
+      30,
+      71,
+      16,
+      "63.5"
+    ],
+    [
+      "After 10 min",
+      1,
+      192,
+      177,
+      "2.4"
+    ],
+    [
+      "After 10 min",
+      3,
+      189,
+      158,
+      "6.9"
+    ],
+    [
+      "After 10 min",
+      10,
+      178,
+      116,
+      "22.7"
+    ],
+    [
+      "After 10 min",
+      30,
+      64,
+      21,
+      "62.8"
+    ]
+  ],
+  "result_sha256": {
+    "calibration": "2c2fac79887d2d77d53d3bfa7f90e5da761b3b15b0d75783aac4857d7a6ed8f0",
+    "test": "3794ec17b8e721b1e920d7079b3ffb2fdfb735b7e12bb009184dba52dfafcb9b"
+  },
+  "runtime": {
+    "calibration": {
+      "runtime_seconds": 8.881552367998665,
+      "scalar_array_bytes": 32,
+      "shared_coefficient_float32_bytes": 36,
+      "finish_seconds_median": 6.814250082243234e-05,
+      "finish_seconds_max": 0.0003350269980728626
+    },
+    "test": {
+      "runtime_seconds": 6.544886850999319,
+      "scalar_array_bytes": 32,
+      "shared_coefficient_float32_bytes": 36,
+      "finish_seconds_median": 6.621099964831956e-05,
+      "finish_seconds_max": 0.0002905770015786402
+    }
+  }
+}
