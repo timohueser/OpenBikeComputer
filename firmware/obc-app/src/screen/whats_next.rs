@@ -70,17 +70,32 @@ impl WhatsNextScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         cv.clear(PARCHMENT);
         let a = rx.ahead;
+        let caption = if a.page == Page::Overview { rx.t(Msg::AheadNext) } else { rx.t(Msg::AheadAhead) };
+        let range = distance(a.range.meters(), rx.settings.units);
         let mut title = heapless::String::<24>::new();
-        let _ = write!(
-            title,
-            "{} {}",
-            if a.page == Page::Overview { rx.t(Msg::AheadNext) } else { rx.t(Msg::AheadAhead) },
-            distance(a.range.meters(), rx.settings.units)
-        );
+        // Timeline status markers start at x=202; keep an eight-pixel gap before them.
+        let budget = if a.page == Page::Timeline { 182 } else { rx.w - 24 };
+        let title_width = obc_render::text::text_width(caption, Font::Body)
+            + Font::Body.char_width()
+            + obc_render::text::text_width(&range, Font::Body);
+        let font = if title_width as i32 <= budget {
+            let _ = write!(title, "{caption} {range}");
+            Font::Body
+        } else {
+            let mut fitted = heapless::String::new();
+            let caption = super::vocab::tiles::fit_caption(
+                caption,
+                budget - obc_render::text::text_width(&range, Font::Label) as i32 - Font::Label.char_width() as i32,
+                &mut fitted,
+                Font::Label,
+            );
+            let _ = write!(title, "{caption} {range}");
+            Font::Label
+        };
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        label(cv, &title, 12, 6, Font::Body, PARCHMENT);
+        label(cv, &title, 12, if font == Font::Body { 6 } else { 8 }, font, PARCHMENT);
         if a.window.is_none() {
-            label(
+            empty_message(
                 cv,
                 if a.stale {
                     rx.t(Msg::AheadChanged)
@@ -89,10 +104,7 @@ impl WhatsNextScreen {
                 } else {
                     rx.t(Msg::AheadNoRoute)
                 },
-                14,
-                108,
-                Font::Body,
-                INK,
+                rx.w,
             );
             return;
         }
@@ -105,6 +117,13 @@ impl WhatsNextScreen {
 }
 fn label(cv: &mut impl Surface, text: &str, x: i32, y: i32, font: Font, color: u16) {
     cv.text(text, Point::new(x, y), font, TextAlign::Left, color);
+}
+fn empty_message(cv: &mut impl Surface, text: &str, width: i32) {
+    if obc_render::text::text_width(text, Font::Body) as i32 > width - 28 {
+        super::vocab::chrome::wrapped(cv, text, width / 2, 108, width - 28, Font::Body, INK);
+    } else {
+        label(cv, text, 14, 108, Font::Body, INK);
+    }
 }
 fn distance(m: u32, units: crate::settings::Units) -> heapless::String<24> {
     let mut s = heapless::String::new();
@@ -257,7 +276,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         cv.text("?", Point::new(228, 8), Font::Label, TextAlign::Right, PARCHMENT);
     }
     if a.pending() {
-        label(cv, rx.t(Msg::AheadLoading), 14, 108, Font::Body, INK);
+        empty_message(cv, rx.t(Msg::AheadLoading), rx.w);
         return;
     }
     if a.rows.is_empty() {
@@ -267,11 +286,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
             QueryProgress::Ready { coverage_complete: false, .. } => rx.t(Msg::AheadPartial),
             _ => rx.t(Msg::AheadMapUnavailable),
         };
-        if obc_render::text::text_width(text, Font::Body) as i32 > rx.w - 28 {
-            super::vocab::chrome::wrapped(cv, text, rx.w / 2, 108, rx.w - 28, Font::Body, INK);
-        } else {
-            label(cv, text, 14, 108, Font::Body, INK);
-        }
+        empty_message(cv, text, rx.w);
         return;
     }
     for (i, row) in a.rows.iter().enumerate() {
