@@ -7,6 +7,9 @@ use obc_route::{RideInfo, RideStats};
 use obc_storage::flat::{ObjectId, Revision};
 use std::path::PathBuf;
 
+/// How many names one ride id can take in the exports directory before the export gives up.
+const EXPORT_NAMES: u32 = 1000;
+
 pub struct TrackStore {
     recorder: FlatRideRecorder,
     owner: HostStore,
@@ -28,10 +31,24 @@ impl TrackStore {
         let mut sink = VecSink::default();
         obc_route::track_to_gpx(&source, info.name.as_str(), &mut sink).map_err(|error| format!("{error:?}"))?;
         std::fs::create_dir_all(&self.exports).map_err(|error| error.to_string())?;
-        let path = self.exports.join(format!("ride-{id}.gpx"));
+        // A reset card restarts its ride ids while the exports directory survives, so a taken name
+        // takes the next free suffix instead of losing the file the rider was told was saved.
+        let mut path = self.exports.join(format!("ride-{id}.gpx"));
+        let mut opened = None;
+        for next in 1..EXPORT_NAMES {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    opened = Some(file);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    path = self.exports.join(format!("ride-{id}-{next}.gpx"));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
         use std::io::Write;
-        let mut file =
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| error.to_string())?;
+        let mut file = opened.ok_or_else(|| format!("ride {id}: no free export name in {}", self.exports.display()))?;
         file.write_all(sink.bytes()).map_err(|error| error.to_string())?;
         eprintln!("track: exported {}", path.display());
         Ok(())
