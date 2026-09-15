@@ -328,7 +328,7 @@ fn corrupt_zero_chunk_size_is_safe() {
 /// A malformed record after a valid candidate fails the shared query and clears its partial page.
 #[test]
 fn corrupt_service_subtypes_fail_without_partial_results() {
-    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     let pois = vec![
         PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), hours_ref: 0xFFFF },
         PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "Bad".into(), hours_ref: 0xFFFF },
@@ -351,7 +351,7 @@ fn corrupt_service_subtypes_fail_without_partial_results() {
             PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
             None,
         );
-        let mut page = heapless::Vec::new();
+        let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
         while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
         assert!(matches!(query.progress(), QueryProgress::Failed(_)), "subtype {invalid}");
         assert!(page.is_empty());
@@ -463,11 +463,12 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
 
 #[test]
 fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
-    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     use obc_reader::PoiCategorySet;
     let pois: Vec<_> = (0..55)
         .map(|i| PoiSpec {
-            lat: 43_500_000 + i * 20,
+            // Sub-metre spacing puts distinct identities at tied integer distances across pages.
+            lat: 43_500_000 + i,
             lon: 7_500_000,
             subtype: 1,
             name: format!("P{i:02}"),
@@ -490,7 +491,7 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
         PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
         Some((0, 600)),
     );
-    let mut page = heapless::Vec::new();
+    let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
     let mut names = Vec::new();
     let mut first_page = Vec::new();
     let mut second_start = None;
@@ -514,9 +515,11 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
         query.next_page(query.key(page.last().unwrap()));
         page.clear();
     }
-    assert_eq!(names.len(), 35);
-    assert_eq!(names[0], "P20");
-    assert_eq!(names[34], "P54");
+    assert_eq!(first_page.len(), PLACE_PAGE_SIZE);
+    assert_eq!(
+        names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+        (20..55).map(|i| format!("P{i:02}")).collect::<Vec<_>>()
+    );
     query.previous_page(second_start.unwrap());
     page.clear();
     while query.step(&reader, None, 7, &mut page) == QueryProgress::Pending {}
@@ -531,7 +534,7 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
 
 #[test]
 fn coverage_and_train_are_explicit() {
-    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     use obc_reader::PoiCategorySet;
     let bytes = build_poi_map(
         BBOX,
@@ -551,7 +554,7 @@ fn coverage_and_train_are_explicit() {
         PlaceWindow::Nearby { position: (7_000_001, 43_000_001), radius_m: 1000 },
         None,
     );
-    let mut page = heapless::Vec::new();
+    let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
     while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
     assert_eq!(query.progress(), QueryProgress::Ready { more: false, coverage_complete: false });
     assert_eq!(page[0].poi.subtype, 20);
