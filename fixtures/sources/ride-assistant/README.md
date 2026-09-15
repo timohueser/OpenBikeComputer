@@ -31,14 +31,15 @@ cargo build --locked --release -p obc-bake -p obc-dem -p obcm-assemble
 python3 fixtures/build-assistant-package.py west-cork
 ```
 
-The recipe verifies the four input packages before work. It runs the offline landmark compiler,
+The recipe verifies the selected region's input packages before work. For Cork it runs the offline landmark compiler,
 `obc-bake` with the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
 the normal catalog selection, verifies every cell hash, and explicitly accepts partial cells at
 the authored crop boundary. It does not accept missing cells or skip the final map verification.
 The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
 
-The default compiler input has four review sites. `--landmarks PATH/content.json` can use an
-existing production compiler output with its own source coverage declaration. It must include
+The Cork compiler input has four review sites. The Swiss recipe uses verified
+`assistant-switzerland-content`: 1,495 texts, 1,119 RGB222 photos, and their source notices.
+`--landmarks PATH/content.json` can use another production compiler output with its own source coverage declaration. It must include
 its referenced photos. This does not turn the regional crop into full-country map coverage.
 No country raw archive is needed or published by the scenario.
 
@@ -63,6 +64,22 @@ and Git reflog; it is not an embedded binary build stamp. The new metadata adapt
 completed map byte for byte from the retained tree and native terrain; the bake was not repeated.
 Monaco already uses its pinned 2026-09-13 v16 output. The Swiss regional v14 package is unchanged
 until its actual v16 crop is complete and published.
+
+## Swiss compiled input
+
+`assistant-switzerland-content` is a 10,554,318-byte immutable archive. Its SHA-256 is
+`cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1`.
+[The source record](switzerland-content.json) pins the compiled manifest, input tree, compiler
+policy, counts, and coverage. The 1,120 content members are `content.json` and 1,119 RGB222 photos, plus the package manifest.
+Each published article and photo keeps its original source and license notice. Raw requests,
+article captures, and full-resolution photos remain in the local acquisition cache.
+
+The Swiss map recipe gives the full pinned national PBF to the shipping baker. It selects cells
+that intersect longitude 8.1–8.4 and latitude 46.5–46.8. It does not pre-extract the PBF: a pre-extract
+would change data in the boundary cells. These map-selection bounds are separate from the wider
+acquisition/replay bounds in `regions.geojson`. The catalog region ID is `europe/switzerland`, with
+a validation-crop name; the assembled simulator package remains `sim-assistant-meiringen`.
+This regional map is not a full-country map. The completed country source census is separate.
 
 ## Source boundaries and provenance
 
