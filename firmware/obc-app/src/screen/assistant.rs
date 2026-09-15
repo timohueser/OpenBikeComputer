@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn question_and_photo_labels_fit_all_supported_languages() {
         for language in Language::ALL {
-            for message in QUESTIONS {
+            for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeJourney]) {
                 let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
             }
@@ -138,6 +138,8 @@ mod tests {
                 Msg::AssistantGoHere,
                 Msg::AssistantSaving,
                 Msg::AssistantBackMap,
+                Msg::AssistantCancelVisit,
+                Msg::AssistantResumeRoute,
                 Msg::AssistantVisitUnavailable,
                 Msg::AssistantUseRoute,
                 Msg::AssistantPreviewRoute,
