@@ -136,15 +136,7 @@ fn run(
     // — a deliberate asymmetry with the serializer's round-to-nearest. ---
     progress.stage(Phase::Bbox, "Calculating BBox...");
     let mut global_bbox = compute_bbox(&ingested);
-    let landmark_bbox = opts.bbox.map_or(global_bbox, |bbox| {
-        let (west, south, east, north) = bbox.to_degrees();
-        (
-            (west * 1e6).ceil() as i64,
-            (south * 1e6).ceil() as i64,
-            (east * 1e6).floor() as i64,
-            (north * 1e6).floor() as i64,
-        )
-    });
+    let landmark_bbox = opts.bbox.map_or(global_bbox, Bbox::microdegree_bounds);
     let landmarks = opts
         .landmarks
         .as_ref()
