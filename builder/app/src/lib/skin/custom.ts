@@ -7,7 +7,7 @@
 // restyling the wrong ids.
 
 import type { SchemaEntry, SkinEntry, SkinStyle } from "../catalog/manifest";
-import { skinBandError } from "./bands";
+import { skinStyleError } from "./validation";
 
 export const CUSTOM_SKINS_KEY = "obcm.customSkins.v1";
 const FORMAT = 1;
@@ -111,7 +111,7 @@ export function validateCustomSkin(raw: unknown, schema: SchemaEntry): SkinEntry
         if (!style) return null;
         styles.push(style);
     }
-    if (skinBandError(schema, styles)) return null;
+    if (skinStyleError(schema, styles)) return null;
     return {
         id: value.id,
         name: value.name.trim().slice(0, 64),
@@ -168,7 +168,7 @@ export function persistCustomSkins(
         throw new Error(`This browser already has ${MAX_CUSTOM_SKINS} custom skins. Delete one before saving another.`);
     }
     for (const { skin } of records) {
-        const error = skinBandError(schema, skin.styles);
+        const error = skinStyleError(schema, skin.styles);
         if (error) throw new Error(error);
         if (!validateCustomSkin(skin, schema)) throw new Error("The skin is incomplete or contains a value outside the device format.");
     }
@@ -215,7 +215,7 @@ export function prepareCustomSkin(
         version: existing && existing.id === id ? existing.version + 1 : 1,
         preview: null,
     };
-    const error = skinBandError(schema, candidate.styles);
+    const error = skinStyleError(schema, candidate.styles);
     if (error) throw new Error(error);
     const valid = validateCustomSkin(candidate, schema);
     if (!valid) throw new Error("The skin is incomplete or contains a value outside the device format.");

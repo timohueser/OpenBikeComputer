@@ -15,7 +15,7 @@ Deliberate exceptions are listed below, each with the decision that made it one.
 recorded deviation, not a way to keep a duplicate quiet.
 
 A text guard fails by going blind, not by going off, so the census is pinned: every `ContextRow`
-must yield a parsed label, and the totals must clear a floor that only ever moves up.
+must yield a parsed label, and the totals must clear a floor that matches the declared controls.
 """
 
 from __future__ import annotations
@@ -36,10 +36,9 @@ DRAWERS = [SCREEN / "context_drawer.rs", SCREEN / "quick_drawer.rs"]
 # keeps its own switch beside the bond it manages (#1515 D2). The rule holds for every other field.
 ALLOWED_SHARED_FIELDS = {"ble_enabled"}
 
-# The census floors. A slice that adds rows or drawer-written settings raises these; a parser that
-# went blind lowers them, which is the failure this guard could not otherwise report.
-MIN_ROW_LABELS = 13
-MIN_DRAWER_FIELDS = 8
+# Update these floors when controls are added or removed. A parser change must not lower them.
+MIN_ROW_LABELS = 11
+MIN_DRAWER_FIELDS = 7
 
 # `cx.settings.<field> = …` — the one production write path a screen has into the persisted record.
 # `=(?!=)` so an equality test is not read as a write.
@@ -106,12 +105,12 @@ def main() -> int:
                 continue
             row_labels[label.group(1)] = where
 
-    # The census floors. A drop means the parser went blind, not that homes vanished.
+    # The census floors catch an incomplete parser or a changed set of controls.
     if len(row_labels) < MIN_ROW_LABELS:
         failures.append(
             f"only {len(row_labels)} context row label(s) parsed, below the pinned floor of "
-            f"{MIN_ROW_LABELS} ({rows_seen} `ContextRow` literal(s) seen). Raise MIN_ROW_LABELS "
-            f"deliberately when a slice adds rows; never lower it to make this pass."
+            f"{MIN_ROW_LABELS} ({rows_seen} `ContextRow` literal(s) seen). Update MIN_ROW_LABELS "
+            f"deliberately when controls change; never lower it to hide a parser failure."
         )
     if len(drawer_fields) < MIN_DRAWER_FIELDS:
         failures.append(

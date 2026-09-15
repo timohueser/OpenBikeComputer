@@ -14,7 +14,6 @@ rides = "Sorties"
 pois = "POIs"
 map = "Carte"
 peaks = "Sommets"
-weather = "Météo"
 settings = "Réglages"
 
 [peak_view]
@@ -559,53 +558,9 @@ cardtype_fix = "Utilisez une carte SDHC ou SDXC"
 storagefault_what = "Lecteur en panne"
 storagefault_fix = "Redémarrez l'appareil"
 
-# --- The Weather surfaces (epic #1185, WX11): dashboard, hourly, rain map, alert ---
-[weather]
-title = "MÉTÉO"
-hourly = "HORAIRE"
-rain_map = "CARTE PLUIE"
-updating = "MISE À JOUR"
-dry_1 = "SEC POUR"
-rain = "PLUIE"
-storm = "ORAGE"
-rain_in = "PLUIE DANS"
-storm_in = "ORAGE DANS"
-now = "MAINT."
-min = "MIN"
-in = "DANS"
-update_needed = "MISE À JOUR MÉTÉO REQUISE"
-hourly_only = "PLUIE SANS DÉTAIL"
-hourly_only_sub = "Par heure"
-no_data = "PAS DE DONNÉES MÉTÉO"
-no_data_sub = "Via téléphone"
-zoom_for_rain = "ZOOM POUR PLUIE"
-alert_rain = "PLUIE DEVANT"
-alert_storm = "ORAGE DEVANT"
-alert_rain_body = "Pluie forte sur le parcours."
-alert_storm_body = "Orage sur le parcours."
-alert_gust = "VENT FORT"
-alert_gust_body = "Rafales dangereuses devant."
-view_rain_map = "CARTE PLUIE"
-dismiss = "FERMER"
-
-# --- The route-plan sheet's one row label (#1515 D4d) — the only home bike type has ---
 [route_context]
 bike_type = "Type de vélo"
 
-# --- The weather sheet's row labels (#1515 D4b) — the only home either control has ---
-[weather_context]
-refresh_now = "Actualiser"
-interval = "Intervalle"
-
-# --- WeatherRefresh enum labels (the weather sheet's Interval editor) ---
-[weather_refresh]
-off = "Non"
-m15 = "15 min"
-m30 = "30 min"
-m60 = "60 min"
-m120 = "120 min"
-
-# --- Cardinal/octant letters (the hourly rows' meteorological wind-from labels) ---
 [compass]
 n = "N"
 ne = "NE"

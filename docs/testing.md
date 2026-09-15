@@ -113,8 +113,8 @@ selected suites without an executable CI route are errors; a selection error nev
 ```sh
 obc test affected --base origin/develop [--head REF] [--dry-run]
 obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
-obc test -p obc-weather                  # focused package work, no registry involved
-obc test fixtures -p obc-wx-bake
+obc test -p obc-app                      # focused package work, no registry involved
+obc test fixtures -p obc-route
 obc test full                            # cross-cutting changes only
 ```
 
@@ -135,16 +135,15 @@ request that the run did not reproduce, with the reason. It makes no unqualified
 
 ## Rust CI result artifacts
 
-The existing `cargo nextest run` commands in `test` and each `test-weather` matrix leg use
+The `cargo nextest run` command in `test` uses
 `NEXTEST_PROFILE=ci`. The profile in `.config/nextest.toml` writes native JUnit XML to
 `target/nextest/ci/junit.xml`. Each test case retains its binary and test identity, result, and
 elapsed duration. Failed tests also retain their output. Test selection, retries, and failure
 handling keep their existing settings; a failed run can contain only the tests completed before
 it stopped. Filtered and ignored tests are absent from the report, not recorded as passes.
 
-CI uploads the report after test success or failure. Artifact names are `rust-test-ATTEMPT` and
-`rust-test-weather-INDEX-ATTEMPT`, where `INDEX` is the matrix job index and `ATTEMPT` is the GitHub
-run attempt. The two canonical mosaic partitions have distinct indices. Open a workflow run's
+CI uploads the report after test success or failure. The artifact name is `rust-test-ATTEMPT`,
+where `ATTEMPT` is the GitHub run attempt. Open a workflow run's
 **Artifacts** section, or download all its Rust reports with:
 
 ```sh
@@ -169,10 +168,9 @@ python3 -m pip install -r tools/requirements-test.txt
 python3 -m pip install -r builder/requirements-dev.txt
 ```
 
-The repository, firmware, and weather tool suites use pinned `unittest-xml-reporting` 4.0.0
+The repository and firmware tool suites use pinned `unittest-xml-reporting` 4.0.0
 with standard unittest discovery. Their registry commands write to
-`.artifacts/python/repository-tools/`, `.artifacts/python/firmware-tools/`, and
-`.artifacts/python/weather-probe/`. Builder uses pytest's native `--junitxml` option and writes
+`.artifacts/python/repository-tools/` and `.artifacts/python/firmware-tools/`. Builder uses pytest's native `--junitxml` option and writes
 `.artifacts/python/builder.xml`. Builder still needs its existing `obc-pack` executable; use
 `OBC_PACK_BIN` to select a built binary. CI builds it before the test step.
 
@@ -185,7 +183,7 @@ measurements and can be zero; XML entry totals can differ from unittest's method
 reporter contract in `tools/tests/test_python_reports.py` checks these native semantics.
 
 CI publishes `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`,
-`python-weather-probe-ATTEMPT`, and `python-builder-ATTEMPT`. Download them with:
+and `python-builder-ATTEMPT`. Download them with:
 
 ```sh
 gh run download RUN_ID --pattern 'python-*-ATTEMPT' --dir test-results
@@ -200,12 +198,12 @@ authoritative.
 
 ## Web CI result artifacts
 
-The existing builder and rain-radar Vitest commands keep their default console output and also
-write native JUnit XML. Each report records file and test identities, outcomes, and elapsed
+The builder Vitest command keeps its default console output and also
+writes native JUnit XML. Each report records file and test identities, outcomes, and elapsed
 durations. Skipped tests retain their skipped status. This does not add test execution or coverage.
 
 CI uploads the reports after test success or failure. Artifact names are `web-builder-ATTEMPT`
-and `web-rain-radar-ATTEMPT`, where `ATTEMPT` is the GitHub run attempt. Download both with:
+where `ATTEMPT` is the GitHub run attempt. Download it with:
 
 ```sh
 gh run download RUN_ID --pattern 'web-*-ATTEMPT' --dir test-results
@@ -214,8 +212,8 @@ gh run download RUN_ID --pattern 'web-*-ATTEMPT' --dir test-results
 Each step removes its old report before it starts. A skipped step uploads nothing. Setup or
 collection failures remain failures and can produce an incomplete report or no report; a missing
 file makes the upload step fail. A cancelled run does not upload these reports. CI does not create
-an empty report or run tests again to obtain results. These reports cover the two Vitest suites,
-which use Node and simulated DOM environments; they are not real-browser evidence.
+an empty report or run tests again to obtain results. These reports cover the builder Vitest suite,
+which uses Node and a simulated DOM; it is not real-browser evidence.
 
 ## Web demo browser journey
 
@@ -285,7 +283,6 @@ owns and, for Cargo packages, from the workflow steps that compile them.
 | iOS application composition or UI | Swift host tests and XCUITest smoke |
 | Desktop application composition | Affected platform build and desktop launch smoke |
 | Python tool or service implementation | Matching Python suite |
-| Rain-radar demo | Demo tests |
 | Documentation only | Documentation and generated-policy checks unless it produces a shared artifact |
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 

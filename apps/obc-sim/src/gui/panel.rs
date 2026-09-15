@@ -234,13 +234,6 @@ impl SimGui {
                         egui::CollapsingHeader::new("Altimeter")
                             .default_open(false)
                             .show(ui, |ui| self.show_altimeter(ui));
-
-                        if self.live_weather.is_some() {
-                            separator_above(ui);
-                            egui::CollapsingHeader::new("Weather (live)")
-                                .default_open(true)
-                                .show(ui, |ui| self.show_live_weather(ui));
-                        }
                     });
 
                     if ctx.input(|i| i.viewport().close_requested()) {
@@ -608,12 +601,10 @@ impl SimGui {
     }
 
     /// The **map-referenced altimeter** readout (elevation epic #1068, EL8) — the simulator half of
-    /// the device's `altfuse:` RTT line, and the inspection surface #529 was waiting on.
+    /// the device's `altfuse:` RTT line.
     ///
     /// Raw vs. fused is the whole story: when replay conditions move the raw row away from the
     /// terrain, the fused row stays on it, and `Offset` is the number doing the work.
-    /// `Reference P` is the sea-level-reduced pressure — the trend a storm heuristic would read,
-    /// with the ride's own climbing already subtracted out. Nothing here is drawn on the device.
     fn show_altimeter(&self, ui: &mut egui::Ui) {
         let a = self.app.recorder.altitude();
         let baro = self.app.recorder.baro_elevation_m();
@@ -639,11 +630,6 @@ impl SimGui {
                 }
                 None => ui.label("—"),
             };
-            ui.end_row();
-
-            ui.label("Reference P");
-            let p = baro.and_then(|b| a.reference_pressure_hpa(b));
-            ui.label(p.map_or_else(|| "—".to_string(), |hpa| format!("{hpa:.2} hPa")));
             ui.end_row();
 
             ui.label("Samples");
@@ -760,88 +746,4 @@ impl SimGui {
     }
 }
 
-impl SimGui {
-    /// The live-weather diagnostics (WX14): which generation answered, how many bytes it cost, and
-    /// where the §11 request/upload machine currently is.
-    ///
-    /// This lives **outside** the emulated device pixels on purpose. The device is forbidden any
-    /// provenance badge — how fresh the data is may reach the rider only through real frame
-    /// timestamps — so every such fact belongs here, in the developer's window, and nowhere on the
-    /// glass. There is no product and no tier to name any more: one dataset, one lattice, and the
-    /// only identity worth printing is the generation the objects came from.
-    fn show_live_weather(&mut self, ui: &mut egui::Ui) {
-        let Some(live) = self.live_weather.as_ref() else { return };
-        let report = &live.report;
-        match (&report.generation, &report.error) {
-            (_, Some(error)) => {
-                ui.colored_label(ERROR_RED, format!("fetch failed: {error}"));
-                ui.weak("The previous bundle stays in place and keeps aging — an outage never blanks the screen.");
-            }
-            (Some(generation), None) => {
-                ui.label(format!("dataset   generation {generation}"));
-            }
-            (None, None) => {
-                ui.label("dataset   none — hourly only");
-            }
-        }
-        if let Some(why) = &report.no_rain_map {
-            ui.weak(format!("no rain map: {why}"));
-        }
-        if report.dry_shards > 0 {
-            ui.weak(format!("{} shard(s) measured dry — no object to fetch, and not a failure", report.dry_shards));
-        }
-        if let Some((width_km, height_km)) = report.corridor_km {
-            ui.label(format!(
-                "corridor  {width_km:.0} x {height_km:.0} km disc{}",
-                if report.corridor_clamped { " (cut at the date line or a pole)" } else { "" }
-            ));
-        }
-        // Two costs, never one number: the OBC half is coordinate-free Range reads, the MET half
-        // is one document that carries the rider's position. Both are *this fetch* — mixing a
-        // cumulative request count with a per-fetch byte count is how "21 requests, 146 KB" came
-        // to describe two different things at once.
-        ui.label(format!(
-            "last      {} B bundle · service {} req / {} B · MET {} req / {} B",
-            report.bundle_bytes, report.service_requests, report.service_bytes, report.met_requests, report.met_bytes
-        ));
-        if report.cached_frames > 0 {
-            ui.weak(format!(
-                "{} frame(s) came from the crop cache — immutable objects are never re-read",
-                report.cached_frames
-            ));
-        }
-        ui.weak(format!("{} request(s) since the simulator started", live.total_requests()));
-        if report.failed_frames > 0 {
-            ui.weak(format!(
-                "{} shard(s) the manifest promised failed to fetch or verify — an error, never dry",
-                report.failed_frames
-            ));
-        }
-        if report.fetched_at > 0 {
-            let age = (self.app.wall_unix_now() as i64 - report.fetched_at).max(0);
-            ui.weak(format!("fetched {age} s ago"));
-        }
-        ui.separator();
-        let state = &self.companion.state;
-        ui.label(format!(
-            "request   {} · {}",
-            state.pending_request_id.map_or("none pending".to_string(), |id| format!("#{id}")),
-            state.reason_text()
-        ));
-        ui.label(format!(
-            "uploads   {} committed, {} refused{}",
-            state.commits,
-            state.rejected,
-            state.last_disposition.map_or(String::new(), |d| format!(" (last: {d})"))
-        ));
-        if let Some(wake) = state.next_wake_s {
-            let now = self.app.wall_unix_now() as u64;
-            ui.weak(format!("next due in {} s", wake.saturating_sub(now)));
-        } else {
-            ui.weak("nothing scheduled (refresh Off, or no ride in progress)");
-        }
-        for line in &report.attribution {
-            ui.weak(line);
-        }
-    }
-}
+impl SimGui {}

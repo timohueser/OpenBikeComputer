@@ -16,7 +16,6 @@ mod tests {
 
     #[test]
     fn a_complete_flat_catalog_distinguishes_absent_and_unreadable_maps() {
-        // An empty catalog — or one holding only routes, rides and weather — is a card with no map.
         assert_eq!(flat_boot_fault(0, true), crate::BootFault::NoMap, "no map objects is the only NO MAP");
         // A present map that failed to open is unreadable, not absent.
         assert_eq!(flat_boot_fault(1, true), crate::BootFault::BadMap);

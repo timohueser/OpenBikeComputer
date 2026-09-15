@@ -230,7 +230,6 @@ pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard
     + CATALOG_UPLOAD_BYTES
     + MAP_READ_BYTES
     + ROUTE_READ_BYTES
-    + WEATHER_READ_BYTES
     + ENGINE_BYTES;
 
 /// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
@@ -246,9 +245,6 @@ pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat:
 /// The active route's one held revision. It is released on selection or revision changes.
 pub(crate) const ROUTE_READ_BYTES: usize =
     core::mem::size_of::<Option<obc_storage::flat::StoreSource<'static, FlatCard>>>();
-
-/// The active weather bundle's held immutable revision, refreshed on catalog movement.
-pub(crate) const WEATHER_READ_BYTES: usize = ROUTE_READ_BYTES;
 
 /// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
 /// is wrong before anything else notices.
@@ -292,16 +288,6 @@ pub(crate) fn mount_at_boot() -> &'static FlatStore<FlatCard> {
     let store = unsafe { FlatStore::mount_in_place(&mut *core::ptr::addr_of_mut!(FLAT_STORE), FlatCard) };
     FLAT_STORE_READY.store(true, core::sync::atomic::Ordering::Release);
     &*store
-}
-
-/// The mounted store after boot initialization. Read-only callers use this instead of inventing a
-/// second global reference; all mutation still goes through [`storage_task`].
-pub(crate) fn mounted() -> Option<&'static FlatStore<FlatCard>> {
-    FLAT_STORE_READY.load(core::sync::atomic::Ordering::Acquire).then(|| unsafe {
-        // SAFETY: `Release` is stored only after `mount_in_place` fully initialized this slot; it is
-        // never overwritten during the boot session.
-        &*core::ptr::addr_of!(FLAT_STORE).cast::<FlatStore<FlatCard>>()
-    })
 }
 
 /// **What the probe found, in the terms boot has to act on.** The three outcomes are the three
@@ -889,14 +875,6 @@ pub(crate) fn writer() -> Option<Writer> {
 /// only thing it did.
 static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Whether the protocol-v4 engine is holding a live transfer — `CoreMode`'s transfer level, at its
-/// source (#1397 S6b, closing S5 open question 2).
-///
-/// Published from [`publish_upload`] on every engine call, which is the one execution context that
-/// holds the engine, and read once per pass by the ride loop into
-/// [`ExternalFacts::note_transfer`](obc_app::device_core::ExternalFacts::note_transfer). It covers
-/// **every** kind — a route, a trip or a weather bundle streaming holds the store exactly as a map
-/// does, and none of those three raises the #927 progress card the level used to be derived from.
 static LIVE_TRANSFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Whether a bulk transfer is streaming into the store right now.
@@ -1008,7 +986,6 @@ pub(crate) fn take_catalog_upload_loss() -> bool {
 
 fn note_catalog_commit() {
     CATALOG_WAKE.signal(());
-    crate::ble::weather_catalog_changed();
 }
 
 pub(crate) async fn wait_catalog_commit() {
@@ -1383,18 +1360,6 @@ fn serve(
     }
 }
 
-/// **Push what the engine knows about a live upload to the glass** — issue #927's progress card,
-/// re-sourced.
-///
-/// It runs here, beside the engine, rather than in an adapter, and both halves of that are
-/// deliberate. Beside the engine, because this is the one execution context that holds one, so the
-/// read is a field access rather than a round trip on the very queue a multi-megabyte upload is
-/// saturating. Not in an adapter, because §5 says an adapter "never parses a payload" and the kind
-/// and the declared length are payload — the engine is the layer entitled to know them.
-///
-/// A rider sees a card for a **map** and nothing else, which is not a filter but the truth: a route
-/// lands in a second and a weather bundle is invisible by design, so a progress bar for either would
-/// be a flicker asking to be dismissed. `crate::link` owns the mapping from these facts to a screen.
 fn publish_upload(engine: &mut BoardEngine) {
     let live = engine.live_upload();
     let ended = engine.take_upload_end();
@@ -1459,22 +1424,6 @@ fn engine_slot() -> &'static mut BoardEngine {
     unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new()) }
 }
 
-/// The two decisions the engine cannot make for itself (`FLAT_Store_Protocol.md` §3.6, §4).
-///
-/// **Both are unfilled in c3a, and the defaults are the honest answers rather than placeholders.**
-///
-/// - `accept` is §3.6's "runs the kind's validator". The hook the seam offers is
-///   `(kind, payload_len)` — the payload itself is in an uncommitted allocation the engine cannot
-///   re-read, and `open` resolves committed entries only. So a real OBCR/OBCW/OBCM magic check
-///   needs a read hook `obc_link::flat::Policy` does not have, and inventing a length-only
-///   "validator" here would be a check that passes everything while reading as though it did not.
-///   What *is* enforced is the whole-payload CRC-32 the engine verifies before this is called, which
-///   is what catches a damaged transfer; what is not enforced is a well-formed transfer of the wrong
-///   bytes. Filling this is a named follow-up on #1420.
-/// - `validate_package` and `hand_off` are §4's arm. They need `obc-dfu`, the RRAM boot page and a
-///   reboot, and the default refuses — which is correct for a build that cannot arm: a device that
-///   committed a rollback reserve it could never hand off would strand extents no client can free
-///   (§3.7 refuses to `REMOVE` a `RESERVED` entry). `ARM` therefore answers `rejected`.
 pub(crate) struct BoardPolicy;
 
 impl Policy for BoardPolicy {}
@@ -1582,137 +1531,6 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
         store.entries_ok(),
         store.free_extents()
     );
-}
-
-// ═══════════════════════════════ weather ═══════════════════════════════
-
-/// One fully validated flat-store weather head.
-///
-/// The proof is safe to retain after the source closes: flat-store revisions are immutable, and
-/// [`with_weather`] always reopens this exact `(ObjectId, Revision)` before using it. A replacement
-/// gets a different revision and therefore a different value here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FlatWeather {
-    pub(crate) id: ObjectId,
-    pub(crate) revision: Revision,
-    pub(crate) validated: obc_weather::ValidatedBundle,
-}
-
-impl FlatWeather {
-    pub(crate) const fn header(self) -> obc_formats::obcw::Header {
-        self.validated.header()
-    }
-
-    /// The scheduler wire identity: serial generation, producer time and CRC are the protocol
-    /// facts, independent of the storage that holds the immutable revision.
-    pub(crate) const fn candidate(self) -> obc_weather::Candidate {
-        let header = self.header();
-        obc_weather::Candidate {
-            generation: header.generation,
-            generated_at: header.generated_at,
-            total_len: header.total_len,
-            bundle_crc32: header.crc32,
-        }
-    }
-}
-
-/// Select and fully validate the active weather head.
-///
-/// Malformed objects are omitted rather than poisoning a previously valid bundle. When more than
-/// one object id exists, OBCW's serial-generation rule chooses the newest producer result; an exact
-/// identity tie is broken by the larger store id so the result is deterministic.
-#[inline(never)]
-pub(crate) fn active_weather(store: &'static FlatStore<FlatCard>) -> Result<Option<FlatWeather>, ()> {
-    // The catalog orders a retained revision immediately before its head. Validate the retained
-    // copy as a fallback, but never let it outrank a valid head merely because its producer serial
-    // is newer: retention is continuity for a bad replacement, not a second active candidate.
-    let revisions = store.entries().filter(|entry| entry.kind == ObjectKind::WeatherBundle).map(|entry| {
-        obc_weather::CatalogRevision {
-            object_id: entry.id.0,
-            retained: entry.flags.has(obc_storage::flat::EntryFlags::RETAINED),
-            validation: validate_weather(store, entry),
-        }
-    });
-    let active = obc_weather::select_catalog(revisions, |incoming, current| {
-        obc_weather::candidate_is_newer(incoming.candidate(), current.candidate())
-            || (incoming.candidate() == current.candidate() && incoming.id > current.id)
-    })?;
-    if !store.entries_ok() {
-        defmt::warn!("flat: weather catalog listing crossed a commit — retrying on the next catalog edge");
-        return Err(());
-    }
-    Ok(active)
-}
-
-/// Validate one immutable weather revision while keeping media/open failures distinct from a
-/// malformed OBCW payload. A malformed head may fall back to its retained predecessor; a transient
-/// store failure must preserve the currently mounted source and retry later.
-fn validate_weather(store: &'static FlatStore<FlatCard>, entry: EntryMeta) -> Result<Option<FlatWeather>, ()> {
-    match store.with_source(entry.id, Some(entry.revision), |source| {
-        obc_weather::WeatherReader::open(source).map(|reader| reader.validated())
-    }) {
-        Ok(Ok(validated)) => Ok(Some(FlatWeather { id: entry.id, revision: entry.revision, validated })),
-        Ok(Err(_)) => {
-            defmt::warn!(
-                "flat: weather object {=u64} revision {=u64} is malformed — omitted",
-                entry.id.0,
-                entry.revision.0
-            );
-            Ok(None)
-        }
-        Err(error) => {
-            defmt::warn!(
-                "flat: weather object {=u64} revision {=u64} could not be read: {}",
-                entry.id.0,
-                entry.revision.0,
-                defmt::Debug2Format(&error)
-            );
-            Err(())
-        }
-    }
-}
-
-static mut WEATHER_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
-
-/// Reconcile the session-held weather source to the selected validated revision.
-#[inline(never)]
-pub(crate) fn reconcile_weather(
-    store: &'static FlatStore<FlatCard>,
-    wanted: Option<FlatWeather>,
-) -> Option<&'static dyn obc_formats::io::ByteSource> {
-    let wanted_key = wanted.map(|weather| (weather.id, weather.revision));
-    let slot = core::ptr::addr_of_mut!(WEATHER_SOURCE);
-    // SAFETY: the ride loop is the sole caller. It reconciles only between synchronous sampling
-    // and rendering operations, never while a reader borrowing the previous source is live.
-    unsafe {
-        let current = (*slot).as_ref().map(|source| (source.id(), source.revision()));
-        if current != wanted_key {
-            if let Some(weather) = wanted {
-                match store.source(weather.id, Some(weather.revision)) {
-                    Ok(source) => {
-                        // Acquire before release: the store budgets one SWAP hold precisely so a
-                        // transient open failure cannot discard the bundle the rider is using.
-                        let old = core::ptr::replace(slot, Some(source));
-                        if let Some(old) = old {
-                            store.close(old.release());
-                        }
-                    }
-                    Err(error) => defmt::warn!(
-                        "flat: weather object {=u64} revision {=u64} would not open: {}",
-                        weather.id.0,
-                        weather.revision.0,
-                        defmt::Debug2Format(&error)
-                    ),
-                }
-            } else {
-                let old = core::ptr::replace(slot, None);
-                if let Some(old) = old {
-                    store.close(old.release());
-                }
-            }
-        }
-        (*slot).as_ref().map(|source| source as &dyn obc_formats::io::ByteSource)
-    }
 }
 
 // ══════════════════════════ the map, as bytes ══════════════════════════

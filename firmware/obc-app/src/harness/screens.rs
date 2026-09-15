@@ -151,10 +151,6 @@ fn map_turn_saturates_at_min_zoom() {
     assert_eq!(st.zoom, saturated, "already at MIN_ZOOM — further zoom-out is a no-op");
 }
 
-/// **Every riding view declares a context, the Up-ahead context is the timeline's, the weather
-/// context is the three weather surfaces', the route-plan context is the create-route confirm
-/// card's, and nothing else declares anything** (#1515 D3/D4a-d). It is the one declaration a
-/// screen makes; everything the sheet then does is the generic drawer's.
 #[test]
 fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     let declared = |s: &Screen| s.context().is_some();
@@ -178,16 +174,7 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
         Screen::Map(MapScreen::new()).context().map(|m| m.rows.len()),
         "the timeline declares its own table, not the ride's"
     );
-    // D4b's addition: the three weather surfaces share one table, and the pushed alert card — a
-    // modal — declares nothing, so the chord cannot squeeze a sheet out from under it.
-    assert!(declared(&Screen::Weather(crate::screen::WeatherScreen::new())));
-    assert!(declared(&Screen::WeatherHourly(crate::screen::WeatherHourlyScreen::new())));
-    assert!(declared(&Screen::WeatherRainMap(crate::screen::WeatherRainMapScreen::new())));
-    assert!(!declared(&Screen::WeatherAlert(crate::screen::WeatherAlertScreen::new(
-        crate::screen::WeatherAlertKind::Rain,
-        0,
-        false
-    ))));
+
     // D4d's addition, and it is the **one** screen of the create-route flow that declares
     // anything: the card whose next press consumes the routing profile.
     let confirm = || Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None));
@@ -246,7 +233,6 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         Screen::Climb(ClimbScreen::new()),
         Screen::RideControl(RideControl::new()),
         Screen::UpAhead(crate::screen::UpAheadScreen::new(0)),
-        Screen::Weather(crate::screen::WeatherScreen::new()),
     ] {
         assert!(!screen.context().is_some_and(|m| core::ptr::eq(m, &MAP_DISPLAY)), "no screen declares the sub-sheet");
     }

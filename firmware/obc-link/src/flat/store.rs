@@ -204,23 +204,7 @@ pub trait Store {
     }
 }
 
-/// The two decisions the engine cannot make for itself, and the crate they belong to cannot reach.
-///
-/// A kind's validator parses OBCR, OBCW, OBCM or OBCU, and arming an update needs `obc-dfu`, the
-/// RRAM boot page and a reboot. Both sit *above* this crate in the dependency graph, so both arrive
-/// as a hook the board fills in. Every method has a default, so a board that has neither implements
-/// this with an empty block and gets §3.6's "no validator" and §4's "this device cannot arm".
-///
-/// The detail values a refusal carries are the kind's own: §3.9 gives `rejected` a detail space and
-/// says the kind's validator owns it.
 pub trait Policy {
-    /// §3.6's "runs the kind's validator": the upload is complete and its whole-payload CRC has
-    /// checked out, and this is the last word before the commit. A refusal costs nothing but the
-    /// allocation the engine then cancels.
-    ///
-    /// It is deliberately whole-payload rather than streaming. The kinds that need validating —
-    /// OBCR, OBCW, OBCM, OBCU — are all read from their own header outward, and the engine has no
-    /// buffer to offer a validator that wanted the bytes twice.
     fn accept(&mut self, kind: ObjectKind, payload_len: u64) -> Result<(), u16> {
         let _ = (kind, payload_len);
         Ok(())

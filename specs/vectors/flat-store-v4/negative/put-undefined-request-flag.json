@@ -3,7 +3,7 @@
   "suite": "flat-store-v4",
   "kind": "negative",
   "target": "controlRecord",
-  "note": "Bit 0 is retain-previous and the other fifteen are zero.",
+  "note": "The request flags are reserved and must be zero.",
   "expect": {
     "disposition": "errorResponse",
     "code": "invalidRequest",

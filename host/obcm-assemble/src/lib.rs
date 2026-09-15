@@ -459,15 +459,13 @@ pub fn assemble_full(
         }
         coverage.push((empty.band, empty.id));
     }
-    // The cells own style ids and rain-band membership, including when a local schema omits its
-    // assignment. A skin may change drawing order only within those bands (§4.7/§6.2).
-    let resolved_bands: Vec<(u8, bool)> =
-        styles.iter().map(|s| (s.id, s.z_index >= obc_map_scene::RAIN_BELOW_Z)).collect();
-    if resolved_bands != cells[0].style_bands {
+    // The skin must describe the same style ids as the baked cells.
+    let resolved_ids: Vec<u8> = styles.iter().map(|s| s.id).collect();
+    if resolved_ids != cells[0].style_ids {
         return Err(Error::Input(format!(
-            "the stamped style table has id/band assignment {resolved_bands:?} but the cells were baked with {:?} — \
+            "the stamped style table has ids {resolved_ids:?} but the cells were baked with {:?} — \
              the skin does not match this schema revision (OBCA §4.7)",
-            cells[0].style_bands
+            cells[0].style_ids
         )));
     }
     let t_open = clock.now_us();
