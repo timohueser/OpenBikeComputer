@@ -117,10 +117,10 @@ those timestamps. The other traces use distance-derived sampling times to contro
 
 These are motion inputs for interactive visits, not preselected navigation plans. The rider
 must still select a place and accept a computed route. The scenario clock is an explicit UTC
-validation clock, separate from GPX timestamps. The integrated `--clock` establishes trusted UTC
-with a known zero offset. The intended +02:00/+01:00 offsets in this source table are not yet
-applied by a CLI argument. Regional opening-hours acceptance remains pending that normal port
-wiring; do not infer the offset from location or the host timezone.
+validation clock, separate from GPX timestamps. The ready Cork and Monaco scenarios use `--clock`
+with `--utc-offset-min` to establish trusted UTC and the declared +01:00 or +02:00 local offset in both GUI and headless mode. The GUI disables
+ambient GPS time for an explicit initial clock unless the user enables it. The Swiss entries keep
+their initial arguments until their map replacement is ready. No host timezone is inferred.
 Dunlough paths have `sac_scale=mountain_hiking` and mud/ground surfaces. They do not explicitly
 set `bicycle=no`. The planner must use actual access and profile suitability; unknown access
 must remain unknown. Hours are absent on the selected landmark objects. No data was edited to
@@ -150,7 +150,8 @@ For a persistent Unix card, start with a path that does not exist:
 
 ```sh
 tools/obc sim assistant-dunlough-access -- --create-card .artifacts/west-cork.obc
-cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical
+cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
+  --clock 2026-09-14T10:00 --utc-offset-min 60
 ```
 
 The second command reopens saved routes and recordings without importing the fixture again.
@@ -166,6 +167,6 @@ tools/obc sim assistant-forward-rejoin
 tools/obc sim assistant-loop-crossing
 ```
 
-The runtime menu, regional hours offsets, real route acceptance, recorder traces, final resource
+The runtime menu, real route acceptance, recorder traces, final resource
 and pixel checks, and physical-device acceptance remain integrated work. A package or replay is
 not evidence that those checks passed.

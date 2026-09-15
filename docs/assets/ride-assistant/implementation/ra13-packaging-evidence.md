@@ -70,3 +70,12 @@ hashes all three producer executables before the bake. This matches the retained
 separation of directly verified binary identity from source attribution. The published package
 already has that distinction and is unchanged. The complete Python suite (187 tests), registry,
 Python compilation and documentation checks pass. No bake, assembly or upload was repeated.
+
+## Scenario clock integration
+
+The approved simulator clock change (`148d0350`, docs `71704933`) is merged. Ready Cork and
+Monaco scenarios now pass the declared UTC 10:00 anchor with offsets +60 and +120 minutes.
+The same clock entry applies after GUI or headless settings load; explicit GUI clocks disable
+ambient time until the user enables it. The persistent-card reopen command also supplies the
+Cork clock and offset. Fresh-cache offline resolution and the normal simulator command dry runs
+confirm both scenario arguments. No map bytes, source captures, or archive hashes changed.
