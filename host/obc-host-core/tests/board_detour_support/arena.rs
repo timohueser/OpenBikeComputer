@@ -20,6 +20,7 @@ pub struct NavGuard {
     output: Box<[u8; NAV_OUTPUT_STAGE_BYTES]>,
     sealed: Box<Option<SealedAllocation<'static>>>,
     preview_chunk: usize,
+    visit: Option<Box<obc_route::visit::VisitBuilder>>,
 }
 pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
     Ok(NavGuard {
@@ -31,6 +32,7 @@ pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
         output: Box::new([0; NAV_OUTPUT_STAGE_BYTES]),
         sealed: Box::new(None),
         preview_chunk: 0,
+        visit: None,
     })
 }
 impl Drop for NavGuard {
@@ -115,5 +117,56 @@ impl NavGuard {
         app.set_detour_preview(&preview);
         self.preview_chunk += 1;
         Ok(false)
+    }
+}
+
+impl NavGuard {
+    pub fn begin_visit(
+        &mut self,
+        c: obc_app::navigator::ReviewContext,
+        target: obc_route::visit::VisitTarget,
+        rejoin: u32,
+    ) -> Result<(), Error> {
+        let original = c.original.ok_or(Error::BadOffset)?;
+        self.visit = Some(Box::new(obc_route::visit::VisitBuilder::new(
+            obc_formats::obcr::RouteSourceKey {
+                store: c.store.bytes(),
+                object: original.object,
+                revision: original.revision,
+            },
+            c.map,
+            c.progress_m,
+            rejoin,
+            target.metadata.source,
+            target.approach(c.map, c.profile).ok_or(Error::BadOffset)?,
+        )?));
+        self.begin_sources();
+        Ok(())
+    }
+    pub fn visit_begin_sources(&mut self) {
+        self.begin_sources();
+    }
+    pub fn visit_begin_plan(&mut self, from: (i32, i32), to: (i32, i32), c: obc_app::navigator::ReviewContext) {
+        self.restore_plan();
+        let mut planner = NavPlanner::new(from, to, "Visit leg", c.profile);
+        planner.set_attribution_map(c.map);
+        self.begin_plan(planner);
+    }
+    pub fn visit_plan_parts(
+        &mut self,
+    ) -> (&mut NavPlanner, &mut NavScratch, &mut obc_reader::NavTileCache, &mut [u8; NAV_OUTPUT_STAGE_BYTES]) {
+        self.plan_parts().unwrap()
+    }
+    pub fn visit_parts(
+        &mut self,
+    ) -> (&mut obc_route::visit::VisitBuilder, &mut RouteIndex, &mut RouteIndex, &mut [u8; NAV_OUTPUT_STAGE_BYTES])
+    {
+        (self.visit.as_mut().unwrap(), &mut self.original, &mut self.leg, &mut self.output)
+    }
+    pub fn visit_seal_request(&mut self, allocation: Allocation) -> Request {
+        self.seal_request(allocation)
+    }
+    pub fn visit_take_sealed(&mut self) -> Option<SealedAllocation<'static>> {
+        self.take_sealed()
     }
 }

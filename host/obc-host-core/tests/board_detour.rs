@@ -19,6 +19,8 @@ mod detour;
 mod flat_store;
 #[path = "board_detour_support/ride.rs"]
 mod ride;
+#[path = "../../../firmware/obc-fw-nrf54l/src/visit.rs"]
+mod visit;
 
 use flat_store::{FlatCard, Kind, Writer};
 use obc_app::device_core::{NavigatorTag, TokenSource};
@@ -443,3 +445,6 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
         Some(id.0)
     ));
 }
+
+#[path = "board_detour_support/visit_tests.rs"]
+mod visit_tests;
