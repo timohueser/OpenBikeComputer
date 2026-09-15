@@ -158,16 +158,13 @@ ceiling a statement about the nav graph alone. **No sub-region ceiling sits unde
 change 3 is there so that the last `uint32` byte offset in the format did not quietly become the new
 limit the moment the old one lifted.
 
-**v15 is the only supported version**; earlier maps get repacked.
+**Version 15** expands POIs to 64-byte records with source identity and a validated
+routing approach (§7.3). Bit 15 of the edge point-count word records complete DEM
+integration (§8.4); the edge record length is unchanged.
 
-**The version byte is the hard cut, and it cuts in both directions.** A reader MUST check `Version`
-before it reads any byte behind it and MUST refuse anything other than `0x0E`, whether the value is
-older or newer than its own: a v13 file (`0x0D`) is refused by a v14 reader because its offsets mean
-bytes, and a v14 file is refused by every v13 reader because its offsets do not — the same
-mis-parse, seen from the two sides. The refusal is the file's, not the section's: nothing is
-partially readable across the cut, because a section offset that means the wrong unit lands
-somewhere plausible rather than somewhere obviously wrong. This is also now the **only** place the
-map version is stated, since the set manifest that used to carry a copy of it is gone.
+**v15 is the only supported version**; earlier maps get repacked. A reader MUST
+check `Version` before it reads any later field and MUST refuse every value other
+than `0x0F`. The header version applies to the whole file.
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).

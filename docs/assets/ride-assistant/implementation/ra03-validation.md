@@ -1,15 +1,28 @@
 # RA03 implementation and validation
 
-Implementation commit: `53a9cc65`.
+Implementation commit: `c8050c6d`; transform corrections: `1693c2a1`.
 Issue: [RA03 #1738](https://github.com/timohueser/OpenBikeComputer/issues/1738).
 
 ## Integration dependency
 
-This branch starts at develop `6abbcd2b`. It must be stacked on RA02 before merge.
-RA02 owns the OBCM v15 version bump and rebuilt map fixtures. RA03 uses v15 edge
-count bit 15 for complete DEM integration; the graph record length stays unchanged.
-Reconcile the small OBCM spec, packer, vector manifest, and synthetic terrain fixture
-hunks when stacking. Review the conflict-resolution delta only.
+The branch is stacked on RA02 `e6f83c32`. RA02 supplies OBCM v15, the place
+metadata extension, and rebuilt small map fixtures. RA03 uses edge count bit 15
+for complete DEM integration; the graph record length stays unchanged. Production
+source, normative nav/POI sections, shared vectors, and the terrain test fixture
+merged cleanly. The public format table conflict is resolved as OBCM 15 / OBCR 4.
+The normative version check is `0x0F` throughout.
+
+Focused checks after stacking:
+
+- `cargo test -p obc-route --test nav --test transform --test facts --test format`
+  (71 pass)
+- `cargo test -p obc-pack --test nav_round_trip -p obcm-assemble --lib`
+  (321 pack unit, 20 graph contract, and 77 assembler unit tests pass)
+- `cargo test -p obc-vectors --test vectors -p obc-web-assemble --test determinism`
+- `python3 docs/build_docs.py --check-links`
+
+The orchestrator owns the final Grimsel package rebuild after the RA09 header
+extension. No large fixture package was rebuilt during this stack.
 
 OBCR v4 has a 160-byte header, 7-byte point records, 80-byte waypoints, and an
 optional 80-byte accepted-visit descriptor. The normative producer matrix is in
@@ -42,7 +55,7 @@ A new card has a different identity, so these facts do not become current-map fa
 for that card automatically. Persistent-card imports use its persistent identity.
 
 The old package is OBCM v14. Repeat final integrated acceptance on the RA02 v15
-package after stacking; do not patch the old content-addressed package in place.
+package at integrated acceptance; do not patch the old content-addressed package in place.
 
 The authored Grimsel route was regenerated from its tracked original GPX. Both
 versions have zero waypoints. Its original name `grimsel-climb` is preserved.
@@ -97,7 +110,6 @@ required for the independent integration and simulator work.
 
 - Independently review incoming segment ownership at chunk and splice boundaries,
   optional-section bounds, and conservative GPX attribution.
-- Integrate RA02 and re-run only the affected conflict-resolution checks.
 - Implement RA04/RA05 descriptor-aware transforms and source binding through the
   reserved contract, then compare preview and committed facts from the same bytes.
 - Run the final pinned v15 real-map simulator scenarios and resource/layout gates.
