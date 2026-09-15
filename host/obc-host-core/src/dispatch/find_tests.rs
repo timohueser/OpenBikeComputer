@@ -172,12 +172,9 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
                     std::fs::write(path, frame.as_rgba()).unwrap();
                 }
                 app.apply_gesture(Gesture::Press);
-                assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
                 phase = 1;
             }
-            1 => {
-                app.apply_gesture(Gesture::Press);
-                assert!(matches!(app.top_screen(), obc_app::screen::Screen::VisitReview(_)));
+            1 if matches!(app.top_screen(), obc_app::screen::Screen::VisitReview(_)) => {
                 phase = 2;
             }
             2 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview => {
@@ -199,8 +196,7 @@ fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
                 app.stamp_clock_ble(1_727_000_000, 0);
                 assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Idle);
                 assert!(app.assistant_preview_shape().is_empty());
-                assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
-                app.apply_gesture(Gesture::Back);
+                assert!(matches!(app.top_screen(), obc_app::screen::Screen::FindPlace(_)));
                 app.apply_gesture(Gesture::Step(4));
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiList(_)));

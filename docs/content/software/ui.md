@@ -470,7 +470,7 @@ Delete actions exist on specific detail or confirmation rows. A hold elsewhere d
 
 The delete footer is a guarded row. The action runs only after a complete hold on that row.
 
-## Find a place
+## Where's the next...
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
 within 300 m of its line. It takes the first eight eligible places from each source, alternates
@@ -485,12 +485,14 @@ Unknown ascent cannot eliminate a measured choice.
 The card shows route distance and ascent to arrival. Added costs compare the complete visit,
 including its return, with the remaining accepted route. With no accepted route, the review is a
 direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
-until **Refresh**. These bounded results are partial; they do not establish a global nearest place.
+until the category is reopened. These bounded results do not establish a global nearest place.
 **More places** opens the full paged category browser. It plans only the place selected for review.
 
-All place entries use the same details and Visit review. The host binds the exact map revision and
-OSM approach. The review reads the published candidate geometry and costs. A known-closed place, a
-changed source, or a stale origin prevents acceptance. Missing elevation remains unknown. Acceptance
+Selecting a Find suggestion opens Visit review directly. More places retains the place detail page.
+Both paths use the shared Visit planner. Ordinary service places without an explicit OSM approach
+use normal coordinate destination routing. The review binds the exact map revision and actual
+route endpoint. A gap of more than 100 m from an explicit approach to the place appears in the
+preview. A known-closed place, a changed source, or a stale origin prevents acceptance. Missing elevation remains unknown. Acceptance
 uses the shared durable Visit transaction; browsing and cancellation leave the active route intact.
 
 Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),

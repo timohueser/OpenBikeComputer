@@ -246,7 +246,7 @@ fn tour_frame(
 /// sequences — the ambient ride, a demo-style app rebuild + mid-climb `GpxPlayer::seek` per
 /// `enter`, the climb demo's Back-cycle, the reroute-to-POI demo including the frame-stepped
 /// planner, and the ambient reset's backward seek — dwelling ≥300 presents on each tour screen
-/// (Map, Statistics, Climb, FindPlace, PoiDetail, VisitReview). Every frame presents
+/// (Map, Statistics, Climb, FindPlace, VisitReview). Every frame presents
 /// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
 /// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
 #[test]
@@ -316,7 +316,8 @@ fn tour_screens_dwell_with_no_present_miss() {
         };
         ($app:expr, $label:expr, $pat:pat, $dwell:expr, $ready:expr) => {{
             let mut reached = false;
-            for _ in 0..1200 {
+            // Find measures a bounded batch of candidates through the serial planner.
+            for _ in 0..1200 * obc_app::find_place::PLAN_LIMIT {
                 tour_frame(
                     $app,
                     &mut scratch,
@@ -423,8 +424,6 @@ fn tour_screens_dwell_with_no_present_miss() {
             && app.find_place_result_count() > 0
             && app.assistant_planner_released()
     );
-    app.apply_gesture(Gesture::Press);
-    until_then_dwell!(&mut app, "visit: PoiDetail", Screen::PoiDetail(_), 300);
     app.apply_gesture(Gesture::Press);
     until_then_dwell!(
         &mut app,

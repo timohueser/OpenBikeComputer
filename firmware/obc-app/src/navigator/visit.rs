@@ -256,8 +256,7 @@ impl crate::App {
             return Err(VisitUnavailable::SourceChanged);
         }
         let fix = self.fresh_position().ok_or(VisitUnavailable::NoFix)?;
-        let a = target.metadata.approach.ok_or(VisitUnavailable::NoMappedAccess)?;
-        if !a.source.is_valid() || !target.metadata.source.is_valid() {
+        if !target.metadata.source.is_valid() || target.metadata.approach.is_some_and(|a| !a.source.is_valid()) {
             return Err(VisitUnavailable::NoMappedAccess);
         }
         let profile = self.settings().bike_profile_idx;
@@ -358,7 +357,7 @@ impl crate::App {
         self.navigator.visit.needs_bind = false;
         true
     }
-    /// Place queries supply a map-bound explicit approach; missing access remains information-only.
+    /// Place queries supply a map-bound approach or an ordinary coordinate destination.
     /// No active route means a direct destination, with no implied continuation.
     pub fn plan_visit(&mut self, target: VisitTarget, mut context: ReviewContext) -> bool {
         if self.navigator.active_visit()

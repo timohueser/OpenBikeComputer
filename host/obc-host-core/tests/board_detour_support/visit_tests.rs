@@ -20,6 +20,9 @@ impl VisitHarness {
         Self::with_route(&route())
     }
     fn with_route(route: &[u8]) -> Self {
+        Self::with_access(route, true)
+    }
+    fn with_access(route: &[u8], mapped: bool) -> Self {
         let mut h = Harness::with_route(route);
         h.app.activate_route(0);
         h.app.set_nav_profiles(obc_reader::Reader::new(h.map.as_ref().unwrap(), &h.tables, &h.cache).nav_profiles());
@@ -48,10 +51,10 @@ impl VisitHarness {
         };
         let target = obc_route::visit::VisitTarget {
             map,
-            display: (500_000, 510_000),
+            display: (if mapped { 500_000 } else { 499_500 }, 510_000),
             metadata: PoiMetadata {
                 source: SourceId::osm(1, 3),
-                approach: Some(PoiApproach {
+                approach: mapped.then_some(PoiApproach {
                     source: SourceId::osm(1, 3),
                     lon: 500_000,
                     lat: 510_000,
@@ -138,26 +141,30 @@ impl VisitHarness {
 }
 #[test]
 fn visit_uses_real_legs_and_cancel_retracts_only_candidate() {
-    let mut h = VisitHarness::new();
-    h.settle(ReviewStatus::Preview);
-    let preview = h.h.app.assistant_preview().unwrap();
-    assert!(!h.h.app.assistant_preview_shape().is_empty());
-    assert_eq!(h.h.app.active_route_index(), Some(0));
-    assert_ne!(preview.source.object, 1);
-    let descriptor =
-        h.h.store
-            .with_source(ObjectId(preview.source.object), None, |s| {
-                obc_route::RouteObjectInfo::read(s).unwrap().visit.unwrap()
-            })
-            .unwrap();
-    assert_eq!(descriptor.original.object, 1);
-    assert!(descriptor.accepted_anchors_m[1] > 1000);
-    assert!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count() <= 6);
-    h.h.app.cancel_assistant();
-    h.settle(ReviewStatus::Idle);
-    h.h.assert_clean();
-    assert_eq!(h.h.store.entries().count(), 2);
+    for mapped in [true, false] {
+        let mut h = VisitHarness::with_access(&route(), mapped);
+        h.settle(ReviewStatus::Preview);
+        let preview = h.h.app.assistant_preview().unwrap();
+        assert!(!h.h.app.assistant_preview_shape().is_empty());
+        assert_eq!(h.h.app.active_route_index(), Some(0));
+        assert_ne!(preview.source.object, 1);
+        let descriptor =
+            h.h.store
+                .with_source(ObjectId(preview.source.object), None, |s| {
+                    obc_route::RouteObjectInfo::read(s).unwrap().visit.unwrap()
+                })
+                .unwrap();
+        assert_eq!(descriptor.original.object, 1);
+        assert_eq!((descriptor.target_lon, descriptor.target_lat), (500_000, 510_000));
+        assert!(descriptor.accepted_anchors_m[1] > 1000);
+        assert!(h.h.writer.transport().completed.borrow().iter().filter(|&&k| k == Kind::Seal).count() <= 6);
+        h.h.app.cancel_assistant();
+        h.settle(ReviewStatus::Idle);
+        h.h.assert_clean();
+        assert_eq!(h.h.store.entries().count(), 2);
+    }
 }
+
 #[test]
 fn visit_cancellation_drains_owned_tickets_before_releasing_arena() {
     for kind in [Kind::Allocate, Kind::Write, Kind::Seal, Kind::ReleaseSealed, Kind::Publish] {

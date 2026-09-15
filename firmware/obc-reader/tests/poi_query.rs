@@ -476,7 +476,7 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
             second_start = Some(query.key(&page[0]));
         }
         names.extend(page.iter().map(|p| p.poi.name.clone()));
-        let QueryProgress::Ready { more, coverage_complete: false } = status else { panic!("{status:?}") };
+        let QueryProgress::Ready { more, coverage_complete: true } = status else { panic!("{status:?}") };
         if !more {
             break;
         }

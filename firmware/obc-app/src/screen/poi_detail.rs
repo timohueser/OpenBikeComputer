@@ -44,6 +44,10 @@ impl PoiDetailScreen {
         PoiDetailScreen { poi, off_route_m: None, schedule_ready: false, visit_error: None, landmark_category: 0 }
     }
 
+    pub(crate) fn is_landmark(&self) -> bool {
+        self.landmark_category != 0
+    }
+
     pub(crate) fn landmark(mut self, category: u8) -> Self {
         self.landmark_category = category;
         self
@@ -280,7 +284,7 @@ impl PoiDetailScreen {
             .poi
             .metadata
             .approach
-            .is_none_or(|a| a.profile_mask & (1 << rx.settings.bike_profile_idx.min(7)) == 0)
+            .map_or(self.is_landmark(), |a| a.profile_mask & (1 << rx.settings.bike_profile_idx.min(7)) == 0)
         {
             rx.t(Msg::AssistantNoRoad)
         } else {
