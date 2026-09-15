@@ -16,6 +16,7 @@ impl LocationSource for Position {
 fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
     for scenario in [
         Scenario::Browse,
+        Scenario::FreeRide,
         Scenario::CancelPlanning,
         Scenario::CancelPreview,
         Scenario::Accept,
@@ -32,6 +33,7 @@ fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Browse,
+    FreeRide,
     CancelPlanning,
     CancelPreview,
     Accept,
@@ -43,6 +45,8 @@ enum Scenario {
 }
 
 fn run_find(scenario: Scenario) {
+    let free_ride = scenario == Scenario::FreeRide;
+    let expected_plans = if free_ride { 8 } else { 16 };
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
     points.extend((1..=8).map(|n| (500_000 + n * 10_000, 500_000)));
@@ -107,7 +111,9 @@ fn run_find(scenario: Scenario) {
     let original = routes.ids()[0];
     let mut app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
     feed_routes(&mut app, &routes, &mut NoTrace);
-    app.activate_route(0);
+    if !free_ride {
+        app.activate_route(0);
+    }
     app.stamp_clock_ble(1_727_000_000, 0);
     let mut host = HostLoop::new();
     let mut session = ActiveRouteSession::new();
@@ -143,7 +149,7 @@ fn run_find(scenario: Scenario) {
             PassClock { ride: RideClock(tick * 100), ui: InputClock(tick * 100) },
             &[],
             Sensors::new(&mut position),
-            Some(&route),
+            (!free_ride).then_some(&route),
             tests::SUPPORT,
         );
         if let Some(effect) = plan.effects.navigator.take() {
@@ -190,12 +196,26 @@ fn run_find(scenario: Scenario) {
                 }
             }
         }
-        app.render_frame(Some(&mut scratch), &mut frame, &map.reader(), Some(&route), 240.0, 320.0, |c| {
-            embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
-                embedded_graphics::pixelcolor::raw::RawU16::new(c),
-            ))
-        });
-        if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted) || phase < 12 {
+        if !free_ride || (plan.render.map && !app.reroute_freeze_active()) {
+            app.render_frame(
+                Some(&mut scratch),
+                &mut frame,
+                &map.reader(),
+                (!free_ride).then_some(&route),
+                240.0,
+                320.0,
+                |c| {
+                    embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
+                        embedded_graphics::pixelcolor::raw::RawU16::new(c),
+                    ))
+                },
+            );
+        }
+        if free_ride {
+            assert!(app.active_route_index().is_none());
+        } else if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted)
+            || phase < 12
+        {
             assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
         }
         if phase == 2 && cancel_at == Some(app.assistant_review_status()) {
@@ -273,8 +293,8 @@ fn run_find(scenario: Scenario) {
                 break;
             }
             0 if app.find_place_state() == State::Ready && routes.ids().len() == 5 => {
-                assert_eq!(acquisitions, 16, "eight eligible nearby plus eight distinct forward places");
-                assert_eq!(calculated.len(), 16);
+                assert_eq!(acquisitions, expected_plans, "all eligible nearby and forward places are measured");
+                assert_eq!(calculated.len(), expected_plans);
                 assert_eq!(restores, 0);
                 assert_eq!(routes.unaccepted_routes().count_ones(), 4, "only the ranked choices remain after pruning");
                 assert!(releases >= acquisitions);
@@ -293,7 +313,7 @@ fn run_find(scenario: Scenario) {
             2 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
                 && app.assistant_planner_released() =>
             {
-                assert_eq!(acquisitions, 16);
+                assert_eq!(acquisitions, expected_plans);
                 assert_eq!(restores, 1);
                 let preview = app.assistant_preview().unwrap();
                 assert!(calculated.contains(&preview.source), "selection reuses a measured candidate");
@@ -333,16 +353,22 @@ fn run_find(scenario: Scenario) {
             11 if scenario == Scenario::Deleted
                 && matches!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Failed(_)) =>
             {
-                assert_eq!(acquisitions, 16);
+                assert_eq!(acquisitions, expected_plans);
                 assert!(app.assistant_preview().is_none(), "a removed source cannot be restored");
                 app.apply_gesture(Gesture::BackHold);
                 phase = 8;
             }
             11 if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview => {
-                assert_eq!(acquisitions, 16);
+                assert_eq!(acquisitions, expected_plans);
                 assert_eq!(restores, 2);
                 assert_eq!(app.assistant_preview(), selected_preview);
                 assert_eq!(app.assistant_preview_shape(), selected_shape);
+                if free_ride {
+                    assert!(app.assistant_review_context().unwrap().original.is_none());
+                    app.apply_gesture(Gesture::BackHold);
+                    phase = 8;
+                    continue;
+                }
                 app.stamp_clock_ble(1_727_007_200, 0);
                 app.apply_gesture(Gesture::Press);
                 assert!(routes.read_checkpoint().unwrap().is_none(), "a place that closed cannot be accepted");
@@ -383,7 +409,7 @@ fn run_find(scenario: Scenario) {
             5 => {
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
-                assert_eq!(acquisitions, 16, "paging does not plan more candidates");
+                assert_eq!(acquisitions, expected_plans, "paging does not plan more candidates");
                 phase = 6;
             }
             6 if routes.ids() == [original] => break,
