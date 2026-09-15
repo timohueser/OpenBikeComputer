@@ -167,8 +167,8 @@ fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// The C surface end to end: a card imported, opened, ticked and read through the header's own
-/// calls, with the absent-value sentinels decoded and every call surviving a host C never opened.
+/// The C surface end to end: a card the header's own calls report on, import into, open, tick and
+/// read, with the absent-value sentinels decoded and every call surviving a host C never opened.
 #[test]
 fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
     use crate::ffi::*;
@@ -179,44 +179,78 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
     let c_path = |path: PathBuf| CString::new(path.to_str().unwrap()).unwrap();
     let (card, settings, exports) =
         (c_path(directory.join("card.obc")), c_path(directory.join("settings")), c_path(directory.join("exports")));
-    let map = CString::new(MAP).unwrap();
+    let (map, absent) = (CString::new(MAP).unwrap(), c_path(directory.join("absent.obc")));
 
-    assert_eq!(obc_ios_import_map(card.as_ptr(), map.as_ptr()), 0);
-    let host = obc_ios_open(card.as_ptr(), settings.as_ptr(), exports.as_ptr());
-    assert!(!host.is_null(), "the imported card opens");
+    // SAFETY: every pointer below is this test's own, and each host is closed exactly once.
+    unsafe {
+        assert_eq!(obc_ios_card_state(card.as_ptr()), 0, "no card file yet");
+        assert_eq!(obc_ios_import_map(card.as_ptr(), map.as_ptr()), 0);
+        assert_eq!(obc_ios_card_state(card.as_ptr()), 2, "a card with a map");
 
-    assert!(obc_ios_tick(host, 0.0), "the first tick always renders");
-    let frame = obc_ios_frame(host);
-    assert!(!frame.is_null());
-    let length = (obc_ios_frame_width() * obc_ios_frame_height() * 4) as usize;
-    let pixels = unsafe { std::slice::from_raw_parts(frame, length) };
-    assert!(pixels.iter().skip(3).step_by(4).all(|&alpha| alpha == 0xFF), "opaque alpha for the CGImage");
-    assert_eq!(unsafe { CStr::from_ptr(obc_ios_screen(host)) }.to_str().unwrap(), "Map");
+        let host = obc_ios_open(card.as_ptr(), settings.as_ptr(), exports.as_ptr());
+        assert!(!host.is_null(), "the imported card opens");
+        assert!(obc_ios_tick(host, 0.0), "the first tick always renders");
+        let frame = obc_ios_frame(host);
+        assert!(!frame.is_null());
+        let length = (obc_ios_frame_width() * obc_ios_frame_height() * 4) as usize;
+        let pixels = std::slice::from_raw_parts(frame, length);
+        assert!(pixels.iter().skip(3).step_by(4).all(|&alpha| alpha == 0xFF), "opaque alpha for the CGImage");
+        assert_eq!(CStr::from_ptr(obc_ios_screen(host)).to_str().unwrap(), "Map");
 
-    // A stationary fix with no stamp: NaN and zero are how C spells an absent value.
-    obc_ios_push_fix(host, GRIMSEL.lat, GRIMSEL.lon, f32::NAN, f32::NAN, 0);
-    obc_ios_tick(host, 16.0);
-    let fix = unsafe { &*host }.app.state.user_fix.expect("the pushed fix reaches the app");
-    assert_eq!(fix, Fix { lat: GRIMSEL.lat, lon: GRIMSEL.lon, course: None, speed_mps: None });
-    obc_ios_close(host);
+        // A stationary fix with no stamp: NaN and zero are how C spells an absent value.
+        obc_ios_push_fix(host, GRIMSEL.lat, GRIMSEL.lon, f32::NAN, f32::NAN, 0);
+        obc_ios_tick(host, 16.0);
+        let fix = (*host).app.state.user_fix.expect("the pushed fix reaches the app");
+        assert_eq!(fix, Fix { lat: GRIMSEL.lat, lon: GRIMSEL.lon, course: None, speed_mps: None });
 
-    // A host the shell never opened, or already closed, takes every call without a crash.
-    assert!(!obc_ios_tick(ptr::null_mut(), 0.0));
-    assert!(obc_ios_frame(ptr::null()).is_null());
-    assert!(obc_ios_screen(ptr::null()).is_null());
-    assert!(!obc_ios_recording(ptr::null()));
-    obc_ios_push_fix(ptr::null_mut(), GRIMSEL.lat, GRIMSEL.lon, 90.0, 4.0, 1_700_000_123);
-    obc_ios_push_heading(ptr::null_mut(), 10.0);
-    obc_ios_push_altitude(ptr::null_mut(), 2_005.0);
-    obc_ios_push_battery(ptr::null_mut(), 50);
-    obc_ios_button(ptr::null_mut(), 2, true);
-    assert_eq!(obc_ios_import_route(ptr::null_mut(), card.as_ptr()), -1);
-    obc_ios_close(ptr::null_mut());
+        // Closing frees the host, so the card's exclusive lock goes with it and the same card opens
+        // again. A leaked handle would fail here.
+        obc_ios_close(host);
+        let reopened = obc_ios_open(card.as_ptr(), settings.as_ptr(), exports.as_ptr());
+        assert!(!reopened.is_null(), "the closed host released the card");
+        obc_ios_close(reopened);
 
-    // An absent card reports through the thread-local message instead of opening.
-    let absent = c_path(directory.join("absent.obc"));
-    assert!(obc_ios_open(absent.as_ptr(), settings.as_ptr(), exports.as_ptr()).is_null());
-    assert!(!unsafe { CStr::from_ptr(obc_ios_last_error()) }.to_bytes().is_empty(), "and says why");
+        // A host the shell never opened, or already closed, takes every call without a crash.
+        assert!(!obc_ios_tick(ptr::null_mut(), 0.0));
+        assert!(obc_ios_frame(ptr::null()).is_null());
+        assert!(obc_ios_screen(ptr::null()).is_null());
+        assert!(!obc_ios_recording(ptr::null()));
+        obc_ios_push_fix(ptr::null_mut(), GRIMSEL.lat, GRIMSEL.lon, 90.0, 4.0, 1_700_000_123);
+        obc_ios_push_heading(ptr::null_mut(), 10.0);
+        obc_ios_push_altitude(ptr::null_mut(), 2_005.0);
+        obc_ios_push_battery(ptr::null_mut(), 50);
+        obc_ios_button(ptr::null_mut(), 2, true);
+        assert_eq!(obc_ios_import_route(ptr::null_mut(), card.as_ptr()), -1);
+        obc_ios_close(ptr::null_mut());
+
+        // An absent card reports through the thread-local message instead of opening.
+        assert!(obc_ios_open(absent.as_ptr(), settings.as_ptr(), exports.as_ptr()).is_null());
+        assert!(!CStr::from_ptr(obc_ios_last_error()).to_bytes().is_empty(), "and says why");
+    }
 
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// The hand-written header and the ABI cannot drift apart: each declares exactly what the other
+/// defines. This is the check that runs where `nm` does not.
+#[test]
+fn the_header_declares_exactly_the_functions_the_abi_defines() {
+    use std::collections::BTreeSet;
+
+    /// Every `obc_ios_*` identifier in `source` whose surrounding text `keep` accepts.
+    fn scan(source: &str, keep: impl Fn(&str, &str) -> bool) -> BTreeSet<&str> {
+        source
+            .match_indices("obc_ios_")
+            .filter_map(|(start, _)| {
+                let rest = &source[start..];
+                let end = rest.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(rest.len());
+                keep(&source[..start], &rest[end..]).then_some(&rest[..end])
+            })
+            .collect()
+    }
+
+    // A header comment that mentions a call spells a declared name, so `name(` needs no C parser.
+    let declared = scan(include_str!("../include/obc_ios_host.h"), |_, after| after.starts_with('('));
+    let defined = scan(include_str!("ffi.rs"), |before, _| before.ends_with("fn "));
+    assert_eq!(declared, defined);
 }
