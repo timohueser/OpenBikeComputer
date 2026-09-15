@@ -473,10 +473,10 @@ The delete footer is a guarded row. The action runs only after a complete hold o
 ## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
-within 300 m of its line. It takes the first eight eligible places from each source, alternates
+within 300 m of its line. It takes the first four eligible places from each source, alternates
 sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
 
-The shared Visit planner measures at most 16 distinct candidates, one at a time. It stores each
+The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
 measured route on the card and releases the planner before the next plan starts. The Finding
 indicator stays visible through the complete batch. Its activity dots update once per second without
 redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
