@@ -50,13 +50,10 @@
 //!
 //! # The bug class this creates: sticky state
 //!
-//! An arm holds **scratch**, never state. Nothing written into an arm may be read after its window
-//! closes, because the next claimant re-initializes those bytes in place. The precedent is the
-//! renderer's `suppress_terrain` (#1096): a single `bool` that had to survive between frames, and
-//! that P1 moved out into a per-call `RenderConfig` precisely so the render arm could join this
-//! union. A field added to an arm that must outlive its window is silently corrupted the first time
-//! another arm runs — the compiler cannot see it, so it is a review rule: **a value that must
-//! survive belongs in a `Config` beside the arena, not in it.**
+//! Durable state lives outside the arena. The photo arm can retain decode work
+//! between bounded steps only while the gate reports the same initialized arm.
+//! After another claimant it restarts from its screen-owned selection and clears
+//! the photo rectangle. No arena reference survives a photo step.
 //!
 //! # The growth asymmetry, and the ≥10 KB bar
 //!
@@ -166,6 +163,7 @@ union ScratchArena {
     /// The per-frame render scratch.
     render: ManuallyDrop<obc_render::RenderScratch>,
     peak_view: ManuallyDrop<PeakArm>,
+    photo: ManuallyDrop<obc_app::photo::Runtime>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
     #[cfg(has_nav)]
@@ -762,3 +760,36 @@ pub(crate) fn claim_peak(
     unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), &framed) };
     Some(PeakGuard { _not_send: PhantomData })
 }
+
+/// One synchronous decoder step. Drop before any source or display await.
+pub(crate) struct PhotoGuard {
+    _not_send: PhantomData<*mut ()>,
+}
+impl Deref for PhotoGuard {
+    type Target = obc_app::photo::Runtime;
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: this guard exclusively owns the initialized photo arm.
+        unsafe { &*(arena_ptr() as *const Self::Target) }
+    }
+}
+impl DerefMut for PhotoGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: this guard exclusively owns the initialized photo arm.
+        unsafe { &mut *(arena_ptr() as *mut Self::Target) }
+    }
+}
+impl Drop for PhotoGuard {
+    fn drop(&mut self) {
+        release(ArenaOwner::Photo);
+    }
+}
+pub(crate) fn claim_photo() -> Option<PhotoGuard> {
+    // SAFETY: the ride loop is the sole owner-switcher, in thread mode.
+    let init = unsafe { gate() }.claim_photo().ok()?;
+    if init == ArenaInit::Required {
+        // SAFETY: the successful claim owns the whole arm. Initialize without a stack copy.
+        unsafe { obc_app::photo::Runtime::init_in_place(arena_ptr() as *mut _) };
+    }
+    Some(PhotoGuard { _not_send: PhantomData })
+}
+const _: () = assert!(core::mem::size_of::<obc_app::photo::Runtime>() <= ARENA_BYTES);

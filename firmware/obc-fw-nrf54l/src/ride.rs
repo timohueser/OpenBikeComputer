@@ -2868,7 +2868,7 @@ pub(crate) async fn run_app(
                         // every frame of an open comes through with `None` and clips nothing. A region does
                         // survive on a settled sheet whose *own* overlay ticked one, and clipping that frame
                         // to it is exactly right: the sheet is all that is drawn, and only that part moved.
-                        let clip = if needs_map { None } else { dirty.region };
+                        let clip = if needs_map || app.photo_status().is_some() { None } else { dirty.region };
                         app.set_render_clip(clip);
                         // Sampled before the render closure borrows `app`; nothing between here and the log
                         // below moves the screen stack.
@@ -2914,7 +2914,7 @@ pub(crate) async fn run_app(
                                 // `MountedSet` as the scene and the core `Reader` for everything else
                                 // — is gone with the set mount (FS7.5-c2, #1420).
                                 let panorama = peak_view.panorama();
-                                app.render_scene_map_rain_timed(
+                                let stats = app.render_scene_map_rain_timed(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
@@ -2929,7 +2929,15 @@ pub(crate) async fn run_app(
                                     FRAME_H as f32,
                                     color_fn,
                                     &InstantClock,
-                                )
+                                );
+                                drop(render_guard.take());
+                                if app.photo_pending() {
+                                    if let Some(mut photo) = crate::arena::claim_photo() {
+                                        let reader = Reader::new(flat_map, map_tables, map_cache);
+                                        app.prepare_photo_step(&mut photo, Some(&reader), &mut fbdev, color_fn);
+                                    }
+                                }
+                                stats
                             });
                             #[cfg(feature = "sd-bench")]
                             if needs_map {
@@ -2951,6 +2959,18 @@ pub(crate) async fn run_app(
                             Some(RenderedFrame { needs_map, sheet_only, stats, render_us })
                         }
                     }
+                }
+            } else if app.photo_pending() {
+                if let Some(mut photo) = crate::arena::claim_photo() {
+                    let reader = Reader::new(flat_map, map_tables, map_cache);
+                    let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
+                        let mut target = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
+                        app.prepare_photo_step(&mut photo, Some(&reader), &mut target, color_fn);
+                        obc_render::RenderStats::default()
+                    });
+                    Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
+                } else {
+                    None
                 }
             } else {
                 None

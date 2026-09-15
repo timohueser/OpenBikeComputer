@@ -3200,7 +3200,11 @@ impl App {
             now_ms, self.ui.now_ms,
             "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
         );
-        self.ui.next_wake_ms
+        if self.photo_pending() {
+            Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
+        } else {
+            self.ui.next_wake_ms
+        }
     }
 
     /// Render the current screen and any overlays above it into `target`, a `w`×`h` pixel display.
@@ -3626,6 +3630,9 @@ impl App {
         // `!sheet_only` is the only place the answer exists: a pass may tick and then render
         // nothing at all.
         if !sheet_only {
+            if let Some(Screen::LandmarkPhoto(page)) = ui.stack.get_mut(base) {
+                page.invalidate();
+            }
             ui.spend_base_draw();
         }
         stats

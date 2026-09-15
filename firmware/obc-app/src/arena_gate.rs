@@ -39,15 +39,14 @@
 //!
 //! # The bug class this creates
 //!
-//! An arm holds **scratch**, never state: nothing written into an arm may be read after its window
-//! closes, because the next claimant re-initializes the same bytes in place. A field that must
-//! survive its window (the renderer's `suppress_terrain` precedent) belongs in a `Config` beside
-//! the arena, not in it. Name it in review; the compiler cannot.
+//! Durable state lives outside the arena. The photo decoder may resume only when
+//! `ArenaInit::Skippable` proves that no other arm used its bytes. Otherwise it
+//! restarts from the selected source and clears the photo rectangle.
 
 /// Which arm currently owns the arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArenaOwner {
-    /// Nobody — the arena's bytes are dead and any claimant may take it.
+    /// Nobody holds a reference; any claimant may take the arena.
     #[default]
     None,
     /// The per-frame render scratch, held for the span of one map render.
@@ -58,6 +57,8 @@ pub enum ArenaOwner {
     Usb,
     /// Runtime panorama and terrain cache, held while Peak View is open.
     PeakView,
+    /// Incremental photo decoder, borrowed for one bounded preparation step.
+    Photo,
 }
 
 /// Why a claim (or a release) was refused. The board maps this to a debug `panic!` and a release
@@ -129,9 +130,7 @@ pub enum ArenaInit {
     /// The block is another arm's (or boot garbage, on the first-ever claim): initialize it.
     Required,
     /// The block already holds this arm's initialized state — the last claimant was this same arm
-    /// and gave it back intact. Skippable **only** for an arm whose own use is write-before-read
-    /// within one span; see [`claim_render`](ArenaGate::claim_render), the one caller that acts on
-    /// it.
+    /// and gave it back intact. Render scratch can be reused; photo work can resume.
     Skippable,
 }
 
@@ -163,6 +162,11 @@ impl ArenaGate {
     /// Whether nobody holds it (any claim would pass the ownership half of its gate).
     pub fn is_idle(&self) -> bool {
         self.owner == ArenaOwner::None
+    }
+
+    /// Claim one bounded photo step. Resume only if no other arm has used the bytes.
+    pub fn claim_photo(&mut self) -> Result<ArenaInit, ArenaError> {
+        self.take(ArenaOwner::Photo)
     }
 
     /// Claim the arena for a **map render**, for the span of that render only.
@@ -386,5 +390,23 @@ mod tests {
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the search left its A* table in the block");
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         assert!(gate.is_idle(), "every arm gave the arena back");
+    }
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+    #[test]
+    fn photo_resumes_only_after_the_same_arm_and_refuses_live_owners() {
+        let mut gate = ArenaGate::new();
+        assert_eq!(gate.claim_photo(), Ok(ArenaInit::Required));
+        assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Photo)));
+        gate.release(ArenaOwner::Photo).unwrap();
+        assert_eq!(gate.claim_photo(), Ok(ArenaInit::Skippable));
+        gate.release(ArenaOwner::Photo).unwrap();
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
+        assert_eq!(gate.claim_photo(), Err(ArenaError::Busy(ArenaOwner::Render)));
+        gate.release(ArenaOwner::Render).unwrap();
+        assert_eq!(gate.claim_photo(), Ok(ArenaInit::Required));
     }
 }

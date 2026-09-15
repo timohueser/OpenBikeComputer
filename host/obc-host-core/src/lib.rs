@@ -43,6 +43,7 @@ pub mod flat_store;
 pub use flat_routes::FlatRouteStore;
 mod frame;
 mod nav;
+pub mod photo;
 mod replay;
 mod repo;
 mod session;

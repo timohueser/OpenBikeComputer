@@ -209,6 +209,7 @@ pub struct Demo {
     /// render (so the map opens without a per-frame `RouteIndex` reparse).
     session: ActiveRouteSession,
     frame: RgbaFrame,
+    photo: obc_host_core::photo::Preparer,
     peaks: crate::peak_view::Runtime,
     elevation: obc_elevation::TerrainElevation<'static, 4>,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
@@ -285,6 +286,7 @@ impl Demo {
             host: HostLoop::new(),
             session: ActiveRouteSession::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
+            photo: obc_host_core::photo::Preparer::default(),
             peaks: crate::peak_view::Runtime::new(),
             elevation: obc_elevation::TerrainElevation::parse(&*crate::peak_view::TERRAIN)
                 .expect("demo elevation parses"),
@@ -420,7 +422,7 @@ impl Demo {
         //
         // Render on demand — `plan.render` is the same signal the firmware gates its repaints on.
         // The first frame always renders (`ready` doubles as the page's poster-swap signal).
-        if plan.render.map || plan.render.overlay || !self.ready {
+        if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
             // Re-open the active route: the executor may have committed new geometry under it (a
             // planned route, a spliced detour), and the frame must draw what is there now.
             self.session.sync(&self.app, &mut self.routes);
@@ -430,23 +432,29 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            self.app.render_scene_map_rain_timed(
-                Some(&mut self.scratch),
-                &mut self.frame,
-                Some(&reader),
-                Some(&reader),
-                route.as_ref(),
-                None,
-                None,
-                self.peaks.panorama(),
-                FRAME_W as f32,
-                FRAME_H as f32,
-                |c| {
-                    let (r, g, b) = rgb565_to_device64(c);
-                    Rgb888::new(r, g, b)
-                },
-                &obc_render::NoopClock,
-            );
+            if plan.render.map || plan.render.overlay || !self.ready {
+                self.app.render_scene_map_rain_timed(
+                    Some(&mut self.scratch),
+                    &mut self.frame,
+                    Some(&reader),
+                    Some(&reader),
+                    route.as_ref(),
+                    None,
+                    None,
+                    self.peaks.panorama(),
+                    FRAME_W as f32,
+                    FRAME_H as f32,
+                    |c| {
+                        let (r, g, b) = rgb565_to_device64(c);
+                        Rgb888::new(r, g, b)
+                    },
+                    &obc_render::NoopClock,
+                );
+            }
+            self.photo.step(&mut self.app, Some(&reader), &mut self.frame, |c| {
+                let (r, g, b) = rgb565_to_device64(c);
+                Rgb888::new(r, g, b)
+            });
             self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
                 let (r, g, b) = rgb565_to_device64(c);
                 Rgb888::new(r, g, b)
