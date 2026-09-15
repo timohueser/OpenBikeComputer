@@ -145,6 +145,11 @@ impl InputPlane {
         self.gestures.cancel_holds();
     }
 
+    /// Time until a pending Assistant chord reaches its hold threshold.
+    pub fn chord_remaining_ms(&self, now_ms: u32) -> Option<u32> {
+        self.gestures.chord_remaining_ms(now_ms)
+    }
+
     /// The most recently recognized gesture (host input readout), if any.
     pub fn last_gesture(&self) -> Option<Gesture> {
         self.last_gesture

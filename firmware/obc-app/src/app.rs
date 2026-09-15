@@ -1989,8 +1989,8 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
-    /// Apply one device-wide [`Chord`] — **the drawer owner**, and the only place a drawer opens
-    /// or closes. Returns whether it moved anything.
+    /// Apply one device-wide [`Chord`]: a drawer toggle or direct Assistant entry.
+    /// Returns whether it moved anything.
     ///
     /// Resolved here rather than in a screen because a chord is not a screen's input: the
     /// recogniser already swallowed its constituents, and the sheet has to be able to open over
@@ -2014,6 +2014,26 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
+            Chord::Assistant => {
+                if let Some(index) = self.ui.stack.iter().rposition(|s| matches!(s, Screen::Assistant(_))) {
+                    self.ui.stack.truncate(index + 1);
+                } else {
+                    let assistant = Screen::Assistant(screen::AssistantScreen::new());
+                    let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
+                        screen::Transition::Push(assistant)
+                    } else {
+                        screen::Transition::Replace(assistant)
+                    };
+                    screen::apply(&mut self.ui.stack, transition);
+                }
+                self.ui.map_dirty = true;
+                self.ui.last_input_ms = self.ui.now_ms;
+                self.ui.idle_return_timing = true;
+                self.ui.input.cancel_holds();
+                self.ui.hold_cancel_pending = true;
+                self.ui.reconcile_corridor(self.up_ahead_scope());
+                true
+            }
             // The contextual sheet exists only where content is declared (#1515 D3): a base screen
             // that names no [`ContextMenu`](crate::screen::ContextMenu) gets nothing, not an empty
             // drawer. The squeeze is still swallowed by the recogniser, so it can never leak a step
@@ -2704,6 +2724,9 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if let Some(remaining) = self.ui.input.chord_remaining_ms(clock.0) {
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
         let place_local = self.place_local_time();
         if self.ui.stack.iter().any(|screen| {
             matches!(

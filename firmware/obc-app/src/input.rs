@@ -16,6 +16,8 @@
 //! from either constituent, and both releases are silent; the latch clears only once both buttons
 //! are up, and re-arms from there. That is what lets opening a drawer never also move the
 //! selection under it or complete a long-press on the screen it covered.
+//! Up + Select waits for the first release to open Quick, or for both buttons to stay down for
+//! [`DEFAULT_HOLD_MS`] to open Assistant directly. Its hold starts when the second button joins.
 //!
 //! The price is the **step deferral**: a directional press cannot step until the window has passed
 //! without a partner. A release inside the window still steps immediately, so a tap feels the same;
@@ -55,8 +57,10 @@ pub const DEFAULT_TAP_MS: u32 = 200;
 /// screen's `handle`, and neither do the presses it is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chord {
-    /// **Up + Select** — open (or close) the universal quick drawer.
+    /// **Up + Select tap** — open (or close) the universal quick drawer.
     Quick,
+    /// **Up + Select hold** — open the Assistant directly.
+    Assistant,
     /// **Down + Back** — open the current screen's contextual drawer, where one is declared.
     Context,
 }
@@ -112,10 +116,10 @@ impl Pair {
         x == b || y == b
     }
 
-    /// What the app does with this pair — `None` for the two reserved ones.
+    /// Immediate action for this pair. Quick waits for release or the hold threshold.
     fn chord(self) -> Option<Chord> {
         match self {
-            Pair::Quick => Some(Chord::Quick),
+            Pair::Quick => None,
             Pair::Context => Some(Chord::Context),
             Pair::UpDown | Pair::SelectBack => None,
         }
@@ -169,10 +173,10 @@ impl Held {
 #[derive(Debug, Clone, Copy, Default)]
 struct Edges {
     /// Millis the direction's next step is due: the deferred **first** step while its `DEFER` bit
-    /// is set, an auto-repeat afterwards. Meaningful only while the matching `DOWN` bit is set.
+    /// is set, an auto-repeat afterwards. The latched Up slot times a pending Assistant hold.
     due: [u32; 2],
     /// Per-direction bits: `DOWN << axis` = the button is down, `DEFER << axis` = its first step
-    /// has not been emitted yet.
+    /// has not been emitted yet. `QUICK_PENDING` waits for the quick pair's release or hold.
     flags: u8,
     /// The chord currently latched, if any. Set on the second press edge of a pair; cleared once
     /// **both** its constituents are up.
@@ -186,6 +190,8 @@ struct Edges {
 const DOWN: u8 = 1;
 /// `flags` bit for "this direction still owes its first step", shifted by axis.
 const DEFER: u8 = 4;
+/// Up + Select is waiting for its first release or hold deadline.
+const QUICK_PENDING: u8 = 16;
 
 impl Edges {
     /// A press edge at `now`: the direction goes down owing a first step, deferred to the end of
@@ -371,6 +377,9 @@ impl Gestures {
     /// they still owe (a tap inside the chord window, which therefore feels immediate) and are
     /// silent once it has fired; Select/Back tap only when released inside the tap window.
     fn release(&mut self, b: Button, now: u32) -> Option<Gesture> {
+        if self.edges.latch.is_some_and(|p| p.holds(b)) {
+            self.resolve_quick(now, true);
+        }
         if self.release_latched(b) {
             return None;
         }
@@ -393,6 +402,7 @@ impl Gestures {
     /// on a still-held direction, and one auto-repeat `Step` each time a held Up/Down falls due.
     /// At most one gesture per call; anything else due fires on the next call.
     pub fn tick(&mut self, now: u32) -> Option<Gesture> {
+        self.resolve_quick(now, false);
         let hold_ms = self.hold_ms;
         // No latch check for the two timed buttons: every press edge under a held latch is spent
         // by [`press`](Self::press), so a latched Select or Back always reads `fired_long`. That is
@@ -431,6 +441,31 @@ impl Gestures {
         let (a, b) = pair.buttons();
         self.spend(a);
         self.spend(b);
+        if pair == Pair::Quick {
+            self.edges.flags |= QUICK_PENDING;
+            // The latched Up cannot step, so its due-time can time the shared hold instead.
+            self.edges.due[0] = now.wrapping_add(self.hold_ms);
+        }
+    }
+
+    /// Time until the pending chord needs recognition, including on an otherwise idle host.
+    pub fn chord_remaining_ms(&self, now: u32) -> Option<u32> {
+        (self.edges.flags & QUICK_PENDING != 0).then(|| {
+            let remaining = self.edges.due[0].wrapping_sub(now);
+            if remaining < u32::MAX / 2 {
+                remaining
+            } else {
+                0
+            }
+        })
+    }
+
+    fn resolve_quick(&mut self, now: u32, released: bool) {
+        let Some(remaining) = self.chord_remaining_ms(now) else { return };
+        if released || remaining == 0 {
+            self.edges.flags &= !QUICK_PENDING;
+            self.edges.pending = Some(if remaining == 0 { Chord::Assistant } else { Chord::Quick });
+        }
     }
 
     /// Whether `b` may still join a chord at `now`: down, pressed inside the window, and nothing
@@ -479,7 +514,8 @@ impl Gestures {
         }
     }
 
-    /// Cancel any in-flight press on Select or Back: mark it already-fired, so the pending
+    /// Cancel any pending Assistant chord and in-flight press on Select or Back: mark it spent,
+    /// so the pending
     /// `Hold`/`BackHold` never emits, the eventual release is silent (no surprise tap), and the
     /// hold-progress reads 0 (the bulge retracts). A fresh press recognises normally. Up/Down
     /// auto-repeat is untouched — a step charges nothing and lands on the new screen just as a
@@ -490,6 +526,7 @@ impl Gestures {
     /// whatever replaced it — e.g. a hold aimed at a popup's "Save & new" landing on the Route
     /// menu's hold-to-**delete** footer after a Back tap dismissed the popup (issue #480).
     pub fn cancel_holds(&mut self) {
+        self.edges.flags &= !QUICK_PENDING;
         for h in [&mut self.select, &mut self.back] {
             if h.since.is_some() {
                 h.fired_long = true;
@@ -776,33 +813,66 @@ mod tests {
 
     // ---- Chords: the device-wide pairs, above the screen ------------------------------------
 
-    /// The headline property, in both press orders and both release orders: a chord reports itself
-    /// **once** and its constituents emit **nothing** — no step, no tap, no long-press, no
-    /// confirm-ring charge — and the latch re-arms once both buttons are up.
     #[test]
-    fn a_chord_reports_once_and_leaks_no_constituent_gesture() {
+    fn quick_tap_and_assistant_hold_are_exclusive_and_rearm_in_both_orders() {
         for (first, second) in [(Button::Up, Button::Select), (Button::Select, Button::Up)] {
-            for release_first_pressed in [true, false] {
+            for (a, b) in [(first, second), (second, first)] {
                 let mut g = Gestures::with_defaults();
-                assert_eq!(g.on_event(down(first), 0), None);
-                assert_eq!(g.on_event(down(second), 60), None, "the completing press is silent too");
-                assert_eq!(g.take_chord(), Some(Chord::Quick), "{first:?} then {second:?}");
-                assert_eq!(g.take_chord(), None, "a chord is reported exactly once");
-
-                // Held well past every threshold: no deferred step, no Hold, no ring.
-                assert_eq!(g.tick(200), None, "the deferred step is the chord's, not the screen's");
-                assert_eq!(g.tick(700), None, "and the Select long-press never fires");
-                assert_eq!(g.select_progress(700), 0.0, "no confirm ring charges under a chord");
-
-                let (a, b) = if release_first_pressed { (first, second) } else { (second, first) };
-                assert_eq!(g.on_event(up(a), 800), None, "the first release is silent");
-                assert_eq!(g.on_event(up(b), 820), None, "and so is the last — it is not a tap");
-
-                // Re-armed: an ordinary tap right afterwards behaves normally.
-                g.on_event(down(Button::Up), 900);
-                assert_eq!(g.on_event(up(Button::Up), 940), Some(Gesture::Step(-1)), "the latch re-armed");
+                for (start, held) in [(0u32, false), (1_000, true), (2_000, false)] {
+                    assert_eq!(g.on_event(down(first), start), None);
+                    assert_eq!(g.on_event(down(second), start + 60), None);
+                    assert_eq!(g.take_chord(), None, "no drawer on the press edges");
+                    assert_eq!(g.chord_remaining_ms(start + 60), Some(DEFAULT_HOLD_MS));
+                    assert_eq!(g.tick(start + 100), None);
+                    assert_eq!(g.select_progress(start + 100), 0.0);
+                    if held {
+                        assert_eq!(g.tick(start + 559), None);
+                        assert_eq!(g.take_chord(), None);
+                        assert_eq!(g.tick(start + 560), None, "no constituent Hold");
+                        assert_eq!(g.take_chord(), Some(Chord::Assistant));
+                        assert_eq!(g.tick(start + 800), None);
+                    }
+                    let released = start + if held { 820 } else { 180 };
+                    assert_eq!(g.on_event(up(a), released), None);
+                    assert_eq!(g.take_chord(), if held { None } else { Some(Chord::Quick) });
+                    assert_eq!(g.on_event(up(b), released + 20), None);
+                    assert_eq!(g.take_chord(), None);
+                    assert_eq!(g.chord_remaining_ms(released + 20), None);
+                }
+                g.on_event(down(Button::Up), 3_000);
+                assert_eq!(g.on_event(up(Button::Up), 3_040), Some(Gesture::Step(-1)));
             }
         }
+    }
+
+    #[test]
+    fn quick_release_at_threshold_and_clock_rollover_resolve_the_hold() {
+        let mut g = Gestures::with_defaults();
+        let start = u32::MAX - 100;
+        g.on_event(down(Button::Select), start);
+        g.on_event(down(Button::Up), start + 40);
+        let deadline = (start + 40).wrapping_add(DEFAULT_HOLD_MS);
+        assert_eq!(g.chord_remaining_ms(deadline - 1), Some(1));
+        assert_eq!(g.on_event(up(Button::Up), deadline), None);
+        assert_eq!(g.take_chord(), Some(Chord::Assistant), "release need not wait for an idle tick");
+        assert_eq!(g.on_event(up(Button::Select), deadline + 20), None);
+        assert_eq!(g.take_chord(), None);
+    }
+
+    #[test]
+    fn cancel_holds_cancels_pending_assistant_without_a_quick_tap() {
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Up), 0);
+        g.on_event(down(Button::Select), 40);
+        g.cancel_holds();
+        assert_eq!(g.chord_remaining_ms(100), None);
+        assert_eq!(g.tick(600), None);
+        assert_eq!(g.take_chord(), None);
+        assert_eq!(g.on_event(up(Button::Up), 650), None);
+        assert_eq!(g.on_event(up(Button::Select), 670), None);
+        assert_eq!(g.take_chord(), None);
+        g.on_event(down(Button::Select), 700);
+        assert_eq!(g.on_event(up(Button::Select), 760), Some(Gesture::Press));
     }
 
     /// The other meaningful pair, and the two reserved ones: all four latch and swallow, but only
@@ -869,11 +939,13 @@ mod tests {
         let mut g = Gestures::with_defaults();
         g.on_event(down(Button::Up), 0);
         g.on_event(down(Button::Select), 30);
-        assert_eq!(g.take_chord(), Some(Chord::Quick));
+        assert_eq!(g.take_chord(), None);
         assert_eq!(g.on_event(up(Button::Select), 100), None, "Up is still down, so the latch holds");
+        assert_eq!(g.take_chord(), Some(Chord::Quick));
         assert_eq!(g.on_event(down(Button::Select), 120), None, "…and the thumb rolls back on");
         assert_eq!(g.select_progress(400), 0.0, "no confirm ring charges under a held chord");
         assert_eq!(g.tick(620), None, "and no Hold reaches the screen the sheet covers");
+        assert_eq!(g.take_chord(), None, "a rolled thumb cannot restart the Assistant hold");
         assert_eq!(g.on_event(up(Button::Select), 700), None);
         assert_eq!(g.on_event(up(Button::Up), 720), None, "the last release ends the chord, silently");
 
@@ -902,9 +974,10 @@ mod tests {
         let mut g = Gestures::with_defaults();
         g.on_event(down(Button::Up), 0);
         g.on_event(down(Button::Select), 30);
-        assert_eq!(g.take_chord(), Some(Chord::Quick));
+        assert_eq!(g.take_chord(), None);
 
         assert_eq!(g.on_event(up(Button::Up), 100), None);
+        assert_eq!(g.take_chord(), Some(Chord::Quick));
         assert_eq!(g.tick(700), None, "the still-held Select is still the chord's");
         assert_eq!(g.select_progress(700), 0.0);
 
