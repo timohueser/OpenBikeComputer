@@ -1319,6 +1319,38 @@ fn main() {
                 // Both tokens are the same device frame; only `f` also draws. The keyed ride-track
                 // fill and the route overview's shape preview are answered inside the executor from
                 // the plan's `derived_needs`, so nothing here reaches for them by hand.
+                if matches!(what, ScriptHook::Tick) {
+                    if let Some(player) = player.as_mut() {
+                        player.seek(replay_to);
+                        session.sync(app, stores.routes);
+                        let mut plan = {
+                            let route = session
+                                .index()
+                                .zip(stores.routes.active_source())
+                                .map(|(index, source)| RouteReader::new(index, source));
+                            host.pass(
+                                app,
+                                obc_app::device_core::PassClock { ride: obc_ports::RideClock(0), ui: InputClock(now) },
+                                &[],
+                                obc_ports::Sensors::new(player),
+                                route.as_ref(),
+                                gui::SIM_SUPPORT,
+                            )
+                        };
+                        host.execute(
+                            app,
+                            &mut plan,
+                            &mut session,
+                            stores.routes,
+                            stores.rides,
+                            stores.tracks,
+                            stores.trips,
+                            map.planner_map(),
+                            &mut *elev,
+                            &mut platform,
+                        );
+                    }
+                }
                 settle(&mut host, &mut session, app, &mut stores, map.planner_map(), &mut *elev, &mut platform, now);
                 peak_runtime.finish(app);
                 if matches!(what, ScriptHook::Render) {

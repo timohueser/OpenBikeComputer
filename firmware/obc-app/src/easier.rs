@@ -61,12 +61,23 @@ impl State {
     }
 }
 impl App {
+    fn cancel_easier(&mut self) {
+        let (Some(mut owned), Some(current)) = (self.easier.context, self.assistant_review_context()) else {
+            return;
+        };
+        if !matches!(current.purpose, ReviewPurpose::Easier(_)) {
+            return;
+        }
+        owned.purpose = current.purpose;
+        if owned.original.is_none() {
+            owned.original = current.original;
+        }
+        if owned == current {
+            self.cancel_assistant();
+        }
+    }
     /// Production entry. The executor binds the original and its facts before the first trial.
     pub fn open_easier_routes(&mut self, map: RouteSourceKey) -> Result<(), VisitUnavailable> {
-        let origin = self.current_review_origin().ok_or(VisitUnavailable::NoFix)?;
-        if !origin.trustworthy || self.active_route_index().is_none() {
-            return Err(VisitUnavailable::Unmatched);
-        }
         if self.active_visit() {
             return Err(VisitUnavailable::Avoidance);
         }
@@ -78,13 +89,19 @@ impl App {
         {
             return Err(VisitUnavailable::Busy);
         }
+        let origin = self.current_review_origin().ok_or(VisitUnavailable::NoFix)?;
+        if !origin.trustworthy || self.active_route_index().is_none() {
+            return Err(VisitUnavailable::Unmatched);
+        }
         self.request_easier(map, Objective::Profile, origin.fix)?;
         let mut state = State::new();
         state.context = self.assistant_review_context();
         state.phase = Phase::Trials;
         self.easier = state;
-        if self.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_err() {
-            self.cancel_assistant();
+        if !matches!(self.ui.stack.last(), Some(crate::screen::Screen::Easier(_)))
+            && self.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_err()
+        {
+            self.cancel_easier();
             self.easier.phase = Phase::Idle;
             return Err(VisitUnavailable::Busy);
         }
@@ -166,7 +183,7 @@ impl App {
             return;
         }
         if !self.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::Easier(_))) {
-            self.cancel_assistant();
+            self.cancel_easier();
             self.easier.phase = Phase::Idle;
             return;
         }
@@ -184,11 +201,11 @@ impl App {
         if !self.easier_current()
             && !matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
         {
-            self.cancel_assistant();
+            self.cancel_easier();
             self.easier.phase = Phase::Unavailable;
         }
         if self.easier.phase == Phase::Ready && matches!(self.assistant_review_status(), ReviewStatus::Failed(_)) {
-            self.cancel_assistant();
+            self.cancel_easier();
             self.easier.phase = Phase::Unavailable;
         }
         match self.easier.phase {
@@ -196,7 +213,7 @@ impl App {
                 ReviewStatus::Preview => {
                     let Some(preview) = self.assistant_preview() else { return };
                     let Some(facts) = preview.visit_costs else {
-                        self.cancel_assistant();
+                        self.cancel_easier();
                         self.easier.phase = Phase::Unavailable;
                         return;
                     };
@@ -214,7 +231,7 @@ impl App {
                         if expected.is_some_and(|r| r.crc == preview.source.crc && r.choice.costs == costs) {
                             self.easier.phase = Phase::Ready;
                         } else {
-                            self.cancel_assistant();
+                            self.cancel_easier();
                             self.easier.phase = Phase::Unavailable;
                         }
                     } else {
@@ -231,7 +248,7 @@ impl App {
                                 });
                             }
                         }
-                        self.cancel_assistant();
+                        self.cancel_easier();
                         self.easier.phase = Phase::Releasing;
                     }
                 }
@@ -242,11 +259,11 @@ impl App {
                         self.easier.failure = Some(error);
                     }
                     self.easier.context = self.assistant_review_context();
-                    self.cancel_assistant();
+                    self.cancel_easier();
                     self.easier.phase = Phase::Releasing;
                 }
                 ReviewStatus::Failed(_) | ReviewStatus::Unresolved => {
-                    self.cancel_assistant();
+                    self.cancel_easier();
                     self.easier.phase = Phase::Unavailable;
                 }
                 _ => {}
@@ -291,7 +308,7 @@ impl App {
         match g {
             crate::Gesture::Back if self.easier.review => self.easier.review = false,
             crate::Gesture::Back | crate::Gesture::BackHold => {
-                self.cancel_assistant();
+                self.cancel_easier();
                 self.easier.phase = Phase::Idle;
                 self.ui.stack.pop();
                 if g == crate::Gesture::BackHold {
@@ -322,7 +339,7 @@ impl App {
                 }
                 if i != self.easier.selected as usize {
                     self.easier.selected = i as u8;
-                    self.cancel_assistant();
+                    self.cancel_easier();
                     // A distinct selected request waits for the same physical release acknowledgement.
                     self.easier.phase = Phase::SelectRelease;
                 }

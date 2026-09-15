@@ -50,7 +50,9 @@ GPX="${GPX:-$GRIMSEL_FIXTURES/tracks/grimsel-climb.gpx}"
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
 WPTGPX="$repo_root/fixtures/sources/vector/vector-loop-replay.gpx"
-ROUTES="$repo_root/specs/vectors"
+# Stage the two UI routes; the vector directory also contains deliberately invalid inputs.
+ROUTES="$(mktemp -d)"
+cp "$repo_root/specs/vectors/route-plain.obcr" "$repo_root/specs/vectors/route-waypoints.obcr" "$ROUTES/"
 OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
@@ -81,13 +83,13 @@ PLAINROUTE="$(mktemp -d)"
 # device-planned route, whose points are all zero-elevation until EL7 fills them from terrain.)
 ETAROUTE="$(mktemp -d)"
 ETAFLAT="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
 rm "$ETAFLAT/grimsel-flat.gpx"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-0.obcr"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-1.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-0.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-1.obcr"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/ride-1.obcr" bs=1 seek=72 conv=notrunc status=none
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
@@ -413,7 +415,7 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p d p p b" --gpx "$WPTGPX" --at 233 --expect-screen Statistics --png "$OUT/stats-wpt.png"
 # The EL7 sweep below plans a route on the device and rides it; its own dir.
 ELEVDIR="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
 # --- Terrain-filled device-planned route -------------------------------------------------------
 # The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
@@ -473,7 +475,7 @@ PYTERRAIN
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
 # The **ride context** the other three riding views share — the unchanged four-row table, shot over
 # Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
@@ -489,7 +491,7 @@ PYTERRAIN
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
 UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
-UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES"' EXIT
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T Q d p d p f p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
@@ -646,7 +648,7 @@ U5CLIMBOFF="B u p p d d p b b b"
 # confirmation with the hold part-way through (`H`).
 QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root.png"
-"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen Assistant --png "$OUT/quick-assistant.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold.png"
@@ -747,7 +749,7 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p d p f p f C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p d p f p f C p w d d" --expect-screen ContextDrawer --png "$OUT/up-ahead-filter-editor-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root-$lang.png"
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen Assistant --png "$OUT/quick-assistant-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold-$lang.png"

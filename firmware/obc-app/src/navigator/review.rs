@@ -738,7 +738,10 @@ mod tests {
         for recovery in [None, Some(false), Some(true)] {
             let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
             app.navigator = preview();
-            app.easier.context = Some(context());
+            let mut easier = context();
+            easier.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
+            app.navigator.review.context = Some(easier);
+            app.easier.context = Some(easier);
             app.easier.phase = Phase::Ready;
             app.easier.review = true;
             assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
@@ -781,6 +784,36 @@ mod tests {
                     assert!(app.assistant_preview().is_some());
                 }
             }
+        }
+    }
+
+    #[test]
+    fn easier_failed_entry_preserves_another_review_and_its_uncertain_save() {
+        use crate::{input::Chord, screen::Screen, Gesture};
+        for unresolved in [false, true] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+            app.navigator = preview();
+            app.bind_place_map(Some(context().map));
+            if unresolved {
+                app.navigator.accept_review(origin(), 0);
+                let token = issued(&mut app.navigator, &mut TokenSource::new());
+                assert!(app.navigator.checkpoint_submission(token));
+                app.navigator
+                    .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+            }
+            let status = app.assistant_review_status();
+            let change = app.navigator.review.change;
+            assert!(app.apply_chord(Chord::Quick));
+            app.apply_gesture(Gesture::Press);
+            app.apply_gesture(Gesture::Step(2));
+            app.apply_gesture(Gesture::Press);
+            assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+            app.advance_easier();
+            app.apply_gesture(Gesture::Back);
+            assert_eq!(app.assistant_review_status(), status);
+            assert_eq!(app.navigator.review.change, change);
+            assert!(!app.navigator.review.cancel_after);
+            assert!(app.assistant_preview().is_some());
         }
     }
 

@@ -203,6 +203,10 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
   Up+Select chord that opens the universal quick drawer, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
+  With `--gpx`, `T` samples the actual track position selected by `--at` through the normal location
+  input and active-route matcher. Use it after starting a route and before opening a route action.
+  It keeps the interaction clock and the pre-replay ride epoch; the full GPX replay still follows
+  the script.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
 - `--hold nav|detour` consumes exactly one planner request without starting it, preserving its
   spinner snapshot.
