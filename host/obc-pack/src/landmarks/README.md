@@ -46,6 +46,11 @@ gives the actual language.
   pages. Each asset permits at most 8 KiB of attribution; the pair permits at most 256 pages.
 - Omissions with QID, asset and reason. A rejected photo leaves usable text available.
 
+CC BY and CC BY-SA photos require a nonempty captured Artist identity. A generic source credit
+such as "Own work" does not identify the creator. Missing or empty Artist metadata produces
+`photo_creator_missing`; the compiler does not infer an author from a filename or linked page.
+CC0 does not require this field. Supplied notices still pass the separate representation limits.
+
 Each photo file contains exactly 51,840 row-major bytes: 216 columns by 240 rows, one RGB222 pixel
 per byte (`00RRGGBB`). The host applies orientation, Lanczos3 fit, white padding and the fixed 4×4
 ordered dither. The manifest records its path, size and digest. The map serializer owns compression,
