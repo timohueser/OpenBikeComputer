@@ -71,3 +71,52 @@ Validation: `python3 -m unittest discover -s firmware/tools/tests -v` passed all
 `./tools/obc suites check`, `bash -n firmware/ui-snapshots.sh`, and `git diff --check` passed.
 No Rust build, local sweep, shipping image, resource rebuild, or hardware run was used. Public
 conceptual documentation is unchanged by these snapshot corrections.
+
+
+## Complete CI capture and translated states
+
+CI run 34957670581 at `7d965378` produced all 258 frames. The manifest guard first refused the
+pixel-identical `assistant.png` and `quick-assistant.png`. Both recipes correctly open the same
+Assistant question list from separate production entry points. Their identity is now declared as
+intentional; the recipes and destination assertions remain unchanged.
+
+Visual review covered the 24 remaining changed frames. Eighteen hashes come from that CI artifact:
+`firmware-de/es/fr`, `map-context-de/es/fr`, `menu-ble`, `menu-de/es/fr`, `quick-root-de/es/fr`,
+`quick-root-no-backlight`, `quick-root`, and `route-plan-context-de/es/fr`. They show the v16 map
+version, Assistant menu and drawer entries, and current POI context.
+
+The other six frames revealed clipped translated Data incomplete text. Commit `8896162d` uses the
+existing word-wrap helper when an Ahead empty-state message exceeds its available width. Short
+messages keep their current layout. The corrected `up-ahead-context-de/es/fr` and
+`up-ahead-filter-editor-de/es/fr` were captured with their exact existing recipes and visually
+checked. The text fits on two lines in all three languages.
+
+Those six named frames used one simulator build from the runtime source in `8896162d`, with the
+pinned v16 Grimsel fixture. Binary SHA-256:
+`5fa176b41df6378da7ee0527b488a6c9582cb4212c17f4a0ef15ace5c7af0524`.
+The manifest matches all 258 files in the combined CI artifact plus six replacement named frames.
+This verifies the reviewed evidence set; it is not a new full sweep or a final-head CI pass.
+
+Focused validation passed: App all-targets Clippy, the one simulator build, all 86 firmware Python
+tests, suite registry, workspace formatting, and diff checks. Documentation links were checked.
+The orchestrator owns the next CI gate and final integrated App checks. No local sweep, shipping
+image, resource measurement, or hardware test ran for this correction. Public conceptual prose
+is unchanged.
+
+
+## Header and no-route delta review
+
+Independent review found that the Spanish Ahead title also reached the right-side status marker.
+Commit `fe59940d` keeps the short title layout and uses the existing smaller label font and caption
+fit helper when needed. Only the caption can be shortened. The range stays complete, with space
+reserved before the timeline's filter and coverage markers. The same measured body wrapping now
+covers no-route and loading messages; German and French no-route text otherwise exceeded the
+available width.
+
+Six named captures verify Spanish 10 km context and filter editor, Spanish 5 km context, and the
+German, French, and Spanish no-route messages. The two existing Spanish context hashes are
+updated. The other four captures are focused visual evidence, not new sweep entries. Their binary
+SHA-256 is `f5e71a8a9ea068ee7d1c48a76d1a0fa172045deb572cd9d5be73009586724714`, built from the
+runtime source in `fe59940d`. App all-targets Clippy, simulator build, registry, formatting, diff
+checks, and the combined 258-frame evidence check pass. The full App suite and snapshot sweep
+were not repeated for this small review delta.
