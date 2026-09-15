@@ -87,8 +87,8 @@ cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
 rm "$ETAFLAT/grimsel-flat.gpx"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-0.obcr"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-1.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-0.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-1.obcr"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/ride-1.obcr" bs=1 seek=72 conv=notrunc status=none
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
