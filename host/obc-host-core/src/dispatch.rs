@@ -21,6 +21,28 @@ use crate::{ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackR
 pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     app.set_unaccepted_routes(routes.unaccepted_routes());
+    for (index, object) in routes.ids().iter().enumerate() {
+        if !app.can_reconcile_reviews() {
+            break;
+        }
+        if !app.route_unaccepted(index) {
+            continue;
+        }
+        let Some(store) = routes.store_scope().map(|scope| scope.store) else { break };
+        let Some(fingerprint) = routes.fingerprint(*object) else { continue };
+        let source =
+            obc_formats::obcr::RouteSourceKey { store: store.bytes(), object: *object, revision: fingerprint.revision };
+        if app.retains_find_review(source) {
+            continue;
+        }
+        if routes.pin_review(source).is_some_and(|bytes| {
+            obc_route::RouteObjectInfo::read(&bytes).is_ok_and(|info| {
+                info.assistant_candidate && info.attribution_map.is_some_and(|map| map.store == source.store)
+            })
+        }) {
+            app.reconcile_review_candidate(source);
+        }
+    }
     trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), routes.catalog().len()));
 }
 

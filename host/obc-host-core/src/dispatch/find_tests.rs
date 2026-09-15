@@ -1,5 +1,6 @@
 use super::*;
 use obc_app::{find_place::State, AppState};
+use obc_formats::io::ByteSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock};
@@ -13,9 +14,17 @@ impl LocationSource for Position {
 
 #[test]
 fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
-    for scenario in
-        [Scenario::Browse, Scenario::CancelPlanning, Scenario::CancelPreview, Scenario::Accept, Scenario::Deleted]
-    {
+    for scenario in [
+        Scenario::Browse,
+        Scenario::CancelPlanning,
+        Scenario::CancelPreview,
+        Scenario::Accept,
+        Scenario::AcceptEscaped,
+        Scenario::Deleted,
+        Scenario::RestartReady,
+        Scenario::RestartPartial,
+        Scenario::RestartAccepted,
+    ] {
         run_find(scenario);
     }
 }
@@ -28,6 +37,9 @@ enum Scenario {
     Accept,
     AcceptEscaped,
     Deleted,
+    RestartReady,
+    RestartPartial,
+    RestartAccepted,
 }
 
 fn run_find(scenario: Scenario) {
@@ -108,9 +120,10 @@ fn run_find(scenario: Scenario) {
     let mut acquisitions = 0;
     let mut restores = 0;
     let mut releases = 0;
-    let mut selected_preview = None;
+    let mut selected_preview: Option<obc_app::navigator::ReviewedRoute> = None;
     let mut selected_shape = Vec::new();
     let mut calculated = Vec::new();
+    let mut ordinary = None;
     let cancel_at = match scenario {
         Scenario::CancelPlanning => Some(obc_app::navigator::ReviewStatus::Planning),
         Scenario::CancelPreview => Some(obc_app::navigator::ReviewStatus::Preview),
@@ -182,7 +195,7 @@ fn run_find(scenario: Scenario) {
                 embedded_graphics::pixelcolor::raw::RawU16::new(c),
             ))
         });
-        if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) || phase < 12 {
+        if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted) || phase < 12 {
             assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
         }
         if phase == 2 && cancel_at == Some(app.assistant_review_status()) {
@@ -190,7 +203,65 @@ fn run_find(scenario: Scenario) {
             assert!(matches!(app.top_screen(), obc_app::screen::Screen::Menu(_)));
             phase = 8;
         }
+        let restart = phase == 0
+            && ((scenario == Scenario::RestartReady
+                && app.find_place_state() == State::Ready
+                && routes.ids().len() == 5)
+                || (scenario == Scenario::RestartPartial && calculated.len() == 4))
+            || phase == 12
+                && scenario == Scenario::RestartAccepted
+                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted;
+        if restart {
+            if scenario == Scenario::RestartReady {
+                let fingerprint = *calculated
+                    .iter()
+                    .find(|fingerprint| routes.fingerprint(fingerprint.object) == Some(**fingerprint))
+                    .unwrap();
+                let source = obc_formats::obcr::RouteSourceKey {
+                    store: routes.store_scope().unwrap().store.bytes(),
+                    object: fingerprint.object,
+                    revision: fingerprint.revision,
+                };
+                let bytes = routes.pin_review(source).unwrap();
+                let mut payload = vec![0; bytes.len() as usize];
+                bytes.read_at(0, &mut payload).unwrap();
+                for _ in 0..20 {
+                    routes.publish_review_route(&payload).unwrap();
+                }
+                ordinary = Some(routes.publish_nav_route(output.bytes()).unwrap().id);
+            }
+            app = App::new_idle(AppState::new(500_000, 500_000, 0.1));
+            feed_routes(&mut app, &routes, &mut NoTrace);
+            if scenario != Scenario::RestartAccepted {
+                app.activate_route(routes.ids().iter().position(|id| *id == original).unwrap());
+            }
+            host = HostLoop::new();
+            session = ActiveRouteSession::new();
+            phase = 14;
+            continue;
+        }
         match phase {
+            14 if routes.unaccepted_routes() == 0 => {
+                assert_eq!(
+                    routes.ids().len(),
+                    if scenario == Scenario::RestartAccepted || ordinary.is_some() { 2 } else { 1 }
+                );
+                assert!(routes.ids().contains(&original));
+                if let Some(ordinary) = ordinary {
+                    assert!(routes.ids().contains(&ordinary), "ordinary routes are not orphaned reviews");
+                }
+                if scenario == Scenario::RestartAccepted {
+                    let checkpoint = routes.read_checkpoint().unwrap().unwrap();
+                    assert_eq!(checkpoint.route, selected_preview.unwrap().source);
+                    assert_eq!(checkpoint.original.unwrap().object, original);
+                    assert!(routes.ids().contains(&checkpoint.route.object));
+                    assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::ResumeAvailable);
+                } else {
+                    assert!(routes.read_checkpoint().unwrap().is_none());
+                }
+                phase = 15;
+                break;
+            }
             8 if app.assistant_planner_released()
                 && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Idle
                 && routes.ids() == [original] =>
@@ -230,7 +301,7 @@ fn run_find(scenario: Scenario) {
                 assert!(routes.read_checkpoint().unwrap().is_none());
                 selected_preview = Some(preview);
                 selected_shape = app.assistant_preview_shape().to_vec();
-                if matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) {
+                if matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted) {
                     app.apply_gesture(Gesture::Press);
                     if scenario == Scenario::AcceptEscaped {
                         app.apply_gesture(Gesture::BackHold);
@@ -322,6 +393,7 @@ fn run_find(scenario: Scenario) {
     let expected = match scenario {
         Scenario::Accept | Scenario::AcceptEscaped => 13,
         Scenario::Browse => 6,
+        Scenario::RestartReady | Scenario::RestartPartial | Scenario::RestartAccepted => 15,
         _ => 9,
     };
     assert_eq!(
@@ -331,7 +403,14 @@ fn run_find(scenario: Scenario) {
         app.assistant_review_status(),
         routes.ids()
     );
-    if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped) {
+    if !matches!(
+        scenario,
+        Scenario::Accept
+            | Scenario::AcceptEscaped
+            | Scenario::RestartReady
+            | Scenario::RestartPartial
+            | Scenario::RestartAccepted
+    ) {
         assert_eq!(routes.ids(), &[original], "{scenario:?}: no retained route leaks after leaving Find");
     }
 }
