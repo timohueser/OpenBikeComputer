@@ -155,3 +155,12 @@ The diagnostic real-map run is `/Users/timo/Documents/OSM-agents/ra06-tour-seam-
 it records the rejected seam before this fix. The separate tour integration records the final
 production acceptance result. No UI sweep, resource image, full CI mirror, or device test was run.
 No public conceptual documentation changed.
+
+## Snapshot route imports
+
+The UI sweep now stages only its two intended route vectors, `route-plain.obcr` and
+`route-waypoints.obcr`. The vector directory also contains invalid Visit overlap inputs for
+format contracts; it is not an importable simulator route directory. Those negative inputs
+remain in the format suite. The staged RouteMenu named frame matches the existing manifest hash
+`4fcf777f6c806d274823f9fedc659e8efa8beb794907dc8c439d008cbf0ebfbe` exactly.
+Shell syntax, suite registry and diff checks pass. No local sweep or image build was repeated.
