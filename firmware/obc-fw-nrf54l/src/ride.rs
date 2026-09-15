@@ -1852,8 +1852,11 @@ pub(crate) async fn run_app(
                                         review_publication = None;
                                         crate::flat_store::load_routes(flat, app);
                                     } else {
-                                        RideExec::deliver(&mut exec.outcomes.navigator,
-                                            NavigatorOutcome::ReleaseUnresolved { token }, "navigator");
+                                        RideExec::deliver(
+                                            &mut exec.outcomes.navigator,
+                                            NavigatorOutcome::ReleaseUnresolved { token },
+                                            "navigator",
+                                        );
                                         continue;
                                     }
                                 }

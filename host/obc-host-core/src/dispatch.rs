@@ -1138,7 +1138,7 @@ mod tests {
         feed_routes(&mut orphan_boot, &routes, &mut NoTrace);
         let orphan = orphan_boot.route_ids().iter().position(|id| *id == preview.source.object).unwrap();
         assert!(orphan_boot.route_unaccepted(orphan));
-        orphan_boot.set_active_route(Some(orphan));
+        orphan_boot.activate_route(orphan);
         assert!(orphan_boot.active_route_index().is_none());
         let bytes = owner
             .open(
