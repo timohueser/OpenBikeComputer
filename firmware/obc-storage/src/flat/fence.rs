@@ -66,6 +66,7 @@ fn put<D: BlockDevice>(store: &FlatStore<D>, revision: u64, bytes: &[u8]) -> (Al
     let mut allocation = store.allocate(bytes.len() as u64).unwrap();
     store.write(&mut allocation, bytes).unwrap();
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: ObjectId(1),
         revision: Revision(revision),
         kind: ObjectKind::Route,

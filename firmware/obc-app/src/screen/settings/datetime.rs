@@ -1,11 +1,4 @@
-//! The Date & Time screen. GPS (and, after epic #638 S2, the phone over BLE) supplies UTC, so the
-//! clock is never hand-set (#641 removed manual editing — a fat-fingered year must never reach the
-//! auto-expiry sweep). Three rows, one of them editable:
-//!
-//! - `GPS fix` — read-only: the UTC anchor GPS supplies (or `Searching for fix`).
-//! - `Local time` — read-only: local = UTC anchor + offset.
-//! - `UTC offset` — the one stepper; turning it shifts the *displayed* local time only (expiry math
-//!   is pure UTC). The two info rows are display-only and the cursor skips them.
+//! Date and time from GPS or BLE, with an editable local UTC offset.
 
 use core::fmt::Write;
 

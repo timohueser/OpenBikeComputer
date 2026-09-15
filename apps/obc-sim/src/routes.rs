@@ -43,28 +43,6 @@ pub fn export_gpx(
     std::fs::write(output, bytes).map_err(|error| error.to_string())?;
     Ok(stats)
 }
-
-pub fn seed_retention(
-    store: &mut FlatRouteStore,
-    id: u64,
-    retention: obc_app::Retention,
-    utc: u32,
-) -> Result<(), String> {
-    use obc_host_core::RouteRepository;
-    let scope = store.refresh_metadata().map_err(|error| format!("{error:?}"))?;
-    let mut tokens = obc_app::device_core::TokenSource::<obc_app::device_core::RetentionTag>::new();
-    store
-        .write_metadata(obc_app::retention::RetentionEffect::WriteRouteMetadata {
-            token: tokens.issue(),
-            scope,
-            id,
-            meta: obc_app::RouteRetentionMeta::new(retention, utc),
-        })
-        .map_err(|error| format!("{error:?}"))?;
-    store.refresh_metadata().map_err(|error| format!("{error:?}"))?;
-    Ok(())
-}
-
 pub fn import_copy(store: &mut FlatRouteStore, index: usize, replace: bool) -> Result<u64, String> {
     use obc_formats::io::ByteSource;
     use obc_host_core::RouteRepository;

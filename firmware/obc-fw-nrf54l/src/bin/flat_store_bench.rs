@@ -860,6 +860,7 @@ fn create_once(store: &FlatStore<Card>) -> Option<Commit> {
         return None;
     }
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: store.next_object_id(),
         revision: Revision(1),
         kind: ObjectKind::Route,
@@ -1026,6 +1027,7 @@ fn ride() {
     // §5.3: a `RECORDING` entry holds slack — it owns more extents than its payload needs — which is
     // the one thing that lets a ride grow without a commit per page.
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::Ride,
@@ -1204,6 +1206,7 @@ fn read_path(bytes: u64) {
     );
 
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::MapShard,
@@ -1534,6 +1537,7 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
     );
 
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: entry.id,
         revision: entry.revision,
         kind: ObjectKind::Ride,
@@ -1639,6 +1643,7 @@ fn short_ride() -> Option<FinishCensus> {
         }
     };
     let recording = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::Ride,
@@ -1680,6 +1685,7 @@ fn short_ride() -> Option<FinishCensus> {
     }
 
     let final_meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision: Revision(1),
         kind: ObjectKind::Ride,
@@ -2222,6 +2228,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     }
 
     let meta = EntryMeta {
+        added_at_utc: 0,
         id: store.next_object_id(),
         revision: Revision(1),
         kind,

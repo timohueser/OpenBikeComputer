@@ -488,6 +488,7 @@ impl HostStore {
                 return Err(ImportError::Io(io::ErrorKind::InvalidData.into()));
             }
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision,
                 kind,

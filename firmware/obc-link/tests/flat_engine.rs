@@ -388,7 +388,7 @@ fn the_device_owned_kinds_and_the_flagged_entries_are_refused() {
 fn metadata_is_readable_but_only_the_device_can_mutate_it() {
     let disk = formatted_card(141);
     let mut device = boot(&disk);
-    let bytes = include_bytes!("../../../specs/vectors/retention-metadata/route-and-ride.bin");
+    let bytes = include_bytes!("../../../specs/vectors/ride-archive-metadata/two-rides.bin");
     let (id, revision) = device.seed(ObjectKind::Metadata, bytes, "");
     let answer = Answer::of(device.control(&client::list(1, None)).answer());
     assert_eq!(answer.body.len(), 24 + 88);
@@ -1367,4 +1367,21 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     assert!(refused.is_error() && refused.request == 2, "the PUT itself is answered `cancelled`");
     assert_eq!(refused.error().0, ErrorCode::Cancelled.value());
     assert_eq!(device.live_upload(), None, "and the transfer is gone");
+}
+
+#[test]
+fn storage_full_at_route_admission_latches_a_prompt_and_retry_can_succeed() {
+    let disk = formatted_card(96);
+    let mut device = boot(&disk);
+    let held = device.hog(64 * 1024 * 1024);
+    let bytes = body();
+    let refused = device.control(&client::put(1, 0, 0, &bytes, ROUTE, "new route"));
+    assert_eq!(error(&Answer::of(refused.answer())).0, ErrorCode::NoSpace.value());
+    assert_eq!(
+        device.take_upload_end(),
+        Some((ObjectKind::Route, obc_link::flat::UploadEnd::Refused(ErrorCode::NoSpace)))
+    );
+    assert!(device.take_upload_end().is_none());
+    device.release(held);
+    assert!(!upload(&mut device, 2, 0, 0, &bytes, ROUTE, "new route").is_error());
 }

@@ -17,7 +17,6 @@
 //! belong to. The macro emits the fixed framing (`b[0] = VERSION`, the trailing CRC, the
 //! `MIN_SUPPORTED..=VERSION` gate) and the per-field loops between them.
 
-use crate::retention::RideRetention;
 use crate::settings::{DeviceName, SavedSensor, DEVICE_NAME_MAX, SENSOR_SLOTS};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 use obc_ports::DateTime;
@@ -187,19 +186,6 @@ impl SettingCodec for [SavedSensor; SENSOR_SLOTS] {
         slots
     }
 }
-
-impl SettingCodec for RideRetention {
-    const LEN: usize = 1;
-    #[inline]
-    fn write(&self, dst: &mut [u8]) {
-        dst[0] = self.as_u8();
-    }
-    #[inline]
-    fn read(src: &[u8]) -> Self {
-        RideRetention::from_u8(src[0])
-    }
-}
-
 /// Give a [`setting_enum!`](crate::settings_enum) type its one-byte codec: the declared
 /// discriminant *is* the stored byte, and an unknown byte sanitises to the enum's default through
 /// `from_byte`. Invoked once by `setting_enum!`, so a declared enum is settings-blob-ready.

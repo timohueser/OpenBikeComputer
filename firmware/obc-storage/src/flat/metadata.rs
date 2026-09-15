@@ -1,5 +1,4 @@
-//! Card-local retention metadata. The caller supplies the payload workspace.
-//! Archive possession is separate from the retention policy that starts its countdown.
+//! Durable proof that a client holds the exact finalized ride bytes.
 
 use super::{
     BlockDevice, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, ObjectKind, PutSource, Revision, Store,
@@ -8,9 +7,8 @@ use super::{
 
 pub const HEADER_LEN: usize = 32;
 pub const ROW_LEN: usize = 40;
-pub const MAX_ROUTES: usize = 64;
 pub const MAX_RIDES: usize = 128;
-pub const MAX_LEN: usize = HEADER_LEN + (MAX_ROUTES + MAX_RIDES) * ROW_LEN;
+pub const MAX_LEN: usize = HEADER_LEN + MAX_RIDES * ROW_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -30,7 +28,7 @@ impl From<StoreError> for Error {
     }
 }
 
-/// A route use stamp or a finalized ride archive stamp, bound to exact source bytes.
+/// A finalized ride archive proof, bound to exact source bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: ObjectId,
@@ -39,18 +37,11 @@ pub struct Row {
     pub payload_crc: u32,
     pub timestamp: u32,
     pub kind: ObjectKind,
-    pub retention: u8,
 }
 
 impl Row {
     fn valid(self) -> bool {
-        self.id.0 != 0
-            && self.revision.0 != 0
-            && match self.kind {
-                ObjectKind::Route => self.retention <= 5,
-                ObjectKind::Ride => self.retention == 0,
-                _ => false,
-            }
+        self.id.0 != 0 && self.revision.0 != 0 && self.kind == ObjectKind::Ride
     }
 
     fn matches(self, entry: EntryMeta) -> bool {
@@ -71,9 +62,8 @@ impl Row {
             timestamp: u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
             kind: ObjectKind::decode(u16::from_le_bytes(bytes[32..34].try_into().unwrap()))
                 .map_err(|_| Error::Invalid)?,
-            retention: bytes[34],
         };
-        if !row.valid() || bytes[35..].iter().any(|&v| v != 0) {
+        if !row.valid() || bytes[34..].iter().any(|&v| v != 0) {
             return Err(Error::Invalid);
         }
         Ok(row)
@@ -87,7 +77,6 @@ impl Row {
         bytes[24..28].copy_from_slice(&self.payload_crc.to_le_bytes());
         bytes[28..32].copy_from_slice(&self.timestamp.to_le_bytes());
         bytes[32..34].copy_from_slice(&(self.kind as u16).to_le_bytes());
-        bytes[34] = self.retention;
     }
 }
 
@@ -125,17 +114,16 @@ impl<'a> Image<'a> {
             return Err(Error::Invalid);
         }
         let mut previous = ObjectId::NONE;
-        let (mut routes, mut rides) = (0, 0);
+        let mut rides = 0;
         for bytes in buffer[HEADER_LEN..len].as_chunks::<ROW_LEN>().0 {
             let row = Row::decode(bytes)?;
             if row.id <= previous {
                 return Err(Error::Invalid);
             }
             previous = row.id;
-            routes += usize::from(row.kind == ObjectKind::Route);
             rides += usize::from(row.kind == ObjectKind::Ride);
         }
-        if routes > MAX_ROUTES || rides > MAX_RIDES {
+        if rides > MAX_RIDES {
             return Err(Error::Capacity);
         }
         Ok(Self { buffer, len, base: None })
@@ -160,7 +148,7 @@ impl<'a> Image<'a> {
         let existing = self.rows().nth(index).filter(|r| r.id == row.id);
         let count = self.rows().filter(|r| r.kind == row.kind).count()
             + usize::from(existing.is_none_or(|old| old.kind != row.kind));
-        let capacity = if row.kind == ObjectKind::Route { MAX_ROUTES } else { MAX_RIDES };
+        let capacity = MAX_RIDES;
         if count > capacity || (existing.is_none() && self.len + ROW_LEN > self.buffer.len()) {
             return Err(Error::Capacity);
         }
@@ -182,7 +170,7 @@ impl<'a> Image<'a> {
         if self.store_id() != store.store_id() {
             return Err(Error::WrongStore);
         }
-        let mut keep = [false; MAX_ROUTES + MAX_RIDES];
+        let mut keep = [false; MAX_RIDES];
         for entry in store.entries() {
             for (index, row) in self.rows().enumerate() {
                 keep[index] |= row.matches(entry);
@@ -269,7 +257,7 @@ impl Metadata {
             return Err(Error::Stale);
         }
         let mut target_present = false;
-        let mut found = [false; MAX_ROUTES + MAX_RIDES];
+        let mut found = [false; MAX_RIDES];
         for entry in store.entries() {
             target_present |= Some(entry) == target && entry.flags == EntryFlags::NONE;
             for (index, row) in image.rows().enumerate() {
@@ -289,6 +277,7 @@ impl Metadata {
             None => (store.next_object_id(), Revision(1)),
         };
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision,
             kind: ObjectKind::Metadata,
@@ -376,57 +365,6 @@ fn read_payload<D: BlockDevice>(store: &FlatStore<D>, meta: EntryMeta, bytes: &m
 #[cfg(test)]
 mod tests;
 
-/// Validate the catalog snapshot captured before a policy decision.
-pub fn check_scope<D: BlockDevice>(store: &FlatStore<D>, expected: StoreId, sequence: u64) -> Result<(), Error> {
-    if store.store_id() != expected {
-        return Err(Error::WrongStore);
-    }
-    if store.mode() == super::Mode::RemountRequired {
-        return Err(Error::RemountRequired);
-    }
-    if store.sequence() != sequence {
-        return Err(Error::Stale);
-    }
-    Ok(())
-}
-
-fn source_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId, kind: ObjectKind) -> Result<EntryMeta, Error> {
-    let head = store.entries().find(|entry| entry.id == id && entry.flags == EntryFlags::NONE);
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
-    }
-    head.filter(|entry| entry.kind == kind).ok_or(Error::Stale)
-}
-
-/// One serialized route stamp. Workspace is stack-local and does not cross a yield.
-#[inline(never)]
-pub fn write_route<D: BlockDevice>(
-    store: &FlatStore<D>,
-    expected: StoreId,
-    sequence: u64,
-    id: ObjectId,
-    retention: u8,
-    timestamp: u32,
-) -> Result<(), Error> {
-    check_scope(store, expected, sequence)?;
-    let target = source_head(store, id, ObjectKind::Route)?;
-    let mut bytes = [0u8; MAX_LEN];
-    let mut owner = Metadata::new(store);
-    let mut image = owner.load(store, &mut bytes)?;
-    image.reconcile(store)?;
-    image.set(Row {
-        id,
-        revision: target.revision,
-        payload_len: target.payload_len,
-        payload_crc: target.payload_crc,
-        timestamp,
-        kind: ObjectKind::Route,
-        retention,
-    })?;
-    owner.replace(store, &mut image, Some(target))?;
-    Ok(())
-}
-
 /// Prune only from a complete catalog; absence does not create a metadata object.
 #[inline(never)]
 pub fn reconcile<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
@@ -452,16 +390,6 @@ pub fn read_rows<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Ro
     }
     Ok(())
 }
-
-/// Read route policy through the same complete card metadata validation.
-pub fn read_routes<D: BlockDevice>(store: &FlatStore<D>, mut accept: impl FnMut(Row)) -> Result<(), Error> {
-    read_rows(store, |row| {
-        if row.kind == ObjectKind::Route {
-            accept(row);
-        }
-    })
-}
-
 fn durable<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
     // A live-medium remount can read a gate whose previous final sync failed.
     if store.sync_media().is_err() {
@@ -470,75 +398,6 @@ fn durable<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
     }
     Ok(())
 }
-
-/// Start the policy clock only for an existing exact archive proof. Repeated stamps preserve it.
-#[inline(never)]
-pub fn write_ride<D: BlockDevice>(
-    store: &FlatStore<D>,
-    expected: StoreId,
-    sequence: u64,
-    id: ObjectId,
-    timestamp: u32,
-) -> Result<(), Error> {
-    check_scope(store, expected, sequence)?;
-    if timestamp == 0 {
-        return Err(Error::Invalid);
-    }
-    let target = source_head(store, id, ObjectKind::Ride)?;
-    let mut bytes = [0u8; MAX_LEN];
-    let mut owner = Metadata::new(store);
-    let mut image = owner.load(store, &mut bytes)?;
-    image.reconcile(store)?;
-    let row = image.rows().find(|row| row.matches(target)).ok_or(Error::Stale)?;
-    if row.timestamp != 0 {
-        return durable(store);
-    }
-    image.set(Row { timestamp, ..row })?;
-    owner.replace(store, &mut image, Some(target))?;
-    Ok(())
-}
-
-/// Remove a ride only after policy admission and a durable exact nonzero archive stamp.
-#[inline(never)]
-pub fn remove_ride<D: BlockDevice>(
-    store: &FlatStore<D>,
-    expected: StoreId,
-    sequence: u64,
-    id: ObjectId,
-) -> Result<(), Error> {
-    check_scope(store, expected, sequence)?;
-    let target = source_head(store, id, ObjectKind::Ride)?;
-    let mut proof = false;
-    read_rows(store, |row| proof |= row.matches(target) && row.timestamp != 0)?;
-    if !proof {
-        return Err(Error::Stale);
-    }
-    remove(store, target)
-}
-
-fn remove<D: BlockDevice>(store: &FlatStore<D>, head: EntryMeta) -> Result<(), Error> {
-    store.commit(&[Mutation::Remove { id: head.id, revision: head.revision }]).map_err(|error| {
-        if store.mode() == super::Mode::RemountRequired {
-            Error::RemountRequired
-        } else {
-            Error::Store(error)
-        }
-    })?;
-    Ok(())
-}
-
-/// A route expiry already admitted by retention against this exact catalog snapshot.
-pub fn remove_route<D: BlockDevice>(
-    store: &FlatStore<D>,
-    expected: StoreId,
-    sequence: u64,
-    id: ObjectId,
-) -> Result<(), Error> {
-    check_scope(store, expected, sequence)?;
-    let head = source_head(store, id, ObjectKind::Route)?;
-    remove(store, head)
-}
-
 /// Persist possession of the exact current finalized ride. Duplicate receipts preserve the stamp
 /// and make no commit. The serialized writer supplies exclusivity for the whole operation.
 #[inline(never)]
@@ -582,7 +441,7 @@ pub fn archive_ride<D: BlockDevice>(
     if !store.mode().writable() {
         return Err(Error::Store(StoreError::ReadOnly));
     }
-    image.set(Row { id, revision, payload_len, payload_crc, timestamp: 0, kind: ObjectKind::Ride, retention: 0 })?;
+    image.set(Row { id, revision, payload_len, payload_crc, timestamp: 0, kind: ObjectKind::Ride })?;
     owner.replace(store, &mut image, Some(target))?;
     Ok(0)
 }

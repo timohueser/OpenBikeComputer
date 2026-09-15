@@ -346,15 +346,8 @@ pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoin
 // The DeviceCore pass.
 
 /// Every capability the test platform implements. A suite that needs a device without one names it.
-pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-
-    bonding: true,
-    storage_space_report: true,
-    retention_metadata: true,
-};
+pub const EVERY_CAPABILITY: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// Run one DeviceCore pass at `ms` with the executor's answers — the production frame every host
 /// drives. The ports these suites do not exercise (a fix, keyed derived answers) stay empty; a

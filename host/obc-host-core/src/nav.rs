@@ -250,10 +250,8 @@ pub fn commit_detour(
             .map_err(|_| NavigatorError::Store)?;
         }
         let publication = store.publish_nav_route(sink.bytes()).ok_or(NavigatorError::Store)?;
-        let metas = store.retention_metas();
-        app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
+        app.set_routes_with_ids(store.catalog(), store.ids());
         trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
-        trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
         // The spliced bytes sit under the reserved slot's (possibly unchanged) id — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
@@ -286,10 +284,8 @@ pub fn commit_nav_plan(
     use obc_app::navigator::NavigatorError;
     let result = outcome.map_err(NavigatorError::Plan).and_then(|stats| {
         let publication = store.publish_nav_route(sink_bytes).ok_or(NavigatorError::Store)?;
-        let metas = store.retention_metas();
-        app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
+        app.set_routes_with_ids(store.catalog(), store.ids());
         trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
-        trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
         // A re-route rewrites the nav bytes under an unchanged catalog index — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
