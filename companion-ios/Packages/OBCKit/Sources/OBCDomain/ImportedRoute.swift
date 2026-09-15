@@ -5,10 +5,15 @@ public struct RoutePoint: Hashable, Sendable {
     public let coordinate: Coordinate
     /// Elevation in metres, when the source carried one.
     public let elevationMeters: Double?
+    /// Incoming segment surface class from OBCR; zero means unknown.
+    public let surface: UInt8
+    public let elevationIncomplete: Bool
 
-    public init(coordinate: Coordinate, elevationMeters: Double? = nil) {
+    public init(coordinate: Coordinate, elevationMeters: Double? = nil, surface: UInt8 = 0, elevationIncomplete: Bool = false) {
         self.coordinate = coordinate
         self.elevationMeters = elevationMeters
+        self.surface = surface & 7
+        self.elevationIncomplete = elevationIncomplete
     }
 }
 

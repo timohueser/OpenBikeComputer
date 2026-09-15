@@ -232,7 +232,10 @@ fn route_switch_without_clear_cannot_cross_serve() {
     resident_idx.read_into(&SliceSource(&a)).unwrap();
 
     let reader_a = RouteReader::new_cached(&resident_idx, &src_a, &cache);
-    assert_eq!(decode(&reader_a, 0).last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
+    assert_eq!(
+        decode(&reader_a, 0).last(),
+        Some(&RoutePoint { lon: 20, lat: 20, ele: 110, surface: 0, elevation_incomplete: false })
+    );
     assert_eq!(src_a.reads.get(), 1);
     assert_eq!(cache.stats(), (0, 1));
 
@@ -241,7 +244,10 @@ fn route_switch_without_clear_cannot_cross_serve() {
     resident_idx.read_into(&SliceSource(&b)).unwrap();
     let reader_b = RouteReader::new_cached(&resident_idx, &src_b, &cache);
     let points_b = decode(&reader_b, 0);
-    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(
+        points_b.last(),
+        Some(&RoutePoint { lon: 30, lat: 40, ele: 120, surface: 0, elevation_incomplete: false })
+    );
     assert_eq!(src_b.reads.get(), 1, "a route switch must read B rather than hit A's slot");
     assert_eq!(cache.stats(), (0, 1), "adoption resets diagnostics and starts B cold");
 
@@ -303,13 +309,22 @@ fn reentrant_read_revalidates_identity_before_miss_put() {
     let reader_a = RouteReader::new_cached(&idx_a, &src_a, &cache);
 
     let points_a = decode(&reader_a, 0);
-    assert_eq!(points_a.last(), Some(&RoutePoint { lon: 20, lat: 20, ele: 110 }));
-    assert_eq!(reentrant_b_last.get(), Some(RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(
+        points_a.last(),
+        Some(&RoutePoint { lon: 20, lat: 20, ele: 110, surface: 0, elevation_incomplete: false })
+    );
+    assert_eq!(
+        reentrant_b_last.get(),
+        Some(RoutePoint { lon: 30, lat: 40, ele: 120, surface: 0, elevation_incomplete: false })
+    );
     assert_eq!(src_a.reads.get(), 1);
     assert_eq!(src_b.reads.get(), 1);
 
     let points_b = decode(&reader_b, 0);
-    assert_eq!(points_b.last(), Some(&RoutePoint { lon: 30, lat: 40, ele: 120 }));
+    assert_eq!(
+        points_b.last(),
+        Some(&RoutePoint { lon: 30, lat: 40, ele: 120, surface: 0, elevation_incomplete: false })
+    );
     assert_eq!(src_b.reads.get(), 2, "B must miss rather than consume A's in-flight fill");
     assert_eq!(decode(&reader_b, 0), points_b);
     assert_eq!(src_b.reads.get(), 2, "B's refill must be warm on the same identity");
@@ -331,16 +346,16 @@ fn chunk_index_and_decode() {
     assert_eq!(
         c0,
         vec![
-            RoutePoint { lon: 10, lat: 10, ele: 200 },
-            RoutePoint { lon: 20, lat: 25, ele: 205 },
-            RoutePoint { lon: 40, lat: 40, ele: 210 },
+            RoutePoint { lon: 10, lat: 10, ele: 200, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 20, lat: 25, ele: 205, surface: 0, elevation_incomplete: false },
+            RoutePoint { lon: 40, lat: 40, ele: 210, surface: 0, elevation_incomplete: false },
         ]
     );
 
     let c1 = decode(&r, 1);
     // Seam: chunk 1's first point == chunk 0's last point.
     assert_eq!(c1[0], *c0.last().unwrap());
-    assert_eq!(c1.last().unwrap(), &RoutePoint { lon: 90, lat: 70, ele: 225 });
+    assert_eq!(c1.last().unwrap(), &RoutePoint { lon: 90, lat: 70, ele: 225, surface: 0, elevation_incomplete: false });
 }
 
 #[test]

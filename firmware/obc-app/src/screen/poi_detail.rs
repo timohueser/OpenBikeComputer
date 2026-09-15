@@ -1,32 +1,12 @@
-//! The POI **detail** screen — reached by pressing a POI in the [list](super::PoiListScreen),
-//! carrying the selected [`Poi`](obc_reader::Poi). Shows the **full stored name** un-ellipsized
-//! (the list row ellipsizes to fit), the subtype label as a muted subtitle, the same live
-//! [bearing arrow](super::poi_list) the list draws, **today's opening hours**, and an
-//! **OPEN / CLOSED-now** badge (epic #439 P4 #444).
-//!
-//! # Hours read at draw (the reader-in-draw seam)
-//!
-//! [`Reader::poi_hours`](obc_reader::Reader::poi_hours) resolves the POI's pooled weekly schedule
-//! (spec §7.5), and the [`Reader`](obc_reader::Reader) lives **only** in the draw context
-//! ([`Render::reader`]). So — exactly like the list's lazy snapshot (#425) — the schedule is read
-//! **once**, on the first draw that has a `Reader`, into a [`Cell`]-held cache on the screen (a
-//! `WeeklySchedule` is a ~29-byte `Copy` value). The tri-state cache distinguishes *not resolved
-//! yet* (`None`) from *resolved to no hours* (`Some(None)`) from *resolved to a schedule*
-//! (`Some(Some(_))`), so a POI with no `hours_ref` is read at most once too, never per frame.
-//! [`base_needs_reader`](crate::App::base_needs_reader) keeps `rx.reader` `Some` until that first
-//! read lands, then the board host stops rebuilding the reader per frame — the same energy
-//! discipline as the list snapshot. The draw stays `&self`; the cache mutates through the `Cell`.
-//!
-//! The **open-now** badge reads the live local wall-clock ([`Render::now`]) each frame: today's
-//! weekday + minute-of-day feed [`WeeklySchedule::is_open`]. By the time a POI detail is on screen
-//! the device already has a fix (the list required one), so the local date is plausible — no
-//! separate "clock unset" state in v1 (see the epic's locked decision).
+//! Place detail with a cached schedule and live, trusted local-time status.
+//! Prepare resolves the schedule into the App-owned scratch. Activation checks the current
+//! status again and refuses a known-closed place or invalidated source.
 
 use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{weekday_from_ymd, Interval, Poi, WeeklySchedule};
+use obc_reader::{Interval, Poi, WeeklySchedule};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -41,10 +21,7 @@ use super::vocab::chrome::{title_frame, LIST_TOP};
 use super::vocab::fmt::write_distance_coarse;
 use super::{palette, Ctx, Render, Screen, Transition};
 
-/// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
-/// lazily-resolved schedule cache. The `Poi` widens the [`Screen`](super::Screen) enum by its size;
-/// the cache is a small `Copy` value behind a `Cell` (see the module docs on the reader-in-draw
-/// seam).
+/// The selected place; its schedule lives in App scratch to keep the screen union small.
 #[derive(Debug)]
 pub struct PoiDetailScreen {
     poi: Poi,
@@ -54,19 +31,15 @@ pub struct PoiDetailScreen {
     /// distance row with the side spelled out in words (epic #946, U3): the list row's side arrow is
     /// a glance cue, this is the answer to "how far off my route is it, and which side".
     off_route_m: Option<i16>,
-    /// The resolved schedule, cached on the first [`prepare`](Self::prepare) pass with a `Reader`.
-    /// Tri-state: `None` = not resolved yet (keep asking for the reader), `Some(None)` = resolved to
-    /// *no hours* (`hours_ref` 0xFFFF or an out-of-range ref), `Some(Some(_))` = the pooled schedule.
-    /// A plain field (#803): the acquisition moved out of the draw path into `prepare`, so the read
-    /// mutates `&mut self` there and [`draw`](Self::draw) consumes it immutably.
-    schedule: Option<Option<WeeklySchedule>>,
+    /// The first schedule read has completed, including missing data or an error.
+    schedule_ready: bool,
 }
 
 impl PoiDetailScreen {
     /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
     /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
     pub fn new(poi: Poi) -> Self {
-        PoiDetailScreen { poi, off_route_m: None, schedule: None }
+        PoiDetailScreen { poi, off_route_m: None, schedule_ready: false }
     }
 
     /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
@@ -88,14 +61,23 @@ impl PoiDetailScreen {
     /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
     /// reader until the one hours read lands in `prepare`, then stops.
     pub(crate) fn hours_pending(&self) -> bool {
-        self.schedule.is_none()
+        !self.schedule_ready
     }
 
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             // Create a route to this POI (epic #116, R4): press opens the "Create a route?"
             // confirm. The route's name is the POI's stored name, or its subtype fallback label —
             // the same fallback the list row shows, so the catalog entry reads like the row did.
+            Gesture::Press if !cx.poi_scratch.detail_valid => Transition::None,
+            Gesture::Press
+                if cx
+                    .poi_scratch
+                    .detail_schedule
+                    .is_some_and(|s| s.status(cx.place_local) == obc_reader::hours::OpeningStatus::Closed) =>
+            {
+                Transition::None
+            }
             Gesture::Press => {
                 let name = if self.poi.name.is_empty() {
                     poi_label_of(self.poi.subtype).unwrap_or("POI")
@@ -118,14 +100,17 @@ impl PoiDetailScreen {
     /// the pre-draw prepare pass (#803) — the one place the side-effectful hours read lives — so
     /// [`base_needs_reader`](crate::App::base_needs_reader) keeps the `Reader` built and passed here
     /// until this lands, then [`draw`](Self::draw) consumes the cache immutably.
-    pub(crate) fn prepare(&mut self, px: &super::Prepare) {
-        if self.schedule.is_some() {
+    pub(crate) fn prepare(&mut self, px: &mut super::Prepare) {
+        if self.schedule_ready {
             return; // already resolved (possibly to `None` — no hours)
         }
         let Some(reader) = px.reader else {
             return; // no map this frame — retry next prepare
         };
-        self.schedule = Some(reader.poi_hours(self.poi.hours_ref));
+        let schedule = reader.try_poi_hours(self.poi.hours_ref);
+        px.poi_scratch.detail_valid = schedule.is_ok();
+        px.poi_scratch.detail_schedule = schedule.ok().flatten();
+        self.schedule_ready = true;
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -210,28 +195,22 @@ impl PoiDetailScreen {
         }
 
         // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
-        // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
-        // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
+        // each open interval on its own row. An overnight spillover can add a third range;
+        // compact numeric rows keep that case within the same hours area.
         let head_y = dist_bot + 16;
-        let schedule = self.schedule.flatten();
-        let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
-        let intervals: &[Interval] = match &schedule {
-            Some(sched) => sched.today_intervals(weekday),
-            None => &[],
-        };
-        let head = match schedule {
-            None => rx.t(Msg::PoiDetailHoursNotListed),
-            Some(_) if intervals.is_empty() => rx.t(Msg::PoiDetailClosedToday),
-            Some(_) => rx.t(Msg::PoiDetailToday),
-        };
+        let schedule = rx.poi_scratch.detail_schedule.filter(|s| s.flags() == 0);
+        let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
+        let head = rx.t(heading);
         cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
 
         let mut row_y = head_y + Font::Label.cap_bottom() as i32 + 8;
-        for iv in intervals {
+        let range_font = if intervals.len() > 2 { Font::Label } else { Font::Body };
+        let range_step = if intervals.len() > 2 { range_font.cap_height() + 2 } else { range_font.line_height() };
+        for iv in &intervals {
             let mut range: heapless::String<16> = heapless::String::new();
             write_interval(&mut range, iv);
-            cv.text(&range, Point::new(x, row_y), Font::Body, TextAlign::Left, INK);
-            row_y += Font::Body.line_height() as i32;
+            cv.text(&range, Point::new(x, row_y), range_font, TextAlign::Left, INK);
+            row_y += range_step as i32;
         }
 
         // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
@@ -253,9 +232,9 @@ impl PoiDetailScreen {
         // overhang toward the roomier side. With no interval rows ("Closed today") the badge keeps
         // its old spot under the caption: there's no vertical pressure without ranges, and the
         // longer closed-today captions would collide with a right-aligned pill.
-        if let Some(sched) = schedule {
-            let minute = rx.now.hour as u16 * 60 + rx.now.minute as u16;
-            let open = sched.is_open(weekday, minute);
+        if let Some(sched) = schedule.filter(|s| s.status(rx.place_local) != obc_reader::hours::OpeningStatus::Unknown)
+        {
+            let open = sched.status(rx.place_local) == obc_reader::hours::OpeningStatus::Open;
             let (text, bg) = if open { (rx.t(Msg::PoiDetailOpen), ON) } else { (rx.t(Msg::PoiDetailClosed), WARNING) };
             let font = Font::Body;
             let badge_w = text_width(text, font) as i32 + 2 * BADGE_PAD_X;
@@ -350,11 +329,22 @@ fn fit_chars(s: &str, max: usize) -> heapless::String<24> {
     out
 }
 
+fn hours_view(schedule: Option<&WeeklySchedule>, local: Option<(u8, u16)>) -> (Msg, heapless::Vec<Interval, 3>) {
+    let Some(schedule) = schedule.filter(|s| s.status(local) != obc_reader::hours::OpeningStatus::Unknown) else {
+        return (Msg::PoiDetailHoursNotListed, heapless::Vec::new());
+    };
+    let intervals = schedule.intervals_on_day(local.expect("known local time").0);
+    let heading = if intervals.is_empty() { Msg::PoiDetailClosedToday } else { Msg::PoiDetailToday };
+    (heading, intervals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings::DateTime;
     use obc_formats::obcm::POI_HOURS_BLOB_LEN;
+    use obc_reader::weekday_from_ymd;
+    use obc_reader::WeeklySchedule;
 
     /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
     /// same shape the reader/packer hours tests build.
@@ -383,22 +373,23 @@ mod tests {
     }
 
     /// The heading + per-interval range strings the draw would render for `sched` on `now`'s
-    /// weekday — mirrors the draw's `head`/`intervals` selection so the format is asserted without a
+    /// weekday — uses the production hours view so the format is asserted without a
     /// framebuffer (this crate is `no_std`, so a `heapless::Vec` collects the rows). `schedule`
     /// `None` = the POI has no hours at all.
-    fn hours_view(
+    fn render_hours(
         schedule: Option<&WeeklySchedule>,
         now: DateTime,
-    ) -> (&'static str, heapless::Vec<heapless::String<16>, 2>) {
+    ) -> (&'static str, heapless::Vec<heapless::String<16>, 3>) {
         let weekday = weekday_from_ymd(now.year, now.month, now.day);
-        let intervals: &[Interval] = schedule.map(|s| s.today_intervals(weekday)).unwrap_or(&[]);
-        let head = match schedule {
-            None => "Hours not listed",
-            Some(_) if intervals.is_empty() => "Closed today",
-            Some(_) => "Today",
+        let (heading, intervals) =
+            hours_view(schedule, Some((weekday, u16::from(now.hour) * 60 + u16::from(now.minute))));
+        let head = match heading {
+            Msg::PoiDetailHoursNotListed => "Hours not listed",
+            Msg::PoiDetailClosedToday => "Closed today",
+            _ => "Today",
         };
-        let mut rows: heapless::Vec<heapless::String<16>, 2> = heapless::Vec::new();
-        for iv in intervals {
+        let mut rows: heapless::Vec<heapless::String<16>, 3> = heapless::Vec::new();
+        for iv in &intervals {
             let mut r: heapless::String<16> = heapless::String::new();
             write_interval(&mut r, iv);
             let _ = rows.push(r);
@@ -407,8 +398,34 @@ mod tests {
     }
 
     /// The range strings from a [`hours_view`] result, as `&str`s for comparison.
-    fn rows_of(rows: &heapless::Vec<heapless::String<16>, 2>) -> heapless::Vec<&str, 2> {
+    fn rows_of(rows: &heapless::Vec<heapless::String<16>, 3>) -> heapless::Vec<&str, 3> {
         rows.iter().map(|r| r.as_str()).collect()
+    }
+
+    #[test]
+    fn trusted_day_display_includes_overnight_spillover() {
+        let mut days = [[(0, 0); 2]; 7];
+        days[6][0] = (88, 8);
+        let schedule = sched(days);
+        let (heading, ranges) = hours_view(Some(&schedule), None);
+        assert!(matches!(heading, Msg::PoiDetailHoursNotListed));
+        assert!(ranges.is_empty(), "an unknown local day cannot claim closed today");
+        for minute in [60, 300] {
+            let (heading, ranges) = hours_view(Some(&schedule), Some((0, minute)));
+            assert!(matches!(heading, Msg::PoiDetailToday));
+            assert_eq!(ranges.as_slice(), &[Interval { open_q: 0, close_q: 8 }]);
+        }
+        assert_eq!(schedule.status(Some((0, 60))), obc_reader::hours::OpeningStatus::Open);
+        days[0] = [(32, 48), (56, 72)];
+        let (_, ranges) = hours_view(Some(&sched(days)), Some((0, 60)));
+        assert_eq!(
+            ranges.as_slice(),
+            &[
+                Interval { open_q: 0, close_q: 8 },
+                Interval { open_q: 32, close_q: 48 },
+                Interval { open_q: 56, close_q: 72 }
+            ]
+        );
     }
 
     #[test]
@@ -416,7 +433,7 @@ mod tests {
         // Mon 08:00-18:00 (32,72); render on Monday 2025-01-06.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 12, 0));
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 12, 0));
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["08:00-18:00"]);
     }
@@ -426,7 +443,7 @@ mod tests {
         // Mon 08:00-12:00, 14:00-18:00 → two stacked range rows.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0] = [(32, 48), (56, 72)];
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 10, 0)); // Monday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 10, 0)); // Monday
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["08:00-12:00", "14:00-18:00"]);
     }
@@ -436,14 +453,14 @@ mod tests {
         // Open Mon only; render on Sunday 2025-01-05 → closed today, no range rows.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 5, 12, 0)); // Sunday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 5, 12, 0)); // Sunday
         assert_eq!(head, "Closed today");
         assert!(rows.is_empty());
     }
 
     #[test]
     fn no_hours_shows_hours_not_listed() {
-        let (head, rows) = hours_view(None, dt(2025, 1, 6, 12, 0));
+        let (head, rows) = render_hours(None, dt(2025, 1, 6, 12, 0));
         assert_eq!(head, "Hours not listed");
         assert!(rows.is_empty());
     }
@@ -453,7 +470,7 @@ mod tests {
         // A 24h day (0,96) shows 00:00–24:00.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (0, 96);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 3, 0)); // Monday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 3, 0)); // Monday
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["00:00-24:00"]);
     }

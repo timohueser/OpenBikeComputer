@@ -40,6 +40,8 @@ extern crate alloc;
 pub mod color;
 pub mod corridor;
 pub mod hours;
+pub mod landmarks;
+pub mod photo;
 pub mod reader;
 mod scene;
 

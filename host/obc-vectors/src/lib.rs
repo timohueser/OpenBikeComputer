@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
+pub mod landmarks;
 pub mod obcg;
 pub mod obcw;
 pub mod weather_request;
@@ -44,6 +45,25 @@ pub fn crc32(bytes: &[u8]) -> u32 {
         }
     }
     crc ^ 0xFFFF_FFFF
+}
+
+/// A service record written directly from the OBCM v15 field table.
+/// A Train place with an explicit node approach, independent of the production encoder.
+pub fn place_record() -> Vec<u8> {
+    let mut bytes = vec![0xff; 64];
+    bytes[0..4].copy_from_slice(&46_561_323i32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&8_361_496i32.to_le_bytes());
+    bytes[8] = 20;
+    bytes[9] = 7;
+    bytes[10..17].copy_from_slice(b"Station");
+    bytes[34..36].copy_from_slice(&0xffffu16.to_le_bytes());
+    bytes[36..44].copy_from_slice(&((1u64 << 62) | 123).to_le_bytes());
+    bytes[44..52].copy_from_slice(&((1u64 << 62) | 456).to_le_bytes());
+    bytes[52..56].copy_from_slice(&46_561_320i32.to_le_bytes());
+    bytes[56..60].copy_from_slice(&8_361_490i32.to_le_bytes());
+    bytes[60] = 5;
+    bytes[61..64].fill(0);
+    bytes
 }
 
 /// The deterministic route source: a short rolling track at 48°N with two `<wpt>`
@@ -652,6 +672,48 @@ pub fn trip_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
     v
 }
 
+/// Valid visit envelope and two overlaps whose shared bytes are otherwise valid.
+fn visit_envelopes(plain: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+    use obc_formats::io::{put_u16, put_u32, rd_u32};
+    let offset = plain.len() as u32;
+    let mut valid = plain.to_vec();
+    let mut descriptor = [0; 80];
+    descriptor[..16].fill(1);
+    descriptor[16..24].copy_from_slice(&2u64.to_le_bytes());
+    descriptor[24..32].copy_from_slice(&3u64.to_le_bytes());
+    for base in [32, 44] {
+        put_u32(&mut descriptor, base + 4, 1);
+        put_u32(&mut descriptor, base + 8, 2);
+    }
+    descriptor[56..64].copy_from_slice(&123u64.to_le_bytes());
+    descriptor[72] = 1;
+    valid.extend_from_slice(&descriptor);
+    valid[118] = 1;
+    put_u32(&mut valid, 120, offset);
+    put_u32(&mut valid, 124, 80);
+
+    // The last four reserved zeros also encode a waypoint's zero distance.
+    let mut waypoint = valid.clone();
+    let mut record = [0; 80];
+    record[15] = 1;
+    record[20] = b'W';
+    waypoint.extend_from_slice(&record[4..]);
+    put_u32(&mut waypoint, 112, offset + 76);
+    put_u16(&mut waypoint, 116, 1);
+
+    // The same zeros also encode a valid index bbox minimum longitude.
+    let mut index = valid.clone();
+    let old_index = rd_u32(plain, 56) as usize;
+    let index_len = rd_u32(plain, 52) as usize * obc_formats::obcr::CHUNK_META_LEN;
+    index.extend_from_slice(&plain[old_index + 4..old_index + index_len]);
+    put_u32(&mut index, 56, offset + 76);
+    vec![
+        ("route-visit.obcr", valid),
+        ("route-visit-waypoint-overlap.obcr", waypoint),
+        ("route-visit-index-overlap.obcr", index),
+    ]
+}
+
 /// Every fixture as `(file name, bytes)`. The transfer descriptors' `total_len`/
 /// `crc32` are the actual length and CRC of `route-waypoints.obcr`, tying the
 /// fixtures together end-to-end.
@@ -663,6 +725,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
     let (trip_len, trip_crc) = (trip.len() as u32, crc32(&trip));
     let terrain = terrain_shard();
+    let envelopes = visit_envelopes(&route_plain);
     let mut fixtures = vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
@@ -714,6 +777,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // point is to be the bytes a current device serves, so an OBCM bump must re-cut it (and, via
         // manifest.json, force the Swift + TS consumers of that number to be looked at) rather than
         // leave three implementations pinned to a number the firmware stopped saying.
+        ("place-train-v15.bin", place_record()),
+        ("landmark-section-v16.bin", landmarks::section()),
         ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
         // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
         // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.
@@ -866,6 +931,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // other way. Shaped for coverage rather than plausibility, like `track-log.obct`.
         ("weather-request-context-southern.bin", weather_request::southern()),
     ];
+    fixtures.extend(envelopes);
     fixtures.extend(obcw::all());
     fixtures.extend(obcg::all());
     fixtures

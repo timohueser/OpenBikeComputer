@@ -44,6 +44,9 @@ use obcm_assemble::grid::{assembly_box, CellId};
 use obcm_assemble::schema::{Schema, Skin, SkinStyle};
 use obcm_assemble::{assemble, CellInput, MemorySource, MemoryStore, NoClock, Options};
 
+#[path = "support/landmarks.rs"]
+mod landmark_fixture;
+
 // --- the fixture ------------------------------------------------------------------------------
 
 /// The `2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
@@ -166,6 +169,13 @@ fn way(kind: u8, pts: &[(i64, (i64, i64))]) -> RoutableWay {
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
     Poi {
+        metadata: obc_formats::obcm::PoiMetadata {
+            source: obc_formats::obcm::SourceId::osm(1, ((lat as u64) << 26) ^ ((lon as u64) << 5) ^ subtype as u64),
+            approach: None,
+        },
+        access_nodes: Vec::new(),
+        wikidata: None,
+        wikipedia: None,
         subtype,
         lon_udeg: lon as i32,
         lat_udeg: lat as i32,
@@ -266,7 +276,10 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         Poi { elevation_m: Some(-25), ..poi(19, LAT + 22_345, SEAM + 23_456, "Below sea level") },
         poi(19, LAT + 23_456, SEAM_E + 12_345, "Unknown summit"),
     ];
-    (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
+    (
+        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
+        ways,
+    )
 }
 
 /// The **uncut** fixture: the same kinds of feature, placed so that nothing crosses a cell edge and
@@ -287,7 +300,10 @@ fn uncut_fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     ];
     let ways = vec![way(7, &[(1, (LAT, SEAM + 70_000)), (2, (LAT + 20_000, SEAM + 120_000))])];
     let pois = vec![poi(1, LAT, SEAM - 160_000, "West water"), poi(5, LAT, SEAM + 100_000, "East camp")];
-    (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
+    (
+        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
+        ways,
+    )
 }
 
 /// Viewports over the uncut fixture: both cells, north-up and rotated, at every ladder level.
@@ -1045,11 +1061,13 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     }
     let dir = scratch("terrain-splice");
     let summary = cut(&dir, &cfg, &ing, &ways);
-    let sources: Vec<MemorySource> = summary
+    let mut sources: Vec<MemorySource> = summary
         .cells
         .iter()
         .map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("a cell artifact")))
         .collect();
+    let core = summary.cells.iter().position(|cell| cell.band == "network").unwrap();
+    landmark_fixture::attach(&mut sources[core].0, vec![landmark_fixture::record(123)], true);
     let inputs = || -> Vec<CellInput<'_>> {
         summary
             .cells
@@ -1126,6 +1144,16 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
         }],
     };
     let (with, with_bytes) = run(inputs(), Some(job));
+
+    let landmark_source = SliceSource(&with_bytes);
+    let landmark_window = obc_reader::landmarks::map_section(&landmark_source).unwrap().unwrap();
+    landmark_fixture::assert_content(&landmark_window);
+    let directory = obc_reader::landmarks::LandmarkDirectory::read(&landmark_window).unwrap();
+    assert_eq!(directory.record(&landmark_window, 0).unwrap().qid, 123);
+    let start = u32::from_le_bytes(with_bytes[49..53].try_into().unwrap()) as u64 * 16;
+    let len = u32::from_le_bytes(with_bytes[53..57].try_into().unwrap()) as u64 * 16;
+    let terrain_start = u32::from_le_bytes(with_bytes[41..45].try_into().unwrap()) as u64 * 16;
+    assert_eq!(start + len, terrain_start, "terrain follows the complete landmark region");
 
     let t = with.terrain.expect("the summary reports the region");
     assert_eq!(t.cells, 1);

@@ -158,6 +158,7 @@ pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
 }
 
 /// Decode an `.obcr` route's polyline: flat `[lat°, lon°, ele m]` triples, in route order.
+/// Missing elevations are NaN, never a fabricated sea-level sample.
 ///
 /// The device-page preview's other direction — reading back what [`gpx_to_obcr`] (or the device)
 /// wrote — through the same [`RouteReader`] the firmware streams its map draw from, so what the
@@ -190,7 +191,7 @@ pub fn obcr_to_track(obcr: &[u8]) -> Result<Vec<f64>, ConvertFailure> {
         for p in buf.iter().skip(skip) {
             out.push(f64::from(p.lat) * 1e-6);
             out.push(f64::from(p.lon) * 1e-6);
-            out.push(f64::from(p.ele));
+            out.push(p.elevation().map_or(f64::NAN, f64::from));
         }
     }
     Ok(out)

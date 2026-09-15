@@ -26,7 +26,7 @@ ride-v3 object, and the OBCT terrain raster
 
 A drift on any side fails that side's tests — the files are the contract.
 
-> **FS7.5-c3b removed three files** (OBCM v14, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
+> **FS7.5-c3b removed three files** (OBCM v15, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
 > `transfer-set-shard.bin`, `transfer-set-terrain.bin` and `transfer-set-manifest.bin` pinned the
 > `mapShard` / `terrainShard` / `mapSet` object types of a volume-set upload. A map is one object
 > now (`OBCA_Spec.md` §5 is superseded), so they described a transfer no producer will make. They
@@ -77,6 +77,10 @@ A drift on any side fails that side's tests — the files are the contract.
 | `weather-request-context-unknown-refresh.bin` | `weatherRequestContext` v1 (§11.8, #1214) | the day a firmware appends a fifth refresh interval, this is the byte every phone already in the field receives: `refresh` = `9`, which v1 never defined. A read may **never** treat it as fatal — an unrecognised value here is newer firmware, not a malformed device, exactly as an unrecognised `reason` bit is. It decodes as *unknown* (not `Off`, not the default) and the raw byte round-trips verbatim. The file is `weather-request-context-full.bin` at every offset but two — the refresh byte and the request-id nonce — so the rule is checkable by byte comparison: an interval a build cannot name costs it the schedule and nothing else, not the fix, the route or the bundle identity |
 | `weather-request-context-southern.bin` | `weatherRequestContext` v1 (§11) | sign coverage, shaped for **coverage not plausibility** like `track-log.obct`: no other fixture carried a negative coordinate or a pre-1970 time, so until this one a mirror could read `lat_udeg`/`lon_udeg` as `u32` and both timestamps as `u64` and pass the whole suite. El Chaltén, Patagonia — southern *and* western — with a fix at 1938-04-24T22:13:20Z and an older bundle an hour before it. Read unsigned those become ≈ 4245°N and a clock 585 billion years ahead: visibly impossible rather than subtly wrong. The two `i64`s sit at different offsets, so one correct sign extension cannot cover for the other, and the bundle group runs the trap the other way — `generation` and `crc32` both have their top bit set, so a *signed* read gets `-2` and `-2147483647` |
 | `trip-list.bin` | `tripList` object §7.4 | one entry for the trip above: **6-byte v2 header** + a **76-byte** entry mirroring `routeList` (trailing whole-object `crc32`); `total_distance_m`/`total_ascent_m` (4414 / 152) summed over the two **resolvable** stages, `stage_count` 3 counts every stored stage (dangling included) |
+
+The `place-train-v15.bin` record pins the OBCM v15 service metadata: Train subtype 20,
+source identity, explicit approach node and coordinate, and profile mask. Its 64 bytes come
+from a separate spec builder and pass through the production metadata decoder.
 
 ### OBCW weather vectors
 
@@ -223,7 +227,7 @@ other:
 
 `version-read.bin`'s `obcm_version` comes
 from `obc_formats::obcm::VERSION`. That is deliberate — the fixture's job is to be
-the bytes a current device serves, and a device that reads OBCM v14 saying "13"
+the bytes a current device serves, and a device that reads OBCM v15 saying "13"
 would be a lie three implementations agreed on. (That example is the v13→v14 bump, which FS7.5b
 made: the spec moved first, the constant followed, and the note at the top of this file is what
 stopped the gap from being silent while the two were apart.) So an OBCM format bump

@@ -21,8 +21,9 @@
 //! rather than into a buffer the size of the map.
 
 use obc_formats::obcm::{
-    OffsetScale, UnitWriter, HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT,
-    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, VERSION,
+    OffsetScale, UnitWriter, HEADER_LANDMARK_LENGTH_OFF, HEADER_LANDMARK_OFFSET_OFF, HEADER_LEN, LOD_ENTRY_LEN, MAGIC,
+    STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN,
+    STYLE_TERRAIN_LAYER_BIT, VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -125,8 +126,8 @@ pub fn fits_ceiling(bytes: u64, what: &str) -> Result<()> {
 pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
 
 /// The byte offset of the style table in every shard this engine writes: the first unit boundary at
-/// or after the 49-byte header (§1.2), which at `U = 16` is `64` — so `Style Offset` is `4` and
-/// bytes `49..64` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
+/// or after the 57-byte header (§1.2), which at `U = 16` is `64` — so `Style Offset` is `4` and
+/// bytes `57..64` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
 pub const STYLE_OFFSET: u64 = 64;
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN as u64);
 
@@ -208,6 +209,8 @@ pub struct MapPlan {
     /// rectangle and the present-cell count alone — which is what lets the header state the region's
     /// offset without anything being back-patched.
     pub terrain_bytes: u64,
+    /// Optional landmark region, including its final unit padding.
+    pub landmark_bytes: u64,
     /// Surface tiles start on SD block boundaries in the complete map.
     pub surface_terrain: bool,
     /// Total bytes, computable before the write and re-checked after it (§5.7).
@@ -221,11 +224,8 @@ impl MapPlan {
     /// `usize`: the crate's `--lib` target is wasm32, where a projection accumulated in a 32-bit
     /// `usize` wraps past 4 GiB and hands §5.7's ceiling a small number it happily accepts.
     ///
-    /// Since v14 the cursor also carries §1.2's filler. Five of this file's six region starts are
-    /// named by a **scaled** offset and so begin on a unit boundary — the style table behind the
-    /// 49-byte header, the LOD table behind the style table, the first LOD's index behind the LOD
-    /// table, each section behind the last, and the terrain region behind the nav section — so each
-    /// is `align_up`'d here and the `0..U-1` bytes it rounds past are written `0xFF` by [`write`].
+    /// Region starts use scaled offsets and begin on a unit boundary. The optional landmark
+    /// region follows navigation; terrain is last. [`write`] fills alignment gaps with `0xFF`.
     /// The per-LOD and per-section interiors carry their own gaps ([`LodPlan::region_bytes`],
     /// [`crate::poi::PoiSection::section_len`], [`crate::nav::NavProjection::bytes_at`]), and each of
     /// those regions **ends** on a unit boundary, which is what keeps this cursor aligned without a
@@ -252,18 +252,29 @@ impl MapPlan {
         debug_assert_eq!(poi_offset, align_up(poi_offset), "every LOD region ends on a unit boundary");
         debug_assert_eq!(nav_offset, align_up(nav_offset), "the POI section ends on a unit boundary");
 
+        let landmark_offset = if self.landmark_bytes == 0 { 0 } else { nav_end };
+        let landmark_end = nav_end.checked_add(self.landmark_bytes).ok_or_else(|| self.past_u64())?;
         // §1.3: terrain sits last, precisely so that splicing it moves no other offset. A map with
-        // no raster ends at the nav section and writes `(0, 0)` — the header pair that means "this
+        // no raster ends after its landmarks and writes `(0, 0)` — the header pair that means "this
         // map carries no elevation", which is unambiguous because byte 0 is the header itself.
         let (terrain_offset, terrain_len, total) = if self.terrain_bytes == 0 {
-            (0, 0, nav_end)
+            (0, 0, landmark_end)
         } else {
-            let at = if self.surface_terrain { (nav_end + 511) & !511 } else { align_up(nav_end) };
+            let at = if self.surface_terrain { (landmark_end + 511) & !511 } else { align_up(landmark_end) };
             let end = at.checked_add(self.terrain_bytes).ok_or_else(|| self.past_u64())?;
             let total = align_up(end);
             (at, total - at, total)
         };
-        Ok(Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, terrain_offset, terrain_len, total })
+        Ok(Layout {
+            lod_table_offset,
+            lod_offsets,
+            poi_offset,
+            nav_offset,
+            landmark_offset,
+            terrain_offset,
+            terrain_len,
+            total,
+        })
     }
 
     fn past_u64(&self) -> Error {
@@ -289,6 +300,7 @@ struct Layout {
     lod_offsets: Vec<u64>,
     poi_offset: u64,
     nav_offset: u64,
+    landmark_offset: u64,
     /// Byte offset of the §1.3 terrain region, or `0` for a map with no elevation.
     terrain_offset: u64,
     /// The region's length **including** the filler `Terrain Length`'s unit count rounds up to, so
@@ -317,7 +329,7 @@ pub fn peak_view_prefix_bytes(
         .nav_offset
         .checked_sub(summit_bytes)
         .ok_or_else(|| Error::Capacity("summit section exceeds the map layout".into()))?;
-    let native_start = align_up(native_nav + nav.bytes_at(native_nav));
+    let native_start = align_up(native_nav + nav.bytes_at(native_nav) + plan.landmark_bytes);
     Ok(layout.terrain_offset - native_start)
 }
 
@@ -367,6 +379,7 @@ pub fn write(
     styles: &[StyleRecord],
     marker_color: u16,
     poi: &PoiSection,
+    landmarks: &crate::landmarks::LandmarkSection,
     nav: &MergedNav,
     profile_table: &[u8],
     terrain: Option<&crate::terrain::TerrainRegion<'_>>,
@@ -376,6 +389,9 @@ pub fn write(
     let style_bytes = pack_style_table(styles);
     let nav_projection = nav.projection(profile_table);
     let l = plan.layout(style_bytes.len(), poi.section_len(), nav_projection)?;
+    if plan.landmark_bytes != landmarks.section_len() {
+        return Err(Error::Verify("landmark section differs from the map plan".into()));
+    }
     debug_assert_eq!(
         plan.terrain_bytes,
         terrain.map_or(0, |t| t.bytes()),
@@ -411,8 +427,8 @@ pub fn write(
         let mut w = MapWriter::new(SCALE, 0, &mut out);
 
         // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
-        //    carries the 49-byte header to the style table's unit boundary.
-        w.put(&header_bytes(
+        //    carries the 57-byte header to the style table's unit boundary.
+        let mut header = header_bytes(
             plan.box_,
             plan.lods.len(),
             marker_color,
@@ -421,7 +437,12 @@ pub fn write(
             l.nav_offset,
             l.terrain_offset,
             l.terrain_len,
-        )?)?;
+        )?;
+        header[HEADER_LANDMARK_OFFSET_OFF..HEADER_LANDMARK_OFFSET_OFF + 4]
+            .copy_from_slice(&scaled(l.landmark_offset)?.to_le_bytes());
+        header[HEADER_LANDMARK_LENGTH_OFF..HEADER_LANDMARK_LENGTH_OFF + 4]
+            .copy_from_slice(&scaled(plan.landmark_bytes)?.to_le_bytes());
+        w.put(&header)?;
         w.begin_section()?;
 
         // 2. Style table (the skin, §4.7) and 3. the LOD table, each followed by the filler that lands
@@ -449,6 +470,7 @@ pub fn write(
         let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
         crate::poi::emit(poi, &mut w)?;
         crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
+        landmarks.emit(nav_cells, &mut w)?;
 
         // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
         //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
@@ -478,7 +500,7 @@ pub fn write(
     Ok((delivered, hasher.finalize().into()))
 }
 
-/// The 49-byte v14 OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split
+/// The 57-byte OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split
 /// out because it is a **restatement** of `obc-pack`'s serializer, and `tests/pinning.rs` compares
 /// the two outputs directly rather than trusting that two copies of a table stay in step.
 ///
@@ -528,6 +550,7 @@ pub fn header_bytes(
     head.push(SCALE.log2());
     head.extend_from_slice(&scaled(terrain_offset)?.to_le_bytes());
     head.extend_from_slice(&scaled(terrain_len)?.to_le_bytes());
+    head.extend_from_slice(&[0; 8]); // optional landmark section
     debug_assert_eq!(head.len(), HEADER_LEN);
     Ok(head)
 }
@@ -697,7 +720,15 @@ mod tests {
     }
 
     fn plan() -> MapPlan {
-        MapPlan { box_: bx(), lods: Vec::new(), terrain_bytes: 0, surface_terrain: false, bytes: 1234, sha256: [0; 32] }
+        MapPlan {
+            box_: bx(),
+            lods: Vec::new(),
+            landmark_bytes: 0,
+            terrain_bytes: 0,
+            surface_terrain: false,
+            bytes: 1234,
+            sha256: [0; 32],
+        }
     }
 
     /// **One wall, and it is the format's.** Three others stood here at various times — FAT32's
@@ -787,8 +818,21 @@ mod tests {
         assert!(projected > FILE_CEILING);
 
         let mut sink = |_: &[u8]| -> Result<()> { panic!("a refused map writes no bytes") };
-        let err = write(&p, &[], &[], &[], 0, &poi, &nav, &[], None, &MemoryScratch::new(), &mut sink)
-            .expect_err("past the ceiling");
+        let err = write(
+            &p,
+            &[],
+            &[],
+            &[],
+            0,
+            &poi,
+            &crate::landmarks::LandmarkSection::default(),
+            &nav,
+            &[],
+            None,
+            &MemoryScratch::new(),
+            &mut sink,
+        )
+        .expect_err("past the ceiling");
         assert!(matches!(err, Error::Capacity(_)), "got: {err}");
         assert!(format!("{err}").contains("past the"), "got: {err}");
     }

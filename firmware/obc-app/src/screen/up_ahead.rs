@@ -391,9 +391,9 @@ impl UpAheadScreen {
             // the detail can spell the side out. A custom waypoint has no detail child yet — the
             // row stays inert rather than advertising a screen that doesn't exist (copy-tone rule).
             Gesture::Press => match self.rows(waypoints, cx.corridor, route_loaded, scope).nth(sel) {
-                Some(Entry::Poi(p)) => Transition::Push(Screen::PoiDetail(
-                    super::PoiDetailScreen::new(p.poi.clone()).off_route(p.offset_m),
-                )),
+                Some(Entry::Poi(p)) if p.poi.opening != obc_reader::hours::OpeningStatus::Closed => Transition::Push(
+                    Screen::PoiDetail(super::PoiDetailScreen::new(p.poi.clone()).off_route(p.offset_m)),
+                ),
                 _ => Transition::None,
             },
             // Select-hold stays a local action on a focused object (#1515): the category filter this
@@ -418,17 +418,41 @@ impl UpAheadScreen {
                 copy: EmptyCopy {
                     no_route: rx.t(Msg::RideContextNoRoute),
                     no_route_sub: rx.t(Msg::UpAheadNoRouteSub),
-                    none: rx.t(Msg::UpAheadNone),
-                    none_sub: rx.t(Msg::UpAheadNoneSub),
-                    none_category_sub: rx.t(Msg::UpAheadNoneCategorySub),
+                    none: rx.t(
+                        if matches!(
+                            rx.corridor_status,
+                            obc_reader::reader::places::QueryProgress::Failed(_)
+                                | obc_reader::reader::places::QueryProgress::Unavailable
+                        ) && scope.source.shows_pois()
+                        {
+                            Msg::PoiListUnavailable
+                        } else {
+                            Msg::UpAheadNone
+                        },
+                    ),
+                    none_sub: rx.t(if scope.source.shows_pois() { Msg::PoiListCoverage } else { Msg::UpAheadNoneSub }),
+                    none_category_sub: rx.t(if scope.source.shows_pois() {
+                        Msg::PoiListCoverage
+                    } else {
+                        Msg::UpAheadNoneCategorySub
+                    }),
                     none_waypoints_sub: rx.t(Msg::UpAheadNoneWaypointsSub),
-                    none_pois_sub: rx.t(Msg::UpAheadNonePoisSub),
+                    none_pois_sub: rx.t(
+                        if matches!(
+                            rx.corridor_status,
+                            obc_reader::reader::places::QueryProgress::Ready { coverage_complete: false, .. }
+                        ) {
+                            Msg::PoiListCoverage
+                        } else {
+                            Msg::UpAheadNonePoisSub
+                        },
+                    ),
                 },
                 waypoints: rx.waypoints.as_slice(),
                 corridor: rx.corridor,
                 scope,
                 route_loaded,
-                settled: rx.corridor_settled,
+                settled: rx.corridor_status != obc_reader::reader::places::QueryProgress::Pending,
                 progress_m: rx.navigation.progress_m,
                 route_total_m: rx.navigation.route_total_m,
                 profile: rx.profile,
@@ -755,7 +779,16 @@ mod tests {
                 let mut name = heapless::String::new();
                 name.push_str(n).unwrap();
                 CorridorPoi {
-                    poi: Poi { lat: 0, lon: 0, subtype: *subtype, name, hours_ref: 0xFFFF, distance_m: *d },
+                    poi: Poi {
+                        opening: Default::default(),
+                        metadata: Default::default(),
+                        lat: 0,
+                        lon: 0,
+                        subtype: *subtype,
+                        name,
+                        hours_ref: 0xFFFF,
+                        distance_m: *d,
+                    },
                     dist_along_m: *d,
                     offset_m: *off,
                 }

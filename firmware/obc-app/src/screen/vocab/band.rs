@@ -89,7 +89,7 @@ impl<'a> ElevationBand<'a> {
             top: area.top_left.y,
             bot: area.top_left.y + area.size.height as i32 - 1,
             min_ele_m: profile.min_ele_m,
-            span_ele: (profile.max_ele_m - profile.min_ele_m).max(1) as f32,
+            span_ele: (i32::from(profile.max_ele_m) - i32::from(profile.min_ele_m)).max(1) as f32,
         }
     }
 
@@ -114,7 +114,7 @@ impl<'a> ElevationBand<'a> {
     /// The panel y elevation `e` maps to: the profile's floor sits on the baseline, its peak on
     /// the band's top row, everything outside that range clamps to them.
     pub(crate) fn ele_to_y(&self, e: i16) -> i32 {
-        let t = ((e - self.min_ele_m) as f32 / self.span_ele).clamp(0.0, 1.0);
+        let t = ((i32::from(e) - i32::from(self.min_ele_m)) as f32 / self.span_ele).clamp(0.0, 1.0);
         self.bot - (t * (self.bot - self.top) as f32) as i32
     }
 
@@ -127,6 +127,10 @@ impl<'a> ElevationBand<'a> {
     /// part of the band by re-filling those columns over the base fill — Statistics' traveled
     /// half, which is its layer, not the raster's.
     pub(crate) fn fill_column(&self, cv: &mut impl Surface, px: i32, color: u16) {
+        let sample = self.profile.sample(self.level, self.frac(px));
+        if sample.0 > sample.1 {
+            return;
+        }
         let top_y = self.column_top(px);
         cv.vline(self.x + px, top_y, self.bot - top_y + 1, 1, color);
     }
@@ -142,6 +146,11 @@ impl<'a> ElevationBand<'a> {
     pub(crate) fn stroke(&self, cv: &mut impl Surface, color: u16) {
         let mut stroke = TopStroke::default();
         for px in 0..self.w {
+            let sample = self.profile.sample(self.level, self.frac(px));
+            if sample.0 > sample.1 {
+                stroke = TopStroke::default();
+                continue;
+            }
             stroke.column(cv, self.x + px, self.column_top(px), color);
         }
     }
@@ -149,6 +158,9 @@ impl<'a> ElevationBand<'a> {
     /// Draw the profile's peak elevation as a small label at `place`, in the rider's units. Both
     /// placements stay inside the band's ends.
     pub(crate) fn peak_label(&self, cv: &mut impl Surface, units: Units, place: PeakLabel) {
+        if self.profile.cols().iter().all(|s| s.0 > s.1) {
+            return;
+        }
         let mut peak: heapless::String<10> = heapless::String::new();
         let _ = write!(peak, "{} {}", units.elev(self.profile.peak_ele_m() as f32) as i32, units.elev_label());
         let (at, align) = match place {

@@ -188,6 +188,7 @@ fn obcm_header(
     let (terrain_off, terrain_len) = terrain.unwrap_or((0, 0));
     f.extend_from_slice(&scaled(terrain_off).to_le_bytes());
     f.extend_from_slice(&scaled(terrain_len).to_le_bytes());
+    f.extend_from_slice(&[0; 8]);
     assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
     f
 }
@@ -308,7 +309,9 @@ pub fn hours_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
 pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
     let dir_gap = filler_len(section_off + poi_dir_len());
     let after_dir = section_off + poi_dir_len() + dir_gap;
-    let cats: Vec<PoiCat> = (1..=POI_CATEGORY_COUNT)
+    let cats: Vec<PoiCat> = obc_formats::obcm::PoiCategory::ALL
+        .into_iter()
+        .map(|c| c.id())
         .map(|id| PoiCat { category_id: id, index_offset: after_dir, node_count: 0, chunk_count: 0 })
         .collect();
     // No categories ⇒ no chunks: the (empty) hours pool sits at that same aligned offset.
@@ -479,6 +482,14 @@ pub fn pack_poi_record(lat: i32, lon: i32, subtype: u8, name: &str, hours_ref: u
     rec[10..10 + len].copy_from_slice(&bytes[..len]);
     // rec[10 + len .. 34] stays 0xFF (name pad); hours_ref goes at [34..36].
     rec[34..36].copy_from_slice(&hours_ref.to_le_bytes());
+    let identity = ((lat as u32 as u64) << 24 ^ lon as u32 as u64 ^ subtype as u64) & ((1 << 62) - 1);
+    rec[36..64].copy_from_slice(
+        &obc_formats::obcm::PoiMetadata {
+            source: obc_formats::obcm::SourceId::osm(1, identity.max(1)),
+            approach: None,
+        }
+        .encode(),
+    );
     rec
 }
 
@@ -630,15 +641,18 @@ pub fn build_poi_map_with_hours(
     // 1..=6. Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
     // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's
     // one rounding step. 512 is a multiple of `U`, so whole chunks leave the cursor aligned.
-    let category_count =
-        pois_by_cat.iter().map(|(id, _)| *id).max().unwrap_or(POI_CATEGORY_COUNT).max(POI_CATEGORY_COUNT);
-    let directory_len = 3 + category_count as usize * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN;
+    let mut ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.into_iter().map(|c| c.id()).collect();
+    ids.extend(pois_by_cat.iter().map(|(id, _)| *id));
+    ids.sort_unstable();
+    ids.dedup();
+    let category_count = ids.len();
+    let directory_len = 3 + category_count * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN;
     let mut payload = Vec::new(); // everything after the directory
     let mut cats: Vec<PoiCat> = Vec::new();
     let dir_gap = filler_len(poi_off + directory_len);
     payload.resize(dir_gap, FILLER);
     let mut cursor = poi_off + directory_len + dir_gap; // absolute offset of the next category's index
-    for id in 1..=category_count {
+    for id in ids {
         let pois = pois_by_cat.iter().find(|(c, _)| *c == id).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
         if pois.is_empty() {
             // Empty category: its (zero-length) index "starts" at the cursor, no chunks.

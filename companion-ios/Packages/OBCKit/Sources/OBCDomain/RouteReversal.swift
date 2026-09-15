@@ -23,7 +23,9 @@ public extension ImportedRoute {
     /// to itself (nothing to flip), and a route with no waypoints reverses its
     /// geometry alone.
     func reversed() -> ImportedRoute {
-        let reversedPoints = Array(points.reversed())
+        let reversedPoints = points.indices.reversed().map { i in
+            RoutePoint(coordinate: points[i].coordinate, elevationMeters: points[i].elevationMeters, surface: i + 1 < points.count ? points[i+1].surface : 0, elevationIncomplete: i + 1 < points.count ? points[i+1].elevationIncomplete : false)
+        }
         return ImportedRoute(
             name: name,
             creator: creator,
@@ -64,7 +66,8 @@ public extension ImportedRoute {
                     distanceAlongMeters: entry.along,
                     coordinate: entry.waypoint.coordinate,
                     category: entry.waypoint.category,
-                    lateralOffsetMeters: -entry.waypoint.lateralOffsetMeters
+                    lateralOffsetMeters: -entry.waypoint.lateralOffsetMeters,
+                    provenance: entry.waypoint.provenance
                 )
             }
     }
@@ -76,7 +79,7 @@ public extension ImportedRoute {
         guard points.count > 1 else { return 0 }
         var total = 0.0
         for i in 1..<points.count {
-            total += points[i - 1].coordinate.distance(to: points[i].coordinate)
+            total += points[i - 1].coordinate.routeDistance(to: points[i].coordinate)
         }
         return total
     }

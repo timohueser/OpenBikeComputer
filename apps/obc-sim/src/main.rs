@@ -1210,11 +1210,41 @@ fn main() {
     if let Some(gpx) = &args.import {
         let result = if let Some(path) = &args.card {
             card::persistent(path, false).and_then(|owner| {
+                let map = match map_file::LoadedMap::reopen(&owner) {
+                    Ok(map) => Some(map),
+                    Err(obc_host_core::flat_map::MapError::Storage(obc_storage::flat::StoreError::NotFound)) => None,
+                    Err(error) => return Err(error.to_string()),
+                };
                 let mut routes = RouteStore::new(owner, &[]).map_err(|error| error.to_string())?;
-                routes::import_gpx(&mut routes, std::path::Path::new(gpx))
+                routes::import_gpx(
+                    &mut routes,
+                    std::path::Path::new(gpx),
+                    map.as_ref()
+                        .map(|map| map.reader())
+                        .as_ref()
+                        .zip(map.as_ref())
+                        .map(|(reader, map)| (reader, map.route_attribution_key())),
+                )
             })
         } else {
-            routes::export_gpx(std::path::Path::new(gpx), std::path::Path::new(&args.routes_dir()))
+            let map = if args.map.is_empty() {
+                Ok(None)
+            } else {
+                map_file::MapSource::load_single(&args.map)
+                    .and_then(map_file::LoadedMap::open)
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            };
+            map.and_then(|map| {
+                routes::export_gpx(
+                    std::path::Path::new(gpx),
+                    std::path::Path::new(&args.routes_dir()),
+                    map.as_ref()
+                        .map(|map| map.reader())
+                        .as_ref()
+                        .zip(map.as_ref().map(|map| map.route_attribution_key())),
+                )
+            })
         };
         match result {
             Ok(stats) => eprintln!("imported {gpx} | {} m, +{} m", stats.total_distance_m, stats.total_ascent_m),

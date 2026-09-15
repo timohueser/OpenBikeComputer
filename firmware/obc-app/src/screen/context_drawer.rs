@@ -1338,12 +1338,12 @@ mod tests {
         let mut d = up_ahead_drawer();
         w.press(&mut d, Gesture::Press); // the Filter editor: Everything + six categories
         w.press(&mut d, Gesture::Step(-1));
-        assert_eq!(d.staged, 6, "stepping back off Everything wraps to the last category");
+        assert_eq!(d.staged, 7, "stepping back off Everything wraps to the last category");
         w.press(&mut d, Gesture::Step(1));
         assert_eq!(d.staged, 0, "…and forward off the last wraps home");
 
         let facts = w.facts();
-        assert_eq!(ContextValue::UpAheadFilter.count(&facts), 7);
+        assert_eq!(ContextValue::UpAheadFilter.count(&facts), 8);
         assert_eq!(ContextValue::UpAheadSource.count(&facts), UpAheadSource::COUNT as u8);
         for ordinal in 0..ContextValue::UpAheadFilter.count(&facts) {
             assert_eq!(filter_choice(choice_filter(ordinal)), ordinal, "ordinal {ordinal} round-trips");
