@@ -629,7 +629,12 @@ impl VisitBuilder {
         // A stored total is floored to metres. Keep the final stored endpoint, not a second
         // sub-metre clip of it, or consecutive legs would no longer have the same seam.
         let upper = if to == route.total_distance_m { u32::MAX } else { to };
-        let found = decode_route_points_between_checked(route, self.chunk, from, upper, &mut points)?;
+        let found = if route.total_distance_m == 0 && route.chunks()[self.chunk].point_count == 1 {
+            route.decode_chunk(self.chunk, &mut points)?;
+            Some(points.len())
+        } else {
+            decode_route_points_between_checked(route, self.chunk, from, upper, &mut points)?
+        };
         self.chunk += 1;
         if found.is_none() {
             return Ok(true);

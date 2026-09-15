@@ -127,7 +127,8 @@ impl NavigatorMachine {
         }
         let at_stop = obc_map_scene::ground_dist_m(fix, (descriptor.target_lon, descriptor.target_lat));
         let departure_m = departure_m(entry, stop);
-        let leave_m = if stop == rejoin { LEAVE_STOP_M } else { LEAVE_STOP_M.min((rejoin - stop) / 2).max(1) };
+        let remaining = if stop == rejoin { route.total_distance_m.saturating_sub(stop) } else { rejoin - stop };
+        let leave_m = if remaining == 0 { 0 } else { LEAVE_STOP_M.min(remaining / 2).max(1) };
         let return_arrival_m = ARRIVAL_M.min(rejoin.saturating_sub(stop) / 2).max(1);
         if current.phase == JourneyPhase::Outbound {
             let first = *self.visit.departure_fix.get_or_insert(fix);
@@ -1047,12 +1048,13 @@ mod tests {
     #[test]
     fn on_route_stops_resume_the_tail_after_stationary_dwell() {
         use crate::navigator::{ReviewContext, ReviewOrigin, ReviewedRoute, REVIEW_FACTS_POLICY};
-        for stop in [0, 111] {
-            let bytes = visit_route(
-                b"<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"0.002\"/></trkseg></trk></gpx>",
-                [0, stop, stop],
-                if stop == 0 { 0 } else { 1000 },
+        for (stop, tail_lat) in [(0, 1000), (0, 90), (0, 0), (111, 1000), (111, 90), (111, 0)] {
+            let lat = if stop == 0 { 0 } else { 1000 };
+            let gpx = std::format!(
+                "<gpx><trk><trkseg><trkpt lon=\"0\" lat=\"0\"/><trkpt lon=\"0\" lat=\"{}\"/></trkseg></trk></gpx>",
+                (lat + tail_lat) as f64 / 1_000_000.0
             );
+            let bytes = visit_route(gpx.as_bytes(), [0, stop, stop], lat);
             let source = SliceSource(&bytes.0);
             let index = obc_route::RouteIndex::read(&source).unwrap();
             let route = RouteReader::new(&index, &source);
@@ -1088,6 +1090,11 @@ mod tests {
             let mut tokens = TokenSource::new();
             ack(&mut app, &mut tokens, &route);
             assert!(!app.visit_arrival_pending());
+            if route.total_distance_m == 0 {
+                assert!(!app.active_visit());
+                assert!(app.assistant_checkpoint().unwrap().original.is_none());
+                continue;
+            }
             if stop != 0 {
                 for lat in [0, 300, 600, 900, 1000] {
                     fix(&mut app, &route, 0, lat);
@@ -1097,12 +1104,14 @@ mod tests {
             }
             assert_eq!(app.assistant_checkpoint().unwrap().phase, JourneyPhase::AtStop);
             assert_eq!(app.assistant_checkpoint().unwrap().upper_m, route.total_distance_m);
-            let lat = if stop == 0 { 0 } else { 1000 };
-            for _ in 0..3 {
-                fix(&mut app, &route, 0, lat);
+            if route.total_distance_m > stop {
+                for _ in 0..3 {
+                    fix(&mut app, &route, 0, lat);
+                }
+                assert!(app.navigator.review.change.is_none());
+                let next = route.position_at(stop + (route.total_distance_m - stop).min(30)).unwrap();
+                fix(&mut app, &route, next.lon, next.lat);
             }
-            assert!(app.navigator.review.change.is_none());
-            fix(&mut app, &route, 0, lat + 300);
             assert_eq!(app.navigator.review.change.unwrap().unwrap().phase, JourneyPhase::Following);
             ack(&mut app, &mut tokens, &route);
             assert!(!app.active_visit());

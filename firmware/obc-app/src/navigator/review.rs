@@ -310,7 +310,9 @@ impl NavigatorMachine {
                 self.review.status = ReviewStatus::Failed(NavigatorError::Unavailable);
                 return;
             }
-            if entry == stop {
+            if entry == stop && stop == rejoin && rejoin == preview.distance_m {
+                (entry, rejoin, JourneyPhase::Following)
+            } else if entry == stop {
                 (entry, if stop == rejoin { preview.distance_m } else { rejoin }, JourneyPhase::AtStop)
             } else {
                 (entry, stop, JourneyPhase::Outbound)
@@ -321,7 +323,13 @@ impl NavigatorMachine {
         // The measured candidate axis is authoritative for its accepted phase.
         let next = NavigatorCheckpoint {
             route: preview.source,
-            original: if context.purpose == ReviewPurpose::ReturnToRoute { None } else { context.original },
+            original: if context.purpose == ReviewPurpose::ReturnToRoute
+                || context.purpose == ReviewPurpose::Visit && phase == JourneyPhase::Following
+            {
+                None
+            } else {
+                context.original
+            },
             progress_m,
             occurrence: 0,
             lon: context.origin.0,

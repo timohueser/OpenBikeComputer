@@ -355,6 +355,25 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
     assert!(!costs.complete_elevation && !costs.arrival_elevation_complete);
     assert_eq!(route.total_distance_m, stats.total_distance_m);
     assert!(stats.total_distance_m > original.total_distance_m);
+    let here = VisitTarget {
+        display: context.origin,
+        metadata: PoiMetadata {
+            approach: Some(PoiApproach {
+                source: SourceId::osm(1, 100),
+                lon: context.origin.0,
+                lat: context.origin.1,
+                profile_mask: 1,
+            }),
+            ..target.metadata
+        },
+        ..target
+    };
+    let mut no_travel = crate::nav_visit::VisitPlan::start(context, Some(here), &original).unwrap();
+    let here_stats = run(&mut no_travel, &original);
+    assert_eq!(no_travel.searches(), 2);
+    let here_info = obc_route::RouteObjectInfo::read(&SliceSource(no_travel.bytes())).unwrap();
+    assert_eq!(here_info.visit.unwrap().accepted_anchors_m, [0; 3]);
+    assert_eq!(here_stats.total_distance_m, original.total_distance_m);
     let rejoin = descriptor.accepted_anchors_m[2];
     let returning = ReviewContext {
         purpose: ReviewPurpose::ReturnToRoute,

@@ -131,24 +131,25 @@ fn on_route_stop_needs_no_artificial_excursion() {
     let source = SliceSource(&bytes);
     let index = RouteIndex::read(&source).unwrap();
     let original = RouteReader::new(&index, &source);
-    let anchor = 100;
-    let at = original.position_at(anchor).unwrap();
-    let zero = route(vec![(at.lon, at.lat, 0), (at.lon, at.lat, 0)], &[], 0);
-    let mut builder = VisitBuilder::new(key(2), key(3), 0, anchor, SourceId::osm(1, 99), (at.lon, at.lat)).unwrap();
-    builder.keep_prefix(anchor).unwrap();
-    let mut sink = VecSink::default();
-    builder.begin(&mut sink).unwrap();
-    while !builder.append_prefix_step(&original, &mut sink).unwrap() {}
-    append(&mut builder, &zero, &mut sink);
-    append(&mut builder, &zero, &mut sink);
-    while builder.finish_step(&original, &mut sink).unwrap().is_none() {}
-    let source = SliceSource(&sink.buf);
-    let info = obc_route::RouteObjectInfo::read(&source).unwrap();
-    assert!((221..=223).contains(&info.distance_m));
-    let anchors = info.visit.unwrap().accepted_anchors_m;
-    assert_eq!(anchors[0], 0);
-    assert_eq!(anchors[1], anchors[2]);
-    assert!((99..=100).contains(&anchors[1]));
+    for anchor in [0, 100] {
+        let at = original.position_at(anchor).unwrap();
+        let zero = route(vec![(at.lon, at.lat, 0)], &[], 0);
+        let mut builder = VisitBuilder::new(key(2), key(3), 0, anchor, SourceId::osm(1, 99), (at.lon, at.lat)).unwrap();
+        builder.keep_prefix(anchor).unwrap();
+        let mut sink = VecSink::default();
+        builder.begin(&mut sink).unwrap();
+        while !builder.append_prefix_step(&original, &mut sink).unwrap() {}
+        append(&mut builder, &zero, &mut sink);
+        append(&mut builder, &zero, &mut sink);
+        while builder.finish_step(&original, &mut sink).unwrap().is_none() {}
+        let source = SliceSource(&sink.buf);
+        let info = obc_route::RouteObjectInfo::read(&source).unwrap();
+        assert!((221..=223).contains(&info.distance_m));
+        let anchors = info.visit.unwrap().accepted_anchors_m;
+        assert_eq!(anchors[0], 0);
+        assert_eq!(anchors[1], anchors[2]);
+        assert!((anchor.saturating_sub(1)..=anchor).contains(&anchors[1]));
+    }
 }
 #[test]
 fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() {
