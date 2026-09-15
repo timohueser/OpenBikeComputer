@@ -100,3 +100,14 @@ closed place, opens an open place through Menu, returns, and verifies the reload
 No public conceptual page changed. No snapshot sweep or resource image ran.
 The Landmarks integration must also set this key when it writes the shared cache.
 CI, final regional acceptance, and physical-device acceptance remain pending.
+
+## Shipping CI allocation after detail fixes
+
+CI run `34947698625`, board job `104311771260`, measured `72085726`:
+App 49,840 bytes; linked resident 305,592 bytes; flash 1,611,496 bytes;
+residual stack 53,832 bytes. The exact App record now matches that image.
+Arena 131,072 bytes, uninitialized section 132,096 bytes, poll frame 9,784 bytes,
+task body 4,048 bytes, and boot chain 7,768 bytes remain unchanged. Margin over
+recorded hardware deep-ride high-water is 16,816 bytes, above the unchanged
+8,704-byte floor. No cap or hardware record changed. No local image ran.
+Final CI and regional acceptance remain required.

@@ -1079,46 +1079,21 @@
           ]
         },
         {
-          id: 'reroute', title: 'The plan changes',
-          blurb: '<b>The day goes off-script before camp.</b> Pick a nearby place and let the device plan a new route there — fully offline, right on the bars.',
+          id: 'reroute', title: 'Add a stop to the ride',
+          blurb: '<b>Make room for a stop along the way.</b> Compare a mapped place, review the complete Visit route, and accept it while the ride keeps recording.',
           highlights: [
-            'Nearest food, water & shelter from the offline map',
-            'On-device route planning — no phone, no signal',
-            'The new route drops straight onto your map'
+            'Places and mapped bike access from the offline map',
+            'Measured Visit costs before you choose',
+            'Accept the route, then return to the riding map'
           ],
           staged: true,
           steps: [
-            { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
-            { cmds: ['context'], until: ["ContextDrawer"], label: 'Squeeze Down + Back for mid-ride tools' },
-            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'POIs — directly from the ride context' },
-            { cmds: ['step:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
-            { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
-            { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
-            // NavPlanning is TRANSIENT — on the small demo map the planner can finish between two
-            // 90 ms state polls, so a step waiting on it alone races: miss it and the engine times
-            // out and restarts the whole scenario while the device already shows the route. Accept
-            // the stable end states here too; if planning is already done, the next step's `until`
-            // resolves instantly and the tick strip just advances.
-            {
-              cmds: ['press'], until: ["NavPlanning", "RouteOverview", "NavFail"], label: 'Planning the route…',
-              labelFor: { NavPlanning: 'Planning the route…', RouteOverview: 'Your new route, on the map', NavFail: 'No route found — nothing routable nearby' }
-            },
-            // The planner honestly resolves to the route overview OR the failure card — captioned
-            // differently by `labelFor` so a routing *failure* is never shown as success.
-            {
-              cmds: [], until: ["RouteOverview", "NavFail"], label: 'The route is ready',
-              labelFor: { RouteOverview: 'The route is ready', NavFail: 'No route found — nothing routable nearby' }
-            },
-            // Complete the story: actually start riding the new route, then pull the map back a
-            // few ticks so the swap is visible. START RIDE opens the RouteSwap prompt (a ride is
-            // active, so the device asks) with "Swap route" pre-selected — the second paced press
-            // confirms it, and the beat between them lets the reader see the prompt. Mutating the
-            // session is safe — every staged run (`enter`) and every chapter switch (`ambient`)
-            // rebuilds the device from scratch. (On the theoretical NavFail path the press
-            // dismisses the card instead; the demo map is fully connected so a plan never fails
-            // there, and a timeout just re-syncs.)
-            { cmds: ['press', 'press'], until: ["Map"], label: 'Start riding it' },
-            { cmds: ['step:-4'], until: ["Map"], label: 'Your new route, on the map' }
+            { cmds: ['enter', 'pause'], until: ["Map"], label: 'Stop on the Grimsel climb to compare a place' },
+            { cmds: ['find'], until: ["FindPlace"], label: 'Find a place near the ride' },
+            { cmds: ['step:6', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare the mapped station' },
+            { cmds: ['press'], until: ["PoiDetail"], label: 'Gletsch — check the selected place' },
+            { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Review the complete Visit route' },
+            { cmds: ['press'], until: ["Map"], waitFor: 'Accepted', label: 'Visit accepted — recording continues' }
           ]
         },
         {
@@ -1303,14 +1278,15 @@
 
       // Resolve with a STATUS so the runner can tell a real timeout from a cancel: 'reached' |
       // 'timeout' | 'cancelled' | 'reset-failed'.
-      function until(targets, token) {
+      function until(targets, token, waitFor) {
         return new Promise(function (resolve) {
           var t0 = performance.now();
           (function poll() {
             if (token !== runToken) return resolve('cancelled');
             var reset = api.obc_demo_reset_status();
             if (reset === 'Failed') return resolve('reset-failed');
-            if (reset === 'Ready' && targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
+            var settled = !waitFor || (waitFor === 'places' ? api.obc_demo_find_ready() : api.obc_demo_visit_status() === waitFor);
+            if (reset === 'Ready' && settled && targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
             if (performance.now() - t0 > (targets.indexOf('PeakView') >= 0 ? 45000 : 12000)) return resolve('timeout');
             setTimeout(poll, 90);
           })();
@@ -1352,7 +1328,7 @@
           // A step that stays on the same screen (e.g. moving the Pause-page selection from
           // Resume to Finish) still needs one rendered frame before its state is claimed.
           if (inputs.length) await sleep(120);
-          var status = await until(step.until, token);
+          var status = await until(step.until, token, step.waitFor);
           if (status === 'cancelled') return;
           if (status === 'reset-failed') { takeControl(); return; }
           if (status === 'timeout') {

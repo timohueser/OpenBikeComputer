@@ -355,7 +355,7 @@ impl SimGui {
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,
-                gps_time: true,
+                gps_time: args.clock.is_none(),
                 clock_offset_secs: 0,
             },
             None => PanelState {
@@ -366,7 +366,7 @@ impl SimGui {
                 ble: obc_app::BleStatus::DISCONNECTED,
                 upload_sel: 0,
                 trip_sel: 0,
-                gps_time: true,
+                gps_time: args.clock.is_none(),
                 clock_offset_secs: 0,
             },
         };
@@ -384,6 +384,7 @@ impl SimGui {
         let mut settings_store = FileSettingsStore::open(args.settings_path());
         let boot_settings = settings_store.load().unwrap_or_default();
         app.set_settings(boot_settings);
+        args.stamp_initial_clock(&mut app);
         // Mirror the map's §8.6 routing-profile names into the app for the bike-type editor +
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).
