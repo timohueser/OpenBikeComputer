@@ -39,6 +39,7 @@ pub(crate) enum Action {
     None,
     Refresh,
     More,
+    Preview(u8),
     Accept,
     Cancel,
     OpenAccepted,
@@ -241,7 +242,7 @@ impl crate::App {
         self.ui.find.results.len()
     }
     pub(crate) fn handle_find_action(&mut self) {
-        if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume) {
+        if matches!(self.ui.find.action, Action::CancelVisit | Action::Resume | Action::Preview(_)) {
             return;
         }
         match core::mem::replace(&mut self.ui.find.action, Action::None) {
@@ -294,7 +295,7 @@ impl crate::App {
                     );
                 }
             }
-            Action::CancelVisit | Action::Resume => return,
+            Action::CancelVisit | Action::Resume | Action::Preview(_) => return,
             Action::DismissArrival => self.dismiss_visit_arrival(),
             Action::DismissResume => {
                 self.ui.find.resume_offer = false;
@@ -365,8 +366,60 @@ impl crate::App {
             }
         }
     }
+    fn preview_find_result(&mut self, reader: &Reader, selected: usize) {
+        self.ui.find.action = Action::None;
+        if self.ui.find.state != State::Ready
+            || !matches!(self.ui.stack.last(), Some(Screen::FindPlace(screen)) if screen.choices())
+        {
+            return;
+        }
+        let local = self.place_local_time();
+        if self.ui.find.map != self.place_map_key()
+            || self.ui.find.profile != self.settings().bike_profile_idx
+            || self.ui.find.clock != (local.is_some(), self.settings().utc_offset_min)
+            || self.ui.find.route != self.active_route_index().and_then(|i| self.route_ids().get(i)).copied()
+        {
+            self.ui.find.state = State::Stale;
+            self.cancel_assistant();
+            return;
+        }
+        let Some(poi) =
+            self.ui.find.selected(selected, &self.ui.poi_scratch, self.ui.corridor_scratch.entries()).cloned()
+        else {
+            return;
+        };
+        let schedule = reader.try_poi_hours(poi.hours_ref);
+        self.ui.poi_scratch.detail_source = poi.metadata.source.0;
+        self.ui.poi_scratch.detail_valid = schedule.is_ok();
+        self.ui.poi_scratch.detail_schedule = schedule.ok().flatten();
+        if !self.ui.poi_scratch.detail_valid
+            || self.ui.poi_scratch.detail_schedule.is_some_and(|s| s.status(local) == OpeningStatus::Closed)
+        {
+            return;
+        }
+        let Some(map) = self.ui.find.map else { return };
+        let name = if poi.name.is_empty() {
+            obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or("Place")
+        } else {
+            poi.name.as_str()
+        };
+        let error =
+            self.request_visit(VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) }, name).err();
+        self.ui.find.selected_review = true;
+        self.ui.find.review_costs = None;
+        self.ui.find.review = self.assistant_review_status();
+        let mut screen = VisitReviewScreen::new(name);
+        screen.error = error;
+        crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
+        self.ui.map_dirty = true;
+    }
     pub(crate) fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
+        if let Action::Preview(selected) = self.ui.find.action {
+            if let Some(reader) = reader {
+                self.preview_find_result(reader, selected as usize);
+            }
+        }
         if self.ui.find.action == Action::CancelVisit {
             self.ui.find.action = Action::None;
             let result = self
@@ -709,6 +762,53 @@ mod tests {
             )],
             &[open],
         )
+    }
+
+    #[test]
+    fn direct_find_preview_resolves_hours_and_rejects_stale_or_abandoned_selection() {
+        let bytes = hours_map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        for invalid in 0..4 {
+            let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+            let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
+            app.bind_place_map(Some(map));
+            app.open_find_place();
+            app.apply_gesture(crate::Gesture::Press);
+            let mut query = PlaceQuery::new(
+                0,
+                PoiCategorySet::ALL,
+                PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
+                None,
+            );
+            while query.step(&reader, None, 0, &mut app.ui.poi_scratch.pois) == QueryProgress::Pending {}
+            app.ui.find.results.push(0).unwrap();
+            app.ui.find.state = State::Ready;
+            app.ui.find.map = Some(map);
+            app.ui.find.profile = app.settings().bike_profile_idx;
+            app.ui.find.clock = (false, app.settings().utc_offset_min);
+            match invalid {
+                1 => app.ui.find.map = Some(RouteSourceKey { revision: 2, ..map }),
+                2 => app.ui.find.profile = app.settings().bike_profile_idx.wrapping_add(1),
+                3 => app.apply_gesture(crate::Gesture::Back),
+                _ => {}
+            }
+            app.ui.find.action = Action::Preview(0);
+            app.prepare_find(Some(&reader), None);
+            assert_eq!(app.ui.find.action, Action::None);
+            if invalid == 0 {
+                assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
+                assert!(app.ui.poi_scratch.detail_valid);
+                assert_eq!(app.ui.poi_scratch.detail_source, app.ui.poi_scratch.pois[0].poi.metadata.source.0);
+                assert!(!app.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiDetail(_))));
+            } else {
+                assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+                assert!(!app.ui.poi_scratch.detail_valid);
+                assert!(matches!(app.ui.find.state, State::Stale | State::Idle));
+            }
+        }
     }
 
     #[test]
