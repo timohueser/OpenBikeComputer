@@ -56,3 +56,24 @@ republished. Processed maps use the normal map publication path.
 Regional Swiss assembly, full source-to-mapped-approach measurements, actual
 Landmarks/photo/Visit UI acceptance, final resource/layout review, and hardware
 acceptance remain pending. No local resource image or UI sweep was added.
+
+## Catalog fixture and allocation corrections
+
+Commit `bc8202c6` removes stale byte counts from the desktop launch fixture and
+updates the browser checks to the current v16 producer output. The hash-failure
+case now changes whitespace, so it remains valid JSON with different bytes.
+The normal three WASM bridges were built before the complete frontend suite:
+`npm run build:wasm --prefix builder/app` and `npm test --prefix builder/app`
+passed (65 files, 980 tests). `./tools/obc suites check` and `git diff --check`
+passed. The Linux desktop launch suite remains a CI gate on this macOS host;
+its prior captured page error identified the stale band total (994 versus 1010).
+No public documentation changed.
+
+CI run 34941991009, board job 104292653311, measured the data head `40f62ee8`:
+App 48,432 bytes; linked resident 303,760 bytes; `.uninit` 132,096 bytes including
+the 131,072-byte arena; flash 1,530,000 bytes. The largest guarded poll frame is
+9,784 bytes, residual main stack is 55,664 bytes, and the recorded deep-ride
+high-water margin is 18,648 bytes against the unchanged 8,704-byte floor.
+The App initialization frame is 64 bytes against 4,096. Commit `ef448514`
+records the measured App size; it does not change any capacity or stack limit.
+No local shipping image, hardware measurement, or snapshot sweep was run.
