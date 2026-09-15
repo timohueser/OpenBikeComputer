@@ -1777,6 +1777,24 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
                 }
                 if candidate && !accepted {
                     candidates |= 1 << routes.len();
+                    let source = obc_formats::obcr::RouteSourceKey {
+                        store: store.store_id().0,
+                        object: entry.id.0,
+                        revision: entry.revision.0,
+                    };
+                    if app.can_reconcile_reviews()
+                        && !app.retains_find_review(source)
+                        && store
+                            .with_source(entry.id, Some(entry.revision), |bytes| {
+                                obc_route::RouteObjectInfo::read(bytes).is_ok_and(|info| {
+                                    info.assistant_candidate
+                                        && info.attribution_map.is_some_and(|map| map.store == source.store)
+                                })
+                            })
+                            .unwrap_or(false)
+                    {
+                        app.reconcile_review_candidate(source);
+                    }
                 }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);

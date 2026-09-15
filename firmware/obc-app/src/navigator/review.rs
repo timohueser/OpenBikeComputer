@@ -714,8 +714,12 @@ impl crate::App {
                 self.note_resume_save_refusal();
             }
         } else {
-            let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
+            let first = !self.navigator.review.recovery_seen;
+            let offer = first && checkpoint.is_some();
             self.navigator.offer_checkpoint(store, checkpoint);
+            if first && self.navigator.review.recovery_seen {
+                self.catalogs.note_store_moved();
+            }
             self.ui.find.resume_offer |= offer;
             self.ui.map_dirty |= offer;
         }
