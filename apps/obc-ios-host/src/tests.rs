@@ -166,3 +166,57 @@ fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {
     drop(host);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// The C surface end to end: a card imported, opened, ticked and read through the header's own
+/// calls, with the absent-value sentinels decoded and every call surviving a host C never opened.
+#[test]
+fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
+    use crate::ffi::*;
+    use std::ffi::{CStr, CString};
+    use std::ptr;
+
+    let directory = scratch_dir("obc-ios-host", "ffi");
+    let c_path = |path: PathBuf| CString::new(path.to_str().unwrap()).unwrap();
+    let (card, settings, exports) =
+        (c_path(directory.join("card.obc")), c_path(directory.join("settings")), c_path(directory.join("exports")));
+    let map = CString::new(MAP).unwrap();
+
+    assert_eq!(obc_ios_import_map(card.as_ptr(), map.as_ptr()), 0);
+    let host = obc_ios_open(card.as_ptr(), settings.as_ptr(), exports.as_ptr());
+    assert!(!host.is_null(), "the imported card opens");
+
+    assert!(obc_ios_tick(host, 0.0), "the first tick always renders");
+    let frame = obc_ios_frame(host);
+    assert!(!frame.is_null());
+    let length = (obc_ios_frame_width() * obc_ios_frame_height() * 4) as usize;
+    let pixels = unsafe { std::slice::from_raw_parts(frame, length) };
+    assert!(pixels.iter().skip(3).step_by(4).all(|&alpha| alpha == 0xFF), "opaque alpha for the CGImage");
+    assert_eq!(unsafe { CStr::from_ptr(obc_ios_screen(host)) }.to_str().unwrap(), "Map");
+
+    // A stationary fix with no stamp: NaN and zero are how C spells an absent value.
+    obc_ios_push_fix(host, GRIMSEL.lat, GRIMSEL.lon, f32::NAN, f32::NAN, 0);
+    obc_ios_tick(host, 16.0);
+    let fix = unsafe { &*host }.app.state.user_fix.expect("the pushed fix reaches the app");
+    assert_eq!(fix, Fix { lat: GRIMSEL.lat, lon: GRIMSEL.lon, course: None, speed_mps: None });
+    obc_ios_close(host);
+
+    // A host the shell never opened, or already closed, takes every call without a crash.
+    assert!(!obc_ios_tick(ptr::null_mut(), 0.0));
+    assert!(obc_ios_frame(ptr::null()).is_null());
+    assert!(obc_ios_screen(ptr::null()).is_null());
+    assert!(!obc_ios_recording(ptr::null()));
+    obc_ios_push_fix(ptr::null_mut(), GRIMSEL.lat, GRIMSEL.lon, 90.0, 4.0, 1_700_000_123);
+    obc_ios_push_heading(ptr::null_mut(), 10.0);
+    obc_ios_push_altitude(ptr::null_mut(), 2_005.0);
+    obc_ios_push_battery(ptr::null_mut(), 50);
+    obc_ios_button(ptr::null_mut(), 2, true);
+    assert_eq!(obc_ios_import_route(ptr::null_mut(), card.as_ptr()), -1);
+    obc_ios_close(ptr::null_mut());
+
+    // An absent card reports through the thread-local message instead of opening.
+    let absent = c_path(directory.join("absent.obc"));
+    assert!(obc_ios_open(absent.as_ptr(), settings.as_ptr(), exports.as_ptr()).is_null());
+    assert!(!unsafe { CStr::from_ptr(obc_ios_last_error()) }.to_bytes().is_empty(), "and says why");
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
