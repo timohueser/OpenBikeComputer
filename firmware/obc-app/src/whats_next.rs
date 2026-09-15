@@ -192,7 +192,7 @@ impl AheadState {
             scope.filter
         };
         (self.page == Page::Overview || scope.source.shows_pois())
-            .then_some(CorridorKey { filter, anchor_m: self.anchor })
+            .then_some(CorridorKey { filter, anchor_m: self.window.map_or(self.anchor, |w| w.start_m) })
     }
     fn keep(&self, key: Key) -> bool {
         self.boundary.is_none_or(|b| if self.backwards { key < b } else { key > b })
@@ -583,6 +583,10 @@ mod tests {
             a.refresh(15_000);
             settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
             assert_eq!(a.window.unwrap().end_m, route.total_distance_m);
+            a.refresh(u32::MAX);
+            settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
+            assert_eq!(scratch.armed().unwrap().anchor_m, route.total_distance_m);
+            assert_eq!(a.window.unwrap().start_m, route.total_distance_m);
             let replacement = RouteIndex::read(&src).unwrap();
             let replacement = RouteReader::new(&replacement, &src);
             a.prepare(None, Some(&replacement), &Climbs::default(), scope(UpAheadSource::Both), &mut scratch, None);
@@ -726,5 +730,68 @@ mod tests {
         assert!(a.totals.is_none());
         assert!(a.rows.is_empty());
         assert!(a.next_waypoint.is_none());
+    }
+    #[test]
+    fn production_frames_keep_the_active_route_and_back_selection() {
+        use crate::harness::support::Buf;
+        use crate::{App, AppState, Gesture};
+        use embedded_graphics::{pixelcolor::Rgb888, prelude::RgbColor};
+        let bytes = route(false);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let map = build_poi_map((-1000, -1000, 150_000, 1000), 512, &[]);
+        let source = obc_reader::SliceSource(&map);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let map = Reader::new(&source, &tables, &cache);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.set_active_route(Some(0));
+        app.navigator.sync_route_state(Some(&route));
+        app.open_whats_next();
+        let mut frame = Buf::new(240, 320);
+        for name in ["overview", "timeline"] {
+            for _ in 0..100 {
+                app.render_map(None, &mut frame, &map, Some(&route), 240.0, 320.0, |c| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                    Rgb888::new(r, g, b)
+                });
+                if !app.ui.ahead.pending() {
+                    break;
+                }
+            }
+            assert!(!app.ui.ahead.pending());
+            assert_eq!(app.navigator.route_state().active_route, Some(0));
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(crate::screen::palette::AMBER);
+            assert!(frame.count(Rgb888::new(r, g, b)) > 500);
+            if let Ok(dir) = std::env::var("OBC_AHEAD_FRAME_DIR") {
+                let mut bmp = vec![0u8; 54];
+                bmp[..2].copy_from_slice(b"BM");
+                let size = 54 + 240 * 320 * 3;
+                bmp[2..6].copy_from_slice(&(size as u32).to_le_bytes());
+                bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+                bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+                bmp[18..22].copy_from_slice(&240i32.to_le_bytes());
+                bmp[22..26].copy_from_slice(&(-320i32).to_le_bytes());
+                bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+                bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+                for p in &frame.px {
+                    bmp.extend_from_slice(&[p.b(), p.g(), p.r()]);
+                }
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(std::path::Path::new(&dir).join(format!("{name}.bmp")), bmp).unwrap();
+            }
+            if name == "overview" {
+                app.apply_gesture(Gesture::Press);
+            }
+        }
+        app.apply_gesture(Gesture::Step(1));
+        let selected = app.ui.ahead.rows[app.ui.ahead.selected].key;
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.ui.ahead.page, Page::Detail);
+        app.apply_gesture(Gesture::Back);
+        assert_eq!(app.ui.ahead.rows[app.ui.ahead.selected].key, selected);
+        assert_eq!(app.navigator.route_state().active_route, Some(0));
     }
 }

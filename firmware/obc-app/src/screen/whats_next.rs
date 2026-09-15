@@ -131,7 +131,7 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
                 rx.settings.units.elev_label()
             );
         } else {
-            let _ = s.push_str("? m");
+            let _ = write!(s, "? {}", rx.settings.units.elev_label());
         }
         label(cv, &s, x, 44, Font::Body, INK);
     }
@@ -195,14 +195,17 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
     }
     if let Some(wpt) = &a.next_waypoint {
         icon(cv, wpt.category, 20, 240, PARCHMENT);
-        label(cv, if wpt.name.is_empty() { rx.t(Msg::AheadWaypoint) } else { &wpt.name }, 38, 226, Font::Body, INK);
-        cv.text(
-            &distance(wpt.dist_along_m.saturating_sub(w.start_m), rx.settings.units),
-            Point::new(228, 228),
-            Font::Label,
-            TextAlign::Right,
-            INK,
+        let distance = distance(wpt.dist_along_m.saturating_sub(w.start_m), rx.settings.units);
+        let budget = 228 - obc_render::text::text_width(&distance, Font::Label) as i32 - 8 - 38;
+        let mut fitted = heapless::String::new();
+        let name = super::vocab::tiles::fit_caption(
+            if wpt.name.is_empty() { rx.t(Msg::AheadWaypoint) } else { &wpt.name },
+            budget,
+            &mut fitted,
+            Font::Body,
         );
+        label(cv, name, 38, 226, Font::Body, INK);
+        cv.text(&distance, Point::new(228, 228), Font::Label, TextAlign::Right, INK);
     } else {
         label(cv, rx.t(Msg::AheadNoWaypoint), 12, 226, Font::Label, SUBTEXT);
     }
