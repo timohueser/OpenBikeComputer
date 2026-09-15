@@ -149,7 +149,7 @@ impl RideRecoveryScreen {
                 let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
                 cx.state.enter_riding_view(lon, lat);
                 cx.activity.mode = crate::activity::Mode::Riding;
-                cx.navigator.set_active_route(None);
+                cx.navigator.suspend_for_recording_recovery();
                 cx.recorder.continue_recovered();
                 Transition::Root(Screen::Map(MapScreen::new()))
             }
@@ -159,7 +159,7 @@ impl RideRecoveryScreen {
             (Gesture::Hold, Row::Discard | Row::Retry) => {
                 cx.recorder.request(RecorderIntent::Discard);
                 cx.activity.mode = crate::activity::Mode::Idle;
-                cx.navigator.set_active_route(None);
+                cx.navigator.suspend_for_recording_recovery();
                 Transition::Home
             }
             // Press on a guarded row is deliberately inert, and Back cannot bypass the decision.

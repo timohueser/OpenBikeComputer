@@ -391,6 +391,18 @@ impl HostLoop {
                 }
             }
         }
+        if let Some(expected) = app.requested_assistant_resume() {
+            let index = routes.ids().iter().position(|id| *id == expected.object);
+            let exact = routes.fingerprint(expected.object) == Some(expected);
+            let changed = routes.sync_active(index.filter(|_| exact));
+            session.reparse(changed, routes);
+            let reader = session
+                .index()
+                .zip(routes.active_source())
+                .map(|(index, source)| obc_route::RouteReader::new(index, source));
+            app.prepare_assistant_resume(reader.as_ref());
+            session.sync(app, routes);
+        }
         if let Some(effect @ MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                 && app.assistant_preview().is_none();
@@ -1249,6 +1261,30 @@ mod tests {
         reboot.offer_assistant_checkpoint(routes.store_scope().unwrap().store, routes.read_checkpoint().unwrap());
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
         assert!(reboot.active_route_index().is_none());
+        feed_routes(&mut reboot, &routes, &mut NoTrace);
+        reboot.tick(
+            RideClock(0),
+            Sensors::new(&mut OneFix(Some(Fix::at(points[0].1, (points[0].0 + points[1].0) / 2)))),
+            None,
+        );
+        reboot.advance_animations(InputClock(0));
+        assert_eq!(reboot.top_screen().name(), "Journey");
+        assert!(reboot.requested_assistant_resume().is_none());
+        reboot.apply_gesture(obc_app::Gesture::Press);
+        assert_eq!(reboot.requested_assistant_resume(), Some(preview.source));
+        for _ in 0..12 {
+            frame(&mut host, &mut reboot, &mut routes);
+            if reboot.assistant_review_status() == ReviewStatus::Accepted {
+                break;
+            }
+        }
+        assert_eq!(reboot.assistant_review_status(), ReviewStatus::Accepted);
+        assert_eq!(reboot.route_ids()[reboot.active_route_index().unwrap()], preview.source.object);
+        assert!(!reboot.recording());
+        assert!(!reboot.visit_arrival_pending());
+        assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
+        assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());
+        app = reboot;
         app.activate_route(usize::MAX);
         for _ in 0..12 {
             frame(&mut host, &mut app, &mut routes);

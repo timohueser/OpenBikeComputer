@@ -596,6 +596,49 @@ fn expire_upload(stack: &mut Stack, now_ms: u32) -> bool {
     true
 }
 
+impl CardScheduler {
+    pub(crate) fn reconcile_journey(
+        &mut self,
+        stack: &mut Stack,
+        hold: bool,
+        arrival: bool,
+        resume: bool,
+        accepted: bool,
+    ) -> bool {
+        let mut changed = false;
+        if !hold {
+            if let Some(i) = stack
+                .iter()
+                .position(|s| matches!(s, Screen::Journey(s) if (!s.resume && !arrival) || (s.resume && accepted)))
+            {
+                let resumed = matches!(&stack[i], Screen::Journey(s) if s.resume && accepted);
+                if resumed {
+                    screen::apply(stack, screen::Transition::Root(Screen::Map(screen::MapScreen::new())));
+                } else {
+                    stack.remove(i);
+                }
+                changed = true;
+            }
+            if (arrival || resume)
+                && !stack.iter().any(|s| matches!(s, Screen::Journey(_)))
+                && !stack.iter().any(|s| {
+                    matches!(
+                        s,
+                        Screen::RideRecovery(_)
+                            | Screen::DfuCheck(_)
+                            | Screen::DfuProgress(_)
+                            | Screen::DfuInstalling(_)
+                    )
+                })
+                && find(stack, CardKind::Passkey).is_none()
+            {
+                changed |= land(stack, None, Screen::Journey(screen::JourneyScreen::new(resume)));
+            }
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 impl CardScheduler {
     /// Whether every slot is unset and no warning has been raised or shown — the
