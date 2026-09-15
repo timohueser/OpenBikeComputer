@@ -40,6 +40,8 @@ SNAPSHOT_SUFFIX = ".png"
 IDENTICAL_BY_DESIGN: list[set[str]] = [
     # Pan mode owns the Map's chrome, not the Statistics grid's: entering it changes no pixel here.
     {"statistics-pan.png", "statistics.png"},
+    # Main menu and quick drawer open the same Assistant question list.
+    {"assistant.png", "quick-assistant.png"},
 ]
 
 class ManifestError(Exception):
