@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "source_sha": "e9f3efaf954279a2a5070735ffcaa852f3049802",
+  "policy_sha": "ac0faca8d72bc7ba561cd16d8d459d17dac7afd0",
+  "evidence": "https://github.com/timohueser/OpenBikeComputer/actions/runs/34980578075",
+  "artifact": "coverage-rust-1",
+  "native_sha256": "b5c8dfc67ab0df5f150ba25b320a57b9c63e48ba9f7aa34c0f953252e99eec84",
+  "tools": [
+    "cargo-llvm-cov=0.9.1",
+    "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "tree-sitter=0.25.2",
+    "tree-sitter-rust=0.24.2"
+  ],
+  "components": {
+    "format-protocol-codecs": {
+      "covered": 2171,
+      "total": 2374
+    },
+    "crc": {
+      "covered": 39,
+      "total": 42
+    },
+    "storage": {
+      "covered": 2734,
+      "total": 2884
+    },
+    "dfu": {
+      "covered": 676,
+      "total": 705
+    },
+    "boot": {
+      "covered": 463,
+      "total": 478
+    }
+  }
+}
