@@ -25,3 +25,25 @@ The query benchmark found extra occurrences for one POI beside a meandering
 route. Its expected row counts have not been changed. This behavior requires a
 query fix and independent delta review. The public v15 map catalog gate also
 remains pending completion and publication of the normal regional bake.
+
+## Query correction and snapshot preparation
+
+CI run 34944405470, board job 104300352212, measured head `2119eb49` after
+the encounter fix. App is 51,040 bytes, linked resident 306,360 bytes, `.uninit`
+132,096 bytes, arena 131,072 bytes, and flash 1,519,316 bytes. The largest
+poll frame remains 9,784 bytes; residual stack is 53,064 bytes, with 16,048 bytes
+above the recorded 37,016-byte deep-ride high-water (unchanged floor 8,704).
+App initialization remains 64/4,096 bytes. Commit `15e924d4` records the actual
+App allocation without changing limits.
+
+The CI snapshot walk exposed a missing prepared detail frame. Commit `14866946`
+adds the existing `f` token before activation, so the schedule read has completed.
+It also pages to the seventh result on the second Resupply page for the real
+detour scenario. Complete place ordering changes the old row-based destination;
+the new destination gives a measured 1,078 m ordinary route and an 801 m detour
+(+1 m). Named NavConfirm, RouteOverview, Detour, and DetourPreview frames passed.
+The first farther-row probe omitted the page preparation and failed its expected
+screen; the corrected script uses the real page boundary. No production bypass
+was added. `cargo build --locked -p obc-sim`, `./tools/obc suites check`, and
+`git diff --check` passed. No local full snapshot sweep or shipping image ran.
+The public v15 catalog publication and independent composition delta remain open.
