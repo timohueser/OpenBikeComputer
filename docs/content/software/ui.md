@@ -470,17 +470,43 @@ Delete actions exist on specific detail or confirmation rows. A hold elsewhere d
 
 The delete footer is a guarded row. The action runs only after a complete hold on that row.
 
+## Find a place
+
+Find combines places within 10 km by air with places along the next 20 km of the accepted route,
+within 300 m of its line. It takes the first eight eligible places from each source, alternates
+sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
+
+The shared Visit planner measures at most 16 distinct candidates, one at a time. Each candidate is
+released before the next plan starts. Planning a suggestion does not activate a route or change the
+recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
+the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
+Unknown ascent cannot eliminate a measured choice.
+
+The card shows route distance and ascent to arrival. Added costs compare the complete visit,
+including its return, with the remaining accepted route. With no accepted route, the review is a
+direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
+until **Refresh**. These bounded results are partial; they do not establish a global nearest place.
+**More places** opens the full paged category browser. It plans only the place selected for review.
+
+All place entries use the same details and Visit review. The host binds the exact map revision and
+OSM approach. The review reads the published candidate geometry and costs. A known-closed place, a
+changed source, or a stale origin prevents acceptance. Missing elevation remains unknown. Acceptance
+uses the shared durable Visit transaction; browsing and cancellation leave the active route intact.
+
+Implementation: [Find preparation](src:firmware/obc-app/src/find_place.rs),
+[Find and Visit review screens](src:firmware/obc-app/src/screen/find_place.rs).
+
 ## POI browser
 
-The main POI menu contains water, campsite, lodging, resupply, pharmacy, and bicycle-shop categories.
+The main POI menu contains water, campsite, lodging, resupply, pharmacy, bicycle-shop, and train categories. The schematic shows six example categories.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: that category's nearest sixteen POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI opens its detail view.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: a page of that category's nearby POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI opens its detail view.">
   <defs>
     <marker id="aU9" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="24">Menu → categories → the nearest-16 of one category</text>
+  <text class="d-tag" x="20" y="24">Menu → categories → pages of nearby places</text>
 
   <!-- Menu station -->
   <rect class="d-panel-2" x="24" y="88" width="120" height="44" rx="10" />
@@ -506,7 +532,7 @@ The main POI menu contains water, campsite, lodging, resupply, pharmacy, and bic
   <line class="d-flow" x1="392" y1="110" x2="442" y2="110" marker-end="url(#aU9)" />
   <text class="d-sub" x="417" y="102" text-anchor="middle" style="font-size:12px">press</text>
   <rect class="d-panel" x="448" y="44" width="248" height="168" rx="11" />
-  <rect x="456" y="52" width="232" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="466" y="66" style="fill:#fff;font-size:12px">Water · 1/16</text>
+  <rect x="456" y="52" width="232" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="466" y="66" style="fill:#fff;font-size:12px">Water · 1/8</text>
   <g font-family="var(--mono)">
     <!-- selected row -->
     <rect x="456" y="78" width="232" height="24" rx="4" class="d-amber" />
@@ -525,10 +551,10 @@ The main POI menu contains water, campsite, lodging, resupply, pharmacy, and bic
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The POI browser has six fixed categories. A category query returns at most 16 nearby POIs.</figcaption>
+<figcaption>The POI browser has seven categories. Each page holds at most eight nearby places.</figcaption>
 </figure>
 
-A category query returns the nearest 16 matching POIs. The list stores one application-owned snapshot.
+A category query uses a 50 km radius and returns pages of eight matching places. The list stores one application-owned page. Forward and reverse paging keep every result reachable. Known-closed places do not consume a result slot. Missing map coverage remains partial.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -568,11 +594,11 @@ A category query returns the nearest 16 matching POIs. The list stores one appli
 <figcaption>The list keeps a fixed snapshot. Only the bearing arrow uses live position data.</figcaption>
 </figure>
 
-The snapshot does not change while the list is open. The bearing arrow uses the latest fix and heading.
+Page membership and order stay fixed while the list is open. Current opening status can make a place unavailable without selecting another place. The bearing arrow uses the latest fix and heading.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Route here bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
+<svg viewBox="0 0 720 250" role="img" aria-label="The POI detail view. On the left, the screen: the POI name with its category icon at the top, a muted subtype subtitle beneath it, then a promoted distance row with the 8-way bearing arrow, a Today heading with an opening-hours range below, a green OPEN pill, and a full-width amber Review visit bar at the bottom. On the right, the three heading states for the hours block: Today with time ranges when open some hours today, Closed today when the schedule has no interval for this weekday, and Hours not listed when the POI has no schedule at all. Below, the open-now pill is derived from the live local clock.">
   <defs>
     <marker id="aPD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -596,7 +622,7 @@ The snapshot does not change while the list is open. The bearing arrow uses the 
   <text class="d-sub" x="68" y="203" text-anchor="middle" style="fill:#fff;font-size:12px">OPEN</text>
   <!-- footer action bar -->
   <rect x="38" y="214" width="204" height="16" rx="5" style="fill:#e3a52b" />
-  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Route here</text>
+  <text class="d-sub" x="140" y="225" text-anchor="middle" style="fill:#3d3427;font-size:12px">&#9654; Review visit</text>
 
   <!-- the three heading states -->
   <text class="d-tag" x="292" y="60">the hours heading — three states</text>
