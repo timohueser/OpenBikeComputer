@@ -18,7 +18,7 @@ Reader and writer crates own parsing, caching, and conversion policy.
 
 | Format | Current version | Use | Main consumer |
 | --- | ---: | --- | --- |
-| OBCM | 14 | Map, POIs, navigation graph, and optional terrain | Device |
+| OBCM | 15 | Map, POIs, navigation graph, and optional terrain | Device |
 | OBCR | 3 | Route geometry, statistics, and waypoints | Device |
 | Ride object | 3 | Recorded samples and summary | Device and companion |
 | OBCT | 1 | Terrain height raster | Device and map tools |
@@ -78,7 +78,7 @@ Readers use checked arithmetic and reject unsupported versions.
 
 ## OBCM — the map
 
-OBCM v14 is the only supported map version.
+OBCM v15 is the only supported map version.
 One OBCM object contains all map data.
 Its global offsets are 32-bit values in scaled units.
 Current writers use 16-byte units.
@@ -272,7 +272,7 @@ The core header fields are:
 | Bytes | Field |
 | ---: | --- |
 | 0–3 | Magic `OBCM` |
-| 4 | Version `14` |
+| 4 | Version `15` |
 | 5–20 | Latitude/longitude bounding box |
 | 21–24 | Style-table offset |
 | 25 | LOD count |
@@ -495,9 +495,9 @@ The even-odd fill rule uses all rings.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 432" role="img" aria-label="A category directory selects a spatial quadtree. Its leaf addresses a 512-byte chunk with fourteen 36-byte records. A byte ruler shows coordinates, subtype, name length, 24-byte name and two-byte trailer. Services store hours references; summits store elevation.">
+<svg viewBox="0 0 720 556" role="img" aria-label="A category directory selects a spatial quadtree. Its leaf addresses a 512-byte chunk with eight 64-byte records. Two byte rulers show display fields, source identity, and explicit approach metadata at the same scale. Services store hours references; summits store elevation.">
 <defs><marker id="r14arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-<text class="d-tag" x="20" y="26" text-anchor="start">POIs · category index to packed 36-byte records</text>
+<text class="d-tag" x="20" y="26" text-anchor="start">POIs · category index to packed 64-byte records</text>
 <text class="d-title" x="20" y="60" text-anchor="start">Category directory</text>
 <rect x="20" y="74" width="165" height="115" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
 <path d="M20 100 L185 100" fill="none" stroke="#9aa884" stroke-width="1.3" />
@@ -518,25 +518,18 @@ The even-odd fill rule uses all rings.
 <rect x="314" y="159" width="28" height="28" fill="#f1cfb4" stroke="#cf6a2a" stroke-width="1.2" />
 <path d="M343 173 H386" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r14arrow)"/>
 <text class="d-title" x="403" y="60" text-anchor="start">One 512-byte chunk</text>
-<rect x="400" y="75" width="20" height="85" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="420" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="440" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="460" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="480" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="500" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="520" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="540" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="560" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="580" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="600" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="620" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="640" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="660" y="75" width="20" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="680" y="75" width="4.45" height="85" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="540" y="185" text-anchor="middle">14 × 36-byte records + 8 bytes padding</text>
+<rect x="400.0" y="75" width="35.5" height="85" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="435.5" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="471.0" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="506.5" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="542.0" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="577.5" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="613.0" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="648.5" y="75" width="35.5" height="85" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="540" y="185" text-anchor="middle">8 × 64-byte records</text>
 <path d="M400 160 V201 H40 V260" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<path d="M420 160 V207 H688 V260" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<text class="d-title" x="65" y="235" text-anchor="start">One POI record · field widths to scale</text>
+<path d="M435.5 160 V207 H688 V260" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="65" y="235" text-anchor="start">Record bytes 0–35 · field widths to scale</text>
 <rect x="40" y="262" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
 <text class="d-sub" x="76.0" y="286" text-anchor="middle">Latitude</text>
 <text class="d-sub" x="76.0" y="319" text-anchor="middle">0–3</text>
@@ -555,24 +548,43 @@ The even-odd fill rule uses all rings.
 <rect x="652" y="262" width="36" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
 <text class="d-sub" x="670.0" y="286" text-anchor="middle">t</text>
 <text class="d-sub" x="670.0" y="319" text-anchor="middle">34–35</text>
-<text class="d-sub" x="40" y="350" text-anchor="start">s: subtype · n: name length · t: two-byte trailer</text>
-<text class="d-title" x="40" y="380" text-anchor="start">Service categories 1–6</text>
-<text class="d-sub" x="270" y="380" text-anchor="start">Printable ASCII name; trailer = HoursRef u16</text>
-<text class="d-title" x="40" y="407" text-anchor="start">Summit category 7</text>
-<text class="d-sub" x="270" y="407" text-anchor="start">UTF-8 name; subtype 19; trailer = elevation i16 (m)</text>
+<text class="d-title" x="40" y="354">Record bytes 36–63 · same scale</text>
+<rect x="40" y="376" width="144" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="112.0" y="400" text-anchor="middle">Source ID</text>
+<text class="d-sub" x="112.0" y="435" text-anchor="middle">36–43</text>
+<rect x="184" y="376" width="144" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="256.0" y="400" text-anchor="middle">Approach ID</text>
+<text class="d-sub" x="256.0" y="435" text-anchor="middle">44–51</text>
+<rect x="328" y="376" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="364.0" y="400" text-anchor="middle">Latitude</text>
+<text class="d-sub" x="364.0" y="435" text-anchor="middle">52–55</text>
+<rect x="400" y="376" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="436.0" y="400" text-anchor="middle">Longitude</text>
+<text class="d-sub" x="436.0" y="435" text-anchor="middle">56–59</text>
+<rect x="472" y="376" width="18" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="481.0" y="400" text-anchor="middle">p</text>
+<text class="d-sub" x="481.0" y="435" text-anchor="middle">60</text>
+<rect x="490" y="376" width="54" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="517.0" y="400" text-anchor="middle">Zero</text>
+<text class="d-sub" x="517.0" y="435" text-anchor="middle">61–63</text>
+<text class="d-sub" x="40" y="470">s: subtype · n: name length · t: two-byte trailer · p: profile mask</text>
+<text class="d-title" x="40" y="502">Services 1–6, 8</text>
+<text class="d-sub" x="270" y="502">ASCII name; trailer = HoursRef u16</text>
+<text class="d-title" x="40" y="532">Summit 7</text>
+<text class="d-sub" x="270" y="532">UTF-8 name; trailer = elevation i16 (m)</text>
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The 36-byte ruler is to scale. Categories share its structure; summit records use UTF-8 names and signed elevation instead of an opening-hours reference.</figcaption>
+<figcaption>The two ruler rows show the 64-byte record at one scale. Source identity and an optional mapped approach follow the display fields.</figcaption>
 </figure>
 
 The map has one POI quadtree for each category.
 The category comes from the selected directory entry.
 It is not repeated in each record.
 
-A POI record is 36 bytes.
+A POI record is 64 bytes.
 Service records contain coordinates, subtype, a 24-byte printable-ASCII name, and `HoursRef`.
-An optional seventh category stores named summits for Peak View. Summit records use a UTF-8 name
+Category 7 stores optional named summits for Peak View. Summit records use a UTF-8 name
 and a signed elevation in place of `HoursRef`. Subtype 19 identifies these records.
 See [OBCM section 7](src:specs/OBCM_Spec.md) for the shared layout and category rules.
 The same indexes support nearest-item and route-corridor queries.
@@ -663,7 +675,8 @@ The same indexes support nearest-item and route-corridor queries.
 Each schedule contains two intervals for each weekday.
 Times use 15-minute units.
 `HoursRef = 0xFFFF` means that no parsed schedule is available.
-Seasonal or unsupported source rules set schedule flags.
+Seasonal rules, unsupported rules, and rounded times set schedule flags.
+Flagged schedules produce Unknown status. Definite status also requires trusted UTC and an explicitly configured local offset.
 
 ### The navigation graph: a routable network
 
@@ -1424,7 +1437,7 @@ It does not change geometry.
 
 ### One map, one file
 
-OBCM v14 uses scaled offsets and stores terrain in the map.
+OBCM v15 uses scaled offsets, stores terrain in the map, and preserves place identities and mapped approaches.
 The assembler produces one OBCM object.
 It does not produce map shards or a set manifest.
 

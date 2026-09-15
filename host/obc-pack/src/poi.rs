@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 
 use obc_formats::obcm::{poi_directory_category_of, poi_label_of, POI_NAME_LEN, SUMMIT_SUBTYPE_ID};
-use obc_map_scene::M_PER_DEG;
 
 use crate::hours::Schedule;
 
@@ -54,7 +53,7 @@ const fn kind(subtype: u8, key: &'static str, value: &'static str) -> PoiKind {
 /// append-only, never renumber). The subtype→category/label half of the table lives
 /// in `obc-formats` (spec §7.4); this half is the OSM tag mapping the
 /// packer owns. First match in table order wins (see [`classify`]).
-pub const POI_TABLE: [PoiKind; 19] = [
+pub const POI_TABLE: [PoiKind; 20] = [
     kind(1, "amenity", "drinking_water"),
     kind(2, "natural", "spring"),
     kind(3, "man_made", "water_tap"),
@@ -74,16 +73,22 @@ pub const POI_TABLE: [PoiKind; 19] = [
     kind(17, "amenity", "pharmacy"),
     kind(18, "shop", "bicycle"),
     kind(SUMMIT_SUBTYPE_ID, "natural", "peak"),
+    kind(20, "railway", "station"),
 ];
 
 /// Category display names for the pack log, indexed by category id (0 unused).
-pub const CATEGORY_NAMES: [&str; 8] =
-    ["", "water", "campsite", "accommodation", "resupply", "pharmacy", "bike shop", "summit"];
+pub const CATEGORY_NAMES: [&str; 9] =
+    ["", "water", "campsite", "accommodation", "resupply", "pharmacy", "bike shop", "summit", "train station"];
 
 /// A classified POI candidate. Coordinates are µdeg (`round(deg * 1e6)`), the
 /// same grid the serializer's chunk coords live on.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Poi {
+    pub metadata: obc_formats::obcm::PoiMetadata,
+    /// Explicit topology and article links retained only at build time.
+    pub access_nodes: Vec<i64>,
+    pub wikidata: Option<String>,
+    pub wikipedia: Option<String>,
     pub subtype: u8,
     pub lon_udeg: i32,
     pub lat_udeg: i32,
@@ -97,6 +102,43 @@ pub struct Poi {
     pub hours: Option<Schedule>,
     /// Summit height in metres, from OSM `ele` or the shared DEM when the tag is absent.
     pub elevation_m: Option<i16>,
+}
+
+/// Explicit source links for offline landmark preparation, including entities with no service category.
+#[derive(Debug, Clone)]
+pub struct LandmarkLink {
+    pub metadata: obc_formats::obcm::PoiMetadata,
+    pub position: Option<(i32, i32)>,
+    pub wikidata: Option<String>,
+    pub wikipedia: Option<String>,
+    pub hours: Option<Schedule>,
+}
+
+impl From<&Poi> for LandmarkLink {
+    fn from(poi: &Poi) -> Self {
+        Self {
+            metadata: poi.metadata,
+            position: Some((poi.lon_udeg, poi.lat_udeg)),
+            wikidata: poi.wikidata.clone(),
+            wikipedia: poi.wikipedia.clone(),
+            hours: poi.hours.clone(),
+        }
+    }
+}
+
+/// Build-only subtype zero carries an explicit Wiki link through source topology resolution.
+pub(crate) fn classify_linked<'a>(
+    tags: impl IntoIterator<Item = (&'a str, &'a str)> + Clone,
+) -> Option<Classification<'a>> {
+    classify(tags.clone()).or_else(|| {
+        let tags: Vec<_> = tags.into_iter().collect();
+        tags.iter().any(|(key, _)| matches!(*key, "wikidata" | "wikipedia")).then(|| Classification {
+            subtype: 0,
+            name: tags.iter().find(|(key, _)| *key == "name").and_then(|(_, value)| normalize_name(value)),
+            raw_hours: tags.iter().find(|(key, _)| *key == "opening_hours").map(|(_, value)| *value),
+            elevation_m: None,
+        })
+    })
 }
 
 /// Look up a subtype's table row (subtype ids are 1-based and dense).
@@ -326,58 +368,53 @@ pub fn normalize_name(raw: &str) -> Option<String> {
     }
 }
 
-/// Dedup radius: OSM double-mapping (node inside a same-tagged building way,
-/// campsite area + entrance node) lands well inside this; genuinely distinct
-/// same-category POIs are almost always farther apart. Accepted v1 risk: two
-/// adjacent bakeries on one square merge.
-const DEDUP_RADIUS_M: f64 = 50.0;
-
-/// Equirectangular meters for the dedup grid — exact enough at 50 m scales.
-fn meters(p: &Poi) -> (f64, f64) {
-    let lat_deg = p.lat_udeg as f64 / 1e6;
-    let x = (p.lon_udeg as f64 / 1e6) * M_PER_DEG * lat_deg.to_radians().cos();
-    (x, lat_deg * M_PER_DEG)
+pub fn dedupe(candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
+    let mut seen = std::collections::HashSet::new();
+    let total = candidates.len();
+    let kept: Vec<_> =
+        candidates.into_iter().filter(|p| p.metadata.source.0 == 0 || seen.insert(p.metadata.source)).collect();
+    let dropped = total - kept.len();
+    (kept, dropped)
 }
 
-/// Collapse duplicates: two candidates of the **same category** within
-/// [`DEDUP_RADIUS_M`] are one POI. Keep by priority — node beats way-centroid,
-/// then named beats unnamed, then first-seen. O(n) via a 50 m grid hash with a
-/// 3×3 neighborhood check. Returns `(kept, dropped_count)`.
-pub fn dedupe(mut candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
-    // Stable sort = first-seen wins among equals; better candidates insert
-    // first, so any later in-radius duplicate loses to the best of its cluster.
-    candidates.sort_by_key(|p| (!p.from_node, p.name.is_none()));
-    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    let mut kept: Vec<Poi> = Vec::new();
-    let mut dropped = 0usize;
-    'cand: for p in candidates {
-        let (x, y) = meters(&p);
-        let (cx, cy) = ((x / DEDUP_RADIUS_M).floor() as i64, (y / DEDUP_RADIUS_M).floor() as i64);
-        let cat = table_row(p.subtype).category();
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for &i in grid.get(&(cx + dx, cy + dy)).into_iter().flatten() {
-                    let q = &kept[i];
-                    if table_row(q.subtype).category() != cat {
-                        continue;
-                    }
-                    let (qx, qy) = meters(q);
-                    let same = if p.subtype == SUMMIT_SUBTYPE_ID {
-                        (p.lat_udeg, p.lon_udeg) == (q.lat_udeg, q.lon_udeg)
-                    } else {
-                        (x - qx).hypot(y - qy) < DEDUP_RADIUS_M
-                    };
-                    if same {
-                        dropped += 1;
-                        continue 'cand;
-                    }
-                }
+/// Resolve only explicit OSM node membership, never nearby geometry.
+pub fn resolve_approaches(
+    pois: &mut [Poi],
+    ways: &[crate::nav::RoutableWay],
+    profiles: &[crate::serialize::NavProfile],
+) {
+    let wanted: std::collections::HashSet<_> = pois.iter().flat_map(|p| p.access_nodes.iter().copied()).collect();
+    let mut nodes: HashMap<i64, ((i32, i32), u8)> = HashMap::new();
+    for way in ways {
+        let mask = profiles.iter().enumerate().fold(0, |mask, (i, profile)| {
+            if profile.highway[(way.kind & 31) as usize] != 0 && profile.surface[(way.kind >> 5) as usize] != 0 {
+                mask | (1 << i)
+            } else {
+                mask
+            }
+        });
+        for (&id, &coord) in way.node_ids.iter().zip(&way.coords) {
+            if wanted.contains(&id) {
+                nodes.entry(id).and_modify(|v| v.1 |= mask).or_insert((coord, mask));
             }
         }
-        grid.entry((cx, cy)).or_default().push(kept.len());
-        kept.push(p);
     }
-    (kept, dropped)
+    for poi in pois {
+        poi.metadata.approach = poi
+            .access_nodes
+            .iter()
+            .filter_map(|id| {
+                let &(coord, mask) = nodes.get(id)?;
+                (mask != 0).then_some((*id, coord, mask))
+            })
+            .min_by_key(|(id, _, _)| *id)
+            .map(|(id, (lon, lat), profile_mask)| obc_formats::obcm::PoiApproach {
+                source: obc_formats::obcm::SourceId::osm(1, id as u64),
+                lat,
+                lon,
+                profile_mask,
+            });
+    }
 }
 
 /// The pack-log line: per-category counts + how many dedup dropped, e.g.
@@ -577,6 +614,16 @@ mod tests {
 
     fn poi(subtype: u8, lat: f64, lon: f64, name: Option<&str>, from_node: bool) -> Poi {
         Poi {
+            metadata: obc_formats::obcm::PoiMetadata {
+                source: obc_formats::obcm::SourceId::osm(
+                    1,
+                    ((to_udeg(lat) as u32 as u64) << 20 | to_udeg(lon) as u32 as u64).max(1),
+                ),
+                approach: None,
+            },
+            access_nodes: Vec::new(),
+            wikidata: None,
+            wikipedia: None,
             subtype,
             lon_udeg: to_udeg(lon),
             lat_udeg: to_udeg(lat),
@@ -588,53 +635,33 @@ mod tests {
     }
 
     #[test]
-    fn dedupe_priority_node_beats_way_beats_unnamed() {
-        // ~28 m apart (0.00025° lat at equator scale). Way-centroid is named,
-        // node is not — node STILL wins (position beats name).
-        let way = poi(13, 48.0, 7.8, Some("Edeka"), false);
-        let node = poi(13, 48.00025, 7.8, None, true);
-        let (kept, dropped) = dedupe(vec![way.clone(), node.clone()]);
-        assert_eq!((kept.len(), dropped), (1, 1));
-        assert_eq!(kept[0], node);
-        // Among two nodes, named beats unnamed…
-        let unnamed = poi(1, 48.0, 7.8, None, true);
-        let named = poi(1, 48.00025, 7.8, Some("Brunnen"), true);
-        let (kept, _) = dedupe(vec![unnamed, named.clone()]);
-        assert_eq!(kept, vec![named.clone()]);
-        // …and among equals, first-seen wins.
-        let first = poi(1, 48.0, 7.8, Some("A"), true);
-        let (kept, _) = dedupe(vec![first.clone(), named]);
-        assert_eq!(kept, vec![first]);
+    fn distinct_colocated_entities_survive() {
+        use obc_formats::obcm::SourceId;
+        let mut a = poi(1, 48.0, 7.8, Some("A"), true);
+        let mut b = a.clone();
+        a.metadata.source = SourceId::osm(1, 100);
+        b.metadata.source = SourceId::osm(1, 101);
+        let (kept, dropped) = dedupe(vec![a.clone(), b, a]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(dropped, 1);
     }
 
     #[test]
-    fn dedupe_radius_and_category_boundaries() {
-        // 40 m apart ⇒ merged; 60 m apart ⇒ both kept (µdeg per meter of
-        // latitude: 1e6 / 111320 ≈ 8.98).
-        let a = poi(1, 48.0, 7.8, Some("A"), true);
-        let near = poi(1, 48.0 + 40.0 / M_PER_DEG, 7.8, Some("B"), true);
-        let far = poi(1, 48.0 + 60.0 / M_PER_DEG, 7.8, Some("C"), true);
-        assert_eq!(dedupe(vec![a.clone(), near]).1, 1);
-        assert_eq!(dedupe(vec![a.clone(), far]).1, 0);
-        // Same spot, different category ⇒ never a duplicate.
-        let pharmacy = poi(17, 48.0, 7.8, Some("A"), true);
-        let bakery = poi(15, 48.0, 7.8, Some("A"), true);
-        assert_eq!(dedupe(vec![pharmacy, bakery]).1, 0);
-        // Same category, different subtype (spring vs drinking_water) DOES merge.
-        let spring = poi(2, 48.0, 7.8, None, true);
-        assert_eq!(dedupe(vec![a, spring]).1, 1);
-    }
-
-    #[test]
-    fn dedupe_across_grid_cell_edge() {
-        // Two points ~45 m apart placed to straddle a 50 m grid boundary — the
-        // 3×3 neighborhood must still find the pair.
-        let lat0 = (50.0 * 179.0) / M_PER_DEG; // just below a cell edge
-        let a = poi(5, lat0, 7.8, Some("Camp"), true);
-        let b = poi(5, lat0 + 45.0 / M_PER_DEG, 7.8, None, true);
-        let (kept, dropped) = dedupe(vec![a.clone(), b]);
-        assert_eq!((kept.len(), dropped), (1, 1));
-        assert_eq!(kept[0], a);
+    fn approach_requires_explicit_topology() {
+        use crate::nav::RoutableWay;
+        let mut linked = poi(1, 48.0, 7.8, Some("A"), true);
+        linked.access_nodes = vec![10];
+        let mut unrelated = linked.clone();
+        unrelated.access_nodes = vec![11];
+        let mut pois = vec![linked, unrelated];
+        let ways = [RoutableWay {
+            node_ids: vec![10, 20],
+            coords: vec![(7_800_000, 48_000_000), (7_800_010, 48_000_000)],
+            kind: 1,
+        }];
+        resolve_approaches(&mut pois, &ways, &crate::config::default_profiles());
+        assert!(pois[0].metadata.approach.is_some());
+        assert!(pois[1].metadata.approach.is_none());
     }
 
     #[test]
@@ -647,7 +674,7 @@ mod tests {
         ];
         assert_eq!(
             format_counts(&pois, 3),
-            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0, summit 0 (dedup dropped 3)"
+            "pois: water 2, campsite 1, accommodation 0, resupply 1, pharmacy 0, bike shop 0, summit 0, train station 0 (dedup dropped 3)"
         );
     }
 }

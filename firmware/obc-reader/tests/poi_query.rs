@@ -307,7 +307,7 @@ fn names_and_fields_round_trip() {
 // === Corrupt-input robustness (skip or clean, never panic/UB) ================
 
 /// A directory advertising `chunk_size == 0` must not divide-by-zero / loop forever — the query
-/// treats the (unwalkable) section as empty and returns `Ok`.
+/// reports the unwalkable section as an error.
 #[test]
 fn corrupt_zero_chunk_size_is_safe() {
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
@@ -316,34 +316,46 @@ fn corrupt_zero_chunk_size_is_safe() {
     // Forge the shared chunk_size (u16 at poi_off+1) to 0. `MapTables::parse` accepts a 0 chunk_size
     // (it only rejects > cap); the query must handle it without panicking.
     bytes[poi_off + 1..poi_off + 3].copy_from_slice(&0u16.to_le_bytes());
-    let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
-    assert!(got.is_empty(), "a 0 chunk_size yields no results, no panic");
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let mut out = heapless::Vec::new();
+    assert!(Reader::new(&src, &tables, &cache)
+        .nearest_pois(PoiCategory::Water, (7_500_000, 43_500_000), &mut out)
+        .is_err());
 }
 
-/// A record with an out-of-range subtype (0, past the table, or the 0xFF-adjacent) is skipped, and
-/// the valid records around it are still returned.
+/// A malformed record after a valid candidate fails the shared query and clears its partial page.
 #[test]
-fn corrupt_out_of_range_subtype_is_skipped() {
+fn corrupt_service_subtypes_fail_without_partial_results() {
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
     let pois = vec![
         PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "AlsoGood".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "Bad".into(), hours_ref: 0xFFFF },
     ];
-    let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
-    // Find the Water category's first chunk and clobber the SECOND record's subtype byte to 99
-    // (past the 18-entry table). Locate the chunk via the directory.
-    let poi_off = resolve_offset(&bytes, 32);
-    // Directory: count(1) chunk_size(2), then 13-byte entries. Category 1 is the first entry.
-    let e1 = poi_off + 3;
-    let idx_off = resolve_offset(&bytes, e1 + 1);
-    let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
-    // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
-    let data_start = align_up(idx_off + node_count * 4);
-    // Second record's subtype byte is at data_start + 36 + 8 (36-byte v7 record stride).
-    bytes[data_start + 36 + 8] = 99;
-    let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
-    // The clobbered record is skipped; the first (valid) one remains.
-    assert_eq!(got.len(), 1, "the out-of-range-subtype record is skipped, the valid one kept");
-    assert_eq!(got[0].name.as_str(), "Good");
+    let base = build_poi_map(BBOX, CS, &[(1, pois)]);
+    let entry = resolve_offset(&base, 32) + 3;
+    let index = resolve_offset(&base, entry + 1);
+    let nodes = u32::from_le_bytes(base[entry + 5..entry + 9].try_into().unwrap()) as usize;
+    let data = align_up(index + nodes * 4);
+    for invalid in [0, 99, 20] {
+        let mut bytes = base.clone();
+        bytes[data + 64 + 8] = invalid;
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut query = PlaceQuery::new(
+            1,
+            obc_reader::PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
+            None,
+        );
+        let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
+        while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
+        assert!(matches!(query.progress(), QueryProgress::Failed(_)), "subtype {invalid}");
+        assert!(page.is_empty());
+    }
 }
 
 /// A chunk whose 0xFF end-of-records sentinel is overwritten with a valid-looking record byte must
@@ -352,7 +364,7 @@ fn corrupt_out_of_range_subtype_is_skipped() {
 fn corrupt_missing_sentinel_stops_at_chunk_end() {
     // One POI ⇒ one record, then a 0xFF sentinel, then padding. Overwrite the sentinel's subtype
     // byte with 1 (a valid subtype) — the record loop must still stop at records_per_chunk, and the
-    // forged "record" (all-0xFF coords, name) is either skipped or bounded, never a panic.
+    // forged record has invalid metadata and is reported as an error, never a panic.
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), hours_ref: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     let poi_off = resolve_offset(&bytes, 32);
@@ -361,11 +373,15 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
     // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
     let data_start = align_up(idx_off + node_count * 4);
-    // Sentinel subtype byte is at the 2nd record slot: data_start + 36 + 8 (36-byte stride). Forge to 1.
-    bytes[data_start + 36 + 8] = 1;
-    // This must not panic and must not read past the chunk; result is well-formed (≤ records/chunk).
-    let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
-    assert!(got.len() <= 16, "bounded by the chunk, no over-read");
+    // Sentinel subtype byte is at the 2nd record slot: data_start + 64 + 8 (64-byte stride). Forge to 1.
+    bytes[data_start + 64 + 8] = 1;
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let mut out = heapless::Vec::new();
+    assert!(Reader::new(&src, &tables, &cache)
+        .nearest_pois(PoiCategory::Water, (7_500_000, 43_500_000), &mut out)
+        .is_err());
 }
 
 // === Real-data smoke test ====================================================
@@ -420,7 +436,7 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
     let bytes = build_poi_map((6_000_000, 42_000_000, 9_000_000, 45_000_000), CS, &[(7, records)]);
     let src = SliceSource(&bytes);
     let tables = MapTables::parse(&src).unwrap();
-    let cache = MapCache::new_boxed();
+    let cache = Box::new(MapCache::new());
     let reader = Reader::new(&src, &tables, &cache);
     for radius in [0, 20_000, 70_000, u32::MAX] {
         let mut found = Vec::new();
@@ -443,4 +459,106 @@ fn summit_spatial_query_preserves_metadata_and_clamps_the_search_radius() {
     let src = SliceSource(&empty);
     let tables = MapTables::parse(&src).unwrap();
     Reader::new(&src, &tables, &cache).visit_summits_within(pos, 100_000, |_| panic!("absent category")).unwrap();
+}
+
+#[test]
+fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+    use obc_reader::PoiCategorySet;
+    let pois: Vec<_> = (0..55)
+        .map(|i| PoiSpec {
+            // Sub-metre spacing puts distinct identities at tied integer distances across pages.
+            lat: 43_500_000 + i,
+            lon: 7_500_000,
+            subtype: 1,
+            name: format!("P{i:02}"),
+            hours_ref: if i < 20 { 0 } else { 1 },
+        })
+        .collect();
+    let closed = [0; 29];
+    let mut open = [0; 29];
+    for day in 0..7 {
+        open[2 + day * 4] = 96;
+    }
+    let bytes = obcm_testkit::build_poi_map_with_hours(BBOX, CS, &[(1, pois)], &[closed, open]);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut query = PlaceQuery::new(
+        7,
+        PoiCategorySet::ALL,
+        PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
+        Some((0, 600)),
+    );
+    let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
+    let mut names = Vec::new();
+    let mut first_page = Vec::new();
+    let mut second_start = None;
+    loop {
+        let status = loop {
+            let status = query.step(&reader, None, 7, &mut page);
+            if status != QueryProgress::Pending {
+                break status;
+            }
+        };
+        if first_page.is_empty() {
+            first_page = page.iter().map(|p| p.poi.name.clone()).collect();
+        } else if second_start.is_none() {
+            second_start = Some(query.key(&page[0]));
+        }
+        names.extend(page.iter().map(|p| p.poi.name.clone()));
+        let QueryProgress::Ready { more, coverage_complete: false } = status else { panic!("{status:?}") };
+        if !more {
+            break;
+        }
+        query.next_page(query.key(page.last().unwrap()));
+        page.clear();
+    }
+    assert_eq!(first_page.len(), PLACE_PAGE_SIZE);
+    assert_eq!(
+        names.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+        (20..55).map(|i| format!("P{i:02}")).collect::<Vec<_>>()
+    );
+    query.previous_page(second_start.unwrap());
+    page.clear();
+    while query.step(&reader, None, 7, &mut page) == QueryProgress::Pending {}
+    assert_eq!(page.iter().map(|p| p.poi.name.clone()).collect::<Vec<_>>(), first_page);
+    query.next_page(query.key(page.last().unwrap()));
+    assert_eq!(query.step(&reader, None, 8, &mut page), QueryProgress::Unavailable);
+    assert!(page.is_empty());
+    query.next_page(second_start.unwrap());
+    query.previous_page(second_start.unwrap());
+    assert_eq!(query.progress(), QueryProgress::Unavailable, "cancelled work cannot revive through paging");
+}
+
+#[test]
+fn coverage_and_train_are_explicit() {
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+    use obc_reader::PoiCategorySet;
+    let bytes = build_poi_map(
+        BBOX,
+        CS,
+        &[(
+            8,
+            vec![PoiSpec { lat: 43_000_001, lon: 7_000_001, subtype: 20, name: "Station".into(), hours_ref: 0xffff }],
+        )],
+    );
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new();
+    let reader = Reader::new(&src, &tables, &cache);
+    let mut query = PlaceQuery::new(
+        1,
+        PoiCategorySet::ALL,
+        PlaceWindow::Nearby { position: (7_000_001, 43_000_001), radius_m: 1000 },
+        None,
+    );
+    let mut page = heapless::Vec::<_, PLACE_PAGE_SIZE>::new();
+    while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
+    assert_eq!(query.progress(), QueryProgress::Ready { more: false, coverage_complete: false });
+    assert_eq!(page[0].poi.subtype, 20);
+    assert_eq!(PoiCategorySet::ALL.len(), 7);
+    assert!(PoiCategorySet::ALL.contains(PoiCategory::Train));
+    assert_eq!(PoiCategorySet::ALL.bits() & (1 << 6), 0, "summits are not services");
 }

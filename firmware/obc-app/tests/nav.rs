@@ -65,6 +65,7 @@ fn open_detail(app: &mut App, bytes: &[u8]) {
     render(app, bytes); // lazy snapshot fills
     app.apply_gesture(Gesture::Press); // → detail
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
+    render(app, bytes); // load the schedule before accepting an action
 }
 
 /// Drive the detail into the confirm and press *Create route*, returning the search the pass hands
@@ -145,6 +146,7 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail (the unnamed campsite)
+    render(&mut app, &bytes);
     let req = request_route(&mut app, &mut host);
     assert_eq!(req.name(), "Campsite", "an unnamed POI titles the route with its subtype label");
 }
@@ -236,6 +238,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail
+    render(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);
     answer(&mut app, &mut host, Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));

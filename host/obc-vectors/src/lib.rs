@@ -42,6 +42,25 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     crc ^ 0xFFFF_FFFF
 }
 
+/// A service record written directly from the OBCM v15 field table.
+/// A Train place with an explicit node approach, independent of the production encoder.
+pub fn place_record() -> Vec<u8> {
+    let mut bytes = vec![0xff; 64];
+    bytes[0..4].copy_from_slice(&46_561_323i32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&8_361_496i32.to_le_bytes());
+    bytes[8] = 20;
+    bytes[9] = 7;
+    bytes[10..17].copy_from_slice(b"Station");
+    bytes[34..36].copy_from_slice(&0xffffu16.to_le_bytes());
+    bytes[36..44].copy_from_slice(&((1u64 << 62) | 123).to_le_bytes());
+    bytes[44..52].copy_from_slice(&((1u64 << 62) | 456).to_le_bytes());
+    bytes[52..56].copy_from_slice(&46_561_320i32.to_le_bytes());
+    bytes[56..60].copy_from_slice(&8_361_490i32.to_le_bytes());
+    bytes[60] = 5;
+    bytes[61..64].fill(0);
+    bytes
+}
+
 /// The deterministic route source: a short rolling track at 48°N with two `<wpt>`
 /// waypoints listed out of ride order (as GPX carries them). One carries a `<sym>` the
 /// converter maps (`Drinking Water` → Water), the other a `<type>` it doesn't (`Viewpoint` →
@@ -654,6 +673,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // point is to be the bytes a current device serves, so an OBCM bump must re-cut it (and, via
         // manifest.json, force the Swift + TS consumers of that number to be looked at) rather than
         // leave three implementations pinned to a number the firmware stopped saying.
+        ("place-train-v15.bin", place_record()),
         ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
         // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
         // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.

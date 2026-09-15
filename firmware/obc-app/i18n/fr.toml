@@ -307,6 +307,7 @@ accommodation = "Hébergement"
 resupply = "Provisions"
 pharmacy = "Pharmacie"
 bike_shop = "Vélociste"
+train = "Gare"
 
 # --- POI category menu ---
 [poi_menu]
@@ -314,6 +315,8 @@ title = "POIS"
 
 # --- POI list screen ---
 [poi_list]
+unavailable = "Lieux indisponibles"
+coverage = "Hors de la carte"
 no_position = "Aucune position"
 no_position_sub = "Pas encore de fix"
 no_pois = "Aucun POI"
