@@ -473,8 +473,11 @@ The delete footer is a guarded row. The action runs only after a complete hold o
 ## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
-within 300 m of its line. It takes the first four eligible places from each source, alternates
-sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
+within 300 m of its line. It takes four eligible nearby places and four from the corridor page,
+alternates sources, and removes duplicate OSM identities. The corridor selection estimates arrival
+using the same route occurrence as Visit and the straight distance from that point to the place.
+This avoids a later pass being treated as an early stop on an overlapping route. Known-closed
+places are excluded before these limits. The shared corridor page keeps its route order.
 
 The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
 measured route on the card and releases the planner before the next plan starts. The Finding
