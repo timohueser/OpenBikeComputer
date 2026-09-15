@@ -2354,7 +2354,20 @@ pub(crate) async fn run_app(
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match result {
                                     Ok(_) if app.assistant_review_context().is_some() => match finished_review {
-                                        Some(preview) => app.assistant_preview_outcome(token, preview),
+                                        Some(preview) => {
+                                            guard.begin_sources();
+                                            let shape=flat.with_source(obc_storage::flat::ObjectId(preview.source.object),Some(obc_storage::flat::Revision(preview.source.revision)),
+                                                |source| crate::assistant::preview_shape(guard.sources().1,source));
+                                            match shape {
+                                                Ok(Ok(shape)) => {
+                                                    let outcome=app.assistant_preview_outcome(token,preview);
+                                                    if matches!(outcome,NavigatorOutcome::ReviewReady{..}) && !app.set_assistant_preview_shape(token,preview.source,&shape) {
+                                                        NavigatorOutcome::Failed {token,error:NavigatorError::SourceChanged}
+                                                    } else {outcome}
+                                                }
+                                                _ => NavigatorOutcome::Failed {token,error:NavigatorError::DurabilityUnknown},
+                                            }
+                                        },
                                         None => {
                                             NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
                                         }
