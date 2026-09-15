@@ -1116,8 +1116,6 @@ mod tests {
         }
         assert!(d.find_ready(), "real station search: {:?}, {:?}", d.app.find_place_state(), d.visit_status());
         dwell(&mut d, &mut now, 2600);
-        drive(&mut d, &mut now, "press", "PoiDetail");
-        dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "press", "VisitReview");
         assert!(d.host.owns_navigation());
         let offset = d.ui_offset_ms;
