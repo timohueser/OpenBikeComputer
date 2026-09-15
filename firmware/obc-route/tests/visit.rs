@@ -92,13 +92,19 @@ fn forward_join_is_clipped_to_first_stored_access_and_searches_are_bounded() {
     assert!(choice.search().is_err());
 }
 #[test]
-fn missing_access_wrong_map_and_profile_are_unavailable() {
+fn coordinate_destinations_use_normal_snap_but_mapped_approaches_remain_exact() {
     let mut target = VisitTarget {
         map: key(1),
         display: (500, 500),
         metadata: PoiMetadata { source: SourceId::osm(1, 2), approach: None },
     };
-    assert!(target.approach(key(1), 0).is_none());
+    assert_eq!(target.approach(key(1), 0), Some(target.display));
+    assert!(target.approach(key(2), 0).is_none());
+    assert!(target.approach(key(1), 8).is_none());
+    let snapped = route(vec![(0, 0, 0), (0, 500, 0)], &[], 55);
+    assert_eq!(target.destination(&SliceSource(&snapped), 0).unwrap(), (0, 500));
+    let distant = route(vec![(0, 0, 0), (0, 2000, 0)], &[], 222);
+    assert!(target.validate_destination(&SliceSource(&distant), 0).is_err());
     target.metadata.approach = Some(PoiApproach { source: SourceId::osm(1, 3), lon: 0, lat: 0, profile_mask: 1 });
     assert_eq!(target.approach(key(1), 0), Some((0, 0)));
     assert!(target.approach(key(2), 0).is_none());
@@ -107,6 +113,35 @@ fn missing_access_wrong_map_and_profile_are_unavailable() {
     assert!(target.validate_destination(&SliceSource(&nearby), 0).is_err());
     let exact = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
     assert!(target.validate_destination(&SliceSource(&exact), 0).is_ok());
+}
+#[test]
+fn coordinate_visit_records_the_real_stop_and_keeps_its_return_connected() {
+    let target = VisitTarget {
+        map: key(2),
+        display: (500, 1000),
+        metadata: PoiMetadata { source: SourceId::osm(1, 9), approach: None },
+    };
+    let outbound = route(vec![(0, 0, 0), (0, 1000, 0)], &[], 111);
+    let returning = route(vec![(0, 1000, 0), (0, 0, 0)], &[], 111);
+    let original = route(vec![(0, 0, 0), (2000, 0, 0)], &[], 222);
+    let mut builder = VisitBuilder::new(key(1), target.map, 0, 0, target.metadata.source, target.display).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    let wrong = VisitTarget { metadata: PoiMetadata { source: SourceId::osm(1, 10), approach: None }, ..target };
+    assert!(builder.resolve_destination(wrong, &SliceSource(&outbound), 0).is_err());
+    builder.resolve_destination(target, &SliceSource(&outbound), 0).unwrap();
+    assert_eq!(builder.destination(), Some((0, 1000)));
+    append(&mut builder, &outbound, &mut sink);
+    append(&mut builder, &returning, &mut sink);
+    let source = SliceSource(&original);
+    let index = RouteIndex::read(&source).unwrap();
+    while builder.finish_step(&RouteReader::new(&index, &source), &mut sink).unwrap().is_none() {}
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let descriptor = RouteReader::new(&index, &source).visit_descriptor().unwrap().unwrap();
+    assert_eq!((descriptor.target_lon, descriptor.target_lat), (0, 1000));
+    assert_eq!(descriptor.target_id, 9);
+    assert_eq!(descriptor.accepted_anchors_m, [0, 111, 222]);
 }
 #[test]
 fn disconnected_return_is_not_joined_with_a_straight_segment() {

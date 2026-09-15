@@ -21,16 +21,20 @@ pub struct VisitTarget {
 }
 impl VisitTarget {
     pub fn approach(self, map: RouteSourceKey, profile: u8) -> Option<(i32, i32)> {
-        let a = self.metadata.approach?;
-        (self.map == map
-            && self.metadata.source.is_valid()
-            && a.source.is_valid()
-            && profile < 8
-            && a.profile_mask & (1 << profile) != 0)
-            .then_some((a.lon, a.lat))
+        if self.map != map || !self.metadata.source.is_valid() || profile >= 8 {
+            return None;
+        }
+        match self.metadata.approach {
+            Some(a) => (a.source.is_valid() && a.profile_mask & (1 << profile) != 0).then_some((a.lon, a.lat)),
+            None => Some(self.display),
+        }
     }
-    /// Validate the actual graph endpoint for a direct destination. A near snap is insufficient.
+    /// Explicit approaches must be reached exactly; other places use the normal bounded graph snap.
     pub fn validate_destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(), Error> {
+        self.destination(src, profile).map(|_| ())
+    }
+    /// The actual final graph coordinate, validated against this map-bound place.
+    pub fn destination(self, src: &dyn obc_formats::io::ByteSource, profile: u8) -> Result<(i32, i32), Error> {
         use crate::reader::{decode_chunk_from, parse_chunk_meta, read_header};
         use obc_formats::obcr::CHUNK_META_LEN;
         let approach = self.approach(self.map, profile).ok_or(Error::BadOffset)?;
@@ -47,10 +51,11 @@ impl VisitTarget {
         let mut points = Vec::<crate::RoutePoint, MAX_POINTS_PER_CHUNK>::new();
         decode_chunk_from(src, &meta, meta.point_count as usize, &mut points)?;
         let p = points.last().ok_or(Error::BadOffset)?;
-        if obc_map_scene::ground_dist_m((p.lon, p.lat), approach) > APPROACH_TOLERANCE_M {
+        let tolerance = if self.metadata.approach.is_some() { APPROACH_TOLERANCE_M } else { crate::nav::SNAP_RADIUS_M };
+        if obc_map_scene::ground_dist_m((p.lon, p.lat), approach) > tolerance {
             return Err(Error::BadOffset);
         }
-        Ok(())
+        Ok((p.lon, p.lat))
     }
 }
 
@@ -381,6 +386,31 @@ impl VisitBuilder {
     }
     pub fn original_anchors(&self) -> [u32; 3] {
         self.anchors
+    }
+
+    /// Bind the stop to the actual outbound graph endpoint before composing the route.
+    pub fn resolve_destination(
+        &mut self,
+        target: VisitTarget,
+        leg: &dyn obc_formats::io::ByteSource,
+        profile: u8,
+    ) -> Result<(), Error> {
+        let descriptor = self.descriptor.as_mut().ok_or(Error::BadOffset)?;
+        if self.phase != Phase::Outbound
+            || self.chunk != 0
+            || descriptor.target_kind != (target.metadata.source.0 >> 62) as u8
+            || descriptor.target_id != target.metadata.source.0 & ((1 << 62) - 1)
+            || self.em.attribution_map() != Some(target.map)
+        {
+            return Err(Error::BadOffset);
+        }
+        let (lon, lat) = target.destination(leg, profile)?;
+        descriptor.target_lon = lon;
+        descriptor.target_lat = lat;
+        Ok(())
+    }
+    pub fn destination(&self) -> Option<(i32, i32)> {
+        self.descriptor.map(|d| (d.target_lon, d.target_lat))
     }
 
     /// A decoded leg cannot join the next required coordinate. Source and sink failures do not set this state.

@@ -61,16 +61,29 @@ impl AssistantScreen {
             if i == self.selected {
                 cv.round(rect(10, y, rx.w - 20, 40), 6, AMBER);
             }
-            cv.text(
-                rx.t(label),
-                Point::new(18, y + 5),
-                Font::Body,
-                TextAlign::Left,
-                if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT },
-            );
+            let ink = if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT };
+            if matches!(label, Msg::AssistantFind) {
+                draw_find_title(cv, rx.t(label), Point::new(18, y + 9), ink);
+            } else {
+                cv.text(rx.t(label), Point::new(18, y + 5), Font::Body, TextAlign::Left, ink);
+            }
         }
         cv.vline(rx.w - 7, 44, 261, 2, RULE);
         cv.vline(rx.w - 7, 44 + first as i32 * 36, 225, 2, WOOD);
+    }
+}
+
+/// Keep the question on one line with compact punctuation in the existing label font.
+pub(super) fn draw_find_title(cv: &mut impl Surface, text: &str, at: Point, ink: u16) {
+    if let Some(prefix) = text.strip_suffix("...") {
+        cv.text(prefix, at, Font::Label, TextAlign::Left, ink);
+        let x = at.x + obc_render::text::text_width(prefix, Font::Label) as i32;
+        let y = at.y + Font::Label.cap_top() as i32 + Font::Label.cap_height() as i32 - 2;
+        for i in 0..3 {
+            cv.fill(rect(x + 2 + i * 4, y, 2, 2), ink);
+        }
+    } else {
+        cv.text(text, at, Font::Label, TextAlign::Left, ink);
     }
 }
 
@@ -118,8 +131,22 @@ mod tests {
         for language in Language::ALL {
             for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeJourney]) {
                 let text = crate::i18n::t(message, language);
+                let width = if matches!(message, Msg::AssistantFind) {
+                    text.strip_suffix("...").map_or_else(
+                        || obc_render::text::text_width(text, Font::Label),
+                        |prefix| obc_render::text::text_width(prefix, Font::Label) + 12,
+                    )
+                } else {
+                    obc_render::text::text_width(text, Font::Body)
+                };
+                assert!(width <= 212, "{language:?}: {text}");
+            }
+            for message in [Msg::AssistantMorePlaces, Msg::AssistantSearchChanged] {
+                let text = crate::i18n::t(message, language);
                 assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
             }
+            let text = crate::i18n::t(Msg::AssistantBrowsePlaces, language);
+            assert!(obc_render::text::text_width(text, Font::Label) <= 204, "{language:?}: {text}");
             for message in [
                 Msg::AssistantPhotoVisit,
                 Msg::AssistantPhotoClosed,
