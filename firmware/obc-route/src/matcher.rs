@@ -55,6 +55,12 @@ pub struct Match {
     pub dist_m: u32,
 }
 
+#[derive(Clone, Copy)]
+enum RecoveryScan {
+    Nearest,
+    Check { progress_m: u32, dist_m: u32 },
+}
+
 /// A forward-biased cursor that snaps fixes to a route. One per active route; reset on
 /// route load/change ([`reset`](RouteMatch::reset)). Owns a reused chunk-decode buffer so
 /// matching allocates nothing per fix.
@@ -176,6 +182,38 @@ impl RouteMatch {
 
     /// Match only the accepted phase. A later overlapping return leg is not an outbound candidate.
     pub fn update_to(&mut self, lon: i32, lat: i32, route: &RouteReader, ceiling_m: u32) -> Match {
+        self.update_window(lon, lat, route, ceiling_m, None)
+    }
+
+    /// Recover a unique position inside a durable phase without the live matcher's forward bias.
+    /// The second scan rejects near-equal projections onto separated parts of the phase.
+    pub fn recover(&mut self, lon: i32, lat: i32, route: &RouteReader, lower_m: u32, upper_m: u32) -> Option<Match> {
+        self.reset();
+        self.set_progress_floor(route, lower_m)?;
+        self.started = false;
+        let nearest = self.update_window(lon, lat, route, upper_m, Some(RecoveryScan::Nearest));
+        if nearest.off_route {
+            return None;
+        }
+        self.started = false;
+        let checked = self.update_window(
+            lon,
+            lat,
+            route,
+            upper_m,
+            Some(RecoveryScan::Check { progress_m: nearest.progress_m, dist_m: nearest.dist_m }),
+        );
+        (!checked.off_route).then_some(checked)
+    }
+
+    fn update_window(
+        &mut self,
+        lon: i32,
+        lat: i32,
+        route: &RouteReader,
+        ceiling_m: u32,
+        recovery: Option<RecoveryScan>,
+    ) -> Match {
         let chunks = route.chunks();
         if chunks.is_empty() {
             return Match { progress_m: 0, off_route: true, dist_m: u32::MAX };
@@ -199,6 +237,7 @@ impl RouteMatch {
 
         // Best so far: (chunk, seg, dist_m, progress_m).
         let mut best: Option<(usize, usize, f32, u32)> = None;
+        let mut ambiguous = false;
         let mut c = first_chunk;
         let mut base_gidx = route.global_seg_index(first_chunk, 0) as i64;
         'outer: while c < chunks.len() {
@@ -207,7 +246,11 @@ impl RouteMatch {
                 break;
             }
             let pc_segs = (chunks[c].point_count as usize).saturating_sub(1) as i64;
-            if route.decode_chunk(c, &mut self.buf).is_ok() && self.buf.len() >= 2 {
+            let decoded = route.decode_chunk(c, &mut self.buf).is_ok();
+            if !decoded && recovery.is_some() {
+                return Match { progress_m: self.progress_m, off_route: true, dist_m: u32::MAX };
+            }
+            if decoded && self.buf.len() >= 2 {
                 let cum0 = chunks[c].cum_distance_m as f32;
                 let mut intra = 0f32; // distance from this chunk's anchor to point s
                                       // cos(lat) barely changes across one chunk's span, so hoist it once per
@@ -258,12 +301,21 @@ impl RouteMatch {
                             dist = ground_dist_m_cl(floor, p, cl);
                             progress = self.floor_progress_m;
                         }
+                        if let Some(RecoveryScan::Check { progress_m: nearest_m, dist_m: nearest_dist }) = recovery {
+                            let separation = progress.abs_diff(nearest_m) as f32;
+                            let nearest_dist = nearest_dist as f32;
+                            // Adjacent projections around one location are harmless. Separate
+                            // near-ties or repeated coordinates do not identify one occurrence.
+                            ambiguous |= (dist <= nearest_dist + TIE_EPS_M
+                                && separation > 2.0 * (nearest_dist + TIE_EPS_M))
+                                || (dist <= nearest_dist + 1.0 && separation > 2.0 * (nearest_dist + 1.0));
+                        }
                         // First lock biases near-ties to the earliest segment (TIE_EPS_M);
                         // once tracking, the forward window bounds the search so a strict
                         // nearest is right.
                         let better = match best {
                             None => true,
-                            Some((_, _, bd, _)) if self.started => dist < bd,
+                            Some((_, _, bd, _)) if self.started || recovery.is_some() => dist < bd,
                             Some((_, _, bd, _)) => dist < bd - TIE_EPS_M,
                         };
                         if better {
@@ -283,7 +335,7 @@ impl RouteMatch {
         };
 
         // Hysteresis on the nearest cross-track distance.
-        let now_off = if bdist >= OFF_M {
+        let now_off = if ambiguous || bdist >= OFF_M {
             true
         } else if bdist < ON_M {
             false
