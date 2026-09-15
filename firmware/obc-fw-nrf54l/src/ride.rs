@@ -3105,6 +3105,7 @@ pub(crate) async fn run_app(
                                         .map(|runtime| obc_app::photo::FramePhoto::interactive(runtime, true)),
                                 );
 
+                                app.render_planning_banner(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                                 stats
                             });
                             #[cfg(feature = "sd-bench")]
