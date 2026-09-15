@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v15)
+# OBCM File Format Specification (v16)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -158,16 +158,16 @@ ceiling a statement about the nav graph alone. **No sub-region ceiling sits unde
 change 3 is there so that the last `uint32` byte offset in the format did not quietly become the new
 limit the moment the old one lifted.
 
-**v15 is the only supported version**; earlier maps get repacked.
+**Version 15** expands POIs to 64-byte records with source identity and a validated
+routing approach (§7.3). Bit 15 of the edge point-count word records complete DEM
+integration (§8.4); the edge record length is unchanged.
 
-**The version byte is the hard cut, and it cuts in both directions.** A reader MUST check `Version`
-before it reads any byte behind it and MUST refuse anything other than `0x0E`, whether the value is
-older or newer than its own: a v13 file (`0x0D`) is refused by a v14 reader because its offsets mean
-bytes, and a v14 file is refused by every v13 reader because its offsets do not — the same
-mis-parse, seen from the two sides. The refusal is the file's, not the section's: nothing is
-partially readable across the cut, because a section offset that means the wrong unit lands
-somewhere plausible rather than somewhere obviously wrong. This is also now the **only** place the
-map version is stated, since the set manifest that used to carry a copy of it is gone.
+**Version 16** extends the header to 57 bytes and adds one optional landmark section (§9).
+
+**v16 is the only supported version**; earlier maps get repacked. A reader MUST
+check `Version` before it reads any later field and MUST refuse every value other
+than `0x10`. The header version applies to the whole file.
+
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
@@ -213,7 +213,7 @@ screen space is the renderer's responsibility, not the format's.
 ## File layout
 
 ```
-[Header]                            (49 bytes, fixed)
+[Header]                            (57 bytes, fixed)
 [Style Table]                       (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
 [LOD 0 Index][LOD 0 Offset Table][LOD 0 Data Chunks]    (coarsest)
@@ -223,6 +223,7 @@ screen space is the renderer's responsibility, not the format's.
 [POI Directory][POI Indexes + Chunks] (§7)
 [Hours-Pool Section]                  (§7.5)
 [Nav Directory][Profile Table][Node Index + Chunks][Edge Pool][Snap Index + Chunks]  (§8)
+[Landmark Directory + Content]        (§9 — optional)
 [Terrain Region]                      (§1.3 — an OBCT container, absent when the header says 0)
 ```
 
@@ -236,14 +237,14 @@ integers are **little-endian**.
 
 ---
 
-## 1. Header (49 bytes)
+## 1. Header (57 bytes)
 
-Packed as `struct "<4sBiiiiIBIHIIBII"`.
+Packed as `struct "<4sBiiiiIBIHIIBIIII"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x0F` |
+| 4 | Version | 1 | `uint8` | `0x10` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -257,19 +258,21 @@ Packed as `struct "<4sBiiiiIBIHIIBII"`.
 | 40 | Offset Scale | 1 | `uint8` | **v14**: base-2 logarithm of the offset unit in bytes, `0..=9`; producers write `4` (§1.1) |
 | 41 | Terrain Offset | 4 | `uint32` | **v14**: scaled offset to the embedded OBCT region, or `0` for a map with no elevation (§1.3) |
 | 45 | Terrain Length | 4 | `uint32` | **v14**: that region's length **in units**; `0` exactly when `Terrain Offset` is `0` |
+| 49 | Landmark Offset | 4 | `uint32` | Scaled offset to the optional landmark section (§9) |
+| 53 | Landmark Length | 4 | `uint32` | Section length in offset units; `0` exactly when Landmark Offset is `0` |
 
 Note the bbox field order in the file is **lat, lon, lat, lon**. A **scaled** offset is a count of
 `2^Offset Scale`-byte units, not of bytes — §1.1 is the whole of that rule, and it applies to every
 field this document marks that way, here and in the LOD table (§3), the offset tables (§5.1) and the
 POI (§7.1) and nav (§8.1) directories.
 
-The header is 49 bytes, which is not a whole number of units at any scale above `0`, so the Style
+The header is 57 bytes, which is not a whole number of units at any scale above `0`, so the Style
 Table begins at the first unit boundary at or after it — `64` at the default `U = 16`, giving
-`Style Offset = 4` — and the `49..64` gap is `0xFF` filler (§1.2). Reading `Style Offset` rather than
+`Style Offset = 4` — and the `57..64` gap is `0xFF` filler (§1.2). Reading `Style Offset` rather than
 assuming the section follows the header is what it was always for; v14 is simply the first version
 where the two differ. The POI and nav sections are always present, so neither of their offsets is
 ever `0` — a map with no POIs (or no routable ways) writes an **empty** directory there instead.
-`Terrain Offset` is the one offset that may be `0`, and §1.3 says why that is unambiguous.
+`Terrain Offset` and `Landmark Offset` may be `0`; each is zero exactly when its corresponding length is zero.
 
 ### 1.1 Offset scale
 
@@ -329,7 +332,7 @@ structure would otherwise begin mid-unit, it writes `0xFF` filler up to the boun
 
 Three kinds of gap follow, and none of them is content:
 
-- **between sections** — the 49-byte header and the style table, and any two sections a header or
+- **between sections** — the 57-byte header and the style table, and any two sections a header or
   directory offset names;
 - **before a region's chunks** — a region's chunk data begins at the first unit boundary at or after
   the structure preceding it, which is the index (§7.1, §8.1) or the index plus the offset table
@@ -1222,6 +1225,7 @@ step(p):
     if p + 19 > 512:            refuse   # no record fits: 19 B is the format's smallest
     n = u16_at(p + 4)                    # Pt Count
     if n == 0xFFFF:             refuse   # end-of-chunk sentinel: no record here
+    n = n & 0x7FFF                       # low 15 bits are the point count
     if n < 2:                   refuse   # impossible count; also what stops 4*(n-1) underflowing
     len = 15 + 4 * (n - 1)
     if p + len > 512:           refuse   # record claims bytes past its chunk
@@ -1314,10 +1318,17 @@ chunk index, whatever a future record's size.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
+In v15, bit 15 of the count word records complete elevation integration. The
+packer sets it only when every sample in both directions resolved. The assembler
+preserves the bit. Readers check the sentinel before masking the count and reject
+impossible counts. A missing bit means incomplete or absent terrain, even when
+both endpoint heights are valid. Route output carries this as incoming-segment
+incompleteness; no extra graph or route-length resident array is required.
+
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
-| 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2); `0xFFFF` is the **end-of-chunk sentinel** (v14), never a real count |
+| 4 | Count / elevation validity | 2 | `uint16` | low 15 bits: vertex count (2..125); bit 15: all DEM integration samples present; `0xFFFF` remains the end-of-chunk sentinel |
 | 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
 | 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
@@ -1600,3 +1611,104 @@ distance (100 m in the reference router).
   `firmware/obc-reader/tests/format.rs` (byte pins) and
   `host/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
   the profile table, kinds, delta reconstruction, and the bin-packing fill floor).
+
+## 9. Landmark section
+
+The optional section holds geographic discovery records and selected-item content in the same map
+object. Both header fields are zero when absent. Otherwise the scaled region starts after the
+header, has at least 16 bytes, and ends within the map. Its directory records its exact byte length;
+only offset-unit padding may follow it. Internal offsets are **bytes relative to this section**.
+They do not use the map offset scale.
+
+### 9.1 Directory and spatial records
+
+All integers are little-endian. The directory is 16 bytes:
+
+| Offset | Field | Type | Constraint |
+| :-- | :-- | :-- | :-- |
+| 0 | Record count | `uint32` | 0..65,535 |
+| 4 | Record length | `uint16` | 92 |
+| 6 | Reserved | `uint16` | 0 |
+| 8 | Payload start | `uint32` | 16 + count × 92 |
+| 12 | Section length | `uint32` | At least payload start, within the header region |
+
+Fixed records follow the directory, sorted strictly by `(latitude, longitude, QID)`.
+Each QID occurs once. Readers bisect this latitude index and scan the relevant latitude band in
+bounded steps. Discovery does not read article or photo payloads. Nearby pages use deterministic
+`(distance in whole metres, QID)` keys. A caller binds each query to its installed map revision,
+position and filter generation; changing any of these cancels the old query.
+
+| Offset | Field | Size | Constraint |
+| :-- | :-- | :-- | :-- |
+| 0 | Wikidata QID number | 8 | Nonzero `uint64`; the leading Q is implicit |
+| 8 | Longitude | 4 | Signed microdegrees, −180,000,000..180,000,000 |
+| 12 | Latitude | 4 | Signed microdegrees, −90,000,000..90,000,000 |
+| 16 | Category | 1 | 1..6, from the pinned landmark category policy |
+| 17 | Article language | 2 | Two lowercase ASCII language letters |
+| 19 | Text page count | 1 | 1..4 |
+| 20 | Hours reference | 2 | Shared §7.5 pool index, or `0xFFFF` |
+| 22 | Reserved | 2 | Zero |
+| 24 | OSM metadata | 28 | The §7 service identity/approach encoding; all zero means absent |
+| 52 | Name reference | 8 | Required, at most 256 UTF-8 bytes |
+| 60 | Text reference | 8 | Required page bundle, at most 4,118 bytes |
+| 68 | Article attribution reference | 8 | Required, at most 65,535 bytes |
+| 76 | Photo reference | 8 | Optional independent stream (§9.3), at most 52,096 bytes |
+| 84 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 65,535 bytes |
+
+Each reference is `(offset uint32, length uint32)`. Only `(0, 0)` means absent. A present reference
+has nonzero length, starts at or after payload start, and ends within the exact section length.
+Addition must be checked for overflow. Identical immutable content can share a reference.
+
+A display coordinate does not establish routable access. The optional OSM metadata carries only an
+explicit source-topology association and its allowed profile mask. Without OSM metadata, the hours
+reference must be `0xFFFF`. A linked non-service entity uses the same hours pool as service POIs.
+Missing, unsupported or failed hours remain Unknown under the shared §7 opening-status rules.
+
+### 9.2 Text and attribution bundles
+
+A bundle starts with `count uint16`, followed by `count + 1` byte offsets (`uint32`) relative to the
+bundle, then UTF-8 fields. The first offset equals `2 + (count + 1) × 4`; offsets are nondecreasing,
+and the final offset equals the bundle length. A selected field is the bytes between its two
+offsets. Readers check its range, UTF-8 and destination capacity before use.
+
+A text bundle has the record's 1..4 fields. Each field is one prepared page of at most 1,024 bytes.
+The language identifies the actual article text. Attribution bundles have four original fields
+(source URL, revision, licence URL, original notices), then 1..256 prepared display pages of at most
+1,024 bytes each. All original fields remain available; display pagination must not drop them.
+The total attribution bundle, including its offset table, is at most 65,535 bytes.
+
+### 9.3 Independent photo stream
+
+Each photo is exactly 216 × 240 row-major RGB222 pixels. One pixel occupies one byte, in `0..63`,
+with red in bits 5..4, green in bits 3..2 and blue in bits 1..0. There is one lossless zlib stream
+with DEFLATE compression, an Adler-32 trailer, and at most a 4,096-byte history window
+(`CINFO <= 4`). Preset dictionaries are not permitted. There is no codec selector or fallback.
+
+The decoder accepts 6..52,096 compressed bytes and exactly 51,840 output bytes. It rejects an
+invalid header, unsupported window, bad checksum, malformed or truncated stream, extra trailing
+bytes, wrong output count or pixel outside `0..63`. Each work step reads at most 256 compressed
+bytes and emits at most 4,096 pixels into the selected mutable framebuffer region. The decoder
+retains only its bounded history/state between steps. No second full photo or framebuffer is
+required. A caller must bind this work to the selected map/QID and render generation, cancel it
+under an overlay, and replay it after a fresh base render. Source and frame borrows end before
+asynchronous presentation.
+
+A malformed photo reference or stream is a selected-photo error. It must not erase valid text,
+attribution, Back or an otherwise available Visit. Clear old pixels on error or identity changes.
+A medium read error remains a read error, distinct from a source with no photo. Malformed discovery
+metadata or directory reads fail the query instead of producing a completed empty list.
+
+### 9.4 Cell ownership and assembly
+
+Cut cells own display coordinates in half-open longitude/latitude bounds `[west, east)` and
+`[south, north)`. Core cells carry the section; geometry-only cells do not duplicate it. Whole-map
+packs use their stated geographic coverage. The compiled input contains unique QIDs.
+
+Assembly deduplicates QIDs. Prefer a record with an explicit approach, then the lower OSM source
+identity (missing identity last), then the canonical record/content digest. Input order must not
+change the result. Collect service and landmark schedules in one shared pool and remap all hours
+references. Intern equal content, copy it with bounded source windows, and rewrite every reference
+against the output section. Empty inputs produce an absent section. Content, producer policy,
+encoder code and dependency hashes belong to cell cache identity; verify each declared photo hash
+before reusing a cached cell. Ordinary map transfer, flat-store checksums and revision ownership
+apply to this section as they do to the rest of the map.

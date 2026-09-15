@@ -139,6 +139,20 @@ fn entity_ids(entity: &Value, property: &str) -> Vec<String> {
         .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"]["id"].as_str().map(str::to_owned))
         .collect()
 }
+fn class_ancestors(id: &str, entity: &Value) -> Result<Vec<String>, String> {
+    if let Some(redirect) = entity.get("redirects") {
+        let target = string(redirect, "to")?;
+        if redirect["from"] != id
+            || entity["id"] != target
+            || !target.starts_with('Q')
+            || target[1..].parse::<u64>().ok().filter(|id| *id != 0).is_none()
+        {
+            return Err(format!("invalid captured class redirect: {id}"));
+        }
+        return Ok(vec![target.to_owned()]);
+    }
+    Ok(entity_ids(entity, "P279"))
+}
 fn coordinate(entity: &Value) -> Option<(f64, f64)> {
     let values: Vec<_> = claims(entity, "P625")
         .filter_map(|claim| {
@@ -184,7 +198,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, language: &str, output: &P
             if entity.get("missing").is_some() {
                 continue;
             }
-            let mut ancestors = entity_ids(entity, "P279");
+            let mut ancestors = class_ancestors(id, entity)?;
             ancestors.sort();
             ancestors.dedup();
             if parents.get(id).is_some_and(|previous| previous != &ancestors) {

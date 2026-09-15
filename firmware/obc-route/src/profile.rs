@@ -103,6 +103,7 @@ pub struct Profile {
     /// per-point elevations at [`ASCENT_COLS`] resolution (not the coarse per-chunk
     /// samples), so "to climb" is correct even on a route with few chunks.
     cum_ascent: [u32; ASCENT_COLS],
+    grades: [i8; PROFILE_COLS],
     /// Lowest/highest elevation over the whole route (the y-axis range), from the route
     /// header. Equal for a perfectly flat route — callers guard the zero-height span.
     pub min_ele_m: i16,
@@ -117,6 +118,7 @@ impl Profile {
     pub const EMPTY: Self = Profile {
         cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
         cum_ascent: [0; ASCENT_COLS],
+        grades: [i8::MIN; PROFILE_COLS],
         min_ele_m: 0,
         max_ele_m: 0,
         peak_col: 0,
@@ -125,6 +127,7 @@ impl Profile {
     fn reset(&mut self) {
         self.cols.fill((i16::MAX, i16::MIN));
         self.cum_ascent.fill(0);
+        self.grades.fill(i8::MIN);
         self.min_ele_m = 0;
         self.max_ele_m = 0;
         self.peak_col = 0;
@@ -166,6 +169,12 @@ impl Profile {
         let last = cols.len() - 1;
         let col = (t.clamp(0.0, 1.0) * last as f32) as usize;
         cols[col.min(last)]
+    }
+
+    pub fn grade_at(&self, frac: f32) -> Option<i32> {
+        let col = (frac.clamp(0.0, 1.0) * (PROFILE_COLS - 1) as f32) as usize;
+        let grade = self.grades[col];
+        (grade != i8::MIN).then_some(i32::from(grade))
     }
 
     /// Peak elevation in meters (the max at [`peak_col`](Profile::peak_col)).
@@ -271,6 +280,9 @@ impl RouteReader<'_> {
         // Sentinel for "no point landed here": an empty column has min > max. Only the
         // base level is filled by the sweep; the coarser levels are derived after.
         let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+        let mut gaps = [false; PROFILE_COLS];
+        let mut grades = [i8::MIN; PROFILE_COLS];
+        let mut previous_sample: Option<(RoutePoint, usize)> = None;
         // Running dead-banded ascent recorded at the last point of each ascent column
         // (0 = none yet); carried forward and scaled into `cum_ascent` below.
         let mut casc = [0f32; ASCENT_COLS];
@@ -287,7 +299,7 @@ impl RouteReader<'_> {
         let n = self.chunks().len();
         for k in 0..n {
             if self.decode_chunk(k, &mut buf).is_err() {
-                continue;
+                return Profile::EMPTY;
             }
             // The chunk's first point sits at its cumulative distance; the rest add up
             // segment by segment from there. Like the converter, accumulate the small
@@ -302,23 +314,54 @@ impl RouteReader<'_> {
                 prev = Some((p.lon, p.lat));
                 let frac = dist / total;
                 let col = ((frac * base_last as f64) as usize).min(base_last);
+                if let Some((a, prev_col)) = previous_sample {
+                    let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
+                    let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
+                    if length > 0.0 {
+                        let grade =
+                            libm::roundf((p.ele as f32 - a.ele as f32) * 100.0 / length).clamp(-127.0, 127.0) as i8;
+                        for c in prev_col..=col {
+                            if known {
+                                grades[c] = grade;
+                            } else {
+                                gaps[c] = true;
+                                grades[c] = i8::MIN;
+                            }
+                        }
+                    }
+                }
+                previous_sample = Some((*p, col));
+                if p.elevation().is_none() {
+                    gaps[col] = true;
+                    ascent.pause();
+                    continue;
+                }
                 let slot = &mut cols[col];
                 slot.0 = slot.0.min(p.ele);
                 slot.1 = slot.1.max(p.ele);
                 // Record the running ascent at this column (later points in the same column
                 // overwrite, so it ends on the correct value).
                 let acol = ((frac * asc_last as f64) as usize).min(asc_last);
+                if p.elevation_incomplete {
+                    ascent.pause();
+                }
                 ascent.push(p.ele as f32);
                 casc[acol] = ascent.ascent();
             }
         }
 
         fill_gaps(&mut cols[..PROFILE_COLS], band_fallback((self.min_ele_m, self.max_ele_m)), band_is_set);
+        for (i, gap) in gaps.into_iter().enumerate() {
+            if gap {
+                cols[i] = (i16::MAX, i16::MIN);
+                grades[i] = i8::MIN;
+            }
+        }
         downsample_levels(&mut cols);
         let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
         let peak_col = peak_column(&cols[..PROFILE_COLS]);
 
-        Profile { cols, cum_ascent, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
+        Profile { cols, cum_ascent, grades, min_ele_m: self.min_ele_m, max_ele_m: self.max_ele_m, peak_col }
     }
 }
 
@@ -431,8 +474,8 @@ pub const SPARKLINE_BUCKETS: usize = 64;
 /// Build the received-route card's mini elevation sparkline by streaming the route **once**:
 /// bucket every point into one of [`SPARKLINE_BUCKETS`] distance columns (keeping each column's
 /// peak height), fill any column no point landed in from its neighbour, then min–max-normalize the
-/// columns to `u8`. Returns `None` when the route carries no usable elevation range (a computed
-/// route, or a dead-flat one) — the card then omits the band rather than drawing a fake flat line.
+/// columns to `u8`. Returns `None` for a flat range, incomplete elevation, or an unreadable
+/// chunk: this compact band cannot represent a gap.
 ///
 /// Column placement mirrors [`RouteReader::elevation_profile`] (re-anchor each chunk to its
 /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m), accumulate per-segment distance from
@@ -461,15 +504,14 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
     let src_len = src.len();
     for k in 0..h.chunk_count {
         let off = h.index_offset + k * CHUNK_META_LEN as u32;
-        if src.read_at(off.into(), &mut meta_bytes).is_err() {
-            continue;
-        }
-        let Ok(m) = parse_chunk_meta(&meta_bytes, src_len) else { continue };
+        src.read_at(off.into(), &mut meta_bytes).ok()?;
+        let m = parse_chunk_meta(&meta_bytes, src_len).ok()?;
         let n = m.point_count as usize;
         buf.clear();
-        if n == 0 || decode_chunk_from(src, &m, n, &mut buf).is_err() {
-            continue;
+        if n == 0 {
+            return None;
         }
+        decode_chunk_from(src, &m, n, &mut buf).ok()?;
         let mut dist = m.cum_distance_m as f64;
         let mut prev: Option<(i32, i32)> = None;
         for p in &buf {
@@ -479,6 +521,10 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
             prev = Some((p.lon, p.lat));
             let b = ((dist / total) * last as f64) as usize;
             let b = b.min(last);
+            p.elevation()?;
+            if p.elevation_incomplete {
+                return None;
+            }
             if p.ele > maxes[b] {
                 maxes[b] = p.ele;
             }
@@ -523,7 +569,7 @@ fn downsample_levels(cols: &mut [(i16, i16); TOTAL_COLS]) {
         for (j, d) in dst.iter_mut().enumerate() {
             let a = src[2 * j];
             let b = src[2 * j + 1];
-            *d = (a.0.min(b.0), a.1.max(b.1));
+            *d = if a.0 > a.1 || b.0 > b.1 { (i16::MAX, i16::MIN) } else { (a.0.min(b.0), a.1.max(b.1)) };
         }
     }
 }

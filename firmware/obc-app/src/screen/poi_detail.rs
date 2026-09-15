@@ -6,7 +6,7 @@ use core::fmt::Write;
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
-use obc_reader::{weekday_from_ymd, Interval, Poi};
+use obc_reader::{Interval, Poi, WeeklySchedule};
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -195,28 +195,22 @@ impl PoiDetailScreen {
         }
 
         // Today's hours — a muted heading row ("Today" / "Closed today" / "Hours not listed"), then
-        // each open interval on its own Body row (`08:00 – 18:00`). Stacking the (up to two) ranges
-        // keeps each within the 240 px panel, where a single two-range line wouldn't fit.
+        // each open interval on its own row. An overnight spillover can add a third range;
+        // compact numeric rows keep that case within the same hours area.
         let head_y = dist_bot + 16;
         let schedule = rx.poi_scratch.detail_schedule.filter(|s| s.flags() == 0);
-        let weekday = weekday_from_ymd(rx.now.year, rx.now.month, rx.now.day);
-        let intervals: &[Interval] = match &schedule {
-            Some(sched) => sched.today_intervals(weekday),
-            None => &[],
-        };
-        let head = match schedule {
-            None => rx.t(Msg::PoiDetailHoursNotListed),
-            Some(_) if intervals.is_empty() => rx.t(Msg::PoiDetailClosedToday),
-            Some(_) => rx.t(Msg::PoiDetailToday),
-        };
+        let (heading, intervals) = hours_view(schedule.as_ref(), rx.place_local);
+        let head = rx.t(heading);
         cv.text(head, Point::new(x, head_y), Font::Label, TextAlign::Left, SUBTEXT);
 
         let mut row_y = head_y + Font::Label.cap_bottom() as i32 + 8;
-        for iv in intervals {
+        let range_font = if intervals.len() > 2 { Font::Label } else { Font::Body };
+        let range_step = if intervals.len() > 2 { range_font.cap_height() + 2 } else { range_font.line_height() };
+        for iv in &intervals {
             let mut range: heapless::String<16> = heapless::String::new();
             write_interval(&mut range, iv);
-            cv.text(&range, Point::new(x, row_y), Font::Body, TextAlign::Left, INK);
-            row_y += Font::Body.line_height() as i32;
+            cv.text(&range, Point::new(x, row_y), range_font, TextAlign::Left, INK);
+            row_y += range_step as i32;
         }
 
         // OPEN / CLOSED-now badge — only when the POI has a schedule; read from the live wall-clock
@@ -335,11 +329,21 @@ fn fit_chars(s: &str, max: usize) -> heapless::String<24> {
     out
 }
 
+fn hours_view(schedule: Option<&WeeklySchedule>, local: Option<(u8, u16)>) -> (Msg, heapless::Vec<Interval, 3>) {
+    let Some(schedule) = schedule.filter(|s| s.status(local) != obc_reader::hours::OpeningStatus::Unknown) else {
+        return (Msg::PoiDetailHoursNotListed, heapless::Vec::new());
+    };
+    let intervals = schedule.intervals_on_day(local.expect("known local time").0);
+    let heading = if intervals.is_empty() { Msg::PoiDetailClosedToday } else { Msg::PoiDetailToday };
+    (heading, intervals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings::DateTime;
     use obc_formats::obcm::POI_HOURS_BLOB_LEN;
+    use obc_reader::weekday_from_ymd;
     use obc_reader::WeeklySchedule;
 
     /// A 29-byte pool blob from `flags` + per-day `(open_q, close_q)` slot pairs (Mon..Sun) — the
@@ -369,22 +373,23 @@ mod tests {
     }
 
     /// The heading + per-interval range strings the draw would render for `sched` on `now`'s
-    /// weekday — mirrors the draw's `head`/`intervals` selection so the format is asserted without a
+    /// weekday — uses the production hours view so the format is asserted without a
     /// framebuffer (this crate is `no_std`, so a `heapless::Vec` collects the rows). `schedule`
     /// `None` = the POI has no hours at all.
-    fn hours_view(
+    fn render_hours(
         schedule: Option<&WeeklySchedule>,
         now: DateTime,
-    ) -> (&'static str, heapless::Vec<heapless::String<16>, 2>) {
+    ) -> (&'static str, heapless::Vec<heapless::String<16>, 3>) {
         let weekday = weekday_from_ymd(now.year, now.month, now.day);
-        let intervals: &[Interval] = schedule.map(|s| s.today_intervals(weekday)).unwrap_or(&[]);
-        let head = match schedule {
-            None => "Hours not listed",
-            Some(_) if intervals.is_empty() => "Closed today",
-            Some(_) => "Today",
+        let (heading, intervals) =
+            hours_view(schedule, Some((weekday, u16::from(now.hour) * 60 + u16::from(now.minute))));
+        let head = match heading {
+            Msg::PoiDetailHoursNotListed => "Hours not listed",
+            Msg::PoiDetailClosedToday => "Closed today",
+            _ => "Today",
         };
-        let mut rows: heapless::Vec<heapless::String<16>, 2> = heapless::Vec::new();
-        for iv in intervals {
+        let mut rows: heapless::Vec<heapless::String<16>, 3> = heapless::Vec::new();
+        for iv in &intervals {
             let mut r: heapless::String<16> = heapless::String::new();
             write_interval(&mut r, iv);
             let _ = rows.push(r);
@@ -393,8 +398,34 @@ mod tests {
     }
 
     /// The range strings from a [`hours_view`] result, as `&str`s for comparison.
-    fn rows_of(rows: &heapless::Vec<heapless::String<16>, 2>) -> heapless::Vec<&str, 2> {
+    fn rows_of(rows: &heapless::Vec<heapless::String<16>, 3>) -> heapless::Vec<&str, 3> {
         rows.iter().map(|r| r.as_str()).collect()
+    }
+
+    #[test]
+    fn trusted_day_display_includes_overnight_spillover() {
+        let mut days = [[(0, 0); 2]; 7];
+        days[6][0] = (88, 8);
+        let schedule = sched(days);
+        let (heading, ranges) = hours_view(Some(&schedule), None);
+        assert!(matches!(heading, Msg::PoiDetailHoursNotListed));
+        assert!(ranges.is_empty(), "an unknown local day cannot claim closed today");
+        for minute in [60, 300] {
+            let (heading, ranges) = hours_view(Some(&schedule), Some((0, minute)));
+            assert!(matches!(heading, Msg::PoiDetailToday));
+            assert_eq!(ranges.as_slice(), &[Interval { open_q: 0, close_q: 8 }]);
+        }
+        assert_eq!(schedule.status(Some((0, 60))), obc_reader::hours::OpeningStatus::Open);
+        days[0] = [(32, 48), (56, 72)];
+        let (_, ranges) = hours_view(Some(&sched(days)), Some((0, 60)));
+        assert_eq!(
+            ranges.as_slice(),
+            &[
+                Interval { open_q: 0, close_q: 8 },
+                Interval { open_q: 32, close_q: 48 },
+                Interval { open_q: 56, close_q: 72 }
+            ]
+        );
     }
 
     #[test]
@@ -402,7 +433,7 @@ mod tests {
         // Mon 08:00-18:00 (32,72); render on Monday 2025-01-06.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 12, 0));
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 12, 0));
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["08:00-18:00"]);
     }
@@ -412,7 +443,7 @@ mod tests {
         // Mon 08:00-12:00, 14:00-18:00 → two stacked range rows.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0] = [(32, 48), (56, 72)];
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 10, 0)); // Monday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 10, 0)); // Monday
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["08:00-12:00", "14:00-18:00"]);
     }
@@ -422,14 +453,14 @@ mod tests {
         // Open Mon only; render on Sunday 2025-01-05 → closed today, no range rows.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (32, 72);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 5, 12, 0)); // Sunday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 5, 12, 0)); // Sunday
         assert_eq!(head, "Closed today");
         assert!(rows.is_empty());
     }
 
     #[test]
     fn no_hours_shows_hours_not_listed() {
-        let (head, rows) = hours_view(None, dt(2025, 1, 6, 12, 0));
+        let (head, rows) = render_hours(None, dt(2025, 1, 6, 12, 0));
         assert_eq!(head, "Hours not listed");
         assert!(rows.is_empty());
     }
@@ -439,7 +470,7 @@ mod tests {
         // A 24h day (0,96) shows 00:00–24:00.
         let mut days = [[(0u8, 0u8); 2]; 7];
         days[0][0] = (0, 96);
-        let (head, rows) = hours_view(Some(&sched(days)), dt(2025, 1, 6, 3, 0)); // Monday
+        let (head, rows) = render_hours(Some(&sched(days)), dt(2025, 1, 6, 3, 0)); // Monday
         assert_eq!(head, "Today");
         assert_eq!(rows_of(&rows).as_slice(), &["00:00-24:00"]);
     }
