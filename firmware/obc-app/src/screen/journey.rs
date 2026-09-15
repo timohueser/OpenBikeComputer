@@ -3,17 +3,13 @@ use super::{
     palette::*,
     vocab::{
         card::{ActionRows, CardEvent},
-        chrome::title_frame,
+        chrome::{title_frame, wrapped},
         rows::{GuardedRowsGeometry, MenuItem},
     },
     Ctx, Render, Transition,
 };
 use crate::{find_place::Action, navigator::ReviewStatus, Gesture, Msg};
-use embedded_graphics::prelude::Point;
-use obc_render::{
-    text::{Font, TextAlign},
-    Surface,
-};
+use obc_render::{text::Font, Surface};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JourneyError {
@@ -65,15 +61,17 @@ impl JourneyScreen {
             rx.t(if self.resume { Msg::AssistantResumeJourney } else { Msg::AssistantArrival }),
             "",
         );
-        cv.text(
+        wrapped(
+            cv,
             rx.t(self.error.map(JourneyError::message).unwrap_or(if self.resume {
                 Msg::AssistantSavedJourney
             } else {
                 Msg::AssistantGuidanceContinues
             })),
-            Point::new(rx.w / 2, 112),
+            rx.w / 2,
+            112,
+            rx.w - 32,
             Font::Label,
-            TextAlign::Center,
             INK,
         );
         let label = if !self.resume {
