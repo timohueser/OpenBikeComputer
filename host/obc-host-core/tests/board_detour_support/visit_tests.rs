@@ -123,8 +123,8 @@ impl VisitHarness {
             derived: DerivedInputs::NONE,
             targets: DerivedTargets::NONE,
         });
-        if catalogs {
-            self.catalog = plan.effects.catalog.take();
+        if let Some(effect) = plan.effects.catalog.take() {
+            assert!(self.catalog.replace(effect).is_none());
         }
         if let Some(effect) = plan.effects.navigator.take() {
             if matches!(effect, Effect::Acquire { work: PlannerWork::AssistantRoute(_), .. }) {
@@ -339,7 +339,14 @@ fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding
             break;
         }
     }
-    assert!(unbound_preview, "ranking must finish before its catalog refresh");
+    assert!(
+        unbound_preview,
+        "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
+        h.h.app.find_place_state(),
+        h.h.app.assistant_review_status(),
+        h.h.app.find_place_result_count(),
+        h.h.app.route_ids()
+    );
     assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
     assert_eq!(h.h.app.find_place_result_count(), 1);
     h.h.app.apply_gesture(obc_app::Gesture::Back);
