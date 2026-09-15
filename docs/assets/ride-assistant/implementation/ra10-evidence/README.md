@@ -76,6 +76,27 @@ failed reads, partial decoding, drawers and fresh-frame reconstruction.
 No UI sweep, local shipping image, resource-base rebuild, full CI mirror, wake-profile isolation,
 or device test was run. CI and independent review remain merge gates.
 
+## Adversarial review corrections
+
+Review of `e816cb53` found three defects: a later photo-credit page failure blocked the article;
+Press did not refresh a populated failed or stale card; and linked photo pages always said Visit.
+Commit `bfb3142e` isolates optional photo failures, restores article sources, enables the displayed
+refresh action, and shares the selected-site availability decision between text and photo pages.
+The photo footer keeps Up/Down navigation. A failed photo remains omitted for that selection.
+
+The shared hours-cache fix from Find `8547bf96` was merged in `a63ea79d`. Landmark preparation
+also records the selected OSM source, or zero for an information-only record. It reloads hours if
+another detail overwrites that cache. A retained detail must prepare its own source before Visit.
+Availability also checks the selected bike profile's explicit approach bit.
+
+Focused validation: whole `./tools/obc test -p obc-app`, App Clippy with all targets and warnings
+as errors, `./tools/obc suites check`, workspace and standalone formatting, and documentation
+link checking. Tests cover a valid photo-credit header with a later unsupported page, restored
+article text and all article credits, populated map invalidation and failure followed by Press,
+retained detail cache ownership, and shared text/photo access decisions. No new simulator sweep,
+shipping image, resource measurement, or hardware test ran. The real-data frames above remain
+pre-correction evidence; final ordinary-entry acceptance stays with RA12/RA13.
+
 ## Remaining acceptance
 
 RA12 must connect the ordinary Assistant entry and remove `L` plus the remaining opt-in study

@@ -57,12 +57,14 @@ there is no photo page. Up from the first text page wraps to the photo when one 
 
 **Down + Back → Sources** opens the full attribution for the selected site. Article and photo
 credits share a paged drawer. Back restores the selected site and exact reading page. Sources
-also remains available when a photo cannot be decoded. Photos use the existing RGB222 frame
-preparation path; text and source pages do not decode an image while they draw.
+also remains available when a photo cannot be decoded. If a photo-credit page fails, Sources
+returns to the article credits and omits the photo. The article remains readable. Photos use the
+existing RGB222 frame preparation path; text and source pages do not decode an image while they draw.
 
 Closed landmarks remain readable for identification. Current opening hours govern **Visit**:
 a known-closed site cannot be accepted. Unknown hours do not claim that a site is open. A site
-without explicit mapped access remains information-only and shows **No mapped access**.
+without explicit mapped access for the selected bike profile remains information-only and shows
+**No mapped access**. The photo footer shows the same availability and keeps its page-navigation hint.
 **Visit** opens the shared place detail and real route preview. A straight-line distance never
 promises a rideable connection. The selected map, current position, profile, and opening hours
 are checked before acceptance. Browsing does not change an accepted visit or start recording.
