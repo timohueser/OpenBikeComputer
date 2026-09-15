@@ -252,6 +252,7 @@ impl crate::App {
         self.ui.find.bound_map
     }
     pub fn open_find_place(&mut self) {
+        self.ui.find.pending_target = None;
         crate::screen::apply(
             &mut self.ui.stack,
             crate::screen::Transition::Push(Screen::FindPlace(FindPlaceScreen::new())),
@@ -355,6 +356,7 @@ impl crate::App {
         }
         match core::mem::replace(&mut self.ui.find.action, Action::None) {
             Action::Refresh => {
+                self.ui.find.pending_target = None;
                 self.cancel_assistant();
                 self.ui.find.state = State::Start;
                 self.ui.find.results.clear();
@@ -406,6 +408,7 @@ impl crate::App {
                 }
             }
             Action::OpenAccepted => {
+                self.ui.find.pending_target = None;
                 if let Some(index) = self.current_visit_index() {
                     let screen = VisitReviewScreen::accepted(self.routes()[index].name.as_str());
                     self.ui.find.selected_review = false;
@@ -450,6 +453,7 @@ impl crate::App {
         }
     }
     pub(crate) fn activate_place_detail(&mut self) -> bool {
+        self.ui.find.pending_target = None;
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
         let poi = detail.poi().clone();
         if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
@@ -490,6 +494,7 @@ impl crate::App {
         }
     }
     fn preview_find_result(&mut self, reader: &Reader, selected: usize) {
+        self.ui.find.pending_target = None;
         if !self.catalogs.can_admit_intent() {
             self.ui.next_wake_ms = Some(1);
             return;
