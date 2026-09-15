@@ -62,6 +62,9 @@ def assembly_inputs(tree: Path, region_id: str, native: Path, out: Path) -> None
 def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path | None) -> tuple[Path, dict]:
     work.mkdir(parents=True)
     commands = []
+    recipe_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    executables = {name: {"sha256": sha256_file(bin_dir / name)}
+                   for name in ("obc-bake", "obc-dem", "obcm-assemble")}
 
     def run(*args: object) -> None:
         argv = [str(arg) for arg in args]
@@ -107,8 +110,8 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     run(bin_dir / "obcm-assemble", "--cells", assembled / "cells.json", "--skin", assembled / "skin.json",
         "--terrain", assembled / "native-terrain.json", "--out", result, "--accept-partial", "--json")
     content = json.loads(landmarks.read_text())
-    return result, {"source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                    "commands": commands, "bounds_lon_lat": [west, south, east, north],
+    return result, {"recipe_commit": recipe_commit,
+                    "executables": executables, "commands": commands, "bounds_lon_lat": [west, south, east, north],
                     "content_manifest_sha256": sha256_file(landmarks), "content_counts": content["counts"],
                     "source_coverage": content["source_coverage"], "summary": json.loads((work / "summary.json").read_text())}
 
