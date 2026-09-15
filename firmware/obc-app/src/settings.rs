@@ -323,7 +323,7 @@ impl UpAheadSource {
 
     /// Whether route-corridor map POIs feed the list under this value. Also the **arming** answer:
     /// `false` means no [`CorridorKey`](crate::corridor::CorridorKey) is ever declared, so the query
-    /// never runs (see [`UpAheadScreen`](crate::screen::UpAheadScreen)).
+    /// never runs (see [`WhatsNextScreen`](crate::screen::WhatsNextScreen)).
     #[inline]
     pub const fn shows_pois(self) -> bool {
         matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)

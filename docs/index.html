@@ -1074,7 +1074,11 @@
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['context'], until: ["ContextDrawer"], label: 'Squeeze Down + Back for mid-ride tools' },
-            { cmds: ['press'], until: ["UpAhead"], label: 'Waypoints and map POIs, in ride order' },
+            { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
+            { cmds: ['step:1', 'press'], until: ["WhatsNext"], label: 'What comes next on the ride' },
+            { cmds: ['press'], until: ["WhatsNext"], label: 'Explore waypoints and map places' },
+            { cmds: ['back'], until: ["WhatsNext"], label: 'Back to the overview' },
+            { cmds: ['back'], until: ["Assistant"], label: 'Back to the questions' },
             { cmds: ['back'], until: ["Map"], label: 'Back on the route' }
           ]
         },
@@ -1089,7 +1093,9 @@
           staged: true,
           steps: [
             { cmds: ['enter', 'pause'], until: ["Map"], label: 'Stop on the Grimsel climb to compare a place' },
-            { cmds: ['find'], until: ["FindPlace"], label: 'Find a place near the ride' },
+            { cmds: ['context'], until: ["ContextDrawer"], label: 'Open the ride tools' },
+            { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
+            { cmds: ['press'], until: ["FindPlace"], label: 'Find a place near the ride' },
             { cmds: ['step:6', 'press'], until: ["FindPlace"], waitFor: 'places', label: 'Compare the mapped station' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Gletsch — check the selected place' },
             { cmds: ['press'], until: ["VisitReview"], waitFor: 'Preview', label: 'Review the complete Visit route' },

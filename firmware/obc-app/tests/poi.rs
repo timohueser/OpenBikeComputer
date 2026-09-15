@@ -55,39 +55,28 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
     buf
 }
 
-/// Walk an idle `App` from Home into the POI list for `category`, leaving the list on top. Uses the
-/// real gesture flow: Home `back-hold` → Menu, two clockwise steps to the POIs station (the menu
-/// order is Routes · Rides · POIs · Map · Settings), press → category list, `steps` clockwise steps
-/// to the category, press → POI list.
+/// Enter the complete category browser through the ordinary Assistant and More places.
 fn open_poi_list(app: &mut App, steps: i32) {
-    app.apply_gesture(Gesture::BackHold); // Home → Menu (compass)
-    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
-    app.apply_gesture(Gesture::Press); // → category list
-    if steps != 0 {
-        app.apply_gesture(Gesture::Step(steps));
-    }
-    app.apply_gesture(Gesture::Press); // → POI list
+    assert!(app.apply_chord(obc_app::Chord::Quick));
+    app.apply_gesture(Gesture::Press);
+    app.apply_gesture(Gesture::Press);
+    app.apply_gesture(Gesture::Step(steps));
+    app.apply_gesture(Gesture::Press);
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
 }
 
-/// The top screen is the POI list for the expected category — the whole navigation reached it.
 #[test]
-fn menu_to_category_to_list_navigation() {
-    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    // Home → Menu → POIs station (two steps past Routes) → category list.
-    app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Step(2));
-    app.apply_gesture(Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::PoiMenu(_)), "POIs opens the category list");
-
-    // Category 0 (Water) → its POI list.
-    app.apply_gesture(Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::PoiList(_)), "picking a category opens its list");
-
-    // Back walks list → category list → Menu.
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::PoiMenu(_)), "back returns to the category list");
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Menu(_)), "back returns to the Menu");
+fn assistant_find_more_reaches_every_category_and_back_restores_questions() {
+    for category in 0..obc_reader::PoiCategory::ALL.len() {
+        let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+        open_poi_list(&mut app, category as i32);
+        assert!(matches!(app.top_screen(), Screen::PoiList(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
+    }
 }
 
 /// The lazy snapshot populates from the `Reader` on the first draw with a fix, and the reader-build
@@ -138,10 +127,7 @@ fn reentering_requeries() {
     let _ = render(&mut app, &bytes);
     assert_eq!(app.poi_snapshot_len(), 3);
 
-    app.apply_gesture(Gesture::Back); // back to category list
-                                      // Opening the *next* category must re-query (a different set), proving the scratch invalidates.
-    app.apply_gesture(Gesture::Step(1)); // Water → Campsite
-    app.apply_gesture(Gesture::Press);
+    open_poi_list(&mut app, 1); // Campsite takes a new snapshot.
     assert!(app.base_needs_reader(), "re-entering a category needs the Reader again (scratch invalidated)");
     let _ = render(&mut app, &bytes);
     assert_eq!(app.poi_snapshot_len(), 1, "Campsite has one POI — the fresh snapshot replaced Water's");

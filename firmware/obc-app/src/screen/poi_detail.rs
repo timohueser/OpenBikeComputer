@@ -26,7 +26,7 @@ use super::{palette, Ctx, Render, Transition};
 pub struct PoiDetailScreen {
     poi: Poi,
     /// The POI's **signed** lateral offset from the route line (m; positive = right of the direction
-    /// of travel) when it was opened from the [Up-ahead timeline](super::UpAheadScreen) — `None`
+    /// of travel) when it was opened from the [Up-ahead timeline](super::WhatsNextScreen) — `None`
     /// from the nearby-POI browser, which has no route to be off. Drawn as one extra line under the
     /// distance row with the side spelled out in words (epic #946, U3): the list row's side arrow is
     /// a glance cue, this is the answer to "how far off my route is it, and which side".
@@ -50,7 +50,7 @@ impl PoiDetailScreen {
     }
 
     /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
-    /// [Up-ahead timeline](super::UpAheadScreen) knows and the nearby browser doesn't. Clamped to
+    /// [Up-ahead timeline](super::WhatsNextScreen) knows and the nearby browser doesn't. Clamped to
     /// the record's `i16`, which the 300 m corridor half-width can never reach.
     pub(crate) fn off_route(mut self, offset_m: i32) -> Self {
         self.off_route_m = Some(offset_m.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
@@ -59,11 +59,6 @@ impl PoiDetailScreen {
 
     /// The carried off-route offset, if this detail was opened from the Up-ahead timeline. The draw
     /// reads the field directly, so this exists for the timeline's own hand-off pin.
-    #[cfg(test)]
-    pub(crate) fn off_route_m(&self) -> Option<i16> {
-        self.off_route_m
-    }
-
     /// Whether the schedule cache still needs a `Reader` — it hasn't resolved yet. Drives
     /// [`base_needs_reader`](crate::App::base_needs_reader) so the board host keeps building the
     /// reader until the one hours read lands in `prepare`, then stops.
@@ -112,12 +107,18 @@ impl PoiDetailScreen {
         use palette::*;
 
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, if self.landmark_category > 0 { "Landmark" } else { rx.t(Msg::PoiDetailTitle) }, "");
+        title_frame(
+            cv,
+            w,
+            h,
+            if self.landmark_category > 0 { rx.t(Msg::AssistantLandmark) } else { rx.t(Msg::PoiDetailTitle) },
+            "",
+        );
 
         // The subtype fallback label ("Supermarket", "Pharmacy", …) — the subtitle, and the whole
         // name line when the POI is unnamed.
         let label = if self.landmark_category > 0 {
-            super::landmarks::kind(self.landmark_category)
+            rx.t(super::landmarks::kind(self.landmark_category))
         } else {
             poi_label_of(self.poi.subtype).unwrap_or("POI")
         };
@@ -194,7 +195,7 @@ impl PoiDetailScreen {
             let off_y = dist_bot + 6;
             // The same drawn side arrow the timeline row uses, left of the words: without it
             // "245m left" reads as a *remaining* distance, which is exactly the number above it.
-            use super::up_ahead::{draw_side_arrow, ARROW_GAP, ARROW_W};
+            use super::poi_display::{draw_side_arrow, ARROW_GAP, ARROW_W};
             draw_side_arrow(cv, Point::new(x, off_y + Font::Label.cap_mid() as i32), off > 0, SUBTEXT);
             cv.text(&line, Point::new(x + ARROW_W + ARROW_GAP, off_y), Font::Label, TextAlign::Left, SUBTEXT);
             dist_bot = off_y + Font::Label.cap_bottom() as i32;
@@ -264,35 +265,35 @@ impl PoiDetailScreen {
         // the shared drawer, so the two can't drift). Press anywhere already opened the create-route
         // confirm; the bar only makes that visible. Back still returns to the list.
         let label = if self.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged) {
-            "Map changed"
+            rx.t(Msg::AssistantMapChanged)
         } else if self.hours_pending(rx.poi_scratch) || !rx.poi_scratch.detail_valid {
-            "Place unavailable"
+            rx.t(Msg::AssistantVisitUnavailable)
         } else if rx
             .poi_scratch
             .detail_schedule
             .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed)
         {
-            "Closed"
+            rx.t(Msg::AssistantClosed)
         } else if rx.no_fix {
-            "GPS required"
+            rx.t(Msg::AssistantNoFix)
         } else if self
             .poi
             .metadata
             .approach
             .is_none_or(|a| a.profile_mask & (1 << rx.settings.bike_profile_idx.min(7)) == 0)
         {
-            "No road access"
+            rx.t(Msg::AssistantNoRoad)
         } else {
             use crate::navigator::VisitUnavailable::*;
             match self.visit_error {
-                Some(NoFix) => "GPS required",
-                Some(NoMappedAccess) => "No road access",
-                Some(Profile) => "Profile blocked",
-                Some(SourceChanged) => "Map changed",
-                Some(Busy) => "Planner busy",
-                Some(Avoidance) => "Blocked route",
-                Some(Unmatched) => "Route unmatched",
-                None => "Review visit",
+                Some(NoFix) => rx.t(Msg::AssistantNoFix),
+                Some(NoMappedAccess) => rx.t(Msg::AssistantNoRoad),
+                Some(Profile) => rx.t(Msg::AssistantProfileBlocked),
+                Some(SourceChanged) => rx.t(Msg::AssistantMapChanged),
+                Some(Busy) => rx.t(Msg::AssistantBusy),
+                Some(Avoidance) => rx.t(Msg::AssistantBlockedRoute),
+                Some(Unmatched) => rx.t(Msg::AssistantUnmatched),
+                None => rx.t(Msg::AssistantReviewVisit),
             }
         };
         super::route_overview::draw_start_button(cv, w, h, label);

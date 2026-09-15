@@ -1,6 +1,6 @@
 //! Source-derived nearby cards and pre-paginated reading, with shared Visit detail.
 use super::{palette::*, vocab::list, Ctx, RenderFrame, Screen, Transition};
-use crate::{landmarks::Status, Gesture};
+use crate::{landmarks::Status, Gesture, Msg};
 use core::fmt::Write;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
@@ -96,24 +96,31 @@ impl LandmarksScreen {
         }
         let (x, y) = vp.to_screen(rx.landmarks.origin.0, rx.landmarks.origin.1);
         cv.disc(Point::new(x, y), 5, INK);
-        header(cv, "Landmarks");
+        header(cv, rx.t(Msg::AssistantLandmarks));
         cv.fill(rect(0, 208, 240, 112), PARCHMENT);
         cv.round(rect(6, 210, 228, 104), 6, AMBER);
         let state = rx.landmarks;
         if state.selected >= state.rows.len() && state.status == Status::Ready {
             cv.text(
-                if state.more && state.selected == state.rows.len() { "More landmarks" } else { "Refresh" },
+                if state.more && state.selected == state.rows.len() {
+                    rx.t(Msg::AssistantMoreLandmarks)
+                } else {
+                    rx.t(Msg::AssistantRefresh)
+                },
                 Point::new(12, 238),
                 Font::Body,
                 TextAlign::Left,
                 INK,
             );
-            cv.text("Within 10km", Point::new(12, 272), Font::Label, TextAlign::Left, SUBTEXT);
+            let mut range = heapless::String::<32>::new();
+            let _ = write!(range, "{} ", rx.t(Msg::AssistantWithin));
+            super::vocab::fmt::write_distance_coarse(&mut range, "", 10_000, rx.settings.units);
+            cv.text(&range, Point::new(12, 272), Font::Label, TextAlign::Left, SUBTEXT);
             return;
         }
         if let Some(record) = state.record.filter(|_| state.ready()) {
             let mut label = heapless::String::<40>::new();
-            let _ = write!(label, "{}  {}", letter(state.selected), kind(record.category));
+            let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
             cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
             cv.text(&super::poi_list::fit(&state.name, 18), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             label.clear();
@@ -123,19 +130,23 @@ impl LandmarksScreen {
                 state.selected().unwrap().key.distance_m,
                 rx.settings.units,
             );
-            let _ = label.push_str(" straight line");
+            let _ = write!(label, " {}", rx.t(Msg::AssistantStraight));
             cv.text(&label, Point::new(12, 262), Font::Label, TextAlign::Left, INK);
             cv.text(
-                if state.status == Status::Partial { "Partial data" } else { "Select to read" },
+                if state.status == Status::Partial {
+                    rx.t(Msg::AssistantPartialData)
+                } else {
+                    rx.t(Msg::AssistantSelectRead)
+                },
                 Point::new(120, 288),
                 Font::Label,
                 TextAlign::Center,
                 SUBTEXT,
             );
         } else {
-            cv.text(status(state.status), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
+            cv.text(rx.t(status(state.status)), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             if state.status != Status::Loading {
-                cv.text("Select to refresh", Point::new(12, 288), Font::Label, TextAlign::Left, SUBTEXT);
+                cv.text(rx.t(Msg::AssistantSelectRefresh), Point::new(12, 288), Font::Label, TextAlign::Left, SUBTEXT);
             }
         }
     }
@@ -192,9 +203,9 @@ where
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    header(cv, if sources { "Sources" } else { &state.name });
+    header(cv, if sources { rx.t(Msg::RideContextSources) } else { &state.name });
     if !state.ready() || state.record.is_none() {
-        cv.text(status(state.status), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
+        cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
     }
     for (i, line) in state.text.lines().enumerate() {
@@ -208,10 +219,10 @@ where
     }
     let mut label = heapless::String::<40>::new();
     if sources {
-        let _ = write!(label, "Back  {}/{}", state.source_page + 1, state.source_pages);
+        let _ = write!(label, "{}  {}/{}", rx.t(Msg::AssistantBack), state.source_page + 1, state.source_pages);
     } else {
         let record = state.record.unwrap();
-        let action = visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx);
+        let action = rx.t(visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx));
         let _ = write!(
             label,
             "{} {}/{}",
@@ -228,28 +239,28 @@ pub(super) fn visit_action(
     scratch: &super::poi_list::PoiScratch,
     local: Option<(u8, u16)>,
     profile: u8,
-) -> &'static str {
+) -> Msg {
     if !state.ready()
         || state.record.is_none()
         || !scratch.detail_valid
         || scratch.detail_source != state.record.and_then(|r| r.osm).map_or(0, |m| m.source.0)
     {
-        "Access unavailable"
+        Msg::AssistantAccessUnavailable
     } else if scratch
         .detail_schedule
         .as_ref()
         .is_some_and(|s| s.status(local) == obc_reader::hours::OpeningStatus::Closed)
     {
-        "Closed"
+        Msg::AssistantClosed
     } else if state
         .record
         .and_then(|r| r.osm)
         .and_then(|m| m.approach)
         .is_some_and(|a| a.profile_mask & (1 << profile.min(7)) != 0)
     {
-        "Visit"
+        Msg::AssistantVisit
     } else {
-        "No mapped access"
+        Msg::AssistantNoAccess
     }
 }
 fn header(cv: &mut impl Surface, title: &str) {
@@ -260,29 +271,29 @@ fn header(cv: &mut impl Surface, title: &str) {
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]
 }
-pub(super) fn kind(category: u8) -> &'static str {
+pub(super) fn kind(category: u8) -> Msg {
     match category {
-        1 => "Natural site",
-        2 => "Castle / ruin",
-        3 => "Archaeology",
-        4 => "Abbey",
-        5 => "Cathedral",
-        6 => "Pass",
-        _ => "Landmark",
+        1 => Msg::AssistantNatural,
+        2 => Msg::AssistantCastle,
+        3 => Msg::AssistantArchaeology,
+        4 => Msg::AssistantAbbey,
+        5 => Msg::AssistantCathedral,
+        6 => Msg::AssistantPass,
+        _ => Msg::AssistantLandmark,
     }
 }
-fn status(status: Status) -> &'static str {
+fn status(status: Status) -> Msg {
     match status {
-        Status::Loading => "Loading landmarks",
-        Status::Missing => "No landmark content",
-        Status::Unsupported => "Unsupported content",
-        Status::Failed => "Content unavailable",
-        Status::Partial => "Partial data",
-        Status::NoFix => "GPS required",
-        Status::NoMap => "No map",
-        Status::Stale => "Map changed: refresh",
-        Status::Empty => "None within 10km",
-        _ => "Select a landmark",
+        Status::Loading => Msg::AssistantLandmarksLoading,
+        Status::Missing => Msg::AssistantLandmarksMissing,
+        Status::Unsupported => Msg::AssistantUnsupported,
+        Status::Failed => Msg::AssistantContentUnavailable,
+        Status::Partial => Msg::AssistantPartialData,
+        Status::NoFix => Msg::AssistantNoFix,
+        Status::NoMap => Msg::AssistantNoMap,
+        Status::Stale => Msg::AssistantRefreshNeeded,
+        Status::Empty => Msg::AssistantNoneFound,
+        _ => Msg::AssistantSelectLandmark,
     }
 }
 
@@ -312,19 +323,19 @@ mod tests {
         });
         let mut scratch = super::super::PoiScratch::new();
         scratch.detail_valid = true;
-        assert_eq!(visit_action(&state, &scratch, None, 0), "No mapped access");
+        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantNoAccess));
         state.record.as_mut().unwrap().osm = Some(PoiMetadata {
             source: SourceId(42),
             approach: Some(PoiApproach { source: SourceId(43), lat: 0, lon: 0, profile_mask: 1 }),
         });
-        assert_eq!(visit_action(&state, &scratch, None, 0), "Access unavailable");
+        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantAccessUnavailable));
         scratch.detail_source = 42;
-        assert_eq!(visit_action(&state, &scratch, None, 0), "Visit");
-        assert_eq!(visit_action(&state, &scratch, None, 1), "No mapped access");
+        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantVisit));
+        assert!(matches!(visit_action(&state, &scratch, None, 1), Msg::AssistantNoAccess));
         scratch.detail_schedule = obc_reader::WeeklySchedule::decode(&[0; 29]);
-        assert_eq!(visit_action(&state, &scratch, Some((0, 30)), 0), "Closed");
-        assert_eq!(visit_action(&state, &scratch, None, 0), "Visit", "unknown time does not claim closure");
+        assert!(matches!(visit_action(&state, &scratch, Some((0, 30)), 0), Msg::AssistantClosed));
+        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantVisit));
         state.invalidate();
-        assert_eq!(visit_action(&state, &scratch, None, 0), "Access unavailable");
+        assert!(matches!(visit_action(&state, &scratch, None, 0), Msg::AssistantAccessUnavailable));
     }
 }

@@ -113,7 +113,9 @@ The `assistant-inputs` profile contains independent OSM, terrain, Wiki, and auth
 packages. See [the source recipes](sources/ride-assistant/README.md) for source dates, exact
 revisions, licenses, offline build commands, review identities, and remaining simulator wiring.
 The Swiss package includes country-wide raw OSM; four Wiki review sites do not prove country-wide
-content coverage. The initial map outputs precede landmark format integration.
+content coverage. The West Cork regional map uses OBCM v16 with native terrain and compiled landmark content.
+The initial Swiss regional package remains v14 until its replacement crop is complete. See the
+source recipes for per-scenario readiness and the persistent-card option.
 
 ## Storage contract
 

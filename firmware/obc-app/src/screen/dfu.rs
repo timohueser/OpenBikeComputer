@@ -11,7 +11,7 @@
 //!   warnings. Select **Install** arms (posts
 //!   [`DfuAction::Install`](crate::activity::DfuAction) and swaps to the progress screen); **Back**
 //!   / **Cancel** returns to the System menu. The standard two-row confirm chrome, like
-//!   [`NavConfirmScreen`](super::NavConfirmScreen).
+//!   [`PoiDetailScreen`](super::PoiDetailScreen).
 //! - [`DfuProgressScreen`] — "Preparing update..." (spinner) while the drain runs the CRC pass +
 //!   rollback snapshot + arm. Ignores input; the arm is irreversible.
 //! - [`DfuInstallingScreen`] — the static, terminal "Installing update" card the board swaps in
