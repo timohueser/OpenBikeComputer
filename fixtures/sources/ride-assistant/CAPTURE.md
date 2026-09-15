@@ -28,11 +28,16 @@ one equivalent box-first query is attempted and both outcomes are kept. Every ro
 a complete response. QIDs are deduplicated before raw entity capture. Wikidata best-rank
 semantics apply: preferred statements when present, otherwise normal statements. Deprecated
 statements are excluded. Coordinates, types and P279 ancestors come from captured entities.
+If an EntityData class request follows a redirect, a captured `wbgetentities` response keeps
+the explicit old-to-canonical ID mapping. The closure follows the canonical class itself, then
+its parents. This preserves category and exclusion roots at the redirect target.
 
 The first compiler pass applies the exact polygon, including border points, and the category
 exclusions. Its candidate QIDs select which assets to acquire. Acquisition checks that its
 category file digest matches the compiler's embedded policy digest. No separate Python
 polygon or category selector can disagree with the production compiler.
+The executable digest is checked before and after selection. Keep a separate copy of the
+built executable when another build can replace the normal target binary.
 
 For each eligible site, acquisition captures available en/de/fr/it/ga sitelinks. Each article
 has a raw revision query, exact-revision rendered HTML, and the supplied notices and footer.
