@@ -32,3 +32,13 @@ Deliberately omitted: full workspace acceptance, physical hardware runs, board
 resource builds, UI snapshot sweeps, wake-profile isolations, and country-scale
 assembly. No public behavior or `docs/content/` documentation changed. The new
 files document an opt-in development measurement.
+
+The native runner's local-input preflight also passed against the 41 pinned
+objects (248,096,256 bytes):
+
+```sh
+python3 host/obcm-assemble/dev/navigation/native.py target/release/obcm-assemble /tmp/obc-ng-inputs/data /tmp/obc-ng-preflight --check-inputs
+```
+
+This check performed no network request or assembly. No measurement was repeated.
+Python syntax and `obc suites check` passed after the preflight change.
