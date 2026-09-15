@@ -368,4 +368,29 @@ mod tests {
         assert_eq!(app.photo_status(), Some(Status::Missing));
         assert!(!app.photo_pending());
     }
+    #[test]
+    fn exact_map_replacement_stays_rejected_after_full_redraw() {
+        let bytes = map(true);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+        let map = obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
+        app.bind_place_map(Some(map));
+        select(&mut app, &reader);
+        let mut frame = RgbaFrame::new(240, 320);
+        let mut phase = Preparer::default();
+        draw(&mut app, &reader, &mut frame);
+        phase.finish(&mut app, Some(&reader), &mut frame, color);
+        assert_pixels(&frame);
+        app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey { revision: 2, ..map }));
+        app.set_resident_frame(false);
+        phase.finish(&mut app, Some(&reader), &mut frame, color);
+        assert_eq!(app.photo_status(), Some(Status::Unavailable));
+        use embedded_graphics::prelude::RgbColor;
+        let background = color(obc_app::screen::palette::PARCHMENT);
+        let at = (40 * 240 + 12) * 4;
+        assert_eq!(&frame.as_rgba()[at..at + 3], &[background.r(), background.g(), background.b()]);
+    }
 }

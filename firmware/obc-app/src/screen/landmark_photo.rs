@@ -80,8 +80,11 @@ impl LandmarkPhotoScreen {
                 }
                 Gesture::Press => {
                     if let Some(poi) = super::landmarks::detail(cx.landmarks) {
-                        return Transition::Push(super::Screen::PoiDetail(super::PoiDetailScreen::new(poi)));
+                        return Transition::Push(super::Screen::PoiDetail(
+                            super::PoiDetailScreen::new(poi).landmark(cx.landmarks.record.unwrap().category),
+                        ));
                     }
+                    return Transition::None;
                 }
                 _ => {}
             }

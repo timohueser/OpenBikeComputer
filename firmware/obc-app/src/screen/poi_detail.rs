@@ -33,6 +33,7 @@ pub struct PoiDetailScreen {
     off_route_m: Option<i16>,
     /// The first schedule read has completed, including missing data or an error.
     schedule_ready: bool,
+    landmark_category: u8,
     pub(crate) visit_error: Option<crate::navigator::VisitUnavailable>,
 }
 
@@ -40,7 +41,12 @@ impl PoiDetailScreen {
     /// Open the detail for `poi` (cloned out of the list snapshot by the list's `Gesture::Press`).
     /// The schedule is resolved lazily on the first [`prepare`](Self::prepare) pass with a `Reader`.
     pub fn new(poi: Poi) -> Self {
-        PoiDetailScreen { poi, off_route_m: None, schedule_ready: false, visit_error: None }
+        PoiDetailScreen { poi, off_route_m: None, schedule_ready: false, visit_error: None, landmark_category: 0 }
+    }
+
+    pub(crate) fn landmark(mut self, category: u8) -> Self {
+        self.landmark_category = category;
+        self
     }
 
     /// Carry the POI's signed lateral offset from the route (m) onto the detail — what the
@@ -104,11 +110,15 @@ impl PoiDetailScreen {
         use palette::*;
 
         let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, rx.t(Msg::PoiDetailTitle), "");
+        title_frame(cv, w, h, if self.landmark_category > 0 { "Landmark" } else { rx.t(Msg::PoiDetailTitle) }, "");
 
         // The subtype fallback label ("Supermarket", "Pharmacy", …) — the subtitle, and the whole
         // name line when the POI is unnamed.
-        let label = poi_label_of(self.poi.subtype).unwrap_or("POI");
+        let label = if self.landmark_category > 0 {
+            super::landmarks::kind(self.landmark_category)
+        } else {
+            poi_label_of(self.poi.subtype).unwrap_or("POI")
+        };
         let named = !self.poi.name.is_empty();
         let name = if named { self.poi.name.as_str() } else { label };
 

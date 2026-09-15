@@ -8,7 +8,7 @@ use obc_formats::{
     obcm::landmarks::*,
 };
 use obc_reader::{
-    landmarks::{map_section, page, LandmarkDirectory, LandmarkKey},
+    landmarks::{map_section, page, LandmarkDirectory, LandmarkHit, LandmarkKey, LandmarkQuery, QueryProgress},
     Error, Reader,
 };
 
@@ -28,12 +28,7 @@ pub enum Status {
     NoMap,
     Stale,
 }
-#[derive(Debug, Clone, Copy)]
-pub struct Row {
-    pub key: LandmarkKey,
-    pub index: u32,
-    pub position: (i32, i32),
-}
+pub type Row = LandmarkHit;
 /// One content buffer serves both reading and attribution. Row identities do not change while reading.
 pub struct Landmarks {
     pub status: Status,
@@ -49,7 +44,7 @@ pub struct Landmarks {
     pub record: Option<LandmarkRecord>,
     pub generation: Option<u32>,
     pub more: bool,
-    cursor: u32,
+    query: Option<LandmarkQuery>,
     after: Option<LandmarkKey>,
     loaded: Option<(usize, bool, u16)>,
     article_pages: u16,
@@ -70,7 +65,7 @@ impl Landmarks {
             record: None,
             generation: None,
             more: false,
-            cursor: 0,
+            query: None,
             after: None,
             loaded: None,
             article_pages: 0,
@@ -85,7 +80,7 @@ impl Landmarks {
     pub(crate) fn restart(&mut self, next: bool) {
         self.after = if next { self.rows.last().map(|r| r.key) } else { None };
         self.rows.clear();
-        self.cursor = 0;
+        self.query = None;
         self.more = false;
         self.selected = 0;
         self.reading = false;
@@ -120,31 +115,26 @@ impl Landmarks {
         };
         let directory = LandmarkDirectory::read(&section)?;
         if self.status == Status::Loading {
+            let query = self.query.get_or_insert_with(|| {
+                LandmarkQuery::new(directory, reader.generation(), self.origin, RADIUS_M, self.after)
+            });
             for _ in 0..64 {
-                if self.cursor == directory.count {
-                    self.status = if self.rows.is_empty() { Status::Empty } else { Status::Ready };
-                    break;
-                }
-                let index = self.cursor;
-                let record = directory.record(&section, index)?;
-                self.cursor += 1;
-                let distance = obc_map_scene::ground_dist_m(self.origin, (record.lon, record.lat));
-                let key = LandmarkKey { distance_m: (distance + 0.5) as u32, qid: record.qid };
-                if distance > RADIUS_M as f32
-                    || self.after.is_some_and(|after| key <= after)
-                    || self.rows.iter().any(|r| r.key.qid == key.qid)
-                {
-                    continue;
-                }
-                let at = self.rows.partition_point(|r| r.key < key);
-                if self.rows.is_full() {
-                    self.more = true;
-                    if at == ROWS {
-                        continue;
+                match query.step(&section, directory, reader.generation(), &mut self.rows) {
+                    QueryProgress::Pending => {}
+                    QueryProgress::Ready { more } => {
+                        self.more = more;
+                        self.status = if self.rows.is_empty() { Status::Empty } else { Status::Ready };
+                        break;
                     }
-                    self.rows.pop();
+                    QueryProgress::Failed(error) => {
+                        self.status = Status::Partial;
+                        return Err(error);
+                    }
+                    QueryProgress::Cancelled => {
+                        self.invalidate();
+                        return Ok(());
+                    }
                 }
-                let _ = self.rows.insert(at, Row { key, index, position: (record.lon, record.lat) });
             }
         }
         if !self.ready() {
@@ -286,7 +276,7 @@ impl crate::App {
         if let Err(error) = state.read_step(reader, sources) {
             state.status = match error {
                 Error::BadVersion => Status::Unsupported,
-                _ if !state.rows.is_empty() && state.record.is_none() => Status::Partial,
+                _ if state.status == Status::Partial => Status::Partial,
                 _ => Status::Failed,
             };
             state.loaded = None;
@@ -326,6 +316,9 @@ mod tests {
         out
     }
     fn map() -> Vec<u8> {
+        map_with_credits(&["Credit page one.", "Credit page two."])
+    }
+    fn map_with_credits(credits: &[&str]) -> Vec<u8> {
         let mut map = obcm_testkit::build_poi_map((0, 0, 1000, 1000), 512, &[]);
         let start = map.len().next_multiple_of(obcm_testkit::UNIT);
         map.resize(start, 0);
@@ -343,7 +336,9 @@ mod tests {
             "Second source
 page.",
         ]));
-        let article = append(&fields(&["A", "URL", "License", "License URL", "Credit page one.", "Credit page two."]));
+        let mut credit_fields = vec!["A", "URL", "License", "License URL"];
+        credit_fields.extend_from_slice(credits);
+        let article = append(&fields(&credit_fields));
         for i in 0..count {
             let record = LandmarkRecord {
                 qid: i as u64 + 1,
@@ -420,6 +415,30 @@ page."
             core::mem::size_of::<Landmarks>() < 1800,
             "only four identities, selected name and one page are resident"
         );
+    }
+    #[test]
+    fn full_attribution_budget_keeps_the_last_page_accessible() {
+        let pages: Vec<_> = (0..MAX_CREDIT_PAGES).map(|i| std::format!("Credit page {i}")).collect();
+        let refs: Vec<_> = pages.iter().map(std::string::String::as_str).collect();
+        let bytes = map_with_credits(&refs);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut state = Landmarks::new();
+        state.generation = Some(reader.generation());
+        state.restart(false);
+        state.read_step(&reader, false).unwrap();
+        assert_eq!(state.source_pages, MAX_CREDIT_PAGES);
+        state.source_page = MAX_CREDIT_PAGES - 1;
+        state.read_step(&reader, true).unwrap();
+        assert_eq!(state.text.as_str(), "Credit page 255");
+        state.selected = 1;
+        state.invalidate_selection();
+        state.selected = 0;
+        state.invalidate_selection();
+        state.read_step(&reader, false).unwrap();
+        assert!(state.record.is_some(), "returning selection reloads its identity");
     }
     #[test]
     fn represented_pages_reject_unsupported_glyphs_and_overflow_without_replacement() {
