@@ -56,7 +56,7 @@ def catalog_fixture():
     region = catalog["regions"][0]
     region.pop("terrain", None)
     region.update(bytes=sum(cell["bytes"] for cell in fine["cells"]),
-                  bytes_by_band={"fine": 994}, cell_count={"fine": 3},
+                  bytes_by_band={"fine": sum(cell["bytes"] for cell in fine["cells"])}, cell_count={"fine": 3},
                   partial_cell_count_by_band={"fine": 0})
     pinned = pin("region", region_cells)
     region.update({f"cells_{key}": value for key, value in pinned.items()})
