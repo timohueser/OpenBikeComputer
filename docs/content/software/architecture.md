@@ -423,6 +423,30 @@ They do not start another step or publish a completed plan on their own.
 | Commit | Publish the completed route, or the detour the rider accepted. | The new durable route identifier, or failure. |
 | Release | Finish pending storage work, cancel unused allocations or remove a cancelled publication, then return the workspace. | Cleanup is complete and the arena is available. |
 
+Assistant planning adds an immutable review step. Navigator freezes the request's exact
+map and original-route identities, profile, progress occurrence, required anchors, and facts
+policy. The executor publishes one complete candidate, releases planner memory, and keeps
+the admitted source leases. Preview does not change the active route or Recorder.
+
+Accept checks the current origin and sources again. Navigator asks RetentionMachine to
+write the optional checkpoint and the candidate's acceptance row in the existing Metadata
+singleton. This uses the same serialized read-modify-write operation as route stamps and
+ride archive proofs. Only a verified durable acknowledgment activates the candidate. A
+known failure keeps the preview available for retry. An uncertain publication keeps a
+fence until recovery; cancellation does not assume that the publication failed.
+
+A candidate remains marked in its immutable route bytes. Its exact accepted Metadata row
+makes it available as an ordinary route. Without that row, the route list labels it as an
+unaccepted preview and does not activate it. The row includes revision, length, and CRC,
+so a replacement cannot inherit acceptance. Clearing the checkpoint preserves this row.
+
+At boot, a verified checkpoint only offers **Resume**. It does not restore ordinary
+navigation or start Recorder. Explicit Resume requires a matching phase occurrence,
+current map binding, and re-verified route bytes. An accepted visit also protects its
+original route from expiry, deletion, and replacement until that dependency is released
+by a durable phase update. New fixes received during a phase write remain available to
+the phase owner after acknowledgment.
+
 A replacement plan cannot acquire the workspace before the previous release is acknowledged.
 Release after successful planning keeps the accepted route or detour preview. Releasing working
 memory is not a cancellation result. Workspace refusal, planner failure and storage failure remain distinct.
