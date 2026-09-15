@@ -1616,7 +1616,10 @@ pub(crate) async fn run_app(
                 #[cfg(has_nav)]
                 let source_error =
                     if matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::AssistantRoute(_), .. })
-                        && app.assistant_visit_target().is_some()
+                        && (app.assistant_visit_target().is_some()
+                            || app
+                                .assistant_review_context()
+                                .is_some_and(|c| matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_))))
                     {
                         let id = app.active_route_index().and_then(|i| app.route_ids().get(i).copied());
                         let original = id.and_then(|id| crate::flat_store::route_fingerprint(flat, id));
@@ -1717,9 +1720,6 @@ pub(crate) async fn run_app(
                                             if let Some((planner, ..)) = bufs.guard.plan_parts() {
                                                 planner.set_attribution_map(context.map);
                                                 planner.set_assistant_candidate();
-                                                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                                                    planner.set_unresolved_avoidance();
-                                                }
                                             }
                                             if let Some(original) = context.original {
                                                 crate::assistant::release_original(flat, &mut review_original, false);

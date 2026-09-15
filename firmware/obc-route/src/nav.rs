@@ -349,6 +349,30 @@ fn sat16(m: u32) -> u16 {
     m.min(u16::MAX as u32) as u16
 }
 
+/// A fixed per-request preference. Highway/access prohibitions and the saved profile stay unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Objective {
+    #[default]
+    Profile,
+    LessClimb,
+    LeastClimb,
+    Smoother,
+    Smoothest,
+    Shorter,
+    Shortest,
+}
+impl Objective {
+    pub const TRIALS: [Self; 7] = [
+        Self::Profile,
+        Self::LessClimb,
+        Self::LeastClimb,
+        Self::Smoother,
+        Self::Smoothest,
+        Self::Shorter,
+        Self::Shortest,
+    ];
+}
+
 /// The selected bike profile's edge-cost parameters, resolved **once per plan** from the map's §8.6
 /// profile table (epic #533 N3; the climb weight is EL6, epic #1068): the 32 highway + 8 surface
 /// `u8` 1/16-fixed-point multipliers (`16` = 1.0×, `0` = forbidden) plus the profile's climb weight,
@@ -390,6 +414,23 @@ impl ProfileMult {
             Some(p) => ProfileMult { highway: p.highway, surface: p.surface, climb: u32::from(p.climb_weight()) },
             None => ProfileMult::NEUTRAL,
         }
+    }
+
+    fn prefer(mut self, objective: Objective) -> Self {
+        match objective {
+            Objective::Profile => {}
+            Objective::LessClimb => self.climb = (self.climb * 2).clamp(10, 255),
+            Objective::LeastClimb => self.climb = (self.climb * 4).clamp(20, 255),
+            Objective::Smoother | Objective::Smoothest => {
+                let factor = if objective == Objective::Smoother { 2 } else { 4 };
+                for surface in &mut self.surface[3..] {
+                    *surface = surface.saturating_mul(factor);
+                }
+            }
+            Objective::Shorter => self.climb /= 2,
+            Objective::Shortest => self.climb = 0,
+        }
+        self
     }
 
     /// The §8.6 weighted cost of one adjacency entry, **the formula verbatim**:
@@ -715,6 +756,7 @@ pub struct NavPlanner {
     /// `0`). Resolved into [`mult`](Self::mult) at the first step; out-of-range falls back to
     /// profile 0.
     profile_idx: u8,
+    objective: Objective,
     /// The profile's 40-byte multiplier lookup **and its climb weight**, resolved once from the
     /// reader at the first step (neutral + climb-blind until then). Every edge — POI plan or detour
     /// alike — is relaxed through [`ProfileMult::edge_cost`].
@@ -784,6 +826,10 @@ impl NavPlanner {
         self.map_source = Some(source);
     }
 
+    pub fn set_objective(&mut self, objective: Objective) {
+        self.objective = objective;
+    }
+
     pub fn set_assistant_candidate(&mut self) {
         self.assistant_candidate = true;
     }
@@ -810,6 +856,7 @@ impl NavPlanner {
             name: nm,
             profile_idx,
             mult: ProfileMult::NEUTRAL,
+            objective: Objective::Profile,
             start_id: 0,
             start_c: (0, 0),
             goal_id: 0,
@@ -923,7 +970,7 @@ impl NavPlanner {
                 if self.snap_ordinal == 0 {
                     scratch.reset();
                     tiles.reset();
-                    self.mult = ProfileMult::resolve(reader, self.profile_idx);
+                    self.mult = ProfileMult::resolve(reader, self.profile_idx).prefer(self.objective);
                 }
                 let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
                 let lookup_radius = snap_lookup_radius(self.snap_ordinal);
@@ -1669,6 +1716,34 @@ fn snap_candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{sat16, ProfileMult};
+
+    #[test]
+    fn objectives_keep_bans_suitability_and_distance_lower_bound() {
+        use super::Objective;
+        let mut profile = ProfileMult { highway: [24; 32], surface: [32; 8], climb: 12 };
+        profile.highway[4] = 0;
+        profile.surface[7] = 0;
+        for objective in Objective::TRIALS {
+            let p = profile.prefer(objective);
+            assert_eq!(p.highway, profile.highway);
+            assert_eq!(p.surface[..3], profile.surface[..3]);
+            assert_eq!(p.edge_cost(100, 100, 4), None);
+            assert_eq!(p.edge_cost(100, 100, 7 << 5), None);
+            for surface in 0..7 {
+                assert!(p.edge_cost(100, 0, surface << 5).unwrap() >= 100);
+                assert!(p.surface[surface as usize] >= profile.surface[surface as usize]);
+            }
+        }
+        assert_eq!(profile.prefer(Objective::LessClimb).climb, 24);
+        assert_eq!(profile.prefer(Objective::LeastClimb).climb, 48);
+        assert_eq!(profile.prefer(Objective::Smoother).surface[3], 64);
+        assert_eq!(profile.prefer(Objective::Smoothest).surface[3], 128);
+        for (objective, weight) in [(Objective::Shorter, 6), (Objective::Shortest, 0)] {
+            let p = profile.prefer(objective);
+            assert_eq!(p.climb, weight);
+            assert_eq!(p.surface, profile.surface);
+        }
+    }
 
     /// The maximum every input can legally reach — `cost_m` and `ascent_m` both `u16::MAX`, both
     /// multiplier bytes and the climb weight all `u8::MAX`. The exact sum is asserted (not merely

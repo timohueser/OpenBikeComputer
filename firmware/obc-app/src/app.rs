@@ -521,6 +521,7 @@ pub struct App {
     /// guidance and of [`mode`](App::mode)'s two search levels.
     pub(crate) navigator: NavigatorMachine,
     pub(crate) metadata: crate::metadata::MetadataMachine,
+    pub(crate) easier: crate::easier::State,
     /// **`CoreMode`** (#1397 S5): the one owner of "what heavy work may run now, and what the rider
     /// is looking at" — the two search levels Navigator writes, the transfer level
     /// [`set_map_transfer`](App::set_map_transfer) writes, and the Recalculating banner's
@@ -611,6 +612,7 @@ impl App {
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
             metadata: crate::metadata::MetadataMachine::new(),
+            easier: crate::easier::State::new(),
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
@@ -658,6 +660,7 @@ impl App {
 
             navigator,
             metadata,
+            easier: _,
             mode,
             settings_ops,
 
@@ -2537,6 +2540,9 @@ impl App {
         self.ui.idle_return_timing = true;
         // **The global escape** (#1515 D3): Back-hold reaches the main menu from anywhere, so it is
         // resolved here, above screen dispatch, and no screen binds it any more.
+        if self.easier_gesture(g) {
+            return true;
+        }
         if g == Gesture::BackHold {
             let changed = self.escape_to_menu();
 
@@ -2651,6 +2657,7 @@ impl App {
     /// [`handle_input`](App::handle_input) calls this for the single-loop hosts; the two-plane
     /// firmware calls it directly on its map plane.
     pub fn advance_animations(&mut self, clock: InputClock) {
+        self.advance_easier();
         let now = self.wall_clock.now(clock.0);
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(clock.0);
         let pan_active = self.state.pan.is_some();
@@ -2959,16 +2966,13 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
-        let assistant_preview_index = self
+
+        let assistant_preview = self
             .ui
             .stack
             .iter()
-            .any(|s| matches!(s, Screen::VisitReview(_)))
-            .then(|| {
-                self.assistant_preview()
-                    .and_then(|preview| self.route_ids().iter().position(|id| *id == preview.source.object))
-            })
-            .flatten();
+            .any(|s| matches!(s, Screen::Easier(_) | Screen::VisitReview(_)))
+            .then(|| self.assistant_preview().map(|p| p.source.object));
         let App {
             state,
             activity,
@@ -2987,7 +2991,12 @@ impl App {
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
         let navigation = navigator.route_state();
-        let nav_key = catalogs.nav_preview_key(assistant_preview_index.or(navigation.active_route));
+        let preview_index = if let Some(source) = assistant_preview {
+            source.and_then(|id| catalogs.route_ids().iter().position(|value| *value == id))
+        } else {
+            navigation.active_route
+        };
+        let nav_key = catalogs.nav_preview_key(preview_index);
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);

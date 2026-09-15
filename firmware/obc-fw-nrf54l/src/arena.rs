@@ -406,7 +406,9 @@ impl NavGuard {
         };
         unsafe {
             let slot = (*(arena_ptr() as *mut VisitArm)).builder.as_mut_ptr();
-            if context.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
+            if matches!(context.purpose, obc_app::navigator::ReviewPurpose::Easier(_)) {
+                obc_route::visit::VisitBuilder::init_easier_in_place(slot, key, context.map, context.progress_m)?;
+            } else if context.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
                 obc_route::visit::VisitBuilder::init_return_in_place(slot, key, context.map, rejoin)?;
             } else {
                 let target = target.ok_or(obc_formats::io::Error::BadOffset)?;
@@ -453,6 +455,9 @@ impl NavGuard {
             (*arm).tiles.reset();
             let mut planner = obc_route::NavPlanner::new(from, to, "Visit leg", context.profile);
             planner.set_attribution_map(context.map);
+            if let obc_app::navigator::ReviewPurpose::Easier(objective) = context.purpose {
+                planner.set_objective(objective);
+            }
             (*arm).planner.write(planner);
         }
         self.phase = NavPhase::VisitPlan;

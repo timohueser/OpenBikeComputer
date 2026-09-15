@@ -47,7 +47,10 @@ impl VisitPlan {
         if original.has_unresolved_avoidance() {
             return Err(NavigatorError::Unavailable);
         }
-        let (approach, rejoin_m, forward) = if returning {
+        let easier = matches!(context.purpose, ReviewPurpose::Easier(_));
+        let (approach, rejoin_m, forward) = if easier {
+            (context.origin, context.progress_m, None)
+        } else if returning {
             let visit = descriptor.ok_or(NavigatorError::Unavailable)?;
             let rejoin = visit.accepted_anchors_m[2];
             if context.required_anchors_m != [rejoin; 3] {
@@ -85,7 +88,17 @@ impl VisitPlan {
             stats: None,
         };
         plan.builder.begin(&mut plan.output).map_err(|_| NavigatorError::Store)?;
-        plan.start_leg(context.origin, approach)?;
+        if easier {
+            plan.builder.prepare_easier(original).map_err(|_| NavigatorError::Unavailable)?;
+            let (from, to) = plan
+                .builder
+                .easier_leg(original, context.origin)
+                .map_err(|_| NavigatorError::Unavailable)?
+                .ok_or(NavigatorError::Unavailable)?;
+            plan.start_leg(from, to)?;
+        } else {
+            plan.start_leg(context.origin, approach)?;
+        }
         Ok(plan)
     }
     #[inline(never)]
@@ -112,7 +125,9 @@ impl VisitPlan {
         let source =
             RouteSourceKey { store: context.store.bytes(), object: original.object, revision: original.revision };
         unsafe {
-            if context.purpose == ReviewPurpose::ReturnToRoute {
+            if matches!(context.purpose, ReviewPurpose::Easier(_)) {
+                VisitBuilder::init_easier_in_place(slot, source, context.map, context.progress_m)
+            } else if context.purpose == ReviewPurpose::ReturnToRoute {
                 VisitBuilder::init_return_in_place(slot, source, context.map, rejoin)
             } else {
                 let target = target.ok_or(NavigatorError::Unavailable)?;
@@ -130,9 +145,17 @@ impl VisitPlan {
         }
     }
     fn start_leg(&mut self, from: (i32, i32), to: (i32, i32)) -> Result<(), NavigatorError> {
-        self.choice.search().map_err(|_| NavigatorError::Unavailable)?;
+        if matches!(self.context.purpose, ReviewPurpose::Easier(_)) {
+            self.choice.search_easier()
+        } else {
+            self.choice.search()
+        }
+        .map_err(|_| NavigatorError::Unavailable)?;
         let mut plan = NavPlan::start(&obc_app::NavRequest::new(from, to, "Visit leg"), self.context.profile);
         plan.set_attribution_map(self.context.map);
+        if let ReviewPurpose::Easier(objective) = self.context.purpose {
+            plan.set_objective(objective);
+        }
         self.leg = Some(plan);
         self.stage = Stage::Plan;
         Ok(())
@@ -186,7 +209,17 @@ impl VisitPlan {
                 if appended.map_err(|_| NavigatorError::Unavailable)? {
                     self.leg = None;
                     self.index = None;
-                    if self.returning {
+                    if matches!(self.context.purpose, ReviewPurpose::Easier(_)) {
+                        self.builder.finish_easier_leg(original).map_err(|_| NavigatorError::Unavailable)?;
+                        match self
+                            .builder
+                            .easier_leg(original, self.context.origin)
+                            .map_err(|_| NavigatorError::Unavailable)?
+                        {
+                            Some((from, to)) => self.start_leg(from, to)?,
+                            None => self.stage = Stage::Finish,
+                        }
+                    } else if self.returning {
                         self.stage = Stage::Finish;
                     } else {
                         self.returning = true;
