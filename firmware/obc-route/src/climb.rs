@@ -240,6 +240,11 @@ pub fn segment_climbs<I: IntoIterator<Item = ElePt>>(stream: I) -> Climbs {
     let mut trough: Option<ElePt> = None;
 
     for p in stream {
+        if !p.ele_m.is_finite() {
+            cand = None;
+            trough = None;
+            continue;
+        }
         match cand.as_mut() {
             // No open candidate: track the running low, and open a candidate as soon as the
             // profile rises at least the dead-band above it (any real rise — the MIN_* gates are
@@ -440,6 +445,10 @@ impl Iterator for ClimbStream<'_, '_> {
             // Smooth the elevation with the shared dead-band; the smoothed reference the
             // segmenter reads is the dead-band's *reference*, not the raw sample, so noise below
             // the band neither opens nor closes a climb.
+            if p.elevation().is_none() || p.elevation_incomplete {
+                self.smooth.pause();
+                return Some(ElePt { dist_m: self.dist, ele_m: f32::NAN });
+            }
             self.smooth.push(p.ele as f32);
             return Some(ElePt { dist_m: self.dist, ele_m: self.smooth.smoothed().unwrap_or(p.ele as f32) });
         }

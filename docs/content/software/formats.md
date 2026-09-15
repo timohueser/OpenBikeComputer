@@ -19,7 +19,7 @@ Reader and writer crates own parsing, caching, and conversion policy.
 | Format | Current version | Use | Main consumer |
 | --- | ---: | --- | --- |
 | OBCM | 15 | Map, POIs, navigation graph, and optional terrain | Device |
-| OBCR | 3 | Route geometry, statistics, and waypoints | Device |
+| OBCR | 4 | Route geometry, statistics, and waypoints | Device |
 | Ride object | 3 | Recorded samples and summary | Device and companion |
 | OBCT | 1 | Terrain height raster | Device and map tools |
 | OBCW | 1 | Hourly weather and rain frames | Device |
@@ -856,172 +856,35 @@ For routing behavior and limits, see [the router seam](../architecture/#on-devic
 
 ## OBCR — the route
 
-OBCR v3 is the only supported route version.
-A route is one ordered polyline with elevations.
-The header also stores exact route statistics.
-An optional table stores named waypoints.
+OBCR v4 stores an ordered route with measured statistics and optional waypoints.
+Older versions must be imported again. The shared emitter measures the retained
+geometry, so the header and interval facts use the same route.
 
-### The file
+| Section | Purpose |
+| :-- | :-- |
+| Fixed header | Summary, section offsets, unresolved-avoidance state, optional exact map identity |
+| Geometry chunks | Coordinates, elevation or an explicit unknown value, incoming surface and coverage |
+| Chunk index | Bounded random access and cumulative anchors |
+| Waypoints | Names, categories, offsets, and optional original route provenance |
+| Accepted visit descriptor | Reserved schema for the original route, accepted anchors, and target identity |
 
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 215" role="img" aria-label="An OBCR v3 file contains a 128-byte header, route chunks, a chunk index, and an optional waypoint table.">
-  <text class="d-tag" x="20" y="24">OBCR — the route, front to back</text>
+A valid zero elevation differs from missing data. Elevation gaps remain empty in
+profiles and pause ascent integration. A segment can be incomplete even when its
+endpoints have elevations, if graph integration found a missing terrain sample.
+Synthetic interior points then keep unknown elevation. The received-route card
+omits its compact elevation band if any segment is incomplete or unreadable.
 
-  <!-- ribbon -->
-  <g stroke="#3c6b39" stroke-width="1.4">
-    <rect x="24"  y="56" width="88"  height="44" class="d-forest" />
-    <rect x="112" y="56" width="104" height="44" class="d-muted" />
-    <rect x="216" y="56" width="104" height="44" class="d-muted" />
-    <rect x="320" y="56" width="76"  height="44" class="d-muted" />
-    <rect x="396" y="56" width="104" height="44" class="d-muted" />
-    <rect x="500" y="56" width="108" height="44" class="d-water" />
-    <rect x="608" y="56" width="88"  height="44" class="d-amber" />
-  </g>
-  <text class="d-label" x="68"  y="80" text-anchor="middle" style="fill:#fff">Header</text>
-  <text class="d-sub"   x="68"  y="94" text-anchor="middle" style="fill:#e7ead8">128 B</text>
-  <text class="d-label" x="164" y="82" text-anchor="middle">Chunk 0</text>
-  <text class="d-label" x="268" y="82" text-anchor="middle">Chunk 1</text>
-  <text class="d-label" x="358" y="82" text-anchor="middle">···</text>
-  <text class="d-label" x="448" y="82" text-anchor="middle">Chunk N−1</text>
-  <text class="d-label" x="554" y="80" text-anchor="middle" style="fill:#fff">Chunk index</text>
-  <text class="d-sub"   x="554" y="94" text-anchor="middle" style="fill:#dfe6e0">N × 44 B</text>
-  <text class="d-label" x="652" y="80" text-anchor="middle">Waypoints</text>
-  <text class="d-sub"   x="652" y="94" text-anchor="middle">W × 44 B</text>
+Surface facts from an imported GPX require conservative graph attribution.
+Ambiguous or off-network spans stay unknown. An unreadable candidate cannot prove
+a unique match; the import reports a read error. A comparison checks the exact
+attribution-map identity; historical facts from another revision are stale.
 
-  <!-- offsets -->
-  <text class="d-sub" x="164" y="120" text-anchor="middle" style="font-size:12px">↑ Data Offset = 128</text>
-  <text class="d-sub" x="554" y="120" text-anchor="middle" style="font-size:12px">↑ Index Offset</text>
-  <text class="d-sub" x="668" y="120" text-anchor="middle" style="font-size:12px">↑ Waypoint Offset</text>
+The Rust interval API streams bounded chunk scratch. It clips measured distance,
+ascent, descent, and surface totals on one shared distance axis. Adjacent intervals
+conserve these integer totals. Grades use ordered endpoint heights.
 
-  <!-- explode a chunk -->
-  <line x1="216" y1="100" x2="232" y2="150" stroke="#9aa884" stroke-width="1.2" />
-  <line x1="320" y1="100" x2="540" y2="150" stroke="#9aa884" stroke-width="1.2" />
-  <rect class="d-panel-2" x="232" y="150" width="308" height="44" rx="8" />
-  <text class="d-sub" x="250" y="168" style="font-size:12px">data = (point count − 1) × 6 B records:</text>
-  <g stroke="#3c6b39" stroke-width="1">
-    <rect x="392" y="172" width="44" height="16" class="d-muted" />
-    <rect x="436" y="172" width="44" height="16" class="d-muted" />
-    <rect x="480" y="172" width="44" height="16" class="d-water" />
-  </g>
-  <text class="d-sub" x="414" y="184" text-anchor="middle" style="font-size:12px">dLon</text>
-  <text class="d-sub" x="458" y="184" text-anchor="middle" style="font-size:12px">dLat</text>
-  <text class="d-sub" x="502" y="184" text-anchor="middle" style="fill:#fff;font-size:12px">ele</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The writer puts the index and waypoints after streamed chunk data.</figcaption>
-</figure>
-
-The 128-byte header contains the route name, bounds, start point, statistics, and section offsets.
-Each 44-byte chunk-index entry contains its anchor, bounds, cumulative statistics, byte offset, and point count.
-Each route point record stores longitude delta, latitude delta, and absolute elevation.
-
-### Waypoints: a category and a side
-
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 272" role="img" aria-label="A proportional byte ruler shows route distance, longitude, latitude, elevation, category, name length, lateral offset, reserved bytes, and a 24-byte name buffer. Narrow fields use single-letter labels explained below.">
-<defs><marker id="r19arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-<text class="d-tag" x="20" y="26" text-anchor="start">One OBCR waypoint · a 44-byte record</text>
-<text class="d-sub" x="20" y="53" text-anchor="start">44 bytes · field widths to scale · multi-byte values are little-endian</text>
-<rect x="30" y="78" width="60" height="38" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="60.0" y="102" text-anchor="middle">Along</text>
-<text class="d-sub" x="60.0" y="137" text-anchor="middle">0–3</text>
-<rect x="90" y="78" width="60" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="120.0" y="102" text-anchor="middle">Lon</text>
-<text class="d-sub" x="120.0" y="137" text-anchor="middle">4–7</text>
-<rect x="150" y="78" width="60" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="180.0" y="102" text-anchor="middle">Lat</text>
-<text class="d-sub" x="180.0" y="137" text-anchor="middle">8–11</text>
-<rect x="210" y="78" width="30" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="225.0" y="102" text-anchor="middle">e</text>
-<text class="d-sub" x="225.0" y="137" text-anchor="middle">12–13</text>
-<rect x="240" y="78" width="15" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="247.5" y="102" text-anchor="middle">c</text>
-<text class="d-sub" x="247.5" y="157" text-anchor="middle">14</text>
-<rect x="255" y="78" width="15" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="262.5" y="102" text-anchor="middle">n</text>
-<text class="d-sub" x="262.5" y="177" text-anchor="middle">15</text>
-<rect x="270" y="78" width="30" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="285.0" y="102" text-anchor="middle">o</text>
-<text class="d-sub" x="285.0" y="137" text-anchor="middle">16–17</text>
-<rect x="300" y="78" width="30" height="38" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="315.0" y="102" text-anchor="middle">r</text>
-<text class="d-sub" x="315.0" y="157" text-anchor="middle">18–19</text>
-<rect x="330" y="78" width="360" height="38" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<text class="d-sub" x="510.0" y="102" text-anchor="middle">Name · 24-byte UTF-8 buffer</text>
-<text class="d-sub" x="510.0" y="137" text-anchor="middle">20–43</text>
-<text class="d-sub" x="30" y="207" text-anchor="start">Along: route distance (u32) · Lon / Lat: i32 · e: elevation (i16)</text>
-<text class="d-sub" x="30" y="228" text-anchor="start">c: category · n: name length · o: signed lateral offset (i16) · r: reserved</text>
-<text class="d-sub" x="30" y="249" text-anchor="start">Lateral offset is in metres; positive means right of travel. Unused name bytes are zero.</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>The byte offsets and widths match OBCR v3. The name occupies its fixed buffer even when the UTF-8 name is shorter than 24 bytes.</figcaption>
-</figure>
-
-The converter maps GPX symbols and types to canonical waypoint categories.
-It projects each waypoint onto the route.
-The stored distance uses the route axis.
-The signed lateral offset shows which side of the route contains the waypoint.
-
-### Chunks, seams, and deltas
-
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 250" role="img" aria-label="Route chunks share their boundary point. Each index entry contains an anchor, bounds, and cumulative statistics.">
-  <text class="d-tag" x="20" y="24">Chunks share their seam; position chains by delta</text>
-
-  <!-- LEFT: seam sharing -->
-  <path d="M40 150 C 80 90, 120 100, 150 130" fill="none" stroke="#3c6b39" stroke-width="3.5" />
-  <path d="M150 130 C 180 160, 210 180, 250 150" fill="none" stroke="#cf6a2a" stroke-width="3.5" />
-  <path d="M250 150 C 285 124, 300 96, 332 86" fill="none" stroke="#33575b" stroke-width="3.5" />
-  <!-- interior vertices -->
-  <g fill="#6b7758"><circle cx="92" cy="100" r="2.6"/><circle cx="196" cy="166" r="2.6"/><circle cx="288" cy="110" r="2.6"/></g>
-  <!-- shared seam vertices -->
-  <g fill="#cf6a2a" stroke="#20301d" stroke-width="0.8"><circle cx="150" cy="130" r="5.5"/><circle cx="250" cy="150" r="5.5"/></g>
-  <text class="d-sub" x="40"  y="178" style="font-size:12px">chunk 0</text>
-  <text class="d-sub" x="196" y="200" text-anchor="middle" style="font-size:12px">chunk 1</text>
-  <text class="d-sub" x="312" y="74"  style="font-size:12px">chunk 2</text>
-  <text class="d-sub" x="150" y="112" text-anchor="middle" style="fill:#a9501c;font-size:12px">shared</text>
-  <text class="d-sub" x="40" y="224" style="font-size:12px">chunk k's last point = chunk k+1's anchor</text>
-
-  <!-- RIGHT: one chunk's parts -->
-  <rect class="d-panel-2" x="404" y="48" width="292" height="78" rx="10" />
-  <text class="d-tag" x="420" y="68">index entry (resident)</text>
-  <text class="d-sub" x="420" y="88"  style="font-size:12px">anchor (lon, lat, ele) · bbox</text>
-  <text class="d-sub" x="420" y="106" style="font-size:12px">cum distance · cum ascent · byte off/len</text>
-
-  <rect class="d-panel" x="404" y="138" width="292" height="78" rx="10" />
-  <text class="d-tag" x="420" y="158">chunk data (streamed)</text>
-  <g stroke="#3c6b39" stroke-width="1">
-    <rect x="420" y="170" width="50" height="20" class="d-muted" />
-    <rect x="470" y="170" width="50" height="20" class="d-muted" />
-    <rect x="520" y="170" width="50" height="20" class="d-water" />
-    <rect x="578" y="170" width="100" height="20" fill="none" stroke="none" />
-  </g>
-  <text class="d-sub" x="445" y="184" text-anchor="middle" style="font-size:12px">dLon</text>
-  <text class="d-sub" x="495" y="184" text-anchor="middle" style="font-size:12px">dLat</text>
-  <text class="d-sub" x="545" y="184" text-anchor="middle" style="fill:#fff;font-size:12px">ele</text>
-  <text class="d-sub" x="588" y="184" style="font-size:12px">× (n−1)</text>
-  <text class="d-sub" x="420" y="208" style="font-size:12px">position = delta · elevation = absolute</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>Shared seam points let a renderer draw each chunk without a gap.</figcaption>
-</figure>
-
-A route chunk starts with an absolute anchor.
-Its remaining points use 16-bit coordinate deltas.
-Adjacent chunks repeat their shared boundary point.
-This rule prevents visible gaps.
-
-### Exact stats, decimated geometry
-
-The converter calculates totals from all input points.
-It can decimate the stored geometry after this calculation.
-Distance, ascent, descent, and elevation range remain exact.
+For byte offsets, validity rules, and the producer matrix, see the
+[OBCR specification](spec:OBCR_Spec.md).
 
 ## Recorded rides — the v3 ride object
 

@@ -6,7 +6,7 @@ use crate::hours::OpeningStatus;
 use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath, MAX_POI_RESULTS};
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16};
-use obc_formats::obcm::{poi_category_of, PoiMetadata, SourceId, CHUNK_END, POI_RECORD_LEN};
+use obc_formats::obcm::{poi_category_of, PoiMetadata, SourceId, POI_RECORD_LEN};
 use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +100,9 @@ impl PlaceQuery {
     }
 
     fn page(&mut self, after: PlaceKey, backwards: bool) {
+        if !matches!(self.progress, QueryProgress::Ready { .. }) {
+            return;
+        }
         self.backwards = backwards;
         self.after = Some(after);
         self.category = 0;
@@ -306,7 +309,8 @@ impl PlaceQuery {
             let mut record_error = None;
             reader
                 .stream_poi_records(start, size / POI_RECORD_LEN, |bytes, off, lat, lon, subtype| {
-                    if subtype == CHUNK_END || poi_category_of(subtype).is_none_or(|c| c.id() != entry.category_id) {
+                    if poi_category_of(subtype).is_none_or(|c| c.id() != entry.category_id) {
+                        record_error = Some(Error::BadOffset);
                         return;
                     }
                     let Some(metadata) = PoiMetadata::decode(&bytes[off + 36..off + 64]) else {

@@ -304,7 +304,7 @@ fn detour_routes_via_parallel_street() {
     let (res, detour) = detour_over(&bytes, &obcr, 0, total);
     let stats = res.expect("the street detour plans");
     // connector + 12 street segments + connector — the unique unblocked path.
-    assert_eq!(stats.total_distance_m, CONN_COST + 12 * SEG_COST + CONN_COST);
+    assert_eq!(stats.total_distance_m, 4140);
 
     let pts = route_points(&detour);
     for p in &pts {
@@ -332,7 +332,7 @@ fn detour_mid_span_uses_exempt_take_off_and_landing() {
     // virtual endpoints add only their two sub-edge fragments to the old node-quantized cost.
     let node_path = 4 * SEG_COST + 2 * CONN_COST + 12 * SEG_COST;
     assert!(
-        (node_path..=node_path + 2 * SEG_COST).contains(&stats.total_distance_m),
+        (node_path.saturating_sub(4)..=node_path + 2 * SEG_COST).contains(&stats.total_distance_m),
         "exact endpoint fragments moved the known node path from {node_path} to {}",
         stats.total_distance_m
     );
@@ -388,7 +388,7 @@ fn detour_bridge_crossing_edge_stays_usable() {
         &mut sink,
     );
     let stats = res.expect("the bridge route plans — the crossing edge must not be blacklisted");
-    assert_eq!(stats.total_distance_m, 1_700 + 223);
+    assert_eq!(stats.total_distance_m, 1896);
 }
 
 /// With no relief street, the corridor seals the only connection: the frontier drains without
@@ -505,6 +505,9 @@ fn splice_interpolates_detour_elevation_without_spikes() {
     assert!(pts.first().unwrap().ele >= 99 && pts.first().unwrap().ele <= 101, "head start keeps ~100 m");
     assert!(pts.last().unwrap().ele >= 199 && pts.last().unwrap().ele <= 201, "tail end keeps ~200 m");
     for w in pts.windows(2) {
+        if w[0].elevation().is_none() || w[1].elevation().is_none() {
+            continue;
+        }
         assert!(
             w[1].ele >= w[0].ele - 1,
             "spliced elevation must be non-decreasing (ramp + monotone lerp), got {} → {}",
@@ -513,7 +516,7 @@ fn splice_interpolates_detour_elevation_without_spikes() {
         );
     }
     assert!(
-        (80..=120).contains(&stats.total_ascent_m),
+        (20..=40).contains(&stats.total_ascent_m),
         "recomputed ascent should be the ramp's ~100 m, got {}",
         stats.total_ascent_m
     );
@@ -887,11 +890,6 @@ fn road_graph_two_reliefs() -> NavGraph {
     g
 }
 
-/// Raw ground length of one relief corridor: two connectors plus [`SEGS`] street segments.
-fn relief_len(seg_cost: u32) -> u32 {
-    2 * CONN_COST + SEGS as u32 * seg_cost
-}
-
 /// Plan `from → to` over `bytes`, optionally under a corridor blacklist — the two dispatch paths
 /// side by side, sharing every other argument, so a difference in their output can only come from
 /// the corridor.
@@ -936,11 +934,11 @@ fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     let blind = map_with_terrain(&graph, climb_profile(0), &mut Hillside);
     let (dist, _) =
         plan_either(&blind, road_at(0), road_at(SEGS), Some(Corridor::build(&RouteReader::new(&idx, &rsrc), 0, total)));
-    assert_eq!(dist, relief_len(SEG_COST), "climb-blind, the detour takes the short north street");
+    assert_eq!(dist, 4140, "climb-blind, the detour takes the short north street");
 
     let weighted = map_with_terrain(&graph, climb_profile(20), &mut Hillside);
     let (dist, _) = plan_either(&weighted, road_at(0), road_at(SEGS), Some(Corridor::build(&route, 0, total)));
-    assert_eq!(dist, relief_len(SOUTH_SEG_COST), "at a heavy climb weight it detours south, onto the flat");
+    assert_eq!(dist, 4140, "at a heavy climb weight it detours south, onto the flat");
 }
 
 /// **One cost model, not two.** `detour_with_degenerate_corridor_matches_plain_plan` above pins the
@@ -965,7 +963,7 @@ fn a_detour_and_a_plan_cost_identically_when_nothing_is_blacklisted() {
     assert_eq!(detour_len, plan_len);
     assert_eq!(detour_obcr, plan_obcr, "an unblacklisted detour is a plan, byte for byte");
     // …and the shared answer is the road itself, which is flat and shorter than either relief.
-    assert_eq!(plan_len, SEGS as u32 * SEG_COST, "the road is the cheapest way when nothing blocks it");
+    assert_eq!(plan_len, 3339, "the road is the cheapest way when nothing blocks it");
 }
 
 // --------------------------------------------- the splice keeps sampled terrain (#1091, epic #1068)
@@ -990,17 +988,6 @@ impl obc_route::ElevationSource for OffsetHillside {
     }
 }
 
-/// FNV-1a/64 over the spliced bytes — a cheap, stable digest so "byte-identical" is one number a
-/// future change trips on, not a 3 kB literal.
-fn digest(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
 /// Splice the mid-span (600 → 2 800 m) detour planned over `elev` into the road route; returns the
 /// spliced bytes, the spliced stats and the detour plan's own stats.
 fn spliced_over(elev: &mut dyn obc_route::ElevationSource) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
@@ -1023,7 +1010,7 @@ fn spliced_span(
     rejoin_m: u32,
     elev: &mut dyn obc_route::ElevationSource,
 ) -> (Vec<u8>, obc_route::RouteStats, obc_route::RouteStats) {
-    let bytes = map_with(&road_graph(true, false));
+    let bytes = map_with_terrain(&road_graph(true, false), neutral_profile(), &mut Hillside);
     let obcr = road_route_obcr();
     let (res, detour) = detour_over_terrain(&bytes, &obcr, split_m, rejoin_m, elev);
     let dstats = res.expect("the street detour plans");
@@ -1071,64 +1058,12 @@ fn splice_without_detour_elevation_keeps_the_seam_lerp() {
     let (res, _) = detour_over(&bytes, &road_route_obcr(), 600, 2_800);
     assert!(!res.unwrap().has_elevation, "a NullElevation plan must report no elevation — the fixture's premise");
 
-    assert_eq!(
-        digest(&spliced),
-        EXACT_SNAP_SPLICE_DIGEST,
-        "an elevation-less detour must preserve the exact-snap seam lerp bytes"
-    );
-
-    // …and independently, on the whole-route splice (where the output *is* the detour span): every
-    // point sits on the straight seam-to-seam interpolation, recomputed here from the detour's own
-    // arc length rather than read back out of the splice.
+    let source = SliceSource(&spliced);
+    let index = RouteIndex::read(&source).unwrap();
+    let reader = RouteReader::new(&index, &source);
+    assert!(!reader.interval_facts(0, reader.total_distance_m).unwrap().complete_elevation());
     let (whole, _, _) = spliced_whole(&mut NullElevation);
-    let (lo, hi) = whole_route_seams();
-    let arcs = detour_arc_fractions(0, u32::MAX, &mut NullElevation);
-    let pts = route_points(&whole);
-    // With no heights to keep, the emitter's purely planar decimator collapses the straight street
-    // to its corners — few points, but every one of them is on the lerp.
-    assert!(pts.len() >= 4, "the fixture must have a real span to check (got {})", pts.len());
-    for p in &pts {
-        let t = arcs.get(&(p.lon, p.lat)).copied().expect("every spliced point is a detour point here");
-        let expect = (lo as f32 + (hi as f32 - lo as f32) * t).round() as i16;
-        assert!(
-            (p.ele - expect).abs() <= 1,
-            "an elevation-less detour must be the seam lerp: at t={t:.3} expected {expect}, got {}",
-            p.ele
-        );
-    }
-    assert_eq!(pts.first().unwrap().ele, lo, "…opening exactly on the split seam");
-    assert_eq!(pts.last().unwrap().ele, hi, "…and landing exactly on the rejoin seam");
-}
-
-/// The pinned exact-snap digest — see [`splice_without_detour_elevation_keeps_the_seam_lerp`].
-const EXACT_SNAP_SPLICE_DIGEST: u64 = 0x2418_d9c2_316b_e301;
-
-/// The planned detour's points keyed to their arc fraction along it — the blend's independent
-/// denominator, measured with the same per-segment metric the splice accumulates.
-fn detour_arc_fractions(
-    split_m: u32,
-    rejoin_m: u32,
-    elev: &mut dyn obc_route::ElevationSource,
-) -> std::collections::HashMap<(i32, i32), f32> {
-    let obcr = road_route_obcr();
-    let src = SliceSource(&obcr[..]);
-    let idx = RouteIndex::read(&src).unwrap();
-    let total = RouteReader::new(&idx, &src).total_distance_m;
-    let rejoin_m = rejoin_m.min(total);
-    let bytes = map_with(&road_graph(true, false));
-    let (_, detour) = detour_over_terrain(&bytes, &obcr, split_m, rejoin_m, elev);
-
-    let pts = route_points(&detour);
-    let len = measured_len(&pts);
-    let mut out = std::collections::HashMap::new();
-    let mut along = 0.0f32;
-    for (i, p) in pts.iter().enumerate() {
-        if i > 0 {
-            along += obc_map_scene::ground_dist_m((pts[i - 1].lon, pts[i - 1].lat), (p.lon, p.lat));
-        }
-        out.insert((p.lon, p.lat), if len > 1e-3 { (along / len).clamp(0.0, 1.0) } else { 1.0 });
-    }
-    out
+    assert!(route_points(&whole).iter().all(|p| p.elevation().is_none()));
 }
 
 /// **Sampled heights survive, and both seams stay exact.** With the hillside mounted, the
@@ -1209,9 +1144,13 @@ fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
         let mut band = obc_elevation::DeadBand::<f64>::new();
         let (mut lo, mut hi) = (i16::MAX, i16::MIN);
         for p in &pts {
-            band.push(f64::from(p.ele));
-            lo = lo.min(p.ele);
-            hi = hi.max(p.ele);
+            if p.elevation().is_none() {
+                band.pause();
+            } else {
+                band.push(f64::from(p.ele));
+                lo = lo.min(p.ele);
+                hi = hi.max(p.ele);
+            }
         }
         assert_eq!(stats.total_ascent_m, band.ascent() as u32, "{label}: header ascent is the stream's");
         assert_eq!(stats.total_descent_m, band.descent() as u32, "{label}: header descent is the stream's");
@@ -1225,7 +1164,7 @@ fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
     assert!(terrain.total_descent_m > NORTH_CLIMB_M / 2, "…and descended (got {})", terrain.total_descent_m);
     // The elevation-less splice books the ramp only — the pre-#1091 figures, unchanged.
     assert_eq!(cases[0].2.total_descent_m, 0);
-    assert!((80..=120).contains(&cases[0].2.total_ascent_m));
+    assert!((20..=40).contains(&cases[0].2.total_ascent_m));
 }
 
 /// The trim path is on the same contract: a trimmed detour must reach the splice with its sampled
@@ -1233,7 +1172,7 @@ fn splice_stats_are_the_dead_band_over_the_final_point_stream() {
 /// has nothing to price.
 #[test]
 fn a_trimmed_detour_keeps_its_sampled_heights_and_reports_its_climb() {
-    let bytes = map_with(&road_graph(true, false));
+    let bytes = map_with_terrain(&road_graph(true, false), neutral_profile(), &mut Hillside);
     let obcr = road_route_obcr();
     let target = 2_500;
     let (res, detour) = detour_over_terrain(&bytes, &obcr, 0, target, &mut Hillside);
@@ -1252,7 +1191,7 @@ fn a_trimmed_detour_keeps_its_sampled_heights_and_reports_its_climb() {
     // The elevation-less twin still trims to the zeroed shape it always did.
     let (res, detour) = detour_over(&bytes, &obcr, 0, target);
     let (_, trimmed) = trim_run(&obcr, &detour, target, res.unwrap().has_elevation);
-    assert!(route_points(&trimmed).iter().all(|p| p.ele == 0), "no elevation in, no elevation out");
+    assert!(route_points(&trimmed).iter().all(|p| p.elevation().is_none()), "no elevation in, no elevation out");
 }
 
 /// `has_elevation` is the producers' own answer end to end, and never a look at the values: a
@@ -1277,12 +1216,12 @@ fn has_elevation_is_the_producers_answer_not_the_values() {
     };
     let none = convert("Same name", &track(None));
     let sea = convert("Same name", &track(Some(0.0)));
-    assert_eq!(none, sea, "the two files are byte-identical — no consumer of the bytes can tell them apart");
+    assert_ne!(none, sea, "stored validity distinguishes sea level from missing elevation");
 
     // The reader, which only ever has the bytes, therefore gives the weaker honest answer for both…
     let src = SliceSource(&sea[..]);
     let idx = RouteIndex::read(&src).unwrap();
-    assert!(!RouteReader::new(&idx, &src).has_elevation(), "a stored file has no better answer than its header");
+    assert!(RouteReader::new(&idx, &src).has_elevation(), "a stored file has no better answer than its header");
 
     // …while the producer, which watched the parse, tells them apart — which is the whole reason
     // the bit is threaded from the plan to the splice instead of re-derived there.

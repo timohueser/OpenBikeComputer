@@ -24,6 +24,19 @@ public struct Coordinate: Hashable, Sendable {
             && (-180.0...180.0).contains(longitude)
     }
 
+    /// Stored route metric: microdegree coordinates, Float segment math, Double accumulation.
+    public func routeDistance(to other: Coordinate) -> Double {
+        guard isValidGeographic, other.isValidGeographic else { return .infinity }
+        let lon = Int32((longitude * 1_000_000).rounded())
+        let lat = Int32((latitude * 1_000_000).rounded())
+        let otherLon = Int32((other.longitude * 1_000_000).rounded())
+        let otherLat = Int32((other.latitude * 1_000_000).rounded())
+        let cosLat = cos((Float(lat) / 1_000_000) * (Float.pi / 180))
+        let x = Float(otherLon - lon) * 0.000001 * 111_320 * cosLat
+        let y = Float(otherLat - lat) * 0.000001 * 111_320
+        return Double((x*x + y*y).squareRoot())
+    }
+
     /// Great-circle distance to `other` in metres (haversine, spherical Earth).
     /// Plenty for route stats and waypoint placement; no CoreLocation.
     public func distance(to other: Coordinate) -> Double {

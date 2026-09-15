@@ -325,30 +325,37 @@ fn corrupt_zero_chunk_size_is_safe() {
         .is_err());
 }
 
-/// A record with an out-of-range subtype (0, past the table, or the 0xFF-adjacent) is skipped, and
-/// the valid records around it are still returned.
+/// A malformed record after a valid candidate fails the shared query and clears its partial page.
 #[test]
-fn corrupt_out_of_range_subtype_is_skipped() {
+fn corrupt_service_subtypes_fail_without_partial_results() {
+    use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
     let pois = vec![
         PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "Good".into(), hours_ref: 0xFFFF },
-        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "AlsoGood".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 43_500_100, lon: 7_500_100, subtype: 1, name: "Bad".into(), hours_ref: 0xFFFF },
     ];
-    let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
-    // Find the Water category's first chunk and clobber the SECOND record's subtype byte to 99
-    // (past the 18-entry table). Locate the chunk via the directory.
-    let poi_off = resolve_offset(&bytes, 32);
-    // Directory: count(1) chunk_size(2), then 13-byte entries. Category 1 is the first entry.
-    let e1 = poi_off + 3;
-    let idx_off = resolve_offset(&bytes, e1 + 1);
-    let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
-    // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
-    let data_start = align_up(idx_off + node_count * 4);
-    // Second record's subtype byte is at data_start + 64 + 8 (64-byte record stride).
-    bytes[data_start + 64 + 8] = 99;
-    let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
-    // The clobbered record is skipped; the first (valid) one remains.
-    assert_eq!(got.len(), 1, "the out-of-range-subtype record is skipped, the valid one kept");
-    assert_eq!(got[0].name.as_str(), "Good");
+    let base = build_poi_map(BBOX, CS, &[(1, pois)]);
+    let entry = resolve_offset(&base, 32) + 3;
+    let index = resolve_offset(&base, entry + 1);
+    let nodes = u32::from_le_bytes(base[entry + 5..entry + 9].try_into().unwrap()) as usize;
+    let data = align_up(index + nodes * 4);
+    for invalid in [0, 99, 20] {
+        let mut bytes = base.clone();
+        bytes[data + 64 + 8] = invalid;
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut query = PlaceQuery::new(
+            1,
+            obc_reader::PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (7_500_000, 43_500_000), radius_m: 5_000 },
+            None,
+        );
+        let mut page = heapless::Vec::new();
+        while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
+        assert!(matches!(query.progress(), QueryProgress::Failed(_)), "subtype {invalid}");
+        assert!(page.is_empty());
+    }
 }
 
 /// A chunk whose 0xFF end-of-records sentinel is overwritten with a valid-looking record byte must
@@ -517,6 +524,9 @@ fn complete_pages_filter_hours_before_capacity_and_cancel_old_generations() {
     query.next_page(query.key(page.last().unwrap()));
     assert_eq!(query.step(&reader, None, 8, &mut page), QueryProgress::Unavailable);
     assert!(page.is_empty());
+    query.next_page(second_start.unwrap());
+    query.previous_page(second_start.unwrap());
+    assert_eq!(query.progress(), QueryProgress::Unavailable, "cancelled work cannot revive through paging");
 }
 
 #[test]
