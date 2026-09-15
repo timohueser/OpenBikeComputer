@@ -19,6 +19,10 @@
 //! any caller `assume_init` a slot nothing had written, with only loop-local bookkeeping standing
 //! between it and a garbage planner.
 //!
+//! Visit construction keeps its emitter beside an overlaid planner/source-index workspace in
+//! the same nav grant. Each completed leg is sealed, streamed into the candidate, then released
+//! before the next search. A pending card ticket keeps the output buffer and grant alive.
+//!
 //! # What makes the arms disjoint
 //!
 //! Nothing about the memory — three *product rules* do, and each is a gate on the claim that needs
