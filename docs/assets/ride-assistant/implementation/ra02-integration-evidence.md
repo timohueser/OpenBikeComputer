@@ -62,3 +62,17 @@ The next CI walk reached Up ahead. Complete encounter ordering moved its old
 POI-detail cursor onto an authored waypoint, where Select is correctly inert.
 The recipe now selects the actual map POI with eight steps. Its named detail
 frame passed. This changes only the fixture journey; waypoint behavior is intact.
+
+## CI frame reconciliation
+
+CI run 34949339747 rendered the complete 261-frame sweep at 09ba133e. The 68 changed frames
+were visually reviewed, including map backgrounds, firmware version labels, POI lists, route
+previews, drawers, and German, French and Spanish variants. Their retained hashes now match
+the manifest. The three opening-hours frames already match the expected open, closed and
+split-hours states. The corrected Up-ahead detail selects Hotel Ambassador.
+
+The plain vector route is outside the Monaco map. Three old empty recipes produced the same
+coverage-guard frame. They are replaced by one `up-ahead-outside-map.png` recipe with the same
+reviewed pixels. The resulting sweep has 259 frames. An in-map empty category is not claimed. The translated
+drawer frames use the existing vector-route/Grimsel pairing and cover layout only. Real regional
+ride acceptance uses the separate source-correct scenarios. No local sweep was run.
