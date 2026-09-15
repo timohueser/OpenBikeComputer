@@ -24,6 +24,9 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
+  obc-bake landmarks --snapshot FILE --boundary GEOJSON --language CODE --out DIR
+      Compile pinned article and image captures offline for the map content stage.
+
   obc-bake regions [--regions FILE]
       List the curated regions this binary would bake.
 
@@ -91,6 +94,7 @@ fn main() -> ExitCode {
     let command = args.first().map(String::as_str).unwrap_or("");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     let result = match command {
+        "landmarks" => run_landmarks(rest),
         "regions" => run_regions(rest),
         "bake" => run_bake(rest),
         "terrain" => run_terrain(rest),
@@ -678,6 +682,31 @@ fn default_cache_dir() -> PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".cache/obcm/geofabrik")
+}
+
+fn run_landmarks(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "language", "out"])?;
+    if !positional.is_empty() {
+        return Err("landmarks accepts named flags only".into());
+    }
+    let snapshot = flags.get("snapshot").ok_or("landmarks requires --snapshot FILE")?;
+    let boundary = flags.get("boundary").ok_or("landmarks requires --boundary GEOJSON")?;
+    let output = flags.get("out").ok_or("landmarks requires --out DIR")?;
+    let content = obc_pack::landmarks::compile(
+        Path::new(snapshot),
+        Path::new(boundary),
+        flags.get("language").unwrap_or("en"),
+        Path::new(output),
+    )?;
+    println!(
+        "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
+        content.counts.candidates,
+        content.counts.texts,
+        content.counts.images,
+        content.counts.photo_bytes,
+        content.omissions.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

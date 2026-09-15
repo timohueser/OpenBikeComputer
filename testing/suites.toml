@@ -866,3 +866,26 @@ scheduled = "none"
 platforms = ["linux"]
 extra_triggers = ["apps/obc-desktop/**", "builder/app/**", "host/obc-pack/schema/*.example.json"]
 ownership = [{ kind = "workflow", pattern = "xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py" }]
+
+[[suite]]
+id = "fixtures.assistant-inputs"
+surface = "map-tools"
+level = "fixture"
+command = "python3 fixtures/verify-assistant-inputs.py"
+fixtures = ["assistant-inputs"]
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["fixtures/sources/ride-assistant/**"]
+coverage_component = "host-tools"
+ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-inputs.py" }]
+[[suite]]
+id = "fixtures.landmark-content"
+surface = "map-tools"
+level = "fixture"
+command = "python3 fixtures/verify-landmark-content.py"
+fixtures = ["assistant-inputs"]
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["host/obc-pack/src/landmarks/**", "fixtures/sources/ride-assistant/assistant-wiki.json"]
+coverage_component = "host-tools"
+ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-landmark-content.py" }]
