@@ -44,6 +44,9 @@ use obcm_assemble::grid::{assembly_box, CellId};
 use obcm_assemble::schema::{Schema, Skin, SkinStyle};
 use obcm_assemble::{assemble, CellInput, MemorySource, MemoryStore, NoClock, Options};
 
+#[path = "support/landmarks.rs"]
+mod landmark_fixture;
+
 // --- the fixture ------------------------------------------------------------------------------
 
 /// The `2^18` lon line between cells `j = 1052` and `j = 1053` — OBCA §7's worked-example seam.
@@ -1058,11 +1061,13 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     }
     let dir = scratch("terrain-splice");
     let summary = cut(&dir, &cfg, &ing, &ways);
-    let sources: Vec<MemorySource> = summary
+    let mut sources: Vec<MemorySource> = summary
         .cells
         .iter()
         .map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("a cell artifact")))
         .collect();
+    let core = summary.cells.iter().position(|cell| cell.band == "network").unwrap();
+    landmark_fixture::attach(&mut sources[core].0, vec![landmark_fixture::record(123)], true);
     let inputs = || -> Vec<CellInput<'_>> {
         summary
             .cells
@@ -1139,6 +1144,15 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
         }],
     };
     let (with, with_bytes) = run(inputs(), Some(job));
+
+    let landmark_source = SliceSource(&with_bytes);
+    let landmark_window = obc_reader::landmarks::map_section(&landmark_source).unwrap().unwrap();
+    let directory = obc_reader::landmarks::LandmarkDirectory::read(&landmark_window).unwrap();
+    assert_eq!(directory.record(&landmark_window, 0).unwrap().qid, 123);
+    let start = u32::from_le_bytes(with_bytes[49..53].try_into().unwrap()) as u64 * 16;
+    let len = u32::from_le_bytes(with_bytes[53..57].try_into().unwrap()) as u64 * 16;
+    let terrain_start = u32::from_le_bytes(with_bytes[41..45].try_into().unwrap()) as u64 * 16;
+    assert_eq!(start + len, terrain_start, "terrain follows the complete landmark region");
 
     let t = with.terrain.expect("the summary reports the region");
     assert_eq!(t.cells, 1);
