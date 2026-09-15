@@ -6,12 +6,12 @@ overview hash=0xf953e5888b2ec1da chunks_visited=32 map_chunk_hits=3064 map_chunk
 overview-rot hash=0x0523871bee60349f chunks_visited=32 map_chunk_hits=3064 map_chunk_misses=40 map_sd_reads=40 map_bytes_read=100608
 overview-cold hash=0xf953e5888b2ec1da chunks_visited=32 map_chunk_hits=3062 map_chunk_misses=42 map_sd_reads=43 map_bytes_read=106080
 route hash=0xe26019c8e500f2c0 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
-corridor/thin/all/cold rows=6 map_reads=44 map_bytes=22528 route_reads=6 route_bytes=7902
-corridor/thin/all/full-walk rows=6 map_reads=38 map_bytes=19456 route_reads=6 route_bytes=7902
-corridor/thin/water/full-walk rows=1 map_reads=6 map_bytes=3072 route_reads=6 route_bytes=7902
-corridor/dense/all/cold rows=16 map_reads=86 map_bytes=44032 route_reads=2 route_bytes=3060
+corridor/thin/all/cold rows=6 map_reads=44 map_bytes=22528 route_reads=6 route_bytes=9219
+corridor/thin/all/full-walk rows=6 map_reads=38 map_bytes=19456 route_reads=6 route_bytes=9219
+corridor/thin/water/full-walk rows=1 map_reads=6 map_bytes=3072 route_reads=6 route_bytes=9219
+corridor/dense/all/cold rows=16 map_reads=86 map_bytes=44032 route_reads=2 route_bytes=3570
 corridor/dense/all/warm rows=16 map_reads=85 map_bytes=43571 route_reads=0 route_bytes=0
 corridor/dense/water/warm rows=16 map_reads=12 map_bytes=6144 route_reads=0 route_bytes=0
 corridor/dense/all/mid-ride rows=16 map_reads=139 map_bytes=71398 route_reads=0 route_bytes=0
-corridor/sparse/all/warm rows=16 map_reads=32 map_bytes=16384 route_reads=5 route_bytes=7650
-corridor/sparse/water/warm rows=4 map_reads=6 map_bytes=3072 route_reads=6 route_bytes=7902
+corridor/sparse/all/warm rows=16 map_reads=32 map_bytes=16384 route_reads=5 route_bytes=8925
+corridor/sparse/water/warm rows=4 map_reads=6 map_bytes=3072 route_reads=6 route_bytes=9219
