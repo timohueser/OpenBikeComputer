@@ -41,6 +41,11 @@ pub struct ReviewOrigin {
 }
 
 impl ReviewContext {
+    /// Both executors use the persisted original, rather than trusting a caller's avoidance flag.
+    pub fn accepts_original(self, active: Option<u64>, current: Option<PayloadFingerprint>, avoidance: bool) -> bool {
+        active == self.original.map(|source| source.object) && current == self.original && !avoidance
+    }
+
     pub fn accepts_origin(self, profile: u8, current: ReviewOrigin) -> bool {
         current.trustworthy
             && self.profile == profile
@@ -205,6 +210,10 @@ impl NavigatorMachine {
     }
     pub(crate) fn select_after_checkpoint(&mut self, index: Option<usize>) -> bool {
         if self.review.status == ReviewStatus::Unresolved {
+            if self.review.change.is_some() {
+                self.review.cancel_after = true;
+                self.review.after = AfterCheckpoint::Select(index);
+            }
             return false;
         }
         if index.is_some_and(|index| self.route_unaccepted(index))
@@ -309,6 +318,7 @@ impl NavigatorMachine {
             return;
         }
         if self.review.status == ReviewStatus::Unresolved {
+            self.review.cancel_after |= self.review.change.is_some();
             return;
         }
         if self.review.submitted {
@@ -420,6 +430,64 @@ impl NavigatorMachine {
         true
     }
 
+    fn checkpoint_committed(&mut self) -> Option<AfterCheckpoint> {
+        self.review.status = ReviewStatus::Saving;
+        let change = CheckpointChange { expected: self.review.checkpoint, next: self.review.change.take()? };
+        self.review.checkpoint = change.next;
+        if core::mem::take(&mut self.review.cancel_after) {
+            // Resolve the submitted acceptance first, then durably clear before retirement.
+            self.review.change = Some(None);
+            if !matches!(self.review.after, AfterCheckpoint::Select(_)) {
+                self.review.after = AfterCheckpoint::Phase;
+            }
+            return None;
+        }
+        if change.next.is_none() {
+            if self.review.preview.is_some() {
+                self.cancel_review();
+            } else {
+                self.review.status = ReviewStatus::Idle;
+            }
+            return Some(self.review.after);
+        }
+        self.review.status = ReviewStatus::Accepted;
+        self.review.preview = None;
+        self.review.preview_index = None;
+        self.review.context = None;
+        self.route = PlanPhase::Active;
+        Some(self.review.after)
+    }
+
+    fn recover_checkpoint(
+        &mut self,
+        store: StoreIdentity,
+        checkpoint: Option<NavigatorCheckpoint>,
+    ) -> Result<Option<AfterCheckpoint>, ()> {
+        if self.review.store != Some(store) || self.review.status != ReviewStatus::Unresolved {
+            return Err(());
+        }
+        let next = self.review.change.ok_or(())?;
+        if checkpoint != next && checkpoint != self.review.checkpoint {
+            return Err(());
+        }
+        self.review.token = None;
+        self.review.submitted = false;
+        if checkpoint == next {
+            return Ok(self.checkpoint_committed());
+        }
+        // The complete recovered head proves the pending edit did not commit.
+        self.review.change = None;
+        self.review.status = if self.review.preview.is_some() {
+            ReviewStatus::Preview
+        } else {
+            ReviewStatus::Failed(NavigatorError::Store)
+        };
+        if core::mem::take(&mut self.review.cancel_after) {
+            self.cancel_review();
+        }
+        Ok(None)
+    }
+
     fn checkpoint_answer(&mut self, outcome: RetentionOutcome) -> Option<AfterCheckpoint> {
         if self.review.token != Some(outcome.token()) {
             return None;
@@ -427,31 +495,7 @@ impl NavigatorMachine {
         self.review.token = None;
         self.review.submitted = false;
         match outcome {
-            RetentionOutcome::CheckpointWritten { .. } => {
-                let change = CheckpointChange { expected: self.review.checkpoint, next: self.review.change.take()? };
-                self.review.checkpoint = change.next;
-                if core::mem::take(&mut self.review.cancel_after) {
-                    // Resolve the submitted acceptance first, then durably clear before retirement.
-                    self.review.change = Some(None);
-                    if !matches!(self.review.after, AfterCheckpoint::Select(_)) {
-                        self.review.after = AfterCheckpoint::Phase;
-                    }
-                    return None;
-                }
-                if change.next.is_none() {
-                    if self.review.preview.is_some() {
-                        self.cancel_review();
-                    } else {
-                        self.review.status = ReviewStatus::Idle;
-                    }
-                    return Some(self.review.after);
-                }
-                self.review.status = ReviewStatus::Accepted;
-                self.review.preview = None;
-                self.review.context = None;
-                self.route = PlanPhase::Active;
-                Some(self.review.after)
-            }
+            RetentionOutcome::CheckpointWritten { .. } => self.checkpoint_committed(),
             RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. } => {
                 self.review.status = ReviewStatus::Unresolved;
                 None
@@ -506,7 +550,8 @@ impl crate::App {
     }
 
     pub fn assistant_needs_recovery(&self) -> bool {
-        !self.navigator.review.recovery_seen && self.navigator.review.status == ReviewStatus::Idle
+        (!self.navigator.review.recovery_seen && self.navigator.review.status == ReviewStatus::Idle)
+            || (self.navigator.review.status == ReviewStatus::Unresolved && self.navigator.review.change.is_some())
     }
 
     /// Keep the newest trustworthy sample while a phase write is pending; the phase owner replays it after ACK.
@@ -550,7 +595,17 @@ impl crate::App {
         self.navigator.review.checkpoint
     }
     pub fn offer_assistant_checkpoint(&mut self, store: StoreIdentity, checkpoint: Option<NavigatorCheckpoint>) {
-        self.navigator.offer_checkpoint(store, checkpoint);
+        if self.navigator.review.status == ReviewStatus::Unresolved {
+            if let Ok(after) = self.navigator.recover_checkpoint(store, checkpoint) {
+                self.retention.reset_store();
+                self.catalogs.remount_required = false;
+                self.catalogs.loaded_scope = None;
+                self.catalogs.note_store_moved();
+                self.apply_assistant_checkpoint_action(after);
+            }
+        } else {
+            self.navigator.offer_checkpoint(store, checkpoint);
+        }
     }
     /// A transient immutable edit, available only to the current RetentionMachine token.
     pub fn assistant_checkpoint_payload(&self, token: OperationToken<RetentionTag>) -> Option<CheckpointChange> {
@@ -565,7 +620,11 @@ impl crate::App {
         self.navigator.checkpoint_submission(token)
     }
     pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: RetentionOutcome) {
-        match self.navigator.checkpoint_answer(outcome) {
+        let after = self.navigator.checkpoint_answer(outcome);
+        self.apply_assistant_checkpoint_action(after);
+    }
+    fn apply_assistant_checkpoint_action(&mut self, after: Option<AfterCheckpoint>) {
+        match after {
             Some(AfterCheckpoint::Activate(id)) => {
                 if let Some(index) = self.route_ids().iter().position(|&candidate| candidate == id) {
                     self.catalogs.mark_route_accepted(index);
@@ -674,6 +733,15 @@ mod tests {
         assert_eq!(nav.review.checkpoint.unwrap().route, source(5));
         assert_eq!(nav.review.status, ReviewStatus::Accepted);
         assert!(nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }).is_none());
+        assert_eq!(nav.review.preview_index, None);
+        assert!(!nav.select_after_checkpoint(None));
+        let token = issued(&mut nav, &mut tokens);
+        nav.checkpoint_submission(token);
+        assert_eq!(
+            nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }),
+            Some(AfterCheckpoint::Select(None))
+        );
+        assert!(nav.select_after_checkpoint(Some(1)), "accepted route can be selected again after stop");
     }
     #[test]
     fn cancel_before_submission_annihilates_and_cancel_after_submission_waits_for_clear_ack() {
@@ -725,6 +793,68 @@ mod tests {
         assert_eq!(nav.following.active_route, Some(0));
         assert!(nav.checkpoint_change().is_none());
     }
+    #[test]
+    fn same_card_recovery_resolves_old_or_new_head_and_queued_cancel_in_the_live_app() {
+        for committed in [false, true] {
+            for cancel in [false, true] {
+                let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+                let summary = obc_route::RouteSummary {
+                    name: heapless::String::new(),
+                    distance_km: 1,
+                    climb_m: 0,
+                    bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+                    start_lon: 0,
+                    start_lat: 0,
+                };
+                app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
+                app.navigator = preview();
+                app.navigator.review.recovery_seen = true;
+                app.navigator.accept_review(origin(), 0);
+                let next = app.navigator.review.change.unwrap();
+                let effect = app.retention.next_checkpoint_effect().unwrap();
+                let token = effect.token();
+                app.navigator.checkpoint_issued(token);
+                app.navigator.checkpoint_submission(token);
+                let failed = RetentionOutcome::Failed { token, error: RetentionError::RemountRequired };
+                assert!(app.retention.apply_outcome(failed));
+                app.assistant_checkpoint_answer(failed);
+                app.catalogs.remount_required = true;
+                if cancel {
+                    app.navigator.cancel_review();
+                }
+                assert!(app.assistant_needs_recovery());
+                assert!(app.retention.next_checkpoint_effect().is_none());
+                let recovered = if committed { next } else { None };
+                app.offer_assistant_checkpoint(context().store, recovered);
+                assert!(!app.catalogs.remount_required);
+                assert_eq!(app.navigator.review.checkpoint, recovered);
+                assert_ne!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                let next_effect =
+                    app.retention.next_checkpoint_effect().expect("same owner permits work after verified recovery");
+                if cancel && committed {
+                    assert_eq!(app.navigator.review.change, Some(None));
+                    assert!(app.assistant_preview().is_some(), "clear is still owed before retirement");
+                    app.navigator.checkpoint_issued(next_effect.token());
+                    app.navigator.checkpoint_submission(next_effect.token());
+                    let outcome = RetentionOutcome::CheckpointWritten { token: next_effect.token() };
+                    assert!(app.retention.apply_outcome(outcome));
+                    app.assistant_checkpoint_answer(outcome);
+                    assert!(app.assistant_checkpoint().is_none());
+                    assert!(app.assistant_preview().is_none());
+                    assert_eq!(app.active_route_index(), Some(0));
+                } else if cancel {
+                    assert!(app.assistant_preview().is_none());
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
+                } else if !committed {
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
+                } else {
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                    assert_eq!(app.active_route_index(), Some(1));
+                }
+            }
+        }
+    }
+
     #[test]
     fn reboot_only_offers_resume_and_requires_same_phase_occurrence() {
         let checkpoint = NavigatorCheckpoint {

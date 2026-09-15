@@ -1619,19 +1619,21 @@ pub(crate) async fn run_app(
                             .unwrap_or(false)
                         });
                     #[cfg(has_nav)]
-                    let sources_current = resume_current
-                        && app.assistant_review_context().is_none_or(|context| {
-                            crate::flat_store::planner_map_current()
-                                && context.map == crate::flat_store::planner_map_key(flat)
-                                && context.profile == app.settings().bike_profile_idx
-                                && context.original.is_none_or(|original| {
-                                    review_original.as_ref().is_some_and(|held| {
-                                        held.id().0 == original.object
-                                            && held.revision().0 == original.revision
-                                            && held.is_current()
+                    let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
+                    let sources_current = clearing
+                        || resume_current
+                            && app.assistant_review_context().is_none_or(|context| {
+                                crate::flat_store::planner_map_current()
+                                    && context.map == crate::flat_store::planner_map_key(flat)
+                                    && context.profile == app.settings().bike_profile_idx
+                                    && context.original.is_none_or(|original| {
+                                        review_original.as_ref().is_some_and(|held| {
+                                            held.id().0 == original.object
+                                                && held.revision().0 == original.revision
+                                                && held.is_current()
+                                        })
                                     })
-                                })
-                        });
+                            });
                     #[cfg(not(has_nav))]
                     let sources_current = app.assistant_review_context().is_none();
                     let result = if matches!(effect, RetentionEffect::WriteCheckpoint { .. }) && !sources_current {
@@ -1727,10 +1729,12 @@ pub(crate) async fn run_app(
                                     context.map != crate::flat_store::planner_map_key(flat)
                                         || context.store.bytes() != flat.store_id().0
                                         || context.profile != app.settings().bike_profile_idx
-                                        || context.original.is_some_and(|original| {
-                                            crate::flat_store::route_fingerprint(flat, original.object)
-                                                != Some(original)
-                                        })
+                                        || !crate::assistant::original_allowed(
+                                            flat,
+                                            context,
+                                            app.active_route_index()
+                                                .and_then(|index| app.route_ids().get(index).copied()),
+                                        )
                                 })
                             {
                                 RideExec::deliver(
@@ -1772,6 +1776,7 @@ pub(crate) async fn run_app(
                                                 }
                                             }
                                             if let Some(original) = context.original {
+                                                crate::assistant::release_original(flat, &mut review_original, false);
                                                 review_original = crate::flat_store::planner_original(
                                                     flat,
                                                     obc_storage::flat::ObjectId(original.object),
@@ -2326,6 +2331,13 @@ pub(crate) async fn run_app(
                     }
                 }
                 if search_ended {
+                    crate::assistant::release_original(
+                        flat,
+                        &mut review_original,
+                        (app.assistant_preview().is_some()
+                            && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview)
+                            || app.assistant_review_status() == obc_app::navigator::ReviewStatus::Unresolved,
+                    );
                     // Acknowledge only after dropping the arena guard. Navigator can then unfreeze
                     // rendering or admit a replacement operation.
                     nav_guard = None;
