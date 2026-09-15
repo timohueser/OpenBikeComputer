@@ -15,8 +15,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from tools.fixtures import Catalog, FixtureError, Store, build_package, cache_root, sha256_file
 
-INPUTS = ("assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-replays")
-REGIONS = {"meiringen": "europe/switzerland/meiringen", "west-cork": "europe/ireland/west-cork"}
+REGIONS = {"meiringen": "europe/switzerland", "west-cork": "europe/ireland/west-cork"}
+
+
+def input_packages(region: str) -> tuple[str, ...]:
+    content = "assistant-switzerland-content" if region == "meiringen" else "assistant-wiki"
+    return ("assistant-osm", "assistant-terrain", "assistant-replays", content)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -73,6 +77,9 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
 
     boundaries = json.loads((ROOT / "fixtures/sources/ride-assistant/regions.geojson").read_text())
     polygon = next(f["geometry"]["coordinates"][0] for f in boundaries["features"] if f["properties"]["id"] == region)
+    if region == "meiringen":
+        # Map selection bounds differ from the wider acquisition/replay boundary.
+        polygon = [[8.1, 46.5], [8.4, 46.5], [8.4, 46.8], [8.1, 46.8], [8.1, 46.5]]
     west, south = polygon[0]
     east, north = polygon[2]
     region_id = REGIONS[region]
@@ -81,10 +88,7 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     prefix = region_id.replace("/", "_")
     source = store.package_root("assistant-osm") / ("switzerland.osm.pbf" if region == "meiringen" else "west-cork.osm.pbf")
     pbf = local_source / (prefix + "-latest.osm.pbf")
-    if region == "meiringen":
-        run("osmium", "extract", "--bbox", f"{west},{south},{east},{north}", "--strategy", "smart", source, "--output", pbf)
-    else:
-        shutil.copyfile(source, pbf)
+    shutil.copyfile(source, pbf)
     manifest = json.loads((store.package_root("assistant-osm") / "manifest.json").read_text())
     source_timestamp = next(s["source_timestamp"] for s in manifest["sources"] if s["path"] == source.name)
     epoch = datetime.fromisoformat(source_timestamp.replace("Z", "+00:00")).timestamp()
@@ -92,6 +96,8 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     (local_source / (prefix + ".poly")).write_text(region + " validation crop\n1\n" + "".join(f" {lon} {lat}\n" for lon, lat in polygon) + "END\nEND\n")
     regions = work / "regions.toml"
     regions.write_text(f'[[regions]]\nid = "{region_id}"\nname = "{region} validation crop"\n')
+    if landmarks is None and region == "meiringen":
+        landmarks = store.package_root("assistant-switzerland-content") / "content.json"
     if landmarks is None:
         wiki = store.package_root("assistant-wiki")
         run(bin_dir / "obc-bake", "landmarks", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--language", "en", "--out", work / "landmarks")
@@ -136,7 +142,7 @@ def package(region: str, output: Path, map_path: Path, provenance: dict, catalog
         if replay["region"] == region:
             shutil.copyfile(replay_root / replay["gpx"], stage / replay["gpx"])
     write_json(stage / "build.json", {"schema": 2, "region": region, "coverage": "regional crop",
-        "source_packages": {p: catalog.packages[p]["sha256"] for p in INPUTS}, "provenance": provenance,
+        "source_packages": {p: catalog.packages[p]["sha256"] for p in input_packages(region)}, "provenance": provenance,
         "map": {"bytes": map_path.stat().st_size, "sha256": digest, "obcm_version": 16}})
     size, digest = build_package(package_id, stage, output / (package_id + ".tar.gz"))
     print(f"{package_id}: bytes={size} sha256={digest}")
@@ -156,9 +162,10 @@ def main() -> int:
     try:
         catalog = Catalog(ROOT / "fixtures/catalog.toml")
         store = Store(catalog, cache_root())
-        for package_id in INPUTS:
+        regions = REGIONS if args.region == "all" else (args.region,)
+        for package_id in sorted({p for region in regions for p in input_packages(region)}):
             store.verify(package_id)
-        for region in REGIONS if args.region == "all" else (args.region,):
+        for region in regions:
             if args.assembled_map:
                 result, provenance = args.assembled_map.resolve(), json.loads(args.provenance.read_text())
             else:
