@@ -1331,7 +1331,7 @@ pub(crate) async fn run_app(
                 match effect {
                     CatalogEffect::RemoveReview { token, source } => {
                         let result = if source.store != flat.store_id().0 {
-                            Err(obc_storage::flat::StoreError::Invalid)
+                            Err(obc_storage::flat::StoreError::NotFound)
                         } else if let Some(writer) = crate::flat_store::writer() {
                             writer
                                 .call(
