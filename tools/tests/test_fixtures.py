@@ -239,8 +239,6 @@ class FixtureRegistryTests(unittest.TestCase):
             self.assertFalse((store.by_id / "sample").is_symlink())
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class AssistantPackageTests(unittest.TestCase):
@@ -278,3 +276,7 @@ class AssistantPackageTests(unittest.TestCase):
             candidate.write_bytes(b"OBCM")
             with self.assertRaisesRegex(FixtureError, "OBCM v16"):
                 recipe.package("west-cork", root / "package", candidate, {}, None, None)
+
+
+if __name__ == "__main__":
+    unittest.main()
