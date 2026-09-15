@@ -33,3 +33,15 @@ shipping image and physical checks remain pending.
 The standalone board lockfile now resolves the same decoder versions as the root
 workspace. `obc licenses` regenerated the required miniz_oxide and adler2 notices.
 No package versions were upgraded.
+
+## Current v16 CI composition
+
+CI run `34944418390`, board job `104300462240`, measured App 48,480 bytes,
+linked resident 303,808 bytes, and flash 1,531,944 bytes. The exact App record
+arrived with the reviewed RA03 parent. All device limits remain unchanged.
+
+The Linux desktop journey reached the map card, then waited for the old
+994-byte accessible label. Its actual v16 fixture is 1,010 bytes. Commit
+`53233340` updates that exact label and the terrain staging assertion to v16.
+The suite registry and diff check pass. Linux launch remains the CI gate; no
+local full sweep or image build ran. CI retains snapshot PNGs for review.
