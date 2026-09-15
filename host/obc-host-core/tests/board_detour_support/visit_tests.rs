@@ -51,7 +51,7 @@ impl VisitHarness {
         };
         let target = obc_route::visit::VisitTarget {
             map,
-            display: (if mapped { 500_000 } else { 500_500 }, 510_000),
+            display: (if mapped { 500_000 } else { 499_500 }, 510_000),
             metadata: PoiMetadata {
                 source: SourceId::osm(1, 3),
                 approach: mapped.then_some(PoiApproach {
