@@ -2,8 +2,8 @@
 //! Entry, filter and route changes define a new generation. Progress and clock ticks do not
 //! rerank that generation; only current opening status changes. Errors settle as failures.
 
-use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
-use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath, MAX_CORRIDOR_RESULTS};
+use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+use obc_reader::{CorridorPoi, PoiCategorySet, Reader, RoutePath};
 use obc_route::RouteReader;
 
 /// What a corridor snapshot is *for*: the category filter and the along-route progress it was
@@ -55,7 +55,7 @@ pub struct CorridorScratch {
     taken_for: Option<CorridorKey>,
     /// The corridor POIs for [`taken_for`](CorridorScratch::taken_for), ascending by along-route
     /// distance. Frozen once filled; the query owns the ordering.
-    pois: heapless::Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
+    pois: heapless::Vec<CorridorPoi, PLACE_PAGE_SIZE>,
 }
 
 impl CorridorScratch {
