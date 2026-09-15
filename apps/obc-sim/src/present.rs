@@ -620,7 +620,9 @@ mod tests {
         let cache = MapCache::new();
         let src = SliceSource(&bytes);
         let reader = Reader::new(&src, &tables, &cache);
-        let (cx, cy, zoom) = crate::initial_camera(&reader, W);
+        // A fixed Meiringen street view stays inside the canonical fixture crop.
+        // Complete OSM ways can expand the file bbox far beyond this rendered region.
+        let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
 
         // Render the whole frame into the resident device-64 plane, exactly as the GUI loop does —
         // the device color path (`Rgb565` → device-64 pack), not an RGB888 side buffer.
@@ -657,8 +659,7 @@ mod tests {
         app.advance_animations(InputClock(0));
         render(&mut app, &mut fb);
         present.present_now(&fb, None); // first present: the whole frame
-        let span_lon = (reader.bbox.max_lon as i64 - reader.bbox.min_lon as i64).max(1);
-        app.state.cam_lon = app.state.cam_lon.wrapping_add((span_lon / 4) as i32); // pan a quarter-map
+        app.state.cam_lon += 3_000; // pan a quarter of the fixed view
         render(&mut app, &mut fb);
         present.present_now(&fb, None);
         let pan = present.stats.pushed_rows;
@@ -677,7 +678,7 @@ mod tests {
 
     /// Real-data pack→parse of the POI section (#423): the committed `monaco.obcm` — a POI-dense
     /// coastal fixture the packer produced from a real OSM extract — must parse at the current format version and expose a
-    /// full six-category POI directory with several **non-empty** categories, each carrying a real
+    /// full POI directory with several **non-empty** categories, each carrying a real
     /// quadtree (non-zero node + chunk counts), plus a populated §8 nav graph (#464). This
     /// complements the reader's hand-built byte pins (`obc-reader/tests/format.rs`) by exercising
     /// the whole write→read path on real geometry, and gives the #425 POI browser a map with POIs
@@ -689,23 +690,25 @@ mod tests {
 
         let bytes = obc_fixtures::read("sim-monaco", "monaco.obcm").expect("full fixture suite requires map");
         let src = SliceSource(&bytes);
-        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid v11 map");
+        let tables = MapTables::parse(&src).expect("monaco.obcm parses as a valid current map");
         let cache = MapCache::new();
         let r = Reader::new(&src, &tables, &cache);
 
         assert_eq!(r.version, obc_formats::obcm::VERSION, "the fixture is the OBCM version this build reads");
         let dir = r.poi_directory();
-        // The directory is always present with all six categories (spec §7.1).
-        assert_eq!(dir.entries.len(), 6, "six-category POI directory");
+        let mut expected: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
+        expected.push(obc_formats::obcm::SUMMIT_CATEGORY_ID);
+        expected.sort_unstable();
+        assert_eq!(dir.entries.iter().map(|e| e.category_id).collect::<Vec<_>>(), expected);
         assert_eq!(dir.chunk_size, 512, "the packer's fixed 512-byte POI chunks");
         // Monaco is a dense coastal city → several categories populated. Each non-empty category
-        // must carry a real quadtree: node_count and chunk_count both non-zero, ids in 1..=6.
+        // must carry a real quadtree: node_count and chunk_count both non-zero, known category ids.
         let populated: Vec<u8> = dir
             .entries
             .iter()
             .filter(|e| !e.is_empty())
             .inspect(|e| {
-                assert!((1..=6).contains(&e.category_id), "category id {} in range", e.category_id);
+                assert!(expected.contains(&e.category_id), "known category {}", e.category_id);
                 assert!(e.node_count > 0 && e.chunk_count > 0, "a non-empty category has a real tree");
             })
             .map(|e| e.category_id)
@@ -969,7 +972,9 @@ mod tests {
         // One host-owned render scratch for the whole tour (#1146), lent to every frame.
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
-        let (cx, cy, zoom) = crate::initial_camera(&reader, W);
+        // A fixed Meiringen street view stays inside the canonical fixture crop.
+        // Complete OSM ways can expand the file bbox far beyond this rendered region.
+        let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
         let build_app = |settings: Settings, store: &FlatRouteStore| {
             let mut state = AppState::new(cx, cy, zoom * 12.0);
             state.mode = CameraMode::Follow;
@@ -1161,7 +1166,9 @@ mod tests {
         // One host-owned render scratch for the whole tour (#1146), lent to every frame.
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
-        let (cx, cy, zoom) = crate::initial_camera(&reader, W);
+        // A fixed Meiringen street view stays inside the canonical fixture crop.
+        // Complete OSM ways can expand the file bbox far beyond this rendered region.
+        let (cx, cy, zoom) = (8_184_271, 46_727_359, W as f32 / 12_000.0);
         let build_app = |settings: Settings, store: &FlatRouteStore| {
             let mut state = AppState::new(cx, cy, zoom * 12.0);
             state.mode = CameraMode::Follow;
