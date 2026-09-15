@@ -57,7 +57,7 @@
 //! epic's closing end-to-end run is what turns it into one. Native tracked-heap numbers carried to
 //! wasm by the same ×1.15 that has held since the C-series.
 
-use crate::driver::{DEFAULT_READ_BLOCK, READ_CACHE_BLOCKS};
+use crate::driver::{DEFAULT_READ_BLOCK, READ_CACHE_BLOCKS, VERIFY_READ_BLOCK};
 
 /// The engine's residual floor over the sort budget: per-cell transients, the first-fit bin table,
 /// the seam table, both block caches, and slack. Largest measured residual is 34 MiB (BW at a
@@ -110,9 +110,10 @@ pub const OUTPUT_PER_CELL_BYTE: f64 = 1.0;
 #[cfg(test)]
 const REGION_GAP_BYTES: f64 = 50.0 * 15.0;
 
-/// One block cache's residency (`driver.rs`'s default geometry). Two exist on the sunk path — the
-/// input cells' and the map read-back's.
-pub const READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * DEFAULT_READ_BLOCK) as f64;
+/// Default input cache residency, shared across all source cells.
+pub const INPUT_READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * DEFAULT_READ_BLOCK) as f64;
+/// Sealed-output verification cache residency.
+pub const VERIFY_READ_CACHE_BYTES: f64 = (READ_CACHE_BLOCKS * VERIFY_READ_BLOCK) as f64;
 
 /// wasm32's hard address space. Nothing can be allocated past this, whatever the machine has.
 pub const WASM32_ADDRESS_SPACE: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
@@ -232,7 +233,7 @@ pub fn estimate_memory_with_budget(
     let whole_map = OUTPUT_PER_CELL_BYTE * cells;
     let output_bytes = if residency.output_sunk { 0.0 } else { whole_map };
     let (engine_bytes, input_bytes) = if residency.input_on_disk {
-        ((sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN, 2.0 * READ_CACHE_BYTES + terrain)
+        ((sort_budget + ENGINE_FLOOR) * WASM_ALLOC_MARGIN, INPUT_READ_CACHE_BYTES + VERIFY_READ_CACHE_BYTES + terrain)
     } else {
         // The fallback: spill in MemoryScratch and cells in memory. No wasm margin on the spill
         // term — 2.5× is already the margin.
@@ -404,7 +405,10 @@ mod tests {
         let bad_budget = estimate_memory(20.0 * MB, 60.0 * MB, 0.0, f64::NAN, Residency::streamed());
         assert!(bad_budget.engine_bytes > 0.0, "a NaN sort budget falls back to the engine default");
         let all_terrain = estimate_memory(0.0, 50.0 * MB, 80.0 * MB, SORT, Residency::streamed());
-        assert!(all_terrain.input_bytes <= 50.0 * MB + 2.0 * READ_CACHE_BYTES, "terrain clamps to the total");
+        assert!(
+            all_terrain.input_bytes <= 50.0 * MB + INPUT_READ_CACHE_BYTES + VERIFY_READ_CACHE_BYTES,
+            "terrain clamps to the total"
+        );
     }
 
     /// The mobile override, unchanged in spirit: the projection is about the selection and mode,

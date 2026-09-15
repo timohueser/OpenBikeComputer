@@ -56,3 +56,7 @@ ureq = { version = "3", optional = true }
 # than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
 sha2 = "0.11"
 obc-fixtures = { path = "../obc-fixtures" }
+
+[[test]]
+name = "assets"
+required-features = ["external-fixtures"]

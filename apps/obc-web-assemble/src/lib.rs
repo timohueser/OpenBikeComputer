@@ -48,8 +48,9 @@ pub use driver::{
     SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
-    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, OUTPUT_PER_CELL_BYTE,
-    PRACTICAL_BUDGET, READ_CACHE_BYTES, SPILL_PER_NAV_BYTE, WASM32_ADDRESS_SPACE, WASM_ALLOC_MARGIN,
+    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, INPUT_READ_CACHE_BYTES,
+    OUTPUT_PER_CELL_BYTE, PRACTICAL_BUDGET, SPILL_PER_NAV_BYTE, VERIFY_READ_CACHE_BYTES, WASM32_ADDRESS_SPACE,
+    WASM_ALLOC_MARGIN,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -507,9 +508,8 @@ mod web {
         /// of the call**. Fill it and return; do not keep it, do not hand it to anything
         /// asynchronous, and do not call back into the assembler from inside it.
         ///
-        /// Reads are served from a small block cache on the wasm side, so this is called on the
-        /// order of once per 64 KiB of a cell rather than once per engine read — which is what makes
-        /// a per-call JS crossing affordable at all (see [`crate::driver`]'s module header).
+        /// Small reads use the bounded input cache with 4 KiB default windows. Host call count
+        /// depends on source locality; bulk reads bypass the cache (see [`crate::driver`]).
         ///
         /// `sink` is the output's version of `on_read` (#1116 D1), and the one that decides whether
         /// a country-scale map can be assembled in a tab at all: an object with `create()`,

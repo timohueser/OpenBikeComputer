@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -316,6 +317,51 @@ class EndToEndTests(unittest.TestCase):
         )
         self.assertEqual({f.path for f in series.files}, {"firmware/obc-storage/src/flat/store.rs"})
         self.assertEqual(series.totals(ledger.PRODUCTION, "raw")[2], 1)
+
+    def test_absolute_storage_count_reconciles_one_committed_tree(self):
+        root = "firmware/obc-storage/src/flat/"
+        self.write(root + "mod.rs", 'pub mod store;\n#[cfg(test)]\nmod check;\n'
+                   '#[cfg(any(test, feature = "std"))]\npub mod host;\n')
+        self.write(root + "store.rs", '// production comment\n\npub fn f() {}\n'
+                   '#[cfg(test)]\nmod tests { fn t() {} }\npub fn last() {}')
+        self.write(root + "check.rs", "fn helper() {}\n")
+        self.write(root + "host.rs", "pub fn production_host() {}\n")
+        self.write(root + "sim.rs", "pub fn fault_model() {}\n")
+        self.write("firmware/obc-fw-nrf54l/src/flat_store.rs", "pub fn adapter() {}\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "storage")
+        head = self.git("rev-parse", "HEAD").strip()
+        self.write(root + "store.rs", "uncommitted replacement\n")
+        total = ledger.storage_total(str(self.repo), head)
+        self.assertEqual(total.head, head)
+        self.assertEqual(total.totals(ledger.PRODUCTION, "raw"), (8, 0, 8))
+        self.assertEqual(total.totals(ledger.PRODUCTION, "code"), (6, 0, 6))
+        self.assertEqual(total.totals(ledger.TEST, "raw"), (6, 0, 6))
+        self.assertEqual(len(total.files), 5)
+        report = ledger.render_storage_total(total)
+        self.assertIn("8 production + 6 excluded = 14 Rust source lines", report)
+        self.assertIn("within by 5992", report)
+        self.assertEqual(report, ledger.render_storage_total(ledger.storage_total(str(self.repo), head)))
+        with self.assertRaisesRegex(SystemExit, "scope contains no Rust"):
+            ledger.storage_total(str(self.repo), self.base)
+
+    def test_absolute_storage_budget_checks_raw_lines_and_exact_limit(self):
+        path = "firmware/obc-storage/src/flat/store.rs"
+        for count in (6000, 6001):
+            self.write(path, "// production comment\n" * count)
+            self.git("add", "-A")
+            self.git("commit", "-qm", f"{count} lines")
+            # Exercise the real CLI against the temporary committed repository.
+            with mock.patch.object(ledger, "__file__", str(self.repo / "loc_ledger.py")):
+                with contextlib.redirect_stdout(io.StringIO()) as report:
+                    status = ledger.main(["--storage-total", "--check-budget"])
+                self.assertEqual(status, int(count > 6000))
+                self.assertIn(f"Budget: {count} / 6000", report.getvalue())
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(ledger.main(["--storage-total"]), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                ledger.main(["--storage-total", "--basis", "code"])
 
     def test_basis_selects_the_headline_but_both_are_always_printed(self):
         self.write("src/thing.rs", "pub fn a() -> u32 {\n    // a comment\n    1\n}\n")

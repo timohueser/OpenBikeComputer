@@ -822,9 +822,9 @@ fn the_read_block_size_changes_the_call_count_and_not_the_bytes() {
         (out.bytes.expect("buffered"), reads)
     };
     let (uncached, engine_reads) = run(1);
-    let (cached, host_reads) = run(64 * 1024);
+    let (cached, host_reads) = run(BridgeOptions::default().read_block_bytes);
     assert_same_bytes(&uncached, &cached, "the map with the read cache off");
-    eprintln!("host reads: {engine_reads} with the cache off, {host_reads} at 64 KiB blocks");
+    eprintln!("host reads: {engine_reads} with the cache off, {host_reads} at default input blocks");
     // 30× on a 20 KB fixture, where most regions already fit one read; the ratio a country's cells
     // see is the one in the module header, because it is the per-record walks that grow with size.
     assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
@@ -1084,14 +1084,9 @@ fn a_cancel_through_the_sink_path_is_still_a_cancellation() {
     }
 }
 
-/// The §4.8 read-back goes through the same block cache the input reads do, and for the same reason:
-/// the pass walks the sealed map a record at a time, and one host call per read is one file read and
-/// one boundary crossing per record.
-///
-/// Transparency first — the same bytes either way — and then the count, because "with the cache"
-/// only means something against "without".
+/// Input cache tuning must not change sealed-output verification caching or output bytes.
 #[test]
-fn the_read_back_is_cached_and_the_cache_changes_no_bytes() {
+fn input_cache_options_leave_read_back_caching_unchanged() {
     let run = |block: usize| {
         let disk = Disk::default();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
@@ -1099,11 +1094,13 @@ fn the_read_back_is_cached_and_the_cache_changes_no_bytes() {
         let written = disk.bytes.borrow().clone();
         (written, disk.reads.get())
     };
-    let (uncached, engine_reads) = run(1);
-    let (cached, host_reads) = run(64 * 1024);
-    assert_same_bytes(&uncached, &cached, "the map with the read-back cache off");
-    eprintln!("read-back: {engine_reads} host reads with the cache off, {host_reads} at 64 KiB blocks");
-    assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
+    let (expected, reads) = run(64 * 1024);
+    assert!(reads > 0);
+    for block in [1, BridgeOptions::default().read_block_bytes] {
+        let (written, actual_reads) = run(block);
+        assert_same_bytes(&expected, &written, "input cache settings preserve output");
+        assert_eq!(actual_reads, reads, "verification cache is independent of input blocks");
+    }
 }
 
 #[path = "../../../host/obcm-assemble/tests/support/landmarks.rs"]
