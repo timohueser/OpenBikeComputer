@@ -185,15 +185,16 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
     --script "B d d w p d d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
 # POI create-route flow (epic #116, R4). The `f` token also drains a pending create-route request
 # (running the real A* router over the map's v8 nav graph), so one script walks the whole flow.
+# The detail needs a prepared frame (`f`) before its activation can validate opening hours.
 # The confirm (#685: the category glyph in the T1 slot + the straight-line 'NNN m away' under
 # the name): detail of a resupply POI ~600 m away → press.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
+    --script "B d d w p d d d p f p f p" --expect-screen NavConfirm --png "$OUT/nav-confirm.png"
 # The confirm card's own context sheet (#1515 D4d) — the **only** home the routing profile has
 # since its settings screen was deleted. `C` is the Down+Back squeeze over the card above: one row,
 # `Bike type`, on the 68 px sheet the card recesses under. Then its nested editor, staged on Gravel
 # with the committed tick still under Road's notch — the mark the grammar promises while browsing.
-NAVCONFIRM="B d d w p d d d p f p p"
+NAVCONFIRM="B d d w p d d d p f p f p"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$NAVCONFIRM C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
@@ -203,12 +204,12 @@ NAVCONFIRM="B d d w p d d d p f p p"
 # decimated route-shape preview polyline in the middle): confirm → Create route → `f` runs the
 # router; the answer swaps in the overview and hands the app the ≤64-point preview.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p f" --expect-screen RouteOverview --png "$OUT/nav-overview.png"
+    --script "B d d w p d d d p f p f p p f" --expect-screen RouteOverview --png "$OUT/nav-overview.png"
 # The planning screen (#499): accepting the confirm swaps to the spinning-needle wait while the
 # host steps the resumable planner. `--hold nav` consumes the recorded request without starting it,
 # so the screen stays up for the snapshot (needle at its deterministic initial angle).
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p" --hold nav --expect-screen NavPlanning --png "$OUT/nav-planning.png"
+    --script "B d d w p d d d p f p f p p" --hold nav --expect-screen NavPlanning --png "$OUT/nav-planning.png"
 # The two locked failure tiers. The range tier ("Too far to route here.") = the router's fixed
 # table exhausting — with no distance cap that IS the device's range limit — which the small
 # fixture graphs can't reach (grimsel plans even ~25 km routes inside the 1536-node table), so
@@ -216,18 +217,18 @@ NAVCONFIRM="B d d w p d d d p f p p"
 # pinning the exhausted→range-tier mapping. The generic tier ("Couldn't find a route.") stays a
 # real plan: a mountain fix with no routable road within the 100 m acceptance envelope.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "B d d w p d d d p f p p p" --inject nav-fail=exhausted --expect-screen NavFail --png "$OUT/nav-toofar.png"
+    --script "B d d w p d d d p f p f p p" --inject nav-fail=exhausted --expect-screen NavFail --png "$OUT/nav-toofar.png"
 "$SIM" "$MAP" --boot --routes-dir "$NAVDIR" --center 8140000,46480000 --heading 0 \
-    --script "B d d w p p f p p p f" --expect-screen NavFail --png "$OUT/nav-nopath.png"
+    --script "B d d w p p f p f p p f" --expect-screen NavFail --png "$OUT/nav-nopath.png"
 
 # The routed-detour flow (#882) on the dense monaco graph, where a corridor detour genuinely has
-# side-street alternatives. The shared prefix plans a ~1.6 km POI route (7th Resupply hit), accepts
+# side-street alternatives. The shared prefix plans a ~1.1 km POI route (7th hit on the second Resupply page), accepts
 # it from the overview (which starts the ride), then `T` runs one route-aware tick — the GUI ticks
 # every frame, but the headless script path doesn't, and the Detour chooser reads the tick-built
 # `route_total_m`. The chooser opens off the ride context sheet (`C d p`); the flow then walks
 # plan → preview (+cost line) → commit — the commit splices the prefix's planned route into a
 # fresh card object and lands back on the riding map.
-DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
+DETOUR_PRE="B d d w p d d d p f d d d d d d d d f d d d d d d p f p p f p T"
 # (a0) The map context with **every row live** — the Monaco graph, a loaded route and an on-route
 # rider are exactly what the Detour row needs, so this is the arrangement `map-context.png` cannot
 # show on the graph-less Grimsel fixture.
@@ -460,8 +461,8 @@ import sys
 
 source, output = map(Path, sys.argv[1:])
 map_bytes = bytearray(source.read_bytes())
-# OBCM §1.1/§1.3: v14 header, 16-byte units, terrain offset/length at bytes 41/45.
-assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0e" and map_bytes[40] == 4
+# OBCM §1.1/§1.3: v15 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0f" and map_bytes[40] == 4
 terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
 assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
 if not terrain_offset:
@@ -481,7 +482,7 @@ PYTERRAIN
 # the pass road (`B d d w p` opens the POI categories, `d d p` picks Lodging, `d d d` steps to
 # Handegg, `p p p` opens it → Route here → confirm, and the trailing `f` drains the request and runs
 # the real A*). Starting the plan on the replay's own road is what lets the same GPX ride it below.
-ELEVPLAN="B d d w p d d p f d d d p p p f"
+ELEVPLAN="B d d w p d d p f d d d p f p p f"
 "$SIM" "$ELEVMAP" --boot --routes-dir "$ELEVDIR" --center 8290977,46653917 --heading 0 \
     --script "$ELEVPLAN" --expect-screen RouteOverview --png "$OUT/elev-nav-overview.png"
 # (a) The route list row for that saved plan: `6 km  ▲396 m` — the climb group is read straight off
