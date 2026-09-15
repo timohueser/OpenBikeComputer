@@ -323,6 +323,7 @@ fn filter_choice(filter: PoiCategorySet) -> u8 {
 /// and lets one table serve four screens whose activity state differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextAction {
+    AssistantSources,
     /// The merged waypoint + corridor-POI timeline, anchored on live progress at entry.
     UpAhead,
     /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
@@ -355,6 +356,7 @@ impl ContextAction {
     /// it is [`ContextValue::accepts`], the same answer the commit obeys.
     fn available(self, f: &ContextFacts) -> bool {
         match self {
+            ContextAction::AssistantSources => f.state.assistant_demo.is_some(),
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
             ContextAction::UpAhead | ContextAction::Pois | ContextAction::Routes => true,
@@ -373,6 +375,7 @@ impl ContextAction {
 
     fn open(self, cx: &mut Ctx) -> Option<Transition> {
         Some(Transition::Replace(match self {
+            ContextAction::AssistantSources => Screen::Assistant(super::AssistantScreen::sources()),
             ContextAction::UpAhead => {
                 // The list always opens on **Everything** (epic #946, U3): the filter is selection
                 // state, cleared on entry so a category the
@@ -445,6 +448,9 @@ pub static MAP_DISPLAY: ContextMenu = ContextMenu {
         ContextRow { label: Msg::MapContextContours, action: ContextAction::Toggle(ContextToggle::MapContours) },
     ],
 };
+
+pub static LANDMARKS: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::RideContextSources, action: ContextAction::AssistantSources }] };
 
 /// The **Up-ahead context** (#1515 D4a): the two controls that scope the timeline, and the only
 /// home either of them has. *Filter* is the category picker the list's Select-hold used to open —

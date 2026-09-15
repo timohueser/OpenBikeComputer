@@ -234,6 +234,7 @@ struct Fixture {
     skins: Vec<StyleDoc>,
     tree: PathBuf,
     extracts: PathBuf,
+    landmarks: Option<PathBuf>,
 }
 
 fn fixture_dirs(name: &str) -> Fixture {
@@ -252,7 +253,7 @@ fn fixture_dirs(name: &str) -> Fixture {
     let schema = obc_bake::presets::load_schema(&presets_dir).expect("the test schema loads");
     let skins = obc_bake::presets::load_skins(&presets_dir, None).expect("the test skin loads");
     let regions = obc_bake::regions::parse(regions_toml()).expect("region list parses");
-    Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts }
+    Fixture { tree: dir.join("tree"), dir, regions, schema, skins, extracts, landmarks: None }
 }
 
 impl Fixture {
@@ -277,6 +278,7 @@ impl Fixture {
                 // CLI does, so the recorded coupling (`OBCC_Spec.md` §13.4) is exercised rather
                 // than hand-wired.
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
+                landmarks: self.landmarks.clone(),
             },
         }
         .run(&Progress::silent())
@@ -299,6 +301,7 @@ impl Fixture {
                 schema_id: "testschema".into(),
                 schema_revision: revision,
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
+                landmarks: self.landmarks.clone(),
             },
         }
         .run(&Progress::silent())
@@ -370,6 +373,40 @@ fn statuses(summary: &CellRunSummary) -> BTreeMap<String, CellStatus> {
 }
 
 // --- the terrain artifact class (#1071) -------------------------------------------
+
+#[test]
+fn landmark_input_changes_invalidate_cell_cache() {
+    let mut f = fixture_dirs("landmark-cache");
+    let path = f.dir.join("content.json");
+    let mut content = obc_pack::landmarks::Content {
+        schema: 1,
+        input_sha256: "first source".into(),
+        policy_sha256: "policy".into(),
+        category_policy_sha256: "categories".into(),
+        language: "de".into(),
+        source_coverage: serde_json::json!({}),
+        counts: Default::default(),
+        candidate_qids: vec![],
+        records: vec![],
+        omissions: vec![],
+    };
+    std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
+    f.landmarks = Some(path.clone());
+    let cutter = FixtureCutter::new();
+    let first = f.bake(&cutter, &[], SNAPSHOT, false);
+    assert!(first.ok(), "{}", first.render());
+    let calls = cutter.calls.load(Ordering::SeqCst);
+    let second = f.bake(&cutter, &[], SNAPSHOT, false);
+    assert!(second.ok(), "{}", second.render());
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), calls);
+    assert!(statuses(&second).values().all(|s| *s == CellStatus::Unchanged));
+    content.input_sha256 = "changed source".into();
+    std::fs::write(path, serde_json::to_vec(&content).unwrap()).unwrap();
+    let third = f.bake(&cutter, &[], SNAPSHOT, false);
+    assert!(third.ok(), "{}", third.render());
+    assert_eq!(cutter.calls.load(Ordering::SeqCst), calls * 2);
+    assert!(statuses(&third).values().all(|s| *s == CellStatus::Cut));
+}
 
 /// The fixture's terrain pairing. `2^19 / 2^15` makes a cell exactly one tile — a 512-byte block
 /// instead of the 2 MiB a real `2^19 / 2^9` cell is — and it is deliberately **not** either band's
@@ -877,6 +914,7 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
             schema_id: "testschema".into(),
             schema_revision: 1,
             terrain: None,
+            landmarks: None,
         },
     }
     .run(&Progress::silent())
@@ -925,6 +963,7 @@ fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
             schema_id: "testschema".into(),
             schema_revision: 1,
             terrain: None,
+            landmarks: None,
         },
     }
     .run(&Progress::silent())
@@ -962,6 +1001,7 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
             schema_id: "typoschema".into(),
             schema_revision: 1,
             terrain: None,
+            landmarks: None,
         },
     }
     .run(&Progress::silent())
@@ -1006,6 +1046,7 @@ fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
                 schema_id: "testschema".into(),
                 schema_revision: 1,
                 terrain: None,
+                landmarks: None,
             },
         }
         .run(&Progress::silent())

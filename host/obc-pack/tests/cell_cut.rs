@@ -806,3 +806,71 @@ fn a_cut_without_terrain_books_no_ascent() {
     assert!(!arcs.is_empty(), "the western cell has a graph to be flat about");
     assert!(arcs.iter().all(|(_, _, ascent)| *ascent == 0), "no terrain in ⇒ no climb out");
 }
+
+#[test]
+fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
+    use obc_reader::landmarks::{map_section, LandmarkDirectory};
+    let scratch = Scratch::new("landmark-only");
+    let path = scratch.path().join("content.json");
+    let content = serde_json::json!({
+        "schema": 1, "input_sha256": "input", "policy_sha256": "policy",
+        "category_policy_sha256": "categories", "language": "en",
+        "source_coverage": {}, "counts": obc_pack::landmarks::Counts::default(), "candidate_qids": [], "omissions": [],
+        "records": [{
+            "qid": "Q1", "name": "Castle", "category": 1,
+            "latitude": deg(LAT), "longitude": deg(SEAM), "language": "en",
+            "text_pages": ["A castle."], "photo": null,
+            "article": {
+                "source_url": "https://en.wikipedia.org/w/index.php?title=Castle&oldid=1",
+                "revision": "1", "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+                "original_notices": "Authors", "display_pages": ["Wikipedia authors"]
+            }
+        }]
+    });
+    std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();
+    let cfg = config();
+    let (mut ing, _) = fixture(&cfg);
+    ing.features = vec![line(
+        style_id(&cfg, "highway", "residential"),
+        1,
+        &[(LAT - 1000, SEAM - 3000), (LAT + 1000, SEAM - 2000)],
+    )];
+    ing.pois.clear();
+    let west = CellId { log2: 18, i: 1204, j: 1052 };
+    let east = CellId { j: 1053, ..west };
+    for with_bbox in [true, false] {
+        let mut opts = options();
+        opts.only_bands = vec!["network".into()];
+        opts.select = vec![west, east];
+        opts.landmarks = Some(path.clone());
+        if with_bbox {
+            opts.bbox = Some(
+                obc_pack::ingest::Bbox::parse(&format!(
+                    "{},{},{},{}",
+                    deg(SEAM - 4000),
+                    deg(LAT - 2000),
+                    deg(SEAM + 4000),
+                    deg(LAT + 2000)
+                ))
+                .unwrap(),
+            );
+        }
+        let out = scratch.path().join(if with_bbox { "bbox" } else { "selection" });
+        let summary = cut_ingested(&ing, &[], &cfg, &out, &opts, &Progress::silent()).unwrap();
+        assert_eq!(summary.cells.len(), 2);
+        for artifact in summary.cells {
+            let bytes = std::fs::read(out.join(artifact.path)).unwrap();
+            let source = SliceSource(&bytes);
+            let section = map_section(&source).unwrap();
+            if artifact.id == east {
+                assert!(!artifact.empty, "landmark-only cells must remain catalog objects");
+                let section = section.unwrap();
+                let directory = LandmarkDirectory::read(&section).unwrap();
+                assert_eq!(directory.count, 1);
+                assert_eq!(directory.record(&section, 0).unwrap().qid, 1);
+            } else {
+                assert!(section.is_none(), "the west cell does not own a site on its east edge");
+            }
+        }
+    }
+}

@@ -44,6 +44,7 @@ pub use flat_routes::FlatRouteStore;
 mod frame;
 mod nav;
 mod nav_visit;
+pub mod photo;
 mod replay;
 mod repo;
 mod session;

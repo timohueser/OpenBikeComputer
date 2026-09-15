@@ -2516,6 +2516,38 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
+Applies to: `miniz_oxide 0.8.9`
+
+```text
+MIT License
+
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+Copyright (c) 2017 Frommi
+Copyright (c) 2017-2024 oyvindln
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```
+
+### MIT License
+
 Applies to: `half 2.7.1`, `ident_case 1.0.1`
 
 ```text
@@ -2543,7 +2575,7 @@ SOFTWARE.
 
 ### MIT License
 
-Applies to: `group 0.13.0`, `once_cell 1.21.4`, `pin-project-lite 0.2.17`, `portable-atomic 1.13.1`, `proc-macro2 1.0.106`, `quote 1.0.46`, `syn 2.0.118`, `thiserror-impl 2.0.18`, `thiserror 2.0.18`, `unicode-ident 1.0.24`
+Applies to: `adler2 2.0.1`, `group 0.13.0`, `once_cell 1.21.4`, `pin-project-lite 0.2.17`, `portable-atomic 1.13.1`, `proc-macro2 1.0.106`, `quote 1.0.46`, `syn 2.0.118`, `thiserror-impl 2.0.18`, `thiserror 2.0.18`, `unicode-ident 1.0.24`
 
 ```text
 Permission is hereby granted, free of charge, to any

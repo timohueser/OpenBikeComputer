@@ -1524,13 +1524,16 @@ fn every_truncation_of_a_document_fails_to_parse() {
     let g = generated(t.path());
     let root = root_json(&g.root);
     assert!(serde_json::from_str::<Catalog>(&root).is_ok());
-    for cut in (1..root.len()).step_by(23) {
-        assert!(serde_json::from_str::<Catalog>(&root[..cut]).is_err(), "root truncated at {cut} must not parse");
+    for cut in (1..root.trim_end().len()).step_by(23) {
+        assert!(
+            serde_json::from_slice::<Catalog>(&root.as_bytes()[..cut]).is_err(),
+            "root truncated at {cut} must not parse"
+        );
     }
     let index = &satellite(&g, "cells/fine/index.json").body;
-    for cut in (1..index.len()).step_by(13) {
+    for cut in (1..index.trim_end().len()).step_by(13) {
         assert!(
-            serde_json::from_str::<CellIndexDocument>(&index[..cut]).is_err(),
+            serde_json::from_slice::<CellIndexDocument>(&index.as_bytes()[..cut]).is_err(),
             "a cell index truncated at {cut} must not parse"
         );
     }

@@ -164,7 +164,7 @@ pub fn read_at(src: &dyn ByteSource, offset: u64, len: usize) -> Result<Vec<u8>>
 /// Preserve the canonical band assignment from the table already read for style ids.
 fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
     let header = read_at(src, 0, HEADER_LEN)?;
-    // Through the file's own `Offset Scale` (§1.1) — the header is 49 bytes, so since v14 the table
+    // Through the file's own `Offset Scale` (§1.1) — the header is 57 bytes, so since v14 the table
     // does not start where the header ends and the field is the only thing that says where it does.
     let style_offset = crate::emit::header_style_offset(&header)
         .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;

@@ -68,7 +68,7 @@ const SUMMIT_FLAG_GAP: i32 = 4;
 /// `9–12 %`, red `> 12 %`. Negative grades (an internal dip) fall in the green `< 3 %` band — a
 /// give-back column is never "steep". Every returned colour is a pinned palette const, so the
 /// stripes quantize exactly on glass.
-fn grade_color(grade_pct: i32) -> u16 {
+pub(super) fn grade_color(grade_pct: i32) -> u16 {
     use palette::*;
     match grade_pct {
         i32::MIN..3 => ON, // < 3 %  — green (also any downhill dip)
