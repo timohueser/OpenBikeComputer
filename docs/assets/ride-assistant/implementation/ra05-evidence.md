@@ -113,3 +113,19 @@ consumers and corridor encounter fix. No route expiry or auto-retention policy
 was restored. No public documentation changed from this composition. Independent
 integration delta review and green CI remain required. No shipping image, UI
 sweep, or physical-device test was run.
+
+## Current CI composition
+
+CI run `34944597121`, board job `104301093080`, measured App 49,080 bytes
+and navigation arena arm 97,440 bytes. The exact records now match the image.
+Linked resident is 304,832 bytes, flash 1,587,584 bytes, and residual stack
+54,592 bytes. The 131,072-byte arena, 132,096-byte uninitialized section,
+9,784-byte poll frame, 4,048-byte task body, and 7,768-byte boot chain are unchanged.
+Margin over recorded hardware deep-ride high-water is 17,576 bytes; the floor
+stays 8,704 bytes. No device limit or hardware measurement changed.
+
+The CI Clippy job reported redundant nested borrows in three Visit arena
+accesses. Each now binds the correct phase's arm once before field access.
+This does not change the arena layout or ownership. Parent snapshot format and
+detail preparation fixes are included. Final CI and independent delta review
+remain required. No local image, sweep, or base rebuild ran.
