@@ -59,7 +59,7 @@ enforcement = "report"
 
 [[component]]
 id = "navigation-map"
-include = ["firmware/obc-map-scene/src/**", "firmware/obc-reader/src/**", "firmware/obc-route/src/**", "firmware/obc-render/src/**"]
+include = ["firmware/obc-elevation/src/**", "firmware/obc-map-scene/src/**", "firmware/obc-reader/src/**", "firmware/obc-route/src/**", "firmware/obc-render/src/**"]
 exclude = []
 enforcement = "report"
 
@@ -67,6 +67,14 @@ enforcement = "report"
 id = "device-drivers"
 include = ["firmware/obc-ble/src/**", "firmware/obc-display/src/**", "firmware/obc-sensors/src/**"]
 exclude = []
+enforcement = "report"
+
+[[component]]
+id = "board-image"
+include = ["firmware/obc-fw-nrf54l/src/**"]
+exclude = [
+  { path = "firmware/obc-fw-nrf54l/src/**", evidence = "The nRF54L image does not execute in the host test runner. Required board build/clippy and resource/frame guards check compilation and static limits. Shared application/platform policy has host coverage in firmware-app. Physical scheduling, I/O, current and stack acceptance remain in #1262 and #1166; these static checks do not establish runtime coverage." },
+]
 enforcement = "report"
 
 [[component]]
