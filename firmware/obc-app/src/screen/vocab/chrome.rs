@@ -205,7 +205,7 @@ pub(crate) fn recalculating_banner_rows(h: f32) -> (u16, u16) {
 /// Draw the "Recalculating..." banner: a centred parchment pill with an ink outline and the copy in
 /// ink — the calm chip idiom (the alert orange stays reserved for the No-GPS / off-route chip, which
 /// is *below* on the frozen map plane and never collides with this band).
-pub(crate) fn recalculating_banner<D, F>(target: &mut D, color_fn: &F, w: f32, h: f32, text: &str)
+pub(crate) fn recalculating_banner<D, F>(target: &mut D, color_fn: &F, w: f32, h: f32, text: &str, phase: u8)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -222,6 +222,9 @@ where
     cv.round(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::PARCHMENT);
     cv.round_outline(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::INK);
     cv.text(text, Point::new(w / 2, py + 5), font, TextAlign::Center, palette::INK);
+    for dot in 0..3 {
+        cv.disc(Point::new(w / 2 + (dot - 1) * 6, py + 30), if dot as u8 + 1 == phase { 2 } else { 1 }, palette::INK);
+    }
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared

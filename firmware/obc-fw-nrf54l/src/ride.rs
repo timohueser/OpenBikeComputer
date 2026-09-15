@@ -2964,7 +2964,8 @@ pub(crate) async fn run_app(
             // ═══ The store phase ends HERE: the tuple is the block's value and `store_guard` dies at
             // the closing brace — every reader/source/track borrow of the card ended above, and the
             // present await below *cannot* hold the guard, by construction. ═══
-            let rendered: Option<RenderedFrame> = if frozen {
+            let banner_rows = app.reroute_banner_rows(FRAME_H as f32);
+            let rendered: Option<RenderedFrame> = if frozen || (!dirty.map && dirty.overlay && banner_rows.is_some()) {
                 // The banner rides the overlay plane, which on this board means: draw it straight
                 // into the resident framebuffer and let the self-diffing present push the handful of
                 // rows it changed. It deliberately does **not** go through the FLPR's
@@ -2972,10 +2973,9 @@ pub(crate) async fn run_app(
                 // bounded at 16 columns (`MAX_OVERLAY_COLS`), because the bulge is a 16 px strip at
                 // the right edge; a 240-px-wide banner band would need a ~26 KB transient on the
                 // overlay frame's stack, on the crate where transients overflow it. Painting into the
-                // frame is free instead, and safe because the map render that would otherwise own
-                // those pixels is precisely what is not running — the full repaint when the freeze
-                // lifts restores them.
-                match app.reroute_banner_rows(FRAME_H as f32).filter(|_| dirty.overlay) {
+                // frame is safe while its base is unchanged. The same path advances the activity
+                // dots between planner runs; a pending base redraw paints its banner in that pass.
+                match banner_rows.filter(|_| dirty.overlay) {
                     Some((y0, rows)) => {
                         let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                             let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);

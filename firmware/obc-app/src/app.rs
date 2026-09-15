@@ -1009,6 +1009,14 @@ impl App {
         }
     }
 
+    fn planning_banner_phase(&self) -> u8 {
+        if self.planning_banner().is_some() {
+            1 + (self.ui.now_ms / 1_000 % 3) as u8
+        } else {
+            0
+        }
+    }
+
     /// What the device is busy with, ranked and payload-free — [`CoreMode`]'s one public read.
     /// (Named apart from [`mode`](App::mode), which is the rider's *activity* — Idle or Riding.)
     ///
@@ -2749,6 +2757,10 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if self.planning_banner().is_some() {
+            let remaining = 1_000 - clock.0 % 1_000;
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
         if let Some(remaining) = self.ui.input.chord_remaining_ms(clock.0) {
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
         }
@@ -3255,7 +3267,14 @@ impl App {
     {
         if let Some(message) = self.planning_banner() {
             let text = crate::i18n::t(message, self.settings.language);
-            crate::screen::vocab::chrome::recalculating_banner(target, &color_fn, w, h, text);
+            crate::screen::vocab::chrome::recalculating_banner(
+                target,
+                &color_fn,
+                w,
+                h,
+                text,
+                self.planning_banner_phase(),
+            );
         }
     }
 
@@ -3296,7 +3315,7 @@ impl App {
     pub fn take_dirty(&mut self) -> Dirty {
         let overlay = crate::device_core::pass::OverlayKey {
             hold: self.ui.input.overlay_active(),
-            banner: self.planning_banner().is_some(),
+            banner: self.planning_banner_phase(),
         };
         let overlay = self.pass.overlay_repaint(overlay);
         let mut dirty = self.ui.take_dirty();
@@ -5106,10 +5125,20 @@ mod tests {
             assert!(!app.take_dirty().overlay, "releasing a candidate does not clear the banner");
             assert_eq!(app.ms_until_next_wake(0), Some(1), "queued work cannot wait for another GPS fix");
         }
+        app.advance_animations(InputClock(999));
+        assert!(!app.take_dirty().overlay, "activity does not repaint before its deadline");
+        app.advance_animations(InputClock(1_000));
+        assert!(app.take_dirty().overlay, "activity repaints at one second");
+        assert!(!app.take_dirty().overlay, "activity never repaints twice in one phase");
+        app.advance_animations(InputClock(1_500));
+        assert!(!app.take_dirty().overlay);
+        assert_eq!(app.ui.next_wake_ms, Some(500));
         app.ui.find.state = State::Ready;
+        app.advance_animations(InputClock(1_500));
+        assert!(app.ui.next_wake_ms.is_none_or(|ms| ms > 1_000), "ready results stop the activity timer");
         assert!(app.planning_banner().is_none());
         assert!(app.take_dirty().overlay, "the completed batch clears its banner");
-        assert_ne!(app.ms_until_next_wake(0), Some(1), "a ready result does not poll");
+        assert_ne!(app.ms_until_next_wake(1_500), Some(1), "a ready result does not poll");
         app.ui.find.state = State::Planning;
         app.apply_gesture(Gesture::Back);
         assert!(app.planning_banner().is_none(), "leaving choices removes the banner");
