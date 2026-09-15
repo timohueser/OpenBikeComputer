@@ -1,7 +1,7 @@
 # Visit implementation evidence
 
 This change supplies the shared route builder, Navigator requests and phases, and host executor
-for issue #1740. The board adapter is a separate dependent change. Find Place and Landmark screens
+for issue #1740. The separately implemented board adapter is included in this branch. Find Place and Landmark screens
 call the shared request and preview methods; this change does not redraw their approved layouts.
 
 ## Behavior and bounds
@@ -17,7 +17,8 @@ call the shared request and preview methods; this change does not redraw their a
   rejoin, and at most one reconstruction of out-and-back: at most six graph searches. Cancellation
   after departure constructs one real connector to the accepted route's preserved original tail.
 - `VisitBuilder::init_in_place` and `init_return_in_place` initialize the emitter field by field.
-  The board adapter must place it beside the planner in the existing navigation arena. No resident
+  The board adapter places it beside the planner in the existing navigation arena and asserts the
+  simultaneous layout and alignment. No resident
   waypoint capacity, open-object limit, reservation limit, or resource ceiling changed here.
 - Arrival and rejoin change checkpoint phases on the accepted bytes. Matcher ceilings prevent a
   repeated coordinate on a later phase from becoming current progress. The newest raw fix is
@@ -41,6 +42,10 @@ The following whole suites pass on the reconciled parent with weather removed:
 - `cargo test -p obc-app --lib`: final phase repaint and arrival tests pass, 940 tests.
 - `cargo test -p obc-host-core --lib`: final immutable Visit acceptance test passes, 62 tests.
 - `cargo clippy -p obc-route -p obc-app -p obc-host-core --all-targets -- -D warnings`: passes.
+- The board adapter author ran `cargo check --release` in the board root, the complete production
+  board executor suite (11 tests), scoped Clippy, and registry checks. All pass. Its storage traces
+  cover allocation, write, seal, publication, cancellation, source change, and unknown durability.
+  The combined merge was clean and did not change the reviewed adapter APIs.
 - `./tools/obc suites check`: passes, 69 suites and 323 execution units.
 - `python3 docs/build_docs.py --check-links`: passes. Workspace formatting and diff checks pass.
 
@@ -62,8 +67,8 @@ the actual fixture command above was subsequently run. It did not start a region
 
 ## Remaining integrated acceptance
 
-- Land and independently review the board adapter, including its simultaneous arena layout and
-  source/failure traces. Read the target layout from its existing check artifacts; do not infer
+- Independently review the shared and board implementation, including its simultaneous arena layout
+  and source/failure traces. Read the target layout from existing check artifacts; do not infer
   resource headroom from removed weather code.
 - Resolve the pinned Grimsel failures on the final map format. Run production simulator replay
   with real offline inputs through out-and-back, forward rejoin, repeated coordinates, parallel
