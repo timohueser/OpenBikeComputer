@@ -194,17 +194,17 @@ fn no_squeeze_stacks_a_second_sheet() {
 /// The BLE icon flips the real radio row **and** reaches the persistence handshake — the same
 /// before/after `==` a settings screen's edit arms, with no new path.
 #[test]
-fn the_assistant_icon_opens_without_a_settings_write() {
+fn the_bluetooth_icon_toggles_and_persists() {
     let mut app = lit();
     let mut f = Frames::new();
     assert!(app.settings().ble_enabled);
 
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
-    let ms = at(&mut app, ms, Gesture::Step(1)); // brightness -> Assistant
+    let ms = at(&mut app, ms, Gesture::Step(1)); // brightness -> Bluetooth
     let ms = at(&mut app, ms, Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-    assert!(app.settings().ble_enabled);
-    assert!(quiet_pass(&mut app, ms).effects.settings.is_empty());
+    assert!(drawer_up(&app));
+    assert!(!app.settings().ble_enabled);
+    assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty());
 }
 
 /// The brightness the host would drive follows the editor live, sticks on Select, and falls back
@@ -254,8 +254,8 @@ fn a_platform_without_a_panel_light_drops_the_brightness_control() {
     assert!(!app.backlight_available());
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let ms = at(&mut app, ms, Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-    assert!(app.settings().ble_enabled);
+    assert!(drawer_up(&app));
+    assert!(!app.settings().ble_enabled);
     assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "no editor, and no preview to hold");
     let ms = at(&mut app, ms, Gesture::Back);
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, ms);

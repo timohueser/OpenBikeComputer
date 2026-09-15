@@ -3766,7 +3766,7 @@ mod tests {
             tick_fix(&mut app, Fix::at(0, 0), 0);
             app.ui.now_ms = if fresh { POSITION_FIX_FRESH_MS } else { POSITION_FIX_FRESH_MS + 1 };
             app.escape_to_menu();
-            app.apply_gesture(Gesture::Step(4));
+            app.apply_gesture(Gesture::Step(3));
             app.apply_gesture(Gesture::Press);
             assert!(app.peak_view_is_base());
             assert_eq!(app.peak_view_needs_position(), !fresh);

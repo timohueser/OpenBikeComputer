@@ -182,13 +182,13 @@ pub(crate) struct DrawerKey {
     selected: u8,
     staged: u8,
     /// The committed brightness the editor marks while the rider browses alternatives — the one
-    /// device fact the quick drawer draws that is not its own.
+    /// brightness value the quick drawer draws.
     committed: u8,
     /// Which of the sheet's rows are live, as a bitmask — the contextual drawer's equivalent of
     /// `committed`, and the only other base-derived fact a drawer draws. It is the *cue*, not the
     /// route/graph/off-route values behind it, so a rider drifting off the route redraws the sheet
-    /// once and a moving map under it still costs nothing. `0` for the quick drawer, whose controls
-    /// are always available.
+    /// once and a moving map under it still costs nothing. For the quick drawer this byte records
+    /// whether Bluetooth is enabled.
     enabled: u8,
 }
 
