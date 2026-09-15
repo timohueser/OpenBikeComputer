@@ -1118,6 +1118,39 @@ Replacing active route geometry clears the corridor snapshot. The open view keep
 
 Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
 
+## What is next on the accepted route
+
+The Assistant overview uses one frozen interval: the entry position through the next 5 km or 10 km,
+clipped at the end of the accepted journey. An accepted visit's approach, stop, return, and original
+tail share this distance axis. A leg boundary is not the destination. Select opens the timeline;
+Select-hold refreshes the anchor. Replacing the route or map invalidates the view and requires a
+refresh.
+
+The overview reads ascent and descent from measured route facts. Missing elevation produces an
+unknown value. The existing elevation profile supplies the chart and its measured grade colors;
+missing spans remain gaps. The overview selects the climb at the frozen anchor, or the next climb
+that starts inside the interval. Its climb length and gain describe the whole climb, including any
+part after the window. The next authored waypoint can be after the window. Generic and categorized
+waypoints retain their stored name and category.
+
+Water and resupply summaries share the interval and use current trusted opening hours. A completed
+empty query differs from missing coverage or failed reads. A known-closed service is not an
+available choice.
+
+The timeline has a four-row display page. It streams the complete authored waypoint section and
+uses the existing corridor query's continuation keys for map places. The riding waypoint cache is
+not changed. Distance and ascent figures refer to the frozen window start; a separate passed cue
+uses current progress. Page boundaries use route occurrence and source identity, so ties and later
+passes through the same place remain distinct. Previous pages and Back from detail preserve the
+selection.
+
+The timeline's context drawer selects category and source. Category starts at Everything on a fresh
+entry; source is the stored preference. Train is a service category. Generic waypoints appear only
+under Everything; climbs appear only under Everything with both sources enabled. Known-closed
+unselected places leave the page without reordering surviving rows. A selected closed place remains
+visible but cannot start a Visit. Map places use the shared place detail and Visit review. Authored
+waypoint details do not offer Add stop.
+
 ## Main rider flow
 
 <figure class="fig">
