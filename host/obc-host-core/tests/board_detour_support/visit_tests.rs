@@ -354,6 +354,7 @@ fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding
     h.h.app.apply_gesture(obc_app::Gesture::Back);
     for _ in 0..20 {
         h.pass_with(&mut Position, true);
+        h.h.app.prepare_find(None, None);
     }
     assert_eq!(h.h.store.entries().count(), 2);
     h.h.assert_clean();
