@@ -696,6 +696,34 @@ If the current date is unknown, use manual deletion from the Routes menu.
 Ride archive proof controls the synced indicator. It never starts a deletion timer.
 See [ride reconciliation](../companion-link/#reconciliation).
 
+## Easier routes
+
+Easier routes compares the remaining journey under the current bike profile. It runs one shared
+baseline and two fixed trials for each goal: less climbing, smoother surfaces, and shorter distance.
+These are bounded alternatives, not a claim that the router found a global optimum. The saved bike
+profile and its road and surface prohibitions do not change.
+
+Each trial passes through the remaining authored waypoints' on-route access points in order. It
+keeps their display positions, names, categories, heights, offsets, and source references. A display
+position beside the route does not become a visit destination. If all remaining records do not fit,
+the comparison is unavailable. An active visit or an unresolved road avoidance also prevents it.
+
+The comparison uses measured route geometry. It requires at least 50 m less ascent, 500 m less rough
+surface, or 500 m less distance. Climb and surface choices can add at most 2 km or 25% of the remaining
+distance, whichever is greater. Surface and distance choices can add at most 100 m or 25% of the
+remaining ascent. Required elevation facts must be complete. A smoother choice must use comparable
+map attribution and cannot increase the distance with unknown surface.
+
+Only useful, distinct choices appear. The camera stays fixed while the rider compares the magenta
+current route and blue proposed route. The review shows the saving and a Current/New table. Back
+keeps the selected choice. **Use this route** starts the existing Navigator acceptance process; it
+checks the exact sources and the rider's position again. Recording continues through acceptance.
+Reopening the comparison uses the accepted route as the new current journey.
+
+The trials run one at a time in the existing planner arena. The app keeps only small result
+records. It releases each trial before starting the next. Opening a selected review reconstructs
+that one route from the same frozen sources and verifies its measured costs and payload checksum.
+
 ## Runtime boundaries
 
 Input logic and drawing receive different data views.
