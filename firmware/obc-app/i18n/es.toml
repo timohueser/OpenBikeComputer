@@ -26,6 +26,7 @@ no_peaks = "SIN CUMBRES CON NOMBRE"
 
 # --- El contexto de ruta (la hoja inferior), la lista Próximo y el selector de desvío ---
 [ride_context]
+easier = "Más fácil"
 up_ahead = "Próximo"
 detour = "Desvío"
 inspect_rejoin = "Ver reenganche"

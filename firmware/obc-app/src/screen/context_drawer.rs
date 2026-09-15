@@ -327,6 +327,7 @@ pub enum ContextAction {
     UpAhead,
     /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
     Detour,
+    Easier,
     /// The POIs browser's category list.
     Pois,
     /// The stored-route / trip menu.
@@ -361,6 +362,7 @@ impl ContextAction {
             // #882: a detour needs a recorded ride to re-route, a route to leave, a graph to route
             // on, and a rider on the route (the corridor anchors on live progress, which off-route
             // freezes).
+            ContextAction::Easier => f.state.has_nav_graph && f.navigation.active_route.is_some(),
             ContextAction::Detour => super::detour::reachable(f.navigation, f.recording, f.state.has_nav_graph),
             ContextAction::Edit(v) => v.accepts(f),
 
@@ -380,6 +382,7 @@ impl ContextAction {
                 cx.state.up_ahead_filter = PoiCategorySet::ALL;
                 Screen::UpAhead(UpAheadScreen::new(cx.navigator.route_state().progress_m))
             }
+            ContextAction::Easier => Screen::Easier(super::EasierScreen::new()),
             ContextAction::Detour => Screen::Detour(DetourScreen::new(cx.navigator.route_state())),
             ContextAction::Pois => Screen::PoiMenu(PoiMenuScreen::new()),
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
@@ -409,15 +412,15 @@ pub struct ContextMenu {
     pub rows: &'static [ContextRow],
 }
 
-/// The **ride context**: the secondary actions the four riding views share (Map, Statistics,
-/// Climb, Ride control). It is the compass ride menu's row inventory minus its *Main menu* station,
-/// which the global Back-hold escape now serves from everywhere instead of from one screen.
+/// Secondary actions for Statistics, Climb and Ride control. The first four match the Map;
+/// the fifth opens the measured Easier comparison.
 pub static RIDE: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextUpAhead, action: ContextAction::UpAhead },
         ContextRow { label: Msg::RideContextDetour, action: ContextAction::Detour },
         ContextRow { label: Msg::MenuPois, action: ContextAction::Pois },
         ContextRow { label: Msg::MenuRoutes, action: ContextAction::Routes },
+        ContextRow { label: Msg::RideContextEasier, action: ContextAction::Easier },
     ],
 };
 
@@ -1048,13 +1051,10 @@ mod tests {
         let mut w = World::riding();
         let mut d = drawer();
         w.press(&mut d, Gesture::Step(-1));
-        assert!(
-            matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::RouteMenu(_))),
-            "wrapped to last"
-        );
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::Easier(_))), "wrapped to last");
 
         let mut d = drawer();
-        w.press(&mut d, Gesture::Step(4));
+        w.press(&mut d, Gesture::Step(5));
         assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::UpAhead(_))), "wrapped to first");
         assert!(matches!(w.press(&mut d, Gesture::Back), Transition::Pop));
     }
@@ -1670,14 +1670,12 @@ mod tests {
         assert!(!swapped.needs_base(), "…and a settled sheet does not ask a second time");
     }
 
-    /// The map's table is the ride's four actions **plus** one door, and the Map is the only screen
-    /// that declares it. Pinned here as well as in `harness/screens.rs` because this is where the
-    /// two tables live: rows 0-3 must stay label-for-label and action-for-action identical, or a
-    /// rider's muscle memory differs between the Map and Statistics.
+    /// The shared actions retain their positions; each view has its own fifth action.
     #[test]
-    fn the_map_table_is_the_ride_table_plus_one_door() {
-        assert_eq!(MAP.rows.len(), RIDE.rows.len() + 1);
-        for (m, r) in MAP.rows.iter().zip(RIDE.rows) {
+    fn riding_tables_share_first_four_actions_and_keep_their_own_fifth() {
+        assert_eq!(MAP.rows.len(), RIDE.rows.len());
+        assert_eq!(RIDE.rows[4].action, ContextAction::Easier);
+        for (m, r) in MAP.rows[..4].iter().zip(&RIDE.rows[..4]) {
             // `Msg` is a bare catalog index with no `Debug`, so the label is compared as the string
             // the rider reads — which is the thing that must not drift anyway.
             assert_eq!(t(m.label, Language::En), t(r.label, Language::En), "the ride labels must not drift per view");

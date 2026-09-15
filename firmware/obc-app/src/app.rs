@@ -2577,6 +2577,13 @@ impl App {
         if let screen::Transition::Push(Screen::PeakView(screen)) = &mut t {
             *screen = screen::PeakViewScreen::new(self.fresh_position());
         }
+        if matches!(t, screen::Transition::Replace(Screen::Easier(_))) {
+            if self.easier.context.is_some() && self.ui.stack.iter().any(|s| matches!(s, Screen::Easier(_))) {
+                return false;
+            }
+            self.easier = crate::easier::State::new();
+            self.easier.phase = crate::easier::Phase::Entry;
+        }
         screen::apply(&mut self.ui.stack, t);
         // Admit Start before the next gesture, after its requested screen transition, so a
         // recovery decision takes precedence over the requested riding view.
