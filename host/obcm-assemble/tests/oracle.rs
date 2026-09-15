@@ -1147,6 +1147,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
 
     let landmark_source = SliceSource(&with_bytes);
     let landmark_window = obc_reader::landmarks::map_section(&landmark_source).unwrap().unwrap();
+    landmark_fixture::assert_content(&landmark_window);
     let directory = obc_reader::landmarks::LandmarkDirectory::read(&landmark_window).unwrap();
     assert_eq!(directory.record(&landmark_window, 0).unwrap().qid, 123);
     let start = u32::from_le_bytes(with_bytes[49..53].try_into().unwrap()) as u64 * 16;

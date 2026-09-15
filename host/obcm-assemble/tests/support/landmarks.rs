@@ -19,6 +19,102 @@ pub fn record(qid: u64) -> LandmarkRecord {
     }
 }
 
+const TEXT: &str = "An alpine château.";
+const ARTICLE: [&str; 5] = [
+    "https://example.invalid/wiki/Castle",
+    "17",
+    "https://example.invalid/license",
+    "Authored article attribution",
+    "Castle credit.",
+];
+const PHOTO: [&str; 5] = [
+    "https://example.invalid/photo/Castle",
+    "2026-01-01",
+    "https://example.invalid/license",
+    "Authored photo attribution",
+    "Photo credit.",
+];
+
+fn fields(values: &[&str]) -> Vec<u8> {
+    let mut bytes = (values.len() as u16).to_le_bytes().to_vec();
+    let mut offset = 2 + (values.len() as u32 + 1) * 4;
+    for value in values {
+        bytes.extend_from_slice(&offset.to_le_bytes());
+        offset += value.len() as u32;
+    }
+    bytes.extend_from_slice(&offset.to_le_bytes());
+    for value in values {
+        bytes.extend_from_slice(value.as_bytes());
+    }
+    bytes
+}
+
+fn pixel(index: usize) -> u8 {
+    ((index * 31 + index / 23) % 64) as u8
+}
+
+/// Independent zlib authoring: a 4 KiB window and one final uncompressed DEFLATE block.
+fn photo() -> Vec<u8> {
+    let cmf = ((PHOTO_WINDOW_BITS - 8) << 4) | 8;
+    let flags = ((31 - ((cmf as u16) << 8) % 31) % 31) as u8;
+    let mut bytes = vec![cmf, flags, 1];
+    let len = PHOTO_PIXELS as u16;
+    bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.extend_from_slice(&(!len).to_le_bytes());
+    let (mut a, mut b) = (1u32, 0u32);
+    for index in 0..PHOTO_PIXELS {
+        let value = pixel(index);
+        bytes.push(value);
+        a = (a + value as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    bytes.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    assert!(bytes.len() <= PHOTO_MAX_COMPRESSED);
+    bytes
+}
+
+pub fn assert_content(source: &dyn obc_formats::io::ByteSource) {
+    use obc_reader::{
+        landmarks::{page, LandmarkDirectory},
+        photo::{PhotoDecoder, Progress},
+    };
+    let directory = LandmarkDirectory::read(source).unwrap();
+    for index in 0..directory.count {
+        let record = directory.record(source, index).unwrap();
+        assert_eq!(directory.name(source, &record, &mut [0; MAX_NAME_BYTES as usize]).unwrap(), "Castle");
+        let text = directory.content(source, record.text, MAX_TEXT_BYTES).unwrap();
+        assert_eq!(page(&text, record.text_pages as u16, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), TEXT);
+        for (reference, expected) in [(record.article, ARTICLE), (record.photo_attribution, PHOTO)] {
+            let credit = directory.content(source, reference, MAX_ATTRIBUTION_BYTES).unwrap();
+            for (index, expected) in expected.iter().enumerate() {
+                assert_eq!(page(&credit, 5, index as u16, &mut [0; MAX_PAGE_BYTES]).unwrap(), *expected);
+            }
+        }
+        let photo = directory.content(source, record.photo, PHOTO_MAX_COMPRESSED as u32).unwrap();
+        let mut decoder = PhotoDecoder::new();
+        let mut completed = false;
+        let mut written = 0;
+        for _ in 0..1024 {
+            let progress = decoder
+                .step(&photo, |offset, values| {
+                    assert_eq!(offset, written);
+                    assert!(values.len() <= PHOTO_HISTORY);
+                    for (i, value) in values.iter().enumerate() {
+                        assert_eq!(*value, pixel(offset + i));
+                    }
+                    written += values.len();
+                })
+                .unwrap();
+            if progress == Progress::Complete {
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed);
+        assert_eq!(written, PHOTO_PIXELS);
+    }
+}
+
 pub fn attach(map: &mut Vec<u8>, mut records: Vec<LandmarkRecord>, photo: bool) {
     records.sort_by_key(LandmarkRecord::key);
     let payload = SECTION_HEADER_LEN + records.len() * RECORD_LEN;
@@ -33,11 +129,11 @@ pub fn attach(map: &mut Vec<u8>, mut records: Vec<LandmarkRecord>, photo: bool) 
     };
     for record in &mut records {
         record.name = add(b"Castle");
-        record.text = add(b"\x01\x00\x0a\x00\x00\x00\x0b\x00\x00\x00X");
-        record.article = add(b"authored credit");
+        record.text = add(&fields(&[TEXT]));
+        record.article = add(&fields(&ARTICLE));
         if photo {
-            record.photo = add(&vec![0xA5; 12_000]);
-            record.photo_attribution = add(b"authored photo credit");
+            record.photo = add(&self::photo());
+            record.photo_attribution = add(&fields(&PHOTO));
         }
     }
     for (index, record) in records.iter().enumerate() {

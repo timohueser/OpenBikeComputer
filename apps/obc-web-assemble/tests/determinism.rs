@@ -1143,6 +1143,8 @@ fn landmarks_survive_the_normal_bridge_with_and_without_terrain() {
         )
         .unwrap();
         assert_eq!(record.qid, 123);
+        let source = obc_formats::io::SliceSource(bytes);
+        landmark_fixture::assert_content(&obc_reader::landmarks::map_section(&source).unwrap().unwrap());
         if terrain {
             assert_eq!(start + len, u32::from_le_bytes(bytes[41..45].try_into().unwrap()) as usize * 16);
         }
