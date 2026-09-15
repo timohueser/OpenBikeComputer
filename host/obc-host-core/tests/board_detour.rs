@@ -53,6 +53,7 @@ fn put(
     let (id, revision) =
         previous.map(|(id, revision)| (id, Revision(revision.0 + 1))).unwrap_or((store.next_object_id(), Revision(1)));
     let meta = EntryMeta {
+        added_at_utc: 0,
         id,
         revision,
         kind,

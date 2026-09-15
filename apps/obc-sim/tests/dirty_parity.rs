@@ -318,15 +318,8 @@ fn squeeze(a: Button, b: Button) -> [InputEvent; 2] {
 // The two instances.
 // ---------------------------------------------------------------------------------------------
 
-const SUPPORT: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-
-    bonding: true,
-    storage_space_report: true,
-    retention_metadata: true,
-};
+const SUPPORT: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// What one map repaint cost and what it moved — the record the sheet-only open is judged on.
 #[derive(Debug)]

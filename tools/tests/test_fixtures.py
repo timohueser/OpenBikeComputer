@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.fixtures import Catalog, FixtureError, Store, build_package, command_publish, resolve_path, sha256_file
+from tools.fixtures import MAX_ARCHIVE_BYTES, Catalog, FixtureError, Store, build_package, command_publish, resolve_path, sha256_file
 
 
 def catalog_text(base_url: str, digest: str, size: int) -> str:
@@ -34,6 +34,15 @@ scenarios = ["sample"]
 
 
 class FixtureRegistryTests(unittest.TestCase):
+    def test_catalog_enforces_archive_budget_without_downloading(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "catalog.toml"
+            path.write_text(catalog_text("https://fixtures.example/", "a" * 64, MAX_ARCHIVE_BYTES))
+            Catalog(path)
+            path.write_text(catalog_text("https://fixtures.example/", "a" * 64, MAX_ARCHIVE_BYTES + 1))
+            with self.assertRaisesRegex(FixtureError, "1 GiB development fixture archive limit"):
+                Catalog(path)
+
     def test_publish_never_probes_the_public_url_before_upload(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

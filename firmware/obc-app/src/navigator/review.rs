@@ -1,8 +1,8 @@
 //! Immutable Assistant review and durable checkpoint policy owned by Navigator.
 use super::NavigatorError;
-use crate::device_core::{OperationToken, RetentionTag, StoreIdentity};
+use crate::device_core::{MetadataTag, OperationToken, StoreIdentity};
+use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
 use obc_formats::obcr::RouteSourceKey;
-use obc_formats::retention::{NavigatorCheckpoint, PayloadFingerprint};
 
 pub const REVIEW_ALONG_TOLERANCE_M: u32 = 50;
 pub const REVIEW_LATERAL_TOLERANCE_M: u32 = 30;
@@ -143,7 +143,7 @@ pub(super) struct ReviewState {
     pub unaccepted: u64,
     pub checkpoint: Option<NavigatorCheckpoint>,
     pub change: Option<Option<NavigatorCheckpoint>>,
-    pub token: Option<OperationToken<RetentionTag>>,
+    pub token: Option<OperationToken<MetadataTag>>,
     pub submitted: bool,
     pub cancel_after: bool,
     pub status: ReviewStatus,
@@ -173,8 +173,8 @@ impl ReviewState {
 }
 
 use super::{NavigatorMachine, PlanFamily, PlanPhase};
-use crate::retention::{RetentionError, RetentionOutcome};
-use obc_formats::retention::JourneyPhase;
+use crate::metadata::{MetadataError, MetadataOutcome};
+use obc_formats::assistant::JourneyPhase;
 
 impl NavigatorMachine {
     pub(crate) fn request_review(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
@@ -197,13 +197,15 @@ impl NavigatorMachine {
         self.route = PlanPhase::Requested;
     }
 
+    pub(crate) fn unaccepted_routes(&self) -> u64 {
+        self.review.unaccepted
+    }
+
     pub fn route_unaccepted(&self, index: usize) -> bool {
         index < 64 && self.review.unaccepted & (1 << index) != 0
     }
-    pub(crate) fn set_review_meta(&mut self, metas: &[crate::RouteRetentionMeta]) {
-        self.review.unaccepted = metas.iter().enumerate().fold(0, |mask, (i, meta)| {
-            mask | if i < 64 && meta.assistant_candidate && !meta.assistant_accepted { 1 << i } else { 0 }
-        });
+    pub(crate) fn set_unaccepted_routes(&mut self, mask: u64) {
+        self.review.unaccepted = mask;
     }
     pub(crate) fn review_index(&mut self, index: Option<usize>) {
         self.review.preview_index = index;
@@ -234,6 +236,15 @@ impl NavigatorMachine {
         true
     }
     pub(crate) fn remap_review_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+        let mut mask = 0;
+        for old in 0..64 {
+            if self.route_unaccepted(old) {
+                if let Some(new) = remap(old).filter(|&index| index < 64) {
+                    mask |= 1 << new;
+                }
+            }
+        }
+        self.review.unaccepted = mask;
         self.review.preview_index = self.review.preview_index.and_then(remap);
         if let AfterCheckpoint::Select(index) = &mut self.review.after {
             *index = index.and_then(remap);
@@ -418,11 +429,11 @@ impl NavigatorMachine {
         }
     }
 
-    pub(crate) fn checkpoint_issued(&mut self, token: OperationToken<RetentionTag>) {
+    pub(crate) fn checkpoint_issued(&mut self, token: OperationToken<MetadataTag>) {
         self.review.token = Some(token);
     }
 
-    pub(crate) fn checkpoint_submission(&mut self, token: OperationToken<RetentionTag>) -> bool {
+    pub(crate) fn checkpoint_submission(&mut self, token: OperationToken<MetadataTag>) -> bool {
         if self.review.token != Some(token) || self.review.change.is_none() {
             return false;
         }
@@ -488,19 +499,19 @@ impl NavigatorMachine {
         Ok(None)
     }
 
-    fn checkpoint_answer(&mut self, outcome: RetentionOutcome) -> Option<AfterCheckpoint> {
+    fn checkpoint_answer(&mut self, outcome: MetadataOutcome) -> Option<AfterCheckpoint> {
         if self.review.token != Some(outcome.token()) {
             return None;
         }
         self.review.token = None;
         self.review.submitted = false;
         match outcome {
-            RetentionOutcome::CheckpointWritten { .. } => self.checkpoint_committed(),
-            RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. } => {
+            MetadataOutcome::CheckpointWritten { .. } => self.checkpoint_committed(),
+            MetadataOutcome::Failed { error: MetadataError::RemountRequired, .. } => {
                 self.review.status = ReviewStatus::Unresolved;
                 None
             }
-            RetentionOutcome::Failed { .. } => {
+            MetadataOutcome::Failed { .. } => {
                 self.review.change = None;
                 self.review.status = if self.review.preview.is_some() {
                     ReviewStatus::Preview
@@ -512,8 +523,7 @@ impl NavigatorMachine {
                 }
                 None
             }
-            RetentionOutcome::Cancelled { .. } => None,
-            _ => None,
+            MetadataOutcome::Cancelled { .. } => None,
         }
     }
 }
@@ -603,7 +613,7 @@ impl crate::App {
     pub fn offer_assistant_checkpoint(&mut self, store: StoreIdentity, checkpoint: Option<NavigatorCheckpoint>) {
         if self.navigator.review.status == ReviewStatus::Unresolved {
             if let Ok(after) = self.navigator.recover_checkpoint(store, checkpoint) {
-                self.retention.reset_store();
+                self.metadata.reset_store();
                 self.catalogs.remount_required = false;
                 self.catalogs.loaded_scope = None;
                 self.catalogs.note_store_moved();
@@ -613,8 +623,8 @@ impl crate::App {
             self.navigator.offer_checkpoint(store, checkpoint);
         }
     }
-    /// A transient immutable edit, available only to the current RetentionMachine token.
-    pub fn assistant_checkpoint_payload(&self, token: OperationToken<RetentionTag>) -> Option<CheckpointChange> {
+    /// A transient immutable edit, available only to the current MetadataMachine token.
+    pub fn assistant_checkpoint_payload(&self, token: OperationToken<MetadataTag>) -> Option<CheckpointChange> {
         (self.navigator.review.token == Some(token)).then_some(())?;
         self.navigator.review.change.map(|next| CheckpointChange { expected: self.navigator.review.checkpoint, next })
     }
@@ -622,10 +632,10 @@ impl crate::App {
         self.navigator.review.store == Some(store) && self.navigator.review.status != ReviewStatus::Unresolved
     }
     /// The executor calls this immediately before physical submission, after admitted cancellations.
-    pub fn assistant_checkpoint_submission(&mut self, token: OperationToken<RetentionTag>) -> bool {
+    pub fn assistant_checkpoint_submission(&mut self, token: OperationToken<MetadataTag>) -> bool {
         self.navigator.checkpoint_submission(token)
     }
-    pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: RetentionOutcome) {
+    pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: MetadataOutcome) {
         let after = self.navigator.checkpoint_answer(outcome);
         self.apply_assistant_checkpoint_action(after);
     }
@@ -633,8 +643,7 @@ impl crate::App {
         match after {
             Some(AfterCheckpoint::Activate(id)) => {
                 if let Some(index) = self.route_ids().iter().position(|&candidate| candidate == id) {
-                    self.catalogs.mark_route_accepted(index);
-                    self.navigator.set_review_meta(self.catalogs.route_metas());
+                    self.navigator.review.unaccepted &= !(1u64 << index);
                     self.navigator.following.active_route = Some(index);
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
@@ -694,7 +703,7 @@ mod tests {
         nav.route = PlanPhase::PreviewReady;
         nav
     }
-    fn issued(nav: &mut NavigatorMachine, tokens: &mut TokenSource<RetentionTag>) -> OperationToken<RetentionTag> {
+    fn issued(nav: &mut NavigatorMachine, tokens: &mut TokenSource<MetadataTag>) -> OperationToken<MetadataTag> {
         let token = tokens.issue();
         nav.checkpoint_issued(token);
         token
@@ -733,18 +742,18 @@ mod tests {
         assert!(nav.checkpoint_submission(token));
         assert_eq!(nav.following.active_route, Some(0));
         assert_eq!(
-            nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }),
+            nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }),
             Some(AfterCheckpoint::Activate(5))
         );
         assert_eq!(nav.review.checkpoint.unwrap().route, source(5));
         assert_eq!(nav.review.status, ReviewStatus::Accepted);
-        assert!(nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }).is_none());
+        assert!(nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }).is_none());
         assert_eq!(nav.review.preview_index, None);
         assert!(!nav.select_after_checkpoint(None));
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
         assert_eq!(
-            nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }),
+            nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }),
             Some(AfterCheckpoint::Select(None))
         );
         assert!(nav.select_after_checkpoint(Some(1)), "accepted route can be selected again after stop");
@@ -757,19 +766,19 @@ mod tests {
         let token = issued(&mut nav, &mut tokens);
         nav.cancel_review();
         assert!(!nav.checkpoint_submission(token));
-        nav.checkpoint_answer(RetentionOutcome::Cancelled { token });
+        nav.checkpoint_answer(MetadataOutcome::Cancelled { token });
         assert!(nav.review.checkpoint.is_none());
         let mut nav = preview();
         nav.accept_review(origin(), 0);
         let token = issued(&mut nav, &mut tokens);
         assert!(nav.checkpoint_submission(token));
         nav.cancel_review();
-        assert!(nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token }).is_none());
+        assert!(nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }).is_none());
         assert_eq!(nav.review.change.unwrap(), None);
         assert!(nav.review.preview.is_some(), "do not retire a durably accepted candidate before durable clear");
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
-        nav.checkpoint_answer(RetentionOutcome::CheckpointWritten { token });
+        nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token });
         assert!(nav.review.checkpoint.is_none());
         assert_eq!(nav.following.active_route, Some(0));
         assert!(matches!(
@@ -785,13 +794,13 @@ mod tests {
         let mut tokens = TokenSource::new();
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
-        nav.checkpoint_answer(RetentionOutcome::Failed { token, error: RetentionError::Busy });
+        nav.checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::Busy });
         assert_eq!(nav.review.preview, original_preview);
         assert_eq!(nav.review.status, ReviewStatus::Preview);
         nav.accept_review(origin(), 0);
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
-        nav.checkpoint_answer(RetentionOutcome::Failed { token, error: RetentionError::RemountRequired });
+        nav.checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
         nav.cancel_review();
         nav.set_active_route(None);
         assert_eq!(nav.review.status, ReviewStatus::Unresolved);
@@ -817,33 +826,33 @@ mod tests {
                 app.navigator.review.recovery_seen = true;
                 app.navigator.accept_review(origin(), 0);
                 let next = app.navigator.review.change.unwrap();
-                let effect = app.retention.next_checkpoint_effect().unwrap();
+                let effect = app.metadata.next_checkpoint_effect().unwrap();
                 let token = effect.token();
                 app.navigator.checkpoint_issued(token);
                 app.navigator.checkpoint_submission(token);
-                let failed = RetentionOutcome::Failed { token, error: RetentionError::RemountRequired };
-                assert!(app.retention.apply_outcome(failed));
+                let failed = MetadataOutcome::Failed { token, error: MetadataError::RemountRequired };
+                assert!(app.metadata.apply_outcome(failed));
                 app.assistant_checkpoint_answer(failed);
                 app.catalogs.remount_required = true;
                 if cancel {
                     app.navigator.cancel_review();
                 }
                 assert!(app.assistant_needs_recovery());
-                assert!(app.retention.next_checkpoint_effect().is_none());
+                assert!(app.metadata.next_checkpoint_effect().is_none());
                 let recovered = if committed { next } else { None };
                 app.offer_assistant_checkpoint(context().store, recovered);
                 assert!(!app.catalogs.remount_required);
                 assert_eq!(app.navigator.review.checkpoint, recovered);
                 assert_ne!(app.assistant_review_status(), ReviewStatus::Unresolved);
                 let next_effect =
-                    app.retention.next_checkpoint_effect().expect("same owner permits work after verified recovery");
+                    app.metadata.next_checkpoint_effect().expect("same owner permits work after verified recovery");
                 if cancel && committed {
                     assert_eq!(app.navigator.review.change, Some(None));
                     assert!(app.assistant_preview().is_some(), "clear is still owed before retirement");
                     app.navigator.checkpoint_issued(next_effect.token());
                     app.navigator.checkpoint_submission(next_effect.token());
-                    let outcome = RetentionOutcome::CheckpointWritten { token: next_effect.token() };
-                    assert!(app.retention.apply_outcome(outcome));
+                    let outcome = MetadataOutcome::CheckpointWritten { token: next_effect.token() };
+                    assert!(app.metadata.apply_outcome(outcome));
                     app.assistant_checkpoint_answer(outcome);
                     assert!(app.assistant_checkpoint().is_none());
                     assert!(app.assistant_preview().is_none());

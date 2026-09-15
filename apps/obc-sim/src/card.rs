@@ -151,7 +151,6 @@ mod tests {
         let mut old_bytes = vec![0; old.len() as usize];
         old.read_at(0, &mut old_bytes).unwrap();
         assert_eq!(old_bytes, ROUTE);
-        crate::routes::seed_retention(&mut session.routes, ids[0], obc_app::Retention::Week2, 42).unwrap();
         assert!(Session::load(&mut args).is_err(), "create refuses an existing path");
         drop(session);
         drop(map);
@@ -165,10 +164,6 @@ mod tests {
         assert_eq!(session.routes.source(ids[0]).unwrap().revision().0, 2);
         assert_eq!(session.trips.inputs()[0].id, trip_id);
         assert_eq!(session.trips.inputs()[0].stage_ids, &[ids[0], ids[1], 0]);
-        assert_eq!(
-            session.routes.retention_metas()[0],
-            obc_app::RouteRetentionMeta::new(obc_app::Retention::Week2, 42)
-        );
         assert_eq!(std::fs::read(directory.join("a.obcr")).unwrap(), ROUTE);
         assert_eq!(std::fs::read(directory.join("TP1.OBT")).unwrap(), TRIP);
         drop(map);

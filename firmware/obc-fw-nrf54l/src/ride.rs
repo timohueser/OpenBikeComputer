@@ -165,7 +165,7 @@ async fn read_catalogs(
     use obc_app::catalog_state::CatalogError;
     app.begin_catalog_refresh();
     metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
-    let start = crate::flat_store::retention_scope(flat);
+    let start = crate::flat_store::catalog_scope(flat);
     // Drop the held revision before rebuilding identity/index state. A replace at the same ObjectId
     // must reopen the new revision, not keep rendering the hold.
     crate::flat_store::reconcile_route(flat, None);
@@ -178,8 +178,8 @@ async fn read_catalogs(
     if !routes_loaded || !trips_loaded || !rides_loaded {
         return Err(CatalogError::Unreadable);
     }
-    crate::flat_store::load_retention(flat, app).map_err(catalog_metadata_error)?;
-    if start != crate::flat_store::retention_scope(flat) {
+    crate::flat_store::load_metadata(flat, app).map_err(catalog_metadata_error)?;
+    if start != crate::flat_store::catalog_scope(flat) {
         return Err(CatalogError::Stale);
     }
     Ok(start)
@@ -592,7 +592,6 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
 
     bonding: true,
     storage_space_report: true,
-    retention_metadata: true,
 };
 
 /// One in-flight `CatalogEffect::RemoveObject` on the flat store's **ticketed** writer path: the
@@ -851,7 +850,7 @@ pub(crate) async fn run_app(
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
     #[cfg(has_nav)]
-    let mut review_publication: Option<obc_formats::retention::PayloadFingerprint> = None;
+    let mut review_publication: Option<obc_formats::assistant::PayloadFingerprint> = None;
     #[cfg(has_nav)]
     let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
     #[cfg(has_nav)]
@@ -1083,12 +1082,6 @@ pub(crate) async fn run_app(
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
             }
-            // BLE setClock (auto-expiry epic #638 S2, #642): a validated `(utc, offset)` from the phone
-            // is waiting to stamp the wall clock. `stamp_clock_ble` sets + persists the offset and marks
-            // the clock trusted `Ble`; posting from *this* half means the `PersistSettings` it arms is
-            // caught by the typed drain below this same pass, so its save + `DEVICE_SETTINGS_CHANGED`
-            // land promptly — a Config read soon after this setClock serves the fresh offset (#456). The
-            // home clock jumps as soon as the loop renders (the post_ble_clock wake got us here).
             if let Some((utc, offset_min)) = crate::object_store::take_ble_clock() {
                 app.stamp_clock_ble(utc, offset_min);
             }
@@ -1326,9 +1319,32 @@ pub(crate) async fn run_app(
             // re-read has to precede this frame's route source/index build (it closes and reopens the
             // held revision, so a reader built before it would outlive its source), and the settings
             // write needs the store this block holds.
+            flat.set_route_added_at(app.clock_trusted().then(|| app.wall_unix_now()));
+            if crate::flat_store::take_route_storage_full() {
+                app.offer_route_cleanup(crate::flat_store::catalog_scope(flat).store);
+            }
             if let Some(effect) = exec.effects.catalog.take() {
                 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
                 match effect {
+                    CatalogEffect::CleanupRoute { token, before_utc, store } => {
+                        let active = app
+                            .active_route_index()
+                            .and_then(|i| app.route_ids().get(i).copied())
+                            .map(obc_storage::flat::ObjectId);
+                        match crate::flat_store::writer().ok_or(()).and_then(|w| {
+                            w.try_call(
+                                crate::flat_store::Request::CleanupRoute { before_utc, store, active },
+                                &CATALOG_STORE_REPLY,
+                            )
+                        }) {
+                            Ok(ticket) => exec.catalog = Some(CatalogRemoval { ticket, token, object: 0 }),
+                            Err(()) => RideExec::deliver(
+                                &mut exec.outcomes.catalog,
+                                CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
+                                "catalog",
+                            ),
+                        }
+                    }
                     // The rescan block: rebuild the flat route/trip/ride identities and remap the
                     // app's held indices by durable ObjectId.
                     CatalogEffect::ReadCatalog { token } => {
@@ -1344,7 +1360,7 @@ pub(crate) async fn run_app(
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
-                    // The rider's removal — a route, a ride, an expiry, or one step of a trip
+                    // The rider's removal — a route, a ride, or one step of a trip
                     // cascade — on the **answering** writer path. The effect is namespace-free (FS7
                     // numbers every object out of one id space), so the store resolves the head at
                     // that id and reports whether it was there. The cascade's member-then-folder
@@ -1353,31 +1369,6 @@ pub(crate) async fn run_app(
                     //
                     // A full request queue is not an answer: the effect simply was not taken this
                     // pass, so the domain re-offers it.
-                    CatalogEffect::ExpireObject { token, object, kind, scope } => {
-                        // No App transition can occur between this policy admission and the writer's reply.
-                        let result = if app.retention_expiry_due(object, kind, scope) {
-                            let id = obc_storage::flat::ObjectId(object);
-                            let request = match kind {
-                                obc_app::catalog_state::CatalogObjectKind::Route => {
-                                    crate::flat_store::Request::ExpireRoute { id, scope }
-                                }
-                                obc_app::catalog_state::CatalogObjectKind::Ride => {
-                                    crate::flat_store::Request::ExpireRide { id, scope }
-                                }
-                                obc_app::catalog_state::CatalogObjectKind::Trip => {
-                                    unreachable!("retention does not expire trips")
-                                }
-                            };
-                            metadata_call(request).await.map_err(catalog_metadata_error)
-                        } else {
-                            Err(CatalogError::Stale)
-                        };
-                        let outcome = match result {
-                            Ok(()) => CatalogOutcome::ObjectRemoved { token, object, existed: true },
-                            Err(error) => CatalogOutcome::Failed { token, error },
-                        };
-                        RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
-                    }
                     CatalogEffect::RemoveObject { token, object, kind } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
@@ -1414,6 +1405,15 @@ pub(crate) async fn run_app(
                     crate::flat_store::writer().and_then(|w| w.try_result(removal.ticket, &CATALOG_STORE_REPLY));
                 match answer {
                     None => exec.catalog = Some(removal),
+                    Some(Ok(crate::flat_store::Outcome::CleanedRoute(object))) => {
+                        let outcome = match object {
+                            Some(object) => {
+                                CatalogOutcome::ObjectRemoved { token: removal.token, object: object.0, existed: true }
+                            }
+                            None => CatalogOutcome::CleanupFinished { token: removal.token },
+                        };
+                        RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
+                    }
                     Some(Ok(crate::flat_store::Outcome::Removed { existed })) => {
                         defmt::info!("catalog: object {=u64} removed (existed {=bool})", removal.object, existed);
                         RideExec::deliver(
@@ -1509,13 +1509,10 @@ pub(crate) async fn run_app(
                 RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
             }
 
-            // The domains with no board executor at all. Each is answered rather than dropped, so a
-            // domain that starts producing one cannot wedge behind an executor that ignored it —
-            // and the loud line names the slice that owes it.
-            // Reuse the catalog reply only when no earlier catalog ticket owns it.
-            if exec.catalog.is_none() {
-                if let Some(effect) = exec.effects.retention.take() {
-                    use obc_app::retention::{RetentionEffect, RetentionOutcome};
+            // The catalog and checkpoint calls share one physical reply slot.
+            if exec.catalog.is_none() && exec.outcomes.metadata.is_empty() {
+                if let Some(effect) = exec.effects.metadata.take() {
+                    use obc_app::metadata::MetadataOutcome;
                     let token = effect.token();
                     #[cfg(has_nav)]
                     let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
@@ -1536,6 +1533,7 @@ pub(crate) async fn run_app(
                         });
                     #[cfg(has_nav)]
                     let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
+                    #[cfg(has_nav)]
                     let sources_current = clearing
                         || resume_current
                             && app.assistant_review_context().is_none_or(|context| {
@@ -1552,44 +1550,33 @@ pub(crate) async fn run_app(
                             });
                     #[cfg(not(has_nav))]
                     let sources_current = app.assistant_review_context().is_none();
-                    let result = if matches!(effect, RetentionEffect::WriteCheckpoint { .. }) && !sources_current {
-                        Some(Err(obc_app::retention::RetentionError::Stale))
-                    } else if matches!(effect, RetentionEffect::WriteCheckpoint { .. })
-                        && (!effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
-                            || !app.assistant_checkpoint_submission(token))
+                    let result = if !sources_current {
+                        Some(Err(obc_app::metadata::MetadataError::Stale))
+                    } else if !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
+                        || !app.assistant_checkpoint_submission(token)
                     {
                         RideExec::deliver(
-                            &mut exec.outcomes.retention,
-                            RetentionOutcome::Cancelled { token },
-                            "retention",
+                            &mut exec.outcomes.metadata,
+                            MetadataOutcome::Cancelled { token },
+                            "metadata",
                         );
                         None
                     } else {
-                        let request = if let RetentionEffect::WriteCheckpoint { scope: Some(scope), .. } = effect {
-                            app.assistant_checkpoint_payload(token)
-                                .map(|change| crate::flat_store::Request::WriteCheckpoint { scope, change })
-                        } else {
-                            Some(crate::flat_store::Request::WriteMetadata { effect })
-                        };
+                        let request = effect
+                            .scope()
+                            .zip(app.assistant_checkpoint_payload(token))
+                            .map(|(scope, change)| crate::flat_store::Request::WriteCheckpoint { scope, change });
                         Some(match request {
                             Some(request) => metadata_call(request).await,
-                            None => Err(obc_app::retention::RetentionError::Stale),
+                            None => Err(obc_app::metadata::MetadataError::Stale),
                         })
                     };
                     if let Some(result) = result {
-                        let outcome = match (effect, result) {
-                            (RetentionEffect::WriteCheckpoint { .. }, Ok(())) => {
-                                RetentionOutcome::CheckpointWritten { token }
-                            }
-                            (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
-                                RetentionOutcome::RouteMetadataWritten { token, id }
-                            }
-                            (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => {
-                                RetentionOutcome::RideMetadataWritten { token, id }
-                            }
-                            (_, Err(error)) => RetentionOutcome::Failed { token, error },
+                        let outcome = match result {
+                            Ok(()) => MetadataOutcome::CheckpointWritten { token },
+                            Err(error) => MetadataOutcome::Failed { token, error },
                         };
-                        RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
+                        RideExec::deliver(&mut exec.outcomes.metadata, outcome, "metadata");
                     }
                 }
             }
@@ -2552,7 +2539,7 @@ pub(crate) async fn run_app(
                 // spends when it *issues* the read, not when the read is answered. Sampling before
                 // the effects split the two arms across consecutive passes, so the bit was armed,
                 // spent, and armed again, and the domain read the store twice for one save.
-                exec.facts.note_store_revision(crate::flat_store::retention_scope(flat));
+                exec.facts.note_store_revision(crate::flat_store::catalog_scope(flat));
                 peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
@@ -3274,19 +3261,19 @@ pub(crate) async fn run_app(
     }
 }
 
-async fn metadata_call(request: crate::flat_store::Request) -> Result<(), obc_app::retention::RetentionError> {
-    use obc_app::retention::RetentionError;
-    let writer = crate::flat_store::writer().ok_or(RetentionError::Unsupported)?;
-    let ticket = writer.try_call(request, &CATALOG_STORE_REPLY).map_err(|()| RetentionError::Busy)?;
+async fn metadata_call(request: crate::flat_store::Request) -> Result<(), obc_app::metadata::MetadataError> {
+    use obc_app::metadata::MetadataError;
+    let writer = crate::flat_store::writer().ok_or(MetadataError::Unsupported)?;
+    let ticket = writer.try_call(request, &CATALOG_STORE_REPLY).map_err(|()| MetadataError::Busy)?;
     match writer.finish_call(ticket, &CATALOG_STORE_REPLY).await {
         Ok(crate::flat_store::Outcome::Metadata(result)) => result,
-        Err(obc_storage::flat::StoreError::ReadOnly) => Err(RetentionError::RemountRequired),
-        _ => Err(RetentionError::WriteFailed),
+        Err(obc_storage::flat::StoreError::ReadOnly) => Err(MetadataError::RemountRequired),
+        _ => Err(MetadataError::WriteFailed),
     }
 }
 
-fn catalog_metadata_error(error: obc_app::retention::RetentionError) -> obc_app::catalog_state::CatalogError {
-    use obc_app::{catalog_state::CatalogError as C, retention::RetentionError as E};
+fn catalog_metadata_error(error: obc_app::metadata::MetadataError) -> obc_app::catalog_state::CatalogError {
+    use obc_app::{catalog_state::CatalogError as C, metadata::MetadataError as E};
     match error {
         E::Stale => C::Stale,
         E::RemountRequired => C::RemountRequired,
