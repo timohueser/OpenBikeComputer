@@ -2,8 +2,7 @@
 
 These files describe the initial real inputs for Ride Assistant. Scenario inputs live in the
 immutable fixture store. Country-scale raw landmark captures stay in a local map-baker source
-cache; see [acquisition and recount commands](CAPTURE.md). The West Cork simulator output now
-uses OBCM v16 with compiled landmark content. The initial Swiss regional output remains pending.
+cache; see [acquisition and recount commands](CAPTURE.md). The West Cork and Swiss regional simulator outputs use OBCM v16 with compiled landmark content.
 It does not prove that an Assistant feature or a hardware test passed.
 
 ## Acquire and verify
@@ -104,7 +103,7 @@ This regional map is not a full-country map. The completed country source census
   and the 155-class P279 ancestor closure for their P31 types. Complete article templates and
   footers retain imported text notices and license information. The content compiler must
   interpret those notices and omit unsupported credits. Capture does not assert publication
-  eligibility. Full-country candidate/content capture and the production count remain RA08/RA13 work.
+  eligibility. The completed country census is linked in the integrated handoff below.
 
 Each `sources[]` entry pins `path`, `url`, `retrieved_at`, `bytes`, and `sha256`. Source revisions
 and dates are also recorded where the provider exposes them. Package members pin derived
@@ -187,6 +186,7 @@ tools/obc sim assistant-forward-rejoin
 tools/obc sim assistant-loop-crossing
 ```
 
-The runtime menu, real route acceptance, recorder traces, final resource
-and pixel checks, and physical-device acceptance remain integrated work. A package or replay is
-not evidence that those checks passed.
+The [integrated handoff](../../../docs/assets/ride-assistant/implementation/final-handoff.md) links
+normal-menu acceptance, the complete Swiss Visit and saved recording, a real Easier alternative,
+resource measurements, and the country census. Physical-device acceptance remains pending.
+Package verification alone does not establish runtime acceptance.
