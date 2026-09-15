@@ -172,10 +172,11 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
     --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
-# The closed state (#685): the same detail at Mon 23:00 — after Carrefour's 08:00-21:00 — so the
-# pill wears its warning-red CLOSED face on the Today line.
-"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T23:00" \
-    --script "B d d w p d d d p f p" --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
+# Select Carrefour while open, then advance the trusted clock past its 21:00 closing time.
+# Closed places are excluded from a new nearby query; an already-open detail must update in place.
+"$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
+    --clock-after-script "2025-01-06T23:00" --script "B d d w p d d d p f p f" \
+    --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
 # The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
 # Mon 08:30-12:30 / 15:00-19:00) — the stack that used to push the badge under the Route-here
@@ -568,12 +569,11 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
     --expect-screen ContextDrawer --png "$OUT/up-ahead-sources-editor.png"
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE d d d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
-# (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
-# ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
+    --script "$UPBASE d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
+# (e) No-route and outside-map states. The plain vector route is outside Monaco;
+# the coverage guard takes precedence over map-place filters.
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-outside-map.png"
 # (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
 # Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
 # presses into its editor, stages `n` steps round the Both → Waypoints → Map POIs ring, commits and
@@ -589,7 +589,6 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPSCOPE 1) $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
 # The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
 # Auto climb panel would take the base screen on this line, so the script turns it Off first
 # (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics
