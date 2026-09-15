@@ -27,7 +27,8 @@ terrain coverage. The map is the published v16 Swiss regional crop, SHA-256
 | Rejoin, at 2,100 s | [Following, original cleared, lower bound 10,091 m](rejoined-card.log) |
 | Finish, at 2,342 s | [One finished ride, no live recorder or journey checkpoint](finished-card.log) |
 
-The phase checks used separate clones of the accepted card. The final fresh-card run completed
+The phase checks used separate clones of an earlier card with the same accepted geometry and
+pinned map. Their store IDs differ from the clean recreation in `accepted-card.log`. The final fresh-card run completed
 without an intervening restart. Its saved ride has 401 samples, exactly one segment, monotonic
 0–2,342,000 ms timestamps, and the final coordinate 8.196681 E / 46.723856 N. Object 3, revision 1
 remains the sole ride. Its payload is 8,104 bytes with CRC-32 `36b62f37`. The UTC start is
