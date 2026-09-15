@@ -120,7 +120,7 @@ struct Args {
     /// `f` = draw one throwaway frame so draw-time lazy state (the POI-list snapshot) is filled
     /// before the next gesture, `T` = one route-aware tick (sync + open the active route and run
     /// the once-per-load state builds), `Q` = the Up+Select squeeze that opens the universal quick
-    /// drawer, with its slide-down settled, `I` = elapse 5 min with no input so the idle-return
+    /// drawer, with its slide-down settled, `A` = hold Up+Select to open Assistant, `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
     /// Normal button input after GPX replay, before the final render.
@@ -966,13 +966,12 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             // token, because every drawer frame starts with it.
             'Q' => {
                 chord(app, &mut now, Button::Up, Button::Select);
-                for _ in 0..8 {
+                for _ in 0..12 {
                     now += 40;
                     feed(app, now, vec![]);
                 }
             }
-            // The contextual drawer's Down+Back squeeze, then its slide-up settled — the bottom
-            // sheet's counterpart to `Q`.
+            // Hold the same raw button pair past the Assistant threshold.
             'A' => {
                 feed(app, now, vec![down(Button::Up)]);
                 now += 30;
@@ -983,6 +982,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 feed(app, now, vec![up(Button::Select), up(Button::Up)]);
                 now += 30;
             }
+            // The contextual drawer's Down+Back squeeze, then its slide-up settled.
             'C' => {
                 chord(app, &mut now, Button::Down, Button::Back);
                 for _ in 0..8 {

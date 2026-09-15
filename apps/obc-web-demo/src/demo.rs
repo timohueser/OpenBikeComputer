@@ -836,7 +836,7 @@ mod tests {
         drive(&mut d, &mut now, "seek:3000", "Map");
         drive(&mut d, &mut now, "heading:250", "Map");
         drive(&mut d, &mut now, "backhold", "Menu");
-        drive(&mut d, &mut now, "step:4", "Menu");
+        drive(&mut d, &mut now, "step:3", "Menu");
         drive(&mut d, &mut now, "press", "PeakView");
         assert!(!d.peak_ready(), "opening yields before terrain work");
         for _ in 0..1200 {
