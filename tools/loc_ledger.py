@@ -1,141 +1,36 @@
 #!/usr/bin/env python3
-"""Pin the LOC counting basis for the Device Object System v3 epic (#1256).
+"""Count committed Rust source as production or test/harness.
 
-The epic runs a hard budget — the storage layer must land in **6,000
-implementation lines** — and the ledger is ticked after every merge.  Three
-independent hand counts of PR #1414 differed by ~120 lines on *basis* alone,
-#1417's ledger was disputed, and #1418's was first posted as ``+359`` and
-corrected in review to ``+39`` production.  Every one of those disputes was
-about *what counts*, never about arithmetic.  This script is the answer: one
-committed, deterministic definition, so a ledger figure is reproducible rather
-than re-derived.
+Usage::
 
-Usage (the file is committed 100644 — ``core.fileMode`` is off in this repo, so
-always invoke it through the interpreter, never as ``./tools/loc_ledger.py``)::
+    python3 tools/loc_ledger.py --storage-total [--head REF] [--check-budget]
+    python3 tools/loc_ledger.py --base REF --head REF [--storage-series]
+    python3 tools/loc_ledger.py --pr NUMBER [--basis code]
 
-    python3 tools/loc_ledger.py                      # HEAD vs merge-base with origin/develop
-    python3 tools/loc_ledger.py --base <ref> --head <ref>
-    python3 tools/loc_ledger.py --pr 1418            # both sides of a merge commit
-    python3 tools/loc_ledger.py --storage-series     # + the #1256 budget line to post
-    python3 tools/loc_ledger.py --basis code         # lead with non-blank, non-comment
+The absolute storage report counts the fixed STORAGE_SERIES_PATHS recursively.
+It uses raw production lines for the 6,000-line ceiling and shows structural
+code lines as supplemental evidence. See tools/storage-line-budget.md for the
+scope, exclusions, current reconciliation and scanner limits.
 
-Or through the task runner: ``obc loc-ledger [args]``.
+Raw means every physical source line, including blanks and comments; a final
+unterminated line counts once. Code means a line with a token left by
+strip_noise, which removes comments and literal contents. This is a structural
+counter, not a Rust compiler or a general code-coverage measurement.
 
-``--pr N`` finds the merge commit and counts ``merge-base(parents)..pr-head``,
-**not** first-parent-to-second: a branch that was not rebased before merging
-would otherwise have everything develop gained meanwhile counted against it,
-backwards.  (That artefact alone moved #1417's figure by ~440 lines.)
+The absolute report excludes only exact cfg(test) gates and named harness
+files. Mixed test/std gates remain counted. The historical delta mode keeps its
+broader test-mentioning cfg rule: any(test, feature = "std") selects harness,
+not(test) selects production, and cfg_attr does not gate an item. Do not add
+historical deltas to the absolute total.
 
-The basis, in full
-------------------
+The scanner balances item braces after removing comments and string/character
+literal contents. It handles nested comments, raw strings, lifetimes and array
+semicolons. It does not expand macros, follow include! or #[path] indirection,
+or evaluate general cfg expressions. Scope changes and new syntax need review.
 
-*Unit.*  Two are reported, always, side by side, because the epic's own series
-has been ticked on both (see "basis drift" below):
-
-  ``raw``   every line of a ``.rs`` file — **the default**, and the headline
-            figure, because the ≤ 6,000 ceiling and the 19,933 lines it is
-            measured against are raw file lengths (#1256 quotes ``sd.rs``
-            at 5,057 and ``object_store.rs`` at 2,226, both plain ``wc -l``).
-            A ceiling and its subject have to be counted the same way.
-  ``code``  non-blank, non-comment lines (``//``, ``///``, ``//!`` and
-            ``/* … */``).  This is what #1418's correction and #1425's ledger
-            used.
-
-``--basis`` picks which one leads the per-file table and the "post this"
-line; the totals block prints both either way, so a ledger can never again be
-read without knowing which basis it is on.
-
-*Basis drift — one flip, in the middle of the series.*  Reconstructed with this
-script against the merged history.  The first four rows are the PRs that
-carried a "Running storage-layer total" line on #1256; all figures are on the
-``--storage-series`` set so the rows are comparable:
-
-===========  ==============  ============  ============  ==================
-PR           posted          raw basis     code basis    ticked on
-===========  ==============  ============  ============  ==================
-#1403 FS3    +2,499          +2,489        +1,836        raw
-#1414        +169            +171          +67           raw
-#1417 FS6    +303            +325          +111          raw
-#1418 FS7.1  +39             +221          +44           **code**
-===========  ==============  ============  ============  ==================
-
-The flip is #1418's, and it is a single PR, not a pattern: three raw ticks,
-then one on code lines.  On a consistent raw basis the running total is about
-3,830 rather than the posted ~3,650, and that ~180-line gap *is* the flip.
-
-(#1425's ``+58`` and #1424's ``−4,273`` are quoted here and there as evidence
-of the code basis — #1425 states "non-blank, non-comment lines" outright — but
-neither is a series tick: neither posted a running total, and neither touches
-the counted set at all, so both are 0 against the budget.  They are host-side
-map-format work.)
-
-Reconciling the series onto one basis is an owner ruling, tracked by FS11
-(#1393); this script's job is to make the choice visible and mechanical rather
-than re-derived per PR.
-
-*Scope.*  Only ``.rs`` files are counted at all.  Specs, docs, workflows, JSON,
-TypeScript and Swift land in a third **other** bucket that is reported but
-counted in neither total — a spec rewrite is not an implementation line.
-
-*Production vs test/harness.*  A file is test/harness if any rule below
-matches; the first match wins and is reported as that file's reason.  What is
-left is production, minus its own ``#[cfg(test)]`` regions:
-
- 1. it lives under a ``tests/`` directory (integration tests);
- 2. it lives under a ``benches/`` directory;
- 3. it is a bench binary — ``src/bin/`` with ``bench`` in the file name;
- 4. its name is test-shaped: ``*_test.rs``, ``*_tests.rs``, ``test_*.rs``;
- 5. it belongs to an oracle/harness crate (``ORACLE_CRATES`` below);
- 6. it lives under a fixture directory;
- 7. its module is declared under a ``test``-mentioning ``cfg`` by its parent
-    module — e.g. ``#[cfg(test)] mod granularity;`` makes the whole of
-    ``granularity.rs`` test/harness, transitively.  This is the rule that moves
-    #1418's 376-line ``flat::granularity`` module out of production, and it is
-    also what classifies ``sim``/``model`` (``#[cfg(any(test, feature =
-    "std"))]``) as harness rather than firmware.
-
-Anything else is production **per line**: an added or removed line inside a
-``#[cfg(test)]`` block of an otherwise-production file is test/harness.  Added
-lines are judged against the *head* version of the file, removed lines against
-the *base* version, so a hunk is attributed to the tree it actually existed in.
-
-*``#[cfg(test)]`` region detection is deliberately approximate, and
-deterministic.*  The scanner strips line comments, block comments and string
-and char literal *contents* (so a brace inside ``"}"`` cannot mislead it), finds
-``cfg`` attributes that select the test configuration, and then brace-matches
-the item that follows — or, for ``mod foo;``, records the module name for rule
-7.  It does not parse Rust.  What that costs, stated rather than discovered:
-
-*Handled, with a test each, because the tree contains all three:*
-
-  ``cfg_attr``      ignored entirely.  ``#[cfg_attr(test, derive(Debug))]``
-                    applies an *attribute* conditionally; the item is compiled
-                    either way.  Matching it was a live bug — the three crate
-                    roots carrying ``#![cfg_attr(not(test), no_std)]``
-                    (``obc-app``, ``obc-reader``, ``obc-dfu``) each counted as
-                    test/harness in their entirety, 268 lines of production.
-  ``not(test)``     the production half of a build, so every balanced
-                    ``not( … )`` group is removed before the ``test`` token is
-                    looked for.  ``all(not(test), feature = "x")`` is
-                    production; ``any(test, miri)`` is test.
-  ``[u8; 4]``       a ``;`` inside brackets or parens ends no item, so the body
-                    of ``#[cfg(test)] fn f(buf: [u8; 4]) { … }`` stays gated.
-  ``'a``            a lifetime tick is not a char literal, so a brace between
-                    two of them on one line survives.
-
-*Not handled, and known:* a macro invocation that emits unbalanced braces would
-run a gated region past its end, and ``include!``-style indirection is not
-followed.  Neither occurs today: sweeping all 651 tracked ``.rs`` files under
-``firmware/``, ``host/`` and ``apps/`` for a gated region that swallows most of
-a file or runs to EOF from high up flags exactly one, ``obc2/equivalence.rs``,
-and that file is a whole-file harness module under rule 7 anyway (its gating is
-a dozen genuine regions with 274 ungated lines between them, not a runaway).
-The trade is intentional: a stdlib-only script that is wrong in ways you can
-read beats a ``syn`` dependency in the tool that arbitrates a budget.
-
-*Renames.*  Detected (``git diff -M``); a pure rename is 0/0 and a rewrite
-counts only its real changes, rather than a whole file added and another
-removed.
+Delta mode defaults to HEAD against the merge base with origin/develop. --pr
+uses the merge base of both parents and the PR head; git diff -M recognizes
+renames. Specs, documentation and non-Rust source are outside both Rust totals.
 """
 
 from __future__ import annotations
@@ -162,35 +57,22 @@ ORACLE_CRATES = (
     "obc-bench",  # host bench driver
 )
 
-#: The storage-budget crate set for ``--storage-series``: the paths whose lines
-#: are ticked against the ≤ 6,000 in #1256.  Adjudicated from the epic's own
-#: ticks, and deliberately narrow:
-#:
-#:  * ``obc-storage/src/flat/`` — the flat store itself (FS3's 2,499) *and* the
-#:    obc-link binder (FS5's "216-line binder in obc-storage"), which lives at
-#:    ``flat/wire.rs``.
-#:  * ``obc-link``'s ``flat`` engine is **not** here.  FS5 counted it at 2,189
-#:    lines and said so explicitly: "obc-link, outside the storage budget".
-#:  * ``obc-formats`` is **not** here.  FS7.5's writer work (#1425, +58
-#:    production) and the deletion slice (#1424, −4,273) were both reported as
-#:    standalone figures and the running storage total did not move for either.
-#:    They are map-format lines, not storage-layer lines.
-#:  * The v1/OBC2 paths being deleted (``obc2/``, ``fat_extents.rs``, the FAT
-#:    half of ``sd.rs``) are **not** here either.  The budget is a ceiling on
-#:    the *new* layer; the 19,933 lines they give back are the epic's separate
-#:    before/after figure, and crediting a deletion against the ceiling would
-#:    let the new layer grow by exactly what the old one cost.
+# The flat-store layer includes its wire binder, metadata and route cleanup.
+# Protocol engines, format codecs, platform adapters and old FAT paths are
+# outside this boundary; deleting them cannot offset growth inside it.
 STORAGE_SERIES_PATHS = ("firmware/obc-storage/src/flat/",)
+STORAGE_LIMIT = 6_000
+# Explicit fault/model backends, exposed with std for external test crates.
+STORAGE_HARNESS_FILES = {
+    "firmware/obc-storage/src/flat/model.rs",
+    "firmware/obc-storage/src/flat/sim.rs",
+}
 
 #: Directory names that make everything under them fixture data.
 FIXTURE_DIRS = ("fixtures", "testdata", "test-data", "golden", "vectors")
 
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-#: `cfg`, deliberately **not** `cfg_attr`: `#[cfg_attr(test, derive(Debug))]`
-#: applies an attribute conditionally, it does not gate the item — the item is
-#: compiled either way. Matching it was a live bug: every crate root carrying
-#: `#![cfg_attr(not(test), no_std)]` (obc-app, obc-reader, obc-dfu) counted as
-#: test/harness in its entirety.
+# cfg_attr changes attributes, not whether the item is present.
 _CFG_ATTR = re.compile(r"^#!?\[\s*cfg\s*\(")
 _MOD_DECL = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 _TEST_TOKEN = re.compile(r"\btest\b")
@@ -350,7 +232,7 @@ def is_code_line(stripped: str) -> bool:
     return bool(stripped.strip())
 
 
-def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
+def scan_cfg_test(text: str, *, exact_test: bool = False) -> tuple[set[int], set[str]]:
     """Return (1-based line numbers inside test-gated items, test-gated module names).
 
     Approximate by construction — see the module docstring.
@@ -378,7 +260,11 @@ def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
                 break
             j += 1
         attr_text = " ".join(attr)
-        if not gates_on_test(attr_text):
+        selected = (
+            bool(re.match(r"^\s*#!?\[\s*cfg\s*\(\s*test\s*\)\s*\]", attr_text))
+            if exact_test else gates_on_test(attr_text)
+        )
+        if not selected:
             i = j + 1
             continue
         # `#![cfg(test)]` at the top of a file gates the whole file.
@@ -437,9 +323,10 @@ OTHER = "other"
 class Tree:
     """Cached read access to one git tree, plus the cfg(test) facts it implies."""
 
-    def __init__(self, repo: str, ref: str) -> None:
+    def __init__(self, repo: str, ref: str, *, exact_test: bool = False) -> None:
         self.repo = repo
         self.ref = ref
+        self.exact_test = exact_test
         self._text: dict[str, str | None] = {}
         self._scan: dict[str, tuple[set[int], set[str]]] = {}
         self._is_test_mod_file: dict[str, bool] = {}
@@ -459,7 +346,7 @@ class Tree:
     def scan(self, path: str) -> tuple[set[int], set[str]]:
         if path not in self._scan:
             text = self.text(path)
-            self._scan[path] = scan_cfg_test(text) if text is not None else (set(), set())
+            self._scan[path] = scan_cfg_test(text, exact_test=self.exact_test) if text is not None else (set(), set())
         return self._scan[path]
 
     def cfg_test_lines(self, path: str) -> set[int]:
@@ -788,18 +675,61 @@ def render(ledger: Ledger, storage: Ledger | None, show_other: bool) -> str:
         _, _, alt = storage.totals(PRODUCTION, other)
         lines.append(f"  POST ON #1256: storage-layer delta {signed(net)} production lines ({basis} basis)")
         lines.append(f"                 {signed(alt)} on the {other} basis — quote both, or say which.")
-        lines.append(
-            "    The ≤ 6,000 ceiling and the 19,933 lines it is measured against are raw file"
-        )
-        lines.append(
-            "    lengths, which is why raw leads. The published series ran on raw until #1418"
-        )
-        lines.append(
-            "    ticked a code-basis figure — reconciling it is an owner ruling, not this"
-        )
-        lines.append("    script's. See 'basis drift' in the docstring.")
+        lines.append("    Historical delta only. Use --storage-total for the current absolute budget.")
         lines.append("")
     return "\n".join(lines)
+
+
+def storage_total(repo: str, ref: str) -> Ledger:
+    """Count one immutable tree, with conservative test exclusions."""
+    head = run_git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+    tree = Tree(repo, head, exact_test=True)
+    paths = run_git(repo, "ls-tree", "-r", "--name-only", head, "--", *STORAGE_SERIES_PATHS).splitlines()
+    paths = [path for path in paths if path.endswith(".rs")]
+    if not paths:
+        raise SystemExit("storage scope contains no Rust files; update and review the fixed scope")
+    result = Ledger(base="", head=head, basis="raw")
+    for path in sorted(paths):
+        source = tree.text(path)
+        if source is None:
+            raise SystemExit(f"cannot read counted source: {path}")
+        bucket, reason = classify_file(path, tree, tree)
+        if path in STORAGE_HARNESS_FILES:
+            bucket, reason = TEST, "explicit fault/model harness"
+        entry = FileLedger(path=path, bucket=bucket, reason=reason)
+        # split on LF only, without inventing a line after the final newline.
+        lines = source.split("\n")
+        if lines[-1] == "":
+            lines.pop()
+        gated = tree.cfg_test_lines(path) if bucket == PRODUCTION else set()
+        for number, code in enumerate(strip_noise(lines), 1):
+            counts = entry.test if bucket == TEST or number in gated else entry.prod
+            counts.add(True, is_code_line(code))
+        result.files.append(entry)
+    return result
+
+
+def render_storage_total(total: Ledger) -> str:
+    rows = [
+        "Flat-store absolute line budget (raw production basis)",
+        f"commit {total.head} (committed tree only; working-tree edits excluded)",
+        "scope  " + ", ".join(STORAGE_SERIES_PATHS),
+        "", "module | production raw | production code | excluded test raw | classification",
+    ]
+    for entry in total.files:
+        rows.append(f"{entry.path} | {entry.prod.raw_add} | {entry.prod.code_add} | "
+                    f"{entry.test.raw_add} | {entry.reason}")
+    raw = total.totals(PRODUCTION, "raw")[0]
+    code = total.totals(PRODUCTION, "code")[0]
+    test = total.totals(TEST, "raw")[0]
+    rows.extend([
+        f"TOTAL | {raw} | {code} | {test}",
+        f"Reconciliation: {raw} production + {test} excluded = {raw + test} Rust source lines",
+        f"Budget: {raw} / {STORAGE_LIMIT} raw production lines; "
+        + (f"OVER by {raw - STORAGE_LIMIT}" if raw > STORAGE_LIMIT else f"within by {STORAGE_LIMIT - raw}"),
+        "Flat-layer scope only. Adapter/FAT removal and physical acceptance remain separate.",
+    ])
+    return "\n".join(rows)
 
 
 def resolve_range(repo: str, args: argparse.Namespace) -> tuple[str, str]:
@@ -830,6 +760,8 @@ def main(argv: list[str]) -> int:
         prog="loc_ledger.py",
         description="Deterministic production-vs-test LOC ledger for the #1256 storage budget.",
     )
+    ap.add_argument("--storage-total", action="store_true", help="count the absolute committed flat-store layer")
+    ap.add_argument("--check-budget", action="store_true", help="with --storage-total, fail above 6,000 raw production lines")
     ap.add_argument("--base", help="base ref (default: merge-base with origin/develop)")
     ap.add_argument("--head", help="head ref (default: HEAD)")
     ap.add_argument("--pr", type=int, help="count a merged PR by number (both sides of its merge commit)")
@@ -839,7 +771,7 @@ def main(argv: list[str]) -> int:
         choices=("raw", "code"),
         default="raw",
         help="which basis leads the table (both are always totalled): "
-        "raw = every line, the basis the 6,000-line ceiling is on; "
+        "raw = every line; "
         "code = non-blank, non-comment",
     )
     ap.add_argument("--storage-series", action="store_true", help="also print the #1256 budget line")
@@ -847,6 +779,14 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     repo = run_git(os.path.dirname(os.path.abspath(__file__)) or ".", "rev-parse", "--show-toplevel").strip()
+    if args.check_budget and not args.storage_total:
+        ap.error("--check-budget requires --storage-total")
+    if args.storage_total:
+        if args.base or args.pr or args.storage_series or args.basis != "raw" or args.show_other:
+            ap.error("--storage-total accepts only --head and --check-budget")
+        total = storage_total(repo, args.head or "HEAD")
+        print(render_storage_total(total))
+        return int(args.check_budget and total.totals(PRODUCTION, "raw")[0] > STORAGE_LIMIT)
     base, head = resolve_range(repo, args)
 
     ledger = build_ledger(repo, base, head, args.basis, None)
