@@ -733,6 +733,94 @@ mod tests {
         token
     }
     #[test]
+    fn easier_review_refuses_movement_and_preserves_uncertain_acceptance_until_recovery() {
+        use crate::easier::Phase;
+        for recovery in [None, Some(false), Some(true)] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+            app.navigator = preview();
+            let mut easier = context();
+            easier.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
+            app.navigator.review.context = Some(easier);
+            app.easier.context = Some(easier);
+            app.easier.phase = Phase::Ready;
+            app.easier.review = true;
+            assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
+            if recovery.is_some() {
+                app.navigator.accept_review(origin(), 0);
+                let mut tokens = TokenSource::new();
+                let token = issued(&mut app.navigator, &mut tokens);
+                assert!(app.navigator.checkpoint_submission(token));
+                app.advance_easier();
+                assert!(app.easier.phase == Phase::Ready, "Saving must remain visible");
+                app.navigator
+                    .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+            } else {
+                let mut moved = origin();
+                moved.progress_m += REVIEW_ALONG_TOLERANCE_M + 1;
+                app.navigator.accept_review(moved, 0);
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
+            }
+            app.advance_easier();
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Unavailable });
+            app.apply_gesture(crate::Gesture::Press);
+            assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
+            assert_eq!(app.active_route_index(), Some(0));
+            if let Some(committed) = recovery {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                assert!(app.navigator.checkpoint_change().is_none());
+                assert!(!app.navigator.review.cancel_after, "an uncertain write is not a cancel request");
+                let checkpoint =
+                    if committed { app.navigator.review.change.unwrap() } else { app.navigator.review.checkpoint };
+                let after = app.navigator.recover_checkpoint(context().store, checkpoint).unwrap();
+                assert!(app.navigator.review.change.is_none(), "recovery must not schedule a clear");
+                if committed {
+                    assert_eq!(after, Some(AfterCheckpoint::Activate(5)));
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                    app.advance_easier();
+                    assert!(app.easier.phase == Phase::Idle);
+                } else {
+                    assert_eq!(after, None);
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
+                    assert!(app.assistant_preview().is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn easier_pending_and_failed_entry_preserve_another_review_and_its_uncertain_save() {
+        use crate::easier::Phase;
+        for admit in [false, true] {
+            for unresolved in [false, true] {
+                let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+                app.navigator = preview();
+                if unresolved {
+                    app.navigator.accept_review(origin(), 0);
+                    let token = issued(&mut app.navigator, &mut TokenSource::new());
+                    assert!(app.navigator.checkpoint_submission(token));
+                    app.navigator
+                        .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+                }
+                let status = app.assistant_review_status();
+                let change = app.navigator.review.change;
+                app.easier.phase = Phase::Entry;
+                assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
+                if admit {
+                    assert_eq!(app.open_easier_routes(context().map), Err(super::super::VisitUnavailable::Busy));
+                    app.prepare_easier_entry(context().map);
+                    assert!(app.easier.phase == Phase::Unavailable);
+                    app.advance_easier();
+                }
+                app.apply_gesture(crate::Gesture::Back);
+                assert_eq!(app.assistant_review_status(), status);
+                assert_eq!(app.navigator.review.change, change);
+                assert!(!app.navigator.review.cancel_after);
+                assert!(app.assistant_preview().is_some());
+            }
+        }
+    }
+
+    #[test]
     fn changing_cards_cannot_submit_or_recover_an_old_checkpoint() {
         let other = StoreIdentity::from_bytes([9; 16]);
         let mut nav = preview();

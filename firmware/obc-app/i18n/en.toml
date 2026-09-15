@@ -42,6 +42,7 @@ no_peaks = "NO NAMED PEAKS"
 # --- is gone (#1515 D3); `filter`/`sources` are the Up-ahead sheet's two value rows (D4a), which
 # --- are the only home either control has.
 [ride_context]
+easier = "Easier"
 up_ahead = "Up ahead"
 detour = "Detour"
 inspect_rejoin = "Inspect rejoin"

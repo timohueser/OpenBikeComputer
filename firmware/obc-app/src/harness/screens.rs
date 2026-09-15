@@ -158,14 +158,10 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(declared(&Screen::Statistics(StatisticsScreen::new())));
     assert!(declared(&Screen::Climb(ClimbScreen::new())));
     assert!(declared(&Screen::RideControl(RideControl::new())));
-    // D4c: the Map's is a *different* table from its three siblings' — one row longer. What that
-    // row is, and that the four under it are the ride's own, is
-    // `the_map_declares_the_ride_actions_plus_its_own_display_row`.
-    assert_ne!(
-        Screen::Map(MapScreen::new()).context().map(|m| m.rows.len()),
-        Screen::Statistics(StatisticsScreen::new()).context().map(|m| m.rows.len()),
-        "only the Map has a referent for a scale-bar switch"
-    );
+    assert!(!core::ptr::eq(
+        Screen::Map(MapScreen::new()).context().unwrap(),
+        Screen::Statistics(StatisticsScreen::new()).context().unwrap(),
+    ));
     // D4a's one addition, and it is a *different* table: the timeline's two scope controls, not
     // the ride's four actions.
     assert!(declared(&Screen::UpAhead(crate::screen::UpAheadScreen::new(0))));
@@ -220,8 +216,8 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         assert!(core::ptr::eq(table(sibling), &RIDE), "the other three riding views keep the ride table");
     }
 
-    assert_eq!(map.rows.len(), RIDE.rows.len() + 1, "four ride actions, plus one door");
-    for (m, r) in map.rows.iter().zip(RIDE.rows) {
+    assert_eq!(map.rows.len(), RIDE.rows.len(), "each view has five actions");
+    for (m, r) in map.rows[..4].iter().zip(&RIDE.rows[..4]) {
         let lang = crate::settings::Language::En;
         assert_eq!(crate::i18n::t(m.label, lang), crate::i18n::t(r.label, lang), "the ride actions must not drift");
     }
@@ -1572,4 +1568,27 @@ fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
         app.apply_gesture(Gesture::Press); // dismiss the card
         assert!(matches!(app.top_screen(), Screen::Map(_)), "{chord:?}: dismissing lands on the base");
     }
+}
+
+#[test]
+fn easier_drawer_entry_waits_for_the_map_owner_and_back_cancels_before_admission() {
+    use crate::easier::Phase;
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    app.test_mount_store();
+    app.test_start_ride();
+    app.state.has_nav_graph = true;
+    app.navigator.route_state_mut().active_route = Some(0);
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+    assert!(app.apply_chord(crate::input::Chord::Context));
+    app.apply_gesture(Gesture::Step(4));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Easier(_)));
+    quiet_pass(&mut app, 0);
+    assert!(matches!(app.easier.phase, Phase::Entry));
+    app.apply_gesture(Gesture::Back);
+    app.prepare_easier_entry(obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 2, revision: 3 });
+    assert!(matches!(app.easier.phase, Phase::Idle));
+    assert!(matches!(app.top_screen(), Screen::Statistics(_)));
+    assert!(app.assistant_planner_released());
 }

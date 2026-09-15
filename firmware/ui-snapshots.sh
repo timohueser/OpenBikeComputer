@@ -49,7 +49,9 @@ GPX="${GPX:-$GRIMSEL_FIXTURES/tracks/grimsel-climb.gpx}"
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
 WPTGPX="$repo_root/fixtures/sources/vector/vector-loop-replay.gpx"
-ROUTES="$repo_root/specs/vectors"
+# Stage the two UI routes; the vector directory also contains deliberately invalid inputs.
+ROUTES="$(mktemp -d)"
+cp "$repo_root/specs/vectors/route-plain.obcr" "$repo_root/specs/vectors/route-waypoints.obcr" "$ROUTES/"
 OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
@@ -80,13 +82,13 @@ PLAINROUTE="$(mktemp -d)"
 # device-planned route, whose points are all zero-elevation until EL7 fills them from terrain.)
 ETAROUTE="$(mktemp -d)"
 ETAFLAT="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
 rm "$ETAFLAT/grimsel-flat.gpx"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-0.obcr"
-cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-1.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-0.obcr"
+cp "$repo_root/specs/vectors/ride-v3.bin" "$TRACKS/ride-1.obcr"
 printf '\x88\x45\x00\x00' | dd of="$TRACKS/ride-1.obcr" bs=1 seek=72 conv=notrunc status=none
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
@@ -235,6 +237,9 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d d d f d d d d d d p f p p f p T"
 # show on the graph-less Grimsel fixture.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/map-context-live.png"
+# The normal Ride drawer admits Easier after a fresh replay fix matches the loaded route.
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 30 \
+    --script "p p p p b T C d d d d p f" --expect-screen Easier --png "$OUT/easier-routes.png"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE C d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
@@ -448,7 +453,7 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p d p p b" --gpx "$WPTGPX" --at 233 --expect-screen Statistics --png "$OUT/stats-wpt.png"
 # The EL7 sweep below plans a route on the device and rides it; its own dir.
 ELEVDIR="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
 # --- Terrain-filled device-planned route -------------------------------------------------------
 # The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
@@ -524,7 +529,7 @@ ELEVPLAN="B d d w p d d p f d d d p f p p f"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C u p p" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/map-display-clock-off.png"
 # The **ride context** the other three riding views share — the unchanged four-row table, shot over
 # Statistics (`p p p p b C`), which is what keeps it covered at all now that the Map declares its own.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p p b C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
@@ -540,7 +545,7 @@ ELEVPLAN="B d d w p d d p f d d d p f p p f"
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
 UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
-UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES"' EXIT
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T C p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
@@ -570,11 +575,10 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
-# (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
-# ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
+# (e) No-route and outside-map states. The plain vector route is outside Monaco;
+# the coverage guard takes precedence over map-place filters.
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-outside-map.png"
 # (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
 # Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
 # presses into its editor, stages `n` steps round the Both → Waypoints → Map POIs ring, commits and
@@ -590,7 +594,6 @@ UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; e
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPSCOPE 1) $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
 # The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
 # Auto climb panel would take the base screen on this line, so the script turns it Off first
 # (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics
