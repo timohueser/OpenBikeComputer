@@ -1,7 +1,7 @@
 # Testing policy
 
 `testing/suites.toml` is the machine-readable inventory of maintained test and validation
-suites. `testing/coverage-policy.toml` is the coverage-policy scaffold. Both files are parsed and
+suites. `testing/coverage-policy.toml` defines coverage ownership and exclusions. Both files are parsed and
 checked by `tools/suite_registry.py`; test counts, durations, and Cargo dependency edges are
 derived and never copied into either registry.
 
@@ -73,7 +73,17 @@ The iOS application command needs Xcode 26.5, XcodeGen and an iPhone 17 Pro simu
 `OBC_TEST_DEVICE` to use another available simulator. It runs each application class once, without
 parallel test execution or retries. The weekly result artifact is `ios-application-ATTEMPT`.
 Required screenshot runs retain `ios-screenshots-ATTEMPT`. Both contain the native `.xcresult`
-bundle. Open it in Xcode to inspect identities, outcomes and durations. A missing expected bundle
+bundle contents. Restore the bundle suffix when downloading, then open it in Xcode to inspect
+identities, outcomes and durations:
+
+```sh
+gh run download RUN_ID --name ios-screenshots-ATTEMPT --dir ios-screenshots.xcresult
+gh run download RUN_ID --name ios-application-ATTEMPT --dir ios-application.xcresult
+```
+
+Weekly storage runs retain the original Cargo output as `storage-weekly-ATTEMPT`. The log contains
+native test identities, outcomes and aggregate durations; it has no per-case durations or coverage.
+A missing expected bundle
 fails the upload; setup failure can leave no bundle. The screenshot script also accepts
 `OBC_XCRESULT_PATH` for local retention. A workflow declaration alone does not establish a passing
 run. TS6 still owns the remaining critical application journeys.
@@ -116,12 +126,64 @@ supply counts and durations. The drift checker rejects fields that try to store 
 ## Coverage-policy fields
 
 Each `[[component]]` in `testing/coverage-policy.toml` has a stable `id`, included production-path
-patterns, optional excluded generated or platform-only paths with replacement evidence, and a
-planned `enforcement` class. Format and protocol codecs, CRC, storage, DFU, and boot are planned
-`ratchet` components. Application, UI, and tool components are `report`.
+patterns, excluded paths with replacement evidence, and an `enforcement` class. Native collectors
+write raw reports during the maintained test run. `tools/coverage_report.py` groups measured lines
+by component, writes `components.json` and `summary.md`, and checks the accepted Rust baseline in
+`testing/coverage-baseline.json`. No tests run again for conversion.
 
-There is deliberately no accepted baseline yet. The coverage delivery step will measure and
-review baselines; this scaffold does not invent a number or enforce coverage tooling.
+Only format/protocol codecs, CRC, storage, DFU and boot have a no-decrease line-coverage gate.
+The comparison uses exact covered/total fractions, with no rounding tolerance. A missing or empty
+critical component and unmeasured critical production function source fail. Other components are
+informational. There is no repository-wide or changed-line percentage gate.
+
+The boot component measures the actual shared boot policy in `obc-dfu` (`engine.rs`, `state.rs`, and
+`blobstage.rs`). These files also belong to DFU. The boot image's MMIO adapters and reset entry are
+explicit exclusions. The boot build and resource guards give static replacement evidence;
+physical install, rollback and power-cut acceptance remain separate obligations. A host percentage
+does not establish MMIO execution coverage.
+The separate informational board-image row lists all nRF54L image source as excluded from host
+execution, with board build/resource guards and the remaining physical obligations as evidence.
+
+Generated bridges, test sources and test-support packages are excluded. A pinned Rust syntax parser
+identifies `#[cfg(test)]` and `#[test]` item ranges and external test modules; it removes these lines
+from component counts without changing the raw LLVM report. Files with declarations and no function
+bodies are listed separately when LLVM has no executable mapping. Every summary lists excluded and
+unmeasured files. Unmeasured informational source stays visible and does not become a zero or a pass.
+
+### Native coverage artifacts
+
+| Maintained invocation | Collector | Coverage artifact |
+| --- | --- | --- |
+| Workspace nextest | cargo-llvm-cov 0.9.1, current Rust LLVM | `coverage-rust-ATTEMPT` |
+| Repository and firmware Python | coverage.py 7.16.1 around xmlrunner | `coverage-repository-tools-ATTEMPT`, `coverage-firmware-tools-ATTEMPT` |
+| Builder Python | pytest-cov 7.1.0, coverage.py 7.16.1 | `coverage-builder-ATTEMPT` |
+| Builder Vitest | Vitest and V8 provider 3.2.6 | `coverage-web-ATTEMPT` |
+| OBCKit package | Xcode 26.5, native xccov | `ios-tests-coverage-ATTEMPT` |
+| Desktop Linux release tests | cargo-llvm-cov 0.9.1 | `coverage-desktop-ATTEMPT` |
+
+Artifacts contain native LCOV or xccov JSON plus component counts and a Markdown summary. V8 also
+keeps its native JSON. Python tool artifacts keep their coverage database. The source SHA and tool
+versions identify each measurement. Components that span languages have separate contributions in
+each native artifact; do not add overlapping percentages. Desktop coverage is measured on Linux;
+macOS and Windows native test results remain available, but their platform-only execution coverage
+is unmeasured. OBCKit coverage does not include the iOS application composition root.
+
+Install `tools/requirements-coverage.txt` to summarize a local native report:
+
+```sh
+python3 tools/coverage_report.py --scope rust --lcov .artifacts/coverage/rust/lcov.info \
+  --output .artifacts/coverage/rust --tool cargo-llvm-cov=0.9.1 --tool "$(rustc --version)"
+```
+
+For downloaded reports, `--source-prefix ORIGINAL_CHECKOUT` maps the original absolute paths to
+this checkout. Use `--measurement-sha ORIGINAL_SHA` to retain the measured source identity. Check
+out that production source before replaying a report; coverage line numbers belong to that source.
+The output records the reporting policy's SHA separately. Replaying reports runs no tests.
+
+A baseline change requires actual successful run evidence, its source SHA and tool versions, and
+review of its counts and exclusions. CI never writes or lowers the baseline. Collect a new measured
+proposal when source ownership or native tool versions change. Raw reports and CI test outcomes
+remain authoritative; reports from failed runs can be partial and are not acceptance evidence.
 
 ## Commands
 
@@ -195,13 +257,16 @@ Each command removes an old report before it starts. A skipped job uploads nothi
 fixture setup failure remains a failure and may produce no report; the upload step reports a
 missing file as an error. CI does not create an empty report or run the tests again for reporting.
 
-These artifacts cover only the nextest invocations. Cargo doctests, other Cargo test commands,
-and serial XCTest results still use their existing logs. Python and Swift Testing results are
-separate, as described below. This is not a coverage baseline or a complete cross-language result set.
+These JUnit artifacts cover nextest invocations. Workspace doctests and the default-feature
+`obc-formats` Cargo command retain their native text in `coverage-rust-ATTEMPT` (`doctests.log` and
+`formats-default.log`). Those logs contain native identities and outcomes, with aggregate durations;
+Cargo does not emit individual case durations for these commands. No synthetic durations or passes
+are added. Desktop uses nextest on Linux, macOS and Windows and publishes
+`desktop-tests-PLATFORM-ATTEMPT`. Swift's native result bundle is described below.
 
 ## Python CI result artifacts
 
-The four Python suites write XML from their existing test invocations. Install the test
+The maintained Python suites write XML from their existing test invocations. Install the test
 requirements in your Python environment before local execution:
 
 ```sh
@@ -234,14 +299,22 @@ CI and local registry commands remove stale reports before execution. CI uploads
 executed test step succeeds or fails. Setup failures, skipped steps and cancelled runs publish no
 report for that step. Missing expected output fails the upload. Collection or test failures keep
 their nonzero exit status and can leave partial results. No tests run again to produce reports.
-These are result artifacts, not coverage measurements; the test exit status and CI log remain
-authoritative.
+Coverage is collected in the same invocation and published separately. The test exit status and CI
+log remain authoritative.
 
 ## Web CI result artifacts
 
 The builder Vitest command keeps its default console output and also
 writes native JUnit XML. Each report records file and test identities, outcomes, and elapsed
-durations. Skipped tests retain their skipped status. This does not add test execution or coverage.
+durations. Skipped tests retain their skipped status. V8 collects coverage in the same invocation.
+
+The same registered builder suite executes the unchanged whole `sha256.test.ts` file separately
+without V8 instrumentation. Its real 600 MB length-boundary assertion and 60-second timeout remain.
+`npm test` keeps the complete uninstrumented suite in one invocation. CI runs
+`npm run test:components -- --coverage` and
+`npm run test:sha256` with separate native JUnit outputs; `web-sha256-ATTEMPT` contains all four SHA
+cases. Other instrumented production callers still contribute SHA coverage. There is no test-name
+filter, duplicate test execution, retry, or injected hash state.
 
 CI uploads the reports after test success or failure. Artifact names are `web-builder-ATTEMPT`
 where `ATTEMPT` is the GitHub run attempt. Download it with:
@@ -268,23 +341,36 @@ The job requires the browser test step to succeed and publishes `web-demo-browse
 with native JUnit and diagnostics, plus a screenshot and trace on failure. See the
 [web demo README](../apps/obc-web-demo/README.md) for setup, reproduction and evidence limits.
 
-## Swift Testing CI result artifact
+## Swift CI results and coverage
 
-The existing `ios-unit` command adds `--xunit-output` without changing how tests run. With both
-frameworks enabled, SwiftPM writes Swift Testing results to `ios-unit-swift-testing.xml`.
-The current serial XCTest run does not produce xUnit XML; its results remain in the CI log.
+The `ios-unit` job runs the complete OBCKit package once with Xcode 26.5 on the macOS host.
+`xcodebuild test` disables parallel testing and collects coverage in the native
+`ios-unit.xcresult` bundle. The registry uses the same package scheme and serial test setting
+for local execution. No iOS simulator or physical device is required.
 
-The native report records Swift Testing function identities and durations. Parameterized cases
-are grouped under their test function. Failure totals count recorded issues, which can differ
-from the number of failed functions; known issues are not failures. Native skipped entries retain
-their status. Do not combine these fields into an invented count of executed parameter cases.
+The bundle contains XCTest and Swift Testing results, including test identities, outcomes,
+durations, and failure details. CI exports the native result summary and test tree with
+`xcresulttool`; it does not convert console output or run tests again. Keep the native hierarchy
+when reading parameterized Swift Testing results. A test function and its argument cases are
+not separate totals to add together.
 
-CI removes stale reports before the command and uploads `ios-swift-testing-ATTEMPT` after test
-success or failure. Download it with `gh run download RUN_ID --name ios-swift-testing-ATTEMPT`.
-A build failure can produce no report; a terminated runner can leave incomplete XML. Missing
-output makes the upload fail. Skipped or cancelled steps upload nothing. The test exit status and
-CI log remain authoritative; an artifact is not proof that the run passed. No converter, extra
-test invocation or coverage collection is added. This is not a result set for all Swift tests.
+`xccov` exports native file coverage to `xccov.json`. The component summary uses covered and
+executable line counts from that report. The artifact also records the actual Xcode build and
+Swift version in `toolchain.txt`. This measures package code executed on macOS; it does not
+measure the iOS app or prove physical BLE behavior.
+
+CI uploads `ios-tests-coverage-ATTEMPT` after test success or failure. Download it with:
+
+```sh
+gh run download RUN_ID --name ios-tests-coverage-ATTEMPT
+```
+
+Open the `.xcresult` bundle in Xcode to inspect the complete run. The JSON exports let other
+tools read the results without Xcode. CI clears stale output before execution. Result export
+and coverage export run as separate steps, so a coverage export failure does not prevent
+result export. A build failure can produce an incomplete bundle or no test results; export
+failures remain CI failures. Skipped or cancelled test steps do not publish results. The test
+exit status and CI log remain authoritative; an uploaded artifact does not prove a passing run.
 
 ## Exceptions, quarantines, and sleeps
 
@@ -357,8 +443,9 @@ Runner-minutes sum active job intervals without billing multipliers. Native suit
 reported as supplied; missing suite times remain unknown. In particular, nextest reports its whole
 run time and per-case times, but does not supply binary wall times. Do not sum concurrent case times
 into wall time. A successful-run sample can omit slow failures and repeat the same PR. Its sample
-percentiles do not establish a population service level. XCTest and other missing artifacts remain
-coverage gaps until their native result routes are available.
+percentiles do not establish a population service level. This XML reader does not ingest native
+XCTest bundles or Cargo text logs; inspect those artifacts with their native tools. Missing artifacts
+remain report gaps and must not be counted as passing suites.
 
 The guidance stays informational: required PR elapsed time at most 10 minutes, p95 at most
 20 minutes, cross-surface cost at most 40 runner-minutes, a required binary/file at most 30 seconds,

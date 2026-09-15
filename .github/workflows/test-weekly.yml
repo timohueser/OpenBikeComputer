@@ -41,4 +41,15 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
       - name: Run registered weekly storage suites
-        run: python3 tools/suite_registry.py run --scheduled weekly --surface storage
+        id: test
+        shell: bash
+        run: |
+          mkdir -p .artifacts
+          python3 tools/suite_registry.py run --scheduled weekly --surface storage 2>&1 | tee .artifacts/storage-weekly.log
+      - name: Upload native storage results
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-weekly-${{ github.run_attempt }}
+          path: .artifacts/storage-weekly.log
+          if-no-files-found: error

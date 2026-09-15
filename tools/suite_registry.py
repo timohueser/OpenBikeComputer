@@ -66,6 +66,8 @@ TEST_POLICY_PATTERNS = (
     "testing/**",
     "tools/suite_registry.py",
     "tools/ci_aggregate.py",
+    "tools/coverage_report.py",
+    "tools/requirements-coverage.txt",
     "docs/testing.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
@@ -102,10 +104,12 @@ WORKFLOW_MARKERS = (
     "cargo run",
     "python3 ",
     "npm test",
+    "npm run test:",
     "npm run check",
     "npm run build",
     "swift test",
     "xcodebuild build",
+    "xcodebuild test",
     "trunk build",
     "build-wasm-bridges.sh",
     "capture-website-screenshots.sh",
@@ -462,9 +466,10 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
         elif executable not in known_tools and shutil.which(executable) is None:
             errors.append(f"{suite_id}: command executable cannot resolve: {executable}")
         expect_executable = False
-    package_match = re.search(r"(?:^|\s)(?:-p|--package)\s+([^\s]+)", command)
-    if package_match and package_match.group(1) not in rust_packages:
-        errors.append(f"{suite_id}: command names unknown Cargo package {package_match.group(1)}")
+    for cargo_args in _cargo_invocations(command):
+        for index, word in enumerate(cargo_args[:-1]):
+            if word in {"-p", "--package"} and cargo_args[index + 1] not in rust_packages:
+                errors.append(f"{suite_id}: command names unknown Cargo package {cargo_args[index + 1]}")
 
 def _collect_rust_packages(discovered: Iterable[Discovered]) -> set[str]:
     return {item.name.split(":", 1)[0] for item in discovered if item.kind in {"rust-target", "rust-manifest"}}
@@ -533,6 +538,12 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
         for pattern in suite.get("extra_triggers", []):
             if not isinstance(pattern, str) or not any(root.glob(pattern)):
                 errors.append(f"{suite_id}: extra trigger matches no maintained path: {pattern!r}")
+
+    for exclusion in coverage_doc.get("exclude", []):
+        if not isinstance(exclusion, dict) or not all(
+            isinstance(exclusion.get(key), str) and exclusion[key].strip() for key in ("path", "evidence")
+        ):
+            errors.append("coverage: every global exclusion needs path and replacement evidence")
 
     for component in coverage:
         component_id = component.get("id", "<missing-id>")
