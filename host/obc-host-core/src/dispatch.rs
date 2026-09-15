@@ -399,7 +399,19 @@ impl HostLoop {
         if app.assistant_needs_recovery() {
             if let Ok(checkpoint) = routes.read_checkpoint() {
                 if let Some(scope) = routes.store_scope() {
+                    let recovering = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Unresolved;
                     app.offer_assistant_checkpoint(scope.store, checkpoint);
+                    if recovering && app.assistant_review_status() != obc_app::navigator::ReviewStatus::Unresolved {
+                        // A fresh mount must replace leases into the old mount before a preview retry.
+                        if let Some(sources) = self.sources.as_mut() {
+                            sources.map = map.source();
+                            if let Some((held, _)) = sources.original.as_mut() {
+                                if let Some(current) = routes.pin_active().filter(|current| held.matches(current)) {
+                                    *held = current;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -408,18 +420,20 @@ impl HostLoop {
                 let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
                     && app.assistant_preview().is_none();
                 let current_map = map.source();
+                let clearing = app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none());
                 let current = scope.is_some_and(|scope| app.assistant_store_matches(scope.store))
-                    && (!resume
-                        || (current_map.is_current()
-                            && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
-                                store: current_map.store_id().0,
-                                object: current_map.id().0,
-                                revision: current_map.revision().0,
-                            })))
-                    && app.assistant_review_context().is_none_or(|context| {
-                        self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
-                            && context.profile == app.settings().bike_profile_idx
-                    });
+                    && (clearing
+                        || (!resume
+                            || (current_map.is_current()
+                                && routes.resume_map_matches(obc_formats::obcr::RouteSourceKey {
+                                    store: current_map.store_id().0,
+                                    object: current_map.id().0,
+                                    revision: current_map.revision().0,
+                                })))
+                            && app.assistant_review_context().is_none_or(|context| {
+                                self.sources.as_ref().is_some_and(|sources| sources.current(map, routes))
+                                    && context.profile == app.settings().bike_profile_idx
+                            }));
                 if !current || !app.assistant_checkpoint_submission(token) {
                     plan.effects.retention.take();
                     let outcome = if current {
@@ -760,9 +774,6 @@ impl HostLoop {
                 {
                     return failed(NavigatorError::SourceChanged);
                 }
-                if app.active_route_index().is_some() && context.original.is_none() {
-                    return failed(NavigatorError::SourceChanged);
-                }
                 let original = if let Some(expected) = context.original {
                     if routes.fingerprint(expected.object) != Some(expected) {
                         return failed(NavigatorError::SourceChanged);
@@ -776,11 +787,22 @@ impl HostLoop {
                     let Ok(index) = obc_route::RouteIndex::read(&held) else {
                         return failed(NavigatorError::Unavailable);
                     };
-                    if index.has_unresolved_avoidance() {
+                    if !context.accepts_original(
+                        app.active_route_index().and_then(|index| app.route_ids().get(index).copied()),
+                        Some(expected),
+                        index.has_unresolved_avoidance(),
+                    ) {
                         return failed(NavigatorError::Unavailable);
                     }
                     Some((held, Box::new(index)))
                 } else {
+                    if !context.accepts_original(
+                        app.active_route_index().and_then(|index| app.route_ids().get(index).copied()),
+                        None,
+                        false,
+                    ) {
+                        return failed(NavigatorError::SourceChanged);
+                    }
                     None
                 };
                 let mut plan = NavPlan::start(&request, context.profile);
@@ -1122,6 +1144,22 @@ mod tests {
             facts_policy: REVIEW_FACTS_POLICY,
             unresolved_avoidance: false,
         };
+        let active_request = obc_app::activity::NavRequest::new(context.origin, points[2], "Target");
+        let mut tokens = obc_app::device_core::TokenSource::<obc_app::device_core::NavigatorTag>::new();
+        let mut refused = App::new_idle(AppState::new(500_000, 500_000, 10.0));
+        feed_routes(&mut refused, &routes, &mut NoTrace);
+        refused.activate_route(0);
+        refused.plan_assistant(active_request, ReviewContext { original: None, ..context });
+        assert!(matches!(
+            HostLoop::new().acquire_plan(
+                &refused,
+                tokens.issue(),
+                PlannerWork::AssistantRoute(active_request),
+                &routes,
+                &map
+            ),
+            Some(NavigatorOutcome::Failed { .. })
+        ));
         app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
         for _ in 0..200 {
             frame(&mut host, &mut app, &mut routes);
@@ -1178,6 +1216,39 @@ mod tests {
         reboot.offer_assistant_checkpoint(routes.store_scope().unwrap().store, routes.read_checkpoint().unwrap());
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
         assert!(reboot.active_route_index().is_none());
+        app.activate_route(usize::MAX);
+        for _ in 0..12 {
+            frame(&mut host, &mut app, &mut routes);
+            if app.assistant_checkpoint().is_none() {
+                break;
+            }
+        }
+        assert!(app.assistant_checkpoint().is_none());
+        assert!(app.active_route_index().is_none());
+        let accepted_index = app.route_ids().iter().position(|id| *id == preview.source.object).unwrap();
+        app.activate_route(accepted_index);
+        assert_eq!(app.active_route_index(), Some(accepted_index));
+        let mut avoided = sink.bytes().to_vec();
+        avoided[5] |= obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE;
+        routes.replace(original, &avoided).unwrap();
+        feed_routes(&mut app, &routes, &mut NoTrace);
+        let original_index = app.route_ids().iter().position(|id| *id == original).unwrap();
+        app.activate_route(original_index);
+        routes.sync_active(Some(original_index));
+        app.plan_assistant(active_request, ReviewContext { original: routes.fingerprint(original), ..context });
+        assert!(
+            matches!(
+                HostLoop::new().acquire_plan(
+                    &app,
+                    tokens.issue(),
+                    PlannerWork::AssistantRoute(active_request),
+                    &routes,
+                    &map
+                ),
+                Some(NavigatorOutcome::Failed { .. })
+            ),
+            "persisted avoidance overrides the caller's false flag"
+        );
     }
     #[test]
     fn bond_platform_results_return_once_with_the_admitted_token() {

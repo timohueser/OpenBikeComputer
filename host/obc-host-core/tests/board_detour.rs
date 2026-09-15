@@ -11,6 +11,8 @@ fn unexpected_compensation_refusal() {
 }
 #[path = "board_detour_support/arena.rs"]
 mod arena;
+#[path = "../../../firmware/obc-fw-nrf54l/src/assistant.rs"]
+mod assistant;
 #[path = "../../../firmware/obc-fw-nrf54l/src/detour.rs"]
 mod detour;
 #[path = "board_detour_support/flat_store.rs"]
@@ -23,7 +25,7 @@ use obc_app::device_core::{NavigatorTag, TokenSource};
 use obc_app::navigator::{
     NavigatorEffect as Effect, NavigatorError, NavigatorOutcome as Outcome, PlanFamily, PlannerWork,
 };
-use obc_formats::io::SliceSource;
+use obc_formats::io::{ByteSource, SliceSource};
 use obc_storage::flat::*;
 
 struct Harness {
@@ -400,4 +402,44 @@ fn full_hold_table_shares_exact_original_reader_and_map_removal_cancels_publicat
     h.release(false);
     assert!(matches!(h.next_outcome(), Outcome::Released { .. }));
     assert_eq!(h.store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags == EntryFlags::NONE).count(), 6);
+}
+
+#[test]
+fn assistant_board_admission_and_terminal_release_preserve_original_ownership() {
+    use obc_app::navigator::{ReviewContext, ReviewPurpose, REVIEW_FACTS_POLICY};
+    let h = Harness::new();
+    let id = h.original.as_ref().unwrap().id();
+    let entry = h.store.entries().find(|entry| entry.id == id).unwrap();
+    let context = ReviewContext {
+        purpose: ReviewPurpose::Destination,
+        map: obc_formats::obcr::RouteSourceKey { store: h.store.store_id().0, object: 2, revision: 1 },
+        store: obc_app::device_core::StoreIdentity::from_bytes(h.store.store_id().0),
+        original: Some(metadata::fingerprint(entry)),
+        origin: (0, 0),
+        progress_m: 0,
+        occurrence: 0,
+        required_anchors_m: [0; 3],
+        profile: 0,
+        facts_policy: REVIEW_FACTS_POLICY,
+        unresolved_avoidance: false,
+    };
+    assert!(assistant::original_allowed(h.store, context, Some(id.0)));
+    assert!(!assistant::original_allowed(h.store, ReviewContext { original: None, ..context }, Some(id.0)));
+    for _ in 0..12 {
+        let mut retained = Some(h.store.source(id, Some(entry.revision)).unwrap());
+        assistant::release_original(h.store, &mut retained, true);
+        assert!(retained.is_some());
+        assistant::release_original(h.store, &mut retained, false);
+        assert!(retained.is_none());
+    }
+    let mut bytes = vec![0; entry.payload_len as usize];
+    h.original.as_ref().unwrap().read_at(0, &mut bytes).unwrap();
+    bytes[5] |= obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE;
+    let replacement = put(h.store, ObjectKind::Route, &bytes, Some((id, entry.revision)));
+    let entry = h.store.entries().find(|entry| entry.id == replacement).unwrap();
+    assert!(!assistant::original_allowed(
+        h.store,
+        ReviewContext { original: Some(metadata::fingerprint(entry)), ..context },
+        Some(id.0)
+    ));
 }
