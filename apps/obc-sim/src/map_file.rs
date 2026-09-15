@@ -141,6 +141,29 @@ where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
+    let stats = render_base_frame(app, scratch, target, scene, rain, weather, peak_view, (w, h), &color_fn);
+    if app.photo_pending() {
+        obc_host_core::photo::Preparer::default().finish(app, Some(scene.reader), target, &color_fn);
+    }
+    stats
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_base_frame<D, F>(
+    app: &mut obc_app::App,
+    scratch: &mut obc_render::RenderScratch,
+    target: &mut D,
+    scene: Scene<'_, '_>,
+    rain: Option<&mut dyn obc_render::RainOverlaySource>,
+    weather: Option<&obc_app::WeatherSnapshot>,
+    peak_view: Option<&obc_app::peak_view::Panorama>,
+    (w, h): (f32, f32),
+    color_fn: F,
+) -> RenderStats
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
     let Scene { reader, route } = scene;
     // A real microsecond clock so the returned stats carry the per-stage map timings (including
     // `rain_us`, the WX10 overlay's own wall time) — the panel and the headless log both read them.

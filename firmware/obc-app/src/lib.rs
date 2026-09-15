@@ -52,6 +52,7 @@ pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
 pub mod peak_view;
+pub mod photo;
 pub(crate) mod placement;
 pub mod recorder;
 pub(crate) mod render_key;

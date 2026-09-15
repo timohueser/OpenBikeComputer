@@ -237,6 +237,7 @@ struct SimGui {
     /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
     /// this struct's moves through the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
+    photo: obc_host_core::photo::Preparer,
     /// `--weather` (WX10): the loaded weather store, leased to every map frame as the production
     /// rain-overlay adapter. `None` (no flag / no valid slot) renders byte-identical rain-free maps.
     weather: Option<crate::weather_store::SimWeather>,
@@ -514,6 +515,7 @@ impl SimGui {
             peak_view,
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
+            photo: obc_host_core::photo::Preparer::default(),
             weather,
             live_weather,
             wx_snapshot: None,
@@ -848,6 +850,7 @@ impl SimGui {
         let scene = crate::map_file::Scene { reader: &reader, route: route.as_ref() };
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
+        let photo_only = self.app.photo_status().is_some() && !plan.render.map;
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
         let rain_step = app.state.rain_step;
         let wx_snapshot = self.wx_snapshot.as_ref();
@@ -857,7 +860,7 @@ impl SimGui {
                       app: &mut App,
                       scratch: &mut obc_render::RenderScratch,
                       fbdev: &mut FbDevice64<'_>| {
-            crate::map_file::render_frame(
+            crate::map_file::render_base_frame(
                 app,
                 scratch,
                 fbdev,
@@ -870,12 +873,17 @@ impl SimGui {
             )
         };
         let wx_wall_now = app.wall_unix_now() as i64;
-        let mut stats = match weather {
-            Some(weather) => {
-                weather.lease(wx_wall_now, rain_step, |rain| render(rain, wx_snapshot, app, scratch, &mut fbdev))
+        let mut stats = if photo_only {
+            obc_render::RenderStats::default()
+        } else {
+            match weather {
+                Some(weather) => {
+                    weather.lease(wx_wall_now, rain_step, |rain| render(rain, wx_snapshot, app, scratch, &mut fbdev))
+                }
+                None => render(None, wx_snapshot, app, scratch, &mut fbdev),
             }
-            None => render(None, wx_snapshot, app, scratch, &mut fbdev),
         };
+        self.photo.step(app, Some(&reader), &mut fbdev, |c| Rgb565::from(RawU16::new(c)));
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // The plan's own render decision, for the stats readout (the sim always redraws, so this

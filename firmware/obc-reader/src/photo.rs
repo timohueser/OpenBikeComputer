@@ -52,6 +52,23 @@ impl PhotoDecoder {
         }
     }
 
+    /// Initialize without creating the history buffer on the caller's stack.
+    ///
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a whole decoder.
+    #[inline]
+    pub unsafe fn init_in_place(slot: *mut Self) {
+        unsafe {
+            core::ptr::addr_of_mut!((*slot).decoder).write(DecompressorOxide::new());
+            core::ptr::addr_of_mut!((*slot).history).write_bytes(0, 1);
+            core::ptr::addr_of_mut!((*slot).read).write(0);
+            core::ptr::addr_of_mut!((*slot).written).write(0);
+            core::ptr::addr_of_mut!((*slot).result).write(Ok(Progress::Pending));
+            // Keep the placement plan exhaustive if a field is added.
+            let Self { decoder: _, history: _, read: _, written: _, result: _ } = &*slot;
+        }
+    }
+
     pub fn reset(&mut self) {
         self.decoder.init();
         self.read = 0;
