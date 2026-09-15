@@ -1206,8 +1206,17 @@ def gate_claims(
                 if owner.get("kind") != "workflow" or set("*?[").intersection(pattern):
                     continue
                 for args in _cargo_invocations(pattern):
-                    for package in _cargo_packages(args, "", graph):
-                        expanded |= by_package.get(package, set())
+                    candidates = set().union(*(by_package.get(package, set()) for package in _cargo_packages(args, "", graph)))
+                    if "--filter-expr" in args:
+                        expression = args[args.index("--filter-expr") + 1]
+                        tier = re.fullmatch(r'\$\(python3 tools/suite_registry.py cargo-filter --tier (fast|fixtures)\)', expression)
+                        # An unknown filter cannot justify a package-wide execution claim.
+                        if not tier:
+                            continue
+                        candidates = {candidate for candidate in candidates
+                                      if by_id[candidate].get("level") in cargo_tier_levels(tier.group(1))
+                                      and by_id[candidate].get("pull_request") != "never"}
+                    expanded |= candidates
         claims[gate] = expanded
     return claims
 
@@ -1463,9 +1472,13 @@ def command_select(args: argparse.Namespace) -> int:
         print(render_selection_text(plan))
     return 1 if plan.errors else 0
 
+def cargo_tier_levels(tier: str) -> set[str]:
+    return {"unit", "component", "contract"} if tier == "fast" else {"fixture"}
+
+
 def cargo_filter(inventory: Inventory, tier: str, packages: set[str] | None = None) -> str:
     """Select whole Rust test binaries from their registry owners."""
-    levels = {"unit", "component", "contract"} if tier == "fast" else {"fixture"}
+    levels = cargo_tier_levels(tier)
     terms = set()
     for suite in inventory.suites:
         if suite["level"] not in levels or suite["pull_request"] == "never":
