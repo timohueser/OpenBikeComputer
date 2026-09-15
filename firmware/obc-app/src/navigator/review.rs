@@ -66,6 +66,7 @@ pub struct ReviewedRoute {
     pub ascent_m: u32,
     pub descent_m: u32,
     pub visit_anchors_m: Option<[u32; 3]>,
+    pub visit_costs: Option<obc_route::visit::VisitCosts>,
 }
 
 impl ReviewedRoute {
@@ -100,12 +101,19 @@ impl ReviewedRoute {
             }
             None
         };
+        let visit_costs = if matches!(context.purpose, ReviewPurpose::Visit | ReviewPurpose::Destination) {
+            let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
+            Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
+        } else {
+            None
+        };
         Ok(Self {
             source,
             distance_m: info.distance_m,
             ascent_m: info.ascent_m,
             descent_m: info.descent_m,
             visit_anchors_m,
+            visit_costs,
         })
     }
 }
@@ -690,6 +698,7 @@ mod tests {
             ascent_m: 10,
             descent_m: 3,
             visit_anchors_m: None,
+            visit_costs: None,
         });
         nav.review_index(Some(1));
         nav.route = PlanPhase::PreviewReady;

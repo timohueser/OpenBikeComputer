@@ -1238,7 +1238,7 @@ mod tests {
         refused.plan_assistant(active_request, ReviewContext { original: None, ..context });
         assert!(matches!(
             HostLoop::new().acquire_plan(
-                &refused,
+                &mut refused,
                 tokens.issue(),
                 PlannerWork::AssistantRoute(active_request),
                 &routes,
@@ -1325,7 +1325,7 @@ mod tests {
         assert!(
             matches!(
                 HostLoop::new().acquire_plan(
-                    &app,
+                    &mut app,
                     tokens.issue(),
                     PlannerWork::AssistantRoute(active_request),
                     &routes,

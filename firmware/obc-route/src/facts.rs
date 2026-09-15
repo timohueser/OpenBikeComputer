@@ -64,72 +64,90 @@ impl RouteReader<'_> {
         if start_m > end_m {
             return Err(Error::BadOffset);
         }
-        let mut facts = IntervalFacts {
-            route_identity: self.identity(),
-            policy: FACTS_POLICY,
-            attribution_map: self.attribution_map()?,
-            start_m,
-            end_m,
-            ascent_m: 0,
-            descent_m: 0,
-            elevation_known_m: 0,
-            surface_m: [0; 8],
-        };
+        let mut accumulator = FactsAccumulator::new(self.identity(), self.attribution_map()?, start_m, end_m);
         let mut buf = Vec::<RoutePoint, MAX_POINTS_PER_CHUNK>::new();
-        let mut previous: Option<RoutePoint> = None;
-        let mut distance = 0.0f64;
-        let mut band = DeadBand::<f64>::new();
         for k in 0..self.chunks().len() {
             self.decode_chunk(k, &mut buf)?;
             for &p in buf.iter().skip(usize::from(k > 0)) {
-                let before_ascent = band.ascent() as u32;
-                let before_descent = band.descent() as u32;
-                let next_distance =
-                    distance + previous.map_or(0.0, |a| ground_dist_m((a.lon, a.lat), (p.lon, p.lat)) as f64);
-                if p.elevation_incomplete {
-                    band.pause();
-                }
-                if let Some(e) = p.elevation() {
-                    if previous.is_none() || next_distance as u32 > distance as u32 {
-                        band.push(e as f64);
-                    }
-                } else {
-                    band.pause();
-                }
-                if let Some(a) = previous {
-                    let seg_start = distance as u32;
-                    let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
-                    distance += length as f64;
-                    let seg_end = distance as u32;
-                    let lo = start_m.max(seg_start);
-                    let hi = end_m.min(seg_end);
-                    if hi > lo {
-                        let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
-                        facts.surface_m[p.surface as usize] += hi - lo;
-                        if known {
-                            facts.elevation_known_m += hi - lo;
-                        }
-                        let clip = |n: u32| -> u32 {
-                            let prefix =
-                                |at: u32| u64::from(n) * u64::from(at - seg_start) / u64::from(seg_end - seg_start);
-                            (prefix(hi) - prefix(lo)) as u32
-                        };
-                        facts.ascent_m += clip(band.ascent() as u32 - before_ascent);
-                        facts.descent_m += clip(band.descent() as u32 - before_descent);
-                        grade(GradeSample {
-                            start_m: lo,
-                            end_m: hi,
-                            grade_percent: known.then(|| (p.ele as f32 - a.ele as f32) * 100.0 / length),
-                        });
-                    }
-                }
-                previous = Some(p);
+                accumulator.push(p, &mut grade);
             }
         }
-        // A mismatch is stale/corrupt metadata, never a confident complete result.
-        if distance as u32 != self.total_distance_m {
+        accumulator.finish(self.total_distance_m)
+    }
+}
+
+pub(crate) struct FactsAccumulator {
+    facts: IntervalFacts,
+    previous: Option<RoutePoint>,
+    distance: f64,
+    band: DeadBand<f64>,
+}
+impl FactsAccumulator {
+    pub(crate) fn new(identity: u32, map: Option<obc_formats::obcr::RouteSourceKey>, start_m: u32, end_m: u32) -> Self {
+        Self {
+            facts: IntervalFacts {
+                route_identity: identity,
+                policy: FACTS_POLICY,
+                attribution_map: map,
+                start_m,
+                end_m,
+                ascent_m: 0,
+                descent_m: 0,
+                elevation_known_m: 0,
+                surface_m: [0; 8],
+            },
+            previous: None,
+            distance: 0.0,
+            band: DeadBand::new(),
+        }
+    }
+    pub(crate) fn push(&mut self, p: RoutePoint, grade: &mut impl FnMut(GradeSample)) {
+        let before_ascent = self.band.ascent() as u32;
+        let before_descent = self.band.descent() as u32;
+        let next_distance =
+            self.distance + self.previous.map_or(0.0, |a| ground_dist_m((a.lon, a.lat), (p.lon, p.lat)) as f64);
+        if p.elevation_incomplete {
+            self.band.pause();
+        }
+        if let Some(e) = p.elevation() {
+            if self.previous.is_none() || next_distance as u32 > self.distance as u32 {
+                self.band.push(e as f64);
+            }
+        } else {
+            self.band.pause();
+        }
+        if let Some(a) = self.previous {
+            let seg_start = self.distance as u32;
+            let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
+            self.distance += length as f64;
+            let seg_end = self.distance as u32;
+            let lo = self.facts.start_m.max(seg_start);
+            let hi = self.facts.end_m.min(seg_end);
+            if hi > lo {
+                let known = !p.elevation_incomplete && a.elevation().is_some() && p.elevation().is_some();
+                self.facts.surface_m[p.surface as usize] += hi - lo;
+                if known {
+                    self.facts.elevation_known_m += hi - lo;
+                }
+                let clip = |n: u32| -> u32 {
+                    let prefix = |at: u32| u64::from(n) * u64::from(at - seg_start) / u64::from(seg_end - seg_start);
+                    (prefix(hi) - prefix(lo)) as u32
+                };
+                self.facts.ascent_m += clip(self.band.ascent() as u32 - before_ascent);
+                self.facts.descent_m += clip(self.band.descent() as u32 - before_descent);
+                grade(GradeSample {
+                    start_m: lo,
+                    end_m: hi,
+                    grade_percent: known.then(|| (p.ele as f32 - a.ele as f32) * 100.0 / length),
+                });
+            }
+        }
+        self.previous = Some(p);
+    }
+    pub(crate) fn finish(self, total_distance_m: u32) -> Result<IntervalFacts, Error> {
+        if self.distance as u32 != total_distance_m {
             return Err(Error::BadOffset);
         }
-        Ok(facts)
+        Ok(self.facts)
     }
 }
