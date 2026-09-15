@@ -181,8 +181,8 @@ pub(crate) fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
 // the still-visible frame, beside the long-press bulge. Whether it is up at all is
 // [`CoreMode`](crate::device_core::core_mode::CoreMode)'s answer; this is only how it looks.
 
-/// Banner height (px) — the map's status-chip height, so the two chrome pills read as one family.
-const BANNER_H: i32 = 36;
+/// Shared drawing and overlay-band height, including the small compass below the label.
+const BANNER_H: i32 = 56;
 /// Horizontal padding (px) around the copy, split either side — tighter than the status chip's 28,
 /// because the copy is one long word: at 240 px the longest catalogued string ("Neuberechnung...")
 /// would otherwise leave under 10 px of frame either side and read as a full-width bar.
@@ -222,9 +222,13 @@ where
     cv.round(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::PARCHMENT);
     cv.round_outline(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::INK);
     cv.text(text, Point::new(w / 2, py + 5), font, TextAlign::Center, palette::INK);
-    for dot in 0..3 {
-        cv.disc(Point::new(w / 2 + (dot - 1) * 6, py + 30), if dot as u8 + 1 == phase { 2 } else { 1 }, palette::INK);
-    }
+    crate::screen::menu::draw_needle(
+        &mut cv,
+        Point::new(w / 2, py + 40),
+        f32::from(phase.saturating_sub(1)) * 120.0,
+        10.0,
+        3.0,
+    );
 }
 
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
@@ -243,9 +247,36 @@ mod tests {
     #[test]
     fn the_recalculating_banner_band_stays_on_panel_and_clear_of_the_marker() {
         let (y0, rows) = recalculating_banner_rows(320.0);
-        assert_eq!((y0, rows), (96, 36));
+        assert_eq!((y0, rows), (96, 56));
         assert!(y0 as i32 + rows as i32 <= 320);
         assert!((y0 + rows) < 160, "clear of the centred user marker");
+
+        let mut previous = None;
+        for phase in 1..=3 {
+            let mut frame = crate::harness::support::Buf::new(240, 320);
+            recalculating_banner(
+                &mut frame,
+                &|c| {
+                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                    embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+                },
+                240.0,
+                320.0,
+                "Finding",
+                phase,
+            );
+            assert!(
+                frame.px[..y0 as usize * 240]
+                    .iter()
+                    .chain(&frame.px[(y0 + rows) as usize * 240..])
+                    .all(|p| *p == embedded_graphics::pixelcolor::Rgb888::new(0, 0, 0)),
+                "the full spinner stays inside the board band"
+            );
+            if let Some(previous) = previous {
+                assert_ne!(frame.px, previous, "each one-second phase rotates the compass");
+            }
+            previous = Some(frame.px);
+        }
 
         let (y0, rows) = recalculating_banner_rows(20.0); // a frame shorter than the banner (the test harnesses')
         assert_eq!(y0, 0, "clamped to the top rather than drawn off-panel");
