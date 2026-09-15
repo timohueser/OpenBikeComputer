@@ -18,6 +18,7 @@ fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
         Scenario::Browse,
         Scenario::FreeRide,
         Scenario::FreeAccept,
+        Scenario::ModeCycle,
         Scenario::CancelPlanning,
         Scenario::CancelPreview,
         Scenario::Accept,
@@ -36,6 +37,7 @@ enum Scenario {
     Browse,
     FreeRide,
     FreeAccept,
+    ModeCycle,
     CancelPlanning,
     CancelPreview,
     Accept,
@@ -132,6 +134,7 @@ fn run_find(scenario: Scenario) {
     let mut selected_shape = Vec::new();
     let mut choices_frame = Vec::new();
     let mut reentered = false;
+    let mut recording_before_mode = false;
     let mut calculated = Vec::new();
     let mut ordinary = None;
     let cancel_at = match scenario {
@@ -147,7 +150,8 @@ fn run_find(scenario: Scenario) {
             app.apply_gesture(Gesture::Press);
         }
         session.sync(&app, &mut routes);
-        let accepted_source = (phase >= 16).then(|| routes.source(selected_preview.unwrap().source.object).unwrap());
+        let accepted_source =
+            ((16..=18).contains(&phase)).then(|| routes.source(selected_preview.unwrap().source.object).unwrap());
         let accepted_index = accepted_source.as_ref().map(|source| obc_route::RouteIndex::read(source).unwrap());
         let accepted_route = accepted_source
             .as_ref()
@@ -172,7 +176,7 @@ fn run_find(scenario: Scenario) {
                     acquisitions += 1;
                 }
             }
-            if phase > 0 && phase != 16 {
+            if phase > 0 && phase != 16 && !(19..=21).contains(&phase) {
                 assert!(
                     !matches!(effect, NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. }),
                     "selection and reopening must not run A* or publish another route"
@@ -218,7 +222,11 @@ fn run_find(scenario: Scenario) {
             assert!(app.active_route_index().is_none());
         } else if !matches!(
             scenario,
-            Scenario::FreeAccept | Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted
+            Scenario::FreeAccept
+                | Scenario::ModeCycle
+                | Scenario::Accept
+                | Scenario::AcceptEscaped
+                | Scenario::RestartAccepted
         ) || phase < 12
         {
             assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
@@ -338,9 +346,19 @@ fn run_find(scenario: Scenario) {
                 assert!(routes.read_checkpoint().unwrap().is_none());
                 selected_preview = Some(preview);
                 selected_shape = app.assistant_preview_shape().to_vec();
+                if scenario == Scenario::ModeCycle {
+                    recording_before_mode = app.recorder.recording();
+                    app.apply_gesture(Gesture::Step(1));
+                    phase = 19;
+                    continue;
+                }
                 if matches!(
                     scenario,
-                    Scenario::FreeAccept | Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted
+                    Scenario::FreeAccept
+                        | Scenario::ModeCycle
+                        | Scenario::Accept
+                        | Scenario::AcceptEscaped
+                        | Scenario::RestartAccepted
                 ) {
                     app.apply_gesture(Gesture::Press);
                     if scenario == Scenario::AcceptEscaped {
@@ -350,6 +368,36 @@ fn run_find(scenario: Scenario) {
                 } else {
                     app.apply_gesture(Gesture::Back);
                     phase = 10;
+                }
+            }
+            19..=21
+                if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
+                    && app.assistant_planner_released() =>
+            {
+                let destination = phase != 20;
+                let preview = app.assistant_preview().unwrap();
+                let context = app.assistant_review_context().unwrap();
+                assert_eq!(
+                    context.purpose,
+                    if destination {
+                        obc_app::navigator::ReviewPurpose::Destination
+                    } else {
+                        obc_app::navigator::ReviewPurpose::Visit
+                    }
+                );
+                let source = routes.source(preview.source.object).unwrap();
+                let info = obc_route::RouteObjectInfo::read(&source).unwrap();
+                assert_eq!(info.visit.is_none(), destination);
+                assert_eq!(acquisitions, expected_plans + phase as usize - 18);
+                assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+                assert_eq!(app.recorder.recording(), recording_before_mode);
+                if phase == 21 {
+                    selected_preview = Some(preview);
+                    app.apply_gesture(Gesture::Press);
+                    phase = 12;
+                } else {
+                    app.apply_gesture(Gesture::Step(1));
+                    phase += 1;
                 }
             }
             10 if app.assistant_planner_released() => {
@@ -410,6 +458,10 @@ fn run_find(scenario: Scenario) {
                 assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, preview.source);
                 assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
                 assert_eq!(routes.unaccepted_routes(), 0);
+                if scenario == Scenario::ModeCycle {
+                    assert!(routes.read_checkpoint().unwrap().unwrap().original.is_none());
+                    assert_eq!(app.recorder.recording(), recording_before_mode);
+                }
                 if scenario == Scenario::FreeAccept {
                     app.open_find_place();
                     app.apply_gesture(Gesture::Press);
@@ -466,7 +518,7 @@ fn run_find(scenario: Scenario) {
     }
     let expected = match scenario {
         Scenario::FreeAccept => 18,
-        Scenario::Accept | Scenario::AcceptEscaped => 13,
+        Scenario::ModeCycle | Scenario::Accept | Scenario::AcceptEscaped => 13,
         Scenario::Browse => 6,
         Scenario::RestartReady | Scenario::RestartPartial | Scenario::RestartAccepted => 15,
         _ => 9,
@@ -481,6 +533,7 @@ fn run_find(scenario: Scenario) {
     if !matches!(
         scenario,
         Scenario::FreeAccept
+            | Scenario::ModeCycle
             | Scenario::Accept
             | Scenario::AcceptEscaped
             | Scenario::RestartReady

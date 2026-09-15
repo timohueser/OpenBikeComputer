@@ -1378,7 +1378,14 @@ mod tests {
         assert_eq!(routes.internal_routes() & (1 << routes.ids().iter().position(|id| *id == original).unwrap()), 0);
         let reopened = crate::FlatRouteStore::new(owner.clone(), &[]).unwrap();
         assert_eq!(reopened.internal_routes(), routes.internal_routes(), "the existing header flag survives reload");
-        assert!(routes.delete_by_id(original).is_err(), "accepted original remains protected without a reader hold");
+        if visit {
+            assert!(
+                routes.delete_by_id(original).is_err(),
+                "accepted original remains protected without a reader hold"
+            );
+        } else {
+            assert!(routes.read_checkpoint().unwrap().unwrap().original.is_none());
+        }
         let mut reboot = App::new_idle(AppState::new(500_000, 500_000, 10.0));
         reboot.offer_assistant_checkpoint(routes.store_scope().unwrap().store, routes.read_checkpoint().unwrap());
         assert_eq!(reboot.assistant_review_status(), ReviewStatus::ResumeAvailable);
