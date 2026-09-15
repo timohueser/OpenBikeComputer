@@ -78,3 +78,10 @@ uncertain metadata acknowledgement, retained screen costs without a usable actio
 loop with a preserved required annotation. Scoped App/host all-target Clippy and the suite registry
 pass. No snapshot sweep or shipping image build was repeated. Independent delta review remains
 required before merge.
+
+Delta review found that automatic invalidation must not request cancellation while the save
+result is unknown. Commit `160c5291` keeps the pending acceptance fenced during Saving and
+Unresolved; the disabled review reports the unknown status. Only explicit Back requests cancel.
+The App test now recovers both possible exact heads: the committed head returns activation without
+an extra clear, and the old head restores the preview without a clear. The whole App suite, scoped
+App Clippy, and registry check pass after this correction. Board code is unchanged from `a77ec8a0`.
