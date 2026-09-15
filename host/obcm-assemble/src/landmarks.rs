@@ -341,6 +341,7 @@ mod tests {
         assert_eq!(section.blobs.len(), 5);
         let src = SliceSource(&bytes);
         let directory = LandmarkDirectory::read(&src).unwrap();
+        fixture::assert_content(&src);
         assert_eq!(directory.count, 2);
         assert_eq!(directory.record(&src, 0).unwrap(), section.records[0]);
         let mut shuffled = inputs;
