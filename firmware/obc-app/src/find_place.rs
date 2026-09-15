@@ -80,6 +80,7 @@ pub struct FindState {
     profile: u8,
     local: Option<(u8, u16)>,
     selected_review: bool,
+    invalid_visit: Option<obc_formats::assistant::PayloadFingerprint>,
     pub review: ReviewStatus,
     pub review_costs: Option<Costs>,
 }
@@ -103,6 +104,7 @@ impl FindState {
             profile: 0,
             local: None,
             selected_review: false,
+            invalid_visit: None,
             review: ReviewStatus::Idle,
             review_costs: None,
         }
@@ -204,8 +206,17 @@ impl crate::App {
         if !self.active_visit() || self.assistant_review_status() != ReviewStatus::Accepted {
             return None;
         }
+        let source = self.assistant_checkpoint()?.route;
+        if self.ui.find.invalid_visit == Some(source) {
+            return None;
+        }
         let index = self.active_route_index()?;
-        (self.route_ids().get(index).copied() == Some(self.assistant_checkpoint()?.route.object)).then_some(index)
+        (self.route_ids().get(index).copied() == Some(source.object)).then_some(index)
+    }
+    pub(crate) fn invalidate_current_visit(&mut self, id: crate::CatalogObjectId) {
+        if let Some(source) = self.assistant_checkpoint().map(|c| c.route).filter(|s| s.object == id) {
+            self.ui.find.invalid_visit = Some(source);
+        }
     }
     pub(crate) fn place_map_key(&self) -> Option<RouteSourceKey> {
         self.ui.find.bound_map
@@ -338,9 +349,9 @@ impl crate::App {
         let local = self.place_local_time();
         self.handle_find_exit();
         self.ui.find.review = self.assistant_review_status();
-        let review_screen = self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_)));
-        if review_screen {
-            if self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(s) if s.accepted)) {
+        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        if let Some(Screen::VisitReview(screen)) = base {
+            if screen.accepted {
                 let current = self.current_visit_index().and_then(|_| self.assistant_checkpoint());
                 self.ui.find.review = if current.is_some() {
                     ReviewStatus::Accepted
