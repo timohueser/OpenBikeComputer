@@ -1587,9 +1587,18 @@ pub(crate) async fn run_app(
                             });
                     #[cfg(not(has_nav))]
                     let sources_current = app.assistant_review_context().is_none();
+                    let current_scope = crate::flat_store::catalog_scope(flat);
+                    let clear_scope_moved =
+                        app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none())
+                            && effect.scope().is_some_and(|issued| {
+                                app.assistant_store_matches(issued.store)
+                                    && issued.store == current_scope.store
+                                    && issued.revision != current_scope.revision
+                            });
                     let result = if !sources_current {
                         Some(Err(obc_app::metadata::MetadataError::Stale))
-                    } else if !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
+                    } else if clear_scope_moved
+                        || !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
                         || !app.assistant_checkpoint_submission(token)
                     {
                         RideExec::deliver(
@@ -1637,7 +1646,12 @@ pub(crate) async fn run_app(
             #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
             #[cfg(has_nav)]
-            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && nav_run.is_none() {
+            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
+                && nav_run.is_none()
+                && review_publication.is_some_and(|source| {
+                    app.assistant_checkpoint().is_some_and(|checkpoint| checkpoint.route == source)
+                })
+            {
                 review_publication = None;
                 if let Some(source) = review_original.take() {
                     flat.close(source.release());
@@ -2909,11 +2923,13 @@ pub(crate) async fn run_app(
             let find_can_prepare = nav_guard.is_none();
             #[cfg(not(has_nav))]
             let find_can_prepare = true;
-            if find_loading_painted && find_can_prepare {
+            let review_pending = app.assistant_route_pending();
+            if (find_loading_painted || review_pending) && find_can_prepare {
                 let reader = Reader::new(flat_map, map_tables, map_cache);
                 app.prepare_find(Some(&reader), route.as_ref());
-                if !app.find_preparing() {
-                    if app.find_place_state() == obc_app::find_place::State::Ready {
+                if (find_loading_painted && !app.find_preparing()) || (review_pending && !app.assistant_route_pending())
+                {
+                    if find_loading_painted && app.find_place_state() == obc_app::find_place::State::Ready {
                         defmt::info!("find: ready results={=usize}", app.find_place_result_count());
                     }
                     find_loading_painted = false;

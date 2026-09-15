@@ -41,6 +41,7 @@ pub(crate) enum Action {
     More,
     Preview(u8),
     Accept,
+    RouteMode(bool),
     Cancel,
     OpenAccepted,
     CancelVisit,
@@ -389,6 +390,19 @@ impl crate::App {
                     }
                 }
             }
+            Action::RouteMode(destination) => {
+                if self.assistant_review_status() == ReviewStatus::Preview && self.assistant_planner_released() {
+                    if let Some(target) = self.assistant_visit_target() {
+                        self.cancel_assistant();
+                        if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                            screen.destination = destination;
+                            screen.pending_target = Some(target);
+                        }
+                        self.ui.find.review_costs = None;
+                        self.ui.find.review = ReviewStatus::Planning;
+                    }
+                }
+            }
             Action::OpenAccepted => {
                 if let Some(index) = self.current_visit_index() {
                     let screen = VisitReviewScreen::accepted(self.routes()[index].name.as_str());
@@ -456,10 +470,8 @@ impl crate::App {
                 self.ui.find.selected_review = true;
                 self.ui.find.review_costs = None;
                 self.ui.find.review = ReviewStatus::Planning;
-                crate::screen::apply(
-                    &mut self.ui.stack,
-                    crate::screen::Transition::Push(Screen::VisitReview(VisitReviewScreen::new(name))),
-                );
+                let screen = VisitReviewScreen::new(name).route_choices(self.active_route_index().is_some());
+                crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
                 self.ui.map_dirty = true;
                 true
             }
@@ -538,7 +550,7 @@ impl crate::App {
         self.ui.find.selected_review = true;
         self.ui.find.review_costs = None;
         self.ui.find.review = self.assistant_review_status();
-        let mut screen = VisitReviewScreen::new(name);
+        let mut screen = VisitReviewScreen::new(name).route_choices(self.active_route_index().is_some());
         screen.error = error;
         crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
         self.ui.map_dirty = true;
@@ -546,6 +558,35 @@ impl crate::App {
     /// Advance place queries and candidate ownership while streamed readers are available.
     pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
+        if let Some(Screen::VisitReview(screen)) = self.ui.stack.last() {
+            if let Some(target) = screen.pending_target {
+                let status = self.assistant_review_status();
+                if matches!(status, ReviewStatus::Failed(_) | ReviewStatus::Unresolved | ReviewStatus::ResumeAvailable)
+                {
+                    if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                        screen.pending_target = None;
+                    }
+                    self.ui.find.review = status;
+                    return;
+                }
+                if !self.assistant_planner_released()
+                    || !self.catalogs.can_admit_intent()
+                    || !matches!(status, ReviewStatus::Idle | ReviewStatus::Accepted)
+                {
+                    return;
+                }
+                let destination = screen.destination;
+                let result = if destination {
+                    self.request_destination(target, "Route to place")
+                } else {
+                    self.request_visit(target, "Visit")
+                };
+                if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                    screen.pending_target = None;
+                    screen.error = result.err();
+                }
+            }
+        }
         if let Action::Preview(selected) = self.ui.find.action {
             if let Some(reader) = reader {
                 self.preview_find_result(reader, selected as usize);
@@ -745,7 +786,9 @@ impl crate::App {
             }
         }
         if self.ui.find.state == State::Releasing {
-            if !self.assistant_planner_released() || self.assistant_review_status() != ReviewStatus::Idle {
+            if !self.assistant_planner_released()
+                || !matches!(self.assistant_review_status(), ReviewStatus::Idle | ReviewStatus::Accepted)
+            {
                 return;
             }
             self.ui.find.next += 1;
@@ -864,12 +907,12 @@ impl crate::App {
         let context = self.assistant_review_context()?;
         let arrival_m = p.visit_anchors_m.map_or(p.distance_m, |a| a[1].saturating_sub(a[0]));
         let facts = self.assistant_visit_costs()?;
+        let original = context.original.filter(|_| context.purpose != crate::navigator::ReviewPurpose::Destination);
         Some(Costs {
             arrival_m,
             arrival_ascent_m: facts.arrival_elevation_complete.then_some(facts.arrival_ascent_m),
-            added_m: context.original.and(self.ui.find.remaining_m).map(|m| p.distance_m.saturating_sub(m)),
-            added_ascent_m: context
-                .original
+            added_m: original.and(self.ui.find.remaining_m).map(|m| p.distance_m.saturating_sub(m)),
+            added_ascent_m: original
                 .and(self.ui.find.remaining_ascent)
                 .filter(|_| facts.complete_elevation)
                 .map(|a| p.ascent_m.saturating_sub(a)),
@@ -922,6 +965,39 @@ mod tests {
         fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
             self.0[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
             Ok(())
+        }
+    }
+
+    #[test]
+    fn mode_change_surfaces_release_failure_without_starting_another_route() {
+        use crate::navigator::NavigatorError;
+        for error in [NavigatorError::Store, NavigatorError::DurabilityUnknown] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            let mut screen = VisitReviewScreen::new("Water").route_choices(true);
+            screen.pending_target = Some(VisitTarget {
+                map: RouteSourceKey { store: [1; 16], object: 1, revision: 1 },
+                metadata: obc_formats::obcm::PoiMetadata {
+                    source: obc_formats::obcm::SourceId::osm(1, 1),
+                    approach: None,
+                },
+                display: (0, 0),
+            });
+            assert!(app.ui.stack.push(Screen::VisitReview(screen)).is_ok());
+            app.ui.find.review = ReviewStatus::Planning;
+            app.advance_animations(obc_ports::InputClock(0));
+            assert!(app.assistant_route_pending());
+            assert_eq!(app.ms_until_next_wake(0), Some(1));
+            assert!(app.reroute_banner_rows(320.0).is_some());
+            assert!(!app.reroute_freeze_active(), "waiting for release does not claim the planner arena");
+            app.navigator.review_failed(error);
+            let expected = app.assistant_review_status();
+            app.prepare_find(None, None);
+            assert_eq!(app.ui.find.review, expected);
+            assert!(!app.assistant_route_pending());
+            assert!(app.reroute_banner_rows(320.0).is_none());
+            assert!(matches!(app.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_none()));
+            assert!(app.assistant_planner_released());
+            assert!(app.assistant_review_context().is_none());
         }
     }
 

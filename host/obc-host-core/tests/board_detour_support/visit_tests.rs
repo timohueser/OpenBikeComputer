@@ -125,6 +125,13 @@ impl VisitHarness {
             derived: DerivedInputs::NONE,
             targets: DerivedTargets::NONE,
         });
+        if let Some(effect) = plan.effects.metadata.take() {
+            assert!(self.h.app.assistant_checkpoint_submission(effect.token()));
+            self.outcomes
+                .metadata
+                .try_put(obc_app::metadata::MetadataOutcome::CheckpointWritten { token: effect.token() })
+                .unwrap();
+        }
         if let Some(effect) = plan.effects.catalog.take() {
             assert!(self.catalog.replace(effect).is_none());
         }
@@ -176,7 +183,7 @@ impl VisitHarness {
             if self.h.writer.pending().is_some() {
                 self.h.writer.complete();
             }
-            self.pass();
+            self.pass_with(&mut NoFix, wanted == ReviewStatus::Accepted);
             if self.h.app.assistant_review_status() == wanted
                 && self.h.guard.is_none()
                 && self.h.writer.pending().is_none()
@@ -312,52 +319,98 @@ fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding
             Some(obc_ports::Fix::at(500_000, 500_000))
         }
     }
-    let mut h = VisitHarness::new();
-    h.h.app.cancel_assistant();
-    h.settle(ReviewStatus::Idle);
-    h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
-    h.h.app.open_find_place();
-    h.h.app.apply_gesture(obc_app::Gesture::Press);
-    let mut unbound_preview = false;
-    for _ in 0..2000 {
-        if h.h.writer.pending().is_some() {
-            h.h.writer.complete();
+    for accepted in [false, true] {
+        let mut h = VisitHarness::new();
+        let mut context = h.h.app.assistant_review_context().unwrap();
+        let target = h.h.app.assistant_visit_target().unwrap();
+        h.h.app.cancel_assistant();
+        h.settle(ReviewStatus::Idle);
+        if accepted {
+            context.purpose = ReviewPurpose::Easier(obc_route::nav::Objective::Profile);
+            h.h.app.plan_assistant(
+                obc_app::NavRequest::new(context.origin, (520_000, 500_000), "Accepted route"),
+                context,
+            );
+            h.settle(ReviewStatus::Preview);
+            let id = h.h.app.assistant_preview().unwrap().source.object;
+            h.h.app.accept_assistant(obc_app::navigator::ReviewOrigin {
+                fix: context.origin,
+                progress_m: 0,
+                occurrence: 0,
+                lateral_m: 0,
+                trustworthy: true,
+            });
+            h.settle(ReviewStatus::Accepted);
+            h.h.store.close(h.h.original.take().unwrap().release());
+            h.h.original = Some(h.h.store.source(ObjectId(id), Some(Revision(1))).unwrap());
+            flat_store::mount_sources(h.h.store, h.h.original.as_ref().unwrap(), h.h.map.as_ref().unwrap());
+            h.h.free = h.h.store.free_extents();
         }
-        h.pass_with(&mut Position, true);
-        if let Some(preview) = h.h.app.assistant_preview() {
-            if !h.h.app.route_ids().contains(&preview.source.object) {
-                unbound_preview = true;
-                assert!(h.h.app.assistant_preview_shape().is_empty());
+        let checkpoint = h.h.app.assistant_checkpoint();
+        h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
+        h.h.app.open_find_place();
+        h.h.app.apply_gesture(obc_app::Gesture::Press);
+        let mut unbound_preview = false;
+        for _ in 0..2000 {
+            if h.h.writer.pending().is_some() {
+                h.h.writer.complete();
+            }
+            h.pass_with(&mut Position, true);
+            assert!(
+                !matches!(h.h.app.assistant_review_status(), ReviewStatus::Failed(_)),
+                "review={:?}, context={:?}, origin={:?}",
+                h.h.app.assistant_review_status(),
+                h.h.app.assistant_review_context(),
+                h.h.app.current_review_origin()
+            );
+            if let Some(preview) = h.h.app.assistant_preview() {
+                if !h.h.app.route_ids().contains(&preview.source.object) {
+                    unbound_preview = true;
+                    assert!(h.h.app.assistant_preview_shape().is_empty());
+                }
+            }
+            if h.h.guard.is_none() {
+                let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
+                let source = h.h.original.as_ref().unwrap();
+                let index = obc_route::RouteIndex::read(source).unwrap();
+                let route = obc_route::RouteReader::new(&index, source);
+                h.h.app.prepare_find(Some(&reader), Some(&route));
+            }
+            if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
+                break;
             }
         }
-        if h.h.guard.is_none() {
-            let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
-            let source = h.h.original.as_ref().unwrap();
-            let index = obc_route::RouteIndex::read(source).unwrap();
-            let route = obc_route::RouteReader::new(&index, source);
-            h.h.app.prepare_find(Some(&reader), Some(&route));
+        assert!(
+            unbound_preview,
+            "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
+            h.h.app.find_place_state(),
+            h.h.app.assistant_review_status(),
+            h.h.app.find_place_result_count(),
+            h.h.app.route_ids()
+        );
+        assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
+        assert_eq!(h.h.app.find_place_result_count(), 1);
+        h.h.app.apply_gesture(obc_app::Gesture::Back);
+        for _ in 0..20 {
+            h.pass_with(&mut Position, true);
+            h.h.app.prepare_find(None, None);
         }
-        if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
-            break;
+        if accepted {
+            h.h.app.request_visit(target, "Another preview").unwrap();
+            h.settle(ReviewStatus::Preview);
+            let candidate = h.h.app.assistant_preview().unwrap().source.object;
+            h.h.app.cancel_assistant();
+            h.settle(ReviewStatus::Accepted);
+            assert!(!h.h.store.entries().any(|entry| entry.id.0 == candidate));
         }
+        assert_eq!(h.h.app.assistant_checkpoint(), checkpoint);
+        assert_eq!(
+            h.h.app.assistant_review_status(),
+            if accepted { ReviewStatus::Accepted } else { ReviewStatus::Idle }
+        );
+        assert_eq!(h.h.store.entries().count(), if accepted { 3 } else { 2 });
+        h.h.assert_clean();
     }
-    assert!(
-        unbound_preview,
-        "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
-        h.h.app.find_place_state(),
-        h.h.app.assistant_review_status(),
-        h.h.app.find_place_result_count(),
-        h.h.app.route_ids()
-    );
-    assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
-    assert_eq!(h.h.app.find_place_result_count(), 1);
-    h.h.app.apply_gesture(obc_app::Gesture::Back);
-    for _ in 0..20 {
-        h.pass_with(&mut Position, true);
-        h.h.app.prepare_find(None, None);
-    }
-    assert_eq!(h.h.store.entries().count(), 2);
-    h.h.assert_clean();
 }
 
 #[test]

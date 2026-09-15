@@ -504,7 +504,12 @@ until the category is reopened. These bounded results do not establish a global 
 **More places** opens the full paged category browser. It plans only the place selected for review.
 
 Selecting a Find suggestion opens Visit review directly and loads its stored route without another
-route calculation. Back and reselect reuse the same route while its inputs remain valid. Leaving
+route calculation. With an active route, the action button offers **Add detour** or **Route here**.
+Use Up or Down to switch; the card updates its geometry and costs before Select accepts it.
+**Route here** plans from the current position to the place and replaces the current goal. It has
+no return leg or original-route continuation. **Add detour** is the initial choice in every category.
+With no active route, the card offers only **Route here**. Switching modes stays on the same card.
+Back and reselect reuse the category's original route while its inputs remain valid. Leaving
 the category removes unused routes. Restart removes abandoned previews while preserving accepted
 checkpoint routes. More places retains the place detail page and plans the
 selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach

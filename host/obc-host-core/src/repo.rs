@@ -78,6 +78,9 @@ pub trait RouteRepository {
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
     fn ids(&self) -> &[CatalogObjectId];
+    fn internal_routes(&self) -> u64 {
+        0
+    }
     fn unaccepted_routes(&self) -> u64 {
         0
     }
