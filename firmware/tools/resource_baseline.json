@@ -67,7 +67,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 54568,
+        "app": 50232,
         "map_cache": 37084,
         "map_tables": 4416,
         "route_cache": 9260,
