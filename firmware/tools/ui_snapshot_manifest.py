@@ -38,8 +38,6 @@ SNAPSHOT_SUFFIX = ".png"
 # Two names over one image is normally a recipe rendering the wrong state under the right name,
 # which every other check passes. Where identity is the assertion instead, declare it here.
 IDENTICAL_BY_DESIGN: list[set[str]] = [
-    # The expiry row is absent in both cases, so both frames are the plain overview (epic #638 S3).
-    {"routeoverview-expiry-far-absent.png", "routeoverview-expiry-unstarted-absent.png", "routeoverview.png"},
     # Pan mode owns the Map's chrome, not the Statistics grid's: entering it changes no pixel here.
     {"statistics-pan.png", "statistics.png"},
 ]

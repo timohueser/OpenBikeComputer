@@ -533,6 +533,7 @@ impl Recorder {
         let revision = Revision(1);
         let name = DisplayName::new(name).unwrap_or_default();
         let meta = EntryMeta {
+            added_at_utc: 0,
             id,
             revision,
             kind: ObjectKind::Ride,
@@ -704,6 +705,7 @@ impl Recorder {
                     }
                 }
                 let meta = EntryMeta {
+                    added_at_utc: 0,
                     id: finalising.id,
                     revision: finalising.revision,
                     kind: ObjectKind::Ride,

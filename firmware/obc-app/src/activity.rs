@@ -148,6 +148,7 @@ pub struct Activity {
     /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
     /// `TP{id}.OBT` **and** every member route file, then rescans + re-feeds trips + routes.
     delete_trip: Option<crate::CatalogObjectId>,
+    pub(crate) cleanup_routes: Option<crate::catalog_state::CatalogIntent>,
     /// The **sensor scan mode** level (BLE sensors epic #707, SE7): raised by the Sensors screen while
     /// a scan-list sub-screen is open (entering a HR/power/cadence row) and lowered on exit/Back.
     /// Unlike the delete/scan *one-shots* this is a **level**, not a drained edge — the enter/leave

@@ -159,6 +159,7 @@ struct Args {
     clock: Option<obc_ports::DateTime>,
 
     no_card: bool,
+    route_cleanup: bool,
     /// Headless `--png` only: the UI language `en` | `de` | `fr` | `es` (epic #602). Seeded into
     /// `Settings.language` before the render, so a scripted screen draws its de/fr/es copy from the
     /// i18n catalog — the per-language snapshot mechanism. Defaults to `en` (the device default), so
@@ -186,13 +187,6 @@ struct Args {
     freeze: bool,
     /// One mutually-exclusive DFU fixture state for headless snapshots.
     dfu: Option<DfuSeed>,
-    /// Headless `--png` only: stamp every loaded route's retention meta (epic #638 S5), so the
-    /// Route overview's expiry row renders for a snapshot. `LEVEL:AGE` — `LEVEL` is the retention
-    /// `u8` (0 Never · 1 1d · 2 1wk · 3 2wk · 4 1mo · 5 2mo), `AGE` the route's `last_used` as a
-    /// duration *ago* from the (`--clock`-pinned) wall clock (`2d` / `19h` / `3600s` / bare seconds),
-    /// or `unknown` for "clock never started" (→ the row's `--`). Stands in for the SD retention
-    /// sidecar the board reads; without it every route stays `Never` and the row is absent.
-    route_retention: Option<(u8, Option<u32>)>,
 }
 
 impl Default for Args {
@@ -227,6 +221,7 @@ impl Default for Args {
             clock: None,
 
             no_card: false,
+            route_cleanup: false,
             lang: None,
             stat_fields: None,
             ble: None,
@@ -235,7 +230,6 @@ impl Default for Args {
             inject: None,
             freeze: false,
             dfu: None,
-            route_retention: None,
         }
     }
 }
@@ -270,30 +264,6 @@ fn parse_clock(s: &str) -> Result<obc_ports::DateTime, String> {
     let minute = t.next().and_then(|v| v.parse().ok()).ok_or("bad --clock minute")?;
     Ok(obc_ports::DateTime { year, month, day, hour, minute })
 }
-
-/// Parse a `--route-retention LEVEL:AGE` value (epic #638 S5). `LEVEL` is the retention `u8`; `AGE`
-/// is a `last_used` age *before now* (`2d` / `19h` / `3600s` / bare seconds), or `unknown` for
-/// "clock never started" (`last_used == 0`). Returns `(level, Some(secs_ago))` / `(level, None)`.
-fn parse_route_retention(s: &str) -> Result<(u8, Option<u32>), String> {
-    let (level, age) = s.split_once(':').ok_or("--route-retention format is LEVEL:AGE (e.g. 3:2d or 2:unknown)")?;
-    let level: u8 = level.parse().map_err(|_| "bad --route-retention LEVEL (0..5)")?;
-    let age = if age == "unknown" { None } else { Some(parse_duration_secs(age)?) };
-    Ok((level, age))
-}
-
-/// Parse a duration like `2d` / `19h` / `3600s` (bare = seconds) into whole seconds.
-fn parse_duration_secs(s: &str) -> Result<u32, String> {
-    let (num, mult) = match s.strip_suffix('d') {
-        Some(n) => (n, 86_400),
-        None => match s.strip_suffix('h') {
-            Some(n) => (n, 3_600),
-            None => (s.strip_suffix('s').unwrap_or(s), 1),
-        },
-    };
-    let v: u32 = num.parse().map_err(|_| "bad --route-retention AGE duration")?;
-    Ok(v.saturating_mul(mult))
-}
-
 /// Parse a `--lang` value into a [`Language`](obc_app::settings::Language). Accepts the four
 /// ISO-639-1 codes the catalog ships (`en`/`de`/`fr`/`es`); anything else is a located error rather
 /// than a silent fall back to English, so a typo in a snapshot script fails loudly.
@@ -582,12 +552,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
 
+            "--route-cleanup" => a.route_cleanup = true,
             "--no-card" => a.no_card = true,
-
-            "--route-retention" => {
-                a.route_retention =
-                    Some(parse_route_retention(&it.next().ok_or("--route-retention needs LEVEL:AGE")?)?);
-            }
             "--lang" => {
                 a.lang = Some(parse_lang(&it.next().ok_or("--lang needs en|de|fr|es")?)?);
             }
@@ -972,9 +938,9 @@ Ride and storage fixtures:
   --routes-dir DIR        Route and trip import directory (default: routes/)
   --tracks-dir DIR        Ride/track-store directory (default: tracks/)
   --import PATH           Import GPX to --card, or convert to --routes-dir, then exit
-  --route-retention L:A   Set route retention LEVEL and AGE (for example 3:2d)
 
 Device state:
+  --route-cleanup        Show the storage cleanup dialog
   --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
   --battery PCT           Initial battery charge, 0..=100
@@ -1264,31 +1230,17 @@ fn main() {
         if let Some(scope) = store.store_scope() {
             host.facts().note_store_revision(scope);
         }
-        // `--route-retention` (epic #638 S5): overlay every route's retention meta so the Route
-        // overview's expiry row renders (the board reads this from the SD retention sidecar). The
-        // `last_used` stamp is anchored to the wall clock — `AGE` seconds before now — so the
-        // countdown is deterministic regardless of the absolute `--clock`; `unknown` leaves it 0.
-        if let Some((level, age)) = args.route_retention {
-            let now = app.wall_unix_now();
-            let last_used = age.map_or(0, |secs| now.saturating_sub(secs));
-            // Into the **sidecar**, not straight onto the app: that is where the board reads it
-            // from, and it is what makes the injection survive the catalog re-read the device's
-            // first pass orders. Overlaying the app's copy alone reverted on that read.
-            let ids: Vec<_> = store.ids().to_vec();
-            for id in ids {
-                routes::seed_retention(&mut store, id, obc_app::Retention::from_u8(level), last_used).unwrap_or_else(
-                    |error| {
-                        eprintln!("retention fixture failed: {error}");
-                        std::process::exit(1);
-                    },
-                );
-            }
-            let metas = store.retention_metas();
-            app.set_route_meta(&metas);
-        }
         // Trip stage references have already been remapped to the card's route identities. Fed
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
+        if args.route_cleanup {
+            if let Some(clock) = args.clock {
+                app.stamp_clock(clock, 0, None, obc_app::ClockTrust::Ble);
+            }
+            if let Some(scope) = store.store_scope() {
+                app.offer_route_cleanup(scope.store);
+            }
+        }
         let mut trip_store = trips;
         app.set_trips(&trip_store.inputs());
         // The complete saved-ride projection comes from the same card as the map and routes.
@@ -1872,7 +1824,7 @@ mod cli_tests {
             "--battery",
             "--clock",
             "--no-card",
-            "--route-retention",
+            "--route-cleanup",
             "--lang",
             "--stat-fields",
             "--ble",

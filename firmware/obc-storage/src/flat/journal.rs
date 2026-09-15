@@ -308,6 +308,7 @@ mod tests {
     fn a_slots_ranges_are_the_rides_own() {
         let ride = |first: u16| super::super::catalog::Entry {
             meta: super::super::seam::EntryMeta {
+                added_at_utc: 0,
                 id: ObjectId(2),
                 revision: Revision(1),
                 kind: super::super::seam::ObjectKind::Ride,

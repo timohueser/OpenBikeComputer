@@ -1,29 +1,11 @@
 import Foundation
 import OBCDomain
 
-/// The device's answer to a `setClock` write (spec §4.4 cmd 5, epic #638). Not an
-/// error type — a device that predates expiry (`unsupported`) is a **supported
-/// peer**; the app degrades gracefully (hides expiry UI, sends no retention).
 public enum ClockSyncOutcome: Equatable, Sendable {
-    /// The device stamped its trusted clock — it understands expiry (`commandResult(ok)`).
+    /// The device stamped its trusted clock (`commandResult(ok)`).
     case stamped
-    /// The device answered `unknownCommand` — it predates expiry support. S7 hides
-    /// the expiry UI behind this and the app sends no `setRouteRetention`.
     case unsupported
 }
-
-/// The device's answer to a `setRouteRetention` write (spec §4.4 cmd 6, epic #638).
-public enum RetentionWriteOutcome: Equatable, Sendable {
-    /// The level was written (`commandResult(ok)`) — the device bumps its route
-    /// store revision only on a real change (idempotent re-set is also `ok`).
-    case applied
-    /// The device holds no route under that id (`commandResult(notFound)`) — the
-    /// id raced a device-side delete; reconcile clears the stale link.
-    case notFound
-    /// The device answered `unknownCommand` — it predates expiry support.
-    case unsupported
-}
-
 /// The device link lifecycle and identity handshake, without unrelated capabilities.
 public protocol DeviceLink: Sendable {
     /// Link lifecycle. **Replays the latest** value to late subscribers (a fresh
@@ -101,24 +83,8 @@ public protocol DeviceBonding: Sendable {
     func forgetBond() async throws
 }
 
-public protocol DeviceRetention: Sendable {
-    /// Stamp the device's **trusted wall clock** (`setClock`, spec §4.4 cmd 5,
-    /// epic #638). Sent on **every connect, after encryption and before the first
-    /// reconcile write** — the device has no RTC, and this (or a GPS
-    /// fix) is what marks its clock trusted for the boot, the retention sweep's
-    /// safety gate. Returns ``ClockSyncOutcome/unsupported`` for a device that
-    /// predates expiry (`commandResult(unknownCommand)`): a supported peer, not an
-    /// error — the app hides expiry UI and sends no retention. Throws only on a
-    /// link/write failure.
+public protocol DeviceClock: Sendable {
     func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome
-    /// Set a stored route's **retention level** (`setRouteRetention`, spec §4.4
-    /// cmd 6, epic #638) without re-uploading it — sent after an upload commit and
-    /// whenever the desired level diverges from the device's at reconcile. The
-    /// device writes the level without touching `last_used`. Returns
-    /// ``RetentionWriteOutcome/notFound`` for an id the device no longer holds and
-    /// ``RetentionWriteOutcome/unsupported`` for a pre-expiry device. Throws only
-    /// on a link/write failure.
-    func setRouteRetention(_ id: DeviceObjectID, _ retention: Retention) async throws -> RetentionWriteOutcome
 }
 
 /// An in-process catalog invalidation cue used by mocks and preview transports. Protocol v4 has no
@@ -215,7 +181,7 @@ public protocol DeviceUpdates: Sendable {
 }
 
 public protocol DeviceTransport: DeviceLink, DeviceBattery, DeviceConfiguration,
-    DeviceBonding, DeviceObjects, DeviceRetention, DeviceUpdates {
+    DeviceBonding, DeviceObjects, DeviceClock, DeviceUpdates {
     // MARK: Control plane (GATT — DIS / BAS / OBC Control)
     /// Read the device diagnostics/crash-log blob.
     func readDiagnostics() async throws -> Data
@@ -272,19 +238,8 @@ extension DeviceBonding {
     public func forgetBond() async throws {}
 }
 
-extension DeviceRetention {
-    /// Default: the device can't stamp its clock — for preview/test stand-ins that
-    /// don't model expiry (a device predating `setClock` reads the same way, spec
-    /// §4.4 compat). Reads as `unsupported` so S7 hides expiry UI and no retention
-    /// is sent. `BLETransport` sends the real command; `MockTransport` records it.
+extension DeviceClock {
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome { .unsupported }
-
-    /// Default: retention can't be set — the same pre-expiry stand-in posture as
-    /// `setClock`. Safe as `unsupported`: the reconcile/upload push gate on the
-    /// capability, so a stand-in simply pushes nothing.
-    public func setRouteRetention(
-        _ id: DeviceObjectID, _ retention: Retention
-    ) async throws -> RetentionWriteOutcome { .unsupported }
 }
 
 extension DeviceTransport {

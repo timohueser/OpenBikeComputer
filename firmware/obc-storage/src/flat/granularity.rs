@@ -235,6 +235,7 @@ impl BlockDevice for &ReentrantCard {
 
 fn meta(id: ObjectId, revision: Revision, len: u64, name: &str) -> EntryMeta {
     EntryMeta {
+        added_at_utc: 0,
         id,
         revision,
         kind: ObjectKind::MapShard,

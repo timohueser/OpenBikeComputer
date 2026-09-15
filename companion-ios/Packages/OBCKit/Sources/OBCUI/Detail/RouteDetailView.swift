@@ -110,11 +110,6 @@ public struct RouteDetailView: View {
                 if case .tracked = model.dressing {
                     servicesBlock
                 }
-
-                if model.showsRetentionRow {
-                    retentionSection
-                }
-
                 actions
             }
             .padding(.horizontal, 20)
@@ -255,23 +250,6 @@ public struct RouteDetailView: View {
         .padding(.top, 22)
         .accessibilityIdentifier("detail.services")
     }
-
-    /// The Auto-delete control (epic #638 S7) — shown for a planned route on the
-    /// device: the desired level with the device's expiry truth beneath, editable
-    /// in place (the main model pushes live or at the next reconcile).
-    private var retentionSection: some View {
-        OBCGroupedSection {
-            OBCRetentionRow(
-                selection: model.retentionValue,
-                detailLine: model.expiryLine,
-                showsDivider: false,
-                accessibilityID: "detail.autoDelete",
-                onSelect: { model.editRetention($0) }
-            )
-        }
-        .padding(.top, 12)
-    }
-
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: 10) {
