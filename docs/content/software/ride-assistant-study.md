@@ -49,28 +49,30 @@ a name, a kind, and straight-line distance. Keep the map stable while the rider 
 selection. Show short text that explains what the landmark is and why it is interesting.
 Give longer text its own pages. Do not shrink it to fit beside the map.
 
-The simulator uses four examples with text adapted from Wikipedia: Aare Gorge, Reichenbach
-Falls, Gelmerbahn, and Dunlough Castle. Each has two short text pages. **Down + Back → Sources** opens attribution, the licence URL,
-and the article URLs. Back restores the reading page. The locations and
-access routes are fictional. The [study captures and attribution](../../assets/ride-assistant/landmarks-study/README.md)
-identify the article revisions and licence.
+The production Landmarks view reads the installed map. It uses the current GPS position and
+keeps a four-card page in nearest straight-line order within 10 km. **More landmarks** reaches
+the next page. **Refresh** starts a new search. Distinct sites at the same position remain separate.
+The selected source provides the name, language, text pages, and optional photo. No photo means
+there is no photo page. Up from the first text page wraps to the photo when one is available.
 
-**Visit** opens the shared visit preview. Straight-line distance helps identify a nearby place;
-the preview supplies the prepared route cost. **Add stop** accepts the outbound and return legs
-together. Browsing another place must not change this accepted visit or interrupt recording.
+**Down + Back → Sources** opens the full attribution for the selected site. Article and photo
+credits share a paged drawer. Back restores the selected site and exact reading page. Sources
+also remains available when a photo cannot be decoded. Photos use the existing RGB222 frame
+preparation path; text and source pages do not decode an image while they draw.
 
-Aare Gorge, Reichenbach Falls, and Dunlough Castle each have a large ordered-dither
-photo page. Up from the first text page opens the photo. Photo credits, source URLs, and licence URLs
-are in **Sources**. The [photo study](../../assets/ride-assistant/landmark-photos/README.md)
-compares rendering methods and storage cost. The simulator and a display-only board demo
-use the same 216 × 240 RGB222 assets. The large format is the accepted choice. The device does not need a JPEG decoder.
-The current assets are fixed examples. Map creation, image selection, and storage remain
-future work. The [category proposal](../../assets/ride-assistant/landmark-selection/README.md)
-uses fixed type rules, with no AI selection or per-place manual ranking. Lakes, mountains,
-and glaciers are excluded. Passes are included, including entries without images.
-[Random glacier and pass samples](../../assets/ride-assistant/glacier-pass-study/README.md)
-show the content used for this decision. Production images should use basic lossless compression;
-the codec and SD loading cost remain to be measured.
+Closed landmarks remain readable for identification. Current opening hours govern **Visit**:
+a known-closed site cannot be accepted. Unknown hours do not claim that a site is open. A site
+without explicit mapped access remains information-only and shows **No mapped access**.
+**Visit** opens the shared place detail and real route preview. A straight-line distance never
+promises a rideable connection. The selected map, current position, profile, and opening hours
+are checked before acceptance. Browsing does not change an accepted visit or start recording.
+
+The [production evidence](../../assets/ride-assistant/implementation/ra10-evidence/README.md)
+uses source-derived Swiss and West Cork content through the simulator and persistent card.
+The earlier [landmark study](../../assets/ride-assistant/landmarks-study/README.md) and
+[photo comparison](../../assets/ride-assistant/landmark-photos/README.md) remain design references.
+The normal Assistant entry and final recording journey are separate integration gates.
+Device loading measurements remain pending hardware acceptance.
 
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
