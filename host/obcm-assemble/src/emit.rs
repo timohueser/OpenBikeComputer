@@ -528,6 +528,7 @@ pub fn header_bytes(
     head.push(SCALE.log2());
     head.extend_from_slice(&scaled(terrain_offset)?.to_le_bytes());
     head.extend_from_slice(&scaled(terrain_len)?.to_le_bytes());
+    head.extend_from_slice(&[0; 8]); // optional landmark section
     debug_assert_eq!(head.len(), HEADER_LEN);
     Ok(head)
 }

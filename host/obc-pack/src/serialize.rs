@@ -865,6 +865,19 @@ pub fn serialize_poi_section(
     let (pool, refs) = crate::hours::build_hours_pool(pois, |p| {
         (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten()
     });
+    serialize_poi_pool(pois, global_bbox, section_offset, &pool, &refs)
+}
+
+fn serialize_poi_pool(
+    pois: &[Poi],
+    global_bbox: (i64, i64, i64, i64),
+    section_offset: usize,
+    pool: &[[u8; POI_HOURS_BLOB_LEN]],
+    refs: &[Option<u16>],
+) -> io::Result<Vec<u8>> {
+    if pool.len() >= POI_HOURS_REF_NONE as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "hours pool exceeds its record limit"));
+    }
     let mut category_ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
     if pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
         category_ids.push(SUMMIT_CATEGORY_ID);
@@ -943,7 +956,7 @@ pub fn serialize_poi_section(
         }
         // The hours pool, then the run that leaves the nav directory behind it nameable.
         let hours_pool_offset = w.begin_section()? as usize;
-        w.put(&pack_hours_pool(&pool))?;
+        w.put(&pack_hours_pool(pool))?;
         w.begin_section()?;
         Ok((cat_entries, hours_pool_offset))
     });
@@ -1783,6 +1796,7 @@ fn header_bytes(
     out.push(SCALE.log2());
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — no embedded raster
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain length, `0` exactly when the offset is
+    out.extend_from_slice(&[0; 8]); // optional landmark section
     debug_assert_eq!(out.len(), HEADER_LEN);
     out
 }
@@ -1953,6 +1967,7 @@ pub fn serialize_lods_streaming<W, F>(
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
     pois: &[Poi],
+    landmarks: &[crate::landmark_map::Landmark],
     nav: &NavGraph,
     profiles: &[NavProfile],
     terrain: &mut dyn ElevationSource,
@@ -1967,7 +1982,19 @@ where
 
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut dropped = 0usize;
-    let (poi_section_offset, nav_section_offset, cursor) = {
+    let schedules: Vec<_> = pois
+        .iter()
+        .map(|p| (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten())
+        .chain(landmarks.iter().map(|p| p.hours.as_ref()))
+        .collect();
+    let (pool, refs) = crate::hours::build_hours_pool(&schedules, |schedule| *schedule);
+    if pool.len() >= POI_HOURS_REF_NONE as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "hours pool exceeds its record limit"));
+    }
+    let landmark_refs: Vec<_> = refs[pois.len()..].iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
+    let landmark_bytes = crate::landmark_map::serialize(landmarks, &landmark_refs)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, cursor) = {
         let mut sink = |bytes: &[u8]| w.write_all(bytes);
         let mut u = UnitWriter::new(SCALE, 0, &mut sink);
 
@@ -2023,10 +2050,18 @@ where
         // 4. The POI section begins at the current cursor (right after the last LOD);
         // the nav-graph section follows it at the file tail.
         let poi_section_offset = u.at() as usize;
-        u.put(&serialize_poi_section(pois, global_bbox, poi_section_offset)?)?;
+        u.put(&serialize_poi_pool(pois, global_bbox, poi_section_offset, &pool, &refs[..pois.len()])?)?;
         let nav_section_offset = u.at() as usize;
         u.put(&serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain))?;
-        (poi_section_offset, nav_section_offset, u.at() as usize)
+        let (landmark_offset, landmark_len) = if landmark_bytes.is_empty() {
+            (0, 0)
+        } else {
+            let start = u.begin_section()? as usize;
+            u.put(&landmark_bytes)?;
+            let end = u.begin_section()? as usize;
+            (start, end - start)
+        };
+        (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, u.at() as usize)
     };
 
     // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
@@ -2038,6 +2073,9 @@ where
     w.seek(SeekFrom::Start(32))?;
     w.write_all(&scaled(poi_section_offset).to_le_bytes())?;
     w.write_all(&scaled(nav_section_offset).to_le_bytes())?;
+    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_LANDMARK_OFFSET_OFF as u64))?;
+    w.write_all(&scaled(landmark_offset).to_le_bytes())?;
+    w.write_all(&scaled(landmark_len).to_le_bytes())?;
     w.seek(SeekFrom::Start(cursor as u64))?;
     Ok((cursor as u64, dropped))
 }
@@ -2274,6 +2312,7 @@ mod tests {
             0xABCD,
             bbox,
             &pois,
+            &[],
             &nav,
             &profiles,
             &mut NullElevation,

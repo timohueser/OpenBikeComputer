@@ -205,6 +205,7 @@ fn run(
         config.marker_color,
         global_bbox,
         &ingested.pois,
+        &[],
         &ingested.nav_graph,
         &config.routing.profiles,
         terrain,

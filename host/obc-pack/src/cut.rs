@@ -969,6 +969,7 @@ fn write_cell(
         config.marker_color,
         square,
         pois,
+        &[],
         graph,
         &config.routing.profiles,
         terrain,
