@@ -497,6 +497,14 @@ impl HostLoop {
         }
         if let Some(MetadataEffect::WriteCheckpoint { token, scope }) = plan.effects.metadata.take() {
             let outcome = match scope.zip(app.assistant_checkpoint_payload(token)) {
+                Some((scope, change))
+                    if change.next.is_none()
+                        && routes.store_scope().is_some_and(|current| {
+                            scope.store == current.store && scope.revision != current.revision
+                        }) =>
+                {
+                    MetadataOutcome::Cancelled { token }
+                }
                 Some((scope, change)) => match routes.write_checkpoint(scope, change) {
                     Ok(()) => MetadataOutcome::CheckpointWritten { token },
                     Err(error) => MetadataOutcome::Failed { token, error },
@@ -1236,6 +1244,9 @@ mod tests {
         let mut rides = crate::MemRideStore::new(vec![]);
         let mut tracks = RecordingTrackStore::default();
         let mut session = ActiveRouteSession::new();
+        let concurrent_discard = std::cell::RefCell::new(None::<crate::FlatRideRecorder>);
+        let clear_scope_changed = std::cell::Cell::new(false);
+        let clear_attempts = std::cell::Cell::new(0);
         let mut now = 0;
         let mut frame = |host: &mut HostLoop, app: &mut App, routes: &mut crate::FlatRouteStore| {
             now += 100;
@@ -1248,6 +1259,22 @@ mod tests {
                 None,
                 SUPPORT,
             );
+            if let Some(effect) = plan.effects.metadata.take() {
+                if app.assistant_checkpoint_payload(effect.token()).is_some_and(|change| change.next.is_none()) {
+                    clear_attempts.set(clear_attempts.get() + 1);
+                    if let Some(mut recorder) = concurrent_discard.borrow_mut().take() {
+                        recorder.discard().unwrap();
+                        assert_ne!(effect.scope(), routes.store_scope(), "recording removal changes the issued scope");
+                        clear_scope_changed.set(true);
+                        if visit {
+                            app.activate_route(routes.ids().iter().position(|&id| id == original).unwrap());
+                        }
+                    } else if clear_scope_changed.get() {
+                        assert_eq!(effect.scope(), routes.store_scope(), "retry waits for the refreshed scope");
+                    }
+                }
+                plan.effects.metadata.try_put(effect).unwrap();
+            }
             host.execute(
                 app,
                 &mut plan,
@@ -1414,6 +1441,12 @@ mod tests {
         assert!(reboot.assistant_checkpoint().unwrap().progress_m > 50);
         assert_eq!(routes.read_checkpoint().unwrap(), reboot.assistant_checkpoint());
         app = reboot;
+        let mut concurrent = crate::FlatRideRecorder::new(owner.clone()).unwrap();
+        assert!(concurrent.open(17, Some("Concurrent recording"), 0));
+        concurrent_discard.replace(Some(concurrent));
+        for _ in 0..4 {
+            frame(&mut host, &mut app, &mut routes);
+        }
         app.activate_route(usize::MAX);
         for _ in 0..12 {
             frame(&mut host, &mut app, &mut routes);
@@ -1421,8 +1454,14 @@ mod tests {
                 break;
             }
         }
-        assert!(app.assistant_checkpoint().is_none());
-        assert!(app.active_route_index().is_none());
+        assert!(clear_scope_changed.get());
+        assert_eq!(clear_attempts.get(), 2);
+        assert!(app.assistant_checkpoint().is_none(), "recording removal must not lose the queued navigation stop");
+        assert_eq!(
+            app.active_route_index().map(|index| app.route_ids()[index]),
+            visit.then_some(original),
+            "the latest route selection survives the scope refusal"
+        );
         let accepted_index = app.route_ids().iter().position(|id| *id == preview.source.object).unwrap();
         app.activate_route(accepted_index);
         assert_eq!(app.active_route_index(), Some(accepted_index));

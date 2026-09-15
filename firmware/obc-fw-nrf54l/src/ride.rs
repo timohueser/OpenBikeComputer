@@ -1587,8 +1587,23 @@ pub(crate) async fn run_app(
                             });
                     #[cfg(not(has_nav))]
                     let sources_current = app.assistant_review_context().is_none();
+                    let current_scope = crate::flat_store::catalog_scope(flat);
+                    let clear_scope_moved =
+                        app.assistant_checkpoint_payload(token).is_some_and(|change| change.next.is_none())
+                            && effect.scope().is_some_and(|issued| {
+                                app.assistant_store_matches(issued.store)
+                                    && issued.store == current_scope.store
+                                    && issued.revision != current_scope.revision
+                            });
                     let result = if !sources_current {
                         Some(Err(obc_app::metadata::MetadataError::Stale))
+                    } else if clear_scope_moved {
+                        RideExec::deliver(
+                            &mut exec.outcomes.metadata,
+                            MetadataOutcome::Cancelled { token },
+                            "metadata",
+                        );
+                        None
                     } else if !effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
                         || !app.assistant_checkpoint_submission(token)
                     {

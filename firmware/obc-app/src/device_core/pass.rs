@@ -333,6 +333,11 @@ impl App {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.remount_required = true;
                     }
+                    // An unsubmitted edit waits for a fresh scope before it is offered again.
+                    MetadataOutcome::Cancelled { .. } if self.navigator.checkpoint_change().is_some() => {
+                        self.catalogs.loaded_scope = None;
+                        self.catalogs.note_store_moved();
+                    }
                     MetadataOutcome::CheckpointWritten { .. } => {
                         self.catalogs.loaded_scope = None;
                         self.catalogs.note_store_moved();
