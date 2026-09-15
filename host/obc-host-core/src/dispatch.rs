@@ -97,6 +97,8 @@ pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
     Ready(NavPlan, obc_route::RouteStats),
+    Visit(Box<crate::nav_visit::VisitPlan>),
+    VisitReady(Box<crate::nav_visit::VisitPlan>, obc_route::RouteStats),
 }
 
 /// Sources admitted together; the reader is always made by the leased FlatMap.
@@ -650,11 +652,13 @@ impl HostLoop {
                 if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
                     return failed(NavigatorError::SourceChanged);
                 }
-                let Some(InflightPlan::Ready(plan, stats)) = self.plan.as_ref() else {
-                    return failed(NavigatorError::Workspace);
+                let (bytes, stats, tile_stats) = match self.plan.as_ref() {
+                    Some(InflightPlan::Ready(plan, stats)) => (plan.bytes(), stats, plan.tile_stats()),
+                    Some(InflightPlan::VisitReady(plan, stats)) => (plan.bytes(), stats, Default::default()),
+                    _ => return failed(NavigatorError::Workspace),
                 };
                 if app.assistant_review_context().is_some() {
-                    return Some(match routes.publish_review_route(plan.bytes()) {
+                    return Some(match routes.publish_review_route(bytes) {
                         Ok(publication) => {
                             self.publication = Some(publication);
                             let Some(source) = routes.fingerprint(publication.id) else {
@@ -662,7 +666,7 @@ impl HostLoop {
                             };
                             let preview = obc_app::navigator::ReviewedRoute::read(
                                 source,
-                                &obc_formats::io::SliceSource(plan.bytes()),
+                                &obc_formats::io::SliceSource(bytes),
                                 app.assistant_review_context().unwrap(),
                             );
                             feed_routes(app, routes, &mut NoTrace);
@@ -674,7 +678,7 @@ impl HostLoop {
                         Err(error) => NavigatorOutcome::Failed { token, error },
                     });
                 }
-                Some(match commit_nav_plan(app, routes, Ok(*stats), plan.bytes(), plan.tile_stats(), &mut NoTrace) {
+                Some(match commit_nav_plan(app, routes, Ok(*stats), bytes, tile_stats, &mut NoTrace) {
                     Ok(publication) => {
                         self.publication = Some(publication);
                         NavigatorOutcome::PlanFinished { token, route: publication.id }
@@ -737,7 +741,7 @@ impl HostLoop {
     #[inline(never)]
     fn acquire_plan(
         &mut self,
-        app: &App,
+        app: &mut App,
         token: OperationToken<NavigatorTag>,
         work: PlannerWork,
         routes: &dyn RouteRepository,
@@ -763,6 +767,17 @@ impl HostLoop {
                 None
             }
             PlannerWork::AssistantRoute(request) => {
+                if app.assistant_visit_target().is_some() {
+                    let Some(scope) = routes.store_scope() else { return failed(NavigatorError::SourceChanged) };
+                    let held = routes.pin_active();
+                    let fingerprint = held.as_ref().and_then(|route| routes.fingerprint(route.id()));
+                    let avoidance = held.as_ref().is_some_and(|route| {
+                        obc_route::RouteObjectInfo::read(route).map_or(true, |info| info.unresolved_avoidance)
+                    });
+                    if !app.bind_visit_sources(scope, fingerprint, avoidance) {
+                        return failed(NavigatorError::SourceChanged);
+                    }
+                }
                 let Some(context) = app.assistant_review_context() else {
                     return failed(NavigatorError::Unavailable);
                 };
@@ -805,13 +820,25 @@ impl HostLoop {
                     }
                     None
                 };
-                let mut plan = NavPlan::start(&request, context.profile);
-                plan.set_attribution_map(context.map);
-                plan.set_assistant_candidate();
-                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                    plan.set_unresolved_avoidance();
+                if context.purpose == obc_app::navigator::ReviewPurpose::Visit {
+                    let (Some(target), Some((source, index))) = (app.assistant_visit_target(), original.as_ref())
+                    else {
+                        return failed(NavigatorError::Unavailable);
+                    };
+                    let route = obc_route::RouteReader::new(index, source);
+                    match crate::nav_visit::VisitPlan::start(context, target, &route) {
+                        Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
+                        Err(error) => return failed(error),
+                    }
+                } else {
+                    let mut plan = NavPlan::start(&request, context.profile);
+                    plan.set_attribution_map(context.map);
+                    plan.set_assistant_candidate();
+                    if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
+                        plan.set_unresolved_avoidance();
+                    }
+                    self.plan = Some(InflightPlan::Nav(plan));
                 }
-                self.plan = Some(InflightPlan::Nav(plan));
                 original
             }
             PlannerWork::Detour(request) => {
@@ -844,6 +871,22 @@ impl HostLoop {
         map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
+        if let Some(InflightPlan::Visit(plan)) = self.plan.as_mut() {
+            let Some(original) = self.sources.as_ref().and_then(|s| s.original()) else {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
+            };
+            let stats = match plan.step(&map.reader(), &original, elev) {
+                Ok(None) => return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Searching }),
+                Ok(Some(stats)) => stats,
+                Err(error) => return Some(NavigatorOutcome::Failed { token, error }),
+            };
+            if !app.assistant_visit_variant(token, plan.original_anchors()) {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
+            }
+            let Some(InflightPlan::Visit(plan)) = self.plan.take() else { unreachable!() };
+            self.plan = Some(InflightPlan::VisitReady(plan, stats));
+            return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached });
+        }
         let outcome = match self.plan.as_mut() {
             Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
             Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
@@ -873,7 +916,9 @@ impl HostLoop {
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 }
             }
-            InflightPlan::Ready(..) => unreachable!("only an unfinished plan steps"),
+            InflightPlan::Ready(..) | InflightPlan::Visit(..) | InflightPlan::VisitReady(..) => {
+                unreachable!("only an unfinished plan steps")
+            }
         })
     }
 

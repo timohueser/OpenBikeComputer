@@ -178,7 +178,8 @@ use obc_formats::retention::JourneyPhase;
 
 impl NavigatorMachine {
     pub(crate) fn request_review(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
-        if self.review.change.is_some()
+        if self.active_visit()
+            || self.review.change.is_some()
             || self.review.preview.is_some()
             || self.live.is_some()
             || self.review.status == ReviewStatus::Unresolved

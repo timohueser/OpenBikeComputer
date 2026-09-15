@@ -60,7 +60,7 @@ impl RouteState {
         }
     }
 
-    fn apply_match(&mut self, result: obc_route::Match) {
+    pub(super) fn apply_match(&mut self, result: obc_route::Match) {
         self.progress_m = result.progress_m;
         self.off_route = result.off_route;
         self.dist_to_route_m = result.dist_m;
@@ -350,6 +350,9 @@ impl NavigatorMachine {
             }
         }
         self.following.waypoint_count = self.waypoints.len();
+        if let Some(route) = route {
+            self.reconcile_visit(route);
+        }
         dirty
     }
 
@@ -357,8 +360,9 @@ impl NavigatorMachine {
     /// [`RouteState`]. Called once per fresh fix (never on a dropout, so progress is not re-derived
     /// from a stale position).
     pub(crate) fn match_fix(&mut self, fix: obc_ports::Fix, route: &RouteReader) {
-        let m = self.route_match.update(fix.lon, fix.lat, route);
+        let m = self.route_match.update_to(fix.lon, fix.lat, route, self.visit_ceiling().unwrap_or(u32::MAX));
         self.following.apply_match(m);
+        self.advance_visit((fix.lon, fix.lat), route);
     }
 
     /// A fresh fix went **unmatched** — the Recalculating freeze (#1146 P2) holds the matcher for
