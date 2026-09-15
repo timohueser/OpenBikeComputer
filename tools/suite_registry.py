@@ -246,6 +246,7 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
 
 def discover_paths(root: Path) -> list[Discovered]:
     rules = (
+        ("fixture-validation", "fixtures", ("verify-*.py",)),
         ("web-test", "builder/app", ("*.test.ts", "*.test.tsx", "*.test.js")),
         ("browser-test", "apps/obc-web-demo/tests/browser", ("*.test.js",)),
         ("python-test", "tools/tests", ("test_*.py",)),
@@ -879,6 +880,8 @@ def required_jobs(plan: SelectionPlan, jobs: Mapping[str, WorkflowJob]) -> list[
     return sorted(required)
 
 def _add_reason(selection: SuiteSelection, reason: str) -> None:
+    if selection.suite.get("pull_request") == "never":
+        return
     if reason not in selection.reasons:
         selection.reasons.append(reason)
 
@@ -1119,7 +1122,7 @@ def select_by_level(
         selection = SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
         if suite["level"] == resolved and surface in (None, suite["surface"]):
             selection.reasons.append(reason)
-            if not selection.jobs:
+            if not selection.jobs and suite.get("pull_request") != "never":
                 errors.append(
                     f"selected suite {suite['id']} has no executable CI route; "
                     f"command is `{suite['command']}`"

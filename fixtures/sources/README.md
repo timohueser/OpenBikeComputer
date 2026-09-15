@@ -7,3 +7,6 @@ reviewable. Directory layouts mirror their package layouts where practical;
 This is the only cross-component home for shared route, trip, and replay
 sources. App-owned shipping payloads and test-owned protocol vectors remain
 with their owners.
+
+[Ride Assistant](ride-assistant/README.md) adds source manifests, exact review identities,
+regional boundaries, and GPS motion with declarative clock and UTC-offset stamps.

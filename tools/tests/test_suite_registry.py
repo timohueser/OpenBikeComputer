@@ -419,6 +419,21 @@ class SuiteSelectionTests(unittest.TestCase):
         self.assertIn("missing.route", {item.suite["id"] for item in plan.selected})
         self.assertTrue(any("no executable CI route" in error for error in plan.errors))
 
+    def test_manual_fixture_stays_owned_but_is_not_selected_for_ci(self) -> None:
+        suite = self._suite(
+            "fixture.manual", "path", "fixture-validation",
+            pattern="fixtures/verify-inputs.py", fixtures=["captured-inputs"],
+            triggers=["fixtures/sources/**"], level="fixture",
+        )
+        suite["pull_request"] = "never"
+        suite["scheduled"] = "manual"
+        self.suites.append(suite)
+        for path in ("fixtures/verify-inputs.py", "fixtures/sources/input.json"):
+            with self.subTest(path=path):
+                plan = self.plan(path)
+                self.assertFalse(plan.errors)
+                self.assertNotIn("fixture.manual", {item.suite["id"] for item in plan.selected})
+
     def test_json_reports_platforms_jobs_and_non_selected_reasons(self) -> None:
         jobs = {"desktop": registry.WorkflowJob("desktop", "ubuntu-latest", ("bundle",), True)}
         data = registry.selection_plan_data(self.plan("apps/desktop/src/main.rs"), jobs)
@@ -522,6 +537,16 @@ class LocalInterfaceTests(unittest.TestCase):
         plan = registry.select_by_level(self.inventory, self.routes, "unit")
         self.assertEqual(registry.run_plan(plan, self.root, dry_run=True), 0)
         self.assertFalse(self.marker.exists())
+
+    def test_manual_fixture_runs_explicitly_without_a_ci_route(self) -> None:
+        suite = next(suite for suite in self.suites if suite["id"] == "fixture.map")
+        suite["pull_request"] = "never"
+        suite["scheduled"] = "manual"
+        self.routes[suite["id"]] = []
+        plan = registry.select_by_level(self.inventory, self.routes, "fixtures", "map")
+        self.assertFalse(plan.errors)
+        self.assertEqual(registry.run_plan(plan, self.root), 0)
+        self.assertEqual(self.marker.read_text(), "fixture.map\n")
 
     def test_platform_restricted_suite_is_skipped_not_passed(self) -> None:
         plan = registry.select_by_level(self.inventory, self.routes, "e2e")
