@@ -4516,7 +4516,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ### ISC License
 
-Applies to: `rustls-webpki 0.103.13`
+Applies to: `rustls-webpki 0.103.15`
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -5493,7 +5493,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### MIT License
 
-Applies to: `rustls 0.23.42`
+Applies to: `rustls 0.23.45`
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
