@@ -36,6 +36,7 @@ mod detour;
 mod dfu;
 mod find_place;
 mod home;
+mod journey;
 mod landmark_photo;
 mod landmarks;
 mod map;
@@ -76,6 +77,8 @@ pub use dfu::{
 };
 pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
+pub(crate) use journey::JourneyError;
+pub use journey::JourneyScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
 pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
 pub(crate) use map::low_battery_cue;
@@ -1018,6 +1021,7 @@ screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
     Assistant(AssistantScreen) => Caps::nav(),
+    Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Landmarks),
     LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
