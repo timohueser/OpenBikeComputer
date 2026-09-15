@@ -47,6 +47,7 @@ pub mod climb;
 pub mod climb_profile;
 pub mod convert;
 pub mod corridor;
+pub mod easier;
 pub mod eta;
 pub mod facts;
 mod geo;

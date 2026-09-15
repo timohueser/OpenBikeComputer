@@ -392,6 +392,7 @@ mod tests {
                 ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),
+                ("Easier", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),

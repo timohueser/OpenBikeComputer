@@ -277,6 +277,47 @@ impl crate::App {
             Err(VisitUnavailable::Busy)
         }
     }
+    pub(crate) fn request_easier(
+        &mut self,
+        map: obc_formats::obcr::RouteSourceKey,
+        objective: obc_route::nav::Objective,
+        destination: (i32, i32),
+    ) -> Result<(), VisitUnavailable> {
+        let scope = self.catalogs.loaded_scope.ok_or(VisitUnavailable::SourceChanged)?;
+        let origin = self.current_review_origin().ok_or(VisitUnavailable::NoFix)?;
+        let original = self
+            .active_route_index()
+            .and_then(|i| self.route_ids().get(i))
+            .copied()
+            .ok_or(VisitUnavailable::Unmatched)?;
+        if scope.store.bytes() != map.store {
+            return Err(VisitUnavailable::SourceChanged);
+        }
+        let context = ReviewContext {
+            purpose: ReviewPurpose::Easier(objective),
+            map,
+            store: scope.store,
+            original: None,
+            origin: origin.fix,
+            progress_m: origin.progress_m,
+            occurrence: origin.occurrence,
+            required_anchors_m: [origin.progress_m; 3],
+            profile: self.settings().bike_profile_idx,
+            facts_policy: super::REVIEW_FACTS_POLICY,
+            unresolved_avoidance: false,
+        };
+        self.navigator.visit = VisitState::new();
+        self.navigator.visit.catalog_revision = scope.revision.raw();
+        self.navigator.visit.requested_route = original;
+        self.navigator.visit.needs_bind = true;
+        self.plan_assistant(crate::NavRequest::new(origin.fix, destination, "Easier route"), context);
+        if self.assistant_review_status() == ReviewStatus::Planning {
+            Ok(())
+        } else {
+            Err(VisitUnavailable::Busy)
+        }
+    }
+
     /// Source binding is accepted only under the epoch captured at the UI request.
     pub fn bind_visit_sources(
         &mut self,
