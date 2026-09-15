@@ -68,7 +68,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 52400,
+        "app": 52720,
         "map_cache": 37084,
         "map_tables": 4416,
         "route_cache": 9260,
@@ -147,7 +147,7 @@
       "_flash_note_1505": "**-5,464 B against #1494's pin, from asking the residual drain for three classes instead of eighteen.** `App::drain_residual_commands` walks `RESIDUAL_CLASSES` rather than `DRAIN_ORDER`, so the board's call site stops monomorphising the fifteen arms it then declined to perform. The saving is incidental \\u2014 the change is a correctness fix (an intent admitted between two passes was being minted and dropped by that walk) \\u2014 and flash is a record here, not a gate. Read from this branch's own `embedded` CI run; both profiles now link the same figure. Resident, `.uninit`, the arena, the poll frame, the task body and the residual stack are all unchanged from the #1494 table.",
       "_app_note_find_bounded": "App 52,800 -> 52,392 B (-408): four nearby and four corridor candidate slots replace eight of each, with four stable corridor row indices. Measured by CI run 35018098962 on the default ARM resource-report image. Exact allocation checks and resident/stack limits stay unchanged.",
       "_app_note_find_preview_reuse": "App 52,312 -> 52,800 B (+488): bounded candidate identities and rejoin distances, restored review identity, and cache store namespace. Route geometry stays on the card. Measured on the follow-up head resource-report image; resident and stack limits are unchanged.",
-      "_place_route_visibility_note": "Head e4b0b3c4 resource report measured App at 52,400 B. The all-generated route visibility mask adds 8 B. This is an exact allocation record; resource ceilings and stack limits are unchanged. Final CI checks the integrated head."
+      "_place_route_visibility_note": "CI run 35027121846 measured App at 52,720 B on source 77fe2b79f. Generated-route visibility adds one mask; each preview owns its pending target. Linked resident is 308,496 B and residual main stack is 50,928 B. Exact allocation record only; resource and stack ceilings are unchanged."
     }
   },
   "bootloader": {
