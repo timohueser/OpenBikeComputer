@@ -141,6 +141,12 @@ mod tests {
                 };
                 assert!(width <= 212, "{language:?}: {text}");
             }
+            for message in [Msg::AssistantMorePlaces, Msg::AssistantSearchChanged] {
+                let text = crate::i18n::t(message, language);
+                assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
+            }
+            let text = crate::i18n::t(Msg::AssistantBrowsePlaces, language);
+            assert!(obc_render::text::text_width(text, Font::Label) <= 204, "{language:?}: {text}");
             for message in [
                 Msg::AssistantPhotoVisit,
                 Msg::AssistantPhotoClosed,
