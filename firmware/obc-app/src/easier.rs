@@ -181,7 +181,13 @@ impl App {
             self.ui.map_dirty = true;
             return;
         }
-        if !self.easier_current() && self.assistant_review_status() != ReviewStatus::Saving {
+        if !self.easier_current()
+            && !matches!(self.assistant_review_status(), ReviewStatus::Saving | ReviewStatus::Unresolved)
+        {
+            self.cancel_assistant();
+            self.easier.phase = Phase::Unavailable;
+        }
+        if self.easier.phase == Phase::Ready && matches!(self.assistant_review_status(), ReviewStatus::Failed(_)) {
             self.cancel_assistant();
             self.easier.phase = Phase::Unavailable;
         }
@@ -292,7 +298,11 @@ impl App {
                     return false;
                 }
             }
-            crate::Gesture::Press if self.easier.phase == Phase::Ready && self.easier_current() => {
+            crate::Gesture::Press
+                if self.easier.phase == Phase::Ready
+                    && self.assistant_review_status() == ReviewStatus::Preview
+                    && self.easier_current() =>
+            {
                 if self.easier.review {
                     if let Some(origin) = self.current_review_origin() {
                         self.accept_assistant(origin);

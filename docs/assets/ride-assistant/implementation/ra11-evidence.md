@@ -64,3 +64,24 @@ its shared App and route code is unchanged from the tested parent.
 - Physical-device acceptance remains pending. It must check action latency, cancellation and Back,
   candidate selection, saving, power recovery, and Recorder continuity. No device is connected;
   this does not block independent software work.
+
+## Adversarial review delta
+
+The review identified two production defects. Commit `a77ec8a0` makes the retained review show
+unavailable or unknown-save status when Navigator cannot accept it. Use is available only for a
+current Preview; Saving remains visible. The board executor also accepts a consumed terminal
+anchor, releases its unused leg allocation, and finishes without charging another search.
+
+`./tools/obc test -p obc-app -p obc-host-core` passes after the fixes, including 883 App library
+and 14 board executor tests. The added cases cover movement refusal while review is open,
+uncertain metadata acknowledgement, retained screen costs without a usable action, and a terminal
+loop with a preserved required annotation. Scoped App/host all-target Clippy and the suite registry
+pass. No snapshot sweep or shipping image build was repeated. Independent delta review remains
+required before merge.
+
+Delta review found that automatic invalidation must not request cancellation while the save
+result is unknown. Commit `160c5291` keeps the pending acceptance fenced during Saving and
+Unresolved; the disabled review reports the unknown status. Only explicit Back requests cancel.
+The App test now recovers both possible exact heads: the committed head returns activation without
+an extra clear, and the old head restores the preview without a clear. The whole App suite, scoped
+App Clippy, and registry check pass after this correction. Board code is unchanged from `a77ec8a0`.
