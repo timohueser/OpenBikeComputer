@@ -453,8 +453,8 @@ impl crate::App {
         }
     }
     pub(crate) fn activate_place_detail(&mut self) -> bool {
-        self.ui.find.pending_target = None;
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
+        self.ui.find.pending_target = None;
         let poi = detail.poi().clone();
         if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
             || (detail.is_landmark() && poi.metadata.approach.is_none())
