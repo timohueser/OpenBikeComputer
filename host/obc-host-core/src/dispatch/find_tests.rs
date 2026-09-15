@@ -17,6 +17,7 @@ fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
     for scenario in [
         Scenario::Browse,
         Scenario::FreeRide,
+        Scenario::FreeAccept,
         Scenario::CancelPlanning,
         Scenario::CancelPreview,
         Scenario::Accept,
@@ -34,6 +35,7 @@ fn find_reuses_ranked_routes_and_releases_every_unaccepted_candidate() {
 enum Scenario {
     Browse,
     FreeRide,
+    FreeAccept,
     CancelPlanning,
     CancelPreview,
     Accept,
@@ -45,7 +47,7 @@ enum Scenario {
 }
 
 fn run_find(scenario: Scenario) {
-    let free_ride = scenario == Scenario::FreeRide;
+    let free_ride = matches!(scenario, Scenario::FreeRide | Scenario::FreeAccept);
     let expected_plans = if free_ride { 4 } else { 8 };
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
@@ -128,6 +130,8 @@ fn run_find(scenario: Scenario) {
     let mut releases = 0;
     let mut selected_preview: Option<obc_app::navigator::ReviewedRoute> = None;
     let mut selected_shape = Vec::new();
+    let mut choices_frame = Vec::new();
+    let mut reentered = false;
     let mut calculated = Vec::new();
     let mut ordinary = None;
     let cancel_at = match scenario {
@@ -143,13 +147,20 @@ fn run_find(scenario: Scenario) {
             app.apply_gesture(Gesture::Press);
         }
         session.sync(&app, &mut routes);
+        let accepted_source = (phase >= 16).then(|| routes.source(selected_preview.unwrap().source.object).unwrap());
+        let accepted_index = accepted_source.as_ref().map(|source| obc_route::RouteIndex::read(source).unwrap());
+        let accepted_route = accepted_source
+            .as_ref()
+            .zip(accepted_index.as_ref())
+            .map(|(source, index)| obc_route::RouteReader::new(index, source));
+        let pass_route = accepted_route.as_ref().or((!free_ride).then_some(&route));
         let mut position = Position;
         let mut plan = host.pass(
             &mut app,
             PassClock { ride: RideClock(tick * 100), ui: InputClock(tick * 100) },
             &[],
             Sensors::new(&mut position),
-            (!free_ride).then_some(&route),
+            pass_route,
             tests::SUPPORT,
         );
         if let Some(effect) = plan.effects.navigator.take() {
@@ -161,7 +172,7 @@ fn run_find(scenario: Scenario) {
                     acquisitions += 1;
                 }
             }
-            if phase > 0 {
+            if phase > 0 && phase != 16 {
                 assert!(
                     !matches!(effect, NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. }),
                     "selection and reopening must not run A* or publish another route"
@@ -197,24 +208,18 @@ fn run_find(scenario: Scenario) {
             }
         }
         if !free_ride || (plan.render.map && !app.reroute_freeze_active()) {
-            app.render_frame(
-                Some(&mut scratch),
-                &mut frame,
-                &map.reader(),
-                (!free_ride).then_some(&route),
-                240.0,
-                320.0,
-                |c| {
-                    embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
-                        embedded_graphics::pixelcolor::raw::RawU16::new(c),
-                    ))
-                },
-            );
+            app.render_frame(Some(&mut scratch), &mut frame, &map.reader(), pass_route, 240.0, 320.0, |c| {
+                embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
+                    embedded_graphics::pixelcolor::raw::RawU16::new(c),
+                ))
+            });
         }
-        if free_ride {
+        if free_ride && phase < 12 {
             assert!(app.active_route_index().is_none());
-        } else if !matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted)
-            || phase < 12
+        } else if !matches!(
+            scenario,
+            Scenario::FreeAccept | Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted
+        ) || phase < 12
         {
             assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
         }
@@ -289,6 +294,17 @@ fn run_find(scenario: Scenario) {
                 assert!(routes.read_checkpoint().unwrap().is_none());
                 assert!(app.assistant_preview_shape().is_empty());
                 assert!(releases >= acquisitions + restores, "all planner owners receive release ACKs");
+                if free_ride && !reentered {
+                    app.open_find_place();
+                    app.apply_gesture(Gesture::Press);
+                    acquisitions = 0;
+                    restores = 0;
+                    releases = 0;
+                    calculated.clear();
+                    reentered = true;
+                    phase = 0;
+                    continue;
+                }
                 phase = 9;
                 break;
             }
@@ -304,6 +320,7 @@ fn run_find(scenario: Scenario) {
                 if let Ok(path) = std::env::var("OBC_FIND_FRAME") {
                     std::fs::write(path, frame.as_rgba()).unwrap();
                 }
+                choices_frame = frame.as_rgba().to_vec();
                 app.apply_gesture(Gesture::Press);
                 phase = 1;
             }
@@ -321,7 +338,10 @@ fn run_find(scenario: Scenario) {
                 assert!(routes.read_checkpoint().unwrap().is_none());
                 selected_preview = Some(preview);
                 selected_shape = app.assistant_preview_shape().to_vec();
-                if matches!(scenario, Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted) {
+                if matches!(
+                    scenario,
+                    Scenario::FreeAccept | Scenario::Accept | Scenario::AcceptEscaped | Scenario::RestartAccepted
+                ) {
                     app.apply_gesture(Gesture::Press);
                     if scenario == Scenario::AcceptEscaped {
                         app.apply_gesture(Gesture::BackHold);
@@ -335,6 +355,13 @@ fn run_find(scenario: Scenario) {
             10 if app.assistant_planner_released() => {
                 assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Idle);
                 assert!(app.assistant_preview_shape().is_empty());
+                if free_ride {
+                    assert_eq!(
+                        frame.as_rgba(),
+                        choices_frame,
+                        "Back must repaint the choices without preview geometry"
+                    );
+                }
                 let preview = selected_preview.unwrap();
                 assert_eq!(routes.fingerprint(preview.source.object), Some(preview.source), "Back retains exact bytes");
                 if scenario == Scenario::Deleted {
@@ -383,7 +410,28 @@ fn run_find(scenario: Scenario) {
                 assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, preview.source);
                 assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
                 assert_eq!(routes.unaccepted_routes(), 0);
-                phase = 13;
+                if scenario == Scenario::FreeAccept {
+                    app.open_find_place();
+                    app.apply_gesture(Gesture::Press);
+                    phase = 16;
+                } else {
+                    phase = 13;
+                    break;
+                }
+            }
+            16 if app.find_place_state() == State::Ready && app.assistant_planner_released() => {
+                assert!(app.find_place_result_count() > 0, "a new search completes with an accepted journey");
+                assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, selected_preview.unwrap().source);
+                app.apply_gesture(Gesture::BackHold);
+                phase = 17;
+            }
+            17 if routes.ids().len() == 2 && app.assistant_planner_released() => {
+                assert_eq!(app.assistant_review_status(), obc_app::navigator::ReviewStatus::Accepted);
+                assert!(app.assistant_preview().is_none());
+                assert!(app.assistant_preview_shape().is_empty());
+                assert_eq!(routes.unaccepted_routes(), 0);
+                assert_eq!(routes.read_checkpoint().unwrap().unwrap().route, selected_preview.unwrap().source);
+                phase = 18;
                 break;
             }
             7 => {
@@ -417,6 +465,7 @@ fn run_find(scenario: Scenario) {
         }
     }
     let expected = match scenario {
+        Scenario::FreeAccept => 18,
         Scenario::Accept | Scenario::AcceptEscaped => 13,
         Scenario::Browse => 6,
         Scenario::RestartReady | Scenario::RestartPartial | Scenario::RestartAccepted => 15,
@@ -431,7 +480,8 @@ fn run_find(scenario: Scenario) {
     );
     if !matches!(
         scenario,
-        Scenario::Accept
+        Scenario::FreeAccept
+            | Scenario::Accept
             | Scenario::AcceptEscaped
             | Scenario::RestartReady
             | Scenario::RestartPartial

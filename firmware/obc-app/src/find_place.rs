@@ -762,7 +762,9 @@ impl crate::App {
             }
         }
         if self.ui.find.state == State::Releasing {
-            if !self.assistant_planner_released() || self.assistant_review_status() != ReviewStatus::Idle {
+            if !self.assistant_planner_released()
+                || !matches!(self.assistant_review_status(), ReviewStatus::Idle | ReviewStatus::Accepted)
+            {
                 return;
             }
             self.ui.find.next += 1;
