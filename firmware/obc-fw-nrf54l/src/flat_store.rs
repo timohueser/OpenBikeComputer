@@ -1778,11 +1778,15 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
     let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut candidates = 0u64;
+    let mut internal_routes = 0u64;
     for (index, entry) in heads.into_iter().enumerate() {
         match store
             .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
         {
             Ok(Ok((summary, candidate))) => {
+                if candidate {
+                    internal_routes |= 1 << routes.len();
+                }
                 if candidate && accepted & (1 << index) == 0 {
                     candidates |= 1 << routes.len();
                     let source = obc_formats::obcr::RouteSourceKey {
@@ -1823,6 +1827,7 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         }
     }
     app.set_routes_with_ids(&routes, &ids);
+    app.set_internal_routes(internal_routes);
     app.set_unaccepted_routes(candidates);
     if app.assistant_needs_recovery() {
         if let Ok(checkpoint) = obc_storage::flat::metadata::read_checkpoint(store) {

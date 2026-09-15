@@ -250,6 +250,18 @@ impl crate::App {
     /// UI entry. Capture the live origin and catalog epoch here; Acquire binds the original
     /// fingerprint from that exact epoch before any planner runs.
     pub fn request_visit(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
+        self.request_place_route(target, name, false)
+    }
+    /// Route to the place without retaining the current route's continuation.
+    pub fn request_destination(&mut self, target: VisitTarget, name: &str) -> Result<(), VisitUnavailable> {
+        self.request_place_route(target, name, true)
+    }
+    fn request_place_route(
+        &mut self,
+        target: VisitTarget,
+        name: &str,
+        destination: bool,
+    ) -> Result<(), VisitUnavailable> {
         if self.active_visit()
             || matches!(
                 self.assistant_review_status(),
@@ -275,7 +287,7 @@ impl crate::App {
         }
         let progress = self.navigator.following.progress_m;
         let context = ReviewContext {
-            purpose: if original.is_some() { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
+            purpose: if original.is_some() && !destination { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
             map: target.map,
             store: scope.store,
             original: None,
@@ -587,6 +599,37 @@ mod tests {
         app.apply_gesture(crate::Gesture::Press);
         app.prepare_find(None, Some(route));
         assert!(matches!(app.top_screen(), crate::screen::Screen::VisitReview(s) if s.accepted));
+    }
+    #[test]
+    fn destination_request_keeps_original_authority_until_acceptance() {
+        use crate::device_core::{Revision, StoreIdentity, StoreRevision};
+        let bytes = route();
+        let source = SliceSource(&bytes.0);
+        let index = obc_route::RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.following.active_route = Some(0);
+        let store = StoreIdentity::from_bytes([1; 16]);
+        let scope = StoreRevision { store, revision: Revision::new(1) };
+        app.catalogs.loaded_scope = Some(scope);
+        live_fix(&mut app, Some(&route), 0, 0);
+        let target = VisitTarget {
+            map: RouteSourceKey { store: store.bytes(), object: 1, revision: 1 },
+            display: (0, 1000),
+            metadata: PoiMetadata { source: obc_formats::obcm::SourceId::osm(1, 99), approach: None },
+        };
+        app.request_destination(target, "Water").unwrap();
+        let original = PayloadFingerprint { object: 7, revision: 1, length: 100, crc: 1 };
+        assert!(!app.bind_visit_sources(scope, None, false));
+        assert!(app.bind_visit_sources(scope, Some(original), false));
+        let context = app.assistant_review_context().unwrap();
+        assert_eq!(context.purpose, ReviewPurpose::Destination);
+        assert_eq!(context.original, Some(original));
+        assert_eq!(app.active_route_index(), Some(0));
+        app.cancel_assistant();
+        assert_eq!(app.active_route_index(), Some(0));
+        assert!(app.assistant_checkpoint().is_none());
     }
     #[test]
     fn current_visit_cancel_waits_for_checkpoint_or_explicit_connector_acceptance() {

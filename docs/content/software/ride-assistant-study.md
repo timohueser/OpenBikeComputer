@@ -135,6 +135,8 @@ Find a place includes all map categories. **More places** opens the complete pag
 selected category. What's next retains category and source filters, generic and categorized authored
 waypoints, route order, route distance and climbing, lateral offsets, and stable selected identity.
 An authored waypoint is information from the route; its detail cannot add it as a new stop.
+Generated Assistant routes are internal and do not appear in saved Routes. Acceptance keeps their
+bytes for navigation and recovery without adding a saved route. Imported routes remain available.
 Place details and accepted visit previews use the same owner across all questions. During a visit,
 **Assistant → Down + Back → Current visit** reopens its route and current-leg distance. Back
 returns to the questions without cancelling the visit or changing the recording. If the accepted
