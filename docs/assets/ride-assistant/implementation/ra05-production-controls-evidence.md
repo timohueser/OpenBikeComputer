@@ -96,3 +96,21 @@ new GPS sample and dismissal of an arrival card. These tests use the owner's Met
 The flat-store executor contracts passed in the earlier `obc-host-core` validation and were not
 rerun for this App-only correction. No simulator rebuild,
 snapshot sweep, board image, or hardware run was used for these corrections.
+
+## Recording recovery and Assistant recovery
+
+The real Swiss card replay found that Continue on the recovered recording card removed the
+Outbound Assistant checkpoint. The recording offer and its Continue or Discard action used the
+normal route-stop command, which requests a durable Assistant cancellation.
+
+Commit `fa50312c` uses one Navigator suspension operation for recording recovery. Both ordinary and
+damaged recording offers, Continue, and Discard or Retry suspend guidance without changing the
+Assistant checkpoint. Resume remains a separate explicit action. The Journey card body uses the
+existing word-wrap helper so the saved-route message fits the 240 px display.
+
+The whole App suite passes, including a contract for both startup offer orders and Continue,
+Discard, and damaged-recording Discard. It checks the retained checkpoint, no queued Assistant
+metadata change, inactive navigation, and the later explicit Resume request. App all-targets
+Clippy, suite registry, workspace formatting, and documentation links are the focused checks.
+The orchestrator owns the fresh real-card replay after this fix. No local snapshot sweep, board
+image, resource rebuild, or physical-device run is part of this correction.
