@@ -1363,6 +1363,13 @@ The assembler rebuilds the header, tables, POIs, opening-hours pool, and navigat
 It also inserts the selected OBCT terrain container.
 Routing seam nodes merge only when their coordinates are equal.
 
+The assembler reads optional landmarks from core cells and keeps one record per Wikidata identity.
+For duplicates, it prefers a mapped approach, then the lowest OSM identity, then the content hash.
+It shares identical content bytes and remaps landmark schedules into the same pool as service schedules.
+The output never retains a schedule index from an input cell.
+Text, photos, and source credits stream from the cells in bounded reads; the assembler does not hold all photos in memory.
+The optional landmark region follows navigation and precedes terrain.
+
 ### Schema and skin
 
 All cells in one assembly use the same schema revision and OBCM version.

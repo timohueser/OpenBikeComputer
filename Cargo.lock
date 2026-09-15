@@ -3224,6 +3224,7 @@ dependencies = [
  "js-sys",
  "obc-formats",
  "obc-pack",
+ "obc-reader",
  "obc-vectors",
  "obcm-assemble",
  "serde_json",
