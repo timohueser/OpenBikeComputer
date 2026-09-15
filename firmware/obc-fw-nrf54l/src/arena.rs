@@ -668,9 +668,11 @@ impl NavGuard {
     pub(crate) fn output(&self) -> &[u8; NAV_OUTPUT_STAGE_BYTES] {
         unsafe {
             if self.phase == NavPhase::VisitPlan {
-                &(&(*(arena_ptr() as *const VisitArm)).work.plan).output
+                let arm = &*(arena_ptr() as *const VisitArm);
+                &arm.work.plan.output
             } else if self.phase == NavPhase::VisitSources {
-                &(&(*(arena_ptr() as *const VisitArm)).work.sources).output
+                let arm = &*(arena_ptr() as *const VisitArm);
+                &arm.work.sources.output
             } else if self.phase == NavPhase::Plan {
                 &(*(arena_ptr() as *const NavArm)).output
             } else {
@@ -749,7 +751,10 @@ impl DerefMut for NavGuard {
 impl Drop for NavGuard {
     fn drop(&mut self) {
         if self.phase == NavPhase::VisitSources {
-            debug_assert!(unsafe { (&(*(arena_ptr() as *const VisitArm)).work.sources).sealed.is_none() });
+            debug_assert!(unsafe {
+                let arm = &*(arena_ptr() as *const VisitArm);
+                arm.work.sources.sealed.is_none()
+            });
         } else if matches!(self.phase, NavPhase::Sources | NavPhase::Trim | NavPhase::Splice) {
             debug_assert!(unsafe { (*(arena_ptr() as *const DetourArm)).sealed.is_none() });
         }
