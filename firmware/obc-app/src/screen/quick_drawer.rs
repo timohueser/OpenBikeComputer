@@ -59,7 +59,7 @@ const POWERING_OFF_H: i32 = 132;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Control {
     Brightness,
-    Assistant,
+    Ble,
     Settings,
     Power,
 }
@@ -74,8 +74,8 @@ enum Control {
 /// comes back the moment the hardware does — as it did on the board, whose `PanelBacklight` drives
 /// a real PWM since #1558 — and nothing else about the sheet changes.
 fn controls(backlight: bool) -> &'static [Control] {
-    const WITH_LIGHT: [Control; 4] = [Control::Brightness, Control::Assistant, Control::Settings, Control::Power];
-    const NO_LIGHT: [Control; 3] = [Control::Assistant, Control::Settings, Control::Power];
+    const WITH_LIGHT: [Control; 4] = [Control::Brightness, Control::Ble, Control::Settings, Control::Power];
+    const NO_LIGHT: [Control; 3] = [Control::Ble, Control::Settings, Control::Power];
     if backlight {
         &WITH_LIGHT
     } else {
@@ -245,7 +245,10 @@ impl QuickDrawerScreen {
                     self.slide_to(Page::Brightness, cx.now_ms);
                     Transition::None
                 }
-                Some(Control::Assistant) => Transition::Replace(Screen::Assistant(super::AssistantScreen::new())),
+                Some(Control::Ble) => {
+                    cx.settings.ble_enabled = !cx.settings.ble_enabled;
+                    Transition::None
+                }
                 // Central settings **replace** the sheet, so Back out of settings lands on the
                 // base screen rather than on a drawer the rider has finished with.
                 Some(Control::Settings) => Transition::Replace(Screen::Settings(SettingsScreen::new())),
@@ -473,7 +476,7 @@ impl QuickDrawerScreen {
             // controls have an off state — settings and power are always simply available.
             let on = match control {
                 Control::Brightness => true,
-                Control::Assistant => true,
+                Control::Ble => rx.settings.ble_enabled,
                 Control::Settings | Control::Power => false,
             };
             let (fill, ink) = if on { (palette::AMBER, palette::INK) } else { (palette::CONTOUR, palette::PARCHMENT) };
@@ -484,7 +487,7 @@ impl QuickDrawerScreen {
             cv.disc(c, if selected { 19 } else { 20 }, fill);
             match control {
                 Control::Brightness => draw_bulb(cv, c, ink, fill),
-                Control::Assistant => super::menu::icon_assistant(cv, c, 1.0, ink, fill),
+                Control::Ble => draw_ble_rune(cv, c, ink),
                 Control::Settings => draw_gear(cv, c, ink, fill),
                 Control::Power => draw_power(cv, c, ink, fill),
             }
@@ -492,7 +495,9 @@ impl QuickDrawerScreen {
 
         let caption = match row.get(self.selected as usize) {
             Some(Control::Brightness) => rx.t(Msg::QuickBrightness),
-            Some(Control::Assistant) => rx.t(Msg::AssistantTitle),
+            Some(Control::Ble) => {
+                rx.t(if rx.settings.ble_enabled { Msg::QuickBluetoothOn } else { Msg::QuickBluetoothOff })
+            }
             Some(Control::Settings) => rx.t(Msg::QuickSettings),
             Some(Control::Power) => rx.t(Msg::QuickPower),
             None => "",
@@ -584,6 +589,24 @@ fn draw_bulb(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.hline(c.x - 2, c.y + 12, 5, color);
 }
 
+/// Bluetooth rune.
+fn draw_ble_rune(cv: &mut impl Surface, c: Point, color: u16) {
+    let (half, quarter) = (11, 5);
+    let stem = c.x - 2;
+    let (top, mid, bot) = (Point::new(stem, c.y - half), Point::new(stem, c.y), Point::new(stem, c.y + half));
+    let up_tip = Point::new(c.x + 6, c.y - half + quarter);
+    let lo_tip = Point::new(c.x + 6, c.y + half - quarter);
+    let up_left = Point::new(c.x - 8, c.y - half + quarter);
+    let lo_left = Point::new(c.x - 8, c.y + half - quarter);
+    stroke2(cv, top, bot, color);
+    stroke2(cv, top, up_tip, color);
+    stroke2(cv, up_tip, mid, color);
+    stroke2(cv, bot, lo_tip, color);
+    stroke2(cv, lo_tip, mid, color);
+    stroke2(cv, up_tip, lo_left, color);
+    stroke2(cv, lo_tip, up_left, color);
+}
+
 /// A filled pixel gear: eight square teeth around a punched hub.
 fn draw_gear(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     const TOOTH: i32 = 5;
@@ -654,11 +677,13 @@ mod tests {
     }
 
     #[test]
-    fn assistant_opens_without_changing_the_radio() {
+    fn bluetooth_toggles_in_place() {
         let mut w = World::new();
         let mut d = settled(w.now_ms);
         w.press(&mut d, Gesture::Step(1));
-        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::Assistant(_))));
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None));
+        assert!(!w.settings.ble_enabled);
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None));
         assert!(w.settings.ble_enabled);
     }
 

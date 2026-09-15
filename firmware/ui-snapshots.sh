@@ -126,17 +126,17 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # Peak View's geographic fixture: Live follows the preset's stopped-compass heading;
 # Select freezes that panorama and selects its most prominent visible summit.
 # Geographic fixture files are independent from MAP. `f` finishes the full panorama before capture or Browse input.
-"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
-"$SIM" "$MAP" --boot --peak-view scheidegg --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-scheidegg.png"
-"$SIM" "$MAP" --boot --peak-view glockner --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-glockner.png"
-"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f p" --expect-screen PeakView --png "$OUT/peak-view-browse.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d p f" --expect-screen PeakView --png "$OUT/peak-view.png"
+"$SIM" "$MAP" --boot --peak-view scheidegg --script "B d d d p f" --expect-screen PeakView --png "$OUT/peak-view-scheidegg.png"
+"$SIM" "$MAP" --boot --peak-view glockner --script "B d d d p f" --expect-screen PeakView --png "$OUT/peak-view-glockner.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d p f p" --expect-screen PeakView --png "$OUT/peak-view-browse.png"
 # A heading outside the initial west-facing crop proves that Live mode discovers a different set
 # of named ridge summits from the fixture's full-circle peak catalog.
-"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d p f" --expect-screen PeakView --png "$OUT/peak-view-heading-east.png"
 # Up enters Browse from the right edge and steps left through the ridge candidates.
-"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d d p f u u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d p f u u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
 # Down enters Browse from the left edge and steps right. Generic labels stay in place.
-"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d d p f d d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
+"$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d p f d d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
 # synced/retention metadata boundary lands.
@@ -164,8 +164,8 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 "$SIM" "$MAP" --boot --script "B d d w"      --expect-screen Menu --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
-"$SIM" "$MAP" --boot --script "B d d w p"    --expect-screen Assistant --png "$OUT/assistant.png"
-"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "Q d p p p d p f" --expect-screen PoiList --png "$OUT/poi-list.png"
+"$SIM" "$MAP" --boot --script "A"    --expect-screen Assistant --png "$OUT/assistant.png"
+"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "A p p d p f" --expect-screen PoiList --png "$OUT/poi-list.png"
 # POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
 # bearing row, the hours block with the OPEN/CLOSED pill riding the "Today" caption line
 # (right-aligned — owner review round 2's overlay fix), and the full-width "Route here" footer
@@ -175,11 +175,11 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # once to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
-    --script "Q d p p d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
+    --script "A p d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
 # Select Carrefour while open, then advance the trusted clock past its 21:00 closing time.
 # Closed places are excluded from a new nearby query; an already-open detail must update in place.
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
-    --clock-after-script "2025-01-06T23:00" --script "Q d p p d d d p d p f p f" \
+    --clock-after-script "2025-01-06T23:00" --script "A p d d d p d p f p f" \
     --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
 # The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
@@ -187,14 +187,14 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # bar. With the badge on the Today line the whole block clears the footer. Pharmacy is one more
 # step into the category list than Resupply.
 "$SIM" "$MONACO" --boot --center 7413793,43734832 --heading 0 --clock "2025-01-06T12:00" \
-    --script "Q d p p d d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
+    --script "A p d d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
 # Selected-place profile controls and real offline Visit preview share the production owner.
-PLACEDETAIL="Q d p p d d d p d p f p f"
+PLACEDETAIL="A p d d d p d p f p f"
 "$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
     --script "$PLACEDETAIL C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
 "$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
     --script "$PLACEDETAIL C p w d" --expect-screen ContextDrawer --png "$OUT/route-plan-biketype-editor.png"
-LANDMARKS="Q d p d d d d d p f"
+LANDMARKS="A d d d d d p f"
 "$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "$LANDMARKS" \
     --expect-screen Landmarks --png "$OUT/landmarks.png"
 "$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "$LANDMARKS p f u f" \
@@ -211,7 +211,7 @@ LANDMARKS="Q d p d d d d d p f"
     --script "$LANDMARKS p p f p f p f" --expect-screen Map --png "$JOURNEYDIR/accepted.png"
 "$SIM" --card "$JOURNEYDIR/card.obc" --boot --heading 0 --center -9825560,51485575 \
     --script "f" --expect-screen Journey --png "$OUT/journey-resume.png"
-"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "Q d p p p f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "A p p f" \
     --expect-screen FindPlace --png "$OUT/find-place.png"
 
 # The existing Detour planner uses the real imported Monaco loop and an actual replay fix.
@@ -455,7 +455,7 @@ PYTERRAIN
 
 # Easier compares the actual matched route; no alternative is fabricated when none improves it.
 "$SIM" "$ELEVMAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 30 \
-    --script "p p p p b T Q d p d d p f" --expect-screen Easier --png "$OUT/easier-route.png"
+    --script "p p p p b T A d d p f" --expect-screen Easier --png "$OUT/easier-route.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
 # The **map context** (#1515 D3, extended by D4c): a Down+Back squeeze (`C`) on the riding Map
 # raises the bottom sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes
@@ -500,7 +500,7 @@ UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
 UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$JOURNEYDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
-UPBASE="p p p p T Q d p d p f p f f f f f f f f"
+UPBASE="p p p p T A d p f p f f f f f f f f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
 # on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE" --expect-screen WhatsNext --png "$OUT/up-ahead.png"
@@ -529,7 +529,7 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
     --script "$UPBASE C d p w d d p w b f f f f f f f f p f" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
 # the coverage guard takes precedence over map-place filters.
-"$SIM" "$UPMAP" --boot --script "Q d p d p f p f" --expect-screen WhatsNext --png "$OUT/up-ahead-noroute.png"
+"$SIM" "$UPMAP" --boot --script "A d p f p f" --expect-screen WhatsNext --png "$OUT/up-ahead-noroute.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen WhatsNext --png "$OUT/up-ahead-outside-map.png"
 # (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
 # Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
@@ -560,7 +560,7 @@ U5CLIMBOFF="B u p p d d p b b b"
 # The empty state: a route-less ride, where nothing can be "ahead" — icon + the category's own word
 # + `--`, at the taller tile height the chart-less grid gives.
 "$SIM" "$MAP" --boot --gpx "$GPX" --at 30 --stat-fields "$U5FIELDS" \
-    --script "$U5CLIMBOFF B d d d w p p p b f f" --expect-screen Statistics --png "$OUT/stats-next-category-empty.png"
+    --script "$U5CLIMBOFF B d d w p p p b f f" --expect-screen Statistics --png "$OUT/stats-next-category-empty.png"
 # Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
 # so the Map station is three steps down from the Routes start (`d d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
@@ -570,21 +570,21 @@ U5CLIMBOFF="B u p p d d p b b b"
 # `-settled` frame runs the browse map ~4.8 s past entry (enough `w` tokens > the 4 s window) to prove
 # the hint auto-hides and the scale bar drops back to the corner. (The GPX replay runs after the
 # script and drives the hint's clock not at all, so the extra `w`s are what expire it.)
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p"     --expect-screen Map --png "$OUT/map-browse.png"
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p w w w w w w" --expect-screen Map --png "$OUT/map-browse-settled.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d w p"     --expect-screen Map --png "$OUT/map-browse.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d w p w w w w w w" --expect-screen Map --png "$OUT/map-browse-settled.png"
 # (b) The start card (browse map → press, T6 #684): the hero bike (the selected profile's sprite +
 # colour) over its profile name, the two-row GPS / Battery checklist (the static Card row dropped
 # in owner review round 1), then Start ride / Back. `--battery 45` pins the % and the `--gpx --at
 # 30` fix makes GPS read `fix`; the second frame drops the `--gpx` (no fix) so GPS reads
 # `searching..` (and a low --battery to vary the row).
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --battery 45 --script "B d d d w p p"   --expect-screen RideStart --png "$OUT/ride-start.png"
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --battery 8 --script "B d d d w p p"   --expect-screen RideStart --png "$OUT/ride-start-nofix.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --battery 45 --script "B d d w p p"   --expect-screen RideStart --png "$OUT/ride-start.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --battery 8 --script "B d d w p p"   --expect-screen RideStart --png "$OUT/ride-start-nofix.png"
 # (c) A route-less RIDING map (start card → Start ride): the follow map with the recorded breadcrumb,
 # no route line and no off-route chip (there's no route to be off).
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p" --expect-screen Map --png "$OUT/map-routeless.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d w p p p" --expect-screen Map --png "$OUT/map-routeless.png"
 # (d) The route-less Statistics page: the "No route loaded" band note over the stat grid, where the
 # route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
-"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p b" --expect-screen Statistics --png "$OUT/statistics-routeless.png"
+"$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d w p p p b" --expect-screen Statistics --png "$OUT/statistics-routeless.png"
 # The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride context's Routes row
 # (`C d d` — the third row down) and press, then pick the *other* vector route (`d p`). Choosing
 # a route while a ride is live raises the Swap / Finish & new / Cancel card instead of opening the
@@ -649,17 +649,18 @@ U5CLIMBOFF="B u p p d d p b b b"
 
 # The universal quick drawer (#1515 D2): the Up+Select squeeze (`Q`) over the **riding Map**, which
 # is the base worth judging — the sheet's contrast, the four unlabelled icons, and the device-64 dim
-# LUT recessing a real map. Five states: the icon row, the Assistant entry,
+# LUT recessing a real map. States include the icon row, Bluetooth off, the held Assistant shortcut,
 # the nested brightness editor, the guarded power confirmation, and that
 # confirmation with the hold part-way through (`H`).
 QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root.png"
-"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen Assistant --png "$OUT/quick-assistant.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p A w"     --expect-screen Assistant --png "$OUT/quick-assistant.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d p w" --expect-screen QuickDrawer --png "$OUT/quick-bluetooth-off.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold.png"
 # The **other** root row: a platform whose panel has no controllable light offers three controls,
-# not four, and opens on Assistant instead of brightness. That is the shipping board today (no
+# not four, and opens on Bluetooth instead of brightness. That is the shipping board today (no
 # light line exists on it — see `PanelBacklight`), so this frame is the arrangement a rider actually
 # gets on hardware. English only: it is an arrangement, and the copy is already swept in four
 # languages above.
@@ -721,11 +722,11 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
     # The ride-start card (T6 #684): the checklist labels/values (GPS/Battery) are the copy to
     # eyeball for clipped rows in the longer translations. --battery 100 pins the widest % value.
-    "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d d w p p" --expect-screen RideStart --png "$OUT/ride-start-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --battery 100 --script "B d d w p p" --expect-screen RideStart --png "$OUT/ride-start-$lang.png"
     # The browse-map start hint chip (T6 #684): the two-line pill in each language, to eyeball for a
     # clipped line now that the copy is longer.
     "$SIM" "$MAP" --boot --lang "$lang" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 \
-        --script "B d d d w p" --expect-screen Map --png "$OUT/map-browse-$lang.png"
+        --script "B d d w p" --expect-screen Map --png "$OUT/map-browse-$lang.png"
     # The SD-sideload update flow (epic #615 S5): the System menu, the Firmware page (whose "Install
     # update from card" label wraps to three Label lines in the longer translations), the
     # first-install confirm (the worst case for vertical fit — the two-row version table + the
@@ -752,10 +753,11 @@ for lang in de fr es; do
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C u p"       --expect-screen ContextDrawer --png "$OUT/map-display-sheet-$lang.png"
   # The Up-ahead sheet (#1515 D4a): its two row labels, then the nested editor's title + the choice
   # it stages. `Campingplatz` / `Alojamiento` are the width constraint on the editor line.
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p d p f p f C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p d p f p f C p w d d" --expect-screen ContextDrawer --png "$OUT/up-ahead-filter-editor-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p A d p f p f C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p A d p f p f C p w d d" --expect-screen ContextDrawer --png "$OUT/up-ahead-filter-editor-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root-$lang.png"
-  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen Assistant --png "$OUT/quick-assistant-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p A w"     --expect-screen Assistant --png "$OUT/quick-assistant-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w" --expect-screen QuickDrawer --png "$OUT/quick-bluetooth-off-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold-$lang.png"
