@@ -985,7 +985,8 @@ impl App {
         self.mode.frozen(self.ui.base_draws_map())
     }
 
-    fn find_preparing(&self) -> bool {
+    /// Whether the visible place choices are still being prepared.
+    pub fn find_preparing(&self) -> bool {
         use crate::find_place::{Action, State};
         matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
             && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))

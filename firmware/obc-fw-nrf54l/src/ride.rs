@@ -874,6 +874,7 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
+    let mut find_loading_painted = false;
     let mut power_off = crate::panel_power::SystemOff;
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
@@ -2902,6 +2903,24 @@ pub(crate) async fn run_app(
             // of them is full-frame, so each also drops a region-scoped clip (`dirty.region`) — the
             // region only survives when the pass's own ticks were the sole dirt.
             let mut dirty = render;
+            // Keep an already-painted loading base while reader work advances between planner owners.
+            find_loading_painted &= app.find_preparing() && app.find_place_state() != obc_app::find_place::State::Start;
+            #[cfg(has_nav)]
+            let find_can_prepare = nav_guard.is_none();
+            #[cfg(not(has_nav))]
+            let find_can_prepare = true;
+            if find_loading_painted && find_can_prepare {
+                let reader = Reader::new(flat_map, map_tables, map_cache);
+                app.prepare_find(Some(&reader), route.as_ref());
+                if !app.find_preparing() {
+                    if app.find_place_state() == obc_app::find_place::State::Ready {
+                        defmt::info!("find: ready results={=usize}", app.find_place_result_count());
+                    }
+                    find_loading_painted = false;
+                    dirty.map = true;
+                    dirty.region = None;
+                }
+            }
             if pending_map_redraw {
                 dirty.map = true;
                 dirty.region = None;
@@ -2971,7 +2990,7 @@ pub(crate) async fn run_app(
             // This is also what makes the arena's `render ⊥ nav` rule hold in practice rather than
             // only at the gate: no map render is attempted while the nav arm is out, so the claim
             // below is never refused on the ordinary path.
-            let frozen = app.reroute_freeze_active();
+            let frozen = app.reroute_freeze_active() || find_loading_painted;
             if frozen && dirty.map {
                 pending_map_redraw = true;
                 dirty.map = false;
@@ -3176,6 +3195,9 @@ pub(crate) async fn run_app(
             } else {
                 None
             };
+            if dirty.map && rendered.is_some() {
+                find_loading_painted = app.find_preparing();
+            }
             (rendered, dirty.map, hold_p, next_wake_ms, immediate, t_store.elapsed().as_micros())
         };
 

@@ -540,7 +540,8 @@ impl crate::App {
         crate::screen::apply(&mut self.ui.stack, crate::screen::Transition::Push(Screen::VisitReview(screen)));
         self.ui.map_dirty = true;
     }
-    pub(crate) fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
+    /// Advance place queries and candidate ownership while streamed readers are available.
+    pub fn prepare_find(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
         let local = self.place_local_time();
         if let Action::Preview(selected) = self.ui.find.action {
             if let Some(reader) = reader {
