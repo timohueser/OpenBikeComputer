@@ -165,7 +165,7 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
 "$SIM" "$MAP" --boot --script "A"    --expect-screen Assistant --png "$OUT/assistant.png"
-"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "A p p d p f" --expect-screen PoiList --png "$OUT/poi-list.png"
+"$SIM" "$MAP" --boot --center 8305000,46601000 --heading 0 --script "A p p u p f" --expect-screen PoiList --png "$OUT/poi-list.png"
 # POI detail (#444, reworked in #685): category glyph on the name row, the promoted distance +
 # bearing row, the hours block with the OPEN/CLOSED pill riding the "Today" caption line
 # (right-aligned — owner review round 2's overlay fix), and the full-width "Route here" footer
@@ -175,11 +175,11 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # once to fill the lazy snapshot, then presses the POI into its detail.
 MONACO="$MONACO_FIXTURES/monaco.obcm"
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
-    --script "A p d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
+    --script "A p d d d p u p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail.png"
 # Select Carrefour while open, then advance the trusted clock past its 21:00 closing time.
 # Closed places are excluded from a new nearby query; an already-open detail must update in place.
 "$SIM" "$MONACO" --boot --center 7416969,43730798 --heading 0 --clock "2025-01-06T12:00" \
-    --clock-after-script "2025-01-06T23:00" --script "A p d d d p d p f p f" \
+    --clock-after-script "2025-01-06T23:00" --script "A p d d d p u p f p f" \
     --expect-screen PoiDetail --png "$OUT/poi-detail-closed.png"
 # The layout worst case (owner review round 2's overlay bug): a two-line wrapping name
 # ("Pharmacie du Jardin Exot..") + the format's two-intervals-per-day maximum (split lunch hours,
@@ -187,9 +187,9 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # bar. With the badge on the Today line the whole block clears the footer. Pharmacy is one more
 # step into the category list than Resupply.
 "$SIM" "$MONACO" --boot --center 7413793,43734832 --heading 0 --clock "2025-01-06T12:00" \
-    --script "A p d d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
+    --script "A p d d d d p u p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
 # Selected-place profile controls and real offline Visit preview share the production owner.
-PLACEDETAIL="A p d d d p d p f p f"
+PLACEDETAIL="A p d d d p u p f p f"
 "$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
     --script "$PLACEDETAIL C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
 "$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
