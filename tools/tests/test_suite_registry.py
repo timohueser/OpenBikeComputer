@@ -137,6 +137,7 @@ class SuiteRegistryTests(unittest.TestCase):
         case("derived fact", lambda s, c, d: s["suite"][0].update(test_count=3), "derived fields are forbidden")
         case("budget issue", lambda s, c, d: s["suite"][0].update(budget_exception={"reason": "slow"}), "GitHub issue reference")
         case("quarantine issue", lambda s, c, d: s["suite"][0].update(quarantine={"reason": "flake"}), "GitHub issue reference")
+        case("global coverage exclusion", lambda s, c, d: c.update(exclude=[{"path": "src/**"}]), "global exclusion needs path and replacement evidence")
         case("unknown component", lambda s, c, d: s["suite"][0].update(coverage_component="missing"), "unknown coverage component")
         case("dead entry", lambda s, c, d: s["suite"].append({**copy.deepcopy(s["suite"][0]), "id": "dead", "ownership": [{"kind": "workflow", "pattern": "never"}]}), "dead registry entry")
         case("missing trigger", lambda s, c, d: s["suite"][0].update(extra_triggers=["missing/**"]), "extra trigger matches no maintained path")

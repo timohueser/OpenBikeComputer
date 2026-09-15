@@ -298,10 +298,12 @@ jobs:
       # nextest runs no doctests, so the whole workspace's doctests run here as one cheap step
       # rather than being silently dropped from the gate.
       - name: cargo test --doc (workspace, all features)
+        shell: bash
         run: |
           mkdir -p .artifacts/rust
           cargo test --workspace --all-features --locked --doc 2>&1 | tee .artifacts/rust/doctests.log
       - name: cargo test (obc-formats, default features = the device's shape)
+        shell: bash
         run: |
           mkdir -p .artifacts/rust
           cargo test -p obc-formats --locked 2>&1 | tee .artifacts/rust/formats-default.log
@@ -949,7 +951,19 @@ jobs:
         id: builder-vitest
         run: |
           rm -f "$RUNNER_TEMP/web-builder-junit.xml"
-          npm test -- --coverage --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
+          npm run test:components -- --coverage --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
+      - name: SHA length boundary (without coverage instrumentation)
+        id: sha256-tests
+        run: |
+          rm -f "$RUNNER_TEMP/web-sha256-junit.xml"
+          npm run test:sha256 -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-sha256-junit.xml"
+      - name: Upload SHA test results
+        if: ${{ !cancelled() && (steps.sha256-tests.outcome == 'success' || steps.sha256-tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-sha256-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/web-sha256-junit.xml
+          if-no-files-found: error
       - name: Builder component coverage
         if: ${{ !cancelled() && (steps.builder-vitest.outcome == 'success' || steps.builder-vitest.outcome == 'failure') }}
         run: |

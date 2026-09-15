@@ -104,6 +104,7 @@ WORKFLOW_MARKERS = (
     "cargo run",
     "python3 ",
     "npm test",
+    "npm run test:",
     "npm run check",
     "npm run build",
     "swift test",
@@ -531,6 +532,12 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
         for pattern in suite.get("extra_triggers", []):
             if not isinstance(pattern, str) or not any(root.glob(pattern)):
                 errors.append(f"{suite_id}: extra trigger matches no maintained path: {pattern!r}")
+
+    for exclusion in coverage_doc.get("exclude", []):
+        if not isinstance(exclusion, dict) or not all(
+            isinstance(exclusion.get(key), str) and exclusion[key].strip() for key in ("path", "evidence")
+        ):
+            errors.append("coverage: every global exclusion needs path and replacement evidence")
 
     for component in coverage:
         component_id = component.get("id", "<missing-id>")

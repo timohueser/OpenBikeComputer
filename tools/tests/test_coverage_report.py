@@ -14,6 +14,8 @@ class CoverageReportTests(unittest.TestCase):
             raw = root / 'coverage.info'
             raw.write_text('SF:src/a.rs\nDA:2,0\nDA:3,1\nend_of_record\nSF:src/a.rs\nDA:2,4\nDA:4,0\nend_of_record\nSF:/outside/file.rs\nDA:1,8\nend_of_record\n')
             self.assertEqual(report.read_lcov(raw, root, root), {'src/a.rs': {2: True, 3: True, 4: False}})
+            raw.write_text('SF:/ci/checkout/src/a.rs\nDA:2,1\nend_of_record\n')
+            self.assertEqual(report.read_lcov(raw, root, root, Path('/ci/checkout')), {'src/a.rs': {2: True}})
             raw.write_text('')
             with self.assertRaisesRegex(ValueError, 'no repository files'):
                 report.read_lcov(raw, root, root)
@@ -28,6 +30,25 @@ class CoverageReportTests(unittest.TestCase):
             self.assertEqual(modules, [path.parent / 'oracle.rs', path.parent / 'oracle'])
             path.write_text('pub struct Declaration;\n#[cfg(test)]\nmod tests { fn test_only() {} }\n')
             self.assertFalse(report.rust_source(path)[1])
+
+    def test_component_inventory_excludes_test_items_and_rejects_empty_function_source(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'src').mkdir()
+            (root / 'src/lib.rs').write_text('pub fn production() {}\n#[cfg(test)]\nmod oracle;\n#[cfg(test)]\nmod tests { fn helper() {} }\n')
+            (root / 'src/oracle.rs').write_text('pub fn reference_model() {}\n')
+            (root / 'src/empty.rs').write_text('pub fn unmeasured() {}\n')
+            (root / 'src/types.rs').write_text('pub struct Declaration;\n')
+            policy = {'component': [{'id': 'storage', 'include': ['src/**'], 'enforcement': 'ratchet'}]}
+            tracked = b'src/lib.rs\0src/oracle.rs\0src/empty.rs\0src/types.rs\0'
+            native = {'src/lib.rs': {1: True, 5: True}, 'src/oracle.rs': {1: True}, 'src/empty.rs': {}}
+            with patch.object(report.subprocess, 'check_output', return_value=tracked):
+                row, = report.summarize(root, policy, 'rust', native, {})
+            self.assertEqual((row['covered'], row['total']), (1, 1))
+            self.assertEqual(row['excluded'], ['src/oracle.rs'])
+            self.assertEqual(row['unmeasured'], ['src/empty.rs'])
+            self.assertEqual(row['declarations_only'], ['src/types.rs'])
 
     def test_ratchet_requires_every_critical_component_and_exact_fraction(self):
         rows = [{'id': name, 'covered': 2, 'total': 3, 'unmeasured': []} for name in report.CRITICAL]

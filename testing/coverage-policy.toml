@@ -17,7 +17,9 @@ exclude = [
 [[component]]
 id = "format-protocol-codecs"
 include = ["firmware/obc-formats/src/**", "firmware/obc-link/src/**"]
-exclude = []
+exclude = [
+  { path = "firmware/obc-link/src/flat/vectors.rs", evidence = "Spec-derived fixture producer for vector tests and regeneration, enabled only for test/std. Shared wire and record codecs are measured; specs/vectors/flat-store-v4 pins their independent contract." },
+]
 enforcement = "ratchet"
 
 [[component]]

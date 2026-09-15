@@ -15,7 +15,9 @@
         "build:wasm:preview": "wasm-pack build ../../apps/obc-skin-preview --release --target web --out-dir ../../builder/app/src/lib/skin/pkg --out-name obc_skin_preview",
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
-        "test": "vitest run"
+        "test": "npm run test:components && npm run test:sha256",
+        "test:components": "vitest run --exclude src/lib/device/sha256.test.ts",
+        "test:sha256": "vitest run src/lib/device/sha256.test.ts"
     },
     "dependencies": {
         "@tauri-apps/api": "^2.11.1",
