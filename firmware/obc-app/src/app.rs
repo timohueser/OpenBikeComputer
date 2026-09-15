@@ -3156,7 +3156,7 @@ impl App {
             .iter()
             .any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::UpAhead(_)))
         {
-            let deadline = if self.ui.poi_scratch.recheck_pending() { 1 } else { ms_to_next_minute };
+            let deadline = ms_to_next_minute;
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(deadline, |wake| wake.min(deadline)));
         }
         // The one host-pushed-card sweep (epic #1397, S1): land anything a hold or a higher-ranked
@@ -5479,6 +5479,44 @@ mod tests {
         assert!(app.take_dirty().map, "the minute rolled over → exactly one repaint");
         app.advance_animations(InputClock(90_000));
         assert!(!app.take_dirty().map, "and it settles back to quiet until the next minute");
+    }
+
+    #[test]
+    fn place_detail_minute_and_unavailable_list_inputs_do_not_poll_at_one_millisecond() {
+        use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource};
+        let bytes = obcm_testkit::build_poi_map((0, 0, 1_000_000, 1_000_000), 512, &[]);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = crate::settings::IdleReturn::Never;
+        app.stamp_clock(DateTime { year: 2025, month: 1, day: 6, hour: 12, minute: 0 }, 0, Some(0), ClockTrust::Ble);
+        app.ui.stack.clear();
+        let _ = app.ui.stack.push(Screen::PoiList(screen::PoiListScreen::new(PoiCategory::Water)));
+        let fix = obc_ports::Fix::at(500_000, 500_000);
+        for (map, position) in [(None, Some(fix)), (Some(&reader), None)] {
+            app.advance_animations(InputClock(0));
+            app.ui.prepare_base(map, None, position, None, 0, 0, &[], app.place_local_time());
+            assert_ne!(app.ms_until_next_wake(0), Some(1), "missing input must await an external update");
+        }
+        app.ui.prepare_base(Some(&reader), None, Some(fix), None, 0, 0, &[], app.place_local_time());
+        let _ = app.ui.stack.push(Screen::PoiDetail(screen::PoiDetailScreen::new(Poi {
+            metadata: Default::default(),
+            opening: Default::default(),
+            lat: fix.lat,
+            lon: fix.lon,
+            subtype: 1,
+            name: heapless::String::new(),
+            hours_ref: 0xffff,
+            distance_m: 0,
+        })));
+        app.ui.prepare_base(Some(&reader), None, Some(fix), None, 0, 0, &[], app.place_local_time());
+        for now in [60_000, 60_001, 120_000] {
+            app.advance_animations(InputClock(now));
+            app.ui.prepare_base(None, None, Some(fix), None, 0, 0, &[], app.place_local_time());
+            assert!(app.ms_until_next_wake(now).is_none_or(|ms| ms > 1), "cached detail only needs minute updates");
+        }
     }
 
     /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack. On
