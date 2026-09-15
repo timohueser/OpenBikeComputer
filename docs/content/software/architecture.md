@@ -437,7 +437,9 @@ fence until recovery; cancellation does not assume that the publication failed. 
 read after remount of the same card can resolve the pending edit against either its old
 or proposed checkpoint. The shared writer resumes only after that read and its durability
 barrier succeed. A queued cancellation clears a recovered accepted checkpoint before
-candidate retirement.
+candidate retirement. Reopened host sources must match the frozen map and route identities,
+including stored payload length and CRC. A different host owner does not make unchanged
+bytes stale, and a changed source cannot authorize the preview.
 
 A candidate remains marked in its immutable route bytes. Its exact accepted Metadata row
 makes it available as an ordinary route. Without that row, the route list labels it as an

@@ -272,6 +272,16 @@ impl ObjectSource {
         card.current_revision(self.id()).is_ok_and(|head| head == Some(self.revision()))
     }
 
+    /// Full current stored identity, independent of a particular mount's owner allocation.
+    pub(crate) fn fingerprint(&self) -> Option<obc_formats::retention::PayloadFingerprint> {
+        let owner = self.0.owner.lock().ok()?;
+        let card = owner.ready().ok()?;
+        let entry = card.entries().find(|entry| {
+            entry.id == self.id() && entry.revision == self.revision() && entry.flags == EntryFlags::NONE
+        })?;
+        card.entries_ok().then(|| obc_storage::flat::metadata::fingerprint(entry))
+    }
+
     pub fn store_id(&self) -> StoreId {
         self.0.store_id
     }
@@ -317,6 +327,15 @@ impl ByteSource for ObjectSource {
 pub struct HostStore(pub(crate) Owner);
 
 impl HostStore {
+    #[cfg(test)]
+    pub(crate) fn remount_memory_snapshot(&self) -> Self {
+        let mut owner = self.0.lock().unwrap();
+        let HostMedia::Memory(pages) = owner.card.device() else { panic!("memory card required") };
+        let media = HostMedia::Memory(RefCell::new(pages.borrow().clone()));
+        owner.remount_required = true;
+        Self(Arc::new(Mutex::new(MountedStore::new(FlatStore::mount(media), false))))
+    }
+
     pub fn memory() -> Result<Self, ImportError> {
         Self::new(HostMedia::Memory(RefCell::default()))
     }
