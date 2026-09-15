@@ -41,8 +41,9 @@ impl FlatRouteStore {
                     return Err(StoreError::Invalid.into());
                 }
                 let source = repo.owner.open(meta.id, meta.revision)?;
-                let summary = RouteSummary::read(&source).map_err(|_| StoreError::Invalid)?;
-                repo.publish(meta, summary);
+                let (summary, candidate) =
+                    RouteSummary::read_with_candidate(&source).map_err(|_| StoreError::Invalid)?;
+                repo.publish(meta, summary, candidate);
             }
         }
         for bytes in routes {
@@ -68,7 +69,8 @@ impl FlatRouteStore {
     }
 
     fn write(&mut self, bytes: &[u8], previous: Option<(ObjectId, Revision)>) -> Result<ObjectId, ImportError> {
-        let summary = RouteSummary::read(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
+        let (summary, candidate) =
+            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| StoreError::Invalid)?;
         let meta = self.owner.import(
             ObjectKind::Route,
             previous,
@@ -77,18 +79,20 @@ impl FlatRouteStore {
             DisplayName::default(),
         )?;
         // No read or open can turn a committed write into a reported failure.
-        self.publish(meta, summary);
+        self.publish(meta, summary, candidate);
         Ok(meta.id)
     }
 
-    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary) {
+    fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, candidate: bool) {
         if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
             self.revisions[i] = meta.revision;
             self.catalog[i] = summary;
+            self.metadata[i] = obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() };
         } else {
             self.ids.push(meta.id.0);
             self.revisions.push(meta.revision);
             self.catalog.push(summary);
+            self.metadata.push(obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() });
         }
     }
 }
@@ -128,8 +132,8 @@ impl RouteRepository for FlatRouteStore {
             if ids.len() == obc_app::MAX_ROUTES {
                 return Err(obc_app::retention::RetentionError::WriteFailed);
             }
-            let summary = store
-                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read(source))
+            let (summary, candidate) = store
+                .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_candidate(source))
                 .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?
                 .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?;
             catalog.push(summary);
@@ -138,10 +142,12 @@ impl RouteRepository for FlatRouteStore {
             metas.push(
                 rows.iter()
                     .find(|row| row.id == entry.id)
-                    .map(|row| {
-                        obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp)
+                    .map(|row| obc_app::RouteRetentionMeta {
+                        assistant_candidate: candidate,
+                        assistant_accepted: row.assistant_accepted,
+                        ..obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp)
                     })
-                    .unwrap_or_default(),
+                    .unwrap_or(obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() }),
             );
         }
         if !store.entries_ok() || scope(store) != start {
@@ -158,24 +164,44 @@ impl RouteRepository for FlatRouteStore {
         self.metadata.clone()
     }
 
+    fn write_checkpoint(
+        &mut self,
+        scope: obc_app::device_core::StoreRevision,
+        change: obc_app::navigator::CheckpointChange,
+    ) -> Result<(), obc_app::retention::RetentionError> {
+        use obc_app::retention::RetentionError;
+        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
+        obc_storage::flat::metadata::write_checkpoint(
+            store,
+            obc_storage::flat::StoreId(scope.store.bytes()),
+            scope.revision.raw(),
+            change.expected,
+            change.next,
+        )
+        .map_err(metadata_error)
+    }
+
     fn write_metadata(
         &mut self,
         effect: obc_app::retention::RetentionEffect,
     ) -> Result<(), obc_app::retention::RetentionError> {
         use obc_app::retention::{RetentionEffect, RetentionError};
-        let RetentionEffect::WriteRouteMetadata { scope: Some(expected), id, meta, .. } = effect else {
-            return Err(RetentionError::Unsupported);
-        };
+        let expected = effect.scope().ok_or(RetentionError::Stale)?;
         let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
         let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
-        obc_storage::flat::metadata::write_route(
-            store,
-            obc_storage::flat::StoreId(expected.store.bytes()),
-            expected.revision.raw(),
-            ObjectId(id),
-            meta.retention as u8,
-            meta.last_used_utc,
-        )
+        let identity = obc_storage::flat::StoreId(expected.store.bytes());
+        match effect {
+            RetentionEffect::WriteRouteMetadata { id, meta, .. } => obc_storage::flat::metadata::write_route(
+                store,
+                identity,
+                expected.revision.raw(),
+                ObjectId(id),
+                meta.retention as u8,
+                meta.last_used_utc,
+            ),
+            _ => return Err(RetentionError::Unsupported),
+        }
         .map_err(metadata_error)
     }
 
@@ -215,6 +241,7 @@ impl RouteRepository for FlatRouteStore {
         self.revisions.remove(i);
         self.ids.remove(i);
         self.catalog.remove(i);
+        self.metadata.remove(i);
         if self.active.as_ref().is_some_and(|source| source.id().0 == id) {
             self.active = None;
         }
@@ -225,14 +252,59 @@ impl RouteRepository for FlatRouteStore {
     }
 
     fn publish_nav_route(&mut self, bytes: &[u8]) -> Option<crate::RoutePublication> {
-        let summary = RouteSummary::read(&SliceSource(bytes)).ok()?;
+        let (summary, candidate) = RouteSummary::read_with_candidate(&SliceSource(bytes)).ok()?;
         let meta = self.owner.import_computed_route(bytes).ok()?;
-        self.publish(meta, summary);
+        self.publish(meta, summary, candidate);
         Some(crate::RoutePublication {
             id: meta.id.0,
             revision: meta.revision.0,
             store: self.store_scope().map(|scope| scope.store),
         })
+    }
+
+    fn publish_review_route(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<crate::RoutePublication, obc_app::navigator::NavigatorError> {
+        use obc_app::navigator::NavigatorError;
+        let (summary, candidate) =
+            RouteSummary::read_with_candidate(&SliceSource(bytes)).map_err(|_| NavigatorError::Unavailable)?;
+        let meta = self.owner.import_computed_route(bytes).map_err(|error| match error {
+            crate::flat_store::ImportError::Storage(StoreError::Media | StoreError::ReadOnly)
+            | crate::flat_store::ImportError::RemountRequired => NavigatorError::DurabilityUnknown,
+            _ => NavigatorError::Store,
+        })?;
+        self.publish(meta, summary, candidate);
+        Ok(crate::RoutePublication {
+            id: meta.id.0,
+            revision: meta.revision.0,
+            store: self.store_scope().map(|scope| scope.store),
+        })
+    }
+    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::retention::PayloadFingerprint> {
+        self.owner
+            .entries()
+            .ok()?
+            .into_iter()
+            .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id)
+            .map(obc_storage::flat::metadata::fingerprint)
+    }
+    fn resume_map_matches(&self, map: obc_formats::obcr::RouteSourceKey) -> bool {
+        let Ok(Some(checkpoint)) = self.read_checkpoint() else {
+            return false;
+        };
+        let Ok(source) = self.owner.open(ObjectId(checkpoint.route.object), Revision(checkpoint.route.revision)) else {
+            return false;
+        };
+        obc_route::RouteObjectInfo::read(&source).is_ok_and(|info| info.attribution_map == Some(map))
+    }
+    fn read_checkpoint(
+        &self,
+    ) -> Result<Option<obc_formats::retention::NavigatorCheckpoint>, obc_app::retention::RetentionError> {
+        use obc_app::retention::RetentionError;
+        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
+        obc_storage::flat::metadata::read_checkpoint(store).map_err(metadata_error)
     }
 
     fn retract_nav_route(&mut self, publication: crate::RoutePublication) -> Result<(), CatalogError> {

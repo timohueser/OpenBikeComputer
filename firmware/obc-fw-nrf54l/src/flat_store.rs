@@ -420,6 +420,10 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// batch — are both worse than the ~1 KB [`REQUEST_QUEUE_BYTES`] accounts for.
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
+    WriteCheckpoint {
+        scope: obc_app::device_core::StoreRevision,
+        change: obc_app::navigator::CheckpointChange,
+    },
     ReconcileMetadata,
     WriteMetadata {
         effect: obc_app::retention::RetentionEffect,
@@ -1132,6 +1136,7 @@ fn remove_head(
     if meta.kind != expected {
         return Err(StoreError::Invalid);
     }
+    check_route_change(store, id)?;
     match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
         Ok(_) => Ok(true),
         Err(error) => {
@@ -1175,6 +1180,16 @@ fn serve(
         Request::ReconcileMetadata => {
             Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(retention_error)))
         }
+        Request::WriteCheckpoint { scope, change } => Ok(Outcome::Metadata(
+            obc_storage::flat::metadata::write_checkpoint(
+                store,
+                StoreId(scope.store.bytes()),
+                scope.revision.raw(),
+                change.expected,
+                change.next,
+            )
+            .map_err(retention_error),
+        )),
         Request::WriteMetadata { effect } => {
             use obc_app::retention::{RetentionEffect, RetentionError};
             let result = match effect {
@@ -1259,6 +1274,7 @@ fn serve(
                 .map(|_| Outcome::Published(id))
         }
         Request::RemoveComputedRoute { id, revision } => {
+            check_route_change(store, id)?;
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
@@ -1734,6 +1750,38 @@ pub(crate) fn planner_map_current() -> bool {
     unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref().is_current() }
 }
 
+#[cfg(has_nav)]
+pub(crate) fn planner_map_key(store: &FlatStore<FlatCard>) -> obc_formats::obcr::RouteSourceKey {
+    // SAFETY: the ride task runs only after the session-long source is initialized.
+    let source = unsafe { (&*core::ptr::addr_of!(MAP_SOURCE)).assume_init_ref() };
+    obc_formats::obcr::RouteSourceKey {
+        store: store.store_id().0,
+        object: source.id().0,
+        revision: source.revision().0,
+    }
+}
+
+fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), StoreError> {
+    obc_storage::flat::metadata::check_route_change(store, id).map_err(|error| match error {
+        obc_storage::flat::metadata::Error::Store(error) => error,
+        _ => StoreError::Media,
+    })
+}
+
+#[cfg(has_nav)]
+pub(crate) fn route_fingerprint(
+    store: &FlatStore<FlatCard>,
+    id: u64,
+) -> Option<obc_formats::retention::PayloadFingerprint> {
+    let meta = store
+        .entries()
+        .find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags == EntryFlags::NONE);
+    if !store.entries_ok() {
+        return None;
+    }
+    meta.map(obc_storage::flat::metadata::fingerprint)
+}
+
 /// The open map's §9 display name, truncated to what the System-settings row shows.
 ///
 /// Captured in [`open_map`] because the alternative is a **second catalog walk** — at 1,027 entries
@@ -1908,9 +1956,15 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
 
     let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+    let mut candidates = 0u64;
     for entry in heads {
-        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read(source)) {
-            Ok(Ok(summary)) => {
+        match store
+            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_candidate(source))
+        {
+            Ok(Ok((summary, candidate))) => {
+                if candidate {
+                    candidates |= 1 << routes.len();
+                }
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
             }
@@ -1930,6 +1984,12 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
         }
     }
     app.set_routes_with_ids(&routes, &ids);
+    app.set_assistant_candidates(candidates);
+    if app.assistant_needs_recovery() {
+        if let Ok(checkpoint) = obc_storage::flat::metadata::read_checkpoint(store) {
+            app.offer_assistant_checkpoint(retention_scope(store).store, checkpoint);
+        }
+    }
     defmt::info!("flat: Route menu loaded {=usize} route(s)", routes.len());
     true
 }
@@ -2068,11 +2128,19 @@ pub(crate) fn load_retention(
     app: &mut obc_app::App,
 ) -> Result<(), obc_app::retention::RetentionError> {
     let mut metas = [obc_app::RouteRetentionMeta::default(); obc_app::MAX_ROUTES];
+    let len = app.route_metas().len();
+    metas[..len].copy_from_slice(app.route_metas());
+    for meta in &mut metas {
+        meta.assistant_accepted = false;
+    }
     obc_storage::flat::metadata::read_rows(store, |row| match row.kind {
         ObjectKind::Route => {
             if let Some(index) = app.route_ids().iter().position(|&id| id == row.id.0) {
-                metas[index] =
-                    obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp);
+                metas[index] = obc_app::RouteRetentionMeta {
+                    assistant_candidate: metas[index].assistant_candidate,
+                    assistant_accepted: row.assistant_accepted,
+                    ..obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp)
+                };
             }
         }
         ObjectKind::Ride => app.set_ride_archive_proof(row.id.0, row.timestamp),

@@ -315,7 +315,8 @@ enum NavIo {
 /// and 256 44-byte index records. The flat store rounds this reservation to one extent and trims
 /// it to the actual streamed length at commit.
 #[cfg(has_nav)]
-const NAV_ROUTE_RESERVE: u64 = 128 + 256 * (1_530 + 44);
+const NAV_ROUTE_RESERVE: u64 = HEADER_FULL_LEN as u64
+    + 256 * (255 * obc_formats::obcr::POINT_RECORD_LEN as u64 + obc_formats::obcr::CHUNK_META_LEN as u64);
 
 #[cfg(has_nav)]
 static NAV_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
@@ -537,6 +538,9 @@ fn nav_finish(
         Err(obc_app::navigator::NavigatorError::Store) => "store",
         Err(obc_app::navigator::NavigatorError::SourceChanged) => "source-changed",
         Err(obc_app::navigator::NavigatorError::Workspace) => "workspace",
+        Err(obc_app::navigator::NavigatorError::Movement) => "movement",
+        Err(obc_app::navigator::NavigatorError::Unavailable) => "unavailable",
+        Err(obc_app::navigator::NavigatorError::DurabilityUnknown) => "durability unknown",
     };
     let len = result.map(|(_, len)| len).unwrap_or(0);
     defmt::info!(
@@ -898,6 +902,10 @@ pub(crate) async fn run_app(
     // bounded step per pass. Guards the planner slot's initialization.
     #[cfg(has_nav)]
     let mut nav_run: Option<NavRun> = None;
+    #[cfg(has_nav)]
+    let mut review_publication: Option<obc_formats::retention::PayloadFingerprint> = None;
+    #[cfg(has_nav)]
+    let mut review_original: Option<obc_storage::flat::StoreSource<'static, crate::flat_store::FlatCard>> = None;
     #[cfg(has_nav)]
     let mut detour = crate::detour::Executor::new();
     // The scratch arena's **nav arm**, held for the whole search (#1146 P2) — many passes, by
@@ -1593,17 +1601,78 @@ pub(crate) async fn run_app(
                 if let Some(effect) = exec.effects.retention.take() {
                     use obc_app::retention::{RetentionEffect, RetentionOutcome};
                     let token = effect.token();
-                    let result = metadata_call(crate::flat_store::Request::WriteMetadata { effect }).await;
-                    let outcome = match (effect, result) {
-                        (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
-                            RetentionOutcome::RouteMetadataWritten { token, id }
-                        }
-                        (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => {
-                            RetentionOutcome::RideMetadataWritten { token, id }
-                        }
-                        (_, Err(error)) => RetentionOutcome::Failed { token, error },
+                    #[cfg(has_nav)]
+                    let resume = app.assistant_review_status() == obc_app::navigator::ReviewStatus::Saving
+                        && app.assistant_preview().is_none();
+                    #[cfg(has_nav)]
+                    let resume_current = !resume
+                        || app.assistant_checkpoint().is_some_and(|checkpoint| {
+                            flat.with_source(
+                                obc_storage::flat::ObjectId(checkpoint.route.object),
+                                Some(obc_storage::flat::Revision(checkpoint.route.revision)),
+                                |source| {
+                                    obc_route::RouteObjectInfo::read(source).is_ok_and(|info| {
+                                        info.attribution_map == Some(crate::flat_store::planner_map_key(flat))
+                                    })
+                                },
+                            )
+                            .unwrap_or(false)
+                        });
+                    #[cfg(has_nav)]
+                    let sources_current = resume_current
+                        && app.assistant_review_context().is_none_or(|context| {
+                            crate::flat_store::planner_map_current()
+                                && context.map == crate::flat_store::planner_map_key(flat)
+                                && context.profile == app.settings().bike_profile_idx
+                                && context.original.is_none_or(|original| {
+                                    review_original.as_ref().is_some_and(|held| {
+                                        held.id().0 == original.object
+                                            && held.revision().0 == original.revision
+                                            && held.is_current()
+                                    })
+                                })
+                        });
+                    #[cfg(not(has_nav))]
+                    let sources_current = app.assistant_review_context().is_none();
+                    let result = if matches!(effect, RetentionEffect::WriteCheckpoint { .. }) && !sources_current {
+                        Some(Err(obc_app::retention::RetentionError::Stale))
+                    } else if matches!(effect, RetentionEffect::WriteCheckpoint { .. })
+                        && (!effect.scope().is_some_and(|scope| app.assistant_store_matches(scope.store))
+                            || !app.assistant_checkpoint_submission(token))
+                    {
+                        RideExec::deliver(
+                            &mut exec.outcomes.retention,
+                            RetentionOutcome::Cancelled { token },
+                            "retention",
+                        );
+                        None
+                    } else {
+                        let request = if let RetentionEffect::WriteCheckpoint { scope: Some(scope), .. } = effect {
+                            app.assistant_checkpoint_payload(token)
+                                .map(|change| crate::flat_store::Request::WriteCheckpoint { scope, change })
+                        } else {
+                            Some(crate::flat_store::Request::WriteMetadata { effect })
+                        };
+                        Some(match request {
+                            Some(request) => metadata_call(request).await,
+                            None => Err(obc_app::retention::RetentionError::Stale),
+                        })
                     };
-                    RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
+                    if let Some(result) = result {
+                        let outcome = match (effect, result) {
+                            (RetentionEffect::WriteCheckpoint { .. }, Ok(())) => {
+                                RetentionOutcome::CheckpointWritten { token }
+                            }
+                            (RetentionEffect::WriteRouteMetadata { id, .. }, Ok(())) => {
+                                RetentionOutcome::RouteMetadataWritten { token, id }
+                            }
+                            (RetentionEffect::WriteRideMetadata { id, .. }, Ok(())) => {
+                                RetentionOutcome::RideMetadataWritten { token, id }
+                            }
+                            (_, Err(error)) => RetentionOutcome::Failed { token, error },
+                        };
+                        RideExec::deliver(&mut exec.outcomes.retention, outcome, "retention");
+                    }
                 }
             }
             if let Some(effect) = exec.effects.bond.take() {
@@ -1625,6 +1694,13 @@ pub(crate) async fn run_app(
             // release is acknowledged only after the pending ticket and its cleanup settle.
             #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
+            #[cfg(has_nav)]
+            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && nav_run.is_none() {
+                review_publication = None;
+                if let Some(source) = review_original.take() {
+                    flat.close(source.release());
+                }
+            }
             if let Some(effect) = exec.effects.navigator.take() {
                 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
                 #[cfg(has_nav)]
@@ -1642,8 +1718,21 @@ pub(crate) async fn run_app(
                 if !detour_effect {
                     match effect {
                         #[cfg(has_nav)]
-                        NavigatorEffect::Acquire { token, work: PlannerWork::Route(request) } => {
-                            if !crate::flat_store::planner_map_current() {
+                        NavigatorEffect::Acquire {
+                            token,
+                            work: PlannerWork::Route(request) | PlannerWork::AssistantRoute(request),
+                        } => {
+                            if !crate::flat_store::planner_map_current()
+                                || app.assistant_review_context().is_some_and(|context| {
+                                    context.map != crate::flat_store::planner_map_key(flat)
+                                        || context.store.bytes() != flat.store_id().0
+                                        || context.profile != app.settings().bike_profile_idx
+                                        || context.original.is_some_and(|original| {
+                                            crate::flat_store::route_fingerprint(flat, original.object)
+                                                != Some(original)
+                                        })
+                                })
+                            {
                                 RideExec::deliver(
                                     &mut exec.outcomes.navigator,
                                     NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged },
@@ -1674,6 +1763,22 @@ pub(crate) async fn run_app(
                                             elev: &mut *nav.elev,
                                         };
                                         nav_begin(&mut bufs, &request, app.settings().bike_profile_idx);
+                                        if let Some(context) = app.assistant_review_context() {
+                                            if let Some((planner, ..)) = bufs.guard.plan_parts() {
+                                                planner.set_attribution_map(context.map);
+                                                planner.set_assistant_candidate();
+                                                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
+                                                    planner.set_unresolved_avoidance();
+                                                }
+                                            }
+                                            if let Some(original) = context.original {
+                                                review_original = crate::flat_store::planner_original(
+                                                    flat,
+                                                    obc_storage::flat::ObjectId(original.object),
+                                                )
+                                                .ok();
+                                            }
+                                        }
                                         exec.nav_token = Some(token);
                                         nav_run = Some(NavRun {
                                             allocation: None,
@@ -1702,7 +1807,10 @@ pub(crate) async fn run_app(
                         // The `ble` image ships without the router (the 256 KB DK's statics), so the
                         // workspace this operation asks for does not exist in it.
                         #[cfg(not(has_nav))]
-                        NavigatorEffect::Acquire { token, work: PlannerWork::Route(_) } => {
+                        NavigatorEffect::Acquire {
+                            token,
+                            work: PlannerWork::Route(_) | PlannerWork::AssistantRoute(_),
+                        } => {
                             defmt::warn!("nav: router not built into the ble image (256K DK) — refusing the operation");
                             RideExec::deliver(
                                 &mut exec.outcomes.navigator,
@@ -1720,6 +1828,46 @@ pub(crate) async fn run_app(
                             );
                         }
                         NavigatorEffect::Release { token, retain_result, .. } => {
+                            #[cfg(has_nav)]
+                            if nav_run.is_none() && !retain_result {
+                                if let Some(source) = review_publication {
+                                    if let Some(writer) = crate::flat_store::writer() {
+                                        let result = writer
+                                            .call(
+                                                crate::flat_store::Request::RemoveComputedRoute {
+                                                    id: obc_storage::flat::ObjectId(source.object),
+                                                    revision: obc_storage::flat::Revision(source.revision),
+                                                },
+                                                &NAV_STORE_REPLY,
+                                            )
+                                            .await;
+                                        if result.is_err() {
+                                            RideExec::deliver(
+                                                &mut exec.outcomes.navigator,
+                                                NavigatorOutcome::ReleaseUnresolved { token },
+                                                "navigator",
+                                            );
+                                            continue;
+                                        }
+                                        review_publication = None;
+                                        crate::flat_store::load_routes(flat, app);
+                                    } else {
+                                        RideExec::deliver(&mut exec.outcomes.navigator,
+                                            NavigatorOutcome::ReleaseUnresolved { token }, "navigator");
+                                        continue;
+                                    }
+                                }
+                                if let Some(source) = review_original.take() {
+                                    flat.close(source.release());
+                                }
+                                nav_guard = None;
+                                RideExec::deliver(
+                                    &mut exec.outcomes.navigator,
+                                    NavigatorOutcome::Released { token },
+                                    "navigator",
+                                );
+                                continue;
+                            }
                             nav_cancel = true;
                             #[cfg(has_nav)]
                             {
@@ -1752,7 +1900,11 @@ pub(crate) async fn run_app(
                                 }
                                 _ => None,
                             });
-                            let error = if !crate::flat_store::planner_map_current() {
+                            let error = if !crate::flat_store::planner_map_current()
+                                || app.assistant_review_context().is_some_and(|context| {
+                                    context.original.is_some()
+                                        && !review_original.as_ref().is_some_and(|source| source.is_current())
+                                }) {
                                 Some(NavigatorError::SourceChanged)
                             } else if next.is_none() {
                                 Some(NavigatorError::Workspace)
@@ -1823,6 +1975,7 @@ pub(crate) async fn run_app(
                 {
                     use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerProgress};
                     let mut finished = None;
+                    let mut finished_review = None;
                     let mut progressed = None;
                     let mut acquired = false;
                     let mut cancelled = false;
@@ -1974,7 +2127,9 @@ pub(crate) async fn run_app(
                                         Some(name) => crate::flat_store::Request::PublishComputedRoute {
                                             allocation,
                                             name,
-                                            original: None,
+                                            original: review_original
+                                                .as_ref()
+                                                .map(|source| (source.id(), source.revision())),
                                         },
                                         None => {
                                             publishing = false;
@@ -2008,8 +2163,29 @@ pub(crate) async fn run_app(
                                                         obc_route::Step::Done(stats) => stats.total_distance_m,
                                                         _ => 0,
                                                     };
+                                                    if let Some(context) = app.assistant_review_context() {
+                                                        if let Some(source) =
+                                                            crate::flat_store::route_fingerprint(flat, id)
+                                                        {
+                                                            review_publication = Some(source);
+                                                            finished_review = flat
+                                                                .with_source(
+                                                                    obc_storage::flat::ObjectId(id),
+                                                                    Some(obc_storage::flat::Revision(source.revision)),
+                                                                    |bytes| {
+                                                                        obc_app::navigator::ReviewedRoute::read(
+                                                                            source, bytes, context,
+                                                                        )
+                                                                    },
+                                                                )
+                                                                .ok()
+                                                                .and_then(Result::ok);
+                                                        }
+                                                    }
                                                     crate::flat_store::load_routes(flat, app);
-                                                    let _ = crate::flat_store::reconcile_route(flat, Some(id));
+                                                    if app.assistant_review_context().is_none() {
+                                                        let _ = crate::flat_store::reconcile_route(flat, Some(id));
+                                                    }
                                                     finished = Some(Ok((id, len)));
                                                 }
                                                 obc_app::host::NavPublishDisposition::Compensate(id) => {
@@ -2019,7 +2195,13 @@ pub(crate) async fn run_app(
                                             }
                                         }
                                         result => {
-                                            if run.cancel_requested {
+                                            if matches!(
+                                                result,
+                                                Err(obc_storage::flat::StoreError::Media
+                                                    | obc_storage::flat::StoreError::ReadOnly)
+                                            ) {
+                                                finished = Some(Err(NavigatorError::DurabilityUnknown));
+                                            } else if run.cancel_requested {
                                                 run.io = NavIo::NeedFinish(obc_route::Step::Failed(
                                                     obc_route::NavError::NoPath,
                                                 ));
@@ -2107,13 +2289,25 @@ pub(crate) async fn run_app(
                             };
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match result {
+                                    Ok(_) if app.assistant_review_context().is_some() => match finished_review {
+                                        Some(preview) => NavigatorOutcome::ReviewReady { token, preview },
+                                        None => {
+                                            NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
+                                        }
+                                    },
                                     Ok((route, _)) => NavigatorOutcome::PlanFinished { token, route },
+                                    Err(NavigatorError::DurabilityUnknown) if run.cancel_requested => {
+                                        search_ended = true;
+                                        NavigatorOutcome::ReleaseUnresolved { token }
+                                    }
                                     Err(error) => NavigatorOutcome::Failed { token, error },
                                 };
                                 RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                             }
-                            prev_active = None;
-                            index_route = None;
+                            if app.assistant_review_context().is_none() {
+                                prev_active = None;
+                                index_route = None;
+                            }
                         } else if acquired || progressed.is_some() {
                             if let Some(token) = exec.nav_token.take() {
                                 let outcome = match progressed {
@@ -2123,7 +2317,9 @@ pub(crate) async fn run_app(
                                 RideExec::deliver(&mut exec.outcomes.navigator, outcome, "navigator");
                             }
                         }
-                        nav_run = Some(run);
+                        if !search_ended {
+                            nav_run = Some(run);
+                        }
                     }
                 }
                 if search_ended {

@@ -401,6 +401,7 @@ impl App {
         }
         if let Some(outcome) = outcomes.retention.take() {
             if self.retention.apply_outcome(outcome) {
+                self.assistant_checkpoint_answer(outcome);
                 use crate::retention::{RetentionError, RetentionOutcome};
                 match outcome {
                     RetentionOutcome::Failed { error: RetentionError::RemountRequired, .. } => {
@@ -488,6 +489,7 @@ impl App {
             if self.pass.store != Some(store) {
                 if self.pass.store.is_none_or(|old| old.store != store.store) {
                     self.retention.reset_store();
+                    self.navigator.review_store_changed(store.store);
                     if self.pass.store.is_some() {
                         self.catalogs.change_store();
                     }
@@ -641,7 +643,14 @@ impl App {
         }
 
         if effects.retention.is_empty() {
-            if let Some(mut effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
+            let checkpoint = self.navigator.checkpoint_change();
+            let effect = checkpoint.and_then(|_| self.retention.next_checkpoint_effect());
+            if let Some(effect) = effect {
+                self.navigator.checkpoint_issued(effect.token());
+            }
+            if let Some(mut effect) =
+                effect.or_else(|| self.with_retention(|retention, view| retention.next_metadata_effect(view)))
+            {
                 effect.bind(scope);
                 let _ = effects.retention.try_put(effect);
             }

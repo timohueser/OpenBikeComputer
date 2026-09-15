@@ -254,11 +254,10 @@ impl Trimmer {
                 }
                 ObcrEmitter::begin(sink)?;
                 self.emitter.set_attribution_map(detour.attribution_map()?);
-                self.emitter.set_flags(if detour.has_unresolved_avoidance() {
-                    obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE
-                } else {
-                    0
-                });
+                self.emitter.set_flags(
+                    (if detour.has_unresolved_avoidance() { obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE } else { 0 })
+                        | if detour.is_assistant_candidate() { obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE } else { 0 },
+                );
                 if self.has_elevation {
                     self.emitter.keep_elevation_detail(ELE_DEADBAND_M as i16);
                 }
