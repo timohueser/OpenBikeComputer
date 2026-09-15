@@ -143,3 +143,21 @@ RA09 OBCM v16 header extension and preserve these v15 graph/place semantics.
 - Implement RA04/RA05 descriptor-aware transforms and source binding through the
   reserved contract, then compare preview and committed facts from the same bytes.
 - Run the final pinned v16 real-map simulator scenarios and resource/layout gates.
+
+## Current mainline and browser upload
+
+The branch includes the mainline weather removal. The merge preserves the local
+UTC-offset authority field, the complete route envelopes, and the current map
+version vectors. The shared vector suite passes after the merge. Exact App
+allocation records still require the next CI measurement for this combined head.
+
+Commit `202c372d` updates the browser header reader used before route upload and
+rename. It now requires the OBCR v4 header (160 bytes). The vector tests refuse an
+old version and a truncated extension. The route-name helper uses the same current
+header. All 65 builder test files pass: 980 tests. The three normal WASM bridges
+were built before the test run. An initial run had missing generated bridges and
+an old test-helper header; those setup and fixture errors were resolved.
+
+`obc suites check` passes. No new public behavior documentation is required: the
+existing OBCR v4 contract describes this change. No snapshot sweep, resource image,
+or hardware run was added. The merge and browser correction need a delta review.
