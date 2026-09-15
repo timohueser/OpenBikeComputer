@@ -51,6 +51,7 @@ integration remain separate work.
 | `long_data.py`, `long_replay.py`, `long_report.py` | GoldenCheetah long-ride input checks, chronological replay, and history comparison |
 | `endurance.py`, `endurance_report.py` | Exploratory one-coefficient gradient, sustained-climb, and duration comparisons |
 | `komoot_data.py`, `komoot_protocol.py` | Private GPX preparation, gap audit, and frozen chronological evaluation plan |
+| `komoot_replay.py`, `komoot_report.py` | Frozen recorded-motion replay, paired history budgets, and private HTML report |
 
 ## Private Komoot preparation
 
@@ -64,6 +65,9 @@ hashes. Optional `pause_events` contain millisecond offsets from the activity st
 python3 host/ride-time-prototype/komoot_data.py
 python3 host/ride-time-prototype/komoot_protocol.py freeze
 python3 host/ride-time-prototype/komoot_protocol.py verify
+python3 host/ride-time-prototype/komoot_replay.py freeze
+python3 host/ride-time-prototype/komoot_replay.py run
+python3 host/ride-time-prototype/komoot_report.py
 ```
 
 Use `--source PATH` and `--output PATH` for other directories. The default source is
@@ -98,11 +102,21 @@ completed evaluation rides may teach subsequent rides, as they would on a device
 parameters must remain fixed. The planned comparison is the current scalar baseline against
 the existing single uphill coefficient, with paired history budgets from 0 to 1000 km.
 
-This stage prepares data and freezes the analysis plan. It produces no ETA predictions.
-The Komoot replay runner must be implemented and its sources/tests locked in a separate
-write-once execution manifest before the first comparison. Report excluded distance/time,
-source-summary disagreement, duration and bike support, and the conditional nature of the
-outcomes with every accuracy result. A single rider cannot establish population accuracy.
+Preparation and plan freeze produce no ETA predictions. The replay freeze locks its sources,
+authored tests, Python/NumPy versions, and input protocol hash in a separate execution manifest.
+`run` refuses to replace a run-start record, even after a failure. Preserve failed run records
+before a corrected execution; never change the experiment because of observed ETA errors.
+
+The runner forms about 20 m observation blocks and enforces every interval's learning mask.
+Unknown positive active time resets the live multiplier; identified pauses preserve it. Block
+uphill weight uses the distance-weighted mean grade, clipped as grade/8% to [0,1]. The existing
+bounded uphill update is unchanged. Both persistent learners update only after a ride ends.
+
+The report verifies the frozen inputs and result hashes. It writes private `summary.json`,
+`report.md`, and standalone `report.html`, with embedded SVG charts. Regenerate presentation
+without repeating the replay. It reports excluded distance/time, source-summary disagreement,
+duration and bike support, and conditional range coverage. A single rider cannot establish
+population accuracy. No personal ride results are published by these commands.
 
 ## Small long-ride corrections
 
