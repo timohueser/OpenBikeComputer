@@ -336,7 +336,7 @@ carry the same value (§3.8). That is why there is no session identifier in this
 | `0x06` | `CANCEL` | none |
 | `0x07` | `ARM` | one commit, then the boot handoff and a reboot |
 | `0x08` | `FORMAT` | replaces the entire card with an empty store, then reboots |
-| `0x09` | `ARCHIVE_RIDE` | persists exact client archive possession without starting an expiry countdown |
+| `0x09` | `ARCHIVE_RIDE` | persists exact client archive possession for the synced indicator |
 
 An unknown opcode is `unsupported`. There is no generic forwarding path.
 
@@ -500,7 +500,7 @@ A `PUT` naming an entry that carries `RECORDING` or `RESERVED` is refused `inval
 replaces: those kinds are produced by the device, and a client that could overwrite a ride
 mid-recording or a rollback reserve mid-update would be writing where the store and the bootloader
 already are. Metadata writes require device policy admission under
-[Retention_Metadata.md](Retention_Metadata.md); remote writes cannot establish archive proof.
+[Ride_Archive_Metadata.md](Ride_Archive_Metadata.md); remote writes cannot establish archive proof.
 
 One commit publishes the new head and removes both the displaced head and any retained revision.
 
@@ -749,17 +749,16 @@ zero through an atomic metadata replacement and readback. An exact existing row 
 timestamp without writing payload or changing the catalog sequence. Before acknowledging a
 duplicate, the hook MUST complete a media sync barrier: a live-medium remount can read a gate whose
 previous final sync failed. A failed duplicate barrier fences mutations until remount and returns
-no success. A duplicate MUST NOT restart the countdown.
+no success. A duplicate MUST preserve the existing proof.
 The serialized storage writer owns the whole operation; it does not call back into App or read a
-client clock. A zero timestamp records possession only. RetentionMachine owns the later first
-trusted-clock stamp and expiry.
+client clock. A zero timestamp records possession without a known archive date. No background task changes it.
 
 **Response — 16 bytes**
 
 | Offset | Type | Field |
 | :-- | :-- | :-- |
 | 0 | `u64` | current catalog commit sequence |
-| 8 | `u32` | stored timestamp; zero means no countdown has started |
+| 8 | `u32` | stored archive timestamp; zero means unknown |
 | 12 | 4 bytes | reserved, zero |
 
 The opcode and RequestId correlate the response. No stream records accompany it. If the response
@@ -768,9 +767,8 @@ RequestId. A committed proof remains idempotent after remount. If the first atte
 a retry must complete the write or fail. If the ride was removed or replaced meanwhile, the source
 mismatch is terminal for that receipt; the device does not recreate the ride or its proof.
 
-The iOS client delivers and retries receipts from its durable archives. The board loads validated
-durable proof into ride retention. Only an existing exact proof can receive its first trusted-clock
-stamp, and scoped expiry requires a durable nonzero stamp.
+The iOS client delivers and retries receipts from its durable archives. The board uses validated
+durable proof for its synced indicator. It does not delete rides automatically.
 
 ## 4. Firmware update
 

@@ -84,6 +84,7 @@ fn publish(store: &FlatStore<HostMedia>, id: ObjectId, revision: Revision, bytes
     store.write(&mut allocation, bytes).unwrap();
     let put = Mutation::Put {
         meta: EntryMeta {
+            added_at_utc: 0,
             id,
             revision,
             kind: ObjectKind::MapShard,

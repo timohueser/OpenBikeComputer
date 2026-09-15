@@ -359,6 +359,7 @@ pub struct FlatStore<D> {
     /// iterator with nowhere to put an error, so the failure is recorded here and
     /// [`entries_ok`](Self::entries_ok) is how a caller finds out its listing was short.
     listing_failed: Cell<bool>,
+    route_added_at: Cell<u32>,
 }
 
 fn read_blocks<D: BlockDevice>(dev: &D, lba: u64, buf: &mut [u8]) -> Result<(), StoreError> {
@@ -577,6 +578,11 @@ struct Resolved {
 }
 
 impl<D: BlockDevice> FlatStore<D> {
+    /// Supply a trusted UTC time for route publications. Unknown time leaves age unknown.
+    pub fn set_route_added_at(&self, utc: Option<u32>) {
+        self.route_added_at.set(utc.unwrap_or(0));
+    }
+
     fn read_ranges(&self, ranges: &Ranges, payload_len: u64, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError> {
         if offset >= payload_len {
             return Ok(0);
@@ -808,6 +814,7 @@ impl<D: BlockDevice> FlatStore<D> {
             ride: Cell::new(None),
             recovered: Cell::new(None),
             listing_failed: Cell::new(false),
+            route_added_at: Cell::new(0),
         }
     }
 
@@ -911,7 +918,14 @@ impl<D: BlockDevice> FlatStore<D> {
         if !self.mode().readable() {
             return Err(StoreError::ReadOnly);
         }
-        Ok(self.find(id)?.1.filter(|entry| entry.meta.flags == EntryFlags::NONE).map(|entry| entry.meta.revision))
+        Ok(self
+            .find(id)?
+            .1
+            .filter(|entry| {
+                entry.meta.flags == EntryFlags::NONE
+                    || (entry.meta.kind == super::ObjectKind::Route && entry.meta.flags.is_route_head())
+            })
+            .map(|entry| entry.meta.revision))
     }
 
     /// Entries the catalog holds.
@@ -1549,10 +1563,15 @@ impl<D: BlockDevice> FlatStore<D> {
                 match source {
                     PutSource::Amend => {
                         let existing = existing.ok_or(StoreError::NotFound)?;
-                        if meta.kind != existing.meta.kind {
+                        if meta.kind != existing.meta.kind
+                            || (meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
+                                && (meta.payload_len != existing.meta.payload_len
+                                    || meta.payload_crc != existing.meta.payload_crc))
+                        {
                             return Err(StoreError::Invalid);
                         }
                         let mut entry = Entry { meta: *meta, ranges: existing.ranges };
+                        entry.meta.added_at_utc = existing.meta.added_at_utc;
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {
@@ -1564,6 +1583,9 @@ impl<D: BlockDevice> FlatStore<D> {
                         Ok(Resolved { key: meta.key(), entry: Some(entry), creates: false, freed, reservation: None })
                     }
                     PutSource::Fresh(allocation) => {
+                        if meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
+                            return Err(StoreError::Invalid);
+                        }
                         // §5.2's cursor never rewinds, so an id below it named an object once and may
                         // never name another. Without this the compare-and-swap below would wave a
                         // retired identity through — `find` comes back empty, so the expected revision
@@ -1597,6 +1619,12 @@ impl<D: BlockDevice> FlatStore<D> {
                             return Err(StoreError::Invalid);
                         }
                         let mut entry = Entry { meta: *meta, ranges };
+                        if meta.kind == super::ObjectKind::Route
+                            && !meta.flags.has(EntryFlags::RETAINED)
+                            && meta.added_at_utc == 0
+                        {
+                            entry.meta.added_at_utc = self.route_added_at.get();
+                        }
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {

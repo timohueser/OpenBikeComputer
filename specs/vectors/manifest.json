@@ -324,14 +324,6 @@
       "utc_iso": "2026-07-09T12:00:00Z",
       "offset_min": 120
     },
-    "command-set-route-retention.bin": {
-      "format": "setRouteRetention command (spec 4.4, cmd 6, epic #638 S4)",
-      "byte_len": 4,
-      "cmd": 6,
-      "object_id": 7,
-      "retention": 3,
-      "retention_meaning": "2 weeks"
-    },
     "update-container-v1.bin": {
       "format": "OBCU update container (spec 1), unsigned/v1 — fwImage payload (spec 7.6)",
       "byte_len": 192,
@@ -363,10 +355,10 @@
       "object_id": 0
     },
     "route-list.bin": {
-      "format": "routeList object (spec 7.4) — 6-byte v2 header + 84-byte entries (76-byte v2 core + auto-expiry tail: expires_at u32 · retention u8 · reserved u8[3], epic #638 S4)",
-      "byte_len": 258,
+      "format": "routeList object (spec 7.4), 6-byte header and 76-byte entries",
+      "byte_len": 234,
       "version": 2,
-      "entry_len": 84,
+      "entry_len": 76,
       "count": 3,
       "entries": [
         {
@@ -377,10 +369,7 @@
           "point_count": 9,
           "waypoint_count": 2,
           "name": "Vector Loop",
-          "crc32": "0x75A4426E",
-          "expires_at": 1784808000,
-          "retention": 3,
-          "retention_state": "live countdown (2 weeks)"
+          "crc32": "0x75A4426E"
         },
         {
           "object_id": 8,
@@ -390,10 +379,7 @@
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1B26FEAF",
-          "expires_at": 0,
-          "retention": 1,
-          "retention_state": "clock not yet started (last_used == 0)"
+          "crc32": "0x1B26FEAF"
         },
         {
           "object_id": 9,
@@ -403,13 +389,11 @@
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1B26FEAF",
-          "expires_at": 0,
-          "retention": 0,
-          "retention_state": "never (synthetic entry — no .obcr file)"
+          "crc32": "0x1B26FEAF"
         }
       ],
-      "total": 3
+      "total": 3,
+      "crc32": "0x601F732E"
     },
     "version-read.bin": {
       "format": "protocolVersion read (spec 1) — version u16 · store_epoch u32 · obcm_version u8",

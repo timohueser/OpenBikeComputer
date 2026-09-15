@@ -143,3 +143,61 @@ RA09 OBCM v16 header extension and preserve these v15 graph/place semantics.
 - Implement RA04/RA05 descriptor-aware transforms and source binding through the
   reserved contract, then compare preview and committed facts from the same bytes.
 - Run the final pinned v16 real-map simulator scenarios and resource/layout gates.
+
+## Current mainline and browser upload
+
+The branch includes the mainline weather removal. The merge preserves the local
+UTC-offset authority field, the complete route envelopes, and the current map
+version vectors. The shared vector suite passes after the merge. Exact App
+allocation records still require the next CI measurement for this combined head.
+
+Commit `202c372d` updates the browser header reader used before route upload and
+rename. It now requires the OBCR v4 header (160 bytes). The vector tests refuse an
+old version and a truncated extension. The route-name helper uses the same current
+header. All 65 builder test files pass: 980 tests. The three normal WASM bridges
+were built before the test run. An initial run had missing generated bridges and
+an old test-helper header; those setup and fixture errors were resolved.
+
+`obc suites check` passes. No new public behavior documentation is required: the
+existing OBCR v4 contract describes this change. No snapshot sweep, resource image,
+or hardware run was added. The merge and browser correction need a delta review.
+
+## Current-producer Grimsel package
+
+The canonical Swiss source and extract bounds were packed with the current v15
+producer and the unchanged terrain sidecar. The map remains 3,874,304 bytes.
+Comparison with the prior package finds exactly 5,756 changed bytes, each from
+0 to 128: the complete DEM integration flags. Geometry and all other bytes are
+unchanged. Map SHA-256 is
+`9adeef547f6f3315ad963836b2df7b59ee5295026a0623b594f728c8a2e378a1`.
+
+The immutable package is 3,446,094 bytes, SHA-256
+`b427bce15e08993ebb07d12b5284fb9ad6c20dfb26cfa7aebaa94399b37b87f5`.
+The normal fixture publisher verified it through the public URL. A fresh cache
+then downloaded and verified it. The whole external `obc-route` nav suite passes
+all 52 tests, including real ascent and planned-GPX re-import parity. Those two
+assertions were kept intact. The four route byte pins now describe OBCR v4;
+their distances remain 8,839 / 6,113 / 6,039 / 7,465 m. Their planner uses
+NullElevation by design; the separate terrain-backed tests prove elevation.
+
+Commands: normal `obc-pack` with canonical `8.15034,46.48261,8.46007,46.72070`
+bounds and `--terrain`; `tools/fixtures.py pack`, `publish`, fresh-cache `sync`;
+`cargo test -p obc-route --features external-fixtures --test nav` with that
+verified cache; `cargo fmt --all`; `obc suites check`. Mainline explicit route
+cleanup was also reconciled, and the whole shared-vector suite passes with its
+new route-list layout and current v4 payload checksums. No public conceptual
+page changes. No image build, UI sweep, or hardware test was added.
+
+
+## Current CI resource measurement
+
+CI run `34941623849`, job `104291474354`, measured head `b0ee7337`.
+App is 48,432 bytes. The exact allocation record is updated to that measured
+value; no resource limit changes. Linked resident is 303,760 bytes (297,976 B
+BSS + 5,784 B data), with 132,096 B uninitialized section and 131,072 B arena.
+The largest guarded poll frame is 9,784 B, residual main stack 55,664 B, largest
+task body 4,048 B, and boot-chain ceiling 7,768 B. The recorded 37,016 B deep-ride
+high-water leaves 18,648 B above it, exceeding the unchanged 8,704 B floor.
+App construction is 64 B against 4,096 B. Flash is 1,529,880 B.
+The existing query benchmark correction and regional catalog publication still
+block green CI. No local image or base rebuild was run.

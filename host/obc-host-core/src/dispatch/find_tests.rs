@@ -13,6 +13,13 @@ impl LocationSource for Position {
 
 #[test]
 fn find_runs_sixteen_sequential_real_visits_then_keeps_paging_independent() {
+    use obc_app::navigator::ReviewStatus;
+    for cancel_at in [None, Some(ReviewStatus::Planning), Some(ReviewStatus::Preview)] {
+        run_find(cancel_at);
+    }
+}
+
+fn run_find(cancel_at: Option<obc_app::navigator::ReviewStatus>) {
     let mut points: Vec<_> = (1..=8).rev().map(|n| (500_000, 503_400 + n * 100)).collect();
     points.push((500_000, 500_000));
     points.extend((1..=8).map(|n| (500_000 + n * 10_000, 500_000)));
@@ -92,6 +99,7 @@ fn find_runs_sixteen_sequential_real_visits_then_keeps_paging_independent() {
     let mut phase = 0;
     for tick in 0..4000 {
         if tick == 4 {
+            app.apply_gesture(Gesture::BackHold);
             app.open_find_place();
             app.apply_gesture(Gesture::Press);
         }
@@ -139,7 +147,21 @@ fn find_runs_sixteen_sequential_real_visits_then_keeps_paging_independent() {
             ))
         });
         assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        if phase == 2 && cancel_at == Some(app.assistant_review_status()) {
+            app.apply_gesture(Gesture::BackHold);
+            assert!(matches!(app.top_screen(), obc_app::screen::Screen::Menu(_)));
+            phase = 8;
+        }
         match phase {
+            8 if app.assistant_planner_released()
+                && app.assistant_review_status() == obc_app::navigator::ReviewStatus::Idle =>
+            {
+                assert!(routes.read_checkpoint().unwrap().is_none());
+                assert!(app.assistant_preview_shape().is_empty());
+                assert!(releases >= acquisitions, "all planner owners receive release ACKs");
+                phase = 9;
+                break;
+            }
             0 if app.find_place_state() == State::Ready => {
                 assert_eq!(acquisitions, 16, "eight eligible nearby plus eight distinct forward places");
                 assert!(releases >= acquisitions);
@@ -199,5 +221,5 @@ fn find_runs_sixteen_sequential_real_visits_then_keeps_paging_independent() {
             _ => {}
         }
     }
-    assert_eq!(phase, 6, "all batch, review, cancellation, and paging phases complete");
+    assert_eq!(phase, if cancel_at.is_some() { 9 } else { 6 }, "all requested phases complete");
 }

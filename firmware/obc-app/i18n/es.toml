@@ -200,15 +200,7 @@ local_time = "Hora local"
 offset = "Desfase"
 utc = "UTC "
 
-# --- Ride-retention values (the Ride screen's inline Auto-delete cycle; epic #638 S5) ---
-[autodelete]
-never = "Nunca"
-day1 = "1 día"
-week1 = "1 sem."
-month1 = "1 mes"
-
-# --- Ride settings screen (the riding stats grid + ride retention; the routing profile moved
-# --- onto the route-plan sheet in #1515 D4d) ---
+# --- Ride settings ---
 [ride]
 title = "SALIDA"
 fields = "Campos"
@@ -219,8 +211,6 @@ climb = "Subida"
 climb_sub = "panel"
 waypoints = "Puntos"
 waypoints_sub = "aviso"
-autodelete = "Autoborrado"
-autodelete_sub = "salidas"
 
 # --- Display settings screen ---
 [display]
@@ -391,7 +381,6 @@ start_ride = "EMPEZAR"
 loading_profile = "Cargando"
 delete = "Borrar ruta"
 new_route = "NUEVA RUTA"
-auto_delete = "Autoborrado"
 
 # --- Route-received / route-updated popups ---
 [route_received]
@@ -608,3 +597,19 @@ access = "fuera de ruta: acceso desconocido"
 whole_climb = "subida completa"
 at = "al"
 partial = "Datos incompletos"
+
+[route_cleanup]
+title = "MEMORIA LLENA"
+body = "Borrar rutas guardadas en este dispositivo durante más de:"
+unknown_clock = "Fecha desconocida. Borra rutas desde el menú Rutas y vuelve a intentarlo."
+delete = "Borrar rutas"
+age_1 = "1 semana"
+age_2 = "2 semanas"
+age_4 = "4 semanas"
+age_8 = "8 semanas"
+age_12 = "12 semanas"
+age_26 = "26 semanas"
+working = "Borrando rutas antiguas..."
+failed = "Limpieza detenida. Puede que se hayan borrado rutas. Revisa la memoria e inténtalo de nuevo."
+no_matches = "Ninguna ruta coincide. Elige un plazo más corto o borra desde el menú Rutas."
+done = "Rutas antiguas borradas. Reintenta el envío. Pulsa para cerrar."
