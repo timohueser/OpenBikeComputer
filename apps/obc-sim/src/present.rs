@@ -936,16 +936,13 @@ mod tests {
         use obc_app::screen::Screen;
         use obc_app::settings::{ClimbMode, Settings};
         use obc_app::{App, AppState, CameraMode, Gesture};
-        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obc_reader::{MapTables, SliceSource};
         use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
         let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
-        let cache = MapCache::new();
-        let src = SliceSource(&bytes);
-        let reader = Reader::new(&src, &tables, &cache);
         let owner = HostStore::memory().unwrap();
         let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
 
@@ -1131,16 +1128,13 @@ mod tests {
 
         use obc_app::settings::{ClimbMode, Settings};
         use obc_app::{App, AppState, CameraMode};
-        use obc_reader::{MapCache, MapTables, Reader, SliceSource};
+        use obc_reader::{MapTables, SliceSource};
         use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
         let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
         let tables = MapTables::parse(&SliceSource(&bytes)).expect("valid demo map");
-        let cache = MapCache::new();
-        let src = SliceSource(&bytes);
-        let reader = Reader::new(&src, &tables, &cache);
         let owner = HostStore::memory().unwrap();
         let map = obc_host_core::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
 
