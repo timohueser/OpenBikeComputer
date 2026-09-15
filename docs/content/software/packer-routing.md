@@ -863,6 +863,25 @@ It clears this state below 15 m.
 This hysteresis prevents state changes from GPS noise.
 While off-route, cross-track distance stays live and route progress stays fixed.
 
+## Preparing landmark content
+
+The host can prepare landmark text and photos from captured Wikidata, Wikipedia and Commons
+responses. This step uses local source files with recorded digests. It selects sites inside the map
+polygon, including points on its boundary. Country claims do not define coverage.
+
+The category policy follows Wikidata types and their parent classes. Excluded types take priority.
+Claims use the preferred rank when present, otherwise the normal rank. The compiler selects the
+requested language, then a fixed fallback order, and records the language it used. It keeps one or
+two complete lead sentences within four readable pages.
+
+Text and photos have separate source and attribution records. The compiler rejects an asset when
+its required credits cannot fit or use unsupported characters. A rejected photo leaves valid text
+available. Photos use a fixed size and palette; there is no subject crop or image ranking.
+
+The output reports captured sites, usable content and omissions separately. Source coverage remains
+explicit. An approach count is unknown until the OSM source join runs. This host preparation step
+does not by itself install content or establish that a landmark has a routeable approach.
+
 ## Attribution and share-alike
 
 OpenStreetMap data uses the Open Database License 1.0.
@@ -880,6 +899,7 @@ Maps with terrain-derived contours also require the [Copernicus attribution](../
 - Configuration: [`config.rs`](src:host/obc-pack/src/config.rs)
 - OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
 - POIs and opening hours: [`poi.rs`](src:host/obc-pack/src/poi.rs), [`hours.rs`](src:host/obc-pack/src/hours.rs)
+- Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
 - Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Builder: [`builder/`](src:builder)
