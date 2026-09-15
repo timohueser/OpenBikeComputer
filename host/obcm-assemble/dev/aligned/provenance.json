@@ -5,11 +5,11 @@
   "verify4_measurement_commit": "e4f18fca5a465edb1119fea7c4a531b4953a0c07",
   "native_baseline": {
     "binary_sha256": "b57afa8e8a7331e772473ccc9de86aa710cb49ecc8832a6d60ec1ea4d2bee083",
-    "source": "NG1 baseline55be89b653f2094cc67c192e3fd2fa31673a8cd8; no assembler production runtime changes to773758a8"
+    "source": "NG1 baseline 55be89b653f2094cc67c192e3fd2fa31673a8cd8; no assembler production runtime changes to 773758a8"
   },
   "route_baseline": {
     "binary_sha256": "c3a0cffc5a6b381f9420210a02d4936d676de6589720976fe02e0e8cb1b5fc2a",
-    "source": "Retained fused-entry NG4 candidate, production-equivalent to773758a8 with optional metrics disabled; host/obc-bench/dev/navigation/probes/provenance.json"
+    "source": "Retained fused-entry NG4 candidate, production-equivalent to 773758a8 with optional metrics disabled; host/obc-bench/dev/navigation/probes/provenance.json"
   },
   "candidate_native_sha256": "192a868881418f50a9a96000df8677f95e4128b26b21984482a5bd27f0c3bb78",
   "candidate_route_sha256": "c77e6d9154d905e82866c394e1a19817e9acf892c69248e32e90e944ea32b161",

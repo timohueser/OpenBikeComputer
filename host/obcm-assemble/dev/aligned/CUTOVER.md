@@ -31,11 +31,7 @@ artifacts and an R2 target for publication. The bake workflow documents the
 workstation requirements for large region builds. Fixture publication has its
 own separate publisher and credentials.
 
-Read-only inspection found no publisher variables in the current environment
-or in the user's main worktree `tools/obc.local`; that file contained only a
-compiler-path setting. The documented production variables are `OBC_R2_BUCKET`,
-`OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY`, and an endpoint or account ID.
-Fixture publication uses separate `OBC_FIXTURE_R2_*` variables. No credential
-values were printed and no external catalog or fixture object was changed.
-Publication access would be a concrete prerequisite for an adopted cutover;
-it is not needed to merge this retained result.
+Publication access would be a prerequisite for an adopted cutover. It is not
+needed to merge this retained result. No external catalog or fixture object
+was changed. The retain decision is based on the measured runtime and producer
+tradeoffs; publication work is not a reason to reject the design.
