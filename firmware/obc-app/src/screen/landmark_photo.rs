@@ -95,7 +95,7 @@ impl LandmarkPhotoScreen {
         }
     }
 
-    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, _rx: &mut RenderFrame<'_, S>)
+    pub fn draw<D, F, S>(&self, cv: &mut Canvas<D, F>, rx: &mut RenderFrame<'_, S>)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
@@ -106,7 +106,18 @@ impl LandmarkPhotoScreen {
         cv.text(self.title.as_str(), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
         if self.linked {
             cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
-            cv.text("Visit / Up or Down", Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+            let label = match super::landmarks::visit_action(
+                rx.landmarks,
+                rx.poi_scratch,
+                rx.place_local,
+                rx.settings.bike_profile_idx,
+            ) {
+                "Visit" => "Visit / Up or Down",
+                "Closed" => "Closed / Up or Down",
+                "No mapped access" => "No access / Up/Down",
+                _ => "Unavailable Up/Down",
+            };
+            cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
         }
     }
 }
