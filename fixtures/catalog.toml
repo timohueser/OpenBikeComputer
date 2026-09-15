@@ -102,12 +102,12 @@ summary = "Pinned map sources, compiled country content, and authored motion for
 packages = ["assistant-osm", "assistant-terrain", "assistant-wiki", "assistant-replays", "assistant-switzerland-content"]
 
 [packages.sim-assistant-meiringen]
-summary = "Initial real Ride Assistant map and motion for meiringen"
-archive = "packages/caae3c9e829aae67b63d0583493629da48c1280951178acc4ddb3045edb1ac75.tar.gz"
-sha256 = "caae3c9e829aae67b63d0583493629da48c1280951178acc4ddb3045edb1ac75"
-bytes = 7090063
-provenance = "OBCM v14 and OBCT from pinned assistant-osm/assistant-terrain inputs at code commit 3b7bf18b. See packaged build.json and fixtures/sources/ride-assistant/README.md. Landmark payload integration is pending."
-license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion)"
+summary = "Swiss v16 regional map, terrain, landmark content, and authored Meiringen motion"
+archive = "packages/96cb46be8727abf10d5a085e820d4cc6ec9e35142760174037a8ce98fd5ce53c.tar.gz"
+sha256 = "96cb46be8727abf10d5a085e820d4cc6ec9e35142760174037a8ce98fd5ce53c"
+bytes = 30352091
+provenance = "OBCM v16 Swiss regional crop selected by 8.1..8.4 E, 46.5..46.8 N from the full pinned 2026-09-13 Switzerland PBF. Shipping bake/cut/assemble with compiled country content and four native Copernicus terrain cells. Not a full-country map. Exact hashes and attribution: sources/ride-assistant/meiringen-v16.json and packaged build.json."
+license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx" }
 
 [packages.sim-assistant-west-cork]
@@ -124,21 +124,21 @@ summary = "Real-data motion for Ride Assistant: out-and-back; accept navigation 
 packages = ["sim-assistant-meiringen"]
 map = "sim-assistant-meiringen:meiringen.obcm"
 gpx = "sim-assistant-meiringen:replays/meiringen-out-and-back.gpx"
-args = ["--clock", "2026-09-14T10:00"]
+args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "120"]
 
 [scenarios.assistant-forward-rejoin]
 summary = "Real-data motion for Ride Assistant: forward-rejoin; accept navigation in the app"
 packages = ["sim-assistant-meiringen"]
 map = "sim-assistant-meiringen:meiringen.obcm"
 gpx = "sim-assistant-meiringen:replays/meiringen-forward-rejoin.gpx"
-args = ["--clock", "2026-09-14T10:00"]
+args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "120"]
 
 [scenarios.assistant-loop-crossing]
 summary = "Real-data motion for Ride Assistant: loop-crossing; accept navigation in the app"
 packages = ["sim-assistant-meiringen"]
 map = "sim-assistant-meiringen:meiringen.obcm"
 gpx = "sim-assistant-meiringen:replays/meiringen-loop-crossing.gpx"
-args = ["--clock", "2026-09-14T10:00"]
+args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "120"]
 
 [scenarios.assistant-monaco-dense]
 summary = "Real-data motion for Ride Assistant: monaco-dense; accept navigation in the app"
@@ -155,5 +155,5 @@ gpx = "sim-assistant-west-cork:replays/dunlough-access.gpx"
 args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "60"]
 
 [profiles.assistant]
-summary = "Initial Ride Assistant maps and motion; production Assistant integration is pending"
+summary = "Offline regional maps, landmark content, and authored motion for Ride Assistant"
 scenarios = ["assistant-out-and-back", "assistant-forward-rejoin", "assistant-loop-crossing", "assistant-monaco-dense", "assistant-dunlough-access"]
