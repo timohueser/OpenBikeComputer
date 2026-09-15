@@ -103,12 +103,12 @@ license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (autho
 tracked_sources = { "replays/meiringen-out-and-back.gpx" = "sources/ride-assistant/replays/meiringen-out-and-back.gpx", "replays/meiringen-loop-crossing.gpx" = "sources/ride-assistant/replays/meiringen-loop-crossing.gpx", "replays/meiringen-forward-rejoin.gpx" = "sources/ride-assistant/replays/meiringen-forward-rejoin.gpx" }
 
 [packages.sim-assistant-west-cork]
-summary = "Initial real Ride Assistant map and motion for west-cork"
-archive = "packages/6277d6dc3b510c92cba6983090c878c3185f394546b668984a628076afb091f0.tar.gz"
-sha256 = "6277d6dc3b510c92cba6983090c878c3185f394546b668984a628076afb091f0"
-bytes = 1627912
-provenance = "OBCM v14 and OBCT from pinned assistant-osm/assistant-terrain inputs at code commit 3b7bf18b. See packaged build.json and fixtures/sources/ride-assistant/README.md. Landmark payload integration is pending."
-license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion)"
+summary = "West Cork v16 regional map, terrain, landmark content, and authored motion"
+archive = "packages/3098b38214e3206bea8947927aa4d0a44cf618535b91dc063a4b3baeaa826a26.tar.gz"
+sha256 = "3098b38214e3206bea8947927aa4d0a44cf618535b91dc063a4b3baeaa826a26"
+bytes = 2425629
+provenance = "OBCM v16 from the pinned 2026-09-13 West Cork OSM crop, Copernicus GLO-30, and four-site assistant-wiki compiler input through shipping bake/cut/assemble. Embedded native raster and actual landmark text/photo/Sources. Exact hashes and producer attribution: sources/ride-assistant/west-cork-v16.json and packaged build.json."
+license = "ODbL-1.0 (map); Copernicus DEM Licence (terrain); GPL-3.0-only (authored motion); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "replays/dunlough-access.gpx" = "sources/ride-assistant/replays/dunlough-access.gpx" }
 
 [scenarios.assistant-out-and-back]
