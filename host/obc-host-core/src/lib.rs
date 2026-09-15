@@ -18,6 +18,11 @@
 //! - [`terrain`] — bounded elevation sampling from the exact retained map on the shared card.
 //! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
 //!   outcome scheduling, which the DeviceCore conformance matrix is built on.
+//! - [`DeviceInput`] / [`FileSettingsStore`] / [`TrackStore`] — the four button edges a host turns
+//!   into raw input events, the persisted-settings file, and the card ride recorder that also
+//!   exports a committed ride as GPX.
+//! - [`peak_view`] — the cooperative panorama runtime the frame-stepped hosts build terrain with.
+//! - [`convert_gpx`] — a GPX file as OBCR bytes, attributed against the host's map.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
@@ -29,6 +34,7 @@
 //! maps use memory. Persistent card APIs are available for host composition.
 
 pub mod conformance;
+mod device_input;
 mod dispatch;
 pub mod flat_map;
 mod flat_recorder;
@@ -42,27 +48,35 @@ pub use flat_trips::FlatTripStore;
 pub mod flat_store;
 pub use flat_routes::FlatRouteStore;
 mod frame;
+mod gpx;
 mod nav;
 mod nav_visit;
+pub mod peak_view;
 pub mod photo;
 mod replay;
 mod repo;
 mod session;
+mod settings_store;
 mod sink;
 mod stores;
 pub mod terrain;
 pub mod trace;
+mod track_store;
 
+pub use device_input::DeviceInput;
 pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
+pub use gpx::convert_gpx;
 pub use nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{
     AppendStatus, RideRepository, RouteLease, RoutePublication, RouteRepository, TrackRepository, TripCatalog,
 };
 pub use session::{fill_nav_preview, ActiveRouteSession};
+pub use settings_store::FileSettingsStore;
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemTrackStore};
+pub use track_store::TrackStore;
 
 /// Session ID band retained by legacy folder and summary-only ride fixtures.
 pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;

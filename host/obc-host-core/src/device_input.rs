@@ -1,7 +1,7 @@
 //! Host-side device-input emulation — the four on-housing buttons (Up / Down / Select / Back)
 //! and the keyboard, turned into raw [`InputEvent`]s for the app.
 //!
-//! [`crate::gui`] pushes raw events here each frame. [`DeviceInput`] implements
+//! A host pushes raw events here each frame. [`DeviceInput`] implements
 //! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`] and its
 //! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. All four
 //! controls arrive here as held state and leave as edges, so a held arrow key auto-repeats through

@@ -5,7 +5,7 @@ use crate::{
     Args, Injection,
 };
 use obc_host_core::{
-    flat_store::HostStore, FlatRideRecorder, FlatRideStore, FlatRouteStore, FlatTripStore, RouteRepository,
+    flat_store::HostStore, FlatRideRecorder, FlatRideStore, FlatRouteStore, FlatTripStore, RouteRepository, TrackStore,
 };
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ pub struct Session {
     pub routes: FlatRouteStore,
     pub trips: FlatTripStore,
     pub rides: FlatRideStore,
-    pub tracks: crate::track::TrackStore,
+    pub tracks: TrackStore,
 }
 
 pub fn persistent(path: &str, create: bool) -> Result<HostStore, String> {
@@ -92,7 +92,7 @@ impl Session {
         if args.card.is_none() {
             crate::rides::import(Path::new(&args.tracks_dir()), &mut rides)?;
         }
-        let tracks = crate::track::TrackStore::new(recorder, owner.clone(), args.tracks_dir());
+        let tracks = TrackStore::new(recorder, owner.clone(), args.tracks_dir());
         routes.refresh_metadata().map_err(|error| format!("route metadata: {error:?}"))?;
         Ok(Self { map, routes, trips, rides, tracks })
     }
