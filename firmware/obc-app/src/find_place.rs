@@ -41,6 +41,7 @@ pub(crate) enum Action {
     More,
     Accept,
     Cancel,
+    OpenAccepted,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Costs {
@@ -199,6 +200,16 @@ impl crate::App {
             self.ui.map_dirty = true;
         }
     }
+    pub(crate) fn current_visit_index(&self) -> Option<usize> {
+        if !self.active_visit() || self.assistant_review_status() != ReviewStatus::Accepted {
+            return None;
+        }
+        let index = self.active_route_index()?;
+        (self.route_ids().get(index).copied() == Some(self.assistant_checkpoint()?.route.object)).then_some(index)
+    }
+    pub(crate) fn place_map_key(&self) -> Option<RouteSourceKey> {
+        self.ui.find.bound_map
+    }
     pub fn open_find_place(&mut self) {
         crate::screen::apply(
             &mut self.ui.stack,
@@ -247,6 +258,17 @@ impl crate::App {
                     if let Some(origin) = self.current_review_origin() {
                         self.accept_assistant(origin);
                     }
+                }
+            }
+            Action::OpenAccepted => {
+                if let Some(index) = self.current_visit_index() {
+                    let screen = VisitReviewScreen::accepted(self.routes()[index].name.as_str());
+                    self.ui.find.selected_review = false;
+                    self.ui.find.review_costs = None;
+                    crate::screen::apply(
+                        &mut self.ui.stack,
+                        crate::screen::Transition::Push(Screen::VisitReview(screen)),
+                    );
                 }
             }
             Action::Cancel => self.cancel_assistant(),
@@ -318,6 +340,21 @@ impl crate::App {
         self.ui.find.review = self.assistant_review_status();
         let review_screen = self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_)));
         if review_screen {
+            if self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(s) if s.accepted)) {
+                let current = self.current_visit_index().and_then(|_| self.assistant_checkpoint());
+                self.ui.find.review = if current.is_some() {
+                    ReviewStatus::Accepted
+                } else {
+                    ReviewStatus::Failed(crate::navigator::NavigatorError::SourceChanged)
+                };
+                self.ui.find.review_costs = current.map(|c| Costs {
+                    arrival_m: c.upper_m.saturating_sub(self.progress_m()),
+                    arrival_ascent_m: None,
+                    added_m: None,
+                    added_ascent_m: None,
+                });
+                return;
+            }
             if self.assistant_review_status() == ReviewStatus::Accepted {
                 crate::screen::apply(
                     &mut self.ui.stack,

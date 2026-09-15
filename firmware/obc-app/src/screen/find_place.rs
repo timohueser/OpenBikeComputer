@@ -7,7 +7,7 @@ use super::{
 use crate::{
     find_place::{Action, Costs, State},
     navigator::ReviewStatus,
-    Gesture,
+    Gesture, Msg,
 };
 use core::fmt::Write;
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
@@ -90,7 +90,7 @@ impl FindPlaceScreen {
         S: obc_map_scene::MapScene,
     {
         let Some(category) = self.category else {
-            title_frame(cv, rx.w, rx.h, "Find a place", "");
+            title_frame(cv, rx.w, rx.h, rx.t(Msg::AssistantFind), "");
             let first = list::window_start(self.selected, 6, PoiCategory::ALL.len());
             for (slot, cat) in PoiCategory::ALL.iter().skip(first).take(6).enumerate() {
                 let y = 43 + slot as i32 * 44;
@@ -139,29 +139,28 @@ impl FindPlaceScreen {
         if self.selected >= count.max(1) {
             let more = self.selected == count.max(1);
             cv.text(
-                if more { "More places" } else { "Refresh" },
+                if more { rx.t(Msg::AssistantMorePlaces) } else { rx.t(Msg::AssistantRefresh) },
                 Point::new(18, 236),
                 Font::Body,
                 TextAlign::Left,
                 INK,
             );
-            cv.text(
-                if more {
-                    if rx.route.is_some() {
-                        "10km / 20km ahead"
-                    } else {
-                        "10km shortlist"
-                    }
-                } else {
-                    "Search again"
-                },
-                Point::new(18, 264),
-                Font::Label,
-                TextAlign::Left,
-                SUBTEXT,
-            );
+            let mut scope = heapless::String::<40>::new();
             if more {
-                cv.text("More: 50km partial", Point::new(18, 288), Font::Label, TextAlign::Left, SUBTEXT);
+                super::vocab::fmt::write_distance_coarse(&mut scope, "", 10_000, rx.settings.units);
+                if rx.route.is_some() {
+                    let _ = scope.push_str(" / ");
+                    super::vocab::fmt::write_distance_coarse(&mut scope, "", 20_000, rx.settings.units);
+                }
+            } else {
+                let _ = scope.push_str(rx.t(Msg::AssistantSearchAgain));
+            }
+            cv.text(&scope, Point::new(18, 264), Font::Label, TextAlign::Left, SUBTEXT);
+            if more {
+                scope.clear();
+                super::vocab::fmt::write_distance_coarse(&mut scope, "", 50_000, rx.settings.units);
+                let _ = write!(scope, " {}", rx.t(Msg::AssistantPartialScope));
+                cv.text(&scope, Point::new(18, 288), Font::Label, TextAlign::Left, SUBTEXT);
             }
             return;
         }
@@ -169,18 +168,22 @@ impl FindPlaceScreen {
             rx.find.selected(self.selected, rx.poi_scratch, rx.corridor).filter(|_| rx.find.state == State::Ready)
         else {
             let title = match rx.find.state {
-                State::NoFix => "GPS required",
-                State::NoMap => "No map",
-                State::NoAccess => "No graph",
-                State::Failed => "Data error",
-                State::Stale => "Refresh needed",
-                State::Ready => "No choices",
-                State::Empty => "None found",
-                _ => "Finding places",
+                State::NoFix => rx.t(Msg::AssistantNoFix),
+                State::NoMap => rx.t(Msg::AssistantNoMap),
+                State::NoAccess => rx.t(Msg::AssistantNoGraph),
+                State::Failed => rx.t(Msg::AssistantDataError),
+                State::Stale => rx.t(Msg::AssistantRefreshNeeded),
+                State::Ready => rx.t(Msg::AssistantNoChoices),
+                State::Empty => rx.t(Msg::AssistantNoneFound),
+                _ => rx.t(Msg::AssistantFinding),
             };
             cv.text(title, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
             cv.text(
-                if matches!(rx.find.state, State::Empty | State::Ready) { "Partial search" } else { "More / Refresh" },
+                if matches!(rx.find.state, State::Empty | State::Ready) {
+                    rx.t(Msg::AssistantPartial)
+                } else {
+                    rx.t(Msg::AssistantMoreRefresh)
+                },
                 Point::new(18, 270),
                 Font::Label,
                 TextAlign::Left,
@@ -190,28 +193,33 @@ impl FindPlaceScreen {
         };
         let Some(cost) = rx.find.costs(self.selected) else { return };
         let mut role = heapless::String::<32>::new();
-        let _ = write!(role, "{} {}", letter(self.selected), if cost.on_way() { "On the way" } else { "Nearby" });
+        let _ = write!(
+            role,
+            "{} {}",
+            letter(self.selected),
+            if cost.on_way() { rx.t(Msg::AssistantOnWay) } else { rx.t(Msg::AssistantNearby) }
+        );
         cv.text(&role, Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT);
         let mut number = heapless::String::<8>::new();
         let _ = write!(number, "{}/{}", self.selected + 1, count);
         cv.text(&number, Point::new(rx.w - 18, 212), Font::Label, TextAlign::Right, INK);
         let name = if poi.name.is_empty() {
-            obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or("Place")
+            obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or(rx.t(Msg::AssistantPlace))
         } else {
             poi.name.as_str()
         };
         cv.text(&super::poi_list::fit(name, 15), Point::new(18, 236), Font::Body, TextAlign::Left, INK);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
-            cv.text("Closed", Point::new(18, 264), Font::Label, TextAlign::Left, WARNING);
+            cv.text(rx.t(Msg::AssistantClosed), Point::new(18, 264), Font::Label, TextAlign::Left, WARNING);
             return;
         }
-        figures(cv, cost.arrival_m, cost.arrival_ascent_m, 264, false);
+        figures(cv, cost.arrival_m, cost.arrival_ascent_m, 264, false, rx.settings.units);
         let mut line = heapless::String::<32>::new();
         if let Some(extra) = cost.added_m {
             super::vocab::fmt::write_distance_coarse(&mut line, "+", extra, rx.settings.units);
-            let _ = line.push_str(" extra");
+            let _ = write!(line, " {}", rx.t(Msg::AssistantExtra));
         } else {
-            let _ = line.push_str("Destination");
+            let _ = line.push_str(rx.t(Msg::AssistantDestination));
         }
         cv.text(&line, Point::new(18, 288), Font::Label, TextAlign::Left, INK);
     }
@@ -219,6 +227,7 @@ impl FindPlaceScreen {
 
 #[derive(Debug)]
 pub struct VisitReviewScreen {
+    pub(crate) accepted: bool,
     name: heapless::String<32>,
 }
 impl VisitReviewScreen {
@@ -229,10 +238,16 @@ impl VisitReviewScreen {
                 break;
             }
         }
-        Self { name: title }
+        Self { name: title, accepted: false }
+    }
+    pub(crate) fn accepted(name: &str) -> Self {
+        let mut screen = Self::new(name);
+        screen.accepted = true;
+        screen
     }
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
+            Gesture::Back if self.accepted => Transition::Pop,
             Gesture::Back => {
                 cx.find.action = Action::Cancel;
                 Transition::Pop
@@ -254,7 +269,10 @@ impl VisitReviewScreen {
         S: obc_map_scene::MapScene,
     {
         let points = rx.nav_preview;
-        let vp = if !points.is_empty() && matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving) {
+        let vp = if !points.is_empty()
+            && (matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)
+                || (self.accepted && rx.find.review == ReviewStatus::Accepted))
+        {
             let (mut min, mut max) = (points[0], points[0]);
             for &(lon, lat) in points {
                 min = (min.0.min(lon), min.1.min(lat));
@@ -265,7 +283,9 @@ impl VisitReviewScreen {
             rx.state.viewport(rx.w as f32, rx.h as f32)
         };
         let _ = super::map::draw_map_scene(cv, rx, &vp, None);
-        if matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving) {
+        if matches!(rx.find.review, ReviewStatus::Preview | ReviewStatus::Saving)
+            || (self.accepted && rx.find.review == ReviewStatus::Accepted)
+        {
             if let Some(scratch) = rx.scratch.as_deref_mut() {
                 let (target, color) = cv.split();
                 scratch.stroke_path(target, &vp, points.iter().copied(), color(DETOUR), super::ROUTE_WEIGHT);
@@ -276,25 +296,33 @@ impl VisitReviewScreen {
         cv.text(&super::poi_list::fit(&self.name, 18), Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
         cv.fill(rect(0, 192, rx.w, rx.h - 192), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {
-            figures(cv, arrival_m, arrival_ascent_m, 196, false);
+            figures(cv, arrival_m, arrival_ascent_m, 196, false, rx.settings.units);
             cv.text(
-                if added_m.is_some() { "Extra incl. return" } else { "Direct destination" },
+                if self.accepted {
+                    rx.t(Msg::AssistantCurrentLeg)
+                } else if added_m.is_some() {
+                    rx.t(Msg::AssistantReturnExtra)
+                } else {
+                    rx.t(Msg::AssistantDirect)
+                },
                 Point::new(14, 222),
                 Font::Label,
                 TextAlign::Left,
                 SUBTEXT,
             );
             if let Some(m) = added_m {
-                figures(cv, m, added_ascent_m, 248, true);
+                figures(cv, m, added_ascent_m, 248, true, rx.settings.units);
             }
         }
         let label = match rx.find.review {
-            ReviewStatus::Planning => "Calculating",
-            ReviewStatus::Preview if rx.find.review_costs.is_some_and(|c| c.added_m.is_some()) => "Add stop",
-            ReviewStatus::Preview => "Go here",
-            ReviewStatus::Saving => "Saving",
-            ReviewStatus::Accepted => "Back to map",
-            _ => "Visit unavailable",
+            ReviewStatus::Planning => rx.t(Msg::AssistantCalculating),
+            ReviewStatus::Preview if rx.find.review_costs.is_some_and(|c| c.added_m.is_some()) => {
+                rx.t(Msg::AssistantAddStop)
+            }
+            ReviewStatus::Preview => rx.t(Msg::AssistantGoHere),
+            ReviewStatus::Saving => rx.t(Msg::AssistantSaving),
+            ReviewStatus::Accepted => rx.t(Msg::AssistantBackMap),
+            _ => rx.t(Msg::AssistantVisitUnavailable),
         };
         cv.round(rect(12, 280, 216, 32), 6, AMBER);
         cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
@@ -316,23 +344,18 @@ pub(super) fn fit(min: (i32, i32), max: (i32, i32), w: i32, h: i32, bottom: i32)
         zoom,
     )
 }
-fn figures(cv: &mut impl Surface, distance: u32, climb: Option<u32>, y: i32, extra: bool) {
+fn figures(
+    cv: &mut impl Surface,
+    distance: u32,
+    climb: Option<u32>,
+    y: i32,
+    extra: bool,
+    units: crate::settings::Units,
+) {
     let mut d = heapless::String::<20>::new();
-    if extra {
-        let _ = d.push('+');
-    }
-    if distance < 1000 {
-        let _ = write!(d, "{distance}m");
-    } else {
-        let _ = write!(d, "{}.{:01}km", distance / 1000, distance % 1000 / 100);
-    }
+    super::vocab::fmt::write_distance_coarse(&mut d, if extra { "+" } else { "" }, distance, units);
     cv.text(&d, Point::new(18, y), Font::Label, TextAlign::Left, INK);
     cv.triangle(Point::new(125, y + 18), Point::new(132, y + 6), Point::new(139, y + 18), INK);
-    let mut c = heapless::String::<16>::new();
-    if let Some(n) = climb {
-        let _ = write!(c, "{n}m");
-    } else {
-        let _ = c.push_str("Unknown");
-    }
+    let c = super::vocab::fmt::elevation_short(climb, units);
     cv.text(&c, Point::new(146, y), Font::Label, TextAlign::Left, INK);
 }

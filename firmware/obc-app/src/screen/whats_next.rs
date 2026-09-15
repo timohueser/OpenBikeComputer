@@ -240,9 +240,10 @@ fn row_name<'a>(row: &'a Row, rx: &'a Render) -> &'a str {
             }
         }
         Item::Climb(_) => rx.t(Msg::AheadClimb),
-        Item::Place(i) => {
-            rx.corridor.get(*i as usize).map_or(rx.t(Msg::AheadUnavailable), |p| super::up_ahead::poi_row_name(&p.poi))
-        }
+        Item::Place(i) => rx
+            .corridor
+            .get(*i as usize)
+            .map_or(rx.t(Msg::AheadUnavailable), |p| super::poi_display::poi_row_name(&p.poi)),
     }
 }
 fn timeline(cv: &mut impl Surface, rx: &Render) {

@@ -48,42 +48,28 @@ fn render(app: &mut App, bytes: &[u8]) {
     render_into(app, bytes, &mut buf);
 }
 
-/// Walk an idle app from Home to the nearest Water POI's **detail**: Menu → POIs → Water list,
-/// one render to take the snapshot, press into the detail.
+/// Set up the legacy category screen, then load the nearest Water detail.
 fn open_detail(app: &mut App, bytes: &[u8]) {
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
-    app.apply_gesture(Gesture::BackHold); // Home → Menu
-    app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
-    app.apply_gesture(Gesture::Press); // → category list (Water first)
-    app.apply_gesture(Gesture::Press); // → POI list
+    let _ = app.ui.stack.push(Screen::PoiList(crate::screen::PoiListScreen::new(obc_reader::PoiCategory::Water))); // → POI list
     render(app, bytes); // lazy snapshot fills
     app.apply_gesture(Gesture::Press); // → detail
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
     render(app, bytes); // load the schedule before accepting an action
 }
 
-// Keep the legacy planner contract covered without adding a public test-only entry point.
-fn open_confirm(app: &mut App) {
+/// Admit the ordinary PlanRoute intent from a selected place. The public Visit flow has its own tests.
+fn request_route(app: &mut App, host: &mut Planner) -> NavRequest {
     let Screen::PoiDetail(detail) = app.top_screen() else { panic!("detail required") };
-    let poi = detail.poi();
+    let poi = detail.poi().clone();
     let name = if poi.name.is_empty() {
         obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or("Place")
     } else {
         poi.name.as_str()
     };
-    let screen =
-        crate::screen::NavConfirmScreen::new((poi.lon, poi.lat), name, obc_formats::obcm::poi_category_of(poi.subtype));
-    let _ = app.ui.stack.push(Screen::NavConfirm(screen));
-}
-
-/// Drive the detail into the confirm and press *Create route*, returning the search the pass hands
-/// the executor. The confirm swaps itself for the **planning** screen (#499) — the spinner the
-/// answer lands in.
-fn request_route(app: &mut App, host: &mut Planner) -> NavRequest {
-    open_confirm(app);
-    app.apply_gesture(Gesture::Press); // Create route (row 0)
-    assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "accepting swaps to the planning screen");
-    plan_req(app, host).expect("Create route records the one-shot request")
+    let fix = app.state.user_fix.unwrap();
+    assert!(app.debug_start_nav((fix.lon, fix.lat), (poi.lon, poi.lat), name));
+    plan_req(app, host).expect("PlanRoute records the one-shot request")
 }
 
 /// The route search the pass handed the executor, if it handed one out.
@@ -146,34 +132,12 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
     common::mount_store(&mut app);
     let mut host = Planner::default();
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
-    app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Step(2));
-    app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Step(1)); // Water → Campsite
-    app.apply_gesture(Gesture::Press);
+    let _ = app.ui.stack.push(Screen::PoiList(crate::screen::PoiListScreen::new(obc_reader::PoiCategory::Campsite)));
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail (the unnamed campsite)
     render(&mut app, &bytes);
     let req = request_route(&mut app, &mut host);
     assert_eq!(req.name(), "Campsite", "an unnamed POI titles the route with its subtype label");
-}
-
-#[test]
-fn confirm_cancel_and_back_return_to_the_detail() {
-    let bytes = fixture();
-    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    common::mount_store(&mut app);
-    let mut host = Planner::default();
-    open_detail(&mut app, &bytes);
-    open_confirm(&mut app);
-    app.apply_gesture(Gesture::Step(1)); // → Cancel
-    app.apply_gesture(Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Cancel returns to the detail");
-    assert!(plan_req(&mut app, &mut host).is_none(), "cancel records nothing");
-
-    open_confirm(&mut app);
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Back = Cancel");
 }
 
 #[test]
@@ -239,10 +203,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     let session = app.ride_session();
 
     // Mid-ride: the main menu → POIs → detail → confirm → create → (host answers).
-    app.apply_gesture(Gesture::BackHold);
-    app.apply_gesture(Gesture::Step(2));
-    app.apply_gesture(Gesture::Press);
-    app.apply_gesture(Gesture::Press);
+    let _ = app.ui.stack.push(Screen::PoiList(crate::screen::PoiListScreen::new(obc_reader::PoiCategory::Water)));
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail
     render(&mut app, &bytes);
@@ -289,20 +250,6 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
         app.apply_gesture(Gesture::Press);
         assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "{tier}: any press dismisses to the detail");
     }
-}
-
-#[test]
-fn create_without_any_position_degrades_to_the_generic_tier() {
-    let bytes = fixture();
-    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    common::mount_store(&mut app);
-    let mut host = Planner::default();
-    open_detail(&mut app, &bytes);
-    open_confirm(&mut app);
-    app.state.user_fix = None; // genuinely no position (can't happen after a snapshot, but locked to degrade)
-    app.apply_gesture(Gesture::Press); // Create route
-    assert!(matches!(app.top_screen(), Screen::NavFail(_)), "no position ⇒ the generic failure tier, no request");
-    assert!(plan_req(&mut app, &mut host).is_none(), "nothing was asked of the host");
 }
 
 #[test]

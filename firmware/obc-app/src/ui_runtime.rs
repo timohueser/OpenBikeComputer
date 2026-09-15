@@ -397,39 +397,9 @@ impl UiRuntime {
         }
     }
 
-    /// Point the App-owned corridor snapshot at whatever the **stack** currently wants (epic #946,
-    /// U3). The Up-ahead screen never queries anything itself: it declares a
-    /// [`CorridorKey`](crate::corridor::CorridorKey) (its filter + the progress anchor frozen at
-    /// entry) through [`Screen::corridor_request`], and this arms it. Everything the lifecycle needs
-    /// falls out of that one declaration:
-    ///
-    /// * **entry** — a screen appears that wants a key ⇒ armed (and, on a *fresh* open,
-    ///   [`invalidate`](crate::corridor::CorridorScratch::invalidate)d, so re-entering re-takes the
-    ///   identical key: the "re-enter refreshes" half of the #115 contract);
-    /// * **a filter change** — the key changes ⇒ the stale rows drop and the query re-runs;
-    /// * **riding on** — the key does *not* change (the anchor is frozen) ⇒ nothing re-runs;
-    /// * **exit** (Back, or the idle return — both *pop* the list off the stack) — nobody wants a
-    ///   key ⇒ disarmed, and the reader-build seam goes quiet;
-    /// * **buried** — a host-pushed card (a passkey, a warning) on top is *not* an exit: the scan
-    ///   covers the whole stack, so the list's request is still found and the scratch stays armed
-    ///   for the uncover.
-    ///
-    /// Cheap enough to call whenever the stack may have moved: a scan of ≤ [`MAX_DEPTH`] slots and
-    /// an idempotent `arm`. The **query** still runs only in the pre-draw `prepare` boundary.
-    ///
-    /// [`MAX_DEPTH`]: crate::screen::MAX_DEPTH
-    /// U5 adds a **second, lower-priority** requester: with no screen asking, the
-    /// [`NextAhead`](crate::next_ahead::NextAhead) cache may want one single-category snapshot to
-    /// refresh a `Next: <category>` tile. A screen always wins — the Up-ahead list is a thing the
-    /// rider is *looking at*, a stat tile's refresh can wait a screen visit — and a cache request
-    /// never counts as a "fresh open" (there is no screen entry to re-take for).
-    ///
-    /// The two can never fight over the buffer's *contents*: the cache only asks while the
-    /// Statistics screen is the base one (so never while the Up-ahead list is up, including U4's
-    /// `Waypoints only` scope where that screen deliberately asks for nothing), and
-    /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
-    /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
-    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope, fresh_open: bool) {
+    /// The visible Assistant query owns the shared corridor scratch. Statistics use it only
+    /// when no Assistant query is active. Rows are still read in prepare, never in draw.
+    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope) {
         if self.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
             if let Some(key) = self.ahead.request(scope) {
                 self.corridor_scratch.arm(key);
@@ -441,17 +411,9 @@ impl UiRuntime {
         if self.find.owns_pages() {
             return;
         }
-        match self.stack.iter().rev().find_map(|s| s.corridor_request(scope)) {
-            Some(key) => {
-                self.corridor_scratch.arm(key);
-                if fresh_open {
-                    self.corridor_scratch.invalidate();
-                }
-            }
-            None => match self.next_ahead.request() {
-                Some(key) => self.corridor_scratch.arm(key),
-                None => self.corridor_scratch.disarm(),
-            },
+        match self.next_ahead.request() {
+            Some(key) => self.corridor_scratch.arm(key),
+            None => self.corridor_scratch.disarm(),
         }
     }
 
@@ -479,7 +441,7 @@ impl UiRuntime {
             }
         }
         self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
-        self.reconcile_corridor(scope, false);
+        self.reconcile_corridor(scope);
     }
 
     /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the
