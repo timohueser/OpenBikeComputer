@@ -7,8 +7,9 @@ stored 29-byte hours blobs agree.
 
 The simulator previously used `--clock` only to seed settings. This did not establish trusted time
 or a known local offset. Current opening status was therefore unknown. Explicit `--clock` now
-uses `App::stamp_clock` with the given UTC time, a known zero offset, and the phone-time trust
-source. `--clock-after-script` supplies a second time through the same entry before final settle.
+uses `App::stamp_clock` with the given UTC time, a known local offset (default zero), and the
+phone-time trust source. The GUI applies this clock after persisted boot settings. With an explicit
+clock, ambient GPS time starts disabled in the simulator panel; the user can enable it. `--clock-after-script` supplies a second time through the same entry before final settle.
 The closed frame selects Carrefour while open and changes the time with the detail retained.
 Queries still exclude places known to be closed.
 
@@ -35,3 +36,10 @@ Clippy with warnings as errors, suite registry, workspace and standalone formatt
 `python3 docs/build_docs.py --check-links`. The named frames used one simulator build. No full
 snapshot sweep, firmware image, resource measurement, App suite, or hardware test ran. Snapshot
 manifest reconciliation and final CI remain integration work.
+
+The optional `--utc-offset-min` uses the device range (-720 to 840 minutes) and requires an explicit
+clock. Both clock arguments retain their UTC values. The open and closed commands above were
+repeated with UTC 10:00 and 21:00, respectively, and offset 120. Both PNG hashes match the retained
+12:00 and 23:00 local-time frames exactly. Whole simulator validation after GUI wiring passes
+63 unit and 11 integration tests, plus all-target Clippy. The reviewer checked the GUI clock
+initialization and default ambient-time suppression; no GUI interaction result is claimed here.

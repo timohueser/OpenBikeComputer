@@ -142,12 +142,17 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 - `--boot` starts a headless render at the real power-on Home state rather than Map.
 - `--battery PCT` sets the initial battery charge (0–100).
-- `--clock YYYY-MM-DDTHH:MM` supplies trusted UTC time and an explicit local offset of `+00:00`
-  before the headless script. It uses the same clock entry as a phone time update. Without an
+- `--clock YYYY-MM-DDTHH:MM` supplies trusted UTC time and a known local offset (default `+00:00`)
+  at startup in both GUI and headless modes. It uses the same clock entry as a phone time update.
+  In GUI mode, an explicit clock starts with ambient GPS time disabled in the control panel. Without an
   explicit time, the boot clock stays untrusted and current opening status is unknown.
-- `--clock-after-script YYYY-MM-DDTHH:MM` supplies another trusted UTC time with offset `+00:00`
-  after the button script and before the final settle and render. Use it to observe an open detail
+- `--clock-after-script YYYY-MM-DDTHH:MM` supplies another trusted UTC time with the same local offset
+  in headless mode after the button script and before the final settle and render. Use it to observe an open detail
   after its place closes. It changes wall-clock time; it does not advance ride duration.
+- `--utc-offset-min MINUTES` sets the local offset for both explicit clock options. It uses the
+  device's range, -720 to 840 minutes, and requires an explicit clock. For example, use
+  `--clock 2026-09-14T10:00 --utc-offset-min 120` for 12:00 local time in the Swiss replay,
+  or offset `60` for 11:00 local time in the West Cork replay. The supplied UTC time is unchanged.
 - `--route-cleanup` opens the storage-full cleanup dialog. Combine with `--clock` to preview the age picker; without it the dialog shows the unknown-date guidance.
 - `--lang en|de|fr|es` chooses the headless UI language.
 - `--stat-fields LIST` replaces the Statistics grid with comma-separated field ids.
