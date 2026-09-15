@@ -329,6 +329,7 @@ impl crate::App {
         let Some(Screen::PoiDetail(detail)) = self.ui.stack.last() else { return false };
         let poi = detail.poi().clone();
         if detail.visit_error == Some(crate::navigator::VisitUnavailable::SourceChanged)
+            || (detail.is_landmark() && poi.metadata.approach.is_none())
             || detail.hours_pending(&self.ui.poi_scratch)
             || !self.ui.poi_scratch.detail_valid
             || self
