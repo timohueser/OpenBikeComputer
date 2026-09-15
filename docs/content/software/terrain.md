@@ -264,8 +264,8 @@ Valid samples on each side can still contribute ascent in their segments.
 | Map rendering | Rendering continues. Baked contour geometry does not require the raster. |
 | Routing | Routing continues with the graph's baked ascent values. |
 | Imported GPX route | The route keeps its supplied heights. |
-| Device-planned route | Before the first valid sample, the route uses zero heights. After that sample, it carries the last valid height across gaps. |
-| Detour | The splice interpolates between the seam elevations. |
+| Device-planned route | Missing heights stay unknown. The route records incomplete segment coverage. |
+| Detour | Known seam heights can adjust sampled detour heights. Missing heights stay unknown. |
 | Ride recording | The recorder stores the barometer measurement. |
 | Current elevation | The UI uses the raw barometric estimate. |
 | Time estimate | The model uses zero remaining ascent. |

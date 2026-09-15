@@ -341,6 +341,9 @@ sentinels) and `io.rs` ([`ByteSource`](#bytesource)/`ByteSink` + endian primitiv
 Format-contract tests build synthetic
 `.obcr` bytes by hand, mirroring this layout (`obc-route/tests/format.rs` +
 `tests/waypoints.rs`); shared phone↔firmware fixtures live in `specs/vectors/`.
+`route-visit.obcr` has a valid descriptor envelope. Both codecs MUST reject
+`route-visit-waypoint-overlap.obcr` and `route-visit-index-overlap.obcr`; each
+shares the descriptor's last four reserved-zero bytes with another section.
 
 ### ByteSource
 

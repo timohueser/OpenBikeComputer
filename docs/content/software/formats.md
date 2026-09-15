@@ -845,9 +845,12 @@ geometry, so the header and interval facts use the same route.
 A valid zero elevation differs from missing data. Elevation gaps remain empty in
 profiles and pause ascent integration. A segment can be incomplete even when its
 endpoints have elevations, if graph integration found a missing terrain sample.
+Synthetic interior points then keep unknown elevation. The received-route card
+omits its compact elevation band if any segment is incomplete or unreadable.
 
 Surface facts from an imported GPX require conservative graph attribution.
-Ambiguous or off-network spans stay unknown. A comparison checks the exact
+Ambiguous or off-network spans stay unknown. An unreadable candidate cannot prove
+a unique match; the import reports a read error. A comparison checks the exact
 attribution-map identity; historical facts from another revision are stale.
 
 The Rust interval API streams bounded chunk scratch. It clips measured distance,
