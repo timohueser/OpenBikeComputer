@@ -433,7 +433,11 @@ write the optional checkpoint and the candidate's acceptance row in the existing
 singleton. This uses the same serialized read-modify-write operation as route stamps and
 ride archive proofs. Only a verified durable acknowledgment activates the candidate. A
 known failure keeps the preview available for retry. An uncertain publication keeps a
-fence until recovery; cancellation does not assume that the publication failed.
+fence until recovery; cancellation does not assume that the publication failed. A complete
+read after remount of the same card can resolve the pending edit against either its old
+or proposed checkpoint. The shared writer resumes only after that read and its durability
+barrier succeed. A queued cancellation clears a recovered accepted checkpoint before
+candidate retirement.
 
 A candidate remains marked in its immutable route bytes. Its exact accepted Metadata row
 makes it available as an ordinary route. Without that row, the route list labels it as an
