@@ -31,8 +31,9 @@ cargo build --locked --release -p obc-bake -p obc-dem -p obcm-assemble
 python3 fixtures/build-assistant-package.py west-cork
 ```
 
-The recipe verifies the selected region's input packages before work. For Cork it runs the offline landmark compiler,
-`obc-bake` with the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
+The recipe verifies the selected region's input packages before work. Cork runs the offline
+landmark compiler; Switzerland loads its compiled input package. Both then run `obc-bake` with
+the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
 the normal catalog selection, verifies every cell hash, and explicitly accepts partial cells at
 the authored crop boundary. It does not accept missing cells or skip the final map verification.
 The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
