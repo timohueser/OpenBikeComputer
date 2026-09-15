@@ -106,11 +106,13 @@ impl VisitHarness {
             store: StoreIdentity::from_bytes(self.h.store.store_id().0),
             revision: obc_app::device_core::Revision::new(self.h.store.sequence()),
         });
+        let index = catalogs.then(|| obc_route::RouteIndex::read(self.h.original.as_ref().unwrap()).unwrap());
+        let route = index.as_ref().map(|index| obc_route::RouteReader::new(index, self.h.original.as_ref().unwrap()));
         let mut plan = self.h.app.run_pass(PassInputs {
             now: PassClock { ride: obc_ports::RideClock(self.now), ui: obc_ports::InputClock(self.now) },
             gestures: &[],
             sensors: obc_ports::Sensors::new(position),
-            route: None,
+            route: route.as_ref(),
             support: PlatformSupport {
                 detour: true,
                 settings_persistence: false,
