@@ -35,16 +35,6 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
     /// sidecar yet, or a genuine CRC of `0`, read the same by spec — no
     /// special-casing). The badge/adoption logic that consumes it is V6 (#770).
     public var crc32: UInt32
-    /// The device's computed auto-delete instant for this route (epic #638), from
-    /// protocol-v4 catalog retention metadata. `nil` when
-    /// the device hasn't started the countdown (`last_used == 0`), retention is
-    /// ``Retention/never``, **or** the device predates expiry. Display-only; goes stale gracefully as
-    /// extend-on-use moves it.
-    public var expiresAt: Date?
-    /// The device's stored retention level for this route (epic #638), from the
-    /// entry's `retention` tail byte. `nil` when the device predates expiry (no
-    /// tail); a known byte decodes via ``Retention/init(safeRawValue:)``.
-    public var retention: Retention?
 
     public init(
         id: DeviceObjectID,
@@ -53,8 +43,6 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
         elevationGainMeters: Double,
         pointCount: Int = 0,
         crc32: UInt32 = 0,
-        expiresAt: Date? = nil,
-        retention: Retention? = nil
     ) {
         self.id = id
         self.name = name
@@ -62,8 +50,6 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
         self.elevationGainMeters = elevationGainMeters
         self.pointCount = pointCount
         self.crc32 = crc32
-        self.expiresAt = expiresAt
-        self.retention = retention
     }
 }
 

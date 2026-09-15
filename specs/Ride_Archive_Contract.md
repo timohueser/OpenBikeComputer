@@ -2,7 +2,7 @@
 
 This contract defines the iOS archive boundary and the device archive-proof boundary.
 [ARCHIVE_RIDE](FLAT_Store_Protocol.md#312-archive_ride) carries proof into
-[card retention metadata](Retention_Metadata.md). iOS delivers and retries these receipts; the board consumes validated proof in its live retention policy.
+[card archive metadata](Ride_Archive_Metadata.md). iOS delivers and retries these receipts; the board uses validated proof for its synced indicator.
 
 ## Source identity
 
@@ -99,7 +99,7 @@ and Resume action expose pending confirmation, unsupported devices and device re
 or a later reconnect revalidates the archives and retries without downloading them again. A
 changed or absent source is terminal for that receipt; a fresh catalog decides any later download.
 There is no persistent receipt queue or local device-acknowledgment mirror. Sync counts describe
-local saves, never device proof. Device retention uses only validated durable proof.
+local saves, never device proof. The device synced indicator uses only validated durable proof.
 
 ## Device archive proof
 
@@ -122,25 +122,10 @@ the client can retry from its revalidated archive. If the first write committed,
 the stored proof; otherwise it must finish a new write or fail. A source that has since vanished
 or changed fails without recreating any object or proof.
 
-## Live retention
+## Device display
 
-The board and the shared-card host adapter load proof into the newest 32 full ride summaries and
-all 128 compact retention records. They admit only current finalized heads with flags NONE.
-Unreadable or malformed summaries, incomplete inventories and overflow fail the refresh. Complete
-metadata validation and source reconciliation precede a media sync barrier; no rows become policy
-evidence before it succeeds. The loaded catalog scope binds the complete StoreId and sequence.
+The runtime overlays validated archive proof on the visible finalized ride summaries.
+The full store determines whether a proof still names the exact current source. Missing proof,
+invalid metadata, and failed reads cannot mark a ride synced. Duplicate receipts are safe.
 
-RetentionMachine owns the trusted-clock stamp and expiry decision. Its checked writer fills a
-zero timestamp only on an existing exact proof row. It cannot create proof, recreate a stale row
-or replace a nonzero timestamp. Success orders a validated reload before resident policy changes.
-A repeated stamp preserves the original clock and repeats the durability barrier without a commit.
-Unknown clock, recording, unsynced data and a failed refresh protect rides from automatic expiry.
-A finalized ride can receive its first trusted stamp while another ride records, but no expiry
-can run until recording ends. Scoped removal requires durable nonzero proof for the current source.
-The FlatRideStore catalog/retention adapter refuses recorder mutations; it does not replace the
-native simulator recorder.
-
-## Pending physical acceptance
-
-A historical download marker, trash entry or deletion marker is never proof. Physical USB/BLE
-lost-response, remount and power-loss acceptance remain pending.
+Archive proof never starts a timer and never authorizes deletion. The rider deletes rides explicitly.

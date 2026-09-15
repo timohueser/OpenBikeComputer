@@ -222,7 +222,7 @@ struct LinkLifecycleModelTests {
 
 /// Records which lifecycle seam each call used; state is a hand-driven
 /// replay-latest stream, like the real transport's.
-private final class SpyTransport: DeviceLink, DeviceBattery, DeviceObjects, DeviceRetention,
+private final class SpyTransport: DeviceLink, DeviceBattery, DeviceObjects, DeviceClock,
     @unchecked Sendable {
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
     private let lock = NSLock()

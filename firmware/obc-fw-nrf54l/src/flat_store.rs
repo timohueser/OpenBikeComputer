@@ -73,7 +73,7 @@ use obc_link::flat::{
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
-    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError, StoreId,
+    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError,
 };
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
@@ -407,16 +407,10 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 #[allow(dead_code, clippy::large_enum_variant)]
 pub(crate) enum Request {
     ReconcileMetadata,
-    WriteMetadata {
-        effect: obc_app::retention::RetentionEffect,
-    },
-    ExpireRoute {
-        id: ObjectId,
-        scope: obc_app::device_core::StoreRevision,
-    },
-    ExpireRide {
-        id: ObjectId,
-        scope: obc_app::device_core::StoreRevision,
+    CleanupRoute {
+        before_utc: u32,
+        store: obc_app::device_core::StoreIdentity,
+        active: Option<ObjectId>,
     },
     /// §6's extent reservation.
     Allocate {
@@ -558,7 +552,8 @@ pub(crate) enum Request {
 /// only what is reached.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
-    Metadata(Result<(), obc_app::retention::RetentionError>),
+    CleanedRoute(Option<ObjectId>),
+    Metadata(Result<(), obc_app::metadata::MetadataError>),
     Allocated(Allocation),
     /// The allocation, advanced by the bytes written.
     Wrote(Allocation),
@@ -1150,44 +1145,8 @@ fn serve(
 ) -> Result<Outcome, StoreError> {
     match request {
         Request::ReconcileMetadata => {
-            Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(retention_error)))
+            Ok(Outcome::Metadata(obc_storage::flat::metadata::reconcile(store).map_err(metadata_error)))
         }
-        Request::WriteMetadata { effect } => {
-            use obc_app::retention::{RetentionEffect, RetentionError};
-            let result = match effect {
-                RetentionEffect::WriteRouteMetadata { scope: Some(scope), id, meta, .. } => {
-                    obc_storage::flat::metadata::write_route(
-                        store,
-                        StoreId(scope.store.bytes()),
-                        scope.revision.raw(),
-                        ObjectId(id),
-                        meta.retention as u8,
-                        meta.last_used_utc,
-                    )
-                    .map_err(retention_error)
-                }
-                RetentionEffect::WriteRideMetadata { scope: Some(scope), id, synced_at, .. } => {
-                    obc_storage::flat::metadata::write_ride(
-                        store,
-                        StoreId(scope.store.bytes()),
-                        scope.revision.raw(),
-                        ObjectId(id),
-                        synced_at,
-                    )
-                    .map_err(retention_error)
-                }
-                _ => Err(RetentionError::Unsupported),
-            };
-            Ok(Outcome::Metadata(result))
-        }
-        Request::ExpireRoute { id, scope } => Ok(Outcome::Metadata(
-            obc_storage::flat::metadata::remove_route(store, StoreId(scope.store.bytes()), scope.revision.raw(), id)
-                .map_err(retention_error),
-        )),
-        Request::ExpireRide { id, scope } => Ok(Outcome::Metadata(
-            obc_storage::flat::metadata::remove_ride(store, StoreId(scope.store.bytes()), scope.revision.raw(), id)
-                .map_err(retention_error),
-        )),
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
         Request::WriteComputedRoute { mut allocation, bytes, header } => {
             if !header.is_empty() {
@@ -1223,6 +1182,7 @@ fn serve(
             let id = store.next_object_id();
             let payload_crc = store.allocation_crc(&allocation)?;
             let meta = EntryMeta {
+                added_at_utc: 0,
                 id,
                 revision: Revision(1),
                 kind: ObjectKind::Route,
@@ -1237,6 +1197,16 @@ fn serve(
         }
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
+        }
+        Request::CleanupRoute { before_utc, store: identity, active } => {
+            if catalog_scope(store).store != identity {
+                return Err(StoreError::Invalid);
+            }
+            let Some((id, batch)) = obc_storage::flat::route_cleanup::next(store, before_utc, active)? else {
+                return Ok(Outcome::CleanedRoute(None));
+            };
+            store.commit(&batch)?;
+            Ok(Outcome::CleanedRoute(Some(id)))
         }
         Request::RemoveObject { id, kind } => remove_head(store, id, kind).map(|existed| Outcome::Removed { existed }),
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
@@ -1360,9 +1330,24 @@ fn serve(
     }
 }
 
+static ROUTE_STORAGE_FULL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub(crate) fn take_route_storage_full() -> bool {
+    ROUTE_STORAGE_FULL.swap(false, core::sync::atomic::Ordering::Relaxed)
+}
+
 fn publish_upload(engine: &mut BoardEngine) {
     let live = engine.live_upload();
     let ended = engine.take_upload_end();
+    if matches!(
+        ended,
+        Some((
+            obc_link::flat::ObjectKind::Route,
+            obc_link::flat::UploadEnd::Refused(obc_link::flat::ErrorCode::NoSpace)
+        ))
+    ) {
+        ROUTE_STORAGE_FULL.store(true, core::sync::atomic::Ordering::Relaxed);
+        CATALOG_WAKE.signal(());
+    }
     // The transfer *level* — every kind, not just the map the card shows. See [`LIVE_TRANSFER`].
     LIVE_TRANSFER.store(engine.live_transfer().is_some(), core::sync::atomic::Ordering::Relaxed);
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
@@ -1797,11 +1782,9 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     true
 }
 
-/// Rebuild the newest summaries and complete retention inventory from finalized current heads.
 #[inline(never)]
 pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
     let mut rides = obc_app::RideCatalog::new();
-    let mut inventory: heapless::Vec<obc_app::RideRetentionRecord, { obc_app::MAX_RIDES }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
         let Ok(Ok(info)) =
             store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source))
@@ -1809,10 +1792,6 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
             defmt::warn!("flat: incomplete ride catalog — keeping the prior menu snapshot");
             return false;
         };
-        if inventory.push(obc_app::RideRetentionRecord { id: entry.id.0, synced: false, synced_at_utc: 0 }).is_err() {
-            defmt::warn!("flat: ride retention inventory exceeds capacity");
-            return false;
-        }
         let position = rides.iter().position(|ride| ride.id < entry.id.0).unwrap_or(rides.len());
         if position < obc_app::UI_RIDES_CAP {
             if rides.is_full() {
@@ -1828,7 +1807,6 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
         return false;
     }
     app.set_rides(&rides);
-    app.set_ride_retention_inventory(&inventory);
     defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
     true
 }
@@ -1862,15 +1840,15 @@ pub(crate) fn fill_ride_track(
 }
 
 /// Exact physical catalog identity, also used for admitted policy work.
-pub(crate) fn retention_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
+pub(crate) fn catalog_scope(store: &FlatStore<FlatCard>) -> obc_app::device_core::StoreRevision {
     obc_app::device_core::StoreRevision {
         store: obc_app::device_core::StoreIdentity::from_bytes(store.store_id().0),
         revision: obc_app::device_core::Revision::new(store.sequence()),
     }
 }
 
-fn retention_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
-    use obc_app::retention::RetentionError as E;
+fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::metadata::MetadataError {
+    use obc_app::metadata::MetadataError as E;
     use obc_storage::flat::metadata::Error;
     match error {
         Error::Stale | Error::WrongStore => E::Stale,
@@ -1881,23 +1859,11 @@ fn retention_error(error: obc_storage::flat::metadata::Error) -> obc_app::retent
 }
 
 #[inline(never)]
-pub(crate) fn load_retention(
+pub(crate) fn load_metadata(
     store: &FlatStore<FlatCard>,
     app: &mut obc_app::App,
-) -> Result<(), obc_app::retention::RetentionError> {
-    let mut metas = [obc_app::RouteRetentionMeta::default(); obc_app::MAX_ROUTES];
-    obc_storage::flat::metadata::read_rows(store, |row| match row.kind {
-        ObjectKind::Route => {
-            if let Some(index) = app.route_ids().iter().position(|&id| id == row.id.0) {
-                metas[index] =
-                    obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp);
-            }
-        }
-        ObjectKind::Ride => app.set_ride_archive_proof(row.id.0, row.timestamp),
-        _ => {}
-    })
-    .map_err(retention_error)?;
-    let len = app.route_ids().len();
-    app.set_route_meta(&metas[..len]);
+) -> Result<(), obc_app::metadata::MetadataError> {
+    obc_storage::flat::metadata::read_rows(store, |row| app.set_ride_archive_proof(row.id.0, row.timestamp))
+        .map_err(metadata_error)?;
     Ok(())
 }
