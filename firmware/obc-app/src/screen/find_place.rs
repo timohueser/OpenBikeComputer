@@ -155,7 +155,17 @@ impl FindPlaceScreen {
                 _ => rx.t(Msg::AssistantFinding),
             };
             cv.text(title, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
-            cv.text(rx.t(Msg::AssistantMorePlaces), Point::new(18, 270), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(
+                if matches!(rx.find.state, State::Empty | State::Ready) {
+                    rx.t(Msg::AssistantPartial)
+                } else {
+                    rx.t(Msg::AssistantMorePlaces)
+                },
+                Point::new(18, 270),
+                Font::Label,
+                TextAlign::Left,
+                SUBTEXT,
+            );
             return;
         };
         let Some(cost) = rx.find.costs(self.selected) else { return };

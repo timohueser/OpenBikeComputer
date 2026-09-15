@@ -2769,7 +2769,6 @@ impl App {
     /// firmware calls it directly on its map plane.
     pub fn advance_animations(&mut self, clock: InputClock) {
         self.advance_easier();
-        self.advance_find_budget(clock.0);
         let now = self.wall_clock.now(clock.0);
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(clock.0);
         let pan_active = self.state.pan.is_some();

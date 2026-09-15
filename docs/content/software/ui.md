@@ -480,11 +480,8 @@ This avoids a later pass being treated as an early stop on an overlapping route.
 places are excluded before these limits. The shared corridor page keeps its route order.
 
 The shared Visit planner measures at most eight distinct candidates, one at a time. It stores each
-measured route on the card and releases the planner before the next plan starts. After eight
-seconds, Find cancels unfinished preparation and keeps the completed choices. It waits for owned
-I/O and the planner to release before it ranks those choices by their measured route costs. A
-preview that is already complete is kept. This is a cooperative time budget, not a hard deadline.
-The Finding indicator stays visible until preparation and cancellation finish. Its activity dots update once per second without
+measured route on the card and releases the planner before the next plan starts. The Finding
+indicator stays visible through the complete batch. Its activity dots update once per second without
 redrawing the map. Planning a suggestion does not activate a route or change the recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.

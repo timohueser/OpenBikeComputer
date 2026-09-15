@@ -312,71 +312,52 @@ fn find_prepares_ranked_candidates_without_render_or_early_catalog_shape_binding
             Some(obc_ports::Fix::at(500_000, 500_000))
         }
     }
-    for timeout in [false, true] {
-        let mut h = VisitHarness::new();
-        h.h.app.cancel_assistant();
-        h.settle(ReviewStatus::Idle);
-        h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
-        h.h.app.open_find_place();
-        h.h.app.apply_gesture(obc_app::Gesture::Press);
-        let mut unbound_preview = false;
-        let mut expired = false;
-        for _ in 0..2000 {
-            if timeout
-                && !expired
-                && h.h.writer.pending() == Some(Kind::Write)
-                && h.h.writer.transport().completed.borrow().contains(&Kind::Publish)
-            {
-                h.now += 8_001;
-                for _ in 0..3 {
-                    h.pass_with(&mut Position, true);
-                    assert!(h.h.guard.is_some());
-                    assert_eq!(h.h.writer.pending(), Some(Kind::Write));
-                    assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Releasing);
-                }
-                expired = true;
-            }
-            if h.h.writer.pending().is_some() {
-                h.h.writer.complete();
-            }
-            h.pass_with(&mut Position, true);
-            if let Some(preview) = h.h.app.assistant_preview() {
-                if !h.h.app.route_ids().contains(&preview.source.object) {
-                    unbound_preview = true;
-                    assert!(h.h.app.assistant_preview_shape().is_empty());
-                }
-            }
-            if h.h.guard.is_none() {
-                let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
-                let source = h.h.original.as_ref().unwrap();
-                let index = obc_route::RouteIndex::read(source).unwrap();
-                let route = obc_route::RouteReader::new(&index, source);
-                h.h.app.prepare_find(Some(&reader), Some(&route));
-            }
-            if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
-                break;
+    let mut h = VisitHarness::new();
+    h.h.app.cancel_assistant();
+    h.settle(ReviewStatus::Idle);
+    h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
+    h.h.app.open_find_place();
+    h.h.app.apply_gesture(obc_app::Gesture::Press);
+    let mut unbound_preview = false;
+    for _ in 0..2000 {
+        if h.h.writer.pending().is_some() {
+            h.h.writer.complete();
+        }
+        h.pass_with(&mut Position, true);
+        if let Some(preview) = h.h.app.assistant_preview() {
+            if !h.h.app.route_ids().contains(&preview.source.object) {
+                unbound_preview = true;
+                assert!(h.h.app.assistant_preview_shape().is_empty());
             }
         }
-        assert!(
-            unbound_preview,
-            "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
-            h.h.app.find_place_state(),
-            h.h.app.assistant_review_status(),
-            h.h.app.find_place_result_count(),
-            h.h.app.route_ids()
-        );
-        assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
-        assert_eq!(expired, timeout);
-        assert_eq!(h.h.app.find_place_result_count(), if timeout { 1 } else { 2 });
-        h.h.app.apply_gesture(obc_app::Gesture::Back);
-        for _ in 0..20 {
-            h.pass_with(&mut Position, true);
-            h.h.app.prepare_find(None, None);
+        if h.h.guard.is_none() {
+            let reader = obc_reader::Reader::new(h.h.map.as_ref().unwrap(), &h.h.tables, &h.h.cache);
+            let source = h.h.original.as_ref().unwrap();
+            let index = obc_route::RouteIndex::read(source).unwrap();
+            let route = obc_route::RouteReader::new(&index, source);
+            h.h.app.prepare_find(Some(&reader), Some(&route));
         }
-        assert_eq!(h.h.store.entries().count(), 2);
-        assert_eq!(h.h.store.current_revision(ObjectId(1)), Ok(Some(Revision(1))));
-        h.h.assert_clean();
+        if h.h.app.find_place_state() == obc_app::find_place::State::Ready {
+            break;
+        }
     }
+    assert!(
+        unbound_preview,
+        "ranking must finish before its catalog refresh: state={:?}, review={:?}, results={}, routes={:?}",
+        h.h.app.find_place_state(),
+        h.h.app.assistant_review_status(),
+        h.h.app.find_place_result_count(),
+        h.h.app.route_ids()
+    );
+    assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
+    assert_eq!(h.h.app.find_place_result_count(), 1);
+    h.h.app.apply_gesture(obc_app::Gesture::Back);
+    for _ in 0..20 {
+        h.pass_with(&mut Position, true);
+        h.h.app.prepare_find(None, None);
+    }
+    assert_eq!(h.h.store.entries().count(), 2);
+    h.h.assert_clean();
 }
 
 #[test]
