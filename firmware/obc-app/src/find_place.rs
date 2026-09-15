@@ -78,6 +78,7 @@ pub struct FindState {
     clock: (bool, i16),
     profile: u8,
     local: Option<(u8, u16)>,
+    selected_review: bool,
     pub review: ReviewStatus,
     pub review_costs: Option<Costs>,
 }
@@ -100,6 +101,7 @@ impl FindState {
             clock: (false, 0),
             profile: 0,
             local: None,
+            selected_review: false,
             review: ReviewStatus::Idle,
             review_costs: None,
         }
@@ -171,6 +173,11 @@ impl crate::App {
         if self.ui.find.bound_map.is_some() && self.ui.find.bound_map != map {
             self.ui.poi_scratch.cancel();
             self.ui.corridor_scratch.cancel();
+            for screen in &mut self.ui.stack {
+                if let Screen::PoiDetail(detail) = screen {
+                    detail.invalidate_source();
+                }
+            }
             if self.ui.find.owns_pages() || self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_))) {
                 self.cancel_assistant();
             }
@@ -239,6 +246,12 @@ impl crate::App {
         self.ui.map_dirty = true;
     }
     fn handle_find_exit(&mut self) {
+        if self.ui.find.selected_review && !self.ui.stack.iter().any(|s| matches!(s, Screen::VisitReview(_))) {
+            self.ui.find.selected_review = false;
+            if self.assistant_review_status() != ReviewStatus::Accepted {
+                self.cancel_assistant();
+            }
+        }
         let has_find = self.ui.stack.iter().any(|s| matches!(s, Screen::FindPlace(s) if s.choices()));
         if self.ui.find.owns_pages() && !has_find {
             if matches!(self.ui.find.state, State::Planning | State::Releasing) {
@@ -268,6 +281,7 @@ impl crate::App {
         };
         match self.request_visit(VisitTarget { map, metadata: poi.metadata, display: (poi.lon, poi.lat) }, name) {
             Ok(()) => {
+                self.ui.find.selected_review = true;
                 self.ui.find.review_costs = None;
                 self.ui.find.review = ReviewStatus::Planning;
                 crate::screen::apply(
@@ -384,6 +398,12 @@ impl crate::App {
             self.ui.find.local = local;
             let end = self.ui.corridor_scratch.armed().map_or(0, |key| key.anchor_m.saturating_add(FORWARD_M));
             self.ui.corridor_scratch.prepare_to(Some(reader), route, local, end);
+            if matches!(self.ui.corridor_scratch.status(), QueryProgress::Failed(_)) {
+                self.ui.find.state = State::Failed;
+                self.ui.find.results.clear();
+                self.cancel_assistant();
+                return;
+            }
         }
         if self.ui.find.state == State::Querying {
             let Some(reader) = reader else { return };
@@ -544,6 +564,129 @@ impl crate::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obc_formats::io::{ByteSink, ByteSource, Error, SliceSource};
+    use obc_reader::{MapCache, MapTables};
+
+    struct Sink(std::vec::Vec<u8>);
+    impl ByteSink for Sink {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            self.0.extend_from_slice(bytes);
+            Ok(())
+        }
+        fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Error> {
+            self.0[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn hours_map() -> std::vec::Vec<u8> {
+        let mut open = [0; 29];
+        for day in 0..7 {
+            open[2 + day * 4] = 96;
+        }
+        obcm_testkit::build_poi_map_with_hours(
+            (0, 0, 100_000, 100_000),
+            512,
+            &[(
+                1,
+                std::vec![obcm_testkit::PoiSpec {
+                    lat: 50_000,
+                    lon: 50_000,
+                    subtype: 1,
+                    name: "Water".into(),
+                    hours_ref: 0,
+                }],
+            )],
+            &[open],
+        )
+    }
+
+    #[test]
+    fn map_replacement_before_first_detail_prepare_cannot_revalidate_old_metadata() {
+        let bytes = hours_map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut page = heapless::Vec::<_, 8>::new();
+        let mut query = PlaceQuery::new(
+            0,
+            PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
+            None,
+        );
+        while query.step(&reader, None, 0, &mut page) == QueryProgress::Pending {}
+        let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+        let key = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
+        app.bind_place_map(Some(key));
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(page[0].poi.clone()))).is_ok());
+        app.bind_place_map(Some(RouteSourceKey { revision: 2, ..key }));
+        let replacement = obcm_testkit::build_poi_map_with_hours((0, 0, 100_000, 100_000), 512, &[], &[[0; 29]]);
+        let source = SliceSource(&replacement);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut frame = crate::harness::support::Buf::new(240, 320);
+        app.render_frame(None, &mut frame, &reader, None, 240.0, 320.0, |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+        });
+        assert!(!app.ui.poi_scratch.detail_valid, "a successful hours read cannot restore old source identity");
+        app.apply_gesture(crate::Gesture::Press);
+        assert_eq!(app.assistant_review_status(), ReviewStatus::Idle);
+    }
+
+    #[test]
+    fn corridor_hours_failure_is_not_an_empty_result_during_or_after_probes() {
+        struct FailingSource {
+            bytes: std::vec::Vec<u8>,
+            fail: core::cell::Cell<bool>,
+        }
+        impl ByteSource for FailingSource {
+            fn len(&self) -> u64 {
+                self.bytes.len() as u64
+            }
+            fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
+                if self.fail.get() {
+                    return Err(Error::Io);
+                }
+                SliceSource(&self.bytes).read_at(offset, out)
+            }
+        }
+        let source = FailingSource { bytes: hours_map(), fail: core::cell::Cell::new(false) };
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut sink = Sink(std::vec::Vec::new());
+        obc_route::gpx_to_obcr(&SliceSource(br#"<gpx><trk><trkseg><trkpt lon="0.04" lat="0.05"/><trkpt lon="0.06" lat="0.05"/></trkseg></trk></gpx>"#), "Route", &mut sink).unwrap();
+        let route_source = SliceSource(&sink.0);
+        let index = obc_route::RouteIndex::read(&route_source).unwrap();
+        let route = RouteReader::new(&index, &route_source);
+        for state in [State::Planning, State::Ready] {
+            source.fail.set(false);
+            let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+            app.stamp_clock_ble(1_727_000_000, 0);
+            app.open_find_place();
+            app.apply_gesture(crate::Gesture::Press);
+            let local = app.place_local_time();
+            app.ui.corridor_scratch.arm(crate::corridor::CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 0 });
+            app.ui.corridor_scratch.clock_changed(local, 0);
+            while app.ui.corridor_scratch.pending() {
+                app.ui.corridor_scratch.prepare_to(Some(&reader), Some(&route), local, FORWARD_M);
+            }
+            assert_eq!(app.ui.corridor_scratch.len(), 1);
+            app.ui.find.state = state;
+            app.ui.find.clock = (true, 0);
+            app.ui.find.local = local;
+            app.ui.find.results.push(1).unwrap();
+            source.fail.set(true);
+            app.stamp_clock_ble(1_727_000_060, 0);
+            app.prepare_find(Some(&reader), Some(&route));
+            assert_eq!(app.find_place_state(), State::Failed);
+            assert!(app.ui.find.results.is_empty());
+            assert!(matches!(app.ui.corridor_scratch.status(), QueryProgress::Failed(_)));
+        }
+    }
     fn cost(arrival: u32, ascent: Option<u32>, added: u32) -> Option<Costs> {
         Some(Costs { arrival_m: arrival, arrival_ascent_m: ascent, added_m: Some(added), added_ascent_m: ascent })
     }

@@ -65,6 +65,11 @@ impl PoiDetailScreen {
         !self.schedule_ready
     }
 
+    pub(crate) fn invalidate_source(&mut self) {
+        self.schedule_ready = true;
+        self.visit_error = Some(crate::navigator::VisitUnavailable::SourceChanged);
+    }
+
     pub(crate) fn poi(&self) -> &Poi {
         &self.poi
     }
