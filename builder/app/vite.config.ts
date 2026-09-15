@@ -82,6 +82,14 @@ export default defineConfig(({ mode }) => {
         test: {
             environment: "node",
             include: ["src/**/*.test.ts"],
+            coverage: {
+                provider: "v8",
+                include: ["src/**/*.{ts,js,svelte}"],
+                exclude: ["src/**/*.test.ts", "src/lib/*/pkg/**"],
+                reporter: ["text", "lcov", "json"],
+                reportsDirectory: "../../.artifacts/coverage/web",
+                reportOnFailure: true,
+            },
         },
     };
 });
