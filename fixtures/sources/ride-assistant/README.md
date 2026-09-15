@@ -44,7 +44,10 @@ No country raw archive is needed or published by the scenario.
 
 Outputs go to `fixtures/build/maps`. An existing work or package directory is refused. Use
 `OBC_FIXTURE_BUILD_DIR` for another build and `--bin-dir` for existing shipping tool binaries.
-No Cargo build or external request runs implicitly. To package completed work without a rebake:
+No Cargo build or external request runs implicitly. Build provenance records `recipe_commit`
+for this checkout and separate SHA-256 hashes for `obc-bake`, `obc-dem`, and `obcm-assemble`.
+A recipe commit does not assert the source revision of prebuilt binaries supplied by `--bin-dir`.
+To package completed work without a rebake:
 
 ```sh
 python3 fixtures/build-assistant-package.py west-cork \

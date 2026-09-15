@@ -61,3 +61,12 @@ The final named-frame/snapshot and shipping resource budgets also remain with th
 Swiss package must be replaced only after its completed crop and provenance are available.
 Physical buttons, SD latency and failures, sensor continuity, and measured stack behavior remain
 pending a connected-device session. No software fixture result substitutes for those measurements.
+
+## Provenance review delta
+
+Independent review found that `--bin-dir` can select tools built from another source revision.
+Commit `9f016807` therefore records the checkout as `recipe_commit`, not `source_commit`, and
+hashes all three producer executables before the bake. This matches the retained Cork record's
+separation of directly verified binary identity from source attribution. The published package
+already has that distinction and is unchanged. The complete Python suite (187 tests), registry,
+Python compilation and documentation checks pass. No bake, assembly or upload was repeated.
