@@ -117,7 +117,7 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // v14 (§1.1/§1.2): every offset a header or directory carries is a count of `U = 16`-byte
     // units, so every structure one reaches starts on a unit boundary and the `0..U-1` bytes
-    // between them are `0xFF` filler. The 49-byte header is not a unit multiple, so the style
+    // between them are `0xFF` filler. The 57-byte header is not a unit multiple, so the style
     // table begins at 64.
     use obc_formats::obcm::{OffsetScale, FILLER};
     const SCALE: OffsetScale = OffsetScale::DEFAULT;
@@ -231,6 +231,7 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     f.push(SCALE.log2()); // §1.1 offset scale
     f.extend_from_slice(&0u32.to_le_bytes()); // §1.3 terrain offset — this fixture has no raster
     f.extend_from_slice(&0u32.to_le_bytes()); // …and its length is `0` exactly when the offset is
+    f.extend_from_slice(&[0; 8]); // no landmark section
     debug_assert_eq!(f.len(), obc_formats::obcm::HEADER_LEN);
     f.resize(style_off, FILLER);
     f.extend_from_slice(&styles);

@@ -2855,7 +2855,9 @@ dependencies = [
  "sha1",
  "sha2",
  "ureq",
+ "url",
  "zip",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -2883,10 +2885,12 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "miniz_oxide",
  "obc-fixtures",
  "obc-formats",
  "obc-map-scene",
  "obcm-testkit",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -3044,6 +3048,7 @@ dependencies = [
  "js-sys",
  "obc-formats",
  "obc-pack",
+ "obc-reader",
  "obc-vectors",
  "obcm-assemble",
  "serde_json",
@@ -6161,6 +6166,12 @@ dependencies = [
  "memchr",
  "typed-path",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"

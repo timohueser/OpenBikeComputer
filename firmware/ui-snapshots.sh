@@ -464,8 +464,8 @@ import sys
 
 source, output = map(Path, sys.argv[1:])
 map_bytes = bytearray(source.read_bytes())
-# OBCM §1.1/§1.3: v15 header, 16-byte units, terrain offset/length at bytes 41/45.
-assert len(map_bytes) >= 49 and map_bytes[:5] == b"OBCM\x0f" and map_bytes[40] == 4
+# OBCM §1.1/§1.3: v16 header, 16-byte units, terrain offset/length at bytes 41/45.
+assert len(map_bytes) >= 57 and map_bytes[:5] == b"OBCM\x10" and map_bytes[40] == 4
 terrain_offset, terrain_length = struct.unpack_from("<II", map_bytes, 41)
 assert bool(terrain_offset) == bool(terrain_length), "incomplete terrain region"
 if not terrain_offset:

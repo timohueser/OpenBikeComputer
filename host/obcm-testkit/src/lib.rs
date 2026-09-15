@@ -188,6 +188,7 @@ fn obcm_header(
     let (terrain_off, terrain_len) = terrain.unwrap_or((0, 0));
     f.extend_from_slice(&scaled(terrain_off).to_le_bytes());
     f.extend_from_slice(&scaled(terrain_len).to_le_bytes());
+    f.extend_from_slice(&[0; 8]);
     assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
     f
 }

@@ -5,11 +5,11 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/b427bce15e08993ebb07d12b5284fb9ad6c20dfb26cfa7aebaa94399b37b87f5.tar.gz"
-sha256 = "b427bce15e08993ebb07d12b5284fb9ad6c20dfb26cfa7aebaa94399b37b87f5"
-bytes = 3446094
-provenance = "OBCM v15, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts. Canonical fixture bbox. See fixtures/README.md."
-license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks)"
+archive = "packages/2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318.tar.gz"
+sha256 = "2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318"
+bytes = 3471573
+provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled local Swiss landmark source content. Canonical fixture bbox. See fixtures/README.md."
+license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
 [packages.sim-peak-view]
@@ -23,10 +23,10 @@ tracked_sources = { "locations.json" = "sources/peak-view/locations.json" }
 
 [packages.sim-monaco]
 summary = "Monaco POI-dense simulator map and up-ahead track"
-archive = "packages/424b80a757214822a779ffa19b08a10e36f10d1c73f344949641357110f90e00.tar.gz"
-sha256 = "424b80a757214822a779ffa19b08a10e36f10d1c73f344949641357110f90e00"
-bytes = 443212
-provenance = "OBCM v15, packed from pinned assistant-osm Monaco snapshot 2026-09-13; unchanged authored 2.7 km up-ahead track. Canonical fixture bbox. See fixtures/README.md."
+archive = "packages/f46cad5848f03d492b6ff87e2227c36b436fbe034439d0fbeb4a00aac972f34e.tar.gz"
+sha256 = "f46cad5848f03d492b6ff87e2227c36b436fbe034439d0fbeb4a00aac972f34e"
+bytes = 443210
+provenance = "OBCM v16, packed from pinned assistant-osm Monaco snapshot 2026-09-13; unchanged authored 2.7 km up-ahead track. Canonical fixture bbox. See fixtures/README.md."
 license = "ODbL-1.0 (map); GPL-3.0-only (authored track)"
 tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/monaco-upahead.gpx" }
 

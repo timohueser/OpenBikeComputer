@@ -199,6 +199,16 @@ impl Bbox {
         (to_deg(self.min_lon), to_deg(self.min_lat), to_deg(self.max_lon), to_deg(self.max_lat))
     }
 
+    /// Inclusive integer microdegree coordinates contained in this box.
+    pub fn microdegree_bounds(self) -> (i64, i64, i64, i64) {
+        (
+            (i64::from(self.min_lon) + 9).div_euclid(10),
+            (i64::from(self.min_lat) + 9).div_euclid(10),
+            i64::from(self.max_lon).div_euclid(10),
+            i64::from(self.max_lat).div_euclid(10),
+        )
+    }
+
     /// Closed on all four edges, exactly like `osmium::Box::contains`.
     #[inline]
     fn contains(&self, lon: i32, lat: i32) -> bool {
@@ -1369,6 +1379,10 @@ mod tests {
         let ok = Bbox::parse("7.39,43.71,7.47,43.77").expect("valid box");
         assert_eq!(ok.to_degrees(), (7.39, 43.71, 7.47, 43.77), "degrees survive the decimicro round trip");
         assert_eq!(Bbox::parse(" 7.39 , 43.71 , 7.47 , 43.77 ").expect("whitespace"), ok, "fields are trimmed");
+        assert_eq!(
+            Bbox::parse("-8.0000011,-1.0000001,8.000001,1.0000001").unwrap().microdegree_bounds(),
+            (-8_000_001, -1_000_000, 8_000_001, 1_000_000)
+        );
         // The edges land on osmium's grid: round-half-away-from-zero at 1e-7.
         assert_eq!(to_fix(7.39), 73_900_000);
         assert_eq!(to_fix(-7.39), -73_900_000);

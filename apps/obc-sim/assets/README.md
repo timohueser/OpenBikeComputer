@@ -34,14 +34,21 @@ Set `OBC_DEMO_DEM_DIR` to reuse downloaded Copernicus tiles. The script packs
 roads and summits, samples ascent, traces contours, and embeds the geographic
 surface. It does not bake a panorama or change the software’s screen rendering.
 
-The current OBCM v15 map uses the pinned `assistant-osm` Switzerland extract
+The current OBCM v16 map uses the pinned `assistant-osm` Switzerland extract
 (source timestamp 2026-09-13T20:21:20Z, SHA-256
 `e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88`).
 The packer used the canonical demo box above and the existing embedded surface
 terrain (SHA-256 `2c46061b61a444df3b24350089551a38451a01a9729de062520458f0749ad9ab`)
 for contours and ascent. This terrain comes from Copernicus DEM GLO-30 tiles
 N46 E007 and N46 E008. The map SHA-256 is
-`67f7ed3fc5227b067f134719e20ca66f65b831b517d4537fe5b538355ab26de7`.
+`de80b47f2e0d00b156aa997bb525d1c1a3f93f5451f08cc81cb159da2d05d95c`.
+The map also contains two landmark records from the pinned
+`assistant-wiki-switzerland` capture. Set `OBC_DEMO_LANDMARKS` to the compiled
+`content.json` to include them when you regenerate the map. The content SHA-256
+is `4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57`.
+Article and photo credits travel in the map. Grimsel Pass has text only because
+its source photo has no creator credit.
+
 OSM data is under ODbL-1.0.
 Terrain is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and
 © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the
