@@ -367,7 +367,13 @@ impl UiRuntime {
         // sheet-only open skips that draw, and on the board building the `Reader` for it is an SD
         // style-table parse the frame then throws away — measured at about 45 ms of an 80 ms open
         // step, which is the difference between six steps of a 440 ms slide and eleven.
-        if self.sheet_only() {
+        let rebuilding_photo = self
+            .stack
+            .iter()
+            .rev()
+            .find(|s| !s.is_overlay())
+            .is_some_and(|s| matches!(s, Screen::LandmarkPhoto(page) if page.covered_rebuild));
+        if self.sheet_only() && !rebuilding_photo {
             return false;
         }
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
@@ -377,10 +383,7 @@ impl UiRuntime {
             ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
             // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
             ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending()),
-            ReaderNeed::Photo => {
-                self.stack.len() == base + 1
-                    && matches!(scr, Screen::LandmarkPhoto(s) if matches!(s.status, crate::photo::Status::Fresh | crate::photo::Status::Pending))
-            }
+            ReaderNeed::Photo => true,
             ReaderNeed::Never => false,
         }
     }

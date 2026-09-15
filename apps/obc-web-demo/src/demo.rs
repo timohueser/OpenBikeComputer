@@ -432,29 +432,24 @@ impl Demo {
                 _ => None,
             };
             let reader = self.map.reader();
-            if plan.render.map || plan.render.overlay || !self.ready {
-                self.app.render_scene_map_rain_timed(
-                    Some(&mut self.scratch),
-                    &mut self.frame,
-                    Some(&reader),
-                    Some(&reader),
-                    route.as_ref(),
-                    None,
-                    None,
-                    self.peaks.panorama(),
-                    FRAME_W as f32,
-                    FRAME_H as f32,
-                    |c| {
-                        let (r, g, b) = rgb565_to_device64(c);
-                        Rgb888::new(r, g, b)
-                    },
-                    &obc_render::NoopClock,
-                );
-            }
-            self.photo.step(&mut self.app, Some(&reader), &mut self.frame, |c| {
-                let (r, g, b) = rgb565_to_device64(c);
-                Rgb888::new(r, g, b)
-            });
+            self.app.render_scene_map_rain_photo_timed(
+                Some(&mut self.scratch),
+                &mut self.frame,
+                Some(&reader),
+                Some(&reader),
+                route.as_ref(),
+                None,
+                None,
+                self.peaks.panorama(),
+                FRAME_W as f32,
+                FRAME_H as f32,
+                |c| {
+                    let (r, g, b) = rgb565_to_device64(c);
+                    Rgb888::new(r, g, b)
+                },
+                &obc_render::NoopClock,
+                Some(self.photo.interactive(plan.render.map || !self.ready)),
+            );
             self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
                 let (r, g, b) = rgb565_to_device64(c);
                 Rgb888::new(r, g, b)

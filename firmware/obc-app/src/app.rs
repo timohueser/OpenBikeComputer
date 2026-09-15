@@ -3423,6 +3423,46 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
+        self.render_scene_map_rain_photo_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            rain,
+            weather,
+            peak_view,
+            w,
+            h,
+            color_fn,
+            clock,
+            None,
+        )
+    }
+
+    /// Render the base, prepare bounded photo work, then compose covering screens.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map_rain_photo_timed<D, F, S>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        scene: Option<&S>,
+        core_reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        rain: Option<&mut dyn obc_render::RainOverlaySource>,
+        weather: Option<&crate::weather::WeatherSnapshot>,
+        peak_view: Option<&crate::peak_view::Panorama>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+        mut photo: Option<crate::photo::FramePhoto<'_>>,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
@@ -3606,19 +3646,38 @@ impl App {
         // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all. The
         // three exclusions, and why each is one, are on [`UiRuntime::sheet_only`] — which the
         // frame's `Reader` need reads too, because a frame that skips this draw reads nothing.
-        let sheet_only = ui.sheet_only();
+        let preserve_photo = photo.as_ref().is_some_and(|work| !work.redraw)
+            && ui.resident_frame
+            && matches!(ui.stack.get(base), Some(Screen::LandmarkPhoto(_)));
+        let sheet_only = ui.sheet_only() || preserve_photo;
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
         // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
         let mut cv = Canvas::new(target, &policy);
         cv.set_clip(render_clip);
-        for (i, scr) in ui.stack.iter().enumerate().skip(base) {
+        for i in base..ui.stack.len() {
             if !(i == base && sheet_only) {
-                scr.draw(&mut cv, &mut rx);
+                if let Screen::LandmarkPhoto(page) = &mut ui.stack[i] {
+                    page.invalidate(covered);
+                }
+                ui.stack[i].draw(&mut cv, &mut rx);
             }
-            // Everything above the base is the sheet itself, at full colour.
             if i == base {
+                if let (Some(work), Screen::LandmarkPhoto(page)) = (photo.as_mut(), &mut ui.stack[i]) {
+                    if !covered || page.covered_rebuild {
+                        let (target, color) = cv.split();
+                        for _ in 0..work.steps {
+                            work.runtime.step(page, core_reader, target, color);
+                            if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
+                                page.covered_rebuild = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        work.runtime.cancel();
+                    }
+                }
                 recess.set(false);
             }
         }
@@ -3630,9 +3689,6 @@ impl App {
         // `!sheet_only` is the only place the answer exists: a pass may tick and then render
         // nothing at all.
         if !sheet_only {
-            if let Some(Screen::LandmarkPhoto(page)) = ui.stack.get_mut(base) {
-                page.invalidate();
-            }
             ui.spend_base_draw();
         }
         stats

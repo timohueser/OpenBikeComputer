@@ -850,16 +850,16 @@ impl SimGui {
         let scene = crate::map_file::Scene { reader: &reader, route: route.as_ref() };
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
-        let photo_only = self.app.photo_status().is_some() && !plan.render.map;
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
         let rain_step = app.state.rain_step;
         let wx_snapshot = self.wx_snapshot.as_ref();
         let weather = self.weather.as_mut();
-        let render = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
-                      feed: Option<&obc_app::WeatherSnapshot>,
-                      app: &mut App,
-                      scratch: &mut obc_render::RenderScratch,
-                      fbdev: &mut FbDevice64<'_>| {
+        let photo = &mut self.photo;
+        let mut render = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
+                          feed: Option<&obc_app::WeatherSnapshot>,
+                          app: &mut App,
+                          scratch: &mut obc_render::RenderScratch,
+                          fbdev: &mut FbDevice64<'_>| {
             crate::map_file::render_base_frame(
                 app,
                 scratch,
@@ -870,20 +870,16 @@ impl SimGui {
                 panorama,
                 (dev_w as f32, dev_h as f32),
                 |c| Rgb565::from(RawU16::new(c)),
+                Some(photo.interactive(plan.render.map)),
             )
         };
         let wx_wall_now = app.wall_unix_now() as i64;
-        let mut stats = if photo_only {
-            obc_render::RenderStats::default()
-        } else {
-            match weather {
-                Some(weather) => {
-                    weather.lease(wx_wall_now, rain_step, |rain| render(rain, wx_snapshot, app, scratch, &mut fbdev))
-                }
-                None => render(None, wx_snapshot, app, scratch, &mut fbdev),
+        let mut stats = match weather {
+            Some(weather) => {
+                weather.lease(wx_wall_now, rain_step, |rain| render(rain, wx_snapshot, app, scratch, &mut fbdev))
             }
+            None => render(None, wx_snapshot, app, scratch, &mut fbdev),
         };
-        self.photo.step(app, Some(&reader), &mut fbdev, |c| Rgb565::from(RawU16::new(c)));
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
         // The plan's own render decision, for the stats readout (the sim always redraws, so this
