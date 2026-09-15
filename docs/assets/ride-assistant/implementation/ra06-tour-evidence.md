@@ -43,3 +43,12 @@ This support change adds no rendering layout or device-state bypass. Normal Assi
 is a separate integration change. The browser end-to-end journey remains the CI gate; it was not
 repeated locally. No UI sweep, resource image, full CI mirror, or device test was run. Hardware
 acceptance remains pending without a connected device.
+
+## Review delta
+
+Commit `5bd3f163` bounds both native Find and Preview waits to 750 frames at 16 ms, the page's
+12 s timeout. The whole 16-test web suite passes with these limits. The same journey also checks
+the refused-navigation-reset latch at playback end after acceptance: the queue remains empty,
+reset remains Failed, and Recorder keeps the same session. This timing avoids moving the frozen
+origin before acceptance. Registry and format checks pass. Logs are
+`/Users/timo/Documents/OSM-agents/ra06-tour-review-{delta,registry}.log`.
