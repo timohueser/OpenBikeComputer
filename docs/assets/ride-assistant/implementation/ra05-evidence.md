@@ -98,3 +98,18 @@ anchors and costs, the build revision, and the simulator trace in the device tes
 7. Test source replacement/deletion refusal, card change, failed reads, and Resume after reboot.
 8. Record stack/arena high-water marks and compare the shipping image with the unchanged resource
    baseline and ceilings. Retain logs and mark hardware acceptance only after these checks run.
+
+## Explicit cleanup integration
+
+Integration `f04b4ea2` takes the reviewed assistant-only Metadata lifecycle.
+Commits `73b7e9fa`, `a81a946b`, and `f82bd517` update the added Visit code to
+its current names and capabilities: assistant codec, Metadata outcome/token,
+current board replay support, and the board catalog scope helper. The shared
+App and host package suites pass; `cargo check --release --locked` from
+`firmware/obc-fw-nrf54l` passes after the final helper correction.
+
+Parent `a92c45c8` also includes the independently reviewed accepted-route bit
+consumers and corridor encounter fix. No route expiry or auto-retention policy
+was restored. No public documentation changed from this composition. Independent
+integration delta review and green CI remain required. No shipping image, UI
+sweep, or physical-device test was run.
