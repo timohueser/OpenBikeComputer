@@ -733,6 +733,43 @@ mod tests {
         token
     }
     #[test]
+    fn easier_review_leaves_ready_on_movement_and_uncertain_save() {
+        use crate::easier::Phase;
+        for uncertain in [false, true] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
+            app.navigator = preview();
+            app.easier.context = Some(context());
+            app.easier.phase = Phase::Ready;
+            app.easier.review = true;
+            assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
+            if uncertain {
+                app.navigator.accept_review(origin(), 0);
+                let mut tokens = TokenSource::new();
+                let token = issued(&mut app.navigator, &mut tokens);
+                assert!(app.navigator.checkpoint_submission(token));
+                app.advance_easier();
+                assert!(app.easier.phase == Phase::Ready, "Saving must remain visible");
+                app.navigator
+                    .checkpoint_answer(MetadataOutcome::Failed { token, error: MetadataError::RemountRequired });
+            } else {
+                let mut moved = origin();
+                moved.progress_m += REVIEW_ALONG_TOLERANCE_M + 1;
+                app.navigator.accept_review(moved, 0);
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
+            }
+            app.advance_easier();
+            assert!(app.easier.phase == Phase::Unavailable);
+            app.apply_gesture(crate::Gesture::Press);
+            assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
+            assert_eq!(app.active_route_index(), Some(0));
+            if uncertain {
+                assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
+                assert!(app.navigator.checkpoint_change().is_none());
+            }
+        }
+    }
+
+    #[test]
     fn changing_cards_cannot_submit_or_recover_an_old_checkpoint() {
         let other = StoreIdentity::from_bytes([9; 16]);
         let mut nav = preview();

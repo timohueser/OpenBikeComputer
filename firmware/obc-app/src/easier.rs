@@ -185,6 +185,12 @@ impl App {
             self.cancel_assistant();
             self.easier.phase = Phase::Unavailable;
         }
+        if self.easier.phase == Phase::Ready
+            && matches!(self.assistant_review_status(), ReviewStatus::Failed(_) | ReviewStatus::Unresolved)
+        {
+            self.cancel_assistant();
+            self.easier.phase = Phase::Unavailable;
+        }
         match self.easier.phase {
             Phase::Trials | Phase::Rebuild => match self.assistant_review_status() {
                 ReviewStatus::Preview => {
@@ -292,7 +298,11 @@ impl App {
                     return false;
                 }
             }
-            crate::Gesture::Press if self.easier.phase == Phase::Ready && self.easier_current() => {
+            crate::Gesture::Press
+                if self.easier.phase == Phase::Ready
+                    && self.assistant_review_status() == ReviewStatus::Preview
+                    && self.easier_current() =>
+            {
                 if self.easier.review {
                     if let Some(origin) = self.current_review_origin() {
                         self.accept_assistant(origin);

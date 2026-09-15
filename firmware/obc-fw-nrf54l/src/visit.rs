@@ -269,14 +269,16 @@ impl Executor {
         }
         Ok(())
     }
-    fn start_leg(&mut self, app: &App, guard: &mut NavGuard) -> Result<(), ()> {
+    fn start_leg(&mut self, app: &App, guard: &mut NavGuard) -> Result<bool, ()> {
         let c = app.assistant_review_context().ok_or(())?;
-        if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
-            .map_err(|_| ())?;
         let (from, to) = if matches!(c.purpose, ReviewPurpose::Easier(_)) {
             let (builder, original, _, _) = guard.visit_parts();
             let route = RouteReader::new(original, self.original.as_ref().ok_or(())?);
-            builder.easier_leg(&route, c.origin).map_err(|_| ())?.ok_or(())?
+            let Some(endpoints) = builder.easier_leg(&route, c.origin).map_err(|_| ())? else {
+                self.returning = true;
+                return Ok(false);
+            };
+            endpoints
         } else if c.purpose == ReviewPurpose::ReturnToRoute {
             (c.origin, self.return_to)
         } else {
@@ -287,8 +289,10 @@ impl Executor {
                 (c.origin, approach)
             }
         };
+        if matches!(c.purpose, ReviewPurpose::Easier(_)) { self.choice.search_easier() } else { self.choice.search() }
+            .map_err(|_| ())?;
         guard.visit_begin_plan(from, to, c);
-        Ok(())
+        Ok(true)
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn poll(
@@ -399,7 +403,11 @@ impl Executor {
                 }
             }
             Phase::DropLeg => {
-                if let Some(sealed) = self.leg.take() {
+                if let Some(allocation) = self.b {
+                    if let Ok(t) = writer.try_call(Request::Cancel { allocation }, reply) {
+                        self.phase = Phase::Await(t, After::DropLeg);
+                    }
+                } else if let Some(sealed) = self.leg.take() {
                     match writer.try_call_owned(Request::ReleaseSealed { sealed }, reply) {
                         Ok(t) => self.phase = Phase::Await(t, After::DropLeg),
                         Err(Request::ReleaseSealed { sealed }) => self.leg = Some(sealed),
@@ -508,8 +516,15 @@ impl Executor {
             }
             (After::AllocateB, Ok(Outcome::Allocated(b))) => {
                 self.b = Some(b);
-                if !releasing && self.start_leg(app, guard.as_mut()?).is_err() {
-                    return self.fail(NavigatorError::Unavailable);
+                if !releasing {
+                    match self.start_leg(app, guard.as_mut()?) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.phase = Phase::DropLeg;
+                            return None;
+                        }
+                        Err(()) => return self.fail(NavigatorError::Unavailable),
+                    }
                 }
                 self.phase = Phase::Ready(Work::Leg);
                 if !releasing {
@@ -551,6 +566,7 @@ impl Executor {
                 self.phase = if releasing { Phase::Stopped } else { Phase::Restart };
             }
             (After::DropLeg, Ok(Outcome::Done)) => {
+                self.b = None;
                 if !releasing {
                     if self.returning {
                         return self.ready(Work::Finish);
