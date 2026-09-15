@@ -116,3 +116,39 @@ fn disconnected_return_is_not_joined_with_a_straight_segment() {
     let index = RouteIndex::read(&source).unwrap();
     assert!(builder.append_leg_step(&RouteReader::new(&index, &source), &mut sink).is_err());
 }
+
+#[test]
+fn cancellation_connector_keeps_tail_and_removes_visit() {
+    let original = route(vec![(0, 0, 10), (2000, 0, 30)], &[(150, 1400, 100, 20, 1, 4, 11, b"Tail")], 222);
+    let source = SliceSource(&original);
+    let index = RouteIndex::read(&source).unwrap();
+    let reader = RouteReader::new(&index, &source);
+    let at = reader.position_at(111).unwrap();
+    let connector = route(vec![(at.lon, 1000, 10), (at.lon, at.lat, 20)], &[], 111);
+    let mut slot = Box::<VisitBuilder>::new_uninit();
+    let mut builder = unsafe {
+        VisitBuilder::init_return_in_place(slot.as_mut_ptr(), key(2), key(3), 111).unwrap();
+        slot.assume_init()
+    };
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    append(&mut builder, &connector, &mut sink);
+    let stats = loop {
+        if let Some(stats) = builder.finish_step(&reader, &mut sink).unwrap() {
+            break stats;
+        }
+    };
+    let emitted = SliceSource(&sink.buf);
+    let info = obc_route::RouteObjectInfo::read(&emitted).unwrap();
+    assert!(info.visit.is_none() && info.assistant_candidate);
+    assert_eq!(stats.waypoint_count, 1);
+    let index = RouteIndex::read(&emitted).unwrap();
+    let reader = RouteReader::new(&index, &emitted);
+    assert!(reader.total_distance_m >= 221 && reader.total_distance_m <= 223);
+    for_each_waypoint(&emitted, |w| {
+        assert_eq!(w.name.as_str(), "Tail");
+        assert_eq!(w.provenance.unwrap().source, key(2));
+        assert_eq!(w.lateral_offset_m, 11);
+    })
+    .unwrap();
+}

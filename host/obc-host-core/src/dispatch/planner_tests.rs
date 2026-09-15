@@ -293,3 +293,76 @@ fn cancelled_self_detour_preserves_the_original_computed_route() {
     assert!(held.matches(&p.routes.pin_active().unwrap()));
     assert!(obc_route::RouteIndex::read(&held).is_ok());
 }
+
+#[test]
+fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
+    use obc_app::navigator::{ReviewContext, ReviewPurpose, REVIEW_FACTS_POLICY};
+    use obc_formats::io::SliceSource;
+    use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+    use obc_formats::obcr::RouteSourceKey;
+    use obc_route::visit::{VisitCosts, VisitTarget};
+    let mut p = Planner::new();
+    let original_id = p.initial_route();
+    let held = p.routes.pin_active().unwrap();
+    let index = obc_route::RouteIndex::read(&held).unwrap();
+    let original = obc_route::RouteReader::new(&index, &held);
+    let source = p.map.source();
+    let key = RouteSourceKey { store: source.store_id().0, object: source.id().0, revision: source.revision().0 };
+    let context = ReviewContext {
+        purpose: ReviewPurpose::Visit,
+        map: key,
+        store: p.routes.store_scope().unwrap().store,
+        original: p.routes.fingerprint(original_id),
+        origin: (500_000, 500_000),
+        progress_m: 0,
+        occurrence: 0,
+        required_anchors_m: [0; 3],
+        profile: 0,
+        facts_policy: REVIEW_FACTS_POLICY,
+        unresolved_avoidance: false,
+    };
+    let target = VisitTarget {
+        map: key,
+        display: (510_100, 510_100),
+        metadata: PoiMetadata {
+            source: SourceId::osm(1, 99),
+            approach: Some(PoiApproach { source: SourceId::osm(1, 100), lon: 510_000, lat: 510_000, profile_mask: 1 }),
+        },
+    };
+    let run = |plan: &mut crate::nav_visit::VisitPlan, route: &obc_route::RouteReader| {
+        for _ in 0..512 {
+            match plan.step(&p.map.reader(), route, &mut obc_route::NullElevation) {
+                Ok(Some(stats)) => return stats,
+                Ok(None) => (),
+                Err(error) => panic!("real graph visit failed: {error:?}"),
+            }
+        }
+        panic!("bounded visit did not complete")
+    };
+    let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
+    let stats = run(&mut visit, &original);
+    assert!(matches!(visit.searches(), 4 | 6));
+    let source = SliceSource(visit.bytes());
+    let index = obc_route::RouteIndex::read(&source).unwrap();
+    let route = obc_route::RouteReader::new(&index, &source);
+    let descriptor = route.visit_descriptor().unwrap().unwrap();
+    let costs = VisitCosts::read(&source, [0, descriptor.accepted_anchors_m[1]]).unwrap();
+    assert!(!costs.complete_elevation && !costs.arrival_elevation_complete);
+    assert_eq!(route.total_distance_m, stats.total_distance_m);
+    assert!(stats.total_distance_m > original.total_distance_m);
+    let rejoin = descriptor.accepted_anchors_m[2];
+    let returning = ReviewContext {
+        purpose: ReviewPurpose::ReturnToRoute,
+        origin: (510_000, 510_000),
+        progress_m: descriptor.accepted_anchors_m[1],
+        required_anchors_m: [rejoin; 3],
+        ..context
+    };
+    let mut connector = crate::nav_visit::VisitPlan::start(returning, None, &route).unwrap();
+    let stats = run(&mut connector, &route);
+    assert_eq!(connector.searches(), 1);
+    let source = SliceSource(connector.bytes());
+    let info = obc_route::RouteObjectInfo::read(&source).unwrap();
+    assert!(info.visit.is_none());
+    assert!(stats.total_distance_m < route.total_distance_m);
+}
