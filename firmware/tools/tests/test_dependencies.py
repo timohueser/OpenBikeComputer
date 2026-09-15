@@ -4,14 +4,12 @@ import sys
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[1] / "check_dependencies.py"
 SPEC = importlib.util.spec_from_file_location("check_dependencies", SCRIPT)
 check_dependencies = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = check_dependencies
 SPEC.loader.exec_module(check_dependencies)
-
 
 def metadata(*dependencies):
     packages = []
@@ -33,7 +31,6 @@ def metadata(*dependencies):
         )
     return {"workspace_members": members, "packages": packages}
 
-
 def metadata_root(member_names, dependencies=()):
     """A realistic `cargo metadata --no-deps` root; dependency targets may live in another root."""
     packages = []
@@ -54,7 +51,6 @@ def metadata_root(member_names, dependencies=()):
         )
     return {"workspace_members": members, "packages": packages}
 
-
 def rules(exceptions=()):
     return {
         "groups": {"low": ["low"], "high": ["high"]},
@@ -64,26 +60,7 @@ def rules(exceptions=()):
         "exceptions": list(exceptions),
     }
 
-
 class DependencyTests(unittest.TestCase):
-    def test_obc_weather_is_core_and_cannot_pull_in_storage_policy(self):
-        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
-        self.assertIn("obc-weather", production_rules["groups"]["core"])
-        edges = {check_dependencies.Edge("obc-weather", "obc-storage")}
-        violations = check_dependencies.check_edges(edges, production_rules)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("core -> platform", violations[0])
-
-    def test_wx_bake_is_host_only(self):
-        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
-        self.assertEqual(
-            check_dependencies.group_index(production_rules)["obc-wx-bake"],
-            "host",
-        )
-        edges = {check_dependencies.Edge("obc-weather", "obc-wx-bake")}
-        violations = check_dependencies.check_edges(edges, production_rules)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("core -> host", violations[0])
 
     def test_usb_transport_is_host_only(self):
         production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
@@ -214,7 +191,6 @@ class DependencyTests(unittest.TestCase):
                 Path("/repo/firmware/obc-boot/Cargo.toml"),
             ],
         )
-
 
 if __name__ == "__main__":
     unittest.main()

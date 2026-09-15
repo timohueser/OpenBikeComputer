@@ -1,6 +1,6 @@
 ---
 title: Data formats
-description: The binary map, route, ride, terrain, weather, catalog, and map-assembly formats.
+description: The binary map, route, ride, terrain, catalog, and map-assembly formats.
 copy: ai
 ---
 
@@ -22,8 +22,6 @@ Reader and writer crates own parsing, caching, and conversion policy.
 | OBCR | 4 | Route geometry, statistics, and waypoints | Device |
 | Ride object | 3 | Recorded samples and summary | Device and companion |
 | OBCT | 1 | Terrain height raster | Device and map tools |
-| OBCW | 1 | Hourly weather and rain frames | Device |
-| OBCG | 1 | Published precipitation grid frame | Companion and host tools |
 | OBCC | Schema 2 | Map-builder catalog | Website and desktop app |
 | OBCA | 1 | Cell and assembly rules | Map tools |
 
@@ -1098,13 +1096,7 @@ The sample posting and cell size are header values.
 <path d="M40 672 L120 672" fill="none" stroke="#9aa884" stroke-width="1.3" />
 <rect x="205" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
 
-
-
-
-
-
 <rect x="355" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-
 
 <path d="M131 634 H190" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
 <path d="M299 634 H340" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
@@ -1132,42 +1124,6 @@ If one required corner is `NODATA`, the sample result is unavailable.
 Published terrain cells use the `.obcd` extension.
 An assembled OBCM map contains one OBCT container in its terrain region.
 The map reader gives that region to the OBCT reader as a byte-source window.
-
-## OBCW — provider-neutral weather
-
-OBCW v1 contains a 112-byte header, 24 hourly records, rain-frame descriptors, tile directories, and tile data.
-The header contains generation, request, time, bounds, offsets, and a whole-object CRC-32.
-Hourly record `i` describes the interval that starts `i` hours after `valid_from`.
-
-Rain frames use their actual UTC validity times.
-Each rain tile contains 16 × 16 four-bit intensity values.
-The format supports canonical raw and run-length encodings.
-Missing precipitation is different from dry precipitation.
-
-[`obc-weather`](src:firmware/obc-weather) validates the complete object.
-It decodes one tile into caller-owned memory.
-See [`OBCW_Spec.md`](src:specs/OBCW_Spec.md) for byte fields and rejection rules.
-
-### Upstream of the phone: OBCG
-
-OBCG v1 is the published precipitation-grid format.
-One object contains one frame for one geographic shard.
-The device does not read OBCG.
-
-An OBCG object contains:
-
-- A self-checked 128-byte header
-- A paged tile directory with page CRCs
-- Tile payloads with individual CRCs
-- A whole-object CRC
-
-A range client reads only directory pages and tiles that intersect its corridor.
-OBCG supports raw, run-length, and DEFLATE tile codecs.
-The companion decodes OBCG and writes device-safe OBCW tiles.
-The device does not include a DEFLATE decoder.
-
-The service manifest selects current objects and states freshness, geometry, presence, and attribution.
-See [`OBCG_Spec.md`](src:specs/OBCG_Spec.md).
 
 ## Streaming: resident vs on-demand
 
@@ -1225,14 +1181,13 @@ The `u64` offset supports large OBCM objects.
 </svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>Large map, route, terrain, and weather objects do not have to fit in RAM.</figcaption>
+<figcaption>Large map, route, and terrain objects do not have to fit in RAM.</figcaption>
 </figure>
 
 OBCM keeps its header, styles, and LOD table in memory.
 It streams quadtree blocks and geometry chunks.
 OBCR keeps its small flat index in memory and streams geometry.
 OBCT keeps its header in memory and uses a four-tile cache.
-OBCW validates and decodes in bounded windows.
 
 ## The catalog — the map builder's source of truth
 
@@ -1364,9 +1319,7 @@ See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md) for the grid, seam, and verificatio
 - OBCM reader: [`obc-reader`](src:firmware/obc-reader)
 - OBCR reader, converter, and router: [`obc-route`](src:firmware/obc-route)
 - OBCT reader and sampler: [`obc-elevation`](src:firmware/obc-elevation)
-- OBCW reader: [`obc-weather`](src:firmware/obc-weather)
 - OBCM packer: [`obc-pack`](src:host/obc-pack)
 - Terrain baker: [`obc-dem`](src:host/obc-dem)
-- Weather-grid baker: [`obc-wx-bake`](src:host/obc-wx-bake)
 - Map assembler: [`obcm-assemble`](src:host/obcm-assemble)
 - Catalog and assembly specifications: [`OBCC_Spec.md`](src:specs/OBCC_Spec.md) and [`OBCA_Spec.md`](src:specs/OBCA_Spec.md)

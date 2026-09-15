@@ -353,13 +353,11 @@ fn replacing_an_object_is_atomic_and_frees_the_old_extents() {
     });
 }
 
-/// Weather's retention: one commit publishes the new head and leaves the displaced revision
-/// `RETAINED`, so a reader mid-stream and a domain that wants continuity both still have bytes.
 #[test]
 fn retaining_the_previous_revision_is_one_commit() {
-    let old = entry(1, 1, ObjectKind::WeatherBundle, EntryFlags::NONE, 3_000, "", &[(0, 1)]);
+    let old = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "", &[(0, 1)]);
     let retained = Entry { meta: EntryMeta { flags: EntryFlags::RETAINED, ..old.meta }, ..old };
-    let new = entry(1, 2, ObjectKind::WeatherBundle, EntryFlags::NONE, 3_000, "", &[(1, 1)]);
+    let new = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 3_000, "", &[(1, 1)]);
     let before = holding(&[old], 4);
     let after = holding(&[old], 4).apply(&[Change::Put(retained), Change::Put(new)]).clone();
     matrix_both_copies("retain", 57, &before, &after, |store: &mut Card| {
@@ -2057,8 +2055,8 @@ fn a_reader_holds_its_extents_until_it_closes() {
 
 #[test]
 fn a_reader_of_a_retained_revision_reaches_it_by_naming_it() {
-    let old = entry(1, 1, ObjectKind::WeatherBundle, EntryFlags::RETAINED, 3_000, "", &[(0, 1)]);
-    let new = entry(1, 2, ObjectKind::WeatherBundle, EntryFlags::NONE, 5_000, "", &[(1, 1)]);
+    let old = entry(1, 1, ObjectKind::Route, EntryFlags::RETAINED, 3_000, "", &[(0, 1)]);
+    let new = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 5_000, "", &[(1, 1)]);
     let disk = card(24, &holding(&[old, new], 9), 0);
     let store = FlatStore::mount(&disk);
     assert_eq!(store.open(ObjectId(1), None).unwrap().revision(), Revision(2), "None did not take the head");

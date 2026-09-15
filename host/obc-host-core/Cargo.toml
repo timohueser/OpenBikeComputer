@@ -16,7 +16,6 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-storage = { path = "../../firmware/obc-storage" }
 obc-crc = { path = "../../firmware/obc-crc" }
-obc-weather = { path = "../../firmware/obc-weather" }
 getrandom = "0.2"
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
@@ -38,8 +37,6 @@ obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
 obc-render = { path = "../../firmware/obc-render" }
 obcm-testkit = { path = "../obcm-testkit" }
 obc-fixtures = { path = "../obc-fixtures" }
-# The behaviour corpus builds sampled weather snapshots by hand, whose frame table is the
-# `heapless::Vec` the device's own snapshot carries.
 heapless = "0.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

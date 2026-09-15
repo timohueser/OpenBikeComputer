@@ -28,7 +28,7 @@ _obc_tasks() {
   if [[ -n "$t" ]] && command -v just >/dev/null 2>&1; then
     just --justfile "$t/justfile" --summary 2>/dev/null && return
   fi
-  echo "fixtures sim weather board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
+  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -88,8 +88,6 @@ _obc() {
         0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_fixture_ids scenarios) $(_obc_maps)" -- "$cur"; compgen -f -X '!*.obcm' -- "$cur") ;;
         1) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx) none" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
       esac ;;
-    weather)
-      (( idx == 0 )) && _obc_reply < <(compgen -W "status start stop" -- "$cur") ;;
     uart)
       (( idx == 0 )) && { compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
     debug)
