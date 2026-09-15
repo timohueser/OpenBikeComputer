@@ -135,13 +135,28 @@ fn run(
     // --- Global bbox over features + coastlines, TRUNCATED toward zero (not rounded)
     // — a deliberate asymmetry with the serializer's round-to-nearest. ---
     progress.stage(Phase::Bbox, "Calculating BBox...");
-    let global_bbox = compute_bbox(&ingested);
+    let mut global_bbox = compute_bbox(&ingested);
+    let landmark_bbox = opts.bbox.map_or(global_bbox, |bbox| {
+        let (west, south, east, north) = bbox.to_degrees();
+        (
+            (west * 1e6).ceil() as i64,
+            (south * 1e6).ceil() as i64,
+            (east * 1e6).floor() as i64,
+            (north * 1e6).floor() as i64,
+        )
+    });
     let landmarks = opts
         .landmarks
         .as_ref()
-        .map(|path| crate::landmark_map::load(path, &ingested.landmark_links, global_bbox))
+        .map(|path| crate::landmark_map::load(path, &ingested.landmark_links, landmark_bbox))
         .transpose()?
         .unwrap_or_default();
+    for landmark in &landmarks {
+        global_bbox.0 = global_bbox.0.min(i64::from(landmark.record.lon));
+        global_bbox.1 = global_bbox.1.min(i64::from(landmark.record.lat));
+        global_bbox.2 = global_bbox.2.max(i64::from(landmark.record.lon));
+        global_bbox.3 = global_bbox.3.max(i64::from(landmark.record.lat));
+    }
 
     // --- Coastline base: clip the global land-polygon dataset to the bbox. Land stays in the
     // working set for semantic coverage; when it is the implicit backdrop, its complement is added

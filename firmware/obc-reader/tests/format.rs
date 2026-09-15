@@ -883,10 +883,7 @@ fn old_version_file_is_rejected() {
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 
-/// **The version cut goes both ways.** A v13 file (`0x0D`) and a hypothetical v15 one (`0x0F`) are
-/// each `BadVersion`, and neither is partially readable: a v13 file's offsets mean bytes and a
-/// v14 file's mean units, so an offset carried across the cut lands somewhere plausible rather than
-/// somewhere obviously wrong. The refusal is the file's, not the section's.
+/// Refuse both adjacent versions before any section is read.
 #[test]
 fn the_version_cut_refuses_both_neighbours() {
     for version in [obc_formats::obcm::VERSION - 1, obc_formats::obcm::VERSION + 1] {
