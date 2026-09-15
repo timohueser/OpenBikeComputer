@@ -945,7 +945,7 @@ mod tests {
         let index = obc_route::RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
         let map = RouteSourceKey { store: [1; 16], object: 1, revision: 1 };
-        let points = [(40_000, 10_000), (60_000, 0), (80_000, 0), (100_000, 20_000), (100_000, 40_000)];
+        let points = [(4000, 1000), (6000, 0), (8000, 0), (10_000, 2000), (10_000, 4000)];
         let mut places: std::vec::Vec<_> = points
             .into_iter()
             .enumerate()
@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [1, 2, 3, 4]);
         assert_eq!(places.iter().map(|p| p.dist_along_m).collect::<std::vec::Vec<_>>(), [0, 1, 2, 3, 4]);
         places[1].poi.metadata.approach =
-            Some(PoiApproach { source: SourceId::osm(1, 10), lon: 60_000, lat: 0, profile_mask: 2 });
+            Some(PoiApproach { source: SourceId::osm(1, 10), lon: 6000, lat: 0, profile_mask: 2 });
         assert_eq!(corridor_candidates(&route, &places, 0, map, 0), [2, 3, 4, 0]);
         assert_eq!(corridor_candidates(&route, &places, route.total_distance_m + 1, map, 0), [u8::MAX; 4]);
     }
