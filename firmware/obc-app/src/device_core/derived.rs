@@ -179,7 +179,8 @@ impl DerivedInputs {
 // Layout tripwires: identities, revisions and a count. The polylines and profiles these keys name
 // are tens of times larger and stay where they are.
 const _: () = assert!(core::mem::size_of::<RideTrackKey>() <= 24, "an identity and two revisions");
-const _: () = assert!(core::mem::size_of::<NavPreviewKey>() <= 24, "an identity and two revisions");
+const _: () =
+    assert!(core::mem::size_of::<Option<NavPreviewKey>>() <= 32, "presentation fits the existing optional key");
 const _: () = assert!(core::mem::size_of::<DerivedResult>() <= 1, "a verdict, not a report");
 const _: () = assert!(core::mem::size_of::<DerivedNeeds>() <= 64, "two optional keys");
 const _: () = assert!(core::mem::size_of::<DerivedInputs>() <= 80, "two optional keyed answers");
