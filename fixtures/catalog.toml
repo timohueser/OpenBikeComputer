@@ -8,7 +8,7 @@ summary = "Full Grimsel simulator map, terrain, routes, and tracks"
 archive = "packages/2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318.tar.gz"
 sha256 = "2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318"
 bytes = 3471573
-provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled assistant-wiki-switzerland landmark content. Canonical fixture bbox. See fixtures/README.md."
+provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled local Swiss landmark source content. Canonical fixture bbox. See fixtures/README.md."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
