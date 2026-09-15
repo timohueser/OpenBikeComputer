@@ -163,6 +163,36 @@ impl NavigatorMachine {
 
 impl crate::App {
     /// Current eligibility from Navigator's matcher and a fresh position, for frozen reviews.
+    /// Stage geometry from the exact published candidate after constructing its ReviewReady
+    /// outcome. The buffer is shared with ordinary route overviews and remains hidden until ACK.
+    pub fn set_assistant_preview_shape(
+        &mut self,
+        token: crate::device_core::OperationToken<crate::device_core::NavigatorTag>,
+        source: obc_formats::retention::PayloadFingerprint,
+        points: &[(i32, i32)],
+    ) -> bool {
+        if !self.navigator.accepts(&super::NavigatorOutcome::ReviewReady { token })
+            || self.assistant_preview().map(|preview| preview.source) != Some(source)
+        {
+            return false;
+        }
+        let Some(index) = self.route_ids().iter().position(|id| *id == source.object) else { return false };
+        let Some(key) = self.catalogs.nav_preview_key(Some(index)) else { return false };
+        self.catalogs.accept_nav_preview(Some(key), crate::device_core::DerivedInput::filled(key), points)
+    }
+
+    pub fn assistant_preview_shape(&self) -> &[(i32, i32)] {
+        if !matches!(
+            self.assistant_review_status(),
+            ReviewStatus::Preview | ReviewStatus::Saving | ReviewStatus::Accepted
+        ) {
+            return &[];
+        }
+        let index =
+            self.assistant_preview().and_then(|p| self.route_ids().iter().position(|id| *id == p.source.object));
+        self.catalogs.nav_preview_for(self.catalogs.nav_preview_key(index))
+    }
+
     pub fn current_review_origin(&self) -> Option<super::ReviewOrigin> {
         let fix = self.fresh_position()?;
         let active = self.active_route_index().is_some();
