@@ -10,7 +10,7 @@ use obc_ble::{Crc32, StatusMessage as Msg};
 fn fixture(name: &str) -> Vec<u8> {
     let path = obc_vectors::dir().join(name);
     std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("fixture {name} unreadable ({e}) — run `cargo test -p obc-vectors regenerate -- --ignored`")
+        panic!("fixture {name} unreadable ({e}) — run `cargo run -p obc-vectors --example regenerate --locked`")
     })
 }
 

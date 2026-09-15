@@ -262,17 +262,24 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
-      - name: cargo nextest (workspace, all features)
+      - name: cargo nextest (fast hermetic binaries)
         id: nextest
         env:
           NEXTEST_PROFILE: ci
-          OBC_REQUIRE_FIXTURES: "1"
         run: |
           rm -f target/nextest/ci/junit.xml
+          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+      - name: cargo nextest (captured fixture binaries)
+        id: nextest-fixtures
+        env:
+          NEXTEST_PROFILE: fixtures
+          OBC_REQUIRE_FIXTURES: "1"
+        run: |
+          rm -f target/nextest/fixtures/junit.xml
           python3 tools/fixtures.py sync test
           OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
           export OBC_FIXTURE_ROOT
-          cargo nextest run --workspace --all-features --locked --no-tests fail
+          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"
       # nextest runs no doctests, so the whole workspace's doctests run here as one cheap step
       # rather than being silently dropped from the gate.
       - name: cargo test --doc (workspace, all features)
@@ -307,12 +314,14 @@ jobs:
       # `update` is a developer command and never runs here: a self-regenerating manifest records
       # nothing.
       - name: ui-snapshots manifest check
+        id: ui-snapshots
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')
         run: |
           cargo build -p obc-sim --locked
           SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
           python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
       - name: Upload UI review frames
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (steps.ui-snapshots.outcome == 'success' || steps.ui-snapshots.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: ui-snapshots-${{ github.run_attempt }}
@@ -353,6 +362,13 @@ jobs:
         with:
           name: rust-test-${{ github.run_attempt }}
           path: target/nextest/ci/junit.xml
+          if-no-files-found: error
+      - name: Upload Rust fixture test results
+        if: ${{ !cancelled() && (steps.nextest-fixtures.outcome == 'success' || steps.nextest-fixtures.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-fixtures-${{ github.run_attempt }}
+          path: target/nextest/fixtures/junit.xml
           if-no-files-found: error
 
   embedded:
@@ -792,9 +808,18 @@ jobs:
         working-directory: companion-ios
         run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
       - name: Companion website screenshots are current
+        id: ios-screenshots
         env:
           OBC_DERIVED_DATA_PATH: ${{ github.workspace }}/companion-ios/DerivedData
+          OBC_XCRESULT_PATH: ${{ runner.temp }}/ios-screenshots.xcresult
         run: companion-ios/scripts/capture-website-screenshots.sh --check
+      - name: Upload native screenshot results
+        if: ${{ !cancelled() && (steps.ios-screenshots.outcome == 'success' || steps.ios-screenshots.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-screenshots-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-screenshots.xcresult
+          if-no-files-found: error
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
