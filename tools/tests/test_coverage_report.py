@@ -28,6 +28,15 @@ class CoverageReportTests(unittest.TestCase):
             self.assertEqual(excluded, {3, 4, 5, 7})
             self.assertTrue(executable)
             self.assertEqual(modules, [path.parent / 'oracle.rs', path.parent / 'oracle'])
+            for filename in ('mod.rs', 'codec.rs'):
+                path = Path(directory) / filename
+                path.write_text('mod outer {\n#[cfg(test)]\nmod oracle;\nmod inner {\n#[cfg(test)]\nmod checks;\npub fn production() {}\n}\n}\n')
+                excluded, executable, modules = report.rust_source(path)
+                base = path.parent if filename == 'mod.rs' else path.with_suffix('')
+                self.assertEqual(excluded, {3, 6})
+                self.assertTrue(executable)
+                self.assertEqual(modules, [base / 'outer/oracle.rs', base / 'outer/oracle',
+                                           base / 'outer/inner/checks.rs', base / 'outer/inner/checks'])
             path.write_text('pub struct Declaration;\n#[cfg(test)]\nmod tests { fn test_only() {} }\n')
             self.assertFalse(report.rust_source(path)[1])
 

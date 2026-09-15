@@ -82,7 +82,7 @@ def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
     modules = []
     production_lines = set()
 
-    def visit(node):
+    def visit(node, module_dir):
         nonlocal executable
         pending_test = False
         for child in node.named_children:
@@ -96,17 +96,20 @@ def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
             if pending_test:
                 if child.type == "mod_item" and child.child_by_field_name("body") is None:
                     name = child.child_by_field_name("name").text.decode()
-                    base = path.parent if path.stem in {"lib", "main", "mod"} else path.with_suffix("")
-                    modules.extend([base / f"{name}.rs", base / name])
+                    modules.extend([module_dir / f"{name}.rs", module_dir / name])
                 excluded.update(range(child.start_point.row + 1, child.end_point.row + 2))
                 pending_test = False
             else:
                 if child.type in {"function_item", "closure_expression", "macro_invocation", "macro_definition"}:
                     executable = True
                     production_lines.update(range(child.start_point.row + 1, child.end_point.row + 2))
-                visit(child)
+                nested_dir = module_dir
+                if child.type == "mod_item" and child.child_by_field_name("body") is not None:
+                    nested_dir /= child.child_by_field_name("name").text.decode()
+                visit(child, nested_dir)
 
-    visit(tree.root_node)
+    base = path.parent if path.stem in {"lib", "main", "mod"} else path.with_suffix("")
+    visit(tree.root_node, base)
     return excluded - production_lines, executable, modules
 
 
