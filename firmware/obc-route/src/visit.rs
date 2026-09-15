@@ -35,7 +35,7 @@ impl VisitTarget {
 /// A forward join stops at the first remaining annotation's on-route access anchor.
 pub fn forward_rejoin(original: &RouteReader, departure_m: u32) -> Result<Option<u32>, Error> {
     if departure_m >= original.total_distance_m
-        || original.visit_descriptor()?.is_some()
+        || original.visit_descriptor()?.is_some_and(|v| departure_m < v.accepted_anchors_m[2])
         || original.has_unresolved_avoidance()
     {
         return Ok(None);
@@ -107,6 +107,8 @@ pub struct VisitBuilder {
     chunk: usize,
     segment_started: bool,
     last: Option<(i32, i32)>,
+    last_ele: i16,
+    seam_incomplete: bool,
     cursor: Option<WaypointCursor>,
     ordinal: u16,
     count: u16,
@@ -123,6 +125,28 @@ impl VisitBuilder {
         target: SourceId,
         approach: (i32, i32),
     ) -> Result<Self, Error> {
+        let mut slot = core::mem::MaybeUninit::uninit();
+        unsafe {
+            Self::init_in_place(slot.as_mut_ptr(), original, map, departure_m, rejoin_m, target, approach)?;
+            Ok(slot.assume_init())
+        }
+    }
+
+    /// Initialize or reset the persistent final emitter without a second emitter on the stack.
+    /// On an invalid descriptor no bytes in `slot` are changed.
+    ///
+    /// # Safety
+    /// `slot` must be aligned, writable and exclusively owned for a complete builder. The caller
+    /// must discard any previous output before resetting it; this value owns no external resources.
+    pub unsafe fn init_in_place(
+        slot: *mut Self,
+        original: RouteSourceKey,
+        map: RouteSourceKey,
+        departure_m: u32,
+        rejoin_m: u32,
+        target: SourceId,
+        approach: (i32, i32),
+    ) -> Result<(), Error> {
         if !target.is_valid() || rejoin_m < departure_m {
             return Err(Error::BadOffset);
         }
@@ -136,23 +160,42 @@ impl VisitBuilder {
             target_lat: approach.1,
         };
         descriptor.encode().map_err(|_| Error::BadOffset)?;
-        let mut em = ObcrEmitter::empty();
-        em.set_attribution_map(Some(map));
-        em.set_flags(obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE);
-        Ok(Self {
-            em,
-            descriptor,
-            phase: Phase::Begin,
-            chunk: 0,
-            segment_started: false,
-            last: None,
-            cursor: None,
-            ordinal: 0,
-            count: 0,
-            waypoint_offset: 0,
-            header: [0; HEADER_FULL_LEN],
-            stats: None,
-        })
+        use core::ptr::addr_of_mut;
+        unsafe {
+            ObcrEmitter::init_in_place(addr_of_mut!((*slot).em));
+            addr_of_mut!((*slot).descriptor).write(descriptor);
+            addr_of_mut!((*slot).phase).write(Phase::Begin);
+            addr_of_mut!((*slot).chunk).write(0);
+            addr_of_mut!((*slot).segment_started).write(false);
+            addr_of_mut!((*slot).last).write(None);
+            addr_of_mut!((*slot).last_ele).write(i16::MIN);
+            addr_of_mut!((*slot).seam_incomplete).write(false);
+            addr_of_mut!((*slot).cursor).write(None);
+            addr_of_mut!((*slot).ordinal).write(0);
+            addr_of_mut!((*slot).count).write(0);
+            addr_of_mut!((*slot).waypoint_offset).write(0);
+            addr_of_mut!((*slot).header).write([0; HEADER_FULL_LEN]);
+            addr_of_mut!((*slot).stats).write(None);
+            let Self {
+                em: _,
+                descriptor: _,
+                phase: _,
+                chunk: _,
+                segment_started: _,
+                last: _,
+                last_ele: _,
+                seam_incomplete: _,
+                cursor: _,
+                ordinal: _,
+                count: _,
+                waypoint_offset: _,
+                header: _,
+                stats: _,
+            } = &*slot;
+            (*slot).em.set_attribution_map(Some(map));
+            (*slot).em.set_flags(obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE);
+        }
+        Ok(())
     }
 
     pub fn begin(&mut self, sink: &mut dyn ByteSink) -> Result<(), Error> {
@@ -203,7 +246,9 @@ impl VisitBuilder {
         let rejoin = self.descriptor.original_anchors_m[2];
         match self.phase {
             Phase::Tail => {
-                if original.visit_descriptor()?.is_some()
+                if original
+                    .visit_descriptor()?
+                    .is_some_and(|v| self.descriptor.original_anchors_m[0] < v.accepted_anchors_m[2])
                     || original.has_unresolved_avoidance()
                     || rejoin > original.total_distance_m
                 {
@@ -303,15 +348,19 @@ impl VisitBuilder {
             return Err(Error::BadOffset);
         }
         self.segment_started = true;
+        let source_surface = route.attribution_map()? == self.em.attribution_map();
         for (i, p) in points.iter().enumerate() {
             let coord = (p.lon, p.lat);
             if i == 0 && self.last == Some(coord) {
+                self.seam_incomplete |= self.last_ele != p.ele;
                 continue;
             }
-            self.em.set_surface(p.surface);
-            self.em.set_elevation_incomplete(p.elevation_incomplete);
+            self.em.set_surface(if source_surface { p.surface } else { 0 });
+            self.em.set_elevation_incomplete(p.elevation_incomplete || self.seam_incomplete);
             self.em.push_retained(sink, p.lon, p.lat, p.ele)?;
             self.last = Some(coord);
+            self.last_ele = p.ele;
+            self.seam_incomplete = false;
         }
         Ok(true)
     }
