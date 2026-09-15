@@ -1,11 +1,3 @@
-//! Small, current device facts shown by app chrome.
-//!
-//! A [`DeviceStatus`] field belongs here when it is a cheap `Copy` fact sampled from a platform
-//! port or host snapshot and multiple screens render it. Commands and workflows do not: forgetting
-//! a bond remains a host command, while navigation, sensors, weather, catalogs, and transfers keep
-//! their domain-specific state. This inclusion rule prevents the status value from becoming a
-//! generic bag for anything the device happens to know.
-
 use crate::BleLink;
 
 /// The platform-fed device facts shared by ordinary app chrome. [`AppState`](crate::AppState)

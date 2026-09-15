@@ -12,12 +12,10 @@ import sys
 from collections import defaultdict
 from pathlib import PurePosixPath
 
-
 AREAS = {
     "firmware": "Device firmware",
     "ios": "iOS companion",
     "web": "Web & desktop",
-    "pipeline": "Map & weather pipeline",
     "tools": "Host & developer tooling",
 }
 
@@ -48,8 +46,6 @@ PIPELINE_CRATES = {
     "obc-dem",
     "obc-mkimage",
     "obc-pack",
-    "obc-wx-bake",
-    "obc-wx-client",
     "obcm-assemble",
 }
 TEST_SUPPORT_COMPONENTS = {
@@ -60,12 +56,10 @@ TEST_SUPPORT_COMPONENTS = {
 }
 TEST_NAME = re.compile(r"(?:^|[._-])(bench(?:mark)?s?|specs?|tests?)(?:[._-]|$)")
 
-
 def is_source(path: PurePosixPath) -> bool:
     if path.name == "Package.swift":
         return False
     return path.suffix.lower() in SOURCE_SUFFIXES or path.name.lower() in SOURCE_NAMES
-
 
 def is_test_support(path: PurePosixPath) -> bool:
     text = path.as_posix()
@@ -80,7 +74,6 @@ def is_test_support(path: PurePosixPath) -> bool:
         return True
     return bool(TEST_NAME.search(path.name.lower()))
 
-
 def ios_component(parts: tuple[str, ...]) -> str:
     if (
         len(parts) >= 5
@@ -94,7 +87,6 @@ def ios_component(parts: tuple[str, ...]) -> str:
         return "iOS app"
     return "Companion support"
 
-
 def web_component(parts: tuple[str, ...]) -> str:
     if parts[:3] == ("builder", "app", "src"):
         if len(parts) >= 5 and parts[3] == "lib":
@@ -103,7 +95,6 @@ def web_component(parts: tuple[str, ...]) -> str:
             return f"frontend/{parts[3]}"
         return "frontend/shell"
     return parts[1]
-
 
 def classify(path_text: str) -> tuple[str, str, str] | None:
     """Return (area key, stable component, implementation|support)."""
@@ -170,8 +161,6 @@ def classify(path_text: str) -> tuple[str, str, str] | None:
             component = parts[1]
     elif parts and parts[0] in {"tools", "ops", "copydesk", "docs"}:
         area, component = "tools", parts[0]
-        if parts[0] == "tools" and len(parts) > 1 and parts[1] == "rain-radar-demo":
-            component = "rain-radar-demo"
     elif text.startswith("firmware/tools/"):
         area, component = "tools", "firmware-tools"
     elif text == "firmware/ui-snapshots.sh":
@@ -188,13 +177,11 @@ def classify(path_text: str) -> tuple[str, str, str] | None:
     )
     return area, component, kind
 
-
 def tracked_files() -> list[str]:
     result = subprocess.run(
         ["git", "ls-files", "-z"], check=True, stdout=subprocess.PIPE, text=False
     )
     return [path.decode() for path in result.stdout.split(b"\0") if path]
-
 
 def tokei_reports(paths: list[str]) -> dict:
     try:
@@ -211,10 +198,8 @@ def tokei_reports(paths: list[str]) -> dict:
         raise SystemExit(error.stderr.strip() or "tokei failed") from error
     return json.loads(result.stdout)
 
-
 def code_lines(stats: dict) -> int:
     return stats.get("code", 0) + sum(code_lines(blob) for blob in stats.get("blobs", {}).values())
-
 
 def collect() -> tuple[dict, int]:
     classified = {}
@@ -238,10 +223,8 @@ def collect() -> tuple[dict, int]:
             counted.add(path)
     return totals, len(counted)
 
-
 def color(text: str, code: str, enabled: bool) -> str:
     return f"\033[{code}m{text}\033[0m" if enabled else text
-
 
 def area_rows(totals: dict) -> list[tuple[str, int, int]]:
     rows = []
@@ -251,7 +234,6 @@ def area_rows(totals: dict) -> list[tuple[str, int, int]]:
         support = sum(item["support"] for item in components.values())
         rows.append((label, implementation, support))
     return rows
-
 
 def print_table(
     title: str, rows: list[tuple[str, int, int]], color_enabled: bool, bars: bool
@@ -288,7 +270,6 @@ def print_table(
         f"{color(f'{implementation:>14,}', '1;32', color_enabled)}  "
         f"{color(f'{support:>12,}', '1;33', color_enabled)}  {total:>10,}"
     )
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -346,7 +327,6 @@ def main() -> int:
         )
     )
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
