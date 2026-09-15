@@ -751,7 +751,7 @@ current_leg = "Current leg"
 save_unknown = "Save state unknown"
 
 cancel_visit = "Cancel visit"
-arrival = "You have arrived"
+arrival = "Arrived"
 guidance_continues = "Guidance continues"
 resume_journey = "Resume journey"
 resume_route = "Resume route"
