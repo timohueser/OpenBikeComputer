@@ -62,23 +62,11 @@
 //! [`SourceCell`] is that input: identity, declared length, and an opaque host key. [`CellReads`] is
 //! the seam the host implements, and [`BlockCache`] is what stands between it and the engine.
 //!
-//! **The cache is not an optimisation, it is what makes the seam affordable.** §4.6.6 emits the
-//! merged edge pool one record at a time ([`obcm_assemble`]'s `nav::serialize`, a `read_into` per
-//! record — 17.5 M of them at country scale, ~13–100 bytes each), and the §4.6 merge walks every
-//! cell's node chunks 512 bytes at a time. Handed straight to a JS callback that does one OPFS read
-//! each, that is millions of boundary crossings and millions of syscalls. Both walks are strongly
-//! sequential *within* a cell, though, so a small LRU of [`DEFAULT_READ_BLOCK`]-sized blocks turns
-//! them into one host read per block — roughly `bytes / 64 KiB` calls for a whole pass, which is
-//! four orders of magnitude fewer. Reads at least a block long (§2.3's 256 KiB verbatim geometry
-//! copy, the merge's whole-edge-pool read) bypass the cache and land straight in the caller's
-//! buffer, so the big copies pay neither an extra copy nor an eviction.
-//!
-//! One crossing measured **~0.4 µs** in Node (V8), callback and memory view included, against the
-//! fixture with the cache switched off — so BW's nav emission alone would spend ~7 s crossing the
-//! boundary before a single byte is read, and each of those crossings is also a file read. Cached,
-//! the same pass asks the host about `795 MB / 64 KiB ≈ 12 k` times. The cache's own residency is
-//! [`READ_CACHE_BLOCKS`] × the block size — 1 MiB by default, independent of how many cells the
-//! selection has.
+//! The block cache reduces host calls when nearby reads reuse an input window. It holds
+//! [`READ_CACHE_BLOCKS`] blocks across all source cells, independent of selection size.
+//! Small records read in final graph order can have poor locality: a cache miss then reads
+//! a full block for a few useful bytes. Block size trades extra bytes against host calls.
+//! Reads at least one block long bypass the cache and fill the caller's buffer directly.
 //!
 //! # Writing the map outside wasm memory (#1116 D1)
 //!
@@ -464,13 +452,8 @@ impl Phase {
 /// flag can only be *set* by a callback, so polling it wherever one might have fired is exhaustive.
 const PROGRESS_STEP: f64 = 0.01;
 
-/// How much of a [`SourceCell`] one host read brings back by default (#1116 B2).
-///
-/// 64 KiB against the engine's two access patterns: §4.6.6's per-record emission and the §4.6
-/// merge's 512-byte node chunks are sequential inside a cell, so one block serves ~128 of them and
-/// the amplification of over-reading is nil; §2.3's verbatim geometry copy asks for 256 KiB at a
-/// time and skips the cache entirely. Smaller would cost calls for nothing; larger would make the
-/// first read of a small cell fetch most of it.
+/// Bytes fetched on a cache miss by default. Sequential reads can reuse the block;
+/// scattered record reads can amplify traffic. Reads at least this large bypass the cache.
 pub(crate) const DEFAULT_READ_BLOCK: usize = 64 * 1024;
 /// The floor a caller can ask for: `1`, which is not a small cache but **no cache** — every read is
 /// at least one byte, so every read takes the bypass and becomes exactly one host call. That is the
@@ -480,12 +463,9 @@ pub(crate) const DEFAULT_READ_BLOCK: usize = 64 * 1024;
 const MIN_READ_BLOCK: usize = 1;
 /// …and the ceiling, so a mistyped option cannot reserve a quarter of the heap for read scratch.
 const MAX_READ_BLOCK: usize = 4 * 1024 * 1024;
-/// How many blocks a read cache holds. The engine reads one cell at a time within a phase, so the
-/// working set is one or two blocks; the rest is slack for the seams where §4.6.6 crosses from one
-/// source cell to the next. Sixteen keeps the whole cache at 1 MiB and the miss scan at sixteen
-/// comparisons — which matters, because that scan runs on every engine read.
-/// `pub(crate)` with [`DEFAULT_READ_BLOCK`] because `estimate.rs` prices the streamed input path
-/// as this cache — restating the product there would let the two drift.
+/// Fixed cache slot count shared by all sources. Together with the block size,
+/// this bounds cache residency and the linear hit/eviction scan. `estimate.rs`
+/// uses these constants to account for the streamed input cache.
 pub(crate) const READ_CACHE_BLOCKS: usize = 16;
 
 /// The floor for [`BridgeOptions::merge_budget_bytes`]: 64 KiB. Below it the merge still produces
