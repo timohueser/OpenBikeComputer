@@ -39,3 +39,5 @@ After the public checks passed, only the failed `obcm-version-guard` job for
 job was `104344192241` in run `34957666039`, on head `1adddfe9`. The GitHub job rerun endpoint
 accepted that request as [job 104353015526](https://github.com/timohueser/OpenBikeComputer/actions/runs/34957666039/job/104353015526).
 No complete workflow or other PR's checks were restarted.
+
+The rerun passed. PR #1757 was then merged with green CI and completed independent review.
