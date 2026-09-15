@@ -1,0 +1,61 @@
+# Accepted journey production controls
+
+Implementation: `b388a284`, based on the RA12 production entry at `26b8f70b`.
+
+The ordinary Assistant context opens Current visit. Its detail has Back to map and Cancel visit
+rows. Cancel calls the existing Visit owner with the current route reader and map identity.
+At the departure anchor, activation waits for the checkpoint clear. Away from departure, the
+existing ReturnToRoute planner prepares one immutable connector for explicit acceptance.
+Back closes a pending save view without revoking that change.
+
+The shared card scheduler delivers the informational arrival card. It defers for a held input,
+passkey, recording recovery, and firmware update. Select and Back dismiss the card without a
+route or Recorder request. Rejoin clears an ignored card. The existing phase owner suppresses
+arrival during recovery.
+
+A recovered checkpoint offers a Resume card. Back keeps guidance inactive. The Assistant context
+can reopen the card. Select queues a read through the existing route reader/index. Both the shared
+host executor and board reuse that index and the Navigator matcher. The match is limited to the
+saved phase and the existing 50 m movement window. No fix leaves Resume available for retry.
+The existing Resume intent and Metadata operation then check exact route and map sources before
+activation. There is no extra route buffer, route owner, or Recorder start.
+
+## Automated evidence
+
+Passed from this worktree:
+
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra05-visits/target ./tools/obc test -p obc-app -p obc-host-core -p obc-sim`
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra05-visits/target cargo clippy -p obc-app -p obc-host-core -p obc-sim --all-targets -- -D warnings`
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra05-visits/firmware/obc-fw-nrf54l/target cargo clippy --locked -- -D warnings`, from `firmware/obc-fw-nrf54l`
+- `./tools/obc suites check`
+- `cargo fmt --all` and `cargo fmt` in all three standalone Cargo roots
+- A final whole `obc-app` run after adding the action-label width checks and shorter translations
+
+The App contracts cover cancellation before departure and after departure, checkpoint-gated
+restoration, Back during save, arrival dismissal, ignored arrival at rejoin, and fresh explicit
+Resume. The two existing flat-store executor tests now continue through a fresh App boot and
+Select on the normal Resume card. They verify exact accepted route activation, no recording,
+and suppressed arrival. These are component tests with a real flat store and small graph.
+
+The first runs exposed two stale RA12 test recipes. The final RA12 parent `26b8f70b` already fixes
+both; this branch merges that parent instead of carrying duplicate repairs. A label-width check
+caught the longer German action. Short action verbs fit all four supported languages.
+
+## Integrated acceptance still due
+
+Use the production map/card and normal controls for these named scenarios:
+
+1. Accept a Visit, open Current visit, cancel before moving, and verify the original route returns
+   after the checkpoint write. Keep recording throughout.
+2. Accept a Visit, ride away from the departure, cancel, inspect the real connector, press Back,
+   and verify the Visit remains active. Repeat and explicitly accept the connector.
+3. Reach the stop, dismiss the arrival card, and continue. Repeat while ignoring the card until
+   rejoin. Compare Recorder session and sample sequence.
+4. Restart the same persistent card. Verify no active route and no automatic recording. Press
+   Resume with a fresh phase-safe fix. Verify the accepted route, current phase, and no arrival card.
+5. Replace a required source or use an off-phase fix. Resume must remain unavailable without
+   starting guidance. Exercise checkpoint failure and recovery on the normal card.
+
+The orchestrator owns real offline simulator captures, final integrated review, CI resource
+records, and the single final snapshot sweep and shipping build. This change runs neither sweep
+nor image build. Physical-device acceptance remains pending; no hardware is connected.

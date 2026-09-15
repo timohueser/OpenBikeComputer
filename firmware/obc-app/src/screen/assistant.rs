@@ -138,6 +138,8 @@ mod tests {
                 Msg::AssistantGoHere,
                 Msg::AssistantSaving,
                 Msg::AssistantBackMap,
+                Msg::AssistantCancelVisit,
+                Msg::AssistantResumeRoute,
                 Msg::AssistantVisitUnavailable,
                 Msg::AssistantUseRoute,
                 Msg::AssistantPreviewRoute,

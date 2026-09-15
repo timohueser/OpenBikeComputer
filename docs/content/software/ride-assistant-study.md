@@ -80,6 +80,22 @@ measurements remain pending the integrated simulator and hardware checks.
 Next town is removed from the questions. It overlaps with What's next and Find a place, and
 its purpose becomes unclear inside a city. Town names on the map remain a separate possibility.
 
+## Current visit and restart
+
+While a visit is active, open **Assistant → Down + Back → Current visit**. The detail shows the
+current leg. Select **Cancel visit** to leave the visit. Before departure, the original route returns
+after the card confirms the saved change. After departure, review the real connector and select
+**Use this route**. Back from the connector preview keeps the accepted visit. Back while a save is
+pending only closes the view; it does not revoke the requested change.
+
+The arrival card is informational. Select or Back closes it. Guidance and recording continue.
+Rejoining the original journey clears an arrival card that is still open.
+
+After a restart, a saved Assistant journey offers **Resume route**. This needs a fresh position
+inside the saved route phase and exact source validation. Select resumes guidance only after the
+saved change is confirmed. It does not start recording. Back leaves navigation inactive. Open the
+Assistant context drawer to reach the Resume card again. Ordinary routes do not resume on their own.
+
 ## Easier route
 
 The reviewed design is the map-first concept C. The simulator shows the real map with the

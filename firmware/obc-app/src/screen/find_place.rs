@@ -228,6 +228,9 @@ impl FindPlaceScreen {
 #[derive(Debug)]
 pub struct VisitReviewScreen {
     pub(crate) accepted: bool,
+    pub(crate) returning: bool,
+    pub(crate) error: Option<crate::navigator::VisitUnavailable>,
+    cancel_selected: bool,
     name: heapless::String<32>,
 }
 impl VisitReviewScreen {
@@ -238,7 +241,7 @@ impl VisitReviewScreen {
                 break;
             }
         }
-        Self { name: title, accepted: false }
+        Self { name: title, accepted: false, returning: false, error: None, cancel_selected: false }
     }
     pub(crate) fn accepted(name: &str) -> Self {
         let mut screen = Self::new(name);
@@ -247,7 +250,24 @@ impl VisitReviewScreen {
     }
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
+            Gesture::Back if self.error.is_some() => {
+                self.error = None;
+                Transition::None
+            }
             Gesture::Back if self.accepted => Transition::Pop,
+            Gesture::Step(_) if self.accepted && cx.find.review == ReviewStatus::Accepted => {
+                self.cancel_selected = !self.cancel_selected;
+                Transition::None
+            }
+            Gesture::Press if self.accepted && self.cancel_selected && cx.find.review == ReviewStatus::Accepted => {
+                cx.find.action = Action::CancelVisit;
+                Transition::None
+            }
+            Gesture::Back
+                if self.returning && matches!(cx.find.review, ReviewStatus::Saving | ReviewStatus::Unresolved) =>
+            {
+                Transition::Pop
+            }
             Gesture::Back => {
                 cx.find.action = Action::Cancel;
                 Transition::Pop
@@ -314,15 +334,29 @@ impl VisitReviewScreen {
                 figures(cv, m, added_ascent_m, 248, true, rx.settings.units);
             }
         }
-        let label = match rx.find.review {
-            ReviewStatus::Planning => rx.t(Msg::AssistantCalculating),
-            ReviewStatus::Preview if rx.find.review_costs.is_some_and(|c| c.added_m.is_some()) => {
-                rx.t(Msg::AssistantAddStop)
+        if self.accepted && rx.find.review == ReviewStatus::Accepted && self.error.is_none() {
+            for (index, label) in [Msg::AssistantBackMap, Msg::AssistantCancelVisit].iter().enumerate() {
+                let y = 240 + index as i32 * 38;
+                cv.round(rect(12, y, 216, 32), 6, if self.cancel_selected == (index == 1) { AMBER } else { PARCHMENT });
+                cv.text(rx.t(*label), Point::new(120, y + 2), Font::Body, TextAlign::Center, INK);
             }
-            ReviewStatus::Preview => rx.t(Msg::AssistantGoHere),
-            ReviewStatus::Saving => rx.t(Msg::AssistantSaving),
-            ReviewStatus::Accepted => rx.t(Msg::AssistantBackMap),
-            _ => rx.t(Msg::AssistantVisitUnavailable),
+            return;
+        }
+        let label = if self.error.is_some() {
+            rx.t(Msg::AssistantVisitUnavailable)
+        } else {
+            match rx.find.review {
+                ReviewStatus::Planning => rx.t(Msg::AssistantCalculating),
+                ReviewStatus::Preview if self.returning => rx.t(Msg::AssistantUseRoute),
+                ReviewStatus::Preview if rx.find.review_costs.is_some_and(|c| c.added_m.is_some()) => {
+                    rx.t(Msg::AssistantAddStop)
+                }
+                ReviewStatus::Preview => rx.t(Msg::AssistantGoHere),
+                ReviewStatus::Saving => rx.t(Msg::AssistantSaving),
+                ReviewStatus::Unresolved => rx.t(Msg::AssistantSaveUnknown),
+                ReviewStatus::Accepted => rx.t(Msg::AssistantBackMap),
+                _ => rx.t(Msg::AssistantVisitUnavailable),
+            }
         };
         cv.round(rect(12, 280, 216, 32), 6, AMBER);
         cv.text(label, Point::new(120, 282), Font::Body, TextAlign::Center, INK);
