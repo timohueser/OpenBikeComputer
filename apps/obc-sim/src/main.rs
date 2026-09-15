@@ -152,11 +152,10 @@ struct Args {
     /// Initial battery charge (0–100 %) shown on the Home gauge; stands in for the not-yet-
     /// wired fuel gauge. Defaults to full.
     battery: Option<u8>,
-    /// Headless `--png` only: seed the device's UTC wall-clock anchor to `YYYY-MM-DDTHH:MM`. With
-    /// the default `+00:00` offset `local_clock()` returns it verbatim, pinning the POI-detail
-    /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
-    /// device default (2025-01-01 12:00, a Wednesday noon).
+    /// Headless explicit UTC time with a known zero local offset, through the trusted clock entry.
     clock: Option<obc_ports::DateTime>,
+    /// Apply another explicit time after the button script, before the final settle and render.
+    clock_after_script: Option<obc_ports::DateTime>,
 
     no_card: bool,
     route_cleanup: bool,
@@ -219,6 +218,7 @@ impl Default for Args {
             palette: false,
             battery: None,
             clock: None,
+            clock_after_script: None,
 
             no_card: false,
             route_cleanup: false,
@@ -550,6 +550,10 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
+            }
+            "--clock-after-script" => {
+                a.clock_after_script =
+                    Some(parse_clock(&it.next().ok_or("--clock-after-script needs YYYY-MM-DDTHH:MM")?)?);
             }
 
             "--route-cleanup" => a.route_cleanup = true,
@@ -944,7 +948,8 @@ Device state:
   --no-card               Simulate an absent storage card
   --boot                  Start headless rendering at the power-on Home screen
   --battery PCT           Initial battery charge, 0..=100
-  --clock DATE            UTC anchor, YYYY-MM-DDTHH:MM
+  --clock DATE            Trusted UTC time with local offset +00:00, YYYY-MM-DDTHH:MM
+  --clock-after-script DATE  Set trusted UTC time after the script (same format and offset)
   --lang LANG             UI language: en|de|fr|es
   --stat-fields LIST      Comma-separated Statistics field ids
   --physical              Use saved physical-size calibration in the GUI
@@ -1114,13 +1119,8 @@ fn main() {
             let mut loc = crate::sim_location::SimLocationSource::new(app.state.user_fix);
             app.tick(obc_ports::RideClock(0), obc_ports::Sensors::new(&mut loc), None);
         }
-        // `--clock` / `--lang` seed the headless Settings. `--clock` pins the UTC wall-clock anchor;
-        // with the default `+00:00` offset `local_clock()` returns it verbatim for the POI-detail
-        // weekday + OPEN/CLOSED-now badge. `--lang` selects the UI language (epic #602) so a scripted
-        // screen draws its de/fr/es copy. Both stay at the device default otherwise — with neither
-        // flag `set_settings` isn't called, and `--clock` alone still leaves `language` English, so
-        // the existing snapshots' output is byte-unchanged. `set_settings` restamps the WallClock
-        // from this local set-point (see `App::set_settings`).
+        // Explicit headless settings are applied before the script. Without an explicit clock,
+        // the device's boot time remains untrusted.
         if args.clock.is_some() || args.lang.is_some() || args.stat_fields.is_some() || args.sensors.is_some() {
             let mut settings = obc_app::settings::Settings::default();
             if let Some(clock) = args.clock {
@@ -1172,6 +1172,9 @@ fn main() {
             }
             app.set_settings(settings);
         }
+        if let Some(clock) = args.clock {
+            app.stamp_clock(clock, 0, Some(0), obc_app::ClockTrust::Ble);
+        }
         // Mirror the map's §8.6 routing-profile names for the bike-type editor + overview label (N5),
         // and whether it carries a nav graph at all (#882: gates the ride menu's Detour station).
         app.set_nav_profiles(tables.nav_profiles());
@@ -1204,9 +1207,6 @@ fn main() {
         // **after** the routes so the stage ids resolve against the catalog. The TR3 menu draws the
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
         if args.route_cleanup {
-            if let Some(clock) = args.clock {
-                app.stamp_clock(clock, 0, None, obc_app::ClockTrust::Ble);
-            }
             if let Some(scope) = store.store_scope() {
                 app.offer_route_cleanup(scope.store);
             }
@@ -1299,6 +1299,9 @@ fn main() {
             };
             hook(&mut app, ScriptHook::Tick, script_now);
             script_now = apply_script(&mut app, script, script_now, &mut hook);
+        }
+        if let Some(clock) = args.clock_after_script {
+            app.stamp_clock(clock, 0, Some(0), obc_app::ClockTrust::Ble);
         }
         // Everything the script's last press asked for, with no trailing `f`: settle it now so the
         // final render reflects the answer (the create-route commit, the detour plan/commit, the
