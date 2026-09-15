@@ -13,7 +13,6 @@ use obc_route::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
     Idle,
-    Entry,
     Trials,
     Releasing,
     SelectRelease,
@@ -75,20 +74,6 @@ impl App {
         }
         if owned == current {
             self.cancel_assistant();
-        }
-    }
-    /// Start a drawer request with the source identity held by the map owner.
-    pub fn prepare_easier_entry(&mut self, map: RouteSourceKey) {
-        if self.easier.phase != Phase::Entry {
-            return;
-        }
-        self.easier.phase = Phase::Idle;
-        if !matches!(self.ui.stack.last(), Some(crate::screen::Screen::Easier(_))) {
-            return;
-        }
-        if self.open_easier_routes(map).is_err() {
-            self.easier.phase = Phase::Unavailable;
-            self.refresh_easier_screen();
         }
     }
     /// Production entry. The executor binds the original and its facts before the first trial.
@@ -194,7 +179,7 @@ impl App {
         self.plan_assistant(NavRequest::new(context.origin, self.easier.destination, "Easier route"), context);
     }
     pub(crate) fn advance_easier(&mut self) {
-        if matches!(self.easier.phase, Phase::Idle | Phase::Entry) {
+        if self.easier.phase == Phase::Idle {
             return;
         }
         if !self.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::Easier(_))) {
@@ -208,7 +193,10 @@ impl App {
         {
             self.easier.phase = Phase::Idle;
             if matches!(self.ui.stack.last(), Some(crate::screen::Screen::Easier(_))) {
-                self.ui.stack.pop();
+                crate::screen::apply(
+                    &mut self.ui.stack,
+                    crate::screen::Transition::Root(crate::screen::Screen::Map(crate::screen::MapScreen::new())),
+                );
             }
             self.ui.map_dirty = true;
             return;

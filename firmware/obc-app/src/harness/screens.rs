@@ -164,16 +164,16 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     ));
     // D4a's one addition, and it is a *different* table: the timeline's two scope controls, not
     // the ride's four actions.
-    assert!(declared(&Screen::UpAhead(crate::screen::UpAheadScreen::new(0))));
+    assert!(declared(&Screen::WhatsNext(crate::screen::WhatsNextScreen::new())));
     assert_ne!(
-        Screen::UpAhead(crate::screen::UpAheadScreen::new(0)).context().map(|m| m.rows.len()),
+        Screen::WhatsNext(crate::screen::WhatsNextScreen::new()).context().map(|m| m.rows.len()),
         Screen::Map(MapScreen::new()).context().map(|m| m.rows.len()),
         "the timeline declares its own table, not the ride's"
     );
 
     // D4d's addition, and it is the **one** screen of the create-route flow that declares
     // anything: the card whose next press consumes the routing profile.
-    let confirm = || Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None));
+    let confirm = || crate::harness::support::selected_place();
     assert!(declared(&confirm()));
     assert!(core::ptr::eq(
         confirm().context().expect("the confirm card declares a context"),
@@ -190,7 +190,6 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
     assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
-    assert!(!declared(&Screen::PoiMenu(crate::screen::PoiMenuScreen::new())));
     assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&crate::navigator::RouteState::new(),))));
 }
 
@@ -216,8 +215,8 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         assert!(core::ptr::eq(table(sibling), &RIDE), "the other three riding views keep the ride table");
     }
 
-    assert_eq!(map.rows.len(), RIDE.rows.len(), "each view has five actions");
-    for (m, r) in map.rows[..4].iter().zip(&RIDE.rows[..4]) {
+    assert_eq!(map.rows.len(), RIDE.rows.len() + 1, "Map adds its display row");
+    for (m, r) in map.rows[..3].iter().zip(&RIDE.rows[..3]) {
         let lang = crate::settings::Language::En;
         assert_eq!(crate::i18n::t(m.label, lang), crate::i18n::t(r.label, lang), "the ride actions must not drift");
     }
@@ -228,7 +227,7 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         Screen::Statistics(StatisticsScreen::new()),
         Screen::Climb(ClimbScreen::new()),
         Screen::RideControl(RideControl::new()),
-        Screen::UpAhead(crate::screen::UpAheadScreen::new(0)),
+        Screen::WhatsNext(crate::screen::WhatsNextScreen::new()),
     ] {
         assert!(!screen.context().is_some_and(|m| core::ptr::eq(m, &MAP_DISPLAY)), "no screen declares the sub-sheet");
     }
@@ -287,73 +286,26 @@ fn the_ride_context_opens_over_a_paused_ride_without_touching_the_session() {
 /// Also pins the **corridor-snapshot lifecycle** the screen drives through the App: armed while the
 /// timeline is up, disarmed the moment it isn't.
 #[test]
-fn the_up_ahead_row_preserves_the_session_and_one_back_returns_to_the_map() {
+fn assistant_whats_next_preserves_the_session_and_back_returns_through_the_questions() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
     app.test_mount_store();
     app.test_start_ride();
     app.navigator.route_state_mut().progress_m = 1_500;
     let session = app.ride_session();
-    assert_eq!(app.activity.mode, Mode::Riding);
-    assert!(!app.corridor_snapshot_pending(), "nothing asks for a corridor query on the map");
-
     assert!(app.apply_chord(crate::input::Chord::Context));
-    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
-    app.apply_gesture(Gesture::Press); // the first row = Up ahead
-    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-    assert!(app.corridor_snapshot_pending(), "entering arms the snapshot (and asks for the Reader)");
-
-    // Row gestures are in-screen: they never move the stack or the session. `Hold` is among them
-    // because it is **inert** since D4a — the filter it used to open is a sheet row now, and a hold
-    // that opened a mode here would show up as a screen the loop did not expect.
-    for g in [Gesture::Step(1), Gesture::Press, Gesture::Hold, Gesture::Step(1), Gesture::Press] {
-        app.apply_gesture(g);
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{g:?} stays on the timeline");
-        assert_eq!(app.activity.mode, Mode::Riding);
-        assert_eq!(app.ride_session(), session);
-    }
-    assert!(app.corridor_snapshot_pending(), "the timeline is still armed");
-
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Map(_)), "one Back: the row replaced the sheet");
-    assert!(!app.corridor_snapshot_pending(), "leaving the timeline stops asking for the Reader");
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    app.apply_gesture(Gesture::Step(1));
+    app.apply_gesture(Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
     assert_eq!(app.activity.mode, Mode::Riding);
     assert_eq!(app.ride_session(), session);
-}
-
-/// The **source-scope arming rule** (epic #946, U4), end to end through the App: the Ride-settings
-/// value is read when the context row opens the timeline, and a rider who asked for *waypoints only*
-/// never arms the corridor snapshot at all — so the board is never asked to build a map `Reader`
-/// for a query whose rows the list would refuse to draw. The other two scopes arm it as U3 did.
-#[test]
-fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
-    use crate::settings::UpAheadSource;
-
-    let open_timeline = |source| {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.test_mount_store();
-        app.set_settings(Settings { up_ahead_source: source, ..Settings::default() });
-        app.test_start_ride();
-        app.navigator.route_state_mut().progress_m = 1_500;
-        assert!(app.apply_chord(crate::input::Chord::Context)); // Map → the ride context sheet
-        app.apply_gesture(Gesture::Press); // the first row = Up ahead
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{source:?} still opens the timeline");
-        app
-    };
-
-    let mut quiet = open_timeline(UpAheadSource::WaypointsOnly);
-    assert!(!quiet.corridor_snapshot_pending(), "Waypoints only never arms the query");
-    assert!(!quiet.base_needs_reader(), "…so the reader-build seam stays quiet on the timeline");
-    // Not even the sheet's Filter row turns it on: a category filter scopes rows, it doesn't add a source.
-    quiet.apply_gesture(Gesture::Hold);
-    quiet.apply_gesture(Gesture::Step(1));
-    quiet.apply_gesture(Gesture::Press);
-    assert!(!quiet.corridor_snapshot_pending(), "a filter change under Waypoints only re-queries nothing");
-
-    for source in [UpAheadSource::Both, UpAheadSource::MapPoisOnly] {
-        let app = open_timeline(source);
-        assert!(app.corridor_snapshot_pending(), "{source:?} arms the snapshot on entry");
-        assert!(app.base_needs_reader(), "{source:?} keeps the Reader built until the query lands");
-    }
+    assert_eq!(app.navigator.route_state().progress_m, 1_500);
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    assert_eq!(app.ride_session(), session);
 }
 
 #[test]
@@ -907,7 +859,7 @@ fn app_with_pending_swap_on_gamma() -> App {
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.active_route_index(), Some(0));
     assert!(app.apply_chord(crate::input::Chord::Context)); // Map → the ride context sheet
-    app.apply_gesture(Gesture::Step(3)); // → the Routes row
+    app.apply_gesture(Gesture::Step(2)); // → the Routes row
     app.apply_gesture(Gesture::Press); // the sheet → Route menu
     app.apply_gesture(Gesture::Step(2)); // highlight Gamma
     app.apply_gesture(Gesture::Press); // a different route mid-ride → the swap prompt
@@ -1215,11 +1167,7 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
     // that gets there needs a fix, a corridor snapshot and a queried map, none of which this test
     // is about.
     app.ui.stack.truncate(1); // [Home]
-    let _ = app.ui.stack.push(crate::Screen::NavConfirm(crate::screen::NavConfirmScreen::new(
-        (7_420_000, 43_735_000),
-        "Fontaine",
-        None,
-    )));
+    let _ = app.ui.stack.push(crate::harness::support::selected_place());
 
     // A page slide owns the sheet's input while it runs, so each gesture waits for the last one's
     // slide to land — on a clock that only ever moves forward, which the passes below share.
@@ -1244,7 +1192,7 @@ fn bike_type_is_picked_from_the_route_plan_sheet_and_persists_across_reboot() {
 
     // Back closes the sheet onto the card the rider squeezed from — not a navigation.
     app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), crate::Screen::NavConfirm(_)), "the card is still under it");
+    assert!(matches!(app.top_screen(), crate::Screen::PoiDetail(_)), "the card is still under it");
 
     // Simulated reboot: the persisted blob seeds a fresh App (the boot path of both hosts).
     let blob = crate::settings::encode(app.settings());
@@ -1568,27 +1516,4 @@ fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
         app.apply_gesture(Gesture::Press); // dismiss the card
         assert!(matches!(app.top_screen(), Screen::Map(_)), "{chord:?}: dismissing lands on the base");
     }
-}
-
-#[test]
-fn easier_drawer_entry_waits_for_the_map_owner_and_back_cancels_before_admission() {
-    use crate::easier::Phase;
-    let mut app = App::new(AppState::new(0, 0, 1.0));
-    app.test_mount_store();
-    app.test_start_ride();
-    app.state.has_nav_graph = true;
-    app.navigator.route_state_mut().active_route = Some(0);
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Statistics(_)));
-    assert!(app.apply_chord(crate::input::Chord::Context));
-    app.apply_gesture(Gesture::Step(4));
-    app.apply_gesture(Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::Easier(_)));
-    quiet_pass(&mut app, 0);
-    assert!(matches!(app.easier.phase, Phase::Entry));
-    app.apply_gesture(Gesture::Back);
-    app.prepare_easier_entry(obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 2, revision: 3 });
-    assert!(matches!(app.easier.phase, Phase::Idle));
-    assert!(matches!(app.top_screen(), Screen::Statistics(_)));
-    assert!(app.assistant_planner_released());
 }

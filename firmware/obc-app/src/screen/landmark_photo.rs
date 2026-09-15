@@ -2,7 +2,7 @@
 use super::{palette::*, Ctx, RenderFrame, Transition};
 use crate::{
     photo::{Selection, Status},
-    Gesture,
+    Gesture, Msg,
 };
 use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_map_scene::MapScene;
@@ -56,17 +56,23 @@ impl LandmarkPhotoScreen {
         self.covered_rebuild = covered;
     }
 
-    pub(crate) fn draw_status<D, F>(&self, target: &mut D, color: &F)
+    pub(crate) fn draw_status<D, F>(&self, target: &mut D, color: &F, language: crate::settings::Language)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
         let message = match self.status {
-            Status::Missing => "No photo available",
-            Status::Unavailable => "Photo unavailable",
+            Status::Missing => Msg::AssistantPhotoMissing,
+            Status::Unavailable => Msg::AssistantPhotoUnavailable,
             _ => return,
         };
-        Canvas::new(target, color).text(message, Point::new(120, 142), Font::Label, TextAlign::Center, INK);
+        Canvas::new(target, color).text(
+            crate::i18n::t(message, language),
+            Point::new(120, 142),
+            Font::Label,
+            TextAlign::Center,
+            INK,
+        );
     }
 
     pub fn handle(&mut self, gesture: Gesture, cx: &mut Ctx) -> Transition {
@@ -112,12 +118,12 @@ impl LandmarkPhotoScreen {
                 rx.place_local,
                 rx.settings.bike_profile_idx,
             ) {
-                "Visit" => "Visit / Up or Down",
-                "Closed" => "Closed / Up or Down",
-                "No mapped access" => "No access / Up/Down",
-                _ => "Unavailable Up/Down",
+                Msg::AssistantVisit => Msg::AssistantPhotoVisit,
+                Msg::AssistantClosed => Msg::AssistantPhotoClosed,
+                Msg::AssistantNoAccess => Msg::AssistantPhotoNoAccess,
+                _ => Msg::AssistantPhotoUnavailableHint,
             };
-            cv.text(label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+            cv.text(rx.t(label), Point::new(120, 286), Font::Label, TextAlign::Center, INK);
         }
     }
 }

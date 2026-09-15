@@ -3,7 +3,7 @@ use super::{palette::*, Ctx, RenderFrame, Transition};
 use crate::{
     easier::{Phase, State},
     navigator::ReviewStatus,
-    Gesture,
+    Gesture, Msg,
 };
 use core::fmt::Write;
 use embedded_graphics::prelude::*;
@@ -14,7 +14,7 @@ use obc_render::{
     Canvas, Surface, Viewport,
 };
 use obc_route::easier::{Costs, Goal};
-const NAMES: [&str; 3] = ["Less climbing", "Smoother surface", "Shorter ride"];
+const NAMES: [Msg; 3] = [Msg::AssistantLessClimb, Msg::AssistantSmoother, Msg::AssistantShorter];
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct EasierScreen {
@@ -79,15 +79,15 @@ impl EasierScreen {
     {
         if let Some(next) = self.next.filter(|_| self.review) {
             cv.clear(PARCHMENT);
-            header(cv, NAMES[self.goal as usize], rx.w, None);
-            benefit(cv, self.current, next, self.goal as usize, rect(8, 46, rx.w - 16, 70), false);
-            cv.text("Current", Point::new(150, 129), Font::Label, TextAlign::Right, SUBTEXT);
-            cv.text("New", Point::new(226, 129), Font::Label, TextAlign::Right, SUBTEXT);
+            header(cv, rx.t(NAMES[self.goal as usize]), rx.w, None);
+            benefit(cv, self.current, next, self.goal as usize, rect(8, 46, rx.w - 16, 70), false, rx);
+            cv.text(rx.t(Msg::AssistantCurrent), Point::new(146, 129), Font::Label, TextAlign::Right, SUBTEXT);
+            cv.text(rx.t(Msg::AssistantNew), Point::new(236, 129), Font::Label, TextAlign::Right, SUBTEXT);
             cv.hline(12, 157, rx.w - 24, SUBTEXT);
             for (i, (name, old, new)) in [
-                ("Ride", self.current.distance_m, next.distance_m),
-                ("Climb", self.current.ascent_m, next.ascent_m),
-                ("Rough", self.current.rough_m, next.rough_m),
+                (rx.t(Msg::AssistantRide), self.current.distance_m, next.distance_m),
+                (rx.t(Msg::AssistantClimb), self.current.ascent_m, next.ascent_m),
+                (rx.t(Msg::AssistantRough), self.current.rough_m, next.rough_m),
             ]
             .iter()
             .enumerate()
@@ -96,18 +96,18 @@ impl EasierScreen {
                 cv.text(name, Point::new(12, y), Font::Body, TextAlign::Left, INK);
                 let known = i != 1 || self.current.elevation_complete;
                 let surface = i != 2 || (self.current.surface_attributed && self.current.unknown_m == 0);
-                let a = distance(*old, i == 1);
-                let b = distance(*new, i == 1);
+                let a = table_distance(*old, i == 1, rx.settings.units);
+                let b = table_distance(*new, i == 1, rx.settings.units);
                 cv.text(
-                    if known && surface { &a } else { "Unknown" },
-                    Point::new(150, y),
+                    if known && surface { &a } else { "--" },
+                    Point::new(146, y),
                     Font::Body,
                     TextAlign::Right,
                     INK,
                 );
                 cv.text(
-                    if i != 2 || next.unknown_m == 0 { &b } else { "Unknown" },
-                    Point::new(226, y),
+                    if i != 2 || next.unknown_m == 0 { &b } else { "--" },
+                    Point::new(236, y),
                     Font::Body,
                     TextAlign::Right,
                     INK,
@@ -117,10 +117,10 @@ impl EasierScreen {
                 }
             }
             if self.ready || self.saving {
-                button(cv, if self.saving { "Saving…" } else { "Use this route" });
+                button(cv, if self.saving { rx.t(Msg::AssistantSaving) } else { rx.t(Msg::AssistantUseRoute) });
             } else {
                 cv.text(
-                    if self.unresolved { "Save status unknown" } else { "Route unavailable" },
+                    if self.unresolved { rx.t(Msg::AssistantSaveUnknown) } else { rx.t(Msg::AssistantUnavailable) },
                     Point::new(rx.w / 2, 282),
                     Font::Label,
                     TextAlign::Center,
@@ -164,22 +164,22 @@ impl EasierScreen {
                 }
             }
         }
-        header(cv, "Easier route", rx.w, self.ready.then_some((self.ordinal, self.count)));
+        header(cv, rx.t(Msg::AssistantEasier), rx.w, self.ready.then_some((self.ordinal, self.count)));
         cv.fill(rect(0, 188, rx.w, rx.h - 188), PARCHMENT);
         if let Some(next) = self.next.filter(|_| self.ready) {
-            benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true);
-            button(cv, "Preview route");
+            benefit(cv, self.current, next, self.goal as usize, rect(8, 190, rx.w - 16, 86), true, rx);
+            button(cv, rx.t(Msg::AssistantPreviewRoute));
         } else {
             cv.text(
                 if self.unavailable {
                     match self.failure {
-                        Some(obc_route::NavError::Exhausted) => "Search limit reached",
-                        Some(obc_route::NavError::NoPath) => "No connecting route",
-                        None if !self.current.elevation_complete => "Cannot compare",
-                        None => "No easier route",
+                        Some(obc_route::NavError::Exhausted) => rx.t(Msg::AssistantSearchLimit),
+                        Some(obc_route::NavError::NoPath) => rx.t(Msg::AssistantNoConnection),
+                        None if !self.current.elevation_complete => rx.t(Msg::AssistantNoComparison),
+                        None => rx.t(Msg::AssistantNoUsefulRoute),
                     }
                 } else {
-                    "Comparing routes…"
+                    rx.t(Msg::AssistantComparing)
                 },
                 Point::new(rx.w / 2, 223),
                 Font::Label,
@@ -215,14 +215,37 @@ fn fit(b: BBox, w: i32, h: i32) -> Viewport {
         zoom,
     )
 }
-fn distance(value: u32, ascent: bool) -> heapless::String<16> {
+fn distance(value: u32, ascent: bool, units: crate::settings::Units) -> heapless::String<16> {
     let mut text = heapless::String::new();
-    if ascent || value < 1000 {
-        let _ = write!(text, "{value}m");
-    } else if value.is_multiple_of(1000) {
-        let _ = write!(text, "{}km", value / 1000);
+    if ascent {
+        let _ = text.push_str(&super::vocab::fmt::elevation_short(Some(value), units));
     } else {
-        let _ = write!(text, "{}.{:01}km", value / 1000, value % 1000 / 100);
+        super::vocab::fmt::write_distance_coarse(&mut text, "", value, units);
+    }
+    text
+}
+
+// The comparison columns each have room for six Body characters. The saving above the
+// table retains the ordinary precision when large totals need a coarser unit here.
+fn table_distance(value: u32, ascent: bool, units: crate::settings::Units) -> heapless::String<16> {
+    use core::fmt::Write;
+    let mut text = distance(value, ascent, units);
+    if text.len() > 6 {
+        text.clear();
+        let (quantity, unit) = if ascent && units.is_imperial() {
+            (((u64::from(value) * 328_084 + 50_000_000) / 100_000_000), "kft")
+        } else if ascent {
+            ((u64::from(value) + 500) / 1000, "km")
+        } else if units.is_imperial() {
+            ((u64::from(value) + 804_672) / 1_609_344, "kmi")
+        } else {
+            ((u64::from(value) + 500_000) / 1_000_000, "Mm")
+        };
+        let _ = write!(text, "{quantity}{unit}");
+        if text.len() > 6 {
+            text.clear();
+            let _ = text.push_str("--");
+        }
     }
     text
 }
@@ -234,14 +257,15 @@ fn benefit(
     goal: usize,
     area: embedded_graphics::primitives::Rectangle,
     heading: bool,
+    rx: &super::Render,
 ) {
-    let title = heading.then_some(NAMES[goal]);
+    let title = heading.then(|| rx.t(NAMES[goal]));
     let (old, new, label) = match goal {
-        0 => (current.ascent_m, next.ascent_m, "ascent saved"),
-        1 => (current.rough_m, next.rough_m, "rough avoided"),
-        _ => (current.distance_m, next.distance_m, "distance saved"),
+        0 => (current.ascent_m, next.ascent_m, rx.t(Msg::AssistantAscentSaved)),
+        1 => (current.rough_m, next.rough_m, rx.t(Msg::AssistantRoughAvoided)),
+        _ => (current.distance_m, next.distance_m, rx.t(Msg::AssistantDistanceSaved)),
     };
-    let text = distance(Goal::ALL[goal].saving(current, next), goal == 0);
+    let text = distance(Goal::ALL[goal].saving(current, next), goal == 0, rx.settings.units);
     let center = area.top_left.x + area.size.width as i32 / 2;
     let label_height = Font::Label.cap_height() as i32;
     let number_height = Font::Display.cap_height() as i32;
@@ -257,7 +281,7 @@ fn benefit(
     let left = center - row_width / 2;
     cv.text_vcentered(&text, left + 28, (top, number_height), Font::Display, TextAlign::Left, INK);
     cv.text_vcentered(
-        if new > old { "more than now" } else { label },
+        if new > old { rx.t(Msg::AssistantMoreThanNow) } else { label },
         center,
         (top + number_height + 8, label_height),
         Font::Label,
@@ -286,6 +310,19 @@ fn benefit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparison_values_fit_both_columns_with_normal_units() {
+        use crate::settings::Units;
+        for units in [Units::Metric, Units::Imperial] {
+            for value in [0, 999, 1608, 3100, 3200, 10_000, 100_000, u32::MAX] {
+                for ascent in [false, true] {
+                    assert!(table_distance(value, ascent, units).len() <= 6);
+                }
+            }
+        }
+        assert_eq!(table_distance(3200, true, Units::Imperial).as_str(), "10kft");
+        assert_eq!(distance(100, true, Units::Imperial).as_str(), "328ft");
+    }
     #[test]
     fn retained_review_costs_do_not_make_stale_or_unresolved_actions_available() {
         let mut state = State::new();
