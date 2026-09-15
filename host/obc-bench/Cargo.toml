@@ -5,6 +5,9 @@ edition = "2021"
 publish = false # host-only bench harness — never shipped or published
 description = "Host render benchmark harness + CI pixel-hash and read-counter golden gate over the real obc-reader → obc-render pipeline (issues #327, #1467)"
 
+[features]
+nav-metrics = ["obc-reader/nav-metrics"]
+
 [dependencies]
 obc-map-scene = { path = "../../firmware/obc-map-scene" }
 obc-reader = { path = "../../firmware/obc-reader" }
