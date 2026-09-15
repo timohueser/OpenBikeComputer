@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse a return to large, scattered fixture blobs in Git."""
+"""Check development fixture archive budgets and large fixture blobs in Git."""
 
 from __future__ import annotations
 
 from pathlib import Path
 import subprocess
 import sys
+
+from fixtures import Catalog, FixtureError
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +44,11 @@ def tracked_files() -> list[str]:
 
 
 def main() -> int:
+    try:
+        Catalog(ROOT / "fixtures/catalog.toml")
+    except FixtureError as error:
+        print(f"fixture policy: {error}", file=sys.stderr)
+        return 1
     violations = []
     for relative in tracked_files():
         fixture_area = relative.startswith(FIXTURE_AREAS) or "/tests/fixtures/" in relative
@@ -51,11 +58,11 @@ def main() -> int:
         if path.is_file() and path.stat().st_size > LIMIT:
             violations.append((relative, path.stat().st_size))
     if violations:
-        print("large generated/captured fixture data belongs in fixtures/catalog.toml:", file=sys.stderr)
+        print("large fixture blobs must leave Git; see fixtures/README.md for storage scope:", file=sys.stderr)
         for relative, size in violations:
             print(f"  {size:>10}  {relative}", file=sys.stderr)
         return 1
-    print("fixture policy: no unregistered large blobs")
+    print("fixture policy: archive budgets valid; no unregistered large blobs")
     return 0
 
 
