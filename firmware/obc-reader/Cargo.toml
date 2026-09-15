@@ -12,6 +12,8 @@ description = "OBCM map format reader (no_std + alloc) — pure-parse logic for 
 # `alloc` stays off by default. Mirrors `obc-route`'s `alloc` / `NavScratch::new_boxed`.
 alloc = []
 external-fixtures = []
+# Optional host attribution; disabled in shipping builds.
+nav-metrics = []
 
 [dependencies]
 heapless = "0.8"

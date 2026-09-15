@@ -152,6 +152,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// supplies the clock and the engine reports the split.
 pub trait Clock {
     fn now_us(&self) -> u64;
+    /// Optional navigation subphase attribution; does not change assembly behavior.
+    fn nav_phase(&self, _name: &'static str) {}
 }
 
 /// A clock that does not tick — the default when a caller does not care about phase timings.
@@ -489,13 +491,14 @@ pub fn assemble_full(
     let landmark_section = landmarks::merge(&core_cells, &mut merged_pois)?;
     let poi_section = poi::layout(&merged_pois, assembly.ubox())?;
     let t_poi = clock.now_us();
-    let merged_nav = nav::merge(
+    let merged_nav = nav::merge_profiled(
         &core_cells,
         core_band.cell_log2,
         schema.routing.min_component_edges,
         assembly.ubox(),
         scratch,
         opts.merge_budget_bytes,
+        clock,
     )?;
     let t_nav = clock.now_us();
 
