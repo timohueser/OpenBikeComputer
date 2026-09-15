@@ -38,6 +38,7 @@ pub mod grid;
 pub mod hours;
 pub mod ingest;
 pub mod land;
+pub mod landmarks;
 pub mod merge;
 pub mod nav;
 pub mod net;
