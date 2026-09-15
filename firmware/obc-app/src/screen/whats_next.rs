@@ -261,19 +261,17 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         return;
     }
     if a.rows.is_empty() {
-        label(
-            cv,
-            match a.status {
-                QueryProgress::Ready { coverage_complete: true, .. } => rx.t(Msg::AheadNoMatches),
-                QueryProgress::Failed(_) => rx.t(Msg::AheadReadFailed),
-                QueryProgress::Ready { coverage_complete: false, .. } => rx.t(Msg::AheadPartial),
-                _ => rx.t(Msg::AheadMapUnavailable),
-            },
-            14,
-            108,
-            Font::Body,
-            INK,
-        );
+        let text = match a.status {
+            QueryProgress::Ready { coverage_complete: true, .. } => rx.t(Msg::AheadNoMatches),
+            QueryProgress::Failed(_) => rx.t(Msg::AheadReadFailed),
+            QueryProgress::Ready { coverage_complete: false, .. } => rx.t(Msg::AheadPartial),
+            _ => rx.t(Msg::AheadMapUnavailable),
+        };
+        if obc_render::text::text_width(text, Font::Body) as i32 > rx.w - 28 {
+            super::vocab::chrome::wrapped(cv, text, rx.w / 2, 108, rx.w - 28, Font::Body, INK);
+        } else {
+            label(cv, text, 14, 108, Font::Body, INK);
+        }
         return;
     }
     for (i, row) in a.rows.iter().enumerate() {
