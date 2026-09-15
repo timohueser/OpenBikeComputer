@@ -19,8 +19,13 @@ def matches(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
-def relative(path: str, root: Path, source_root: Path) -> str | None:
+def relative(path: str, root: Path, source_root: Path, source_prefix: Path | None = None) -> str | None:
     candidate = Path(path)
+    if candidate.is_absolute() and source_prefix is not None:
+        try:
+            candidate = root / candidate.relative_to(source_prefix)
+        except ValueError:
+            pass
     if not candidate.is_absolute():
         candidate = source_root / candidate
     try:
@@ -29,12 +34,12 @@ def relative(path: str, root: Path, source_root: Path) -> str | None:
         return None
 
 
-def read_lcov(path: Path, root: Path, source_root: Path) -> dict[str, dict[int, bool]]:
+def read_lcov(path: Path, root: Path, source_root: Path, source_prefix: Path | None = None) -> dict[str, dict[int, bool]]:
     files: dict[str, dict[int, bool]] = {}
     current = None
     for line in path.read_text().splitlines():
         if line.startswith("SF:"):
-            current = relative(line[3:], root, source_root)
+            current = relative(line[3:], root, source_root, source_prefix)
             if current is not None:
                 files.setdefault(current, {})
         elif line.startswith("DA:") and current is not None:
@@ -85,7 +90,7 @@ def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
                 excluded.update(range(child.start_point.row + 1, child.end_point.row + 2))
                 pending_test = False
             else:
-                if child.type in {"function_item", "closure_expression"}:
+                if child.type in {"function_item", "closure_expression", "macro_invocation", "macro_definition"}:
                     executable = True
                     production_lines.update(range(child.start_point.row + 1, child.end_point.row + 2))
                 visit(child)
@@ -94,11 +99,11 @@ def rust_source(path: Path) -> tuple[set[int], bool, list[Path]]:
     return excluded - production_lines, executable, modules
 
 
-def read_xccov(path: Path, root: Path) -> dict[str, tuple[int, int]]:
+def read_xccov(path: Path, root: Path, source_prefix: Path | None = None) -> dict[str, tuple[int, int]]:
     files = {}
     for target in json.loads(path.read_text())["targets"]:
         for row in target.get("files", []):
-            name = relative(row["path"], root, root)
+            name = relative(row["path"], root, root, source_prefix)
             if name is None:
                 continue
             counts = (row["coveredLines"], row["executableLines"])
@@ -132,7 +137,10 @@ def summarize(root: Path, policy: dict, scope: str, lines: dict, counts: dict) -
             omitted, executable, _ = syntax.get(name, (set(), True, []))
             if name in lines:
                 measured = {line: hit for line, hit in lines[name].items() if line not in omitted}
-                files[name] = {"covered": sum(measured.values()), "total": len(measured), "test_lines_removed": len(lines[name]) - len(measured)}
+                if executable and not measured:
+                    missing.append(name)
+                else:
+                    files[name] = {"covered": sum(measured.values()), "total": len(measured), "test_lines_removed": len(lines[name]) - len(measured)}
             elif name in counts:
                 covered, total = counts[name]
                 files[name] = {"covered": covered, "total": total}
@@ -174,6 +182,8 @@ def main() -> int:
     parser.add_argument("--lcov", type=Path, action="append", default=[])
     parser.add_argument("--xccov", type=Path)
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--source-prefix", type=Path, help="original checkout root when reading downloaded native reports")
+    parser.add_argument("--measurement-sha", help="original source SHA when summarizing downloaded reports")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--tool", action="append", required=True)
     parser.add_argument("--baseline", type=Path, default=Path("testing/coverage-baseline.json"))
@@ -183,17 +193,18 @@ def main() -> int:
         parser.error("at least one native report is required")
     lines = {}
     for path in args.lcov:
-        for name, data in read_lcov(path, root, (args.source_root or root).resolve()).items():
+        for name, data in read_lcov(path, root, (args.source_root or root).resolve(), args.source_prefix).items():
             bucket = lines.setdefault(name, {})
             for number, hits in data.items():
                 bucket[number] = bucket.get(number, False) or hits
-    counts = read_xccov(args.xccov, root) if args.xccov else {}
+    counts = read_xccov(args.xccov, root, args.source_prefix) if args.xccov else {}
     policy = tomllib.loads((root / "testing/coverage-policy.toml").read_text())
     rows = summarize(root, policy, args.scope, lines, counts)
     baseline_path = root / args.baseline
     baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else {}
     errors = check_baseline(rows, baseline) if args.scope == "rust" else []
-    report = {"schema": 1, "scope": args.scope, "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+    policy_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    report = {"schema": 1, "scope": args.scope, "source_sha": args.measurement_sha or policy_sha, "policy_sha": policy_sha,
               "tools": args.tool, "native_reports": [str(p) for p in args.lcov] + ([str(args.xccov)] if args.xccov else []),
               "components": rows, "errors": errors}
     args.output.mkdir(parents=True, exist_ok=True)

@@ -504,8 +504,9 @@ extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
-  { kind = "workflow", pattern = 'npm test -- --coverage --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"' },
+  { kind = "workflow", pattern = 'npm run test:components -- --coverage --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"' },
   { kind = "workflow", pattern = "python3 ../../tools/coverage_report.py --scope web *" },
+  { kind = "workflow", pattern = 'npm run test:sha256 -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-sha256-junit.xml"' },
 ]
 
 [[suite]]
