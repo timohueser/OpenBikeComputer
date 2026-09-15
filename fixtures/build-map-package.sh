@@ -124,16 +124,19 @@ do_grimsel_demo() {
         --cell-log2 16 --shard "$native" --quiet
     "$obc_dem" surface "$native" "$surface"
     repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX" "$surface"
-    # obc-pack samples terrain for contours/ascent but leaves the v14 region empty.
-    python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" <<'PY_EMBED'
+    # obc-pack samples terrain for contours/ascent but leaves the terrain region empty.
+    python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" \
+      "$REPO_ROOT/firmware/obc-formats/src/obcm.rs" <<'PY_EMBED'
 from pathlib import Path
+import re
 import struct
 import sys
 
 path = Path(sys.argv[1])
 map_bytes = bytearray(path.read_bytes())
 terrain = Path(sys.argv[2]).read_bytes()
-assert map_bytes[:5] == b"OBCM\x0e", "expected OBCM v14"
+version = int(re.search(r"pub const VERSION: u8 = (\d+);", Path(sys.argv[3]).read_text())[1])
+assert map_bytes[:5] == b"OBCM" + bytes([version]), "expected current OBCM version"
 assert map_bytes[41:49] == bytes(8), "terrain region must be empty"
 assert terrain[:5] == b"OBCT\x03" and terrain[7] & 2, "expected surface terrain"
 unit = 1 << map_bytes[40]
