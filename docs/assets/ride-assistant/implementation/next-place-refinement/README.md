@@ -36,10 +36,13 @@ Passed:
 - `tools/obc suites check`, workspace and standalone formatting, and documentation link checks.
 - One successful head device measurement against the recorded baseline. No base image rebuild.
 
-The lifecycle test executes nine scenarios, including Back/reselect without a new route plan,
+The lifecycle test executes ten scenarios, including Back/reselect without a new route plan,
 missing retained source, cancellation, acceptance during exit, interrupted ranking, 24 orphan
 candidates after restart, preservation of an ordinary route, and accepted checkpoint recovery.
 The added recovery delta passed the whole App and host suites and their Clippy checks.
+The free-ride case supplies no active route or route reader. It renders only when the pass requests
+an unfrozen map frame, as the board does. It covers all eight candidate plans, stored preview
+reopening, and cleanup with a stationary fix.
 
 Independent review found stale-store cleanup and restart orphan problems. Both are fixed and their
 deltas were reviewed. Named-frame review and the board fallback delta passed with no open findings.
@@ -49,15 +52,50 @@ changed packages; the device run checks the changed scheduling path. CI remains 
 
 ## Device image
 
-The `debug-uart` image was built from `3fc026699` with the normal standalone board configuration.
-Its SHA-256 is `c21759c4e2129ec31aa1621b9a67d8488295e61674807823d6584c4f291ba8c9`.
+The final `debug-uart` image was built from `7315fa201` with the normal standalone board configuration.
+Its SHA-256 is `c2cbe630333d441a884e7ccb5541ad6cdd4dc86ce36e2cab835fdf59f5b84644`.
 The report-only resource image is separate and must not be flashed.
 
-[Resource guards](resources.log) pass: 309,832 B linked resident, 132,096 B `.uninit`, 9,776 B largest
+[Resource guards](resources.log) on the first head image pass: 309,832 B linked resident, 132,096 B `.uninit`, 9,776 B largest
 guarded poll frame, and 49,592 B residual main stack. Resident use is 512 B above the prior
-`6c81ddb` debug image. The recorded RAM and stack limits are unchanged.
+`6c81ddb` debug image. The recorded RAM and stack limits are unchanged. The diagnostic allocation table records App at
+52,800 B, a 488 B increase. The final release-ACK correction changes no stored fields. CI checks the
+final head resource limits.
+
+The first physical run found a stall after one candidate: the cancellation release no longer
+removed a retained route, so its catalog deletion no longer caused a redraw. The release ACK now
+marks Find preparation dirty when it is waiting in Releasing. Commit `7315fa201` fixes this edge;
+`3fdff39f2` adds the board-style free-ride test. A second flash is required for this physical fix.
+No second UI sweep or base resource build was run.
 
 The card keeps the Swiss map, Meiringen route, and fixed location from the
 [previous device setup](../next-place-device/README.md). The SD card is not formatted again.
 
-Device timing and owner acceptance are recorded below after the reload.
+## Physical result
+
+Verified flash completed. The board boots `7315fa2` and reads the unchanged Swiss map and Meiringen
+route. The stationary fix is 46.723126 N, 8.194551 E with heading 225 degrees. No route is active.
+
+| Check | Result |
+| --- | --- |
+| Water category press to ready result frame | 5.801 s, previously 9.628 s |
+| Measured candidates | 8, still ranked by route cost |
+| Candidate planner time, total | 2.894 s; work limits unchanged |
+| Result press to final preview frame | 0.955 s |
+| New route calculations on preview open | 0 |
+| New route calculations after Back and reselect | 0 |
+| Device stack high-water in this check | 34,296 / 49,592 B |
+
+This single stationary comparison is about 40% faster. It is not a worst-case routing guarantee.
+The remaining preview time includes catalog settlement and map drawing; it is not another route
+search. The image below is read from the actual device framebuffer.
+
+![Swiss water preview on the device](device-water-preview.png)
+
+Evidence: [timings](timings.json), [water batch](water-search.log),
+[first preview](water-open-preview.log), [Back and reselect](water-reopen-preview.log).
+
+Owner acceptance remains pending for progress continuity, the preview pin and rider, landmark
+pagination, and the gap caption. Long rides, active-route excursions, and the broader hardware
+matrix in issue #1748 remain separate acceptance work. The device is available for owner testing;
+the stationary GPS feed remains active.
