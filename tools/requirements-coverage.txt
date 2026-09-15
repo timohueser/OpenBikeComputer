@@ -1,0 +1,5 @@
+# Native coverage collectors and Rust syntax for test-only source exclusions.
+coverage==7.16.1
+pytest-cov==7.1.0
+tree-sitter==0.25.2
+tree-sitter-rust==0.24.2

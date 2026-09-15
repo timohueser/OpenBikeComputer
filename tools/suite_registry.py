@@ -66,6 +66,8 @@ TEST_POLICY_PATTERNS = (
     "testing/**",
     "tools/suite_registry.py",
     "tools/ci_aggregate.py",
+    "tools/coverage_report.py",
+    "tools/requirements-coverage.txt",
     "docs/testing.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
@@ -106,6 +108,7 @@ WORKFLOW_MARKERS = (
     "npm run build",
     "swift test",
     "xcodebuild build",
+    "xcodebuild test",
     "trunk build",
     "build-wasm-bridges.sh",
     "capture-website-screenshots.sh",
@@ -456,9 +459,10 @@ def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str]
         elif executable not in known_tools and shutil.which(executable) is None:
             errors.append(f"{suite_id}: command executable cannot resolve: {executable}")
         expect_executable = False
-    package_match = re.search(r"(?:^|\s)(?:-p|--package)\s+([^\s]+)", command)
-    if package_match and package_match.group(1) not in rust_packages:
-        errors.append(f"{suite_id}: command names unknown Cargo package {package_match.group(1)}")
+    for cargo_args in _cargo_invocations(command):
+        for index, word in enumerate(cargo_args[:-1]):
+            if word in {"-p", "--package"} and cargo_args[index + 1] not in rust_packages:
+                errors.append(f"{suite_id}: command names unknown Cargo package {cargo_args[index + 1]}")
 
 def _collect_rust_packages(discovered: Iterable[Discovered]) -> set[str]:
     return {item.name.split(":", 1)[0] for item in discovered if item.kind in {"rust-target", "rust-manifest"}}
@@ -688,7 +692,7 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
             flush()
             name, runs_on, needs, gated, gates_on = job_match.group(1), "", (), False, ""
             continue
-        if not name:
+        if not name or len(raw) - len(raw.lstrip()) != 4:
             continue
         stripped = raw.strip()
         runner = re.fullmatch(r"runs-on:\s*(.+)", stripped)
@@ -1024,6 +1028,11 @@ def select_suites(
             errors.append(
                 f"changed production path has no suite owner: {path}; add a registry trigger or build-graph owner"
             )
+
+    # The snapshot sweep has an explicit rendering-input budget. Broad policy and
+    # fixture changes must not add an otherwise unrelated full UI render run.
+    if snapshots := selections.get("ci.ui-snapshots"):
+        snapshots.reasons = [reason for reason in snapshots.reasons if reason.startswith("registry trigger ")]
 
     selected_jobs = {
         job for selection in selections.values() if selection.selected for job in selection.jobs

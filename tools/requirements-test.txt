@@ -1,2 +1,3 @@
 # unittest discovery with native XML results.
 unittest-xml-reporting==4.0.0
+-r requirements-coverage.txt

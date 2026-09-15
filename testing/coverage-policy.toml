@@ -1,7 +1,18 @@
 schema = 1
 
-# Baselines are intentionally absent. TS5 will measure and accept them; "pending"
-# is not a number and must never be used as one.
+# Native reports remain unchanged. Summaries exclude test-only Rust syntax items.
+# Baselines and their measurement provenance live in coverage-baseline.json.
+exclude = [
+  { path = "**/tests/**", evidence = "Test source; the containing production component is measured." },
+  { path = "**/tests.rs", evidence = "Test source; the containing production component is measured." },
+  { path = "**/*_tests.rs", evidence = "Test source; the containing production component is measured." },
+  { path = "**/*.test.*", evidence = "Vitest test source; the imported production source is measured." },
+  { path = "**/test_*.py", evidence = "Python test source; the imported production source is measured." },
+  { path = "host/obcm-testkit/src/**", evidence = "Fixture builders; production readers and writers are measured." },
+  { path = "host/obc-fixtures/src/**", evidence = "Captured fixture support; consuming production components are measured." },
+  { path = "host/obc-vectors/src/**", evidence = "Test vector support; codecs are measured in format-protocol-codecs." },
+  { path = "companion-ios/Packages/OBCKit/Sources/OBCMock/**", evidence = "Debug-only mock transport and developer UI. CI checks its marker is absent from the Release app; shipping domain, transport, formats and UI are measured." },
+]
 
 [[component]]
 id = "format-protocol-codecs"
@@ -18,7 +29,10 @@ enforcement = "ratchet"
 [[component]]
 id = "storage"
 include = ["firmware/obc-storage/src/**"]
-exclude = []
+exclude = [
+  { path = "firmware/obc-storage/src/flat/model.rs", evidence = "Independent reference model used by flat-store tests; the real FlatStore is measured." },
+  { path = "firmware/obc-storage/src/flat/sim.rs", evidence = "Fault-injection in-memory storage support, enabled only for host simulation/tests; actual storage code is measured." },
+]
 enforcement = "ratchet"
 
 [[component]]
@@ -29,8 +43,10 @@ enforcement = "ratchet"
 
 [[component]]
 id = "boot"
-include = ["firmware/obc-boot/src/**"]
-exclude = []
+include = ["firmware/obc-boot/src/**", "firmware/obc-dfu/src/engine.rs", "firmware/obc-dfu/src/state.rs", "firmware/obc-dfu/src/blobstage.rs"]
+exclude = [
+  { path = "firmware/obc-boot/src/**", evidence = "MMIO adapters and reset entry cannot execute on the host. The boot build and resource contracts cover compilation and image limits. obc-dfu engine, state and blobstage tests exercise the actual shared boot policy (deliberate overlap with dfu). Physical install, rollback and power-cut acceptance remains in #1391 and #1166; host coverage does not prove it." },
+]
 enforcement = "ratchet"
 
 [[component]]
