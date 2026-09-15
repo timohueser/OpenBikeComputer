@@ -241,9 +241,8 @@ final class UploadSheetModelTests: XCTestCase {
         let model = UploadSheetModel(
             transport: transport, blob: blob, deviceName: "Trailhead",
         )
-        model.start()
-        try? await Task.sleep(for: .milliseconds(20))  // let the outcome watcher suspend
         transport.outcomePromise.fulfill(.failed(error))
+        model.start()
         try await waitFor("failed") { model.phase == .failed }
         return model
     }
