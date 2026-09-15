@@ -100,8 +100,8 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 
 # Menu navigation: Home's press (and back-hold) opens the compass Menu — the single door into the
 # app — so the Route menu is now `p p` from boot (open Menu, then press the Routes station, which the
-# menu starts on). The compass menu is Routes / Rides / POIs / Map / Settings, so Settings is one Up
-# step (`u`, wrapping) from the Routes start, Rides is one down (`d`), POIs two down (`d d`). `w`
+# menu starts on). The compass menu is Routes / Rides / Map / Peaks / Settings, so Settings is one Up
+# step (`u`, wrapping) from the Routes start, Rides is one down (`d`), Map two down (`d d`). `w`
 # settles the needle sweep after a step — and the back-hold charge indicator (a half-disc at the
 # right screen edge) decays over a few frames, so scripts that snapshot within ~3 tokens of a `B`
 # end in `w` too, or the residue bakes into the PNG.
@@ -561,8 +561,8 @@ U5CLIMBOFF="B u p p d d p b b b"
 # + `--`, at the taller tile height the chart-less grid gives.
 "$SIM" "$MAP" --boot --gpx "$GPX" --at 30 --stat-fields "$U5FIELDS" \
     --script "$U5CLIMBOFF B d d w p p p b f f" --expect-screen Statistics --png "$OUT/stats-next-category-empty.png"
-# Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/POIs/Map/Settings,
-# so the Map station is three steps down from the Routes start (`d d d w`). A live `--gpx` fix pins
+# Route-less ride tracking (Menu's Map station). The Menu compass is Routes/Rides/Map/Peaks/Settings,
+# so the Map station is two steps down from the Routes start (`d d w`). A live `--gpx` fix pins
 # the follow camera + marker so the frames reproduce (no route → no magenta line, no off-route chip).
 # (a) The route-less BROWSE map: Menu → Map (not tracking) → the follow map with clock + scale bar,
 # and — new in T6 (#684) — the one-shot `Press to start a ride` hint chip (a two-line pill, since the

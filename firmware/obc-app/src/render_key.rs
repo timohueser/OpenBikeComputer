@@ -271,7 +271,13 @@ impl App {
         self.ui.stack.iter().find_map(|screen| match screen {
             Screen::QuickDrawer(d) => {
                 let (page, selected, staged) = d.key();
-                Some(DrawerKey { page, selected, staged, committed: self.settings().brightness, enabled: 0 })
+                Some(DrawerKey {
+                    page,
+                    selected,
+                    staged,
+                    committed: self.settings().brightness,
+                    enabled: u8::from(self.settings().ble_enabled),
+                })
             }
             Screen::ContextDrawer(d) => {
                 // The contextual sheet's five facts: its page, the cursor, the value the nested
