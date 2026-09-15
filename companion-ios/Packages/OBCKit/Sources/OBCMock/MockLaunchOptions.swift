@@ -55,10 +55,6 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// boundary (TR8) — the flat-store/menu-cap XCUITest / demo hook.
     public var deviceRoutesFull: Bool
 
-    /// Model a device that predates auto-expiry (epic #638): `setClock` /
-    /// `setRouteRetention` answer `unsupported` and route catalog entries carry no
-    /// expiry tail. `false` = the current firmware (expiry supported). Drives
-    /// S7's capability-gated (hidden) state under automation.
     public var oldFirmware: Bool
 
     public init(
@@ -186,9 +182,9 @@ public struct MockLaunchOptions: Equatable, Sendable {
         if let fixtures { control.loadFixtures(fixtures) }
         if let connection { control.connection = connection }
         control.routesNearlyFull = deviceRoutesFull
-        // The flag forces old-firmware even over a scenario that supports expiry;
+        // The flag forces old-firmware even over a scenario that supports clock sync;
         // it never re-enables it (a `.oldFirmware` scenario stays old).
-        if oldFirmware { control.supportsExpiry = false }
+        if oldFirmware { control.supportsClockSync = false }
 
         return control
     }

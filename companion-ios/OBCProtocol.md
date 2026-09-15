@@ -65,8 +65,8 @@ A timeout or failed receipt leaves the local archive intact and device confirmat
 existing sync banner. Resume or reconnect revalidates and retries without downloading saved rides.
 Unsupported and refused receipts remain visible; a changed source is terminal for that receipt.
 Only the matching ARCHIVE_RIDE response confirms proof. STATUS and local save counts cannot do so.
-Timestamp zero is valid and does not start a countdown. Live device retention consumes this proof
-separately. See the [archive contract](../specs/Ride_Archive_Contract.md).
+Timestamp zero is valid. The device uses archive proof for the synced indicator.
+Rides remain on the device until the user deletes them. See the [archive contract](../specs/Ride_Archive_Contract.md).
 
 ## Delta 1 — device name lives in Config
 

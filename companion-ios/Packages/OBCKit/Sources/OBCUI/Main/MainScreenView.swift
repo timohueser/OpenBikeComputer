@@ -455,7 +455,6 @@ public struct MainScreenView: View {
                             RouteCard(
                                 route: route,
                                 onDevice: model.onDeviceState(route.id),
-                                expiryBadge: model.expiryBadge(for: route.id)
                             )
                                 .overlay(alignment: .topTrailing) {
                                     selectionCheck(on: route.id)
@@ -472,7 +471,6 @@ public struct MainScreenView: View {
                             RouteCard(
                                 route: route,
                                 onDevice: model.onDeviceState(route.id),
-                                expiryBadge: model.expiryBadge(for: route.id)
                             )
                         }
                         .buttonStyle(.plain)

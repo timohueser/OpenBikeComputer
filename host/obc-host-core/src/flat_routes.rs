@@ -16,7 +16,7 @@ pub struct FlatRouteStore {
     revisions: Vec<Revision>,
     active: Option<ObjectSource>,
     nav_id: Option<ObjectId>,
-    metadata: Vec<obc_app::RouteRetentionMeta>,
+    unaccepted: u64,
 }
 
 impl FlatRouteStore {
@@ -33,12 +33,12 @@ impl FlatRouteStore {
             revisions: Vec::new(),
             active: None,
             nav_id: None,
-            metadata: Vec::new(),
+            unaccepted: 0,
         };
         for meta in repo.owner.entries()? {
             if meta.kind == ObjectKind::Route {
                 if repo.ids.len() == obc_app::MAX_ROUTES {
-                    return Err(StoreError::Invalid.into());
+                    break;
                 }
                 let source = repo.owner.open(meta.id, meta.revision)?;
                 let (summary, candidate) =
@@ -84,23 +84,61 @@ impl FlatRouteStore {
     }
 
     fn publish(&mut self, meta: EntryMeta, summary: RouteSummary, candidate: bool) {
-        if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
+        let i = if let Some(i) = self.ids.iter().position(|&id| id == meta.id.0) {
             self.revisions[i] = meta.revision;
             self.catalog[i] = summary;
-            self.metadata[i] = obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() };
+            i
         } else {
+            let i = self.ids.len();
             self.ids.push(meta.id.0);
             self.revisions.push(meta.revision);
             self.catalog.push(summary);
-            self.metadata.push(obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() });
+            i
+        };
+        if i < 64 {
+            self.unaccepted &= !(1 << i);
+            if candidate && !meta.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
+                self.unaccepted |= 1 << i;
+            }
         }
     }
 }
 
 impl RouteRepository for FlatRouteStore {
+    fn set_route_clock(&mut self, utc: Option<u32>) {
+        if let Ok(owner) = self.owner.0.lock() {
+            if let Ok(store) = owner.ready() {
+                store.set_route_added_at(utc);
+            }
+        }
+    }
+    fn cleanup_route(
+        &mut self,
+        before_utc: u32,
+        identity: obc_app::device_core::StoreIdentity,
+        active: Option<CatalogObjectId>,
+    ) -> Result<Option<CatalogObjectId>, CatalogError> {
+        let mut owner = self.owner.0.lock().map_err(|_| CatalogError::Unreadable)?;
+        let store = owner.ready().map_err(|_| CatalogError::RemountRequired)?;
+        if scope(store).store != identity {
+            return Err(CatalogError::Stale);
+        }
+        let Some((id, batch)) = obc_storage::flat::route_cleanup::next(store, before_utc, active.map(ObjectId))
+            .map_err(|_| CatalogError::Unreadable)?
+        else {
+            return Ok(None);
+        };
+        owner.commit(&batch).map_err(|_| CatalogError::RemoveFailed)?;
+        Ok(Some(id.0))
+    }
+
     fn catalog(&self) -> &[RouteSummary] {
         &self.catalog
     }
+    fn unaccepted_routes(&self) -> u64 {
+        self.unaccepted
+    }
+
     fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
     }
@@ -113,65 +151,48 @@ impl RouteRepository for FlatRouteStore {
 
     fn refresh_metadata(
         &mut self,
-    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::retention::RetentionError> {
+    ) -> Result<Option<obc_app::device_core::StoreRevision>, obc_app::metadata::MetadataError> {
         use obc_storage::flat::{metadata, Store};
-        let owner = self.owner.0.lock().map_err(|_| obc_app::retention::RetentionError::WriteFailed)?;
-        let store = owner.ready().map_err(|_| obc_app::retention::RetentionError::RemountRequired)?;
+        let owner = self.owner.0.lock().map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| obc_app::metadata::MetadataError::RemountRequired)?;
         metadata::reconcile(store).map_err(metadata_error)?;
         let start = scope(store);
-        let mut rows = Vec::new();
-        metadata::read_routes(store, |row| rows.push(row)).map_err(metadata_error)?;
         let mut catalog = Vec::new();
         let mut ids = Vec::new();
         let mut revisions = Vec::new();
-        let mut metas = Vec::new();
-        for entry in store
-            .entries()
-            .filter(|entry| entry.kind == ObjectKind::Route && entry.flags == obc_storage::flat::EntryFlags::NONE)
-        {
+        let mut unaccepted = 0u64;
+        for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
             if ids.len() == obc_app::MAX_ROUTES {
-                return Err(obc_app::retention::RetentionError::WriteFailed);
+                break;
             }
             let (summary, candidate) = store
                 .with_source(entry.id, Some(entry.revision), |source| RouteSummary::read_with_candidate(source))
-                .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?
-                .map_err(|_| obc_app::retention::RetentionError::WriteFailed)?;
+                .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?
+                .map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+            if candidate && !entry.flags.has(obc_storage::flat::EntryFlags::ASSISTANT_ACCEPTED) {
+                unaccepted |= 1 << ids.len();
+            }
             catalog.push(summary);
             ids.push(entry.id.0);
             revisions.push(entry.revision);
-            metas.push(
-                rows.iter()
-                    .find(|row| row.id == entry.id)
-                    .map(|row| obc_app::RouteRetentionMeta {
-                        assistant_candidate: candidate,
-                        assistant_accepted: row.assistant_accepted,
-                        ..obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(row.retention), row.timestamp)
-                    })
-                    .unwrap_or(obc_app::RouteRetentionMeta { assistant_candidate: candidate, ..Default::default() }),
-            );
         }
         if !store.entries_ok() || scope(store) != start {
-            return Err(obc_app::retention::RetentionError::Stale);
+            return Err(obc_app::metadata::MetadataError::Stale);
         }
         self.catalog = catalog;
         self.ids = ids;
         self.revisions = revisions;
-        self.metadata = metas;
+        self.unaccepted = unaccepted;
         Ok(Some(start))
     }
-
-    fn retention_metas(&self) -> Vec<obc_app::RouteRetentionMeta> {
-        self.metadata.clone()
-    }
-
     fn write_checkpoint(
         &mut self,
         scope: obc_app::device_core::StoreRevision,
         change: obc_app::navigator::CheckpointChange,
-    ) -> Result<(), obc_app::retention::RetentionError> {
-        use obc_app::retention::RetentionError;
-        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
-        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
+    ) -> Result<(), obc_app::metadata::MetadataError> {
+        use obc_app::metadata::MetadataError;
+        let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;
         obc_storage::flat::metadata::write_checkpoint(
             store,
             obc_storage::flat::StoreId(scope.store.bytes()),
@@ -180,50 +201,6 @@ impl RouteRepository for FlatRouteStore {
             change.next,
         )
         .map_err(metadata_error)
-    }
-
-    fn write_metadata(
-        &mut self,
-        effect: obc_app::retention::RetentionEffect,
-    ) -> Result<(), obc_app::retention::RetentionError> {
-        use obc_app::retention::{RetentionEffect, RetentionError};
-        let expected = effect.scope().ok_or(RetentionError::Stale)?;
-        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
-        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
-        let identity = obc_storage::flat::StoreId(expected.store.bytes());
-        match effect {
-            RetentionEffect::WriteRouteMetadata { id, meta, .. } => obc_storage::flat::metadata::write_route(
-                store,
-                identity,
-                expected.revision.raw(),
-                ObjectId(id),
-                meta.retention as u8,
-                meta.last_used_utc,
-            ),
-            _ => return Err(RetentionError::Unsupported),
-        }
-        .map_err(metadata_error)
-    }
-
-    fn expire_route(
-        &mut self,
-        id: CatalogObjectId,
-        expected: obc_app::device_core::StoreRevision,
-    ) -> Result<bool, CatalogError> {
-        let owner = self.owner.0.lock().map_err(|_| CatalogError::RemoveFailed)?;
-        let store = owner.ready().map_err(|_| CatalogError::RemountRequired)?;
-        obc_storage::flat::metadata::remove_route(
-            store,
-            obc_storage::flat::StoreId(expected.store.bytes()),
-            expected.revision.raw(),
-            ObjectId(id),
-        )
-        .map(|()| true)
-        .map_err(|error| match metadata_error(error) {
-            obc_app::retention::RetentionError::Stale => CatalogError::Stale,
-            obc_app::retention::RetentionError::RemountRequired => CatalogError::RemountRequired,
-            _ => CatalogError::RemoveFailed,
-        })
     }
 
     fn delete_by_id(&mut self, id: CatalogObjectId) -> Result<bool, CatalogError> {
@@ -241,7 +218,10 @@ impl RouteRepository for FlatRouteStore {
         self.revisions.remove(i);
         self.ids.remove(i);
         self.catalog.remove(i);
-        self.metadata.remove(i);
+        if i < 64 {
+            self.unaccepted =
+                (self.unaccepted & ((1u64 << i) - 1)) | if i < 63 { (self.unaccepted >> (i + 1)) << i } else { 0 };
+        }
         if self.active.as_ref().is_some_and(|source| source.id().0 == id) {
             self.active = None;
         }
@@ -281,7 +261,7 @@ impl RouteRepository for FlatRouteStore {
             store: self.store_scope().map(|scope| scope.store),
         })
     }
-    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::retention::PayloadFingerprint> {
+    fn fingerprint(&self, id: CatalogObjectId) -> Option<obc_formats::assistant::PayloadFingerprint> {
         self.owner
             .entries()
             .ok()?
@@ -300,10 +280,10 @@ impl RouteRepository for FlatRouteStore {
     }
     fn read_checkpoint(
         &self,
-    ) -> Result<Option<obc_formats::retention::NavigatorCheckpoint>, obc_app::retention::RetentionError> {
-        use obc_app::retention::RetentionError;
-        let owner = self.owner.0.lock().map_err(|_| RetentionError::WriteFailed)?;
-        let store = owner.ready().map_err(|_| RetentionError::RemountRequired)?;
+    ) -> Result<Option<obc_formats::assistant::NavigatorCheckpoint>, obc_app::metadata::MetadataError> {
+        use obc_app::metadata::MetadataError;
+        let owner = self.owner.0.lock().map_err(|_| MetadataError::WriteFailed)?;
+        let store = owner.ready().map_err(|_| MetadataError::RemountRequired)?;
         obc_storage::flat::metadata::read_checkpoint(store).map_err(metadata_error)
     }
 
@@ -372,8 +352,8 @@ pub(crate) fn scope<D: obc_storage::flat::BlockDevice>(
     }
 }
 
-pub(crate) fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::retention::RetentionError {
-    use obc_app::retention::RetentionError as E;
+pub(crate) fn metadata_error(error: obc_storage::flat::metadata::Error) -> obc_app::metadata::MetadataError {
+    use obc_app::metadata::MetadataError as E;
     use obc_storage::flat::metadata::Error;
     match error {
         Error::WrongStore | Error::Stale => E::Stale,

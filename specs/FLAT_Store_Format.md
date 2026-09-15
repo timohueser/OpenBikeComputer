@@ -119,7 +119,7 @@ same numbers and defines no others.
 | 6 | map set manifest | ~~names shards by `ObjectId`; a set activates when its manifest commits~~ — **retired with `OBCA_Spec.md` §5** (#1420). No producer writes this kind after FS7.5b; the value is not reissued |
 | 7 | update package | OBCU image |
 | 8 | firmware rollback reserve | extents owned by the store, payload written by the bootloader (§5.3) |
-| 9 | metadata | device-owned card retention payload; [contract](Retention_Metadata.md) |
+| 9 | metadata | device-owned ride archive proofs; [contract](Ride_Archive_Metadata.md) |
 
 ## 4. Superblock
 
@@ -266,7 +266,7 @@ Exactly 128 bytes. One entry names one revision of one object.
 | 16 | 8 | `Revision`, nonzero |
 | 24 | 8 | payload length in bytes |
 | 32 | 4 | payload CRC-32 over the whole payload |
-| 36 | 4 | zero |
+| 36 | 4 | route added time, UTC Unix seconds; `0` = unknown |
 | 40 | 32 | 8 × extent range: `u16 first extent`, `u16 extent count` |
 | 72 | 48 | display name, UTF-8, unused bytes zero |
 | 120 | 8 | zero |
@@ -290,9 +290,14 @@ Flags:
 | Bit | Name | Meaning |
 | --: | :-- | :-- |
 | 0 | `RECORDING` | the active ride. Payload length and CRC are the values of the last commit, not of the current recording; the ride journal (§7) is authoritative for what is beyond them. At most one entry in the catalog carries it. |
+| 1 | `RETAINED` | a non-head revision kept by the store. |
 | 2 | `RESERVED` | the entry owns extents and the store does not write the payload. Only kind 8 uses it; the bootloader writes those bytes. Payload length is zero and `read` on it is refused. |
+| 3 | `ASSISTANT_ACCEPTED` | the exact immutable Route payload was accepted by Navigator. It is valid only for Route entries without `RECORDING` or `RESERVED`. |
 
-Bits `3..15` are zero.
+Bits `4..15` are zero. The acceptance flag is set by an `Amend` with unchanged ObjectId,
+revision, payload length, and CRC in the checkpoint transaction described in
+[Ride archive metadata](Ride_Archive_Metadata.md). A fresh payload cannot carry this flag.
+Catalog copying preserves it. Clearing the checkpoint does not clear acceptance.
 
 **Display name** is what a menu shows. It is UTF-8, at most 48 bytes, and the store does not
 normalise, trim or case-fold it. An empty name (length `0`) is legal — a ride has none until it is
@@ -893,3 +898,12 @@ Each of these was in the format this one replaces, and each is absent for one re
   the link reconciles against it ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.4).
 - **No partition table and no filesystem.** The card is not user-accessible and no host reads it.
 - **No migration.** An old card is re-initialized.
+
+### Route upload age
+
+Catalog entry bytes `36..40` store the route added time as a little-endian `u32`.
+A fresh route publication records the trusted device UTC time. An unknown clock records zero.
+An amendment preserves the date. A fresh replacement starts a new age. Non-route objects use zero.
+The field is device-local and is not part of the protocol LIST metadata or route content CRC.
+Explicit cleanup removes routes older than a confirmed cutoff; it excludes unknown dates and
+the active route. The catalog supplies the age for every route without a separate route index.

@@ -26,7 +26,7 @@ ride-v3 object, and the OBCT terrain raster
 
 A drift on any side fails that side's tests — the files are the contract.
 
-> **FS7.5-c3b removed three files** (OBCM v15, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
+> **FS7.5-c3b removed three files** (OBCM v14, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
 > `transfer-set-shard.bin`, `transfer-set-terrain.bin` and `transfer-set-manifest.bin` pinned the
 > `mapShard` / `terrainShard` / `mapSet` object types of a volume-set upload. A map is one object
 > now (`OBCA_Spec.md` §5 is superseded), so they described a transfer no producer will make. They
@@ -60,8 +60,7 @@ A drift on any side fails that side's tests — the files are the contract.
 | `status-command-result-ack.bin` | `status` msg 3 §4.3 | the answer to an `ackRides`: `ok`, `detail` = 3 newly-flagged rides |
 | `command-ack-rides.bin` | `ackRides` §4.4 cmd 2 | `count` 3 · ride ids 3, 5, 9 |
 | `command-set-clock.bin` | `setClock` §4.4 cmd 5 | `utc` 1783598400 (2026-07-09T12:00:00Z) · `offset_min` 120 |
-| `command-set-route-retention.bin` | `setRouteRetention` §4.4 cmd 6 | route id 7 · retention `3` (2 weeks) |
-| `route-list.bin` | `routeList` object §7.4 | three catalog entries — the two stored route fixtures (ids 7 + 8, fields from their OBCR headers, each with its whole-object `crc32`) plus a synthetic id 9 with no file behind it; **6-byte v2 header** (`total` = `count` = 3) + **84-byte entries** (the 76-byte v2 core + the auto-expiry tail), covering all three retention states: a live countdown, a clock not yet started, and `Never` |
+| `route-list.bin` | `routeList` object §7.4 | Three routes (ids 7, 8, and 9), with content CRCs; a 6-byte header and 76-byte entries. |
 | `update-container-v1.bin` | OBCU container ([`OBCU_Spec.md`](../OBCU_Spec.md) §1), **unsigned/v1** | a full `UPDATE.BIN` / `fwImage` payload (§7.6, id 0): 64-byte header (`fw_version` `1.2.0+abc1234`, `image_len` 128) + a 128-byte raw image. Decoded by `obc-dfu` (`cargo test -p obc-dfu --test vectors`) and the iOS `OBCUHeader`. Kept even though a v2 device refuses to *install* it: it is still the shape of a fielded container and of the device-written `ROLLBACK.BIN`, and pairing it with the v2 file below is what pins the offset-compatibility guarantee across implementations |
 | `update-container-v2.bin` | OBCU container (§1), **Ed25519-signed/v2** (#997) | the *same* header table and the *same* 128-byte image as v1 — `header_version` still `1`, deliberately (§1.2) — with `sig_scheme`/`sig_len` in v1's reserved bytes `48..52` and a 64-byte signature trailer after the image. Signed with the committed **test** key (`firmware/obc-dfu/keys/test/`); signing is deterministic, so this is a stable file. A decoder must read every v1 field from it byte-identically |
 | `trip-v2.bin` | trip object v2 (spec §7.7) | "Alpen Traverse", 3 stages referencing route ids 7 + 8 **plus one deliberately dangling id (`0x1_0000_0063`)** — pins full-width ObjectId read-tolerance; 56-byte header + 8 bytes/stage |
@@ -94,7 +93,7 @@ other:
 
 `version-read.bin`'s `obcm_version` comes
 from `obc_formats::obcm::VERSION`. That is deliberate — the fixture's job is to be
-the bytes a current device serves, and a device that reads OBCM v15 saying "13"
+the bytes a current device serves, and a device that reads OBCM v14 saying "13"
 would be a lie three implementations agreed on. (That example is the v13→v14 bump, which FS7.5b
 made: the spec moved first, the constant followed, and the note at the top of this file is what
 stopped the gap from being silent while the two were apart.) So an OBCM format bump

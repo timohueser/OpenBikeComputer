@@ -401,26 +401,7 @@ pub const CMD_INSTALL_FW: u8 = 3;
 /// posture. The device answers `commandResult(ok)` first, then clears the bond + drops the link and
 /// returns to open-pairing advertising.
 pub const CMD_FORGET_BOND: u8 = 4;
-/// `command` byte: `setClock` (§4.4, cmd 5) — `utc u32 LE · offset_min i16 LE`; see [`SetClock`].
-/// Auto-expiry epic #638 S2 (#642): the phone stamps the device's UTC clock + local offset on every
-/// connect, the second trusted clock source after GPS. The epic's draft table numbered it `3`; that
-/// predates `installFw`/`forgetBond` taking `3`/`4`, so it lands at `5` (the next-free command, §4.4).
 pub const CMD_SET_CLOCK: u8 = 5;
-/// `command` byte: `setRouteRetention` (§4.4, cmd 6) — `object_id u16 LE · retention u8`; see
-/// [`SetRouteRetention`]. Auto-expiry epic #638 S4 (#644): the phone sets a stored route's retention
-/// level without re-uploading it — right after an upload's `transferResult` commits (the result
-/// carries the assigned id) and on any user retention edit. The epic's draft table numbered it `4`;
-/// that predates `forgetBond`/`setClock` taking `4`/`5`, so it lands at `6` (the next-free command).
-pub const CMD_SET_ROUTE_RETENTION: u8 = 6;
-
-/// The largest valid `setRouteRetention` retention byte: `5` (2 months). A write above it is an
-/// out-of-range level (§4.4), rejected `error` — decoded here, mirrored by the iOS codec, and pinned
-/// by the `command-set-route-retention.bin` vector.
-pub const SET_ROUTE_RETENTION_MAX: u8 = 5;
-
-/// The earliest UTC a `setClock` will accept: `2020-01-01T00:00:00Z` (unix `1577836800`). An earlier
-/// stamp is an obviously-bogus phone clock (§4.4) and is rejected `error`, so it can never seed a
-/// stale set-point that the auto-expiry sweep (#638) would then treat as trusted.
 pub const SET_CLOCK_MIN_UTC: u32 = 1_577_836_800;
 /// The magnitude bound on a `setClock` UTC offset: ±14 h (±840 min), the real-world offset span
 /// (−12:00 Baker Island … +14:00 Kiribati). A write outside it is rejected `error` (§4.4).
@@ -523,20 +504,6 @@ impl<'a> AckRides<'a> {
     }
 }
 
-/// The `setClock` command (§4.4, cmd `5`): `cmd u8 = 5 · utc u32 LE · offset_min i16 LE` — the
-/// phone stamps the device's wall clock on every connect (auto-expiry epic #638 S2, #642).
-///
-/// `utc` is the phone's current time in unix seconds; `offset_min` is its local UTC offset in
-/// minutes with **DST already applied** (the phone is the timezone oracle — the device carries no tz
-/// tables). The device sets its UTC wall-clock set-point, persists the offset, and becomes *trusted*
-/// for the boot — the safety gate the retention sweep reads. The app sends it immediately after
-/// encryption and **before** `ackRides`, so ride `synced_at` stamping (S3) can assume a trusted clock.
-///
-/// [`decode`](Self::decode) checks the fixed 7-byte structure **and** the two plausibility gates a
-/// bogus phone clock would fail — `utc` no earlier than 2020-01-01 ([`SET_CLOCK_MIN_UTC`]) and
-/// `|offset|` within ±14 h ([`SET_CLOCK_MAX_OFFSET_MIN`]) — so a caller answers `error` (§4.3) on any
-/// `Err` and `ok` on success. Keeping both checks here (not only the length) means the firmware and
-/// the iOS mirror share one definition of "valid", pinned by the `command-set-clock.bin` vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetClock {
     /// The phone's current UTC time, unix seconds.
@@ -583,69 +550,6 @@ impl SetClock {
         Some(Self::ENCODED_LEN)
     }
 }
-
-/// The `setRouteRetention` command (§4.4, cmd `6`): `cmd u8 = 6 · object_id u16 LE · retention u8` —
-/// the phone sets a stored route's retention level (auto-expiry epic #638 S4, #644).
-///
-/// `object_id` names a stored route; `retention` is the retention enum byte (`0` never · `1` 1 day ·
-/// `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months), mirroring `obc_app::Retention`. The device
-/// writes the level into its route-retention sidecar **without touching `last_used`** — changing
-/// retention never resets the usage clock — and bumps the **route** store revision only on a real
-/// change (setting the same value twice is `ok` with no bump). An unknown `object_id` answers
-/// `notFound`; a `retention` above [`SET_ROUTE_RETENTION_MAX`] or a wrong-length write answers `error`.
-/// The command is **additive** on protocol v2 — no `protocolVersion` bump.
-///
-/// [`decode`](Self::decode) folds the §4.4 validation (exact 4-byte length, cmd byte, `retention` in
-/// range) so a caller answers `error` on any `Err`, and checks the id against the catalog separately
-/// (that needs store state). Keeping the range check here — not only in the handler — means the
-/// firmware and the iOS mirror share one definition of "valid", pinned by the
-/// `command-set-route-retention.bin` vector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SetRouteRetention {
-    /// The stored route object id whose retention to set.
-    pub object_id: u16,
-    /// The retention enum byte (`0..=`[`SET_ROUTE_RETENTION_MAX`]); mirrors `obc_app::Retention`.
-    pub retention: u8,
-}
-
-impl SetRouteRetention {
-    /// The wire length: `cmd u8 · object_id u16 · retention u8`.
-    pub const ENCODED_LEN: usize = 4;
-
-    /// Decode a full `command` write (starting at the command byte). Errors — each answered `error`
-    /// (§4.4) — are a wrong length or command byte ([`Truncated`](DescriptorError::Truncated) /
-    /// [`UnknownOp`](DescriptorError::UnknownOp)) or a `retention` above [`SET_ROUTE_RETENTION_MAX`].
-    /// The write must be **exactly** 4 bytes (like `setClock`, it carries no variable tail, so
-    /// trailing bytes are malformed). An out-of-range `retention` reuses `Truncated` — the caller maps
-    /// every `Err` to `error` regardless of variant, matching the `setClock` precedent.
-    pub fn decode(data: &[u8]) -> Result<Self, DescriptorError> {
-        let bytes: [u8; Self::ENCODED_LEN] = data.try_into().map_err(|_| DescriptorError::Truncated)?;
-        if bytes[0] != CMD_SET_ROUTE_RETENTION {
-            return Err(DescriptorError::UnknownOp(bytes[0]));
-        }
-        let object_id = u16::from_le_bytes([bytes[1], bytes[2]]);
-        let retention = bytes[3];
-        if retention > SET_ROUTE_RETENTION_MAX {
-            return Err(DescriptorError::Truncated);
-        }
-        Ok(Self { object_id, retention })
-    }
-
-    /// Encode into `out` (≥ [`ENCODED_LEN`](Self::ENCODED_LEN)); returns the written length or `None`
-    /// for a too-small buffer. The app side encodes (its Swift codec mirrors this); the firmware only
-    /// decodes — this exists for the shared-vector and round-trip tests. It does **not** range-check
-    /// `retention`, so a negative test can encode an out-of-range byte for [`decode`](Self::decode).
-    pub fn encode(object_id: u16, retention: u8, out: &mut [u8]) -> Option<usize> {
-        if out.len() < Self::ENCODED_LEN {
-            return None;
-        }
-        out[0] = CMD_SET_ROUTE_RETENTION;
-        out[1..3].copy_from_slice(&object_id.to_le_bytes());
-        out[3] = retention;
-        Some(Self::ENCODED_LEN)
-    }
-}
-
 /// One `status` characteristic notification: a `u8` discriminator + fixed body. The app **ignores
 /// unknown discriminators** (forward compatibility), never failing the link over one. In protocol
 /// v2 this is the **sole** device → app control channel, so every message — including a download's

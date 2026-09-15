@@ -93,25 +93,7 @@ public final class MockControl: @unchecked Sendable {
     /// What the next `installFw` request answers (S7). Default `accepted` — the
     /// happy path, after which the modelled device reboots onto the staged version.
     private var _firmwareInstallOutcome: FirmwareInstallResult = .accepted
-    /// Whether the modelled device understands auto-expiry (epic #638). `false` =
-    /// the **old-firmware** knob: `setClock`/`setRouteRetention` answer
-    /// `unsupported` and `deviceRoutes()` serves entries with **no** expiry tail
-    /// (the pre-tail 76-byte device), so S7 can UI-test the capability-gated state.
-    private var _supportsExpiry: Bool
-    /// The device-side retention sidecar (epic #638): device object id → the level
-    /// the phone last pushed. An override layered over each fixture route's
-    /// declared `deviceRetention`; absent → `.never`.
-    private var _routeRetention: [UInt64: Retention] = [:]
-    /// How many `setRouteRetention` commands the app has sent this session (test
-    /// hook) — every call, regardless of outcome. Lets a test assert a redundant
-    /// push was *not* made (idempotence) or that a skipped trip stage still got its
-    /// retention command (finding #876-4).
-    private var _routeRetentionWriteCount = 0
-    /// The device-side `last_used` sidecar: device object id → the anchor the
-    /// expiry countdown runs from. Stamped `now` at **upload commit** (the device's
-    /// rule) and seeded from a fixture's `lastUsedDaysAgo`; **never** moved by a
-    /// retention set (spec §4.4 — changing retention keeps the anchor).
-    private var _routeLastUsed: [UInt64: Date] = [:]
+    private var _supportsClockSync: Bool
     /// Every `setClock` sample the transport sent, in order — the connect-time
     /// clock-stamp tests assert the prologue landed one.
     private var _setClockSamples: [WallClockSample] = []
@@ -130,7 +112,7 @@ public final class MockControl: @unchecked Sendable {
         self._pairingFail = preset.pairingFail
         self._pendingFailures = preset.pendingFailure.map { [$0] } ?? []
         self._dropFraction = preset.dropAtFraction
-        self._supportsExpiry = preset.supportsExpiry
+        self._supportsClockSync = preset.supportsClockSync
         self._fixtures = fixtures
     }
 
@@ -224,11 +206,7 @@ public final class MockControl: @unchecked Sendable {
             _pairingFail = preset.pairingFail
             _pendingFailures = preset.pendingFailure.map { [$0] } ?? []
             _dropFraction = preset.dropAtFraction
-            _supportsExpiry = preset.supportsExpiry
-            // Reset the expiry sidecar overrides — a scenario reset is a fresh
-            // device (the fixtures re-declare their own retention defaults).
-            _routeRetention = [:]
-            _routeLastUsed = [:]
+            _supportsClockSync = preset.supportsClockSync
             _setClockSamples = []
             _fixtures = fixtures
         }
@@ -391,9 +369,7 @@ public final class MockControl: @unchecked Sendable {
     /// shape the protocol-v4 route catalog produces. The app consumes this only
     /// to reconcile the "on device" badge (#289) — never as list rows.
     func deviceRoutes() -> [RouteCatalogEntry] {
-        let (routes, retentionOverrides, lastUsedOverrides, supportsExpiry) = lock.withLocked {
-            (_fixtures.routes, _routeRetention, _routeLastUsed, _supportsExpiry)
-        }
+        let routes = lock.withLocked { _fixtures.routes }
         let now = Date()
         var catalog = routes.compactMap { entry -> RouteCatalogEntry? in
             guard let objectID = entry.deviceObjectID else { return nil }
@@ -402,24 +378,12 @@ public final class MockControl: @unchecked Sendable {
             // from the fixture geometry — the same OBCR encoding `seedLibrary`
             // fingerprints, so a device-held fixture boots proven up to date.
             let crc32 = entry.crc32 ?? RouteObjectCodec.payloadCRC(for: entry.record(addedAt: now))
-            // The auto-expiry tail (epic #638). Omitted entirely on the
-            // old-firmware knob — a pre-tail 76-byte device serves neither field
-            // (both read `nil`, exactly what a pre-expiry catalog entry produces).
-            let retention: Retention? = supportsExpiry
-                ? (retentionOverrides[objectID.raw] ?? entry.deviceRetention ?? .never)
-                : nil
-            let lastUsed = lastUsedOverrides[objectID.raw]
-                ?? entry.lastUsedDaysAgo.map { now.addingTimeInterval(-$0 * 86_400) }
-            let expiresAt: Date? = {
-                guard supportsExpiry, let days = retention?.days, let lastUsed else { return nil }
-                return lastUsed.addingTimeInterval(Double(days) * 86_400)
-            }()
             return RouteCatalogEntry(
                 id: objectID, name: entry.summary.name,
                 distanceMeters: entry.summary.distanceMeters,
                 elevationGainMeters: entry.summary.elevationGainMeters,
                 pointCount: entry.summary.pointCount,
-                crc32: crc32, expiresAt: expiresAt, retention: retention
+                crc32: crc32
             )
         }
         // Resident-menu boundary hook: pad to one below the 64-route on-device
@@ -444,47 +408,15 @@ public final class MockControl: @unchecked Sendable {
         lock.withLocked { _fixtures.routes.first { $0.deviceObjectID == id } }
     }
 
-    /// Record a `setClock` stamp (epic #638). `unsupported` on the old-firmware
-    /// knob — the connect prologue reads that as "this device predates expiry" and
-    /// hides the UI / sends no retention; otherwise the stamp lands and is `.stamped`.
     func recordSetClock(_ sample: WallClockSample) -> ClockSyncOutcome {
         lock.withLocked {
             // The command was sent regardless of the answer — record it, then let
             // the outcome flip the capability. An old-firmware device simply
             // answers `unknownCommand`; the app degrades gracefully.
             _setClockSamples.append(sample)
-            return _supportsExpiry ? .stamped : .unsupported
+            return _supportsClockSync ? .stamped : .unsupported
         }
     }
-
-    /// Apply a `setRouteRetention` write (epic #638), validating like the firmware:
-    /// `unsupported` on the old-firmware knob, `notFound` for an id the device
-    /// doesn't hold, else write the level into the sidecar **without touching
-    /// `last_used`** (spec §4.4 — a retention change never resets the usage clock).
-    func applyRouteRetention(_ id: DeviceObjectID, _ retention: Retention) -> RetentionWriteOutcome {
-        lock.withLocked {
-            _routeRetentionWriteCount += 1 // the command was sent — record it regardless of outcome
-            guard _supportsExpiry else { return .unsupported }
-            guard _fixtures.routes.contains(where: { $0.deviceObjectID == id }) else { return .notFound }
-            _routeRetention[id.raw] = retention
-            return .applied
-        }
-    }
-
-    /// How many `setRouteRetention` commands the app has sent this session (test
-    /// hook — finding #876-4). A skipped trip stage must still send one; a re-run at
-    /// the already-current level must send none.
-    public var routeRetentionWriteCount: Int {
-        lock.withLocked { _routeRetentionWriteCount }
-    }
-
-    /// Lock-held: the retention the (mock) device serves for `id` — the pushed
-    /// override, the fixture's declared default, or `.never`.
-    private func effectiveRetention(_ id: DeviceObjectID) -> Retention {
-        if let pushed = _routeRetention[id.raw] { return pushed }
-        return _fixtures.routes.first { $0.deviceObjectID == id }?.deviceRetention ?? .never
-    }
-
     /// Record a `forgetBond` request (#756, the mock's stand-in for the device
     /// dissolving its side of the bond). The mock models no device-side bond
     /// slot, so the count is the observable effect the forget tests assert.
@@ -514,9 +446,6 @@ public final class MockControl: @unchecked Sendable {
             for index in _fixtures.routes.indices where _fixtures.routes[index].deviceObjectID == id {
                 _fixtures.routes[index].deviceObjectID = nil
             }
-            // The device forgets the route's expiry sidecar too (epic #638).
-            _routeRetention[id.raw] = nil
-            _routeLastUsed[id.raw] = nil
         }
     }
 
@@ -539,13 +468,9 @@ public final class MockControl: @unchecked Sendable {
         set { lock.withLocked { _routesNearlyFull = newValue } }
     }
 
-    /// The **old-firmware** knob (epic #638): `false` models a device that predates
-    /// auto-expiry — `setClock`/`setRouteRetention` answer `unsupported` and
-    /// `deviceRoutes()` serves entries with no expiry tail. S7 UI-tests the
-    /// capability-gated (hidden) state against this. Dev-panel / launch hook.
-    public var supportsExpiry: Bool {
-        get { lock.withLocked { _supportsExpiry } }
-        set { lock.withLocked { _supportsExpiry = newValue } }
+    public var supportsClockSync: Bool {
+        get { lock.withLocked { _supportsClockSync } }
+        set { lock.withLocked { _supportsClockSync = newValue } }
     }
 
     /// The `setClock` samples the transport sent this session, in order (test
@@ -553,14 +478,6 @@ public final class MockControl: @unchecked Sendable {
     public var setClockSamples: [WallClockSample] {
         lock.withLocked { _setClockSamples }
     }
-
-    /// The retention level the (mock) device currently stores for `id` — the
-    /// override the phone pushed, or the fixture's declared default, or `.never`
-    /// (test hook: assert a push / upload landed the right level).
-    public func routeRetention(for id: DeviceObjectID) -> Retention {
-        lock.withLocked { effectiveRetention(id) }
-    }
-
     /// One trip the (mock) device stores — the device's own copy, keyed by the id
     /// it assigned. `stageIDs` are **device** route object ids in ride order.
     struct DeviceTrip: Sendable {
@@ -837,11 +754,6 @@ public final class MockControl: @unchecked Sendable {
                     crc32: committedCRC
                 ))
             }
-            // The device stamps `last_used = now` at upload commit (epic #638,
-            // spec §4.4) — so a `setRouteRetention` right after yields
-            // `expires_at = now + retention`. The retention itself arrives as the
-            // separate command the app sends next (it isn't set here).
-            _routeLastUsed[objectID.raw] = Date()
         }
     }
 
