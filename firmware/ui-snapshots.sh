@@ -49,7 +49,9 @@ GPX="${GPX:-$GRIMSEL_FIXTURES/tracks/grimsel-climb.gpx}"
 # Grimsel climb GPX above is far off it, so it can't drive the waypoint chip/ticks. Synthetic + its
 # provenance are pinned in the assets README; it stops ~300 m short of the "Pass Summit" waypoint.
 WPTGPX="$repo_root/fixtures/sources/vector/vector-loop-replay.gpx"
-ROUTES="$repo_root/specs/vectors"
+# Stage the two UI routes; the vector directory also contains deliberately invalid inputs.
+ROUTES="$(mktemp -d)"
+cp "$repo_root/specs/vectors/route-plain.obcr" "$repo_root/specs/vectors/route-waypoints.obcr" "$ROUTES/"
 OUT="${1:-ui-snapshots}"
 
 mkdir -p "$OUT"
@@ -80,7 +82,7 @@ PLAINROUTE="$(mktemp -d)"
 # device-planned route, whose points are all zero-elevation until EL7 fills them from terrain.)
 ETAROUTE="$(mktemp -d)"
 ETAFLAT="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ETAROUTE" "$ETAFLAT"' EXIT
 cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
@@ -448,7 +450,7 @@ ETAFIELDS="time-to-go,eta,dist-to-go,to-climb,speed,ride-time"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p d p p b" --gpx "$WPTGPX" --at 233 --expect-screen Statistics --png "$OUT/stats-wpt.png"
 # The EL7 sweep below plans a route on the device and rides it; its own dir.
 ELEVDIR="$(mktemp -d)"
-trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
+trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE" "$ETAFLAT"' EXIT
 
 # --- Terrain-filled device-planned route -------------------------------------------------------
 # The pinned Grimsel pack has a separate OBCT input. Stage it inside a temporary OBCM so the
@@ -540,7 +542,7 @@ ELEVPLAN="B d d w p d d p f d d d p f p p f"
 # `f` draws one throwaway frame so the corridor snapshot lands before the next token.
 UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
-UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES"' EXIT
+UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
 UPBASE="p p p p T C p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
