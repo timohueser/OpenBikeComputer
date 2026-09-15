@@ -257,7 +257,8 @@ durations. Skipped tests retain their skipped status. V8 collects coverage in th
 
 The same registered builder suite executes the unchanged whole `sha256.test.ts` file separately
 without V8 instrumentation. Its real 600 MB length-boundary assertion and 60-second timeout remain.
-`npm test` runs both native invocations once. CI runs `npm run test:components -- --coverage` and
+`npm test` keeps the complete uninstrumented suite in one invocation. CI runs
+`npm run test:components -- --coverage` and
 `npm run test:sha256` with separate native JUnit outputs; `web-sha256-ATTEMPT` contains all four SHA
 cases. Other instrumented production callers still contribute SHA coverage. There is no test-name
 filter, duplicate test execution, retry, or injected hash state.
