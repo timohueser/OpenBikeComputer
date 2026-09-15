@@ -57,8 +57,7 @@ fn render(app: &mut App, bytes: &[u8]) -> Buf {
 
 /// Enter the complete category browser through the ordinary Assistant and More places.
 fn open_poi_list(app: &mut App, steps: i32) {
-    assert!(app.apply_chord(obc_app::Chord::Quick));
-    app.apply_gesture(Gesture::Press);
+    assert!(app.apply_chord(obc_app::Chord::Assistant));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(steps));
     app.apply_gesture(Gesture::Press);

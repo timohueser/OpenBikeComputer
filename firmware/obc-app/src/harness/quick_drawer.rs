@@ -29,7 +29,7 @@ fn chord(app: &mut App, frames: &mut Frames, a: Button, b: Button, ms: u32) -> u
     }
     // Settle the sheet's own open so a following gesture is not eaten by the animation — read off
     // the drawer's constant, so retuning it cannot leave this helper acting mid-slide.
-    let settled = crate::screen::QUICK_OPEN_MS + 60;
+    let settled = crate::screen::QUICK_OPEN_MS + 140;
     frames.idle(app, ms + settled);
     ms + settled + 100
 }

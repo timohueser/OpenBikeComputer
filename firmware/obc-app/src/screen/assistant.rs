@@ -81,13 +81,12 @@ mod tests {
 
     fn open() -> App {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        assert!(app.apply_chord(Chord::Quick));
-        app.apply_gesture(Gesture::Press);
+        assert!(app.apply_chord(Chord::Assistant));
         assert!(matches!(app.top_screen(), Screen::Assistant(_)));
         app
     }
     #[test]
-    fn normal_drawer_reaches_real_questions_and_keeps_placeholders_inert() {
+    fn held_shortcut_reaches_real_questions_and_keeps_placeholders_inert() {
         for (selected, expected) in [(0, "FindPlace"), (1, "WhatsNext"), (5, "Landmarks")] {
             let mut app = open();
             app.apply_gesture(Gesture::Step(selected));
