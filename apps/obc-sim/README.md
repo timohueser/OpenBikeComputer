@@ -206,6 +206,11 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
 
 ## Scripted snapshots
 
+- `--script-after TOKENS` applies normal device input after GPX replay, before the final render.
+  It requires `--gpx` and `--png`. It continues the button clock and retains the final GPS position
+  and ride clock. `T` refreshes that position without replaying earlier motion. Use `--script-after
+  'p f d h f'` from the riding Map to pause, select Finish, hold to save, and complete pending writes
+  before the process exits. This saves the recorder's final partial batch in the same session.
 - `--script TOKENS` applies device input before a headless render. `d`/`u` step, `p` selects, `h`
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
   Up+Select chord that opens the universal quick drawer, `w` settles animation,
