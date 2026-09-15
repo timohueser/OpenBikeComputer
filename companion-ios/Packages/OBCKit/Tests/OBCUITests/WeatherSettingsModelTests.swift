@@ -489,7 +489,7 @@ struct WeatherSettingsModelTests {
         try await waitFor("pending", interval: .milliseconds(5)) { model.pending != nil }
 
         let tap = Task { await model.retryNow() }
-        try await waitFor("in flight", interval: .milliseconds(5)) { model.isRetrying }
+        try await waitFor("in flight", interval: .milliseconds(5)) { model.isRetrying && jobs.retryCount == 1 }
         // A rider pressing again while it spins must not start a second run.
         await model.retryNow()
         #expect(jobs.retryCount == 1)
