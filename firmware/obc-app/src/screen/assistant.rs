@@ -63,8 +63,8 @@ impl AssistantScreen {
             }
             cv.text(
                 rx.t(label),
-                Point::new(18, y + 5),
-                Font::Body,
+                Point::new(18, y + if label == Msg::AssistantFind { 9 } else { 5 }),
+                if label == Msg::AssistantFind { Font::Label } else { Font::Body },
                 TextAlign::Left,
                 if matches!(i, 0 | 1 | 2 | 5) { INK } else { SUBTEXT },
             );
@@ -118,7 +118,8 @@ mod tests {
         for language in Language::ALL {
             for message in QUESTIONS.into_iter().chain([Msg::AssistantArrival, Msg::AssistantResumeJourney]) {
                 let text = crate::i18n::t(message, language);
-                assert!(obc_render::text::text_width(text, Font::Body) <= 212, "{language:?}: {text}");
+                let font = if message == Msg::AssistantFind { Font::Label } else { Font::Body };
+                assert!(obc_render::text::text_width(text, font) <= 212, "{language:?}: {text}");
             }
             for message in [
                 Msg::AssistantPhotoVisit,
