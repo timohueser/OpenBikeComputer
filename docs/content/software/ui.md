@@ -470,14 +470,15 @@ Delete actions exist on specific detail or confirmation rows. A hold elsewhere d
 
 The delete footer is a guarded row. The action runs only after a complete hold on that row.
 
-## Where's the next...
+## Find a place
 
 Find combines places within 10 km by air with places along the next 20 km of the accepted route,
 within 300 m of its line. It takes the first eight eligible places from each source, alternates
 sources, and removes duplicate OSM identities. Known-closed places are excluded before these limits.
 
-The shared Visit planner measures at most 16 distinct candidates, one at a time. Each candidate is
-released before the next plan starts. Planning a suggestion does not activate a route or change the
+The shared Visit planner measures at most 16 distinct candidates, one at a time. It stores each
+measured route on the card and releases the planner before the next plan starts. The Finding
+indicator stays visible through the complete batch. Planning a suggestion does not activate a route or change the
 recording session. Up to four useful choices remain. An **On the way** choice adds at most 400 m to
 the complete visit. A nearer alternative remains when its measured costs provide a useful choice.
 Unknown ascent cannot eliminate a measured choice.
@@ -488,8 +489,10 @@ direct destination and has no return cost. Membership, order, map bounds, and co
 until the category is reopened. These bounded results do not establish a global nearest place.
 **More places** opens the full paged category browser. It plans only the place selected for review.
 
-Selecting a Find suggestion opens Visit review directly. More places retains the place detail page.
-Both paths use the shared Visit planner. Ordinary service places without an explicit OSM approach
+Selecting a Find suggestion opens Visit review directly and loads its stored route without another
+route calculation. Back and reselect reuse the same route while its inputs remain valid. Leaving
+the category removes unused routes. More places retains the place detail page and plans the
+selected place through the shared Visit planner. Ordinary service places without an explicit OSM approach
 use normal coordinate destination routing. The review binds the exact map revision and actual
 route endpoint. The preview draws the rider and destination pin above the route. When an explicit
 approach is more than 100 m from the place's map coordinate, a dotted line connects the route end
