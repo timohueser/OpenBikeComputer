@@ -442,14 +442,16 @@ segment. Without an active route, the same place request creates a direct destin
 
 The shared visit builder keeps one output and one reusable leg. It first builds an out-and-back.
 It can compare one forward connection, clipped to the next stored waypoint or the destination.
-If the forward route does not reduce the complete measured distance, it rebuilds the first route
-once. This uses at most six searches. The final bytes supply the review distance and ascent;
+If the forward route cannot join the retained geometry or does not reduce the complete measured
+distance, it rebuilds the first route once. Source and storage failures remain explicit. This uses at most six searches. The final bytes supply the review distance and ascent;
 missing elevation remains unknown. The full stored waypoint section keeps every remaining
 annotation, including its original route key and ordinal. The display window does not limit output.
 
 After acceptance, Navigator follows outbound, at-stop, and return intervals on those same bytes.
-Progress and proximity checks prevent stationary acceptance from causing arrival. Phase writes
-use the existing checkpoint operation. Arrival does not search, publish another route, or restart
+Observed movement, progress, and proximity checks prevent stationary acceptance from causing
+arrival. Departure and return thresholds fit the accepted leg lengths, including short legs.
+Phase writes use the existing checkpoint operation and store the route occurrence at the persisted
+progress position. Arrival does not search, publish another route, or restart
 Recorder. Dismiss only closes the informational arrival state. Rejoin clears that state and
 releases the original dependency through a durable checkpoint.
 
