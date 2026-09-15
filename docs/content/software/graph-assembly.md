@@ -8,7 +8,7 @@ copy: ai
 
 The assembler retains one navigation graph in one OBCM file.
 A bounded experiment did not establish the required speed improvement.
-The production reader, planner, format, and assembly algorithm are unchanged.
+The production reader, format, and assembly algorithm are unchanged.
 Further optimization remains open. The retained experiments evaluate specific
 candidates; they do not establish an optimal graph layout or navigation algorithm.
 
