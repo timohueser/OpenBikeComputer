@@ -148,9 +148,6 @@ final class WebsiteScreenshotTests: XCTestCase {
         capture(app, name: "route-imported")
 
         upload.tap()
-        let begin = app.buttons["upload.begin"]
-        XCTAssertTrue(begin.waitForExistence(timeout: 5), "the upload confirmation did not appear")
-        begin.tap()
 
         XCTAssertTrue(
             app.staticTexts["On the device"].waitForExistence(timeout: 20),

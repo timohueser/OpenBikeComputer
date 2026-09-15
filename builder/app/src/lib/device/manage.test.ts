@@ -27,12 +27,12 @@ import { decodeTripObject, type TripObject } from "../usb/objects";
 import { loopbackDevice } from "../usb/loopback";
 import { EntryFlags, ObjectKind } from "../usb/protocol";
 
-/** A minimal, valid OBCR: the 128-byte header + no points — enough for the header codec. */
+/** A minimal, valid OBCR: the 160-byte header + no points — enough for the header codec. */
 function obcrWithName(name: string): Uint8Array {
-    const out = new Uint8Array(128);
+    const out = new Uint8Array(160);
     const view = new DataView(out.buffer);
     view.setUint32(0, 0x4f424352, false); // "OBCR"
-    out[4] = 3; // version
+    out[4] = 4; // version
     const bytes = new TextEncoder().encode(name);
     out[6] = bytes.length;
     out.set(bytes, 64);
@@ -42,7 +42,7 @@ function obcrWithName(name: string): Uint8Array {
 describe("renameRouteBytes", () => {
     it("rewrites the name and only the name", () => {
         const original = obcrWithName("Old name");
-        original[100 + 12] = 0; // (offset 112 is the end; touch nothing)
+        original[100 + 12] = 0; // (offset 112 is outside the name field)
         const renamed = renameRouteBytes(original, "Grimsel – Furka");
         expect(decodeRouteHeader(renamed).name).toBe("Grimsel – Furka");
         // Everything outside the name field is untouched…

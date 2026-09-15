@@ -136,7 +136,7 @@ fn reopen_continues_exact_object_clock_totals_with_all_reader_slots_full() {
         bytes.as_chunks::<SAMPLE_LEN>().0.iter().map(|sample| obc_formats::track::decode_record(sample).t_ms).collect();
     assert_eq!(times, [10_000, 12_000, 13_000]);
     let rides = FlatRideStore::new(owner).unwrap();
-    assert!(rides.retention_inventory().unwrap().iter().any(|ride| ride.id == original.id.0 && !ride.synced));
+    assert!(rides.catalog().iter().any(|ride| ride.id == original.id.0 && !ride.summary.synced));
 }
 
 #[test]

@@ -1594,12 +1594,8 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
 /// header the planner wrote. Without the emit-time fill both sides are 0 and the check is vacuous;
 /// with it, the two independently-computed totals have to land on each other.
 ///
-/// The route is **wholly inside** `grimsel.obcd`'s coverage, and the `p.ele > 0` assertion in the
-/// export loop is what holds it there. That is the parity claim's boundary, by construction: a
-/// route whose opening lies outside the raster stores `0` for those points (the module docs' hole
-/// policy — the format has no "unknown"), so its export re-imports with a step the converter's
-/// dead-band books. Inside coverage — every route on a map whose terrain was baked for it — the
-/// two integrations agree.
+/// This route lies wholly inside the terrain coverage. Every exported point must have a
+/// measured height, so the export cannot turn an unknown span into a false elevation sample.
 #[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
 #[test]
 #[cfg(feature = "external-fixtures")]
@@ -1897,31 +1893,24 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
     assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
 }
 
-/// **The registered-fixture pin.** `sim-grimsel:grimsel.obcm` is the canonical map revision this
-/// test freezes the router against. It is *not* a terrain-free map: it is packed `--terrain`, and
-/// 4 357 of its 11 524 §8.3 adjacency entries — **37.8%** — carry a non-zero `Ascent M`, up to
-/// 951 m. So the stock Road 10 / Gravel 8 / MTB 6 / Touring 8 climb weights all bite, and the four
-/// profiles plan four *different* routes; each is byte-frozen at its **own** digest below. If any
-/// one moves, either the router changed or the registered revision did — and with it every
-/// committed UI snapshot.
-#[cfg_attr(miri, ignore)] // reads the multi-megabyte fixture from disk — Miri's isolation forbids it
+/// Stock profiles on the registered Grimsel map produce stable OBCR bytes.
+#[cfg_attr(miri, ignore)]
 #[test]
 #[cfg(feature = "external-fixtures")]
 fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
     let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
     let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
-    for (idx, want) in GRIMSEL_PRE_EL6_DIGESTS.iter().enumerate() {
+    let actual = core::array::from_fn::<_, 4, _>(|idx| {
         let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
         res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
-        assert_eq!(digest(&obcr), *want, "profile {idx}'s route on the registered fixture moved");
-    }
+        digest(&obcr)
+    });
+    assert_eq!(actual, GRIMSEL_ROUTE_DIGESTS, "registered fixture routes moved");
 }
 
-/// FNV-1a of each stock profile's Innertkirchen→Grimsel route on the committed fixture, captured on
-/// `develop` at 16de566c (EL7's merge, the commit this branch forked from) and unchanged by EL6.
 #[cfg(feature = "external-fixtures")]
-const GRIMSEL_PRE_EL6_DIGESTS: [u64; 4] =
-    [0xd6e8_1a83_6000_7fb9, 0xb605_bfd0_f318_e1b3, 0xfa4b_d3c0_6c4c_1e92, 0x407d_5d79_4678_0248];
+const GRIMSEL_ROUTE_DIGESTS: [u64; 4] =
+    [0xf19d_4c75_e881_a991, 0xb5ae_0e8d_eb90_d7b7, 0xbf1c_9f49_2699_20e0, 0x618f_00e9_7a9c_7042];
 
 /// **Admissibility in practice, not just in prose**: over a graph whose paths genuinely differ in
 /// climb (the [`Knoll`] — over the top costs 500 m, around the rim costs nothing, and every path

@@ -410,10 +410,10 @@ map and original-route identities, profile, progress occurrence, required anchor
 policy. The executor publishes one complete candidate, releases planner memory, and keeps
 the admitted source leases. Preview does not change the active route or Recorder.
 
-Accept checks the current origin and sources again. Navigator asks RetentionMachine to
-write the optional checkpoint and the candidate's acceptance row in the existing Metadata
-singleton. This uses the same serialized read-modify-write operation as route stamps and
-ride archive proofs. Only a verified durable acknowledgment activates the candidate. A
+Accept checks the current origin and sources again. Navigator's small Metadata handshake
+asks the existing serialized writer to update the optional checkpoint. The same transaction
+marks the exact route catalog entry as accepted. The Metadata image preserves all 128 ride
+archive proof rows. Only a verified durable acknowledgment activates the candidate. A
 known failure keeps the preview available for retry. An uncertain publication keeps a
 fence until recovery; cancellation does not assume that the publication failed. A complete
 read after remount of the same card can resolve the pending edit against either its old
@@ -423,15 +423,16 @@ candidate retirement. Reopened host sources must match the frozen map and route 
 including stored payload length and CRC. A different host owner does not make unchanged
 bytes stale, and a changed source cannot authorize the preview.
 
-A candidate remains marked in its immutable route bytes. Its exact accepted Metadata row
-makes it available as an ordinary route. Without that row, the route list labels it as an
-unaccepted preview and does not activate it. The row includes revision, length, and CRC,
-so a replacement cannot inherit acceptance. Clearing the checkpoint preserves this row.
+A candidate remains marked in its immutable route bytes. Its accepted catalog flag makes
+it available as an ordinary route. Without that flag, the route list labels it as an
+unaccepted preview and does not activate it. Acceptance binds the current revision, length,
+and CRC. A replacement payload cannot inherit the flag. Clearing the checkpoint preserves
+accepted route eligibility.
 
 At boot, a verified checkpoint only offers **Resume**. It does not restore ordinary
 navigation or start Recorder. Explicit Resume requires a matching phase occurrence,
 current map binding, and re-verified route bytes. An accepted visit also protects its
-original route from expiry, deletion, and replacement until that dependency is released
+original route from explicit cleanup, deletion, and replacement until that dependency is released
 by a durable phase update. New fixes received during a phase write remain available to
 the phase owner after acknowledgment.
 
@@ -442,14 +443,16 @@ segment. Without an active route, the same place request creates a direct destin
 
 The shared visit builder keeps one output and one reusable leg. It first builds an out-and-back.
 It can compare one forward connection, clipped to the next stored waypoint or the destination.
-If the forward route does not reduce the complete measured distance, it rebuilds the first route
-once. This uses at most six searches. The final bytes supply the review distance and ascent;
+If the forward route cannot join the retained geometry or does not reduce the complete measured
+distance, it rebuilds the first route once. Source and storage failures remain explicit. This uses at most six searches. The final bytes supply the review distance and ascent;
 missing elevation remains unknown. The full stored waypoint section keeps every remaining
 annotation, including its original route key and ordinal. The display window does not limit output.
 
 After acceptance, Navigator follows outbound, at-stop, and return intervals on those same bytes.
-Progress and proximity checks prevent stationary acceptance from causing arrival. Phase writes
-use the existing checkpoint operation. Arrival does not search, publish another route, or restart
+Observed movement, progress, and proximity checks prevent stationary acceptance from causing
+arrival. Departure and return thresholds fit the accepted leg lengths, including short legs.
+Phase writes use the existing checkpoint operation and store the route occurrence at the persisted
+progress position. Arrival does not search, publish another route, or restart
 Recorder. Dismiss only closes the informational arrival state. Rejoin clears that state and
 releases the original dependency through a durable checkpoint.
 

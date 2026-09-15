@@ -12,13 +12,7 @@ use heapless::String;
 
 use obc_formats::obcr::NAME_CAP;
 use obc_route::RideInfo;
-
-/// Maximum rides the host-facing inventory can hand to retention/catalog logic. The resident menu
-/// catalog is deliberately smaller ([`UI_RIDES_CAP`]).
 pub const MAX_RIDES: usize = 128;
-
-/// Maximum resident menu rows. The separate compact retention inventory can
-/// cover older rides without retaining their full summaries.
 pub const UI_RIDES_CAP: usize = 32;
 
 /// The app's resident ride catalog: the paired entries the Rides screen lists (newest first, capped at
@@ -54,8 +48,6 @@ pub struct RideSummary {
     pub climb_m: u16,
     /// Whether exact durable client archive proof exists. The delete footer warns when false.
     pub synced: bool,
-    /// First trusted UTC retention stamp for the archived ride. Zero protects an unstamped proof;
-    /// retention starts its clock through a checked metadata write before it can expire.
     pub synced_at_utc: u32,
 }
 

@@ -62,7 +62,7 @@ impl ObjectKind {
     }
 }
 
-/// §5.3's entry flags. Bits `3..15` are zero.
+/// §5.3's entry flags. Bits `4..15` are zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EntryFlags(u16);
 
@@ -77,7 +77,14 @@ impl EntryFlags {
     /// The entry owns extents and the store does not write the payload.
     pub const RESERVED: EntryFlags = EntryFlags(1 << 2);
 
-    const DEFINED: u16 = 0b111;
+    /// The exact immutable route payload has been accepted by Navigator.
+    pub const ASSISTANT_ACCEPTED: EntryFlags = EntryFlags(1 << 3);
+
+    const DEFINED: u16 = 0b1111;
+
+    pub fn is_route_head(self) -> bool {
+        self == Self::NONE || self == Self::ASSISTANT_ACCEPTED
+    }
 
     pub fn decode(value: u16) -> Result<Self> {
         if value & !Self::DEFINED != 0 {
@@ -172,6 +179,8 @@ impl DisplayName {
 /// The metadata half of a catalog entry, and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryMeta {
+    /// UTC seconds when the current route payload was added; zero means unknown.
+    pub added_at_utc: u32,
     pub id: ObjectId,
     pub revision: Revision,
     pub kind: ObjectKind,
@@ -332,12 +341,13 @@ mod tests {
     }
 
     #[test]
-    fn flag_bits_are_the_three_section_5_3_defines() {
+    fn flag_bits_match_section_5_3() {
         assert_eq!(EntryFlags::RECORDING.bits(), 1);
         assert_eq!(EntryFlags::RETAINED.bits(), 2);
         assert_eq!(EntryFlags::RESERVED.bits(), 4);
-        assert!(EntryFlags::decode(0b111).is_ok());
-        for bit in 3..16 {
+        assert_eq!(EntryFlags::ASSISTANT_ACCEPTED.bits(), 8);
+        assert!(EntryFlags::decode(0b1111).is_ok());
+        for bit in 4..16 {
             assert_eq!(EntryFlags::decode(1 << bit).unwrap_err().reason, Reason::UnknownEnum);
         }
     }

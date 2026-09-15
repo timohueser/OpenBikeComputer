@@ -20,10 +20,7 @@ use obc_app::device_core::{
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use obc_app::navigator::NavigatorOutcome;
 use obc_app::screen::Screen;
-use obc_app::{
-    App, AppState, Gesture, Mode, RecorderIntent, RideRetentionRecord, RideSummary, RouteSummary, TripInput,
-    WarningFlags,
-};
+use obc_app::{App, AppState, Gesture, Mode, RecorderIntent, RideSummary, RouteSummary, TripInput, WarningFlags};
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
     FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep, TimeKey, Trace,
@@ -75,15 +72,6 @@ pub enum Requirement {
     SettingsStaleResult,
     SettingsFailure,
     SettingsRetry,
-    RetentionRouteUseStamp,
-    RetentionRideSyncStamp,
-    RetentionExpiryDelete,
-    RetentionRetry,
-    RetentionTrustedClockGate,
-    /// An expiry candidate is retired by the catalog's removal verdict (#1548), in the pass that
-    /// answer lands. The re-read the removal ordered can be slower than the delete backstop, and a
-    /// second removal for an object the store has already reported gone is what that would cost.
-    RetentionCandidateRetiredByVerdict,
     DfuScanSuccess,
     DfuScanFailure,
     DfuInstallStart,
@@ -131,12 +119,6 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::SettingsStaleResult,
     Requirement::SettingsFailure,
     Requirement::SettingsRetry,
-    Requirement::RetentionRouteUseStamp,
-    Requirement::RetentionRideSyncStamp,
-    Requirement::RetentionExpiryDelete,
-    Requirement::RetentionRetry,
-    Requirement::RetentionTrustedClockGate,
-    Requirement::RetentionCandidateRetiredByVerdict,
     Requirement::DfuScanSuccess,
     Requirement::DfuScanFailure,
     Requirement::DfuInstallStart,
@@ -189,12 +171,6 @@ pub enum Action {
     DeliverMatchingSettingsResult,
     FailSettingsPersist,
     RetrySettingsPersist,
-    StampRouteUse,
-    StampRideSync,
-    DeleteExpiredObject,
-    RetryExpiredDelete,
-    SleepPastDeleteBackoff,
-    GateExpiryUntilClockTrusted,
     ScanDfuSuccess,
     ScanDfuFailure,
     StartDfuInstall,
@@ -259,7 +235,7 @@ pub struct VisibleState {
     pub settings_utc_offset_min: i16,
     pub nav_preview_missing: bool,
     pub warning: Option<WarningFlags>,
-    pub retention_delete_attempts: u16,
+    pub delete_attempts: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -300,7 +276,7 @@ pub struct CorpusState {
     /// The next catalog read does not answer. One shot, so the retry that follows it succeeds and
     /// the scenario has a rider-visible difference between "re-offered" and "lost".
     pub catalog_read_fail_once: bool,
-    pub retention_delete_attempts: u16,
+    pub delete_attempts: u16,
 
     pub settings_retry_requested: bool,
     /// What the executor has handed back, waiting for the next pass to read it.
@@ -354,7 +330,7 @@ impl CorpusState {
             settings_revision: 0,
             route_delete_fail_once: false,
             catalog_read_fail_once: false,
-            retention_delete_attempts: 0,
+            delete_attempts: 0,
 
             settings_retry_requested: false,
             facts: ExternalFacts::NONE,
@@ -629,58 +605,6 @@ impl CorpusState {
                 self.app.advance_animations(InputClock(4_002));
                 self.pending_settings_result = Some(PendingSettingsResult::PersistLatest);
             }
-            Action::StampRouteUse => {
-                self.mount_store();
-                self.app.stamp_clock_ble(1_720_000_000, 60);
-                self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
-            }
-            Action::StampRideSync => {
-                self.mount_store();
-                self.app.stamp_clock_ble(1_720_000_000, 60);
-                let mut stamped = self.rides[0].clone();
-                stamped.summary.synced = true;
-                stamped.summary.synced_at_utc = 0;
-                self.rides[0] = stamped;
-                self.feed_rides("retention.synced", trace);
-                self.app.set_ride_retention_inventory(&[RideRetentionRecord {
-                    id: self.rides[0].id,
-                    synced: true,
-                    synced_at_utc: 0,
-                }]);
-                trace.record_feeder(FeederCall::new(FeederKind::RideRetention, "retention.rides", 1));
-                self.app.force_retention_sweep();
-                self.tick_without_fix();
-            }
-            Action::DeleteExpiredObject => {
-                self.mount_store();
-                self.app.stamp_clock_ble(1_720_000_000, 60);
-                self.app.set_route_meta(&[
-                    obc_app::RouteRetentionMeta::new(obc_app::Retention::Day1, 1),
-                    obc_app::RouteRetentionMeta::new(obc_app::Retention::Never, 0),
-                    obc_app::RouteRetentionMeta::new(obc_app::Retention::Never, 0),
-                ]);
-                trace.record_feeder(FeederCall::new(FeederKind::RouteRetention, "retention.routes", 3));
-                self.route_delete_fail_once = true;
-                self.app.force_retention_sweep();
-                self.tick_without_fix();
-            }
-            Action::RetryExpiredDelete => {
-                // The original failed candidate owns its retry; no new discovery sweep is needed.
-                self.app.advance_animations(InputClock(5_002));
-                self.tick_without_fix();
-            }
-            Action::SleepPastDeleteBackoff => {
-                // The removal was answered, and the device slept past the delete backstop before
-                // the re-read that answer ordered re-fed the catalogs — the board's ordinary
-                // cadence. Nothing may order a second removal for an object already gone (#1548).
-                self.app.advance_animations(InputClock(9_002));
-                self.tick_without_fix();
-            }
-            Action::GateExpiryUntilClockTrusted => {
-                assert!(!self.app.clock_trusted());
-                self.app.force_retention_sweep();
-                self.tick_without_fix();
-            }
             Action::ScanDfuSuccess => {
                 assert!(self.app.open_remote_dfu_check());
                 self.pending_dfu_scan = Some(Ok(DfuScanReport::new("v1", "v2", false)));
@@ -766,12 +690,12 @@ impl CorpusState {
     }
 
     pub fn snapshot_state(&self) -> VisibleState {
-        visible_state(&self.app, self.settings_revision, self.retention_delete_attempts)
+        visible_state(&self.app, self.settings_revision, self.delete_attempts)
     }
 }
 
 /// The normalized rider-visible state every runner is compared on.
-pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempts: u16) -> VisibleState {
+pub fn visible_state(app: &App, settings_revision: u16, delete_attempts: u16) -> VisibleState {
     let screen = match app.top_screen() {
         Screen::Home(_) => ScreenState::Home,
         Screen::Menu(_) => ScreenState::Menu,
@@ -827,7 +751,7 @@ pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempt
             Screen::Warning(card) => Some(card.flags()),
             _ => None,
         },
-        retention_delete_attempts,
+        delete_attempts,
     }
 }
 
@@ -946,15 +870,8 @@ fn nav_delivery_key(requested: u16, current: u16) -> &'static str {
 }
 
 /// Every platform capability — the fixture device implements all of them.
-pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-
-    bonding: true,
-    storage_space_report: true,
-    retention_metadata: true,
-};
+pub const EVERY_CAPABILITY: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// The identity the fixture store commits a finalized ride under. It never joins the resident
 /// catalog — the corpus's repositories are a fixed set — so it is only ever the `ride` a
@@ -1175,26 +1092,6 @@ pub const SCENARIOS: &[Scenario] = &[
         actions: &[Action::DirtySettings, Action::FailSettingsPersist, Action::RetrySettingsPersist],
     },
     Scenario {
-        name: "retention.route-and-ride-stamps",
-        requirements: &[Requirement::RetentionRouteUseStamp, Requirement::RetentionRideSyncStamp],
-        actions: &[Action::StampRouteUse, Action::StampRideSync],
-    },
-    Scenario {
-        name: "retention.expiry-retry-and-trusted-clock",
-        requirements: &[
-            Requirement::RetentionExpiryDelete,
-            Requirement::RetentionRetry,
-            Requirement::RetentionTrustedClockGate,
-            Requirement::RetentionCandidateRetiredByVerdict,
-        ],
-        actions: &[
-            Action::GateExpiryUntilClockTrusted,
-            Action::DeleteExpiredObject,
-            Action::RetryExpiredDelete,
-            Action::SleepPastDeleteBackoff,
-        ],
-    },
-    Scenario {
         name: "dfu.scan-outcomes",
         requirements: &[Requirement::DfuScanSuccess, Requirement::DfuScanFailure],
         actions: &[Action::ScanDfuSuccess, Action::Settle, Action::Settle, Action::ScanDfuFailure],
@@ -1268,8 +1165,6 @@ pub fn clock_watermark(action: Action) -> u32 {
         Action::RideFixes => 10_001,
         Action::RetrySettingsPersist => 4_002,
         Action::RetryCatalogRead => 30_010,
-        Action::RetryExpiredDelete => 5_002,
-        Action::SleepPastDeleteBackoff => 9_002,
         _ => 0,
     }
 }
@@ -1310,12 +1205,6 @@ pub fn action_name(action: Action) -> &'static str {
         Action::DeliverMatchingSettingsResult => "deliver-matching-settings-result",
         Action::FailSettingsPersist => "fail-settings-persist",
         Action::RetrySettingsPersist => "retry-settings-persist",
-        Action::StampRouteUse => "stamp-route-use",
-        Action::StampRideSync => "stamp-ride-sync",
-        Action::DeleteExpiredObject => "delete-expired-object",
-        Action::RetryExpiredDelete => "retry-expired-delete",
-        Action::SleepPastDeleteBackoff => "sleep-past-delete-backoff",
-        Action::GateExpiryUntilClockTrusted => "gate-expiry-until-clock-trusted",
         Action::ScanDfuSuccess => "scan-dfu-success",
         Action::ScanDfuFailure => "scan-dfu-failure",
         Action::StartDfuInstall => "start-dfu-install",

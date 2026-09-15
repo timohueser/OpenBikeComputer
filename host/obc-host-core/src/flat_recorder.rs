@@ -172,6 +172,7 @@ impl FlatRideRecorder {
         let name = DisplayName::new(name).unwrap_or_default();
         let allocation = card.allocate(RESERVE)?;
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: key.id,
             revision: key.revision,
             kind: ObjectKind::Ride,
@@ -228,6 +229,7 @@ impl FlatRideRecorder {
         let mut owner = self.owner.0.lock().map_err(|_| StoreError::Media)?;
         live.key.check(&owner)?;
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: live.key.id,
             revision: live.key.revision,
             kind: ObjectKind::Ride,

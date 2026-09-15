@@ -13,7 +13,7 @@ pub(crate) fn original_allowed<D: BlockDevice>(
     let current = store.entries().find(|entry| {
         entry.id.0 == expected.object
             && entry.kind == obc_storage::flat::ObjectKind::Route
-            && entry.flags == obc_storage::flat::EntryFlags::NONE
+            && entry.flags.is_route_head()
     });
     if !store.entries_ok() || current.map(obc_storage::flat::metadata::fingerprint) != Some(expected) {
         return false;

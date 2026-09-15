@@ -703,50 +703,24 @@ The application marks settings dirty when a value changes. `SettingsMachine` wai
 
 The settings blob is independent of the SD card. The current UI languages are English, German, French, and Spanish.
 
-Settings use layout version 19. The device rejects older or newer layouts and uses defaults. A valid current layout preserves the rider’s settings across updates.
+Settings use layout version 20. The device rejects older or newer layouts and uses defaults. A valid current layout preserves the rider’s settings across updates.
 
 The build generates a complete translation table from four TOML catalogs. The build fails if a catalog has missing or extra keys.
 
-## Retention
+## Route cleanup
 
-Routes have individual retention values. The shared retention policy has one setting for synced rides.
-Current protocol-v4 clients cannot mark device rides synced, so these rides remain protected
-from automatic expiry. See [ride reconciliation](../companion-link/#reconciliation).
+The device does not delete routes or rides automatically.
+When a route upload fails because storage is full, the device offers a cleanup dialog.
+Choose an age in weeks, then hold **Delete old routes** to confirm. Cancel is selected first.
+The dialog reports completion, no matching routes, or a failure. Retry the upload after cleanup.
 
-<figure class="fig">
-<div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 300" role="img" aria-label="A trusted GPS or phone clock permits retention checks. Active routes and unsynced rides are protected. Current protocol-v4 downloads do not mark device rides synced, so those rides do not expire automatically.">
-  <defs><marker id="software-ui-11" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-  <text class="d-tag" x="20" y="26" text-anchor="start">Retention needs both time and eligibility</text>
-  <rect class="d-panel" x="20" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="120" y="85" text-anchor="middle">Trusted clock</text>
-  <text class="d-sub" x="120" y="105" text-anchor="middle">GPS or phone · this boot</text>
-  <path class="d-flow" d="M220 98 L258 98" marker-end="url(#software-ui-11)" />
-  <rect class="d-panel" x="260" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="360" y="85" text-anchor="middle">Check eligibility</text>
-  <text class="d-sub" x="360" y="105" text-anchor="middle">Inactive route</text>
-  <text class="d-sub" x="360" y="122" text-anchor="middle">Or a synced ride</text>
-  <path class="d-flow" d="M460 98 L498 98" marker-end="url(#software-ui-11)" />
-  <rect class="d-panel" x="500" y="60" width="200" height="76" rx="8" />
-  <text class="d-title" x="600" y="85" text-anchor="middle">Check age</text>
-  <text class="d-sub" x="600" y="105" text-anchor="middle">Delete only after expiry</text>
-  <rect class="d-panel d-focus" x="20" y="184" width="680" height="92" rx="8" />
-  <text class="d-title" x="360" y="209" text-anchor="middle">Current device rides remain protected</text>
-  <text class="d-sub" x="360" y="229" text-anchor="middle">Protocol v4 has no ride-possession acknowledgment.</text>
-  <text class="d-sub" x="360" y="246" text-anchor="middle">A local download does not start device ride expiry.</text>
-</svg>
-</div>
-<div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
-<figcaption>A trusted clock is necessary, but it is not sufficient for deletion. Active routes and unsynced rides remain protected.</figcaption>
-</figure>
+Age starts when the current route copy is uploaded under a trusted clock. Navigation does not
+change this date. Cleanup scans the complete store, including routes beyond the visible menu.
+It keeps the active route, routes with unknown dates, and routes newer than the selected age.
+If the current date is unknown, use manual deletion from the Routes menu.
 
-The retention sweep requires a trusted clock from this boot. GPS or the companion can establish this clock.
-
-### The device has no clock — so deletion waits for a trusted one
-
-The sweep does not delete the active route. It does not delete unsynced rides.
-
-An unknown route-use time starts a new retention period. It does not cause immediate deletion.
+Ride archive proof controls the synced indicator. It never starts a deletion timer.
+See [ride reconciliation](../companion-link/#reconciliation).
 
 ## Runtime boundaries
 
@@ -1061,6 +1035,12 @@ The Up-ahead view merges route waypoints with map POIs near the route.
 </figure>
 
 The corridor query sorts results by distance along the route. It excludes POIs behind the snapshot anchor.
+A continuous pass within the configured radius of a place produces one encounter, at the nearest
+point on that pass. Equal distances keep the earlier route position and its side. Small bends
+within a pass do not add rows. Leaving the radius and returning produces a later encounter.
+Passes can cross route-chunk and page boundaries. The query completes the nearest-point calculation
+before it publishes the encounter, so changing pages does not change its identity or position.
+
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
@@ -1240,6 +1220,6 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
 - Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n), [`i18n.rs`](src:firmware/obc-app/src/i18n.rs)
 - POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`up_ahead.rs`](src:firmware/obc-app/src/screen/up_ahead.rs)
-- Retention policy: [`retention.rs`](src:firmware/obc-app/src/retention.rs)
+- Route cleanup: [`route_cleanup.rs`](src:firmware/obc-storage/src/flat/route_cleanup.rs)
 
 See [system architecture](../architecture/) for the host loop. See [rendering pipeline](../rendering/) for pixel generation.

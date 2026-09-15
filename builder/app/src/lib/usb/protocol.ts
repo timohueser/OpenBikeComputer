@@ -158,6 +158,8 @@ export const EntryFlags = {
     Retained: 1 << 1,
     /** Extents held for the bootloader. The store did not write these bytes. */
     Reserved: 1 << 2,
+    /** The exact immutable route payload has been accepted by Navigator. */
+    AssistantAccepted: 1 << 3,
 } as const;
 
 /** `0` names no object (`FLAT_Store_Format.md` §3), and is what a `PUT` sends to create one. */
