@@ -733,16 +733,16 @@ mod tests {
         token
     }
     #[test]
-    fn easier_review_leaves_ready_on_movement_and_uncertain_save() {
+    fn easier_review_refuses_movement_and_preserves_uncertain_acceptance_until_recovery() {
         use crate::easier::Phase;
-        for uncertain in [false, true] {
+        for recovery in [None, Some(false), Some(true)] {
             let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 10.0));
             app.navigator = preview();
             app.easier.context = Some(context());
             app.easier.phase = Phase::Ready;
             app.easier.review = true;
             assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
-            if uncertain {
+            if recovery.is_some() {
                 app.navigator.accept_review(origin(), 0);
                 let mut tokens = TokenSource::new();
                 let token = issued(&mut app.navigator, &mut tokens);
@@ -758,13 +758,28 @@ mod tests {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Failed(NavigatorError::Movement));
             }
             app.advance_easier();
-            assert!(app.easier.phase == Phase::Unavailable);
+            assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Unavailable });
             app.apply_gesture(crate::Gesture::Press);
             assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
             assert_eq!(app.active_route_index(), Some(0));
-            if uncertain {
+            if let Some(committed) = recovery {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
                 assert!(app.navigator.checkpoint_change().is_none());
+                assert!(!app.navigator.review.cancel_after, "an uncertain write is not a cancel request");
+                let checkpoint =
+                    if committed { app.navigator.review.change.unwrap() } else { app.navigator.review.checkpoint };
+                let after = app.navigator.recover_checkpoint(context().store, checkpoint).unwrap();
+                assert!(app.navigator.review.change.is_none(), "recovery must not schedule a clear");
+                if committed {
+                    assert_eq!(after, Some(AfterCheckpoint::Activate(5)));
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
+                    app.advance_easier();
+                    assert!(app.easier.phase == Phase::Idle);
+                } else {
+                    assert_eq!(after, None);
+                    assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
+                    assert!(app.assistant_preview().is_some());
+                }
             }
         }
     }
