@@ -60,6 +60,8 @@ pub enum InflightPlan {
     Nav(NavPlan),
     Detour(DetourPlan),
     Ready(NavPlan, obc_route::RouteStats),
+    Visit(Box<crate::nav_visit::VisitPlan>),
+    VisitReady(Box<crate::nav_visit::VisitPlan>, obc_route::RouteStats),
 }
 
 /// Sources admitted together; the reader is always made by the leased FlatMap.
@@ -599,11 +601,20 @@ impl HostLoop {
                 if !self.sources.as_ref().is_some_and(|s| s.current(map, routes)) {
                     return failed(NavigatorError::SourceChanged);
                 }
-                let Some(InflightPlan::Ready(plan, stats)) = self.plan.as_ref() else {
-                    return failed(NavigatorError::Workspace);
+                let (bytes, stats, tile_stats) = match self.plan.as_ref() {
+                    Some(InflightPlan::Ready(plan, stats)) => (plan.bytes(), stats, plan.tile_stats()),
+                    Some(InflightPlan::VisitReady(plan, stats)) => (plan.bytes(), stats, Default::default()),
+                    _ => return failed(NavigatorError::Workspace),
                 };
-                if app.assistant_review_context().is_some() {
-                    return Some(match routes.publish_review_route(plan.bytes()) {
+                if let Some(context) = app.assistant_review_context() {
+                    if context.purpose == obc_app::navigator::ReviewPurpose::Destination
+                        && app.assistant_visit_target().is_some_and(|target| {
+                            target.validate_destination(&obc_formats::io::SliceSource(bytes), context.profile).is_err()
+                        })
+                    {
+                        return failed(NavigatorError::Unavailable);
+                    }
+                    return Some(match routes.publish_review_route(bytes) {
                         Ok(publication) => {
                             self.publication = Some(publication);
                             let Some(source) = routes.fingerprint(publication.id) else {
@@ -611,7 +622,7 @@ impl HostLoop {
                             };
                             let preview = obc_app::navigator::ReviewedRoute::read(
                                 source,
-                                &obc_formats::io::SliceSource(plan.bytes()),
+                                &obc_formats::io::SliceSource(bytes),
                                 app.assistant_review_context().unwrap(),
                             );
                             feed_routes(app, routes, &mut NoTrace);
@@ -623,7 +634,7 @@ impl HostLoop {
                         Err(error) => NavigatorOutcome::Failed { token, error },
                     });
                 }
-                Some(match commit_nav_plan(app, routes, Ok(*stats), plan.bytes(), plan.tile_stats(), &mut NoTrace) {
+                Some(match commit_nav_plan(app, routes, Ok(*stats), bytes, tile_stats, &mut NoTrace) {
                     Ok(publication) => {
                         self.publication = Some(publication);
                         NavigatorOutcome::PlanFinished { token, route: publication.id }
@@ -686,7 +697,7 @@ impl HostLoop {
     #[inline(never)]
     fn acquire_plan(
         &mut self,
-        app: &App,
+        app: &mut App,
         token: OperationToken<NavigatorTag>,
         work: PlannerWork,
         routes: &dyn RouteRepository,
@@ -712,6 +723,17 @@ impl HostLoop {
                 None
             }
             PlannerWork::AssistantRoute(request) => {
+                if app.assistant_visit_target().is_some() {
+                    let Some(scope) = routes.store_scope() else { return failed(NavigatorError::SourceChanged) };
+                    let held = routes.pin_active();
+                    let fingerprint = held.as_ref().and_then(|route| routes.fingerprint(route.id()));
+                    let avoidance = held.as_ref().is_some_and(|route| {
+                        obc_route::RouteObjectInfo::read(route).map_or(true, |info| info.unresolved_avoidance)
+                    });
+                    if !app.bind_visit_sources(scope, fingerprint, avoidance) {
+                        return failed(NavigatorError::SourceChanged);
+                    }
+                }
                 let Some(context) = app.assistant_review_context() else {
                     return failed(NavigatorError::Unavailable);
                 };
@@ -754,13 +776,27 @@ impl HostLoop {
                     }
                     None
                 };
-                let mut plan = NavPlan::start(&request, context.profile);
-                plan.set_attribution_map(context.map);
-                plan.set_assistant_candidate();
-                if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
-                    plan.set_unresolved_avoidance();
+                if matches!(
+                    context.purpose,
+                    obc_app::navigator::ReviewPurpose::Visit | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                ) {
+                    let Some((source, index)) = original.as_ref() else {
+                        return failed(NavigatorError::Unavailable);
+                    };
+                    let route = obc_route::RouteReader::new(index, source);
+                    match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
+                        Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
+                        Err(error) => return failed(error),
+                    }
+                } else {
+                    let mut plan = NavPlan::start(&request, context.profile);
+                    plan.set_attribution_map(context.map);
+                    plan.set_assistant_candidate();
+                    if context.purpose == obc_app::navigator::ReviewPurpose::Easier {
+                        plan.set_unresolved_avoidance();
+                    }
+                    self.plan = Some(InflightPlan::Nav(plan));
                 }
-                self.plan = Some(InflightPlan::Nav(plan));
                 original
             }
             PlannerWork::Detour(request) => {
@@ -794,6 +830,26 @@ impl HostLoop {
         map: &crate::flat_map::FlatMap,
         elev: &mut dyn obc_route::ElevationSource,
     ) -> Option<NavigatorOutcome> {
+        if let Some(InflightPlan::Visit(plan)) = self.plan.as_mut() {
+            let Some(original) = self.sources.as_ref().and_then(|s| s.original()) else {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
+            };
+            let stats = match plan.step(&map.reader(), &original, elev) {
+                Ok(None) => return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Searching }),
+                Ok(Some(stats)) => stats,
+                Err(error) => return Some(NavigatorOutcome::Failed { token, error }),
+            };
+            if app
+                .assistant_review_context()
+                .is_some_and(|context| context.purpose == obc_app::navigator::ReviewPurpose::Visit)
+                && !app.assistant_visit_variant(token, plan.original_anchors())
+            {
+                return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
+            }
+            let Some(InflightPlan::Visit(plan)) = self.plan.take() else { unreachable!() };
+            self.plan = Some(InflightPlan::VisitReady(plan, stats));
+            return Some(NavigatorOutcome::Stepped { token, progress: PlannerProgress::Reached });
+        }
         let outcome = match self.plan.as_mut() {
             Some(InflightPlan::Nav(plan)) => plan.step(&map.reader(), elev),
             Some(InflightPlan::Detour(plan)) => plan.step(&map.reader(), elev),
@@ -823,7 +879,9 @@ impl HostLoop {
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 }
             }
-            InflightPlan::Ready(..) => unreachable!("only an unfinished plan steps"),
+            InflightPlan::Ready(..) | InflightPlan::Visit(..) | InflightPlan::VisitReady(..) => {
+                unreachable!("only an unfinished plan steps")
+            }
         })
     }
 
@@ -982,6 +1040,13 @@ mod tests {
 
     #[test]
     fn assistant_plans_reviews_and_accepts_exact_immutable_bytes_through_the_host_executor() {
+        immutable_assistant_replay(false);
+    }
+    #[test]
+    fn visit_accepts_complete_bytes_through_the_host_executor() {
+        immutable_assistant_replay(true);
+    }
+    fn immutable_assistant_replay(visit: bool) {
         use obc_app::navigator::{ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, REVIEW_FACTS_POLICY};
         use obc_pack::nav::{Edge, NavGraph, Node};
         let bbox = (0, 0, 1_000_000, 1_000_000);
@@ -1048,7 +1113,7 @@ mod tests {
         }
         let map_source = map.source();
         let context = ReviewContext {
-            purpose: ReviewPurpose::Destination,
+            purpose: if visit { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
             map: obc_formats::obcr::RouteSourceKey {
                 store: map_source.store_id().0,
                 object: map_source.id().0,
@@ -1072,7 +1137,7 @@ mod tests {
         refused.plan_assistant(active_request, ReviewContext { original: None, ..context });
         assert!(matches!(
             HostLoop::new().acquire_plan(
-                &refused,
+                &mut refused,
                 tokens.issue(),
                 PlannerWork::AssistantRoute(active_request),
                 &routes,
@@ -1080,7 +1145,27 @@ mod tests {
             ),
             Some(NavigatorOutcome::Failed { .. })
         ));
-        app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
+        if visit {
+            use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+            assert!(app.plan_visit(
+                obc_route::visit::VisitTarget {
+                    map: context.map,
+                    display: points[1],
+                    metadata: PoiMetadata {
+                        source: SourceId::osm(1, 99),
+                        approach: Some(PoiApproach {
+                            source: SourceId::osm(1, 100),
+                            lon: points[1].0,
+                            lat: points[1].1,
+                            profile_mask: 1,
+                        }),
+                    },
+                },
+                context
+            ));
+        } else {
+            app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
+        }
         for _ in 0..200 {
             frame(&mut host, &mut app, &mut routes);
             if app.assistant_review_status() == ReviewStatus::Preview && !host.is_planning() {
@@ -1105,6 +1190,7 @@ mod tests {
             )
             .unwrap();
         let info = obc_route::RouteObjectInfo::read(&bytes).unwrap();
+        assert_eq!(info.visit.is_some(), visit);
         assert_eq!(
             (preview.distance_m, preview.ascent_m, preview.descent_m),
             (info.distance_m, info.ascent_m, info.descent_m)
@@ -1159,7 +1245,7 @@ mod tests {
         assert!(
             matches!(
                 HostLoop::new().acquire_plan(
-                    &app,
+                    &mut app,
                     tokens.issue(),
                     PlannerWork::AssistantRoute(active_request),
                     &routes,

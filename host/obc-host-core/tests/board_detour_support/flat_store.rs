@@ -210,3 +210,14 @@ pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
     }
     app.set_routes_with_ids(&summaries, &ids);
 }
+
+pub fn route_fingerprint(store: &FlatStore<FlatCard>, id: u64) -> Option<obc_formats::assistant::PayloadFingerprint> {
+    store.entries().find(|e| e.id.0 == id).map(metadata::fingerprint)
+}
+pub fn planner_map_key(store: &FlatStore<FlatCard>) -> obc_formats::obcr::RouteSourceKey {
+    SOURCES.with(|s| {
+        let s = s.borrow();
+        let (_, _, _, id, revision) = s.as_ref().unwrap();
+        obc_formats::obcr::RouteSourceKey { store: store.store_id().0, object: id.0, revision: revision.0 }
+    })
+}

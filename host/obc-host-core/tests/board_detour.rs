@@ -19,6 +19,8 @@ mod detour;
 mod flat_store;
 #[path = "board_detour_support/ride.rs"]
 mod ride;
+#[path = "../../../firmware/obc-fw-nrf54l/src/visit.rs"]
+mod visit;
 
 use flat_store::{FlatCard, Kind, Writer};
 use obc_app::device_core::{NavigatorTag, TokenSource};
@@ -111,10 +113,13 @@ fn map_bytes() -> Vec<u8> {
 }
 impl Harness {
     fn new() -> Self {
+        Self::with_route(&route())
+    }
+    fn with_route(route: &[u8]) -> Self {
         let media = Box::leak(Box::new(obc_storage::flat::sim::SparseDisk::blank(2_000_000, 7)));
         let disk = Box::leak(Box::new(obc_storage::flat::sim::FaultOnce::new(&*media)));
         let store = Box::leak(Box::new(FlatStore::initialize(&*disk, StoreId([0x54; 16])).unwrap()));
-        let id = put(store, ObjectKind::Route, &route(), None);
+        let id = put(store, ObjectKind::Route, route, None);
         let map_id = put(store, ObjectKind::MapShard, &map_bytes(), None);
         let original = store.source(id, None).unwrap();
         let map = store.source(map_id, None).unwrap();
@@ -447,3 +452,6 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
         Some(id.0)
     ));
 }
+
+#[path = "board_detour_support/visit_tests.rs"]
+mod visit_tests;

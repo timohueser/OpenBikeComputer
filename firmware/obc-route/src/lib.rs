@@ -61,6 +61,7 @@ pub mod symbol;
 pub mod track;
 mod trim;
 pub mod trip;
+pub mod visit;
 
 pub use climb::{
     segment_climbs, ClimbSeg, Climbs, ElePt, MAX_CLIMBS, MAX_DROP, MAX_FLAT, MIN_AVG_GRADE, MIN_GAIN, MIN_LEN,
