@@ -343,7 +343,7 @@ impl VisitReviewScreen {
             return;
         }
         let label = if self.error.is_some() {
-            rx.t(Msg::AssistantVisitUnavailable)
+            rx.t(if self.returning { Msg::AssistantUnavailable } else { Msg::AssistantVisitUnavailable })
         } else {
             match rx.find.review {
                 ReviewStatus::Planning => rx.t(Msg::AssistantCalculating),

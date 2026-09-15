@@ -1,6 +1,6 @@
 # Accepted journey production controls
 
-Implementation: `b388a284`, with recovery fix `c0306a6f`. The branch includes the RA12 production entry and CI fixes through `2680ba23`.
+Implementation: `b388a284`, with recovery fixes `c0306a6f` and `fe2151b0`. The branch includes the RA12 production entry and CI fixes through `2680ba23`.
 
 The ordinary Assistant context opens Current visit. Its detail has Back to map and Cancel visit
 rows. Cancel calls the existing Visit owner with the current route reader and map identity.
@@ -74,3 +74,43 @@ existing nonzero-occurrence test now expects the newly matched coordinate in the
 Delta validation also includes scoped all-targets Clippy, standalone board Clippy, the suite
 registry, formatting, and the documentation link check. The simulator suite was already passed
 for the initial control patch; the orchestrator owns final real-data simulator acceptance.
+
+## Integrated recovery corrections
+
+The integrated review found two recovery edges. A restart close to the stop treated the recovered
+position as a new departure anchor. Resume now uses the route entry and confirmed progress to retain
+proven departure. A new visit still requires movement before arrival.
+
+A refused phase or cancellation write could leave an accepted visit inactive in the review owner.
+The owner now retains the authoritative checkpoint and active journey when the write is confirmed
+unpublished. Phase reconciliation retries with the latest fix, without waiting for another GPS
+sample. A refusal during initial Resume keeps guidance inactive and permits retry. An unknown write
+outcome remains fenced until the card resolves it. The screen shows the refusal and keeps the
+current visit available.
+
+For `fe2151b0`, the whole `obc-app` suite, App all-targets Clippy, suite registry, workspace formatting,
+and diff whitespace check pass. The App contracts cover recovery 5 m and 15 m before the stop,
+stationary new acceptance, all three phase transitions, cancellation, initial Resume, definite
+write refusal, and uncertain writes resolved to the old checkpoint. They also check retry without a
+new GPS sample and dismissal of an arrival card. These tests use the owner's Metadata outcomes.
+The flat-store executor contracts passed in the earlier `obc-host-core` validation and were not
+rerun for this App-only correction. No simulator rebuild,
+snapshot sweep, board image, or hardware run was used for these corrections.
+
+## Recording recovery and Assistant recovery
+
+The real Swiss card replay found that Continue on the recovered recording card removed the
+Outbound Assistant checkpoint. The recording offer and its Continue or Discard action used the
+normal route-stop command, which requests a durable Assistant cancellation.
+
+Commit `fa50312c` uses one Navigator suspension operation for recording recovery. Both ordinary and
+damaged recording offers, Continue, and Discard or Retry suspend guidance without changing the
+Assistant checkpoint. Resume remains a separate explicit action. The Journey card body uses the
+existing word-wrap helper so the saved-route message fits the 240 px display.
+
+The whole App suite passes, including a contract for both startup offer orders and Continue,
+Discard, and damaged-recording Discard. It checks the retained checkpoint, no queued Assistant
+metadata change, inactive navigation, and the later explicit Resume request. App all-targets
+Clippy, suite registry, workspace formatting, and documentation links are the focused checks.
+The orchestrator owns the fresh real-card replay after this fix. No local snapshot sweep, board
+image, resource rebuild, or physical-device run is part of this correction.

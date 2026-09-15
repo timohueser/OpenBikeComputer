@@ -1896,7 +1896,7 @@ impl App {
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 
@@ -1910,7 +1910,7 @@ impl App {
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 

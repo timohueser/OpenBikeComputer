@@ -505,16 +505,31 @@ impl NavigatorMachine {
             return Ok(self.checkpoint_committed());
         }
         // The complete recovered head proves the pending edit did not commit.
+        self.checkpoint_unpublished();
+        Ok(None)
+    }
+
+    fn checkpoint_unpublished(&mut self) {
+        let retry_phase =
+            self.review.after == AfterCheckpoint::Phase && self.review.change.is_some_and(|next| next.is_some());
         self.review.change = None;
         self.review.status = if self.review.preview.is_some() {
             ReviewStatus::Preview
+        } else if self.review.checkpoint.is_some() {
+            if self.following.active_route.is_some() {
+                ReviewStatus::Accepted
+            } else {
+                ReviewStatus::ResumeAvailable
+            }
         } else {
             ReviewStatus::Failed(NavigatorError::Store)
         };
+        if retry_phase && self.review.status == ReviewStatus::Accepted {
+            self.retry_visit_phase();
+        }
         if core::mem::take(&mut self.review.cancel_after) {
             self.cancel_review();
         }
-        Ok(None)
     }
 
     fn checkpoint_answer(&mut self, outcome: MetadataOutcome) -> Option<AfterCheckpoint> {
@@ -530,15 +545,7 @@ impl NavigatorMachine {
                 None
             }
             MetadataOutcome::Failed { .. } => {
-                self.review.change = None;
-                self.review.status = if self.review.preview.is_some() {
-                    ReviewStatus::Preview
-                } else {
-                    ReviewStatus::Failed(NavigatorError::Store)
-                };
-                if core::mem::take(&mut self.review.cancel_after) {
-                    self.cancel_review();
-                }
+                self.checkpoint_unpublished();
                 None
             }
             MetadataOutcome::Cancelled { .. } => None,
@@ -683,6 +690,8 @@ impl crate::App {
                 self.catalogs.loaded_scope = None;
                 self.catalogs.note_store_moved();
                 self.apply_assistant_checkpoint_action(after);
+                self.ui.map_dirty = true;
+                self.note_resume_save_refusal();
             }
         } else {
             let offer = !self.navigator.review.recovery_seen && checkpoint.is_some();
@@ -704,8 +713,18 @@ impl crate::App {
         self.navigator.checkpoint_submission(token)
     }
     pub(crate) fn assistant_checkpoint_answer(&mut self, outcome: MetadataOutcome) {
+        let before = self.assistant_review_status();
         let after = self.navigator.checkpoint_answer(outcome);
         self.apply_assistant_checkpoint_action(after);
+        self.ui.map_dirty |= self.assistant_review_status() != before;
+        self.note_resume_save_refusal();
+    }
+    fn note_resume_save_refusal(&mut self) {
+        if self.assistant_review_status() == ReviewStatus::ResumeAvailable {
+            if let Some(crate::screen::Screen::Journey(screen)) = self.ui.stack.last_mut() {
+                screen.error = Some(crate::screen::JourneyError::SourceChanged);
+            }
+        }
     }
     fn apply_assistant_checkpoint_action(&mut self, after: Option<AfterCheckpoint>) {
         match after {
@@ -798,6 +817,7 @@ mod tests {
             app.easier.context = Some(easier);
             app.easier.phase = Phase::Ready;
             app.easier.review = true;
+            assert!(app.ui.stack.push(crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new())).is_ok());
             assert!(app.ui.stack.push(crate::screen::Screen::Easier(crate::screen::EasierScreen::new())).is_ok());
             if recovery.is_some() {
                 app.navigator.accept_review(origin(), 0);
@@ -832,6 +852,8 @@ mod tests {
                     assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                     app.advance_easier();
                     assert!(app.easier.phase == Phase::Idle);
+                    assert!(matches!(app.top_screen(), crate::screen::Screen::Map(_)));
+                    assert!(!app.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::Assistant(_))));
                 } else {
                     assert_eq!(after, None);
                     assert_eq!(app.assistant_review_status(), ReviewStatus::Preview);
