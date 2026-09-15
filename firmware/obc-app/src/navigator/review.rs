@@ -12,6 +12,7 @@ pub const REVIEW_FACTS_POLICY: u16 = 1;
 pub enum ReviewPurpose {
     Destination,
     Visit,
+    ReturnToRoute,
     Easier,
 }
 
@@ -101,7 +102,10 @@ impl ReviewedRoute {
             }
             None
         };
-        let visit_costs = if matches!(context.purpose, ReviewPurpose::Visit | ReviewPurpose::Destination) {
+        let visit_costs = if matches!(
+            context.purpose,
+            ReviewPurpose::Visit | ReviewPurpose::Destination | ReviewPurpose::ReturnToRoute
+        ) {
             let arrival = visit_anchors_m.map_or([0, info.distance_m], |a| [a[0], a[1]]);
             Some(obc_route::visit::VisitCosts::read(bytes, arrival).map_err(|_| NavigatorError::Unavailable)?)
         } else {
@@ -140,6 +144,7 @@ pub struct CheckpointChange {
 pub(super) enum AfterCheckpoint {
     Activate(u64),
     Select(Option<usize>),
+    Restore { route: u64, progress_m: u32 },
     Phase,
 }
 
@@ -186,7 +191,7 @@ use obc_formats::retention::JourneyPhase;
 
 impl NavigatorMachine {
     pub(crate) fn request_review(&mut self, request: crate::activity::NavRequest, context: ReviewContext) {
-        if self.active_visit()
+        if (self.active_visit() && context.purpose != ReviewPurpose::ReturnToRoute)
             || self.review.change.is_some()
             || self.review.preview.is_some()
             || self.live.is_some()
@@ -298,7 +303,7 @@ impl NavigatorMachine {
         // The measured candidate axis is authoritative for its accepted phase.
         let next = NavigatorCheckpoint {
             route: preview.source,
-            original: context.original,
+            original: if context.purpose == ReviewPurpose::ReturnToRoute { None } else { context.original },
             progress_m,
             occurrence: 0,
             lon: context.origin.0,
@@ -346,7 +351,7 @@ impl NavigatorMachine {
         }
         self.review.change = None;
         // An emitted but unsubmitted Metadata effect is answered Cancelled by its executor.
-        self.review.status = ReviewStatus::Idle;
+        self.review.status = if self.review.checkpoint.is_some() { ReviewStatus::Accepted } else { ReviewStatus::Idle };
         self.route_request = None;
         self.supersede(PlanFamily::Route);
         self.route = PlanPhase::Idle;
@@ -648,6 +653,15 @@ impl crate::App {
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
                         self.navigator.request_seam(index, checkpoint.progress_m);
                     }
+                    self.ui.map_dirty = true;
+                } else {
+                    self.navigator.review_failed(NavigatorError::SourceChanged);
+                }
+            }
+            Some(AfterCheckpoint::Restore { route, progress_m }) => {
+                if let Some(index) = self.route_ids().iter().position(|&id| id == route) {
+                    self.navigator.following.active_route = Some(index);
+                    self.navigator.request_seam(index, progress_m);
                     self.ui.map_dirty = true;
                 } else {
                     self.navigator.review_failed(NavigatorError::SourceChanged);

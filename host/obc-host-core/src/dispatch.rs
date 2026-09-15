@@ -860,13 +860,15 @@ impl HostLoop {
                     }
                     None
                 };
-                if context.purpose == obc_app::navigator::ReviewPurpose::Visit {
-                    let (Some(target), Some((source, index))) = (app.assistant_visit_target(), original.as_ref())
-                    else {
+                if matches!(
+                    context.purpose,
+                    obc_app::navigator::ReviewPurpose::Visit | obc_app::navigator::ReviewPurpose::ReturnToRoute
+                ) {
+                    let Some((source, index)) = original.as_ref() else {
                         return failed(NavigatorError::Unavailable);
                     };
                     let route = obc_route::RouteReader::new(index, source);
-                    match crate::nav_visit::VisitPlan::start(context, target, &route) {
+                    match crate::nav_visit::VisitPlan::start(context, app.assistant_visit_target(), &route) {
                         Ok(plan) => self.plan = Some(InflightPlan::Visit(Box::new(plan))),
                         Err(error) => return failed(error),
                     }
@@ -921,7 +923,11 @@ impl HostLoop {
                 Ok(Some(stats)) => stats,
                 Err(error) => return Some(NavigatorOutcome::Failed { token, error }),
             };
-            if !app.assistant_visit_variant(token, plan.original_anchors()) {
+            if app
+                .assistant_review_context()
+                .is_some_and(|context| context.purpose == obc_app::navigator::ReviewPurpose::Visit)
+                && !app.assistant_visit_variant(token, plan.original_anchors())
+            {
                 return Some(NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged });
             }
             let Some(InflightPlan::Visit(plan)) = self.plan.take() else { unreachable!() };
