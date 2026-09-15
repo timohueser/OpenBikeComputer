@@ -284,7 +284,7 @@ impl Executor {
         } else {
             let approach = app.assistant_visit_target().ok_or(())?.approach(c.map, c.profile).ok_or(())?;
             if self.returning {
-                (approach, self.return_to)
+                (guard.visit_parts().0.destination().ok_or(())?, self.return_to)
             } else {
                 (c.origin, approach)
             }
@@ -553,11 +553,17 @@ impl Executor {
                 self.leg = guard.as_mut()?.visit_take_sealed();
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    let (_, original, leg, _) = guard.as_mut()?.visit_parts();
-                    if original.read_into(self.original.as_ref()?).is_err()
-                        || leg.read_into(&store.sealed_source(self.leg.as_ref()?)).is_err()
-                    {
+                    let (builder, original, leg, _) = guard.as_mut()?.visit_parts();
+                    let source = store.sealed_source(self.leg.as_ref()?);
+                    if original.read_into(self.original.as_ref()?).is_err() || leg.read_into(&source).is_err() {
                         return self.fail(NavigatorError::Store);
+                    }
+                    let context = app.assistant_review_context()?;
+                    if context.purpose == ReviewPurpose::Visit
+                        && !self.returning
+                        && builder.resolve_destination(app.assistant_visit_target()?, &source, context.profile).is_err()
+                    {
+                        return self.fail(NavigatorError::Unavailable);
                     }
                     return self.ready(Work::Append);
                 }

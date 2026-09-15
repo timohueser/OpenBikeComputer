@@ -195,6 +195,16 @@ impl VisitPlan {
                 obc_route::Step::Done(_) => {
                     let source = SliceSource(self.leg.as_ref().unwrap().bytes());
                     self.index = Some(Box::new(RouteIndex::read(&source).map_err(|_| NavigatorError::Store)?));
+                    if self.context.purpose == ReviewPurpose::Visit && !self.returning {
+                        self.builder
+                            .resolve_destination(
+                                self.target.ok_or(NavigatorError::Unavailable)?,
+                                &source,
+                                self.context.profile,
+                            )
+                            .map_err(|_| NavigatorError::Unavailable)?;
+                        self.approach = self.builder.destination().ok_or(NavigatorError::Unavailable)?;
+                    }
                     self.stage = Stage::Append;
                 }
             },
