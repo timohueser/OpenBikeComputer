@@ -45,11 +45,6 @@ public struct OBCRetentionMenu<MenuLabel: View>: View {
     }
 }
 
-/// The Auto-delete field row: a tinted icon tile, a label, the current level's
-/// value, and the pull-down chevron — the whole row opens the menu. `detailLine`
-/// renders faint under the label (the detail's "Expires in 2 days" device-truth
-/// line; `nil` elsewhere). Sits inside an ``OBCGroupedSection`` (Settings, detail)
-/// which supplies the panel + border.
 public struct OBCRetentionRow: View {
     let icon: String
     let iconColor: Color

@@ -14,9 +14,8 @@
 use obc_app::catalog_state::CatalogError;
 use obc_app::device_core::ModeState;
 use obc_app::device_core::{
-    DataIdentity, DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock,
-    PassInputs, PlatformSupport, Revision, RouteUpload, SettingsTag, StoreIdentity, StoreRevision, TripUpload,
-    UpdateResult, WeatherData,
+    DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs,
+    PlatformSupport, Revision, RouteUpload, SettingsTag, StoreIdentity, StoreRevision, TripUpload, UpdateResult,
 };
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use obc_app::navigator::NavigatorOutcome;
@@ -95,54 +94,6 @@ pub enum Requirement {
     PlatformCardSpaceScan,
     DerivedRideTrackRepeatedUntilFill,
     DerivedNavPreviewRepeatedUntilFill,
-    WeatherRefreshState,
-    WeatherInstalledDataChange,
-    WeatherStaleData,
-    WeatherAlertDelivery,
-}
-
-/// The corpus's one installed weather product.
-pub const WEATHER_PRODUCT: u64 = 4;
-
-/// A sampled bundle: `frames` dry rain frames 15 minutes apart from `now`, no rain grid.
-pub fn weather_bundle(now: i64, frames: usize) -> obc_app::WeatherSnapshot {
-    let mut table = heapless::Vec::new();
-    for index in 0..frames {
-        table
-            .push(obc_app::weather::FrameSample {
-                valid_at: now + index as i64 * 900,
-                intensity: 0,
-                lat: 0,
-                lon: 0,
-                past_route_end: false,
-                spread_uncertain: false,
-            })
-            .expect("the synthetic table fits");
-    }
-    obc_app::WeatherSnapshot {
-        generated_at: now,
-        valid_from: now - 3_600,
-        valid_until: now + 24 * 3_600,
-        hourly: [obc_formats::obcw::HourlyRecord {
-            valid_time_offset_s: 0,
-            temperature_deci_c: 150,
-            precipitation_tenth_mm: 0,
-            precipitation_probability_pct: 0,
-            condition: obc_formats::obcw::CONDITION_CLEAR,
-            wind_from_deg: 200,
-            wind_speed_deci_ms: 20,
-            wind_gust_deci_ms: 30,
-            flags: 0,
-        }; obc_formats::obcw::HOURLY_COUNT],
-        frames: table,
-        frame_cap_s: 900,
-        sampled_at: Some((0, 0)),
-        pos_in_grid: true,
-        current_pos_in_grid: true,
-        projected: false,
-        frames_truncated: false,
-        rain_grid: None,
-    }
 }
 
 /// The corpus's one trip folder, and the two routes it groups — one id space, as every store the
@@ -196,10 +147,6 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::PlatformCardSpaceScan,
     Requirement::DerivedRideTrackRepeatedUntilFill,
     Requirement::DerivedNavPreviewRepeatedUntilFill,
-    Requirement::WeatherRefreshState,
-    Requirement::WeatherInstalledDataChange,
-    Requirement::WeatherStaleData,
-    Requirement::WeatherAlertDelivery,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,10 +211,6 @@ pub enum Action {
     NeedNavPreview,
     ReplaceNavPreviewNeed,
     FillNavPreview,
-    RefreshWeather,
-    InstallWeatherData,
-    MarkWeatherStale,
-    DeliverWeatherAlert,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,7 +231,7 @@ pub enum ScreenState {
     DfuInstalling,
     DfuError,
     Warning,
-    WeatherAlert,
+
     /// Any screen the projection does not name, carrying its variant name so two runners resting on
     /// *different* unnamed screens still compare unequal.
     Other(&'static str),
@@ -311,14 +254,7 @@ pub struct VisibleState {
     pub requested_ride_id: Option<ObjectKey>,
     pub recording: bool,
     pub clock_trusted: bool,
-    /// The rain map's step range, as the **domain** derived it from the frame's sampled snapshot
-    /// (#1549) — no host computes this any more, so the two cadences agreeing on it is a statement
-    /// about `WeatherDomain`, not about a setter both of them happened to call.
-    pub rain_steps_ahead: u8,
-    /// Which weather product the device believes is installed, and at what revision.
-    pub weather_installed: Option<obc_app::device_core::WeatherData>,
-    /// How many refresh requests actually went out to the executor — one radio trip each.
-    pub weather_refreshes: u16,
+
     pub settings_revision: Option<RevisionKey>,
     pub settings_utc_offset_min: i16,
     pub nav_preview_missing: bool,
@@ -365,14 +301,7 @@ pub struct CorpusState {
     /// the scenario has a rider-visible difference between "re-offered" and "lost".
     pub catalog_read_fail_once: bool,
     pub retention_delete_attempts: u16,
-    /// How many weather refreshes the executor has raised — the counter behind
-    /// [`VisibleState::weather_refreshes`].
-    pub weather_refreshes: u16,
-    /// The host's sampled weather snapshot, handed to every pass as `PassInputs::weather` — the
-    /// borrow stage 10 derives the rain view state and the alert decision from.
-    pub weather: Option<obc_app::WeatherSnapshot>,
-    /// The resample counter reported as `ExternalFacts::note_weather_sample`.
-    pub weather_sample: u64,
+
     pub settings_retry_requested: bool,
     /// What the executor has handed back, waiting for the next pass to read it.
     pub facts: ExternalFacts,
@@ -426,9 +355,7 @@ impl CorpusState {
             route_delete_fail_once: false,
             catalog_read_fail_once: false,
             retention_delete_attempts: 0,
-            weather_refreshes: 0,
-            weather: None,
-            weather_sample: 0,
+
             settings_retry_requested: false,
             facts: ExternalFacts::NONE,
             outcomes: OutcomeSlots::new(),
@@ -521,7 +448,7 @@ impl CorpusState {
             gestures: &[],
             sensors: Sensors::new(&mut location),
             route: None,
-            weather: None,
+
             support: EVERY_CAPABILITY,
             outcomes: &mut OutcomeSlots::new(),
             facts: &mut facts,
@@ -537,7 +464,7 @@ impl CorpusState {
                 gestures: &[],
                 sensors: Sensors::new(&mut location),
                 route: None,
-                weather: None,
+
                 support: EVERY_CAPABILITY,
                 outcomes: &mut outcomes,
                 facts: &mut facts,
@@ -835,62 +762,16 @@ impl CorpusState {
                 }
             }
             Action::FillNavPreview => {}
-            // The rider opens the Weather dashboard from the Menu — `menu.rs`'s row is the intent's
-            // one producer, and a companion is what makes the request serviceable, so the link
-            // level goes in with it. What must follow is exactly one `WeatherEffect::RequestRefresh`.
-            Action::RefreshWeather => {
-                self.facts.note_link(obc_app::BleStatus {
-                    link: obc_app::BleLink::Connected,
-                    paired: true,
-                    passkey: None,
-                });
-                self.app.apply_gesture(Gesture::Press); // Home → Menu
-                for _ in 0..4 {
-                    self.app.apply_gesture(Gesture::Step(1));
-                }
-                self.app.apply_gesture(Gesture::Press); // → the Weather dashboard
-            }
-            // A bundle lands: the platform reports the installed identity, and the host resamples
-            // it. Five frames, so four lie ahead of NOW — a step range no host computed.
-            Action::InstallWeatherData => {
-                self.facts.note_weather_data(WeatherData {
-                    data: DataIdentity::new(WEATHER_PRODUCT),
-                    revision: Revision::new(1),
-                });
-                self.resample(Some(5), trace);
-            }
-            // The bundle ages out from under the rider: the next resample finds nothing current, so
-            // the step range collapses — and the installed identity does **not**, because a stale
-            // sample is not an uninstall.
-            Action::MarkWeatherStale => self.resample(None, trace),
-            Action::DeliverWeatherAlert => {
-                assert!(self.app.show_weather_alert(obc_app::WeatherAlertKind::Storm, 12));
-            }
         }
     }
 
-    /// The host resampled: swap the borrow the next pass reads and report the new revision. `None`
-    /// is a sample that found nothing current — a stale or unreadable bundle.
-    fn resample(&mut self, frames: Option<usize>, trace: &mut TraceRecorder<VisibleState>) {
-        let now = self.app.wall_unix_now() as i64;
-        self.weather = frames.map(|count| weather_bundle(now, count));
-        self.weather_sample += 1;
-        self.facts.note_weather_sample(Revision::new(self.weather_sample));
-        trace.record_feeder(FeederCall::new(FeederKind::WeatherSnapshot, "weather.sample", frames.unwrap_or(0)));
-    }
-
     pub fn snapshot_state(&self) -> VisibleState {
-        visible_state(&self.app, self.settings_revision, self.retention_delete_attempts, self.weather_refreshes)
+        visible_state(&self.app, self.settings_revision, self.retention_delete_attempts)
     }
 }
 
 /// The normalized rider-visible state every runner is compared on.
-pub fn visible_state(
-    app: &App,
-    settings_revision: u16,
-    retention_delete_attempts: u16,
-    weather_refreshes: u16,
-) -> VisibleState {
+pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempts: u16) -> VisibleState {
     let screen = match app.top_screen() {
         Screen::Home(_) => ScreenState::Home,
         Screen::Menu(_) => ScreenState::Menu,
@@ -908,7 +789,7 @@ pub fn visible_state(
         Screen::DfuInstalling(_) => ScreenState::DfuInstalling,
         Screen::DfuError(_) => ScreenState::DfuError,
         Screen::Warning(_) => ScreenState::Warning,
-        Screen::WeatherAlert(_) => ScreenState::WeatherAlert,
+
         other => ScreenState::Other(other.name()),
     };
     VisibleState {
@@ -933,9 +814,7 @@ pub fn visible_state(
         requested_ride_id: app.derived_needs().ride_track.map(|key| fixture_object_key(ObjectKind::Ride, key.ride)),
         recording: app.recording(),
         clock_trusted: app.clock_trusted(),
-        rain_steps_ahead: app.weather().steps_ahead(),
-        weather_installed: app.weather().installed(),
-        weather_refreshes,
+
         settings_revision: match settings_revision {
             0 => None,
             1 => Some(RevisionKey(0)),
@@ -1071,7 +950,7 @@ pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
     detour: true,
     settings_persistence: true,
     dfu: true,
-    weather: true,
+
     bonding: true,
     storage_space_report: true,
     retention_metadata: true,
@@ -1364,21 +1243,6 @@ pub const SCENARIOS: &[Scenario] = &[
             Action::FillNavPreview,
         ],
     },
-    Scenario {
-        name: "weather.refresh-install-stale-alert",
-        requirements: &[
-            Requirement::WeatherRefreshState,
-            Requirement::WeatherInstalledDataChange,
-            Requirement::WeatherStaleData,
-            Requirement::WeatherAlertDelivery,
-        ],
-        actions: &[
-            Action::RefreshWeather,
-            Action::InstallWeatherData,
-            Action::MarkWeatherStale,
-            Action::DeliverWeatherAlert,
-        ],
-    },
 ];
 
 /// The animation clock a delivered settings failure moves the app to, so the bounded retry window
@@ -1468,10 +1332,6 @@ pub fn action_name(action: Action) -> &'static str {
         Action::NeedNavPreview => "need-nav-preview",
         Action::ReplaceNavPreviewNeed => "replace-nav-preview-need",
         Action::FillNavPreview => "fill-nav-preview",
-        Action::RefreshWeather => "refresh-weather",
-        Action::InstallWeatherData => "install-weather-data",
-        Action::MarkWeatherStale => "mark-weather-stale",
-        Action::DeliverWeatherAlert => "deliver-weather-alert",
     }
 }
 

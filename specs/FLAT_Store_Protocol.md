@@ -461,7 +461,7 @@ Request, 84 bytes:
 | 16 | 8 | declared payload length |
 | 24 | 4 | declared payload CRC-32 |
 | 28 | 2 | kind |
-| 30 | 2 | flags: retain-previous bit 0; other bits zero |
+| 30 | 2 | reserved; must be zero |
 | 32 | 1 | display-name length, `0..=48` |
 | 33 | 3 | zero |
 | 36 | 48 | display name, UTF-8, unused bytes zero |
@@ -502,18 +502,7 @@ mid-recording or a rollback reserve mid-update would be writing where the store 
 already are. Metadata writes require device policy admission under
 [Retention_Metadata.md](Retention_Metadata.md); remote writes cannot establish archive proof.
 
-The request's flag word says what this upload should do, not what the resulting entry carries:
-`RECORDING`, `RETAINED` and `RESERVED` are the format contract's entry flags, they appear in a `LIST`
-entry, and no client sets them. `retain-previous` asks the same commit to leave the displaced revision
-`RETAINED` (`FLAT_Store_Format.md` §5.3); it is legal only for kinds whose reader needs continuity —
-weather, today — and a second retaining replace frees the first.
-
-**A replace leaves at most what it asked for.** One commit publishes the new head, retains or removes
-the revision it displaced, and frees any revision the object was already keeping retained — so a
-replace *without* the flag clears retention outright, and never leaves a revision two generations back
-alive behind a head that did not ask for it. That matters to a client because retention is durable and
-visible: `LIST` shows the retained entry, `GET` can pin it, and `REMOVE` takes it with the head. A
-client that wants continuity sets the flag on every replace of that object.
+One commit publishes the new head and removes both the displaced head and any retained revision.
 
 **Any break before the commit leaves the card as if nothing happened**: the allocation is released,
 the written bytes are anonymous, the catalog is untouched, and the client restarts from zero. That

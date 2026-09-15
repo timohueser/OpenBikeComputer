@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// **Grouped List & Row** (§9, EXT) — the device `ListRow` re-cut for iOS
-/// settings: inset panel groups (14pt radius) with an uppercase header,
-/// hairline-divided rows (52pt min height), tinted 28pt icon tiles, chevrons,
-/// section footers, disabled + "coming soon" rows.
-///
-///     OBCGroupedSection("Device", footer: "…") {
-///         OBCListRow(icon: "antenna…", iconColor: .forest, label: "Trailhead") { … }
-///         OBCListRow(icon: "arrow.up", iconColor: .wood, label: "Firmware", comingSoon: true)
-///     }
 public struct OBCGroupedSection<Rows: View>: View {
     let header: String?
     let footer: String?

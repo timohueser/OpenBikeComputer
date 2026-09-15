@@ -52,7 +52,6 @@ use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
 use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
-use obc_app::weather::{WeatherEffect, WeatherOutcome};
 use obc_app::{App, AppState, Gesture, RecorderIntent, RideRetentionRecord, WarningFlags};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
@@ -153,7 +152,7 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
     detour: true,
     settings_persistence: true,
     dfu: true,
-    weather: true,
+
     bonding: true,
     storage_space_report: true,
     // The folder stores keep the retention sidecars beside their objects.
@@ -206,7 +205,7 @@ enum Done {
     Dfu(DfuOutcome),
     Storage(StorageInfoOutcome),
     Bond(obc_app::ble::BondOutcome),
-    Weather(WeatherOutcome),
+
     Recorder(RecorderOutcome),
     RideTrack(DerivedInput<RideTrackKey>),
     NavPreview(DerivedInput<NavPreviewKey>),
@@ -252,7 +251,7 @@ impl CoreHarness {
         &mut self.state.app
     }
 
-    /// One DeviceCore frame: whatever the executor handed back, then fourteen stages, then a plan.
+    /// One DeviceCore frame: whatever the executor handed back, then thirteen stages, then a plan.
     ///
     /// The clock moves one millisecond per pass — the corpus's actions drive the app's animation
     /// clock directly and time otherwise stands still, so a runner that ran the clock faster would
@@ -287,7 +286,7 @@ impl CoreHarness {
             gestures: &[],
             sensors: Sensors::new(&mut location),
             route: None,
-            weather: state.weather.as_ref(),
+
             support: EVERYTHING,
             outcomes: &mut state.outcomes,
             facts: &mut state.facts,
@@ -319,7 +318,6 @@ impl CoreHarness {
             }
         }
         let mut persisted = None;
-        let mut marks_answer = None;
         if let Some(effect) = effects.settings.take() {
             self.served.insert("settings");
             match effect {
@@ -327,12 +325,6 @@ impl CoreHarness {
                     self.state.settings_token = Some(token);
                     self.settings_writes.push(revision);
                     persisted = Some(revision);
-                }
-                // The alert-mark record shares this slot. No corpus scenario fires a storm, so
-                // there is no script for it — acknowledge it at once rather than let a future one
-                // park the handshake.
-                SettingsEffect::PersistAlertMarks { token, revision } => {
-                    marks_answer = Some(SettingsOutcome::MarksPersisted { token, revision });
                 }
             }
         }
@@ -348,13 +340,6 @@ impl CoreHarness {
             let StorageInfoEffect::MeasureFreeSpace { token } = effect;
             done.push(Done::Storage(StorageInfoOutcome::Measured { token, free_bytes: 8 * 1024 * 1024 }));
         }
-        if let Some(WeatherEffect::RequestRefresh { token }) = effects.weather.take() {
-            self.served.insert("weather");
-            // **Raise** and answer that, nothing more: what comes back is the installed-data fact,
-            // and whether a fetch is running is the provider plane's own level.
-            self.state.weather_refreshes += 1;
-            done.push(Done::Weather(WeatherOutcome::Raised { token }));
-        }
         if let Some(BondEffect::Forget { token }) = effects.bond.take() {
             self.served.insert("bond");
             done.push(Done::Bond(obc_app::ble::BondOutcome::KeysRemoved {
@@ -363,13 +348,7 @@ impl CoreHarness {
             }));
         }
         assert!(!effects.has_pending());
-        // The marks record shares the settings slot but has no script of its own, so it answers
-        // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
-        // preferences write — is skipped for that pass only.
-        match marks_answer {
-            Some(outcome) => done.push(Done::Settings(outcome)),
-            None => self.serve_scripted(persisted, done),
-        }
+        self.serve_scripted(persisted, done);
     }
 
     /// Serve one navigation operation from the corpus's scripted planner answers.
@@ -651,12 +630,7 @@ impl TraceHarness<Action> for CoreHarness {
     type Outcome = Done;
 
     fn snapshot(&self) -> Self::State {
-        visible_state(
-            &self.state.app,
-            self.state.settings_revision,
-            self.state.retention_delete_attempts,
-            self.state.weather_refreshes,
-        )
+        visible_state(&self.state.app, self.state.settings_revision, self.state.retention_delete_attempts)
     }
 
     fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<Self::State>) {
@@ -701,9 +675,7 @@ impl TraceHarness<Action> for CoreHarness {
             Done::Storage(outcome) => {
                 let _ = self.state.outcomes.storage_info.try_put(outcome);
             }
-            Done::Weather(outcome) => {
-                let _ = self.state.outcomes.weather.try_put(outcome);
-            }
+
             Done::Recorder(outcome) => {
                 let _ = self.state.outcomes.recorder.try_put(outcome);
             }
@@ -1177,7 +1149,7 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     let facts = |heavy| DeviceFacts {
         store_writable: true,
         nav_graph: true,
-        weather_data: false,
+
         link_connected: true,
         ride_recording: false,
         heavy_operations: heavy,
@@ -1557,82 +1529,6 @@ fn an_object_that_vanished_before_the_commit_is_a_success() {
     );
 }
 
-// ==================== the four weather requirements (#1549) ====================
-//
-// `weather.refresh-install-stale-alert` carried four requirements and four host setter calls, and
-// nothing asserted any of them. A requirement in `ALL_REQUIREMENTS` with no assertion behind it is
-// exactly as ungated as one that is missing — the S6c lesson's other half. Each of the four below
-// names what it now gates, and every one of them reads `WeatherDomain` rather than a host mirror.
-
-/// **Opening the dashboard raises exactly one refresh** (`Requirement::WeatherRefreshState`).
-///
-/// The rider walks the Menu to the Weather station; `menu.rs`'s row names
-/// `WeatherIntent::RefreshRequested`, and stage 10 turns it into one `WeatherEffect::RequestRefresh`
-/// once the companion capability is up. One radio trip, not two, and not none.
-#[test]
-fn opening_the_weather_dashboard_raises_exactly_one_refresh() {
-    for runner in Runner::ALL {
-        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
-        assert_eq!(
-            settled.weather_refreshes,
-            1,
-            "{}: the dashboard's one entry edge must raise exactly one request",
-            runner.name()
-        );
-    }
-}
-
-/// **The installed identity reaches the domain and survives everything after it**
-/// (`Requirement::WeatherInstalledDataChange`).
-///
-/// The platform reports what it installed; `WeatherDomain` is the only thing that holds it, and
-/// neither a later resample nor an alert can walk it back.
-#[test]
-fn the_installed_weather_identity_is_the_domains_and_it_holds() {
-    let expected = obc_app::device_core::WeatherData {
-        data: obc_app::device_core::DataIdentity::new(device_core_corpus::WEATHER_PRODUCT),
-        revision: Revision::new(1),
-    };
-    for runner in Runner::ALL {
-        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
-        assert_eq!(settled.weather_installed, Some(expected), "{}: the installed level is lost", runner.name());
-    }
-}
-
-/// **A stale resample collapses the step range and installs nothing**
-/// (`Requirement::WeatherStaleData`).
-///
-/// The bundle ages out from under the rider: the next sample finds no current frame, so the rain
-/// map has nothing ahead to step to — and the *installed* identity is untouched, because a sample
-/// that found nothing is not an uninstall. The step range is the domain's own derivation; no host
-/// computes it, which is why the two cadences agreeing on it says something.
-#[test]
-fn a_stale_resample_collapses_the_step_range_without_uninstalling() {
-    for runner in Runner::ALL {
-        let run = runner.run(named("weather.refresh-install-stale-alert"));
-        assert!(
-            run.trace.steps.iter().any(|step| step.visible_state.rain_steps_ahead == 4),
-            "{}: the five-frame bundle must first give the rain map four steps ahead",
-            runner.name()
-        );
-        assert_eq!(run.settled.rain_steps_ahead, 0, "{}: a stale sample has nothing ahead", runner.name());
-        assert!(run.settled.weather_installed.is_some(), "{}: a stale sample is not an uninstall", runner.name());
-    }
-}
-
-/// **The storm card reaches the rider** (`Requirement::WeatherAlertDelivery`).
-///
-/// The presentation seam is deliberately separate from the decision (a passkey prompt outranks the
-/// card, and a full stack refuses it), so what this pins is that a delivered card is on top and
-/// stays there through the settle.
-#[test]
-fn the_delivered_storm_card_is_what_the_rider_is_looking_at() {
-    for runner in Runner::ALL {
-        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
-        assert_eq!(settled.screen, ScreenState::WeatherAlert, "{}: the storm card is not up", runner.name());
-    }
-}
-
 /// **A completed removal is followed by the re-read the domain orders** (#1541,
 /// `Requirement::CatalogDeleteOrdersRefresh`). No executor composes a refresh any more, so a deleted
 /// row leaves the rider's menu only because `CatalogMachine` ordered the read that re-fills it — and
@@ -1716,7 +1612,7 @@ fn capabilities_follow_the_mounted_data_and_the_platform() {
     let facts = |nav_graph| DeviceFacts {
         store_writable: true,
         nav_graph,
-        weather_data: false,
+
         link_connected: false,
         ride_recording: false,
         heavy_operations: true,
@@ -1768,7 +1664,7 @@ fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
     let facts = DeviceFacts {
         store_writable: true,
         nav_graph: true,
-        weather_data: false,
+
         link_connected: false,
         ride_recording: false,
         heavy_operations: true,
@@ -1918,7 +1814,7 @@ fn recorder() -> TraceRecorder<VisibleState> {
 }
 
 fn blank_state() -> VisibleState {
-    visible_state(&App::new_idle(AppState::new(0, 0, 1.0)), 0, 0, 0)
+    visible_state(&App::new_idle(AppState::new(0, 0, 1.0)), 0, 0)
 }
 
 /// The one warning path the pass owns end to end: a fault raised by any producer reaches the rider
@@ -2064,9 +1960,8 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
     assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
 }
 
-/// Explicit planner phases and cancellation settlement add seven timed passes to the replay.
-/// Immediate and sleep counts stay unchanged.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (218, 7, 140, 71);
+/// The wake counts for the complete scenario table.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (208, 7, 137, 64);
 
 // ==================== the resource gate ====================
 
@@ -2079,8 +1974,8 @@ const WAKE_PROFILE: (u32, u32, u32, u32) = (218, 7, 140, 71);
 fn the_pass_protocol_stays_within_its_budget() {
     use std::mem::size_of;
 
-    assert!(size_of::<EffectSlots>() <= 216, "nine bounded effects: {}", size_of::<EffectSlots>());
-    assert!(size_of::<OutcomeSlots>() <= 248, "nine bounded outcomes: {}", size_of::<OutcomeSlots>());
+    assert!(size_of::<EffectSlots>() <= 216, "eight bounded effects: {}", size_of::<EffectSlots>());
+    assert!(size_of::<OutcomeSlots>() <= 248, "eight bounded outcomes: {}", size_of::<OutcomeSlots>());
     assert!(size_of::<DerivedNeeds>() <= 64);
     assert!(size_of::<DerivedInputs>() <= 80);
 
@@ -2092,7 +1987,6 @@ fn the_pass_protocol_stays_within_its_budget() {
         size_of::<RecorderEffect>(),
         size_of::<NavigatorEffect>(),
         size_of::<SettingsEffect>(),
-        size_of::<WeatherEffect>(),
         size_of::<DfuEffect>(),
         size_of::<BondEffect>(),
         size_of::<StorageInfoEffect>(),
