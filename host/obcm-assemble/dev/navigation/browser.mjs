@@ -13,8 +13,10 @@ const requireBuilder = createRequire(resolve(root, 'builder/app/package.json'));
 const requireBrowser = createRequire(resolve(root, 'apps/obc-web-demo/tests/browser/package.json'));
 const { createServer } = await import(requireBuilder.resolve('vite'));
 const { chromium } = requireBrowser('playwright');
-const [input, output] = process.argv.slice(2);
-if (!input || !output) throw new Error('Usage: node browser.mjs INPUT_DIRECTORY OUTPUT.json');
+const [input, output, blockArg] = process.argv.slice(2);
+const readBlockBytes = blockArg === undefined ? 65536 : Number(blockArg);
+if (![4096, 65536].includes(readBlockBytes)) throw new Error("Expected 4096 or 65536 read block bytes");
+if (!input || !output) throw new Error('Usage: node browser.mjs INPUT_DIRECTORY OUTPUT.json [4096|65536]');
 const manifest = JSON.parse(readFileSync(resolve(here, 'inputs.json')));
 const files = new Map(manifest.objects.map(e => [e.sha256, resolve(input, e.sha256 + (e.band === 'terrain' ? '.obcd' : '.obcm'))]));
 const wrapper = `
@@ -86,7 +88,7 @@ try {
   page.on('pageerror', error => console.error(error));
   page.on('console', message => { if(message.text().startsWith('NG1 ')) console.log(message.text()); });
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/ng`);
-  const result = await page.evaluate(async (manifest) => {
+  const result = await page.evaluate(async ({manifest, readBlockBytes}) => {
     const { openCellStore } = await import('/src/lib/cells/store.ts');
     const store = await openCellStore('ng1');
     if (!store) throw new Error('OPFS input unavailable');
@@ -126,7 +128,7 @@ try {
       worker.onerror = bad;
       worker.postMessage({type:'assemble',requireDisk:true,cells:[],cellStore:'ng1',sourceCells,knownEmpty:[],
         schemaJson:JSON.stringify({schema:manifest.schema}),skinJson:JSON.stringify(manifest.skin),
-        options:{mergeBudgetBytes:manifest.options.merge_budget_bytes,acceptPartial:manifest.options.accept_partial,acceptHoles:manifest.options.accept_holes},
+        options:{readBlockBytes,mergeBudgetBytes:manifest.options.merge_budget_bytes,acceptPartial:manifest.options.accept_partial,acceptHoles:manifest.options.accept_holes},
         terrain:{postingLog2:manifest.terrain.posting_log2,cellLog2:manifest.terrain.cell_log2},terrainCells},
         terrainCells.map(e=>e.bytes.buffer));
     });
@@ -137,7 +139,7 @@ try {
     const stored = messages.find(m=>m.type==='stored-map');
     if (!stored || stored.byteLength !== globalThis.ngOutput.size) throw new Error('Missing or short sunk output');
     return {request_ms,estimate,done,stored,reading:messages.find(m=>m.type==='reading'),writing:messages.find(m=>m.type==='writing'),visibility:document.visibilityState};
-  }, manifest);
+  }, {manifest, readBlockBytes});
   console.log(JSON.stringify({stage:'assembled',request_ms:result.request_ms,...result.done.measurement}));
   // Read back in bounded chunks after the assembly timing and memory observation.
   const hash = createHash('sha256');
@@ -151,6 +153,7 @@ try {
   }
   result.readback_sha256 = hash.digest('hex');
   if (result.readback_sha256 !== result.stored.sha256) throw new Error('Independent output digest mismatch');
+  result.read_block_bytes = readBlockBytes;
   result.measured_at_utc = new Date().toISOString();
   result.source_commit = execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
   result.wasm_sha256 = createHash('sha256').update(readFileSync(resolve(root,'builder/app/src/lib/assemble/pkg/obc_web_assemble_bg.wasm'))).digest('hex');
