@@ -97,6 +97,7 @@ CODE_OR_POLICY_SUFFIXES = {
 WORKFLOW_MARKERS = (
     "cargo test",
     "cargo nextest run",
+    "cargo check",
     "cargo clippy",
     "cargo fmt",
     "cargo deny",
