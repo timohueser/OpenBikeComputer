@@ -71,12 +71,10 @@ impl VisitHarness {
             gestures: &[],
             sensors: obc_ports::Sensors::new(&mut NoFix),
             route: None,
-            weather: None,
             support: PlatformSupport {
                 detour: true,
                 settings_persistence: false,
                 dfu: false,
-                weather: false,
                 bonding: false,
                 storage_space_report: false,
                 retention_metadata: true,
