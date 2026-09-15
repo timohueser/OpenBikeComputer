@@ -631,7 +631,14 @@ impl HostLoop {
                     Some(InflightPlan::VisitReady(plan, stats)) => (plan.bytes(), stats, Default::default()),
                     _ => return failed(NavigatorError::Workspace),
                 };
-                if app.assistant_review_context().is_some() {
+                if let Some(context) = app.assistant_review_context() {
+                    if context.purpose == obc_app::navigator::ReviewPurpose::Destination
+                        && app.assistant_visit_target().is_some_and(|target| {
+                            target.validate_destination(&obc_formats::io::SliceSource(bytes), context.profile).is_err()
+                        })
+                    {
+                        return failed(NavigatorError::Unavailable);
+                    }
                     return Some(match routes.publish_review_route(bytes) {
                         Ok(publication) => {
                             self.publication = Some(publication);
