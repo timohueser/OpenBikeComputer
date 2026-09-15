@@ -213,7 +213,7 @@ class LeadImage(HTMLParser):
         attrs = dict(attrs)
         if attrs.get("id") == "mw-content-text":
             self.in_content = True
-        if self.in_content and tag == "h2":
+        if self.in_content and not self.finished and tag == "h2":
             self.finished = True
             self.status = "unsupported-lead"
         if self.in_content and not self.finished and tag == "a" and "mw-file-description" in attrs.get("class", "").split():

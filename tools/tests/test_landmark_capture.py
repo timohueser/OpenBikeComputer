@@ -111,10 +111,11 @@ class LandmarkCaptureTests(unittest.TestCase):
         parser = LeadImage()
         parser.feed('<a class="mw-file-description" href="/wiki/File:Outside.jpg"></a><div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Example_%C3%A9.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Example_%C3%A9.jpg/240px-Example.jpg"></a><h2>History</h2><a class="mw-file-description" href="/wiki/File:Other.jpg"></a></div>')
         self.assertEqual(parser.filename, "Example é.jpg")
+        self.assertEqual(parser.status, "commons")
 
     def test_local_lead_does_not_select_a_same_named_commons_file(self):
         parser = LeadImage()
-        parser.feed('<div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Local.jpg"><img src="//upload.wikimedia.org/wikipedia/en/a/a1/Local.jpg"></a><a class="mw-file-description" href="/wiki/File:Later.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/a/a1/Later.jpg"></a></div>')
+        parser.feed('<div id="mw-content-text"><a class="mw-file-description" href="/wiki/File:Local.jpg"><img src="//upload.wikimedia.org/wikipedia/en/a/a1/Local.jpg"></a><a class="mw-file-description" href="/wiki/File:Later.jpg"><img src="//upload.wikimedia.org/wikipedia/commons/a/a1/Later.jpg"></a><h2>History</h2></div>')
         self.assertIsNone(parser.filename)
         self.assertEqual(parser.status, "unsupported-repository")
 
