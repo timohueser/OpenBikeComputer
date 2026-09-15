@@ -17,6 +17,8 @@ pub struct LandmarkPhotoScreen {
     pub(crate) status: Status,
     pub(crate) covered_rebuild: bool,
     title: heapless::String<32>,
+    pub(crate) linked: bool,
+    pub(crate) source_valid: bool,
 }
 
 impl LandmarkPhotoScreen {
@@ -27,7 +29,25 @@ impl LandmarkPhotoScreen {
                 break;
             }
         }
-        Self { selection, revision: 0, status: Status::Fresh, covered_rebuild: false, title: label }
+        Self {
+            selection,
+            revision: 0,
+            status: Status::Fresh,
+            covered_rebuild: false,
+            title: label,
+            linked: false,
+            source_valid: true,
+        }
+    }
+
+    pub(crate) fn invalidate_source(&mut self) {
+        self.source_valid = false;
+        self.status = Status::Unavailable;
+    }
+
+    pub(crate) fn linked(mut self) -> Self {
+        self.linked = true;
+        self
     }
 
     pub(crate) fn invalidate(&mut self, covered: bool) {
@@ -49,7 +69,23 @@ impl LandmarkPhotoScreen {
         Canvas::new(target, color).text(message, Point::new(120, 142), Font::Label, TextAlign::Center, INK);
     }
 
-    pub fn handle(&mut self, gesture: Gesture, _cx: &mut Ctx) -> Transition {
+    pub fn handle(&mut self, gesture: Gesture, cx: &mut Ctx) -> Transition {
+        if self.linked {
+            match gesture {
+                Gesture::Step(n) => {
+                    if let Some(record) = cx.landmarks.record {
+                        cx.landmarks.page = if n < 0 { record.text_pages as u16 - 1 } else { 0 };
+                    }
+                    return Transition::Pop;
+                }
+                Gesture::Press => {
+                    if let Some(poi) = super::landmarks::detail(cx.landmarks) {
+                        return Transition::Push(super::Screen::PoiDetail(super::PoiDetailScreen::new(poi)));
+                    }
+                }
+                _ => {}
+            }
+        }
         match gesture {
             Gesture::Back | Gesture::Press => Transition::Pop,
             _ => Transition::None,
@@ -65,5 +101,9 @@ impl LandmarkPhotoScreen {
         cv.clear(PARCHMENT);
         cv.round(obc_render::rect(4, 4, 232, 34), 6, WOOD);
         cv.text(self.title.as_str(), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+        if self.linked {
+            cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
+            cv.text("Visit / Up or Down", Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+        }
     }
 }

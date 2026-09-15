@@ -110,7 +110,7 @@ impl SimGui {
                                     }
                                 });
                             if previous != self.assistant_scenario {
-                                self.app.set_assistant_candidates(self.assistant_scenario.candidates());
+                                self.app.set_assistant_demo_candidates(self.assistant_scenario.candidates());
                                 self.sync_assistant_position();
                             }
                             let demo = self.app.state.assistant_demo.unwrap();

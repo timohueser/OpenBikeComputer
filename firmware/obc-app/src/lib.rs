@@ -48,6 +48,7 @@ pub mod host;
 pub mod i18n;
 pub mod input;
 pub mod input_plane;
+pub mod landmarks;
 pub mod map_catalog;
 pub mod nav_profiles;
 pub mod navigator;

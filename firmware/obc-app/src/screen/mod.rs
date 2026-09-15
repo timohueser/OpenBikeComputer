@@ -37,6 +37,7 @@ mod dfu;
 mod find_place;
 mod home;
 mod landmark_photo;
+mod landmarks;
 mod map;
 mod map_transfer;
 mod menu;
@@ -75,6 +76,7 @@ pub use dfu::{
 pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
 pub use landmark_photo::LandmarkPhotoScreen;
+pub use landmarks::{LandmarkSourcesScreen, LandmarksScreen};
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
@@ -215,6 +217,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 /// render half is [`Render`].
 pub struct Ctx<'a> {
     pub find: &'a mut crate::find_place::FindState,
+    pub landmarks: &'a mut crate::landmarks::Landmarks,
     pub place_local: Option<(u8, u16)>,
     pub state: &'a mut AppState,
     pub activity: &'a mut Activity,
@@ -298,6 +301,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
         find: Box::leak(Box::new(crate::find_place::FindState::new())),
+        landmarks: Box::leak(Box::new(crate::landmarks::Landmarks::new())),
         place_local: None,
         state,
         activity,
@@ -339,6 +343,7 @@ pub struct ActiveClimb<'a> {
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
     pub find: &'a crate::find_place::FindState,
+    pub landmarks: &'a crate::landmarks::Landmarks,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
@@ -657,6 +662,7 @@ pub enum BaseContent {
 /// runtime pending check, but which check to run is chosen from this declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReaderNeed {
+    Landmarks,
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
     /// Always needs it — any [`Map`](BaseContent::Map) base screen.
@@ -1019,6 +1025,8 @@ screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
     Assistant(AssistantScreen) => Caps::map(),
+    Landmarks(LandmarksScreen) => Caps::map(),
+    LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Landmarks),
     LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
@@ -1266,6 +1274,8 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::Landmarks(_) => Some(&context_drawer::LANDMARK_CONTENT),
+            Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),
             Screen::Assistant(s) if s.has_ahead_context() => Some(&context_drawer::UP_AHEAD),
 
@@ -1637,7 +1647,7 @@ mod tests {
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
-                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo => {
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo | ReaderNeed::Landmarks => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
                     assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
                 }
@@ -1716,9 +1726,8 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Assistant", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview"],
+            ["Map", "Assistant", "Landmarks", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview"],
             "streamed map and prepared photo pixels stay unchanged while covered"
-
         );
     }
 

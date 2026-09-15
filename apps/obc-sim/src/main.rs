@@ -961,6 +961,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             // One route-aware tick (see the fn doc): sync + open the active route and run the
             // once-per-load state builds the GUI's per-frame tick would have run.
             'T' => hook(app, ScriptHook::Tick, now),
+            'L' => app.open_landmarks(),
             // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
             // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
@@ -1043,7 +1044,7 @@ Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,
-                           w wait, f frame, T tick, I idle)
+                           w wait, f frame, T tick, I idle, L production landmarks)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour

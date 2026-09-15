@@ -81,12 +81,15 @@ impl Runtime {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        if reader.is_none_or(|reader| reader.generation() != page.selection.map_generation) {
+        if !page.source_valid || reader.is_none_or(|reader| reader.generation() != page.selection.map_generation) {
             page.status = Status::Unavailable;
             clear(target, &color);
         }
         if !matches!(page.status, Status::Fresh | Status::Pending) {
             self.cancel();
+            if page.status == Status::Unavailable {
+                clear(target, &color);
+            }
             page.draw_status(target, &color);
             return;
         }

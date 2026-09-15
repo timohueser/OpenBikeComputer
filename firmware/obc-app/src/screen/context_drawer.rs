@@ -324,6 +324,7 @@ fn filter_choice(filter: PoiCategorySet) -> u8 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextAction {
     AssistantSources,
+    LandmarkSources,
     /// The merged waypoint + corridor-POI timeline, anchored on live progress at entry.
     UpAhead,
     /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
@@ -357,6 +358,7 @@ impl ContextAction {
     fn available(self, f: &ContextFacts) -> bool {
         match self {
             ContextAction::AssistantSources => f.state.assistant_demo.is_some(),
+            ContextAction::LandmarkSources => true,
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
             ContextAction::UpAhead | ContextAction::Pois | ContextAction::Routes => true,
@@ -376,6 +378,10 @@ impl ContextAction {
     fn open(self, cx: &mut Ctx) -> Option<Transition> {
         Some(Transition::Replace(match self {
             ContextAction::AssistantSources => Screen::Assistant(super::AssistantScreen::sources()),
+            ContextAction::LandmarkSources => {
+                cx.landmarks.source_page = 0;
+                Screen::LandmarkSources(super::LandmarkSourcesScreen)
+            }
             ContextAction::UpAhead => {
                 // The list always opens on **Everything** (epic #946, U3): the filter is selection
                 // state, cleared on entry so a category the
@@ -933,6 +939,9 @@ impl ContextDrawerScreen {
         cv.disc(Point::new(knob, y), 3, palette::INK);
     }
 }
+
+pub static LANDMARK_CONTENT: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::RideContextSources, action: ContextAction::LandmarkSources }] };
 
 #[cfg(test)]
 mod tests {
