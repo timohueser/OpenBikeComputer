@@ -332,17 +332,22 @@ fn visits_measure_complete_graph_paths_and_real_cancellation_connectors() {
         }
         panic!("bounded visit did not complete")
     };
-    // An anchor beside the graph cannot invent a connector from the retained prefix.
+    // A nearby imported anchor keeps its measured connection and the original continuation.
     let mut offset = crate::VecSink::default();
     obc_route::gpx_to_obcr(&SliceSource(b"<gpx><trk><trkseg><trkpt lon=\"0.500\" lat=\"0.500\"/><trkpt lon=\"0.520\" lat=\"0.5001\"/><trkpt lon=\"0.530\" lat=\"0.5001\"/></trkseg></trk></gpx>"),"Offset tail",&mut offset).unwrap();
     let offset_source = SliceSource(offset.bytes());
     let offset_index = obc_route::RouteIndex::read(&offset_source).unwrap();
     let offset_route = obc_route::RouteReader::new(&offset_index, &offset_source);
     let mut fallback = crate::nav_visit::VisitPlan::start(context, Some(target), &offset_route).unwrap();
-    let refusal =
-        (0..512).find_map(|_| fallback.step(&p.map.reader(), &offset_route, &mut obc_route::NullElevation).err());
-    assert_eq!(refusal, Some(NavigatorError::Unavailable));
-    assert!(fallback.searches() <= 2);
+    let offset_stats = run(&mut fallback, &offset_route);
+    assert_eq!(fallback.searches(), 2);
+    assert!(offset_stats.total_distance_m > offset_route.total_distance_m);
+    let offset_visit = SliceSource(fallback.bytes());
+    let offset_index = obc_route::RouteIndex::read(&offset_visit).unwrap();
+    let offset_reader = obc_route::RouteReader::new(&offset_index, &offset_visit);
+    assert_eq!(offset_reader.preview_polyline::<64>().last(), Some(&(530_000, 500_100)));
+    let stop = offset_reader.visit_descriptor().unwrap().unwrap().accepted_anchors_m[1];
+    assert!(!VisitCosts::read(&offset_visit, [0, stop]).unwrap().complete_elevation);
     let mut visit = crate::nav_visit::VisitPlan::start(context, Some(target), &original).unwrap();
     let stats = run(&mut visit, &original);
     assert_eq!(visit.searches(), 2);
