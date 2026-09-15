@@ -189,22 +189,22 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
     --script "Q d p p d d d d p d p f p f" --expect-screen PoiDetail --png "$OUT/poi-detail-split-hours.png"
 # Selected-place profile controls and real offline Visit preview share the production owner.
 PLACEDETAIL="Q d p p d d d p d p f p f"
-"$SIM" "$MONACO" --boot --center 7416969,43730798 --clock "2025-01-06T12:00" \
+"$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
     --script "$PLACEDETAIL C" --expect-screen ContextDrawer --png "$OUT/route-plan-context.png"
-"$SIM" "$MONACO" --boot --center 7416969,43730798 --clock "2025-01-06T12:00" \
+"$SIM" "$MONACO" --boot --heading 0 --center 7416969,43730798 --clock "2025-01-06T12:00" \
     --script "$PLACEDETAIL C p w d" --expect-screen ContextDrawer --png "$OUT/route-plan-biketype-editor.png"
 LANDMARKS="Q d p d d d d d p f"
-"$SIM" "$CORK" --boot --center -9829419,51482665 --script "$LANDMARKS" \
+"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "$LANDMARKS" \
     --expect-screen Landmarks --png "$OUT/landmarks.png"
-"$SIM" "$CORK" --boot --center -9829419,51482665 --script "$LANDMARKS p f u f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "$LANDMARKS p f u f" \
     --expect-screen LandmarkPhoto --png "$OUT/landmark-photo.png"
-"$SIM" "$CORK" --boot --center -9829419,51482665 --script "$LANDMARKS p f C p f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "$LANDMARKS p f C p f" \
     --expect-screen LandmarkSources --png "$OUT/landmark-sources.png"
-"$SIM" "$CORK" --boot --center -9825560,51485575 --script "$LANDMARKS p p f p f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9825560,51485575 --script "$LANDMARKS p p f p f" \
     --expect-screen VisitReview --png "$OUT/visit-preview.png"
-"$SIM" "$CORK" --boot --center -9825560,51485575 --script "$LANDMARKS p p f p f p f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9825560,51485575 --script "$LANDMARKS p p f p f p f" \
     --expect-screen Map --png "$OUT/visit-accepted.png"
-"$SIM" "$CORK" --boot --center -9829419,51482665 --script "Q d p p p f" \
+"$SIM" "$CORK" --boot --heading 0 --center -9829419,51482665 --script "Q d p p p f" \
     --expect-screen FindPlace --png "$OUT/find-place.png"
 
 # The existing Detour planner uses the real imported Monaco loop and an actual replay fix.
