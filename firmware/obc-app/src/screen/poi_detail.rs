@@ -251,24 +251,24 @@ impl PoiDetailScreen {
         {
             "Closed"
         } else if rx.no_fix {
-            "GPS fix required"
+            "GPS required"
         } else if self
             .poi
             .metadata
             .approach
             .is_none_or(|a| a.profile_mask & (1 << rx.settings.bike_profile_idx.min(7)) == 0)
         {
-            "No mapped access"
+            "No road access"
         } else {
             use crate::navigator::VisitUnavailable::*;
             match self.visit_error {
-                Some(NoFix) => "GPS fix required",
-                Some(NoMappedAccess) => "No mapped access",
-                Some(Profile) => "Profile unavailable",
+                Some(NoFix) => "GPS required",
+                Some(NoMappedAccess) => "No road access",
+                Some(Profile) => "Profile blocked",
                 Some(SourceChanged) => "Map changed",
                 Some(Busy) => "Planner busy",
-                Some(Avoidance) => "Avoidance unavailable",
-                Some(Unmatched) => "Route position unknown",
+                Some(Avoidance) => "Blocked route",
+                Some(Unmatched) => "Route unmatched",
                 None => "Review visit",
             }
         };

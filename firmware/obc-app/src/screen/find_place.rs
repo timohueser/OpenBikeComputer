@@ -169,17 +169,23 @@ impl FindPlaceScreen {
             rx.find.selected(self.selected, rx.poi_scratch, rx.corridor).filter(|_| rx.find.state == State::Ready)
         else {
             let title = match rx.find.state {
-                State::NoFix => "GPS fix required",
-                State::NoMap => "No map available",
-                State::NoAccess => "No routing graph",
-                State::Failed => "Place data unavailable",
-                State::Stale => "Refresh required",
-                State::Ready => "No useful choices",
-                State::Empty => "No places in scope",
+                State::NoFix => "GPS required",
+                State::NoMap => "No map",
+                State::NoAccess => "No graph",
+                State::Failed => "Data error",
+                State::Stale => "Refresh needed",
+                State::Ready => "No choices",
+                State::Empty => "None found",
                 _ => "Finding places",
             };
             cv.text(title, Point::new(18, 236), Font::Body, TextAlign::Left, INK);
-            cv.text("More places / Refresh", Point::new(18, 270), Font::Label, TextAlign::Left, SUBTEXT);
+            cv.text(
+                if matches!(rx.find.state, State::Empty | State::Ready) { "Partial search" } else { "More / Refresh" },
+                Point::new(18, 270),
+                Font::Label,
+                TextAlign::Left,
+                SUBTEXT,
+            );
             return;
         };
         let Some(cost) = rx.find.costs(self.selected) else { return };
@@ -194,7 +200,7 @@ impl FindPlaceScreen {
         } else {
             poi.name.as_str()
         };
-        cv.text(&super::poi_list::fit(name, 17), Point::new(18, 236), Font::Body, TextAlign::Left, INK);
+        cv.text(&super::poi_list::fit(name, 15), Point::new(18, 236), Font::Body, TextAlign::Left, INK);
         if poi.opening == obc_reader::hours::OpeningStatus::Closed {
             cv.text("Closed", Point::new(18, 264), Font::Label, TextAlign::Left, WARNING);
             return;
@@ -267,7 +273,7 @@ impl VisitReviewScreen {
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        cv.text(&self.name, Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
+        cv.text(&super::poi_list::fit(&self.name, 18), Point::new(14, 8), Font::Label, TextAlign::Left, PARCHMENT);
         cv.fill(rect(0, 192, rx.w, rx.h - 192), PARCHMENT);
         if let Some(Costs { arrival_m, arrival_ascent_m, added_m, added_ascent_m }) = rx.find.review_costs {
             figures(cv, arrival_m, arrival_ascent_m, 196, false);
