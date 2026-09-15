@@ -155,6 +155,7 @@ pub(super) struct ReviewState {
     pub preview: Option<ReviewedRoute>,
     pub preview_index: Option<usize>,
     pub unaccepted: u64,
+    pub internal_routes: u64,
     pub checkpoint: Option<NavigatorCheckpoint>,
     pub change: Option<Option<NavigatorCheckpoint>>,
     pub token: Option<OperationToken<MetadataTag>>,
@@ -174,6 +175,7 @@ impl ReviewState {
             preview: None,
             preview_index: None,
             unaccepted: 0,
+            internal_routes: 0,
             checkpoint: None,
             change: None,
             token: None,
@@ -221,6 +223,13 @@ impl NavigatorMachine {
     pub fn route_unaccepted(&self, index: usize) -> bool {
         index < 64 && self.review.unaccepted & (1 << index) != 0
     }
+    /// Generated Assistant routes stay internal even after they are accepted.
+    pub fn internal_routes(&self) -> u64 {
+        self.review.internal_routes
+    }
+    pub(crate) fn set_internal_routes(&mut self, mask: u64) {
+        self.review.internal_routes = mask;
+    }
     pub(crate) fn set_unaccepted_routes(&mut self, mask: u64) {
         self.review.unaccepted = mask;
     }
@@ -253,15 +262,17 @@ impl NavigatorMachine {
         true
     }
     pub(crate) fn remap_review_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        let mut mask = 0;
-        for old in 0..64 {
-            if self.route_unaccepted(old) {
-                if let Some(new) = remap(old).filter(|&index| index < 64) {
-                    mask |= 1 << new;
+        for mask in [&mut self.review.unaccepted, &mut self.review.internal_routes] {
+            let mut next = 0;
+            for old in 0..64 {
+                if *mask & (1 << old) != 0 {
+                    if let Some(new) = remap(old).filter(|&index| index < 64) {
+                        next |= 1 << new;
+                    }
                 }
             }
+            *mask = next;
         }
-        self.review.unaccepted = mask;
         self.review.preview_index = self.review.preview_index.and_then(remap);
         if let AfterCheckpoint::Select(index) = &mut self.review.after {
             *index = index.and_then(remap);

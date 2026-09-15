@@ -1179,6 +1179,18 @@ impl App {
         self.navigator.route_unaccepted(index)
     }
 
+    /// Saved Routes omits these rows; navigation and recovery keep the complete catalog.
+    pub fn set_internal_routes(&mut self, mask: u64) {
+        if self.navigator.internal_routes() != mask {
+            self.navigator.set_internal_routes(mask);
+            for screen in self.ui.stack.iter_mut() {
+                if let Screen::RouteMenu(menu) = screen {
+                    menu.remap_routes(&Some, self.catalogs.trips(), self.catalogs.route_len(), mask);
+                }
+            }
+            self.ui.map_dirty = true;
+        }
+    }
     pub fn set_unaccepted_routes(&mut self, mask: u64) {
         if self.navigator.unaccepted_routes() != mask {
             self.navigator.set_unaccepted_routes(mask);
@@ -1205,7 +1217,7 @@ impl App {
         let trips = catalogs.trips();
         for s in ui.stack.iter_mut() {
             match s {
-                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len),
+                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len, navigator.internal_routes()),
                 Screen::RouteOverview(o) => o.remap_routes(&remap),
                 Screen::RouteSwap(sw) => sw.remap_routes(&remap),
                 Screen::RouteReceived(rc) => rc.remap_routes(&remap),
@@ -3147,6 +3159,7 @@ impl App {
             settings,
             routes: catalogs.routes(),
             unaccepted_routes: navigator.unaccepted_routes(),
+            internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
@@ -6476,6 +6489,21 @@ mod tests {
 
         let _ = app.ui.stack.push(overview()); // …and comes back
         assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    #[test]
+    fn internal_route_visibility_follows_catalog_identity_without_unloading_navigation() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Visit"), summary("Saved")], &[10, 20]);
+        app.set_internal_routes(1);
+        app.navigator.route_state_mut().active_route = Some(0);
+        app.take_dirty();
+        app.set_internal_routes(1);
+        assert!(!app.take_dirty().map);
+        app.set_routes_with_ids(&[summary("Saved"), summary("Visit")], &[20, 10]);
+        assert_eq!(app.navigator.internal_routes(), 2);
+        assert_eq!(app.active_route_index(), Some(1));
+        assert_eq!(app.routes().len(), 2, "the durable navigation catalog stays complete");
     }
 
     #[test]
