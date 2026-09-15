@@ -29,9 +29,9 @@ gets from GPIO:
 | Backspace | Back |
 
 Because these are held-state edges, the device-wide **chords** work as they do on the device. Press
-Left and Enter (Up + Select) **within 100 ms of each other** to open the universal quick drawer; a
-larger gap is two ordinary gestures. Down + Back (Right and Backspace) is the contextual drawer's
-chord, on the same window; it is recognised, but it has no content yet.
+Left and Enter (Up + Select) **within 100 ms of each other**. Release before 500 ms to open the
+quick drawer, or hold both for 500 ms to open Ride Assistant directly. A larger gap is two ordinary
+gestures. Down + Back (Right and Backspace) opens the contextual drawer with the same 100 ms window.
 
 The mouse wheel over the screen injects selection steps directly, so it does not model a button and
 makes no chord.
@@ -130,9 +130,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ### Ride Assistant
 
-Open the top drawer with **Up + Select** (Left arrow + Enter), choose **Assistant**, and select
+Hold **Up + Select** (Left arrow + Enter) for **500 ms** to open Assistant, then select
 **Find a place**, **What's next**, **Easier route**, or **Landmarks**. The same Assistant menu is
-available from the main menu and map context. Bluetooth remains under **Settings → Connections → Phone**.
+available from the map context. Tap **Up + Select** for the quick drawer, which includes the
+Bluetooth on/off control. **Peak View** stays in the main menu; its screen reports missing GPS or
+terrain data. Bluetooth is also under **Settings → Connections → Phone**.
 The normal detour command remains in the map context. The three grey questions are inactive.
 
 Use an installed OBCM v16 map and an explicit simulator position, or play a captured GPS track.
@@ -152,7 +154,7 @@ For a named capture through normal physical-button gestures:
 ```sh
 cargo build -p obc-sim --bin obc-sim --locked
 target/debug/obc-sim --card west-cork.obc --center -9829419,51482665 --heading 0 \
-  --script 'Q d p d d d d d p f p f' --expect-screen Landmarks --png landmark-text.png
+  --script 'A d d d d d p f p f' --expect-screen Landmarks --png landmark-text.png
 ```
 
 The explicit center is a simulated GPS fix. Use `--lang en|de|fr|es` for UI copy; article language
@@ -216,7 +218,8 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
   before the process exits. This saves the recorder's final partial batch in the same session.
 - `--script TOKENS` applies device input before a headless render. `d`/`u` step, `p` selects, `h`
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
-  Up+Select chord that opens the universal quick drawer, `w` settles animation,
+  Up+Select chord that opens the universal quick drawer, `A` holds Up+Select to open Assistant,
+  `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
   With `--gpx`, `T` samples the actual track position selected by `--script-at` (or `--at` when omitted) through the normal location
   input and active-route matcher. Use it after starting a route and before opening a route action.

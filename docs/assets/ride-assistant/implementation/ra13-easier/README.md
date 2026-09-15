@@ -33,7 +33,7 @@ DATA=docs/assets/ride-assistant/implementation/ra13-easier
 mkdir -p "$OUT"
 "$SIM" --import "$DATA/meiringen-loop-dem.gpx" --routes-dir "$OUT/routes"
 "$SIM" "$MAP" --routes-dir "$OUT/routes" --create-card "$OUT/easier.card"
-PREP="p p p p b T Q d p d d p"
+PREP="p p p p b T A d d p"
 for i in $(seq 1 30); do PREP="$PREP f"; done
 "$SIM" --card "$OUT/easier.card" --gpx "$DATA/meiringen-loop-from-265.gpx" \
   --at 0 --boot --clock 2026-09-14T10:00 --utc-offset-min 120 \

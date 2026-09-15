@@ -6,9 +6,10 @@ copy: ai
 
 # Ride Assistant
 
-Open **Up + Select → Assistant** to find a place, inspect what comes next, compare easier routes,
+Hold **Up + Select** for **500 ms** to find a place, inspect what comes next, compare easier routes,
 or read about nearby landmarks. All four questions use installed offline data. The grey questions
-remain inactive. Bluetooth stays in Settings, and the working Detour command stays in the map context.
+remain inactive. Tap **Up + Select** to open the quick drawer with Bluetooth on/off. Peak View
+stays in the main menu. The Detour command stays in the map context.
 See the [simulator README](../../../apps/obc-sim/README.md#ride-assistant) for controls and data setup.
 
 ## Purpose
