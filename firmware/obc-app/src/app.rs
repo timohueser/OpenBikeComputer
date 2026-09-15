@@ -1989,8 +1989,8 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
-    /// Apply one device-wide [`Chord`] — **the drawer owner**, and the only place a drawer opens
-    /// or closes. Returns whether it moved anything.
+    /// Apply one device-wide [`Chord`]: a drawer toggle or direct Assistant entry.
+    /// Returns whether it moved anything.
     ///
     /// Resolved here rather than in a screen because a chord is not a screen's input: the
     /// recogniser already swallowed its constituents, and the sheet has to be able to open over
@@ -2014,6 +2014,26 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
+            Chord::Assistant => {
+                if let Some(index) = self.ui.stack.iter().rposition(|s| matches!(s, Screen::Assistant(_))) {
+                    self.ui.stack.truncate(index + 1);
+                } else {
+                    let assistant = Screen::Assistant(screen::AssistantScreen::new());
+                    let transition = if self.ui.stack.len() < self.ui.stack.capacity() {
+                        screen::Transition::Push(assistant)
+                    } else {
+                        screen::Transition::Root(assistant)
+                    };
+                    screen::apply(&mut self.ui.stack, transition);
+                }
+                self.ui.map_dirty = true;
+                self.ui.last_input_ms = self.ui.now_ms;
+                self.ui.idle_return_timing = true;
+                self.ui.input.cancel_holds();
+                self.ui.hold_cancel_pending = true;
+                self.ui.reconcile_corridor(self.up_ahead_scope());
+                true
+            }
             // The contextual sheet exists only where content is declared (#1515 D3): a base screen
             // that names no [`ContextMenu`](crate::screen::ContextMenu) gets nothing, not an empty
             // drawer. The squeeze is still swallowed by the recogniser, so it can never leak a step
@@ -2704,6 +2724,9 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        if let Some(remaining) = self.ui.input.chord_remaining_ms(clock.0) {
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(remaining, |wake| wake.min(remaining)));
+        }
         let place_local = self.place_local_time();
         if self.ui.stack.iter().any(|screen| {
             matches!(
@@ -3743,7 +3766,7 @@ mod tests {
             tick_fix(&mut app, Fix::at(0, 0), 0);
             app.ui.now_ms = if fresh { POSITION_FIX_FRESH_MS } else { POSITION_FIX_FRESH_MS + 1 };
             app.escape_to_menu();
-            app.apply_gesture(Gesture::Step(4));
+            app.apply_gesture(Gesture::Step(3));
             app.apply_gesture(Gesture::Press);
             assert!(app.peak_view_is_base());
             assert_eq!(app.peak_view_needs_position(), !fresh);
@@ -3791,6 +3814,22 @@ mod tests {
     /// One pass with nothing on any port — the quiet frame.
     fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
         pass_ports(app, now_ms, None, None)
+    }
+
+    #[test]
+    fn assistant_shortcut_at_full_stack_leaves_room_for_its_actions() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        while app.ui.stack.len() < app.ui.stack.capacity() {
+            screen::apply(&mut app.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
+        }
+        assert!(app.apply_chord(Chord::Assistant));
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
     }
 
     /// The frozen base, through a **real pass**: a fresh fix under an open drawer moves the camera

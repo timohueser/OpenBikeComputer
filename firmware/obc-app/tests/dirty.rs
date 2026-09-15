@@ -12,7 +12,7 @@ use obc_map_scene::BBox;
 use obc_ports::{Button, Fix};
 
 mod common;
-use common::{down, step, tap, Frames};
+use common::{down, step, tap, up, Frames};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
@@ -229,7 +229,9 @@ fn a_minute_rollover_under_an_open_drawer_asks_for_nothing() {
     assert_eq!(host.idle(&mut app, 60_100), Dirty::CLEAN, "…and then goes quiet again");
 
     // Squeeze the quick drawer open over it and let the sheet land.
-    for (dt, ev) in [(0, down(Button::Up)), (40, down(Button::Select))] {
+    for (dt, ev) in
+        [(0, down(Button::Up)), (40, down(Button::Select)), (100, up(Button::Select)), (120, up(Button::Up))]
+    {
         host.frame(&mut app, 61_000 + dt, &[ev], None, None);
     }
     host.idle(&mut app, 62_000);

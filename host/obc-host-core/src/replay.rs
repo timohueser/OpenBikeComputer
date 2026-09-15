@@ -54,3 +54,32 @@ pub fn replay_advance<'s>(
     };
     (RideClock(now_ms), sensors)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_app::{App, AppState};
+    use obc_ports::InputClock;
+    use obc_replay::gpx::{Track, TrackPoint};
+
+    #[test]
+    fn paused_replay_keeps_the_idle_apps_position_fresh_without_starting_a_ride() {
+        let mut player =
+            GpxPlayer::new(Track { points: vec![TrackPoint { lat: 46_700_000, lon: 8_200_000, ele: None, t: 0.0 }] });
+        let mut baro = BaroSensor::new();
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        for second in 0..=60 {
+            app.advance_animations(InputClock(second * 1_000));
+            let (ride, sensors) = replay_advance(&mut player, &mut baro, None, 1.0, ReplaySensors::default());
+            assert_eq!(ride.0, 0);
+            app.tick(ride, sensors, None);
+            let fix = app.fresh_position().expect("paused receiver remains current on the UI clock");
+            assert_eq!((fix.lat, fix.lon), (46_700_000, 8_200_000));
+            assert!(!app.recording());
+            assert!(app.active_route_index().is_none());
+        }
+        // A receiver which stops supplying fixes must still expire normally.
+        app.advance_animations(InputClock(120_000));
+        assert!(app.fresh_position().is_none());
+    }
+}
