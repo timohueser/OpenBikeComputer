@@ -24,7 +24,10 @@ python3 host/obcm-assemble/dev/navigation/native.py target/release/obcm-assemble
 
 The native runner uses a 16 MiB merge budget, includes terrain, accepts marked
 partial inputs, refuses holes, and leaves full output verification enabled. It
-runs exactly three assemblies. Each output is read back independently for a
+checks local sidecar identities, order, schema, skin, terrain lattice, and payload
+digests before timing. It refuses drift without downloading inputs. Add
+`--check-inputs` to run only this preflight. It runs exactly three assemblies
+otherwise. Each output is read back independently for a
 SHA-256 check. Native JSON and stderr are retained together with binary, source,
 platform, and input-manifest identities. Keep the machine idle for elapsed-time
 comparisons. Do not run compilers or another assembly at the same time.
