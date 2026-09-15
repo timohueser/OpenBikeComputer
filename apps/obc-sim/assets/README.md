@@ -4,7 +4,6 @@ This directory contains the shipped web-demo map and reviewable renderer
 goldens. It is not the developer-fixture store.
 
 - `grimsel-demo.obcm` is a shipped wasm demo payload.
-- `weather-icons/` contains renderer goldens pinned by tests.
 
 Shared authored tracks/routes live under `fixtures/sources/`; keeping them
 there prevents firmware, host, iOS, and app tests from reaching into one

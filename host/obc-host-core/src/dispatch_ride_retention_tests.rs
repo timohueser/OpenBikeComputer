@@ -51,7 +51,6 @@ impl Rig {
             &[],
             Sensors::new(&mut loc),
             None,
-            None,
             PlatformSupport { retention_metadata: true, ..Default::default() },
         );
         if let Some(effect) = plan.effects.retention.take() {
@@ -198,7 +197,6 @@ fn legacy_ride_expiry_never_selects_a_same_id_protected_flat_route() {
             &[],
             Sensors::new(&mut loc),
             None,
-            None,
             PlatformSupport { retention_metadata: true, ..Default::default() },
         );
         rig.host.serve_effects(
@@ -219,7 +217,6 @@ fn legacy_ride_expiry_never_selects_a_same_id_protected_flat_route() {
         PassClock { ride: RideClock(50_000), ui: InputClock(50_000) },
         &[],
         Sensors::new(&mut loc),
-        None,
         None,
         PlatformSupport { retention_metadata: true, ..Default::default() },
     );

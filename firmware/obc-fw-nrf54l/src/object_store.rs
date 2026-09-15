@@ -146,10 +146,6 @@ pub struct ObjectStore {
     settings: Settings,
 }
 
-/// The announce-time ceiling on a weather bundle's `total_len` (#1221 F6). A megabyte-scale
-/// length — which no OBCW producer can mean — is refused before a byte streams, instead of being
-/// streamed to the card for minutes and then failing validation.
-///
 impl ObjectStore {
     /// The empty control-plane cache — no settings read; [`hydrate`](Self::hydrate) fills it in
     /// place. The former catalog arrays disappeared with flat-store ownership; a const initializer
@@ -177,47 +173,17 @@ impl ObjectStore {
     /// every field coherent (not only units + name). Then [`BLE_CONFIG_WRITTEN`] is raised so the
     /// ride loop reloads the units + name into the live `App` copy before its next save — the phone's
     /// write reaches the UI and can't be clobbered by the app's change-detection save (#456).
-    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8, weather_refresh: Option<u8>) {
+    pub fn apply_config(&mut self, shared: &mut SharedStore, name: &str, units: u8) {
         // Start from the current persisted truth so an on-device edit racing this write isn't dropped.
         self.settings = shared.settings.load().unwrap_or_default();
         self.settings.device_name = DeviceName::from_str_lossy(name);
         self.settings.units = if units == 1 { obc_app::Units::Imperial } else { obc_app::Units::Metric };
-        // The §7.3 weather-refresh interval (WX8, #1193). `None` = the writer never mentioned the
-        // field — *leave the stored value untouched* (spec §7.3's absent-on-write rule; this is
-        // what keeps an old app's rename from resetting a rider who chose `Off`). The caller
-        // already validated the byte through the wire enum's strict write direction.
-        if let Some(refresh) = weather_refresh {
-            // Wire-validated upstream (obc-ble's strict write direction); this converts the §11.8
-            // byte into obc-app's typed representation (#1221/#1224 merge resolution).
-            //
-            // That conversion is only sound because the two enums agree byte-for-byte, and this
-            // crate is the only one that depends on both — so the parity check lives here, as a
-            // compile-time assert per interval. The last two lines close it from **both** sides:
-            // an interval appended to obc-app fails `COUNT`, and one appended to obc-ble (which
-            // has no `COUNT` to pin) fails because the wire enum would then *know* a byte obc-app
-            // does not — the byte `from_byte` would silently clamp back to the default, which is
-            // exactly the substitution §11.8 forbids on a phone→device write.
-            const _: () = {
-                use obc_app::WeatherRefresh as Stored;
-                use obc_ble::WeatherRefresh as Wire;
-                assert!(Stored::Off as u8 == Wire::Off.as_u8());
-                assert!(Stored::Every15 as u8 == Wire::Every15.as_u8());
-                assert!(Stored::Every30 as u8 == Wire::Every30.as_u8());
-                assert!(Stored::Every60 as u8 == Wire::Every60.as_u8());
-                assert!(Stored::Every120 as u8 == Wire::Every120.as_u8());
-                assert!(Stored::COUNT == 5, "a new refresh interval needs a §11.8 parity row above");
-                assert!(Wire::from_u8(Stored::COUNT as u8).is_err(), "obc-ble grew an interval obc-app has not");
-            };
-            self.settings.weather_refresh = obc_app::WeatherRefresh::from_byte(refresh);
-        }
+
         // The BLE plane persists its owned fields directly (best-effort): the store logs a write
         // failure internally, and the phone re-asserts config on reconnect, so there is no App-side
         // revision to retry here (the device-edit path owns the acknowledged handshake — #810).
         let _ = shared.settings.save(&self.settings);
         BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
-        // The due scheduler keys its cadence off this setting — wake it so an interval change
-        // lands now rather than at the next unrelated edge (WX8).
-        crate::ble::weather_settings_changed();
     }
 
     /// Refresh the config cache from RRAM **if** the ride loop flagged an on-device settings change

@@ -70,7 +70,7 @@ fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
     }
     // The suite's own size, so a category that stopped being produced is visible.
     let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 29);
+    assert_eq!(count(Category::Control), 28);
     assert_eq!(count(Category::Stream), 4);
     assert_eq!(count(Category::Error), 14);
     assert_eq!(count(Category::Negative), 34);

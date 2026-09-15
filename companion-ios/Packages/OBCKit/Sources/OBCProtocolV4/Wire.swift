@@ -45,7 +45,7 @@ public enum ObjectKind: UInt16, CaseIterable, Hashable, Sendable {
     case route = 1
     case trip = 2
     case ride = 3
-    case weather = 4
+
     case map = 5
     case retiredMapSet = 6
     case update = 7
@@ -315,8 +315,7 @@ public struct ControlFrame: Hashable, Sendable {
             guard let kind = ObjectKind(rawValue: kindRaw) else { throw WireError.invalidEnum }
             guard kind != .ride, kind != .rollbackReserve, kind != .metadata else { throw WireError.invalidCombination }
             let requestFlags = try c.u16()
-            guard requestFlags & ~UInt16(1) == 0 else { throw WireError.invalidFlags }
-            guard requestFlags == 0 || kind == .weather else { throw WireError.invalidCombination }
+            guard requestFlags == 0 else { throw WireError.invalidFlags }
             let nameLength = Int(try c.u8())
             guard nameLength <= FlatStoreV4.maximumDisplayNameLength else { throw WireError.invalidCombination }
             guard try c.read(count: 3).allSatisfy({ $0 == 0 }) else { throw WireError.invalidReserved }
@@ -427,20 +426,18 @@ public struct PutRequest: Hashable, Sendable {
     public let payloadLength: UInt64
     public let payloadCRC32: UInt32
     public let kind: ObjectKind
-    public let retainPrevious: Bool
     public let displayName: String
 
     public init(
         objectID: ObjectID? = nil, expectedRevision: Revision? = nil,
         payloadLength: UInt64, payloadCRC32: UInt32, kind: ObjectKind,
-        retainPrevious: Bool = false, displayName: String
+        displayName: String
     ) {
         self.objectID = objectID
         self.expectedRevision = expectedRevision
         self.payloadLength = payloadLength
         self.payloadCRC32 = payloadCRC32
         self.kind = kind
-        self.retainPrevious = retainPrevious
         self.displayName = displayName
     }
 
@@ -451,7 +448,6 @@ public struct PutRequest: Hashable, Sendable {
             || (objectID?.rawValue ?? 0) != 0 && (expectedRevision?.rawValue ?? 0) != 0
         else { throw WireError.invalidCombination }
         guard kind != .ride, kind != .rollbackReserve, kind != .metadata else { throw WireError.invalidCombination }
-        guard !retainPrevious || kind == .weather else { throw WireError.invalidCombination }
 
         var out = Data()
         out.appendLE(objectID?.rawValue ?? 0)
@@ -459,7 +455,7 @@ public struct PutRequest: Hashable, Sendable {
         out.appendLE(payloadLength)
         out.appendLE(payloadCRC32)
         out.appendLE(kind.rawValue)
-        out.appendLE(UInt16(retainPrevious ? 1 : 0))
+        out.appendLE(UInt16(0))
         out.append(UInt8(name.count))
         out.append(contentsOf: [0, 0, 0])
         out.append(name)
