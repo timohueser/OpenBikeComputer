@@ -192,7 +192,7 @@ const BANNER_RADIUS: u32 = 9;
 /// Where the banner's top sits, as a fraction of frame height. A third of the way down: clear of
 /// the top-centre clock, and well above the centred rider marker the rider is looking at (the map
 /// under the banner is frozen, not gone — covering the marker would read as "lost").
-const BANNER_Y_FRAC: f32 = 0.3;
+const BANNER_Y_FRAC: f32 = 0.275;
 
 /// The banner's bounding rows `[y0, y0 + rows)` in a `h`-high frame — what a partial-overlay host
 /// re-presents (the board pushes overlay rows, not whole frames).
@@ -247,9 +247,9 @@ mod tests {
     #[test]
     fn the_recalculating_banner_band_stays_on_panel_and_clear_of_the_marker() {
         let (y0, rows) = recalculating_banner_rows(320.0);
-        assert_eq!((y0, rows), (96, 56));
+        assert_eq!((y0, rows), (88, 56));
         assert!(y0 as i32 + rows as i32 <= 320);
-        assert!((y0 + rows) < 160, "clear of the centred user marker");
+        assert!(y0 + rows <= 160 - 12, "clear of the full rider chevron, including its north tip");
 
         let mut previous = None;
         for phase in 1..=3 {
