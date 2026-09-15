@@ -130,6 +130,105 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
 
+  # ─────────────────────────────────────────────── device shell (the Rust host on a phone)
+  #
+  # A development tool, not a product: the shared firmware runs over a card in Application
+  # Support, the phone's GPS/compass/barometer are the sensors, and four touch pads are the
+  # buttons. It links OBCHost (apps/obc-ios-host) and nothing from OBCKit.
+  OBCDevice:
+    type: application
+    platform: iOS
+    sources:
+      - path: OBCDevice
+        # The README documents the target; it is not part of the app bundle.
+        excludes:
+          - README.md
+    dependencies:
+      # A static-library XCFramework: linked, never embedded. Xcode resolves it while it plans
+      # the build, before the pre-build script below can run, so `obc ios-host` has to have been
+      # run once already. The script keeps it current from then on.
+      - framework: ../target/OBCHost.xcframework
+        embed: false
+    preBuildScripts:
+      - name: Rust host (OBCHost.xcframework)
+        # Always: cargo decides what is stale, and the script is seconds when nothing changed.
+        basedOnDependencyAnalysis: false
+        script: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # cargo picks the SDK per Rust target; Xcode's SDKROOT is the one being built for and
+          # would be the wrong one for the other slice.
+          unset SDKROOT
+          if [ "$PLATFORM_NAME" = iphonesimulator ]; then
+            "$SRCROOT/../tools/build-ios-host.sh" --sim-only
+          else
+            "$SRCROOT/../tools/build-ios-host.sh"
+          fi
+    info:
+      path: OBCDevice/Info.plist
+      properties:
+        CFBundleDisplayName: OBC Device
+        NSLocationWhenInUseUsageDescription: "OBC Device puts your position, speed and heading on the device screens, exactly as the bike computer does."
+        NSMotionUsageDescription: "OBC Device reads the barometer for altitude, exactly as the bike computer does."
+        # Finder file sharing over USB, and Files can open a map in place: the two ways a map
+        # or a route gets onto the phone without a download path.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: OBC map
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.openbikecomputer.obcm
+          - CFBundleTypeName: OBC route
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.openbikecomputer.obcr
+          - CFBundleTypeName: GPX route
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.topografix.gpx
+        # Ours, so this app declares them rather than importing someone else's spelling.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.openbikecomputer.obcm
+            UTTypeDescription: OBC map
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - obcm
+          - UTTypeIdentifier: com.openbikecomputer.obcr
+            UTTypeDescription: OBC route
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - obcr
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.topografix.gpx
+            UTTypeDescription: GPX route
+            UTTypeConformsTo:
+              - public.xml
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gpx
+              public.mime-type:
+                - application/gpx+xml
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.device
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"      # iPhone only
+        # tools/build-ios-host.sh packs aarch64-apple-ios-sim, so there is no Intel simulator
+        # slice to link. Every Mac that can run this today is Apple silicon.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+
   # ─────────────────────────────────────────────────────── UI tests (B1P home)
   OBCCompanionUITests:
     type: bundle.ui-testing
@@ -156,6 +255,19 @@ schemes:
       config: Debug
       targets:
         - OBCCompanionUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  OBCDevice:
+    build:
+      targets:
+        OBCDevice: all
+    run:
+      config: Debug
     profile:
       config: Release
     analyze:
