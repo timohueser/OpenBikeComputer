@@ -147,8 +147,9 @@ pub fn run(
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
+    let title = "OBC Simulator";
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("OBC Simulator").with_inner_size(win),
+        viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size(win),
         ..Default::default()
     };
     eframe::run_native(
@@ -192,7 +193,7 @@ struct SimGui {
     /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
     /// this struct's moves through the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
-
+    photo: obc_host_core::photo::Preparer,
     /// The card route projection and its retained active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -414,6 +415,7 @@ impl SimGui {
             peak_view,
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
+            photo: obc_host_core::photo::Preparer::default(),
             store,
             trip_store,
             ride_store,
@@ -462,6 +464,7 @@ impl SimGui {
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
+
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
@@ -656,7 +659,7 @@ impl SimGui {
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
-        let mut stats = crate::map_file::render_frame(
+        let mut stats = crate::map_file::render_base_frame(
             app,
             scratch,
             &mut fbdev,
@@ -664,6 +667,7 @@ impl SimGui {
             panorama,
             (dev_w as f32, dev_h as f32),
             |c| Rgb565::from(RawU16::new(c)),
+            Some(self.photo.interactive(plan.render.map)),
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;

@@ -135,7 +135,9 @@ impl NavGuard {
         };
         let mut slot = Box::<obc_route::visit::VisitBuilder>::new_uninit();
         unsafe {
-            if c.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
+            if matches!(c.purpose, obc_app::navigator::ReviewPurpose::Easier(_)) {
+                obc_route::visit::VisitBuilder::init_easier_in_place(slot.as_mut_ptr(), key, c.map, c.progress_m)?;
+            } else if c.purpose == obc_app::navigator::ReviewPurpose::ReturnToRoute {
                 obc_route::visit::VisitBuilder::init_return_in_place(slot.as_mut_ptr(), key, c.map, rejoin)?;
             } else {
                 let target = target.ok_or(Error::BadOffset)?;
@@ -161,6 +163,9 @@ impl NavGuard {
         self.restore_plan();
         let mut planner = NavPlanner::new(from, to, "Visit leg", c.profile);
         planner.set_attribution_map(c.map);
+        if let obc_app::navigator::ReviewPurpose::Easier(objective) = c.purpose {
+            planner.set_objective(objective);
+        }
         self.begin_plan(planner);
     }
     pub fn visit_plan_parts(

@@ -44,3 +44,15 @@ gh run download RUN_ID --name web-demo-browser-ATTEMPT --dir test-results
 This journey covers page, WASM, rendering, controls and reset integration. It does not assert
 exact saved-object counts, identities or sample bytes. The native Demo and storage tests own
 those assertions. Companion images are recorded screenshots; no phone or board is used.
+
+## Guided Visit
+
+The Add a stop chapter pauses the captured ride at its mid-climb position. The `find` command
+opens the shared Find Place screen. The tour selects Train, waits for a measured choice, opens
+Gletsch, and waits for the complete Visit preview. Select accepts that exact route and returns
+to the map. The Recorder continues through acceptance.
+
+The page waits on `obc_demo_find_ready()` and `obc_demo_visit_status()` as well as the screen name.
+A planning screen alone cannot advance a preview or acceptance caption. The native journey uses
+the page's input pacing and dwells. The simulator presentation journey uses the same
+`grimsel-climb-demo.gpx` timebase and the external Grimsel map, with frame equality checks.

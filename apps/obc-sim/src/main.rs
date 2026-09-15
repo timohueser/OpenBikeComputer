@@ -19,6 +19,7 @@ mod device_input;
 mod dfu;
 mod framebuffer;
 mod gui;
+mod headless_script;
 mod map_file;
 mod palette;
 mod panel_power;
@@ -105,6 +106,8 @@ struct Args {
     /// With `--gpx --png`, the playback time (seconds) to render the fix at; defaults
     /// to the track midpoint.
     at: Option<f64>,
+    /// GPX position for the button script; replay then continues from here to `at`.
+    script_at: Option<f64>,
     /// Headless camera center "lon,lat" (microdegrees); defaults to the bbox center.
     center: Option<(i32, i32)>,
     /// Headless zoom multiplier applied to the bbox-fit zoom (picks a finer LOD).
@@ -120,6 +123,8 @@ struct Args {
     /// drawer, with its slide-down settled, `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
+    /// Normal button input after GPX replay, before the final render.
+    script_after: Option<String>,
     /// `--no-backlight`: model a platform whose panel has **no controllable light**
     /// ([`Backlight::available`](obc_ports::Backlight) `== false`). The board is not that platform
     /// any more — it drives a PWM backlight since #1558 — so this is the arrangement a *future*
@@ -204,9 +209,11 @@ impl Default for Args {
             peak_view: None,
             gpx: None,
             at: None,
+            script_at: None,
             center: None,
             zoom_mul: 1.0,
             script: None,
+            script_after: None,
             no_backlight: false,
             expect_screen: None,
             boot: false,
@@ -237,6 +244,15 @@ impl Default for Args {
 }
 
 impl Args {
+    fn replay_range(&self, duration: f64) -> Result<(f64, f64, f64), String> {
+        let end = self.at.unwrap_or(duration / 2.0);
+        let Some(start) = self.script_at else { return Ok((end, 0.0, end)) };
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start || end > duration {
+            return Err("--script-at requires 0 <= script start <= --at <= GPX duration".into());
+        }
+        Ok((start, start, end))
+    }
+
     fn stamp_initial_clock(&self, app: &mut obc_app::App) {
         if let Some(clock) = self.clock {
             app.stamp_clock(clock, 0, Some(self.utc_offset_min.unwrap_or(0)), obc_app::ClockTrust::Ble);
@@ -531,6 +547,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--gpx" => a.gpx = Some(it.next().ok_or("--gpx needs a path")?),
             "--at" => a.at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --at")?),
+            "--script-at" => a.script_at = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --script-at")?),
             "--center" => {
                 let s = it.next().ok_or("--center needs lon,lat")?;
                 let (lon, lat) = s.split_once(',').ok_or("--center format is lon,lat")?;
@@ -542,6 +559,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
             "--no-backlight" => a.no_backlight = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
+            "--script-after" => a.script_after = Some(it.next().ok_or("--script-after needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
             "--card" => a.card = Some(it.next().ok_or("--card needs a path")?),
@@ -612,6 +630,17 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
         }
     }
+    if a.script_after.is_some() && (a.gpx.is_none() || a.png.is_none()) {
+        return Err("--script-after requires --gpx and --png".into());
+    }
+    if let Some(start) = a.script_at {
+        if a.gpx.is_none() || a.png.is_none() || a.script.is_none() {
+            return Err("--script-at requires --gpx, --png and --script".into());
+        }
+        if !start.is_finite() || start < 0.0 || a.at.is_some_and(|end| !end.is_finite() || end < start) {
+            return Err("--script-at requires a finite non-negative start no later than --at".into());
+        }
+    }
     if a.utc_offset_min.is_some() && a.clock.is_none() && a.clock_after_script.is_none() {
         return Err("--utc-offset-min requires --clock or --clock-after-script".into());
     }
@@ -619,6 +648,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     if a.card.is_some() && (a.create_card.is_some() || !a.map.is_empty() || a.routes_dir.is_some()) {
         return Err("--card reopens without map or route-directory imports".into());
     }
+
     if a.card.is_some() && matches!(a.inject, Some(Injection::TripUpload { .. })) {
         return Err("trip-upload names a TP fixture and requires a map import session".into());
     }
@@ -629,6 +659,16 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         return Err("missing map path (one .obcm file)".into());
     }
     Ok(a)
+}
+
+fn headless_replay_advance<'s>(
+    player: &'s mut GpxPlayer,
+    baro: &'s mut BaroSensor,
+    dt: f64,
+    from: f64,
+) -> (obc_ports::RideClock, obc_ports::Sensors<'s>) {
+    let (ride, sensors) = replay_advance(player, baro, None, dt, ReplaySensors::default());
+    (obc_ports::RideClock(ride.0.saturating_sub((from * 1000.0) as u32)), sensors)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -724,6 +764,29 @@ fn settle(
 
     now: u32,
 ) {
+    settle_at(
+        host,
+        session,
+        app,
+        stores,
+        map,
+        elev,
+        platform,
+        obc_app::device_core::PassClock { ride: obc_ports::RideClock(0), ui: InputClock(now) },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settle_at(
+    host: &mut HostLoop,
+    session: &mut ActiveRouteSession,
+    app: &mut App,
+    stores: &mut Stores<'_>,
+    map: &obc_host_core::flat_map::FlatMap,
+    elev: &mut dyn obc_route::ElevationSource,
+    platform: &mut HeadlessPlatform,
+    clock: obc_app::device_core::PassClock,
+) {
     let mut quiet = 0usize;
     for _ in 0..MAX_SETTLE_PASSES {
         session.sync(app, stores.routes);
@@ -733,16 +796,10 @@ fn settle(
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            let mut loc = NoFix;
+            let fix = None;
+            let mut loc = crate::sim_location::SimLocationSource::new(fix);
             let sensors = obc_ports::Sensors::new(&mut loc);
-            let plan = host.pass(
-                app,
-                obc_app::device_core::PassClock { ride: obc_ports::RideClock(0), ui: InputClock(now) },
-                &[],
-                sensors,
-                route.as_ref(),
-                gui::SIM_SUPPORT,
-            );
+            let plan = host.pass(app, clock, &[], sensors, route.as_ref(), gui::SIM_SUPPORT);
             let owed = plan.effects.has_pending() || plan.immediate || !plan.derived_needs.is_empty();
             (plan, owed)
         };
@@ -775,15 +832,6 @@ fn nav_error(kind: NavFailure) -> obc_route::NavError {
     match kind {
         NavFailure::Exhausted => obc_route::NavError::Exhausted,
         NavFailure::NoPath => obc_route::NavError::NoPath,
-    }
-}
-
-/// A location port that never has a fix — the settling pass's sensor input. The headless driver
-/// drives position through the GPX replay below, never through a settle.
-struct NoFix;
-impl obc_ports::LocationSource for NoFix {
-    fn poll(&mut self) -> Option<obc_ports::Fix> {
-        None
     }
 }
 
@@ -885,6 +933,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             ' ' => {}
             'd' => step(app, &mut now, 1),
             'u' => step(app, &mut now, -1),
+
             'p' => tap(app, &mut now, Button::Select),
             'b' => tap(app, &mut now, Button::Back),
             'h' => press_hold(app, &mut now, Button::Select),
@@ -952,7 +1001,7 @@ Map and output:
   --scale N               Integer PNG/window scale (default: 1)
   --png PATH              Render one device frame to PNG and exit
   --palette               Show or save the device 64-colour palette
-  --center LON,LAT        Headless camera centre in microdegrees
+  --center LON,LAT        Headless camera or local Assistant study centre in microdegrees
   --zoom MULT             Headless bbox-fit zoom multiplier
   --heading DEG           Start in heading-up mode at this course
   --peak-view PLACE       Peak panorama: gornergrat|scheidegg|glockner
@@ -960,6 +1009,7 @@ Map and output:
 Ride and storage fixtures:
   --gpx PATH              Replay a GPX track
   --at SECONDS            GPX playback time for a headless render
+  --script-at SECONDS     GPX script position; replay continues from here to --at
   --card PATH             Reopen an existing persistent Unix card without importing files
   --create-card PATH      Create a new Unix card, import MAP/routes once, then exit
   --routes-dir DIR        Route and trip import directory (default: routes/)
@@ -981,6 +1031,7 @@ Device state:
   --sensors MODE          demo|screen
 
 Scripted snapshots:
+  --script-after TOKENS  Apply button input after GPX replay, before rendering
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, C context-drawer squeeze,
@@ -1142,18 +1193,21 @@ fn main() {
             let (lat, lon) = state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((cy, cx));
             state.user_fix = Some(Fix { lat, lon, course: Some(deg), speed_mps: None });
         }
-        // `--gpx` renders the replayed fix at `--at` (default: track midpoint). Seed the
-        // camera/heading from that fix now; the replay up to `--at` runs below (after the
-        // route opens) so the snapshot shows live riding state, not just a static marker.
+        // Seed the camera and script fix at `--script-at`, or `--at` (default: midpoint).
+        // Replay up to `--at` runs below, after the route opens, so the snapshot shows live riding state, not just a static marker.
         let mut player: Option<GpxPlayer> = None;
         let mut replay_to = 0.0_f64;
+        let mut replay_from = 0.0_f64;
+        let mut script_at = 0.0_f64;
         if let Some(path) = &args.gpx {
             match Track::load(std::path::Path::new(path)) {
                 Ok(track) => {
                     let mut p = GpxPlayer::new(track);
-                    let at = args.at.unwrap_or(p.duration() / 2.0);
-                    replay_to = at;
-                    p.seek(at);
+                    (script_at, replay_from, replay_to) = args.replay_range(p.duration()).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    });
+                    p.seek(script_at);
                     if let Some(fix) = p.poll() {
                         state.heading_up = fix.course.is_some();
                         state.user_fix = Some(fix);
@@ -1249,6 +1303,7 @@ fn main() {
         // The startup import has committed route identities before the first catalog feed.
         let mut store = routes;
         app.set_routes_with_ids(store.catalog(), store.ids());
+
         // The same host-protocol owner the interactive simulator drives. Headless runs each plan
         // to completion inside a pass; its planned detour stays resident here until commit/cancel.
         let mut host = HostLoop::new();
@@ -1309,48 +1364,21 @@ fn main() {
 
         let mut script_now = 100u32;
         if let Some(script) = &args.script {
-            // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
-            // Up-ahead corridor snapshot) by settling the device and then drawing one throwaway
-            // frame against the map reader and the active route. Settling first is what lets a
-            // script walk the whole POI→route flow: the plan's answer swaps the confirm for the
-            // overview / failure card, and the frame after it draws what the next token acts on.
-            let (rw, rh) = (args.width, args.height);
-            // One render scratch for the whole script run, lent to each throwaway frame — the
-            // host owns it since #1146, and ~90 KB is not something to re-allocate per token.
-            let mut scratch = Box::new(obc_render::RenderScratch::new());
             let mut stores =
                 Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
-            let mut hook = |app: &mut App, what: ScriptHook, now: u32| {
-                // Both tokens are the same device frame; only `f` also draws. The keyed ride-track
-                // fill and the route overview's shape preview are answered inside the executor from
-                // the plan's `derived_needs`, so nothing here reaches for them by hand.
-                settle(&mut host, &mut session, app, &mut stores, map.planner_map(), &mut *elev, &mut platform, now);
-                peak_runtime.finish(app);
-                if matches!(what, ScriptHook::Render) {
-                    // The frame carries the **streamed route** when one is active, exactly as the
-                    // GUI's per-frame render does: the Up-ahead timeline's corridor snapshot (epic
-                    // #946) is taken in the pre-draw `prepare` pass off that route, so a routeless
-                    // throwaway frame would leave it pending and the next gesture would step an
-                    // empty list.
-                    let src = stores.routes.active_source();
-                    let route = match (session.index(), src) {
-                        (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
-                        _ => None,
-                    };
-                    let mut fb = Framebuffer::new(rw, rh);
-                    let _ = map_file::render_frame(
-                        app,
-                        &mut scratch,
-                        &mut fb,
-                        map_file::Scene { reader: &reader, route: route.as_ref() },
-                        peak_runtime.panorama(),
-                        (rw as f32, rh as f32),
-                        color_of,
-                    );
-                }
-            };
-            hook(&mut app, ScriptHook::Tick, script_now);
-            script_now = apply_script(&mut app, script, script_now, &mut hook);
+            script_now = headless_script::Session {
+                host: &mut host,
+                route: &mut session,
+                stores: &mut stores,
+                map: &map,
+                reader: &reader,
+                elevation: &mut *elev,
+                platform: &mut platform,
+                peak: &mut peak_runtime,
+                player: &mut player,
+                size: (args.width, args.height),
+            }
+            .run(&mut app, script, script_now, obc_ports::RideClock(0), Some(script_at));
         }
         if let Some(clock) = args.clock_after_script {
             app.stamp_clock(clock, 0, Some(args.utc_offset_min.unwrap_or(0)), obc_app::ClockTrust::Ble);
@@ -1528,17 +1556,21 @@ fn main() {
             app.set_sensor_scan_hits(&fake_scan_hits());
         }
 
-        // Replay the track from the start up to `--at`, one **device frame** per step so the
+        // Replay from `--script-at` (default: zero) up to `--at`, one device frame per step so the
         // map-matcher locks on and the ride accumulators + breadcrumb fill. A coarse-but-bounded
         // step keeps long tracks fast while staying under the dropout/teleport gates. The UI clock
         // stands still at the script's own mark: a replay drives the *ride*, and aging the UI on top
         // of it would run every card and idle timer through the whole track in one go.
+        let mut replay_clock = obc_ports::RideClock(0);
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
-            p.seek(0.0);
-            p.play();
-            let step = (replay_to / 400.0).clamp(1.0, 8.0);
-            let mut t = 0.0;
+            p.seek(replay_from);
+            // `play` restarts at zero when already at the end. An empty range stays still.
+            if replay_from < replay_to {
+                p.play();
+            }
+            let step = ((replay_to - replay_from) / 400.0).clamp(1.0, 8.0);
+            let mut t = replay_from;
             while t < replay_to {
                 session.sync(&app, stores.routes);
                 let mut plan = {
@@ -1547,7 +1579,9 @@ fn main() {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
-                    let (ride, sensors) = replay_advance(p, &mut baro, None, step, ReplaySensors::default());
+                    let dt = if args.script_at.is_some() { step.min(replay_to - t) } else { step };
+                    let (ride, sensors) = headless_replay_advance(p, &mut baro, dt, replay_from);
+                    replay_clock = ride;
                     host.pass(
                         &mut app,
                         obc_app::device_core::PassClock { ride, ui: InputClock(script_now) },
@@ -1573,7 +1607,7 @@ fn main() {
                 // retained map terrain the router emits from, drained right behind the pass exactly as
                 // the board's ride loop does.
                 app.sample_terrain(&mut *elev);
-                t += step;
+                t = (t + step).min(replay_to);
             }
         }
 
@@ -1603,7 +1637,8 @@ fn main() {
                     }
                 }
                 session.sync(&app, stores.routes);
-                let ride = obc_ports::RideClock((p.time() * 1000.0) as u32);
+                let ride = obc_ports::RideClock(((p.time() - replay_from) * 1000.0) as u32);
+                replay_clock = ride;
                 let mut plan = {
                     let src = stores.routes.active_source();
                     let route = match (session.index(), src) {
@@ -1641,6 +1676,32 @@ fn main() {
             }
         }
 
+        if let Some(script) = &args.script_after {
+            script_now = headless_script::Session {
+                host: &mut host,
+                route: &mut session,
+                stores: &mut stores,
+                map: &map,
+                reader: &reader,
+                elevation: &mut *elev,
+                platform: &mut platform,
+                peak: &mut peak_runtime,
+                player: &mut player,
+                size: (args.width, args.height),
+            }
+            .run(&mut app, script, script_now, replay_clock, None);
+            settle_at(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                map.planner_map(),
+                &mut *elev,
+                &mut platform,
+                obc_app::device_core::PassClock { ride: replay_clock, ui: InputClock(script_now) },
+            );
+        }
+
         // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
         // plan command takes, so the snapshot shows the real banner over the real frozen map.
         if args.freeze {
@@ -1658,6 +1719,10 @@ fn main() {
         };
         let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
 
+        // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
+        // sim checks it against the `screens!` table's own name before a single pixel is written.
+        // Checked here — below every seam that can still change the top screen, including WX12's
+        // alert decision — so what is verified is exactly what gets saved.
         if let Some(expected) = &args.expect_screen {
             let landed = app.top_screen().name();
             if landed != expected {
@@ -1717,6 +1782,7 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(1);
         }
+
         eprintln!("wrote {path}");
         return;
     }
@@ -1736,6 +1802,70 @@ mod cli_tests {
         let mut args = vec!["map.obcm".to_string()];
         args.extend(options.iter().map(|s| (*s).to_string()));
         parse_args_from(args)
+    }
+
+    #[test]
+    fn after_script_requires_headless_replay() {
+        assert!(parse(&["--script-after", "p"]).is_err());
+        assert!(parse(&["--gpx", "ride.gpx", "--script-after", "p"]).is_err());
+        assert!(parse(&["--png", "out.png", "--script-after", "p"]).is_err());
+        assert_eq!(
+            parse(&["--gpx", "ride.gpx", "--png", "out.png", "--script-after", "p f d h f"])
+                .unwrap()
+                .script_after
+                .as_deref(),
+            Some("p f d h f")
+        );
+    }
+
+    #[test]
+    fn script_replay_ranges_reject_invalid_times_and_preserve_defaults() {
+        let parse_range = |start: &str, end: &str| {
+            parse(&["--gpx", "ride.gpx", "--png", "out.png", "--script", "T", "--script-at", start, "--at", end])
+                .and_then(|a| a.replay_range(100.0))
+        };
+        for (start, end) in [("-1", "10"), ("NaN", "10"), ("1", "inf"), ("20", "10"), ("10", "101")] {
+            assert!(parse_range(start, end).is_err(), "{start}..{end}");
+        }
+        for flags in [
+            vec!["--script-at", "0"],
+            vec!["--script-at", "0", "--gpx", "ride.gpx", "--script", "T"],
+            vec!["--script-at", "0", "--gpx", "ride.gpx", "--png", "out.png"],
+        ] {
+            assert!(parse(&flags).is_err());
+        }
+        assert_eq!(parse_range("25", "75").unwrap(), (25.0, 25.0, 75.0));
+        assert_eq!(parse_range("100", "100").unwrap(), (100.0, 100.0, 100.0));
+        assert_eq!(parse(&[]).unwrap().replay_range(100.0).unwrap(), (50.0, 0.0, 50.0));
+        assert_eq!(parse(&["--at", "75"]).unwrap().replay_range(100.0).unwrap(), (75.0, 0.0, 75.0));
+    }
+
+    #[test]
+    fn trimmed_replay_polls_actual_positions_with_elapsed_ride_time() {
+        use obc_replay::gpx::TrackPoint;
+        let mut player = GpxPlayer::new(Track {
+            points: vec![
+                TrackPoint { lat: 48_000_000, lon: 7_000_000, ele: Some(100.0), t: 0.0 },
+                TrackPoint { lat: 48_000_000, lon: 7_000_100, ele: Some(110.0), t: 10.0 },
+            ],
+        });
+        let args = parse(&["--gpx", "ride.gpx", "--png", "out.png", "--script", "T", "--script-at", "5", "--at", "8"])
+            .unwrap();
+        let (script, from, end) = args.replay_range(player.duration()).unwrap();
+        player.seek(script);
+        assert_eq!(player.poll().unwrap().lon, 7_000_050);
+        // The script's T token polls this same position through the normal location port.
+        player.seek(script);
+        assert_eq!(player.poll().unwrap().lon, 7_000_050);
+        player.seek(from);
+        player.play();
+        let mut baro = BaroSensor::new();
+        for second in 1..=3 {
+            let (ride, sensors) = headless_replay_advance(&mut player, &mut baro, 1.0, from);
+            assert_eq!(ride.0, second * 1000);
+            assert_eq!(sensors.loc.poll().unwrap().lon, 7_000_050 + second as i32 * 10);
+        }
+        assert_eq!(player.time(), end);
     }
 
     #[test]
@@ -1849,9 +1979,11 @@ mod cli_tests {
             "--peak-view",
             "--gpx",
             "--at",
+            "--script-at",
             "--center",
             "--zoom",
             "--script",
+            "--script-after",
             "--expect-screen",
             "--boot",
             "--routes-dir",

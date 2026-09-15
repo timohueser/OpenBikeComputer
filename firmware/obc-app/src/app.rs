@@ -161,7 +161,7 @@ pub struct AppState {
     /// It resets to Everything on every entry to the list.
     ///
     /// It lives in the app plane rather than on
-    /// [`UpAheadScreen`](crate::screen::UpAheadScreen) because the sheet that edits it (#1515 D4a)
+    /// [`WhatsNextScreen`](crate::screen::WhatsNextScreen) because the sheet that edits it (#1515 D4a)
     /// sits *above* that screen on the stack: a copy inside the screen would be a copy the rider's
     /// edit could not reach. Read with [`Settings::up_ahead_source`](crate::Settings) as one
     /// [`UpAheadScope`](crate::corridor::UpAheadScope).
@@ -518,6 +518,7 @@ pub struct App {
     /// guidance and of [`mode`](App::mode)'s two search levels.
     pub(crate) navigator: NavigatorMachine,
     pub(crate) metadata: crate::metadata::MetadataMachine,
+    pub(crate) easier: crate::easier::State,
     /// **`CoreMode`** (#1397 S5): the one owner of "what heavy work may run now, and what the rider
     /// is looking at" — the two search levels Navigator writes, the transfer level
     /// [`set_map_transfer`](App::set_map_transfer) writes, and the Recalculating banner's
@@ -608,6 +609,7 @@ impl App {
             recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             navigator: NavigatorMachine::new() => NavigatorMachine::init_in_place,
             metadata: crate::metadata::MetadataMachine::new(),
+            easier: crate::easier::State::new(),
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
@@ -655,6 +657,7 @@ impl App {
 
             navigator,
             metadata,
+            easier: _,
             mode,
             settings_ops,
 
@@ -1723,6 +1726,17 @@ impl App {
     /// frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::Journey(_))) || self.ui.find.resume_offer {
+            self.ui.find.review = self.assistant_review_status();
+        }
+        let arrival = self.visit_arrival_pending();
+        let accepted = self.assistant_review_status() == crate::navigator::ReviewStatus::Accepted;
+        if accepted {
+            self.ui.find.resume_offer = false;
+        }
+        let hold = self.ui.hold_charging();
+        self.ui.map_dirty |=
+            self.ui.cards.reconcile_journey(&mut self.ui.stack, hold, arrival, self.ui.find.resume_offer, accepted);
     }
 
     /// The update domain's terminal answer — a scan result, the install beginning, or its failure:
@@ -1816,6 +1830,7 @@ impl App {
         let active_id = self.active_route_index().and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if replaced {
+            self.invalidate_current_visit(id);
             // New bytes under a durable identity: every derived key moves, so a preview or profile
             // produced from the old geometry stops matching. Identity alone cannot catch this one —
             // the id is exactly what did *not* change (#1437).
@@ -1881,7 +1896,7 @@ impl App {
         }
         self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 
@@ -1895,7 +1910,7 @@ impl App {
         }
         self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
-        self.navigator.set_active_route(None);
+        self.navigator.suspend_for_recording_recovery();
         self.raise_ride_recovery()
     }
 
@@ -2012,7 +2027,7 @@ impl App {
 
     /// What the Up-ahead timeline is scoped to right now: the rider's live category filter (app
     /// state, reset on entry) and their persisted source preference. One value, so the two halves
-    /// of the scope can never reach [`corridor_request`](crate::screen::Screen) apart.
+    /// of the scope can never reach the Assistant runtime apart.
     pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
         crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
     }
@@ -2021,7 +2036,19 @@ impl App {
     /// non-overlay row, so a sheet already up does not hide the content the chord is asking about
     /// (which is what makes the same chord close the context drawer again).
     fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
-        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| s.context())
+        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| {
+            if matches!(s, Screen::Assistant(_)) && self.current_visit_index().is_some() {
+                Some(&crate::screen::context_drawer::ASSISTANT_VISIT)
+            } else if matches!(s, Screen::Assistant(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::ResumeAvailable
+            {
+                Some(&crate::screen::context_drawer::ASSISTANT_RESUME)
+            } else if matches!(s, Screen::WhatsNext(_)) && self.ui.ahead.page != crate::whats_next::Page::Timeline {
+                None
+            } else {
+                s.context()
+            }
+        })
     }
 
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
@@ -2103,7 +2130,7 @@ impl App {
     /// a changed filter (or a new anchor) drops the stale rows and re-queries.
     ///
     /// **Since U3 the request belongs to the screen stack**, not to this call: a screen declares the
-    /// key it wants through [`Screen::corridor_request`](crate::screen::Screen) and
+    /// key it wants through the Assistant runtime and
     /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) re-points the scratch
     /// at it after every gesture and per-pass sweep — which is what disarms a request whose screen
     /// went away. So a request armed *here* survives only until the next reconcile unless some screen
@@ -2503,7 +2530,7 @@ impl App {
         }
         // The corridor snapshot follows the stack: escaping off the Up-ahead timeline disarms its
         // query exactly as a Back would.
-        self.ui.reconcile_corridor(self.up_ahead_scope(), false);
+        self.ui.reconcile_corridor(self.up_ahead_scope());
         if changed {
             self.ui.input.cancel_holds();
             self.ui.hold_cancel_pending = true;
@@ -2515,6 +2542,9 @@ impl App {
     /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
     /// drop rule without consuming the hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
+        if g == Gesture::Press && self.activate_place_detail() {
+            return true;
+        }
         // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
@@ -2525,6 +2555,33 @@ impl App {
         self.ui.idle_return_timing = true;
         // **The global escape** (#1515 D3): Back-hold reaches the main menu from anywhere, so it is
         // resolved here, above screen dispatch, and no screen binds it any more.
+        if g == Gesture::Press {
+            if let Some(Screen::Assistant(screen)) = self.ui.stack.last() {
+                let selected = screen.selected;
+                let before = self.ui.stack.len();
+                match selected {
+                    0 => self.open_find_place(),
+                    1 => self.open_whats_next(),
+                    2 => {
+                        let result = self
+                            .place_map_key()
+                            .ok_or(crate::navigator::VisitUnavailable::SourceChanged)
+                            .and_then(|map| self.open_easier_routes(map));
+                        if let Err(error) = result {
+                            if let Some(Screen::Assistant(screen)) = self.ui.stack.last_mut() {
+                                screen.error = Some(error);
+                            }
+                        }
+                    }
+                    5 => self.open_landmarks(),
+                    _ => {}
+                }
+                return self.ui.stack.len() != before;
+            }
+        }
+        if self.easier_gesture(g) {
+            return true;
+        }
         if g == Gesture::BackHold {
             let changed = self.escape_to_menu();
 
@@ -2540,6 +2597,9 @@ impl App {
         let backlight_available = self.backlight_available;
         let App { state, activity, settings, catalogs, nav_profiles, recorder, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
+            find: &mut ui.find,
+            landmarks: &mut ui.landmarks,
+            ahead: &mut ui.ahead,
             place_local,
             state,
             activity,
@@ -2575,6 +2635,7 @@ impl App {
         // Admit Start before the next gesture, after its requested screen transition, so a
         // recovery decision takes precedence over the requested riding view.
         self.advance_recorder_session();
+        self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
@@ -2587,9 +2648,8 @@ impl App {
         // re-takes the identical key, the "re-enter refreshes" half of the frozen-snapshot contract
         // (epic #946, U2/U3). Nothing on the stack wants one ⇒ the request is dropped and the
         // reader-build seam goes quiet.
-        let fresh = self.ui.stack.len() > depth_before;
         let scope = self.up_ahead_scope();
-        self.ui.reconcile_corridor(scope, fresh);
+        self.ui.reconcile_corridor(scope);
         // Returning to the bare Home root re-opens the screensaver — re-roll its contour seed so the
         // topo peaks drift for this visit. Gated on the *edge* (was deeper, now 1) so it fires once
         // per return; being in `apply_gesture` means a clock/battery re-render (which never touches
@@ -2635,6 +2695,7 @@ impl App {
     /// [`handle_input`](App::handle_input) calls this for the single-loop hosts; the two-plane
     /// firmware calls it directly on its map plane.
     pub fn advance_animations(&mut self, clock: InputClock) {
+        self.advance_easier();
         let now = self.wall_clock.now(clock.0);
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(clock.0);
         let pan_active = self.state.pan.is_some();
@@ -2644,8 +2705,16 @@ impl App {
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
         let place_local = self.place_local_time();
-        if self.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_)))
-            && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
+        if self.ui.stack.iter().any(|screen| {
+            matches!(
+                screen,
+                Screen::PoiList(_)
+                    | Screen::PoiDetail(_)
+                    | Screen::FindPlace(_)
+                    | Screen::VisitReview(_)
+                    | Screen::Landmarks(_)
+            )
+        }) && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
         {
             self.ui.map_dirty = true;
         }
@@ -2654,12 +2723,17 @@ impl App {
         {
             self.ui.map_dirty = true;
         }
-        if self
-            .ui
-            .stack
-            .iter()
-            .any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::UpAhead(_)))
-        {
+        if self.ui.stack.iter().any(|screen| {
+            matches!(
+                screen,
+                Screen::PoiList(_)
+                    | Screen::PoiDetail(_)
+                    | Screen::FindPlace(_)
+                    | Screen::VisitReview(_)
+                    | Screen::Landmarks(_)
+                    | Screen::WhatsNext(_)
+            )
+        }) {
             let deadline = ms_to_next_minute;
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(deadline, |wake| wake.min(deadline)));
         }
@@ -2701,7 +2775,11 @@ impl App {
             now_ms, self.ui.now_ms,
             "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
         );
-        self.ui.next_wake_ms
+        if self.photo_pending() || self.landmarks_pending() {
+            Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
+        } else {
+            self.ui.next_wake_ms
+        }
     }
 
     /// Render the current screen and any overlays above it into `target`, a `w`×`h` pixel display.
@@ -2823,9 +2901,47 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
+        self.render_scene_map_photo_timed(
+            scratch,
+            target,
+            scene,
+            core_reader,
+            route,
+            peak_view,
+            w,
+            h,
+            color_fn,
+            clock,
+            None,
+        )
+    }
+
+    /// Render the base, prepare bounded photo work, then compose covering screens.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_scene_map_photo_timed<D, F, S>(
+        &mut self,
+        scratch: Option<&mut RenderScratch>,
+        target: &mut D,
+        scene: Option<&S>,
+        core_reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        peak_view: Option<&crate::peak_view::Panorama>,
+        w: f32,
+        h: f32,
+        color_fn: F,
+        clock: &dyn Clock,
+        mut photo: Option<crate::photo::FramePhoto<'_>>,
+    ) -> RenderStats
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+        S: MapScene,
+    {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
+        self.prepare_find(core_reader, route);
+        self.prepare_landmarks(core_reader);
         // Route-relative pan steps are recorded by gesture handling as a cumulative-distance
         // cursor because `Ctx` deliberately owns no streamed reader. Resolve that cursor here,
         // once per dirty step, before `Render` borrows state read-only for the draw pass.
@@ -2838,6 +2954,22 @@ impl App {
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
         self.navigator.refresh_route_profile(route);
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
+            let scope = self.up_ahead_scope();
+            let local = self.place_local_time();
+            self.ui.ahead.prepare(
+                core_reader,
+                route,
+                self.navigator.climbs(),
+                scope,
+                &mut self.ui.corridor_scratch,
+                local,
+            );
+            if self.ui.ahead.pending() {
+                self.ui.map_dirty = true;
+                self.ui.next_wake_ms = Some(1);
+            }
+        }
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the executor's keyed answer; only
@@ -2872,6 +3004,13 @@ impl App {
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
 
+        let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
+            if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
+                self.current_visit_index().and_then(|i| self.route_ids().get(i).copied())
+            } else {
+                self.assistant_preview().map(|p| p.source.object)
+            }
+        });
         let App {
             state,
             activity,
@@ -2890,7 +3029,12 @@ impl App {
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
         let navigation = navigator.route_state();
-        let nav_key = catalogs.nav_preview_key(navigation.active_route);
+        let preview_index = if let Some(source) = assistant_preview {
+            source.and_then(|id| catalogs.route_ids().iter().position(|value| *value == id))
+        } else {
+            navigation.active_route
+        };
+        let nav_key = catalogs.nav_preview_key(preview_index);
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
@@ -2903,6 +3047,9 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
+            find: &ui.find,
+            landmarks: &ui.landmarks,
+            ahead: &ui.ahead,
             peak_view,
             scratch,
 
@@ -2979,19 +3126,38 @@ impl App {
         // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all. The
         // three exclusions, and why each is one, are on [`UiRuntime::sheet_only`] — which the
         // frame's `Reader` need reads too, because a frame that skips this draw reads nothing.
-        let sheet_only = ui.sheet_only();
+        let preserve_photo = photo.as_ref().is_some_and(|work| !work.redraw)
+            && ui.resident_frame
+            && matches!(ui.stack.get(base), Some(Screen::LandmarkPhoto(_)));
+        let sheet_only = ui.sheet_only() || preserve_photo;
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
         // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
         let mut cv = Canvas::new(target, &policy);
         cv.set_clip(render_clip);
-        for (i, scr) in ui.stack.iter().enumerate().skip(base) {
+        for i in base..ui.stack.len() {
             if !(i == base && sheet_only) {
-                scr.draw(&mut cv, &mut rx);
+                if let Screen::LandmarkPhoto(page) = &mut ui.stack[i] {
+                    page.invalidate(covered);
+                }
+                ui.stack[i].draw(&mut cv, &mut rx);
             }
-            // Everything above the base is the sheet itself, at full colour.
             if i == base {
+                if let (Some(work), Screen::LandmarkPhoto(page)) = (photo.as_mut(), &mut ui.stack[i]) {
+                    if !covered || page.covered_rebuild {
+                        let (target, color) = cv.split();
+                        for _ in 0..work.steps {
+                            work.runtime.step(page, core_reader, target, color, rx.settings.language);
+                            if !matches!(page.status, crate::photo::Status::Fresh | crate::photo::Status::Pending) {
+                                page.covered_rebuild = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        work.runtime.cancel();
+                    }
+                }
                 recess.set(false);
             }
         }
@@ -3161,7 +3327,10 @@ impl App {
             .filter(|&key| !self.catalogs.ride_track_answered(key));
         // The screen half of the preview level — is an overview up? — is the UI's; the data half is
         // the key's.
-        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
+        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
+            || self.ui.stack.iter().rev().find(|s| !s.is_overlay()).is_some_and(
+                |s| matches!(s, Screen::VisitReview(s) if s.accepted && self.current_visit_index().is_some()),
+            );
         let nav_preview = overview_open
             .then(|| self.catalogs.nav_preview_key(self.active_route_index()))
             .flatten()
@@ -4560,9 +4729,9 @@ mod tests {
             "the cache holds the scratch while nothing else wants it"
         );
 
-        assert!(app.apply_chord(crate::input::Chord::Context)); // → the ride context sheet
-        app.apply_gesture(Gesture::Press); // → Up ahead (its first row)
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        app.open_whats_next();
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
         app.advance_animations(InputClock(2_000));
         assert_eq!(
             app.ui.corridor_scratch.armed().map(|k| k.filter),
@@ -4703,50 +4872,6 @@ mod tests {
             Some(std::string::String::from("Spring")),
             "a passed entry re-arms out of turn and the next one takes its place"
         );
-        // Keep Up Ahead open while new bytes replace the active route at the same identity.
-        app.set_routes_with_ids(&[summary("East"), summary("Other")], &[10, 20]);
-        app.activate_route(0);
-        app.navigator.route_state_mut().progress_m = 100;
-        assert!(app.apply_chord(crate::input::Chord::Context));
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-        frame(&mut app, Some(&obcr));
-        let held = app.corridor_snapshot().to_vec();
-        assert!(!held.is_empty());
-        let key = app.ui.corridor_scratch.armed();
-        assert_eq!(key.unwrap().anchor_m, 100);
-        app.apply_gesture(Gesture::Step(1));
-
-        // An unrelated replacement covers the list with a card but preserves its snapshot.
-        app.on_route_uploaded(20, true, None);
-        app.advance_animations(InputClock(11_000));
-        assert_eq!(app.corridor_snapshot(), held);
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-        assert!(!app.base_needs_reader());
-
-        app.on_route_uploaded(10, true, None);
-        assert!(matches!(app.top_screen(), Screen::RouteUpdated(_)));
-        assert!(app.corridor_snapshot().is_empty(), "old geometry rows drop at commit");
-        assert!(app.corridor_snapshot_pending());
-        app.advance_animations(InputClock(12_000));
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
-        assert_eq!(app.ui.corridor_scratch.armed(), key, "the list keeps its frozen anchor");
-        assert!(app.base_needs_reader());
-        frame(&mut app, None);
-        assert!(app.corridor_snapshot_pending(), "missing new geometry must keep the reader request live");
-
-        // The replacement runs well north of the old water points, so its real query is empty.
-        let north_gpx = gpx.replace("48.0000", "48.1000");
-        let mut north = VecSink::default();
-        obc_route::gpx_to_obcr(&SliceSource(north_gpx.as_bytes()), "North", &mut north).unwrap();
-        frame(&mut app, Some(&north.0));
-        assert!(app.corridor_snapshot().is_empty(), "the new route cannot reuse old projected POIs");
-        assert!(!app.corridor_snapshot_pending());
-        assert!(!app.base_needs_reader());
-        frame(&mut app, Some(&obcr));
-        assert!(app.corridor_snapshot().is_empty(), "a settled snapshot does not query again each frame");
     }
 
     /// A **same-index / new-bytes** route replace invalidates the `Next: <category>` cache (epic

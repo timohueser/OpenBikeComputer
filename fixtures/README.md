@@ -112,8 +112,11 @@ missed that corridor.
 The `assistant-inputs` profile contains independent OSM, terrain, Wiki, and authored replay
 packages. See [the source recipes](sources/ride-assistant/README.md) for source dates, exact
 revisions, licenses, offline build commands, review identities, and remaining simulator wiring.
-The Swiss package includes country-wide raw OSM; four Wiki review sites do not prove country-wide
-content coverage. The initial map outputs precede landmark format integration.
+The Swiss OSM input is country-wide. The separate compiled Swiss content package contains
+1,495 articles and 1,119 photos; the four-site Wiki input is only a review sample. Both West Cork
+and the Swiss regional simulator maps use OBCM v16 with native terrain and compiled landmark
+content. The Swiss map is a crop, not a full-country map. See the source recipes for exact
+coverage, scenario clocks and the persistent-card option.
 
 ## Storage contract
 

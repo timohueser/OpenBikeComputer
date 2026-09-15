@@ -31,22 +31,23 @@ const ROW_H: i32 = 64;
 
 /// The App owns one bounded nearby page, outside the screen stack so each stack slot stays small.
 pub struct PoiScratch {
-    query: Option<PlaceQuery>,
+    pub(crate) query: Option<PlaceQuery>,
     pub(crate) detail_valid: bool,
+    pub(crate) detail_source: u64,
     pub(crate) detail_schedule: Option<obc_reader::WeeklySchedule>,
     clock_key: Option<(bool, i16)>,
     local: Option<(u8, u16)>,
-    recheck: bool,
+    pub(crate) recheck: bool,
     page: Option<(PlaceKey, bool)>,
-    status: QueryProgress,
-    generation: u32,
+    pub(crate) status: QueryProgress,
+    pub(crate) generation: u32,
     /// The category the current snapshot is for once a query has run — `Some` even when the result
     /// is empty (so the screen can tell "queried, empty category" from "not queried yet"). `None`
     /// on a fresh/invalidated scratch.
-    taken_for: Option<PoiCategory>,
+    pub(crate) taken_for: Option<PoiCategory>,
     /// The current page for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
     /// filled; the query owns the ordering.
-    pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
+    pub(crate) pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
 }
 
 impl PoiScratch {
@@ -57,6 +58,7 @@ impl PoiScratch {
             pois: heapless::Vec::new(),
             query: None,
             detail_valid: false,
+            detail_source: 0,
             detail_schedule: None,
             clock_key: None,
             local: None,
@@ -73,6 +75,7 @@ impl PoiScratch {
         }
         self.status = QueryProgress::Unavailable;
         self.detail_valid = false;
+        self.detail_source = 0;
     }
 
     pub(crate) fn clock_changed(&mut self, local: Option<(u8, u16)>, offset: i16) -> bool {
@@ -83,6 +86,7 @@ impl PoiScratch {
             }
             self.status = QueryProgress::Unavailable;
             self.detail_valid = false;
+            self.detail_source = 0;
         }
         let changed = self.local != local;
         self.recheck |= changed;
@@ -147,7 +151,7 @@ pub struct PoiListScreen {
 }
 
 impl PoiListScreen {
-    /// Open the list for `category`. The caller ([`PoiMenuScreen`](super::PoiMenuScreen)) also
+    /// Open the list for `category`. The caller (the Find a place screen) also
     /// [invalidates](PoiScratch::invalidate) the App scratch on this transition, so the first draw
     /// re-queries even when re-entering the same category.
     pub fn new(category: PoiCategory) -> Self {
@@ -294,7 +298,7 @@ impl PoiListScreen {
     /// Fill the [`App`](crate::App)-owned scratch with this category's nearest-16 on the first
     /// **prepare** pass that has both a `Reader` and a fix — then never again (the scratch already
     /// `holds` the category). A re-entry invalidated the scratch in
-    /// [`PoiMenuScreen`](super::PoiMenuScreen), so it re-queries.
+    /// the Find a place screen, so it re-queries.
     ///
     /// Runs in the pre-draw [`prepare`](super::Screen::prepare) pass (#803) — the one place the
     /// side-effectful `Reader` query lives — writing solely to the shared [`Prepare::poi_scratch`];
@@ -484,7 +488,7 @@ pub(super) fn draw_bearing_arrow(
 
 /// Fit `s` into `max` chars, appending ".." when truncated (no ellipsis glyph). Truncates on a char
 /// boundary. A local twin of the Route menu's `fit_name`, capped for a POI name (≤ 20 bytes).
-fn fit(s: &str, max: usize) -> heapless::String<24> {
+pub(super) fn fit(s: &str, max: usize) -> heapless::String<24> {
     let mut out = heapless::String::new();
     if s.chars().count() <= max {
         let _ = out.push_str(s);

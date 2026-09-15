@@ -1,74 +1,8 @@
-//! The POI **category** screen — the first step of the POIs browser (Menu → POIs). Six rows in
-//! fixed category-id order ([`PoiCategory::ALL`]), each a small icon in the main-menu pixel style
-//! plus the category's [`name()`](PoiCategory::name). Selecting one opens the
-//! [`PoiListScreen`](super::PoiListScreen) for that category; `back` returns to the Menu.
-//!
-//! Names only, no counts (house style — a count would also cost a `nearest_pois` query per row on
-//! entry). The list itself reuses the shared [`list`](super::vocab::list) widget; only the per-row body
-//! (icon + name) and the Press semantics are local, mirroring the Route menu.
-
+//! Shared place-category labels and icons.
+use crate::Msg;
 use embedded_graphics::prelude::Point;
 use obc_reader::PoiCategory;
-use obc_render::{
-    rect,
-    text::{Font, TextAlign},
-    Surface,
-};
-
-use crate::input::Gesture;
-use crate::Msg;
-
-use super::vocab::list::{self, ListGeometry, Separators};
-use super::{palette, Ctx, PoiListScreen, Render, Screen, Transition};
-
-/// Per-category row height — a Body-tier row with an amber highlight + padding, matching the nav
-/// menus. Six rows fit the list area at this pitch.
-const ROW_H: i32 = 52;
-
-/// The category list. State is just the highlighted category.
-#[derive(Debug, Default)]
-pub struct PoiMenuScreen {
-    selected: usize,
-}
-
-impl PoiMenuScreen {
-    pub fn new() -> Self {
-        PoiMenuScreen { selected: 0 }
-    }
-
-    pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
-        let len = PoiCategory::ALL.len();
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
-            Gesture::Press => {
-                let cat = PoiCategory::ALL[self.selected.min(len - 1)];
-                Transition::Push(Screen::PoiList(PoiListScreen::new(cat)))
-            }
-            Gesture::Back => Transition::Pop, // return to the Menu
-            _ => Transition::None,
-        }
-    }
-
-    pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        use palette::*;
-        let (w, h) = (rx.w, rx.h);
-        let total = PoiCategory::ALL.len();
-        let geo = ListGeometry::below_title(w, h, ROW_H, 8, 16, Separators::All);
-        list::list_frame(cv, w, h, rx.t(Msg::PoiMenuTitle), self.selected + 1, total, geo.visible);
-
-        let first = list::window_start(self.selected, geo.visible, total) as i32;
-        list::draw_rows(cv, geo, total, self.selected, first, |cv, row| {
-            let cat = PoiCategory::ALL[row.index];
-            let a = row.area;
-            let mid = a.top_left.y + a.size.height as i32 / 2;
-            // Icon in a fixed left gutter, then the name — same rhythm as the nav-menu bullet+label.
-            let ink = if row.selected { INK } else { SUBTEXT };
-            let bg = if row.selected { AMBER } else { PARCHMENT };
-            draw_category_icon(cv, cat, Point::new(a.top_left.x + 22, mid), ink, bg);
-            cv.text(rx.t(category_msg(cat)), Point::new(a.top_left.x + 44, mid - 14), Font::Body, TextAlign::Left, INK);
-        });
-    }
-}
+use obc_render::{rect, Surface};
 
 /// The catalog key for a category's name (epic #602 + #946). [`PoiCategory::name`] is the
 /// format crate's English label — fine for a spec dump, wrong on glass — so every screen that

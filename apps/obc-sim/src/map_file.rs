@@ -140,9 +140,28 @@ where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
 {
+    let mut photo = app.photo_base_active().then(obc_host_core::photo::Preparer::default);
+    render_base_frame(app, scratch, target, scene, peak_view, (w, h), &color_fn, photo.as_mut().map(|p| p.capture()))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_base_frame<D, F>(
+    app: &mut obc_app::App,
+    scratch: &mut obc_render::RenderScratch,
+    target: &mut D,
+    scene: Scene<'_, '_>,
+    peak_view: Option<&obc_app::peak_view::Panorama>,
+    (w, h): (f32, f32),
+    color_fn: F,
+    photo: Option<obc_app::photo::FramePhoto<'_>>,
+) -> RenderStats
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
     let Scene { reader, route } = scene;
     let clock = StdClock(std::time::Instant::now());
-    let stats = app.render_scene_map_timed(
+    let stats = app.render_scene_map_photo_timed(
         Some(scratch),
         target,
         Some(reader),
@@ -153,6 +172,7 @@ where
         h,
         &color_fn,
         &clock,
+        photo,
     );
     app.render_overlay(target, w, h, &color_fn);
     stats

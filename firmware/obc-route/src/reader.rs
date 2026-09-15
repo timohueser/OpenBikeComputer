@@ -426,6 +426,16 @@ impl<'a> RouteReader<'a> {
 
     /// The underlying byte source — for the crate's own whole-file passes over sections the
     /// chunk index doesn't cover (the splicer's [`for_each_waypoint`] sweep).
+    /// Start a bounded cursor over the complete authored waypoint section.
+    pub fn waypoint_cursor(&self) -> Result<WaypointCursor, Error> {
+        WaypointCursor::new(self.source())
+    }
+
+    /// Read one authored record without retaining a source handle in the cursor.
+    pub fn next_waypoint(&self, cursor: &mut WaypointCursor) -> Result<Option<Waypoint>, Error> {
+        cursor.next(self.source())
+    }
+
     pub(crate) fn source(&self) -> &dyn ByteSource {
         self.src
     }
@@ -1236,21 +1246,22 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
 }
 
 /// A source-free cursor; each advance reads at most one stored record.
-pub(crate) struct WaypointCursor {
+#[derive(Debug)]
+pub struct WaypointCursor {
     offset: u32,
     count: u16,
     next: u16,
 }
 
 impl WaypointCursor {
-    pub(crate) fn new(src: &dyn ByteSource) -> Result<Self, Error> {
+    pub fn new(src: &dyn ByteSource) -> Result<Self, Error> {
         read_header(src)?;
         let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
         src.read_at(HEADER_LEN as u64, &mut ext)?;
         Ok(Self { offset: rd_u32(&ext, 0), count: rd_u16(&ext, 4), next: 0 })
     }
 
-    pub(crate) fn next(&mut self, src: &dyn ByteSource) -> Result<Option<Waypoint>, Error> {
+    pub fn next(&mut self, src: &dyn ByteSource) -> Result<Option<Waypoint>, Error> {
         if self.next == self.count {
             return Ok(None);
         }

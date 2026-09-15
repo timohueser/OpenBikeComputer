@@ -5,7 +5,7 @@
 //!
 //! A screen does not implement a drawer. It names one — a `&'static` [`ContextMenu`], returned from
 //! [`Screen::context`](super::Screen::context) in the same partial-match idiom as
-//! [`corridor_request`](super::Screen::corridor_request). Everything else lives here: the cursor,
+//! the Assistant runtime. Everything else lives here: the cursor,
 //! which rows are inert, what a press resolves to, how the sheet is drawn and how it animates. A
 //! screen that declares nothing gets no drawer, and the chord does nothing on it.
 //!
@@ -54,9 +54,7 @@ use crate::settings::UpAheadSource;
 use crate::{AppState, Msg, Settings};
 
 use super::vocab::{rows, sheet};
-use super::{
-    palette, Ctx, DetourScreen, PoiMenuScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition, UpAheadScreen,
-};
+use super::{palette, Ctx, DetourScreen, Render, RouteMenuScreen, Screen, ScreenTick, Transition};
 
 /// How long the sheet takes to slide up from the bottom edge on open (ms).
 ///
@@ -146,7 +144,7 @@ pub enum ContextValue {
     /// Rider selection state, so it lives in [`AppState`] rather than
     /// in [`Settings`]: the list opens on Everything every time (epic #946, U3 — predictable beats
     /// sticky), and a value that is reset on entry is not a preference. It sits in the app plane
-    /// rather than on [`UpAheadScreen`] because the sheet that edits it is *above* that screen on
+    /// rather than on [`WhatsNextScreen`](super::WhatsNextScreen) because the sheet that edits it is *above* that screen on
     /// the stack, so it belongs to neither of the two and to the pair.
     UpAheadFilter,
     /// Which sources feed the Up-ahead timeline — [`Settings::up_ahead_source`], the persisted
@@ -323,12 +321,14 @@ fn filter_choice(filter: PoiCategorySet) -> u8 {
 /// and lets one table serve four screens whose activity state differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContextAction {
+    LandmarkSources,
+    CurrentVisit,
+    ResumeJourney,
     /// The merged waypoint + corridor-POI timeline, anchored on live progress at entry.
-    UpAhead,
+    Assistant,
     /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
     Detour,
     /// The POIs browser's category list.
-    Pois,
     /// The stored-route / trip menu.
     Routes,
     /// A value the sheet edits on a nested page instead of a screen it opens.
@@ -355,9 +355,11 @@ impl ContextAction {
     /// it is [`ContextValue::accepts`], the same answer the commit obeys.
     fn available(self, f: &ContextFacts) -> bool {
         match self {
+            ContextAction::LandmarkSources | ContextAction::ResumeJourney => true,
+            ContextAction::CurrentVisit => f.navigation.active_route.is_some(),
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
-            ContextAction::UpAhead | ContextAction::Pois | ContextAction::Routes => true,
+            ContextAction::Assistant | ContextAction::Routes => true,
             // #882: a detour needs a recorded ride to re-route, a route to leave, a graph to route
             // on, and a rider on the route (the corridor anchors on live progress, which off-route
             // freezes).
@@ -373,15 +375,17 @@ impl ContextAction {
 
     fn open(self, cx: &mut Ctx) -> Option<Transition> {
         Some(Transition::Replace(match self {
-            ContextAction::UpAhead => {
-                // The list always opens on **Everything** (epic #946, U3): the filter is selection
-                // state, cleared on entry so a category the
-                // rider chose one ride never silently empties the list on the next.
-                cx.state.up_ahead_filter = PoiCategorySet::ALL;
-                Screen::UpAhead(UpAheadScreen::new(cx.navigator.route_state().progress_m))
+            ContextAction::LandmarkSources => {
+                cx.landmarks.source_page = 0;
+                Screen::LandmarkSources(super::LandmarkSourcesScreen)
             }
+            ContextAction::ResumeJourney => Screen::Journey(super::JourneyScreen::new(true)),
+            ContextAction::CurrentVisit => {
+                cx.find.action = crate::find_place::Action::OpenAccepted;
+                return Some(Transition::Pop);
+            }
+            ContextAction::Assistant => Screen::Assistant(super::AssistantScreen::new()),
             ContextAction::Detour => Screen::Detour(DetourScreen::new(cx.navigator.route_state())),
-            ContextAction::Pois => Screen::PoiMenu(PoiMenuScreen::new()),
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
 
             // The shorter sheet takes the taller one's place, already landed.
@@ -414,9 +418,8 @@ pub struct ContextMenu {
 /// which the global Back-hold escape now serves from everywhere instead of from one screen.
 pub static RIDE: ContextMenu = ContextMenu {
     rows: &[
-        ContextRow { label: Msg::RideContextUpAhead, action: ContextAction::UpAhead },
+        ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
         ContextRow { label: Msg::RideContextDetour, action: ContextAction::Detour },
-        ContextRow { label: Msg::MenuPois, action: ContextAction::Pois },
         ContextRow { label: Msg::MenuRoutes, action: ContextAction::Routes },
     ],
 };
@@ -427,9 +430,8 @@ pub static RIDE: ContextMenu = ContextMenu {
 /// and a rider who squeezes on Statistics reach the same actions by the same steps.
 pub static MAP: ContextMenu = ContextMenu {
     rows: &[
-        ContextRow { label: Msg::RideContextUpAhead, action: ContextAction::UpAhead },
+        ContextRow { label: Msg::AssistantTitle, action: ContextAction::Assistant },
         ContextRow { label: Msg::RideContextDetour, action: ContextAction::Detour },
-        ContextRow { label: Msg::MenuPois, action: ContextAction::Pois },
         ContextRow { label: Msg::MenuRoutes, action: ContextAction::Routes },
         ContextRow { label: Msg::MapContextMapDisplay, action: ContextAction::MapDisplay },
     ],
@@ -445,6 +447,12 @@ pub static MAP_DISPLAY: ContextMenu = ContextMenu {
         ContextRow { label: Msg::MapContextContours, action: ContextAction::Toggle(ContextToggle::MapContours) },
     ],
 };
+
+pub(crate) static ASSISTANT_RESUME: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::AssistantResumeJourney, action: ContextAction::ResumeJourney }] };
+
+pub static ASSISTANT_VISIT: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
 
 /// The **Up-ahead context** (#1515 D4a): the two controls that scope the timeline, and the only
 /// home either of them has. *Filter* is the category picker the list's Select-hold used to open —
@@ -928,6 +936,9 @@ impl ContextDrawerScreen {
     }
 }
 
+pub static LANDMARK_CONTENT: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::RideContextSources, action: ContextAction::LandmarkSources }] };
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,7 +1038,7 @@ mod tests {
     fn every_ride_row_replaces_the_sheet_with_its_destination() {
         let mut w = World::riding();
         let mut d = drawer();
-        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::UpAhead(_))));
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::Assistant(_))));
 
         let mut d = drawer();
         w.press(&mut d, Gesture::Step(1));
@@ -1035,10 +1046,6 @@ mod tests {
 
         let mut d = drawer();
         w.press(&mut d, Gesture::Step(2));
-        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::PoiMenu(_))));
-
-        let mut d = drawer();
-        w.press(&mut d, Gesture::Step(3));
         assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::RouteMenu(_))));
     }
 
@@ -1054,8 +1061,11 @@ mod tests {
         );
 
         let mut d = drawer();
-        w.press(&mut d, Gesture::Step(4));
-        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::UpAhead(_))), "wrapped to first");
+        w.press(&mut d, Gesture::Step(3));
+        assert!(
+            matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::Assistant(_))),
+            "wrapped to first"
+        );
         assert!(matches!(w.press(&mut d, Gesture::Back), Transition::Pop));
     }
 
@@ -1128,35 +1138,23 @@ mod tests {
         );
     }
 
-    /// The timeline anchors its corridor snapshot on **live progress at entry** (epic #946 U3),
-    /// opens on Everything, and leaves the recording session exactly as it found it — the property
-    /// the compass menu's north station carried, now carried by the row that replaced it.
+    /// Opening the Assistant leaves recording, progress, and source preferences unchanged.
     #[test]
-    fn up_ahead_anchors_on_live_progress_and_preserves_the_session() {
+    fn assistant_preserves_the_session_and_selection_scope() {
         let mut w = World::riding();
         w.recorder.test_open();
         w.activity.mode = Mode::Paused;
         w.navigator.route_state_mut().progress_m = 4_200;
-        // A category the rider left on from an earlier list must not survive into this one.
         w.state.up_ahead_filter = PoiCategorySet::only(PoiCategory::Water);
         let session = w.recorder.session();
         let mut d = drawer();
-        match w.press(&mut d, Gesture::Press) {
-            Transition::Replace(Screen::UpAhead(screen)) => {
-                let scope = crate::corridor::UpAheadScope {
-                    filter: w.state.up_ahead_filter,
-                    source: w.settings.up_ahead_source,
-                };
-                let key = screen.corridor_key(scope).expect("the default source scope wants a snapshot");
-                assert_eq!(key.anchor_m, 4_200, "the snapshot anchors where the rider is");
-                assert_eq!(key.filter, PoiCategorySet::ALL, "the list opens on Everything, every time");
-            }
-            _ => panic!("the Up ahead row did not open its timeline"),
-        }
-        assert_eq!(w.activity.mode, Mode::Paused, "opening ride chrome never resumes/pauses the session");
-        assert!(w.recorder.recording(), "…and never closes the open ride");
-        assert_eq!(w.recorder.session(), session, "…nor starts a new one");
-        assert_eq!(w.recorder.test_take_intent(), None, "a row press names no recorder intent at all");
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::Replace(Screen::Assistant(_))));
+        assert_eq!(w.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
+        assert_eq!(w.navigator.route_state().progress_m, 4_200);
+        assert_eq!(w.activity.mode, Mode::Paused);
+        assert!(w.recorder.recording());
+        assert_eq!(w.recorder.session(), session);
+        assert_eq!(w.recorder.test_take_intent(), None);
     }
 
     /// **Every declared table is a sheet, not a page**, and fits the key's availability mask. The
@@ -1572,7 +1570,7 @@ mod tests {
     fn the_display_row_swaps_the_sheet_and_back_lands_on_the_map() {
         let mut w = World::riding();
         let mut d = map_drawer();
-        w.press(&mut d, Gesture::Step(4)); // → the Map display row
+        w.press(&mut d, Gesture::Step(3)); // → the Map display row
         let Transition::Replace(Screen::ContextDrawer(mut swapped)) = w.press(&mut d, Gesture::Press) else {
             panic!("row 4 did not replace the sheet with the display sheet")
         };

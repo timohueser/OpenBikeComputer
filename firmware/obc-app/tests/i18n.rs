@@ -193,13 +193,16 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         let mut app = App::new(AppState::new(0, 0, 0.05));
         app.set_settings(Settings { language: lang, ..Default::default() });
         assert!(app.apply_chord(obc_app::Chord::Context)); // Map -> the ride context sheet
-        app.apply_gesture(Gesture::Press); // its first row -> Up ahead
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+        app.apply_gesture(Gesture::Press); // Assistant
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
         let buf = render_120(&mut app, &bytes);
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "route-less Up-ahead state rendered blank in {lang:?}");
 
-        // The timeline declares its own context (#1515 D4a): the sheet's two value rows, then the
-        // nested filter editor a press opens.
+        app.apply_gesture(Gesture::Press); // Explore ahead owns the filter drawer.
+                                           // The timeline declares its own context (#1515 D4a): the sheet's two value rows, then the
+                                           // nested filter editor a press opens.
         assert!(app.apply_chord(obc_app::Chord::Context));
         assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
         let buf = render_120(&mut app, &bytes);
@@ -296,18 +299,20 @@ fn the_route_plan_sheet_is_localized_and_every_state_renders() {
         app.set_nav_profiles(tables.nav_profiles());
         app.state.user_fix = Some(Fix::at(POS.1, POS.0));
 
-        // Home → Menu → POIs → the Water list → the POI's detail → the create-route confirm.
+        // Home → Menu → POIs → Water → shared place detail and its route-profile context.
         app.apply_gesture(Gesture::BackHold);
         app.apply_gesture(Gesture::Step(2)); // Routes → Rides → POIs
-        app.apply_gesture(Gesture::Press); // → the category list (Water first)
-        app.apply_gesture(Gesture::Press); // → the POI list
+        app.apply_gesture(Gesture::Press); // Assistant
+        app.apply_gesture(Gesture::Press); // Find a place
+        app.apply_gesture(Gesture::Press); // Water
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press); // More places
         render_120(&mut app, &bytes); // the lazy POI snapshot fills on a render
         app.apply_gesture(Gesture::Press); // → the detail
         render_120(&mut app, &bytes); // resolve current opening hours before enabling the action
-        app.apply_gesture(Gesture::Press); // → the confirm card
-        assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "the POI detail opens the confirm");
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "the shared place detail owns the visit profile");
 
-        assert!(app.apply_chord(obc_app::Chord::Context), "the confirm card declares a context");
+        assert!(app.apply_chord(obc_app::Chord::Context), "the place detail declares a route-profile context");
         assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
         let root = render_120(&mut app, &bytes);
         assert!(root.px.iter().any(|&p| p != Rgb888::BLACK), "the route-plan sheet rendered blank in {lang:?}");

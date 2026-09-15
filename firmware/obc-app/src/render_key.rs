@@ -386,12 +386,16 @@ mod tests {
             [
                 ("Home", RenderKeyKind::Home),
                 ("Map", RenderKeyKind::Map),
+                ("Landmarks", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
                 ("PeakView", RenderKeyKind::Statistics),
-                ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),
+                ("WhatsNext", RenderKeyKind::UpAhead),
+                ("FindPlace", RenderKeyKind::Map),
+                ("VisitReview", RenderKeyKind::Map),
+                ("Easier", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),
@@ -634,7 +638,8 @@ mod tests {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         app.apply_gesture(crate::Gesture::Press); // -> the Menu, then a route-less Up-ahead list
         app.ui.stack.truncate(2);
-        app.ui.stack[1] = Screen::UpAhead(crate::screen::UpAheadScreen::new(0));
+        app.ui.stack[1] = Screen::WhatsNext(crate::screen::WhatsNextScreen::new());
+        app.apply_gesture(crate::Gesture::Press);
         assert!(app.apply_chord(crate::input::Chord::Context), "the timeline declares a context");
 
         let root = app.render_key();
@@ -680,7 +685,7 @@ mod tests {
     #[test]
     fn a_map_load_under_the_sheet_moves_the_row_and_nothing_else() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
-        let _ = app.ui.stack.push(Screen::NavConfirm(crate::screen::NavConfirmScreen::new((0, 0), "Fontaine", None)));
+        let _ = app.ui.stack.push(crate::harness::support::selected_place());
         assert!(app.apply_chord(crate::input::Chord::Context), "the confirm card declares a context");
 
         // No map yet: the row is inert, and the frame holds no base fact of any kind.

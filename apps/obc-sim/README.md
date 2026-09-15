@@ -128,8 +128,49 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ## Ride and storage fixtures
 
+### Ride Assistant
+
+Open the top drawer with **Up + Select** (Left arrow + Enter), choose **Assistant**, and select
+**Find a place**, **What's next**, **Easier route**, or **Landmarks**. The same Assistant menu is
+available from the main menu and map context. Bluetooth remains under **Settings → Connections → Phone**.
+The normal detour command remains in the map context. The three grey questions are inactive.
+
+Use an installed OBCM v16 map and an explicit simulator position, or play a captured GPS track.
+Find lists all place categories. More places opens the complete bounded result list. What's next
+uses the accepted route; **Explore ahead** includes authored waypoints and map places. Its
+**Down + Back** drawer retains category and source filters. Authored waypoint details do not add
+another stop. Easier route compares real planner results and offers a preview before acceptance.
+
+Landmarks reads the installed source text, article language, optional image and full attribution.
+Up/Down pages through text and the photo. **Down + Back → Sources** opens article and image
+credits; Back restores the selected site and reading page. Missing mapped access leaves a site
+information-only. Opening hours and the selected bike profile govern Visit. The shared Visit
+preview plans the actual connection before acceptance. Browsing does not start recording.
+
+For a named capture through normal physical-button gestures:
+
+```sh
+cargo build -p obc-sim --bin obc-sim --locked
+target/debug/obc-sim --card west-cork.obc --center -9829419,51482665 --heading 0 \
+  --script 'Q d p d d d d d p f p f' --expect-screen Landmarks --png landmark-text.png
+```
+
+The explicit center is a simulated GPS fix. Use `--lang en|de|fr|es` for UI copy; article language
+comes from the installed source. Metric/imperial follows the normal Units setting. A map without
+landmark content or a route without coverage shows its unavailable state. There are no study
+fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls in this path.
+
+### Storage inputs
+
 - `--gpx PATH` replays a GPX track as the location source.
-- `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
+- `--at SECONDS` chooses the GPX playback endpoint for a headless frame (default: midpoint).
+- `--script-at SECONDS` sets the GPX position during `--script`, including its `T` inputs.
+  It requires `--gpx`, `--png`, and `--script`. After the script, replay advances from this
+  position to `--at`; both positions must be within the track and the endpoint cannot be earlier.
+  Ride time starts at zero at the selected position. For example, `--script-at 30 --at 120`
+  runs the script at second 30, then replays 90 seconds of actual GPS motion. Equal start and
+  end positions run the script without further motion. Without `--script-at`, the script uses
+  the endpoint position and the subsequent replay starts at the beginning, as before.
 - `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
 - `--tracks-dir DIR` selects saved-ride import inputs and GPX export output (default `tracks/`).
   A new session imports valid `ride-{number}.obcr` files without changing them. `--card` does not
@@ -165,10 +206,19 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 
 ## Scripted snapshots
 
+- `--script-after TOKENS` applies normal device input after GPX replay, before the final render.
+  It requires `--gpx` and `--png`. It continues the button clock and retains the final GPS position
+  and ride clock. `T` refreshes that position without replaying earlier motion. Use `--script-after
+  'p f d h f'` from the riding Map to pause, select Finish, hold to save, and complete pending writes
+  before the process exits. This saves the recorder's final partial batch in the same session.
 - `--script TOKENS` applies device input before a headless render. `d`/`u` step, `p` selects, `h`
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
   Up+Select chord that opens the universal quick drawer, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
+  With `--gpx`, `T` samples the actual track position selected by `--script-at` (or `--at` when omitted) through the normal location
+  input and active-route matcher. Use it after starting a route and before opening a route action.
+  It keeps the interaction clock and the pre-replay ride epoch; the full GPX replay still follows
+  the script.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
 - `--hold nav|detour` consumes exactly one planner request without starting it, preserving its
   spinner snapshot.
@@ -193,3 +243,10 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
 The committed snapshot sweep is [`firmware/ui-snapshots.sh`](../../firmware/ui-snapshots.sh). When
 changing command spelling or fixture ownership, compare the surviving `--png` outputs byte for
 byte; delete a scenario only when its capability was intentionally removed.
+
+### Ride Assistant validation
+
+Use the ordinary drawer entry shown above. The RA10 [source and card evidence](../../docs/assets/ride-assistant/implementation/ra10-evidence/README.md)
+records the real West Cork and Grimsel data. The temporary `L` entry has been removed.
+Final integrated acceptance includes the ordinary journey while recording; hardware acceptance
+remains a separate device check.

@@ -2,8 +2,8 @@
 
 These files describe the initial real inputs for Ride Assistant. Scenario inputs live in the
 immutable fixture store. Country-scale raw landmark captures stay in a local map-baker source
-cache; see [acquisition and recount commands](CAPTURE.md). This input revision does not contain
-the later landmark map format.
+cache; see [acquisition and recount commands](CAPTURE.md). The West Cork simulator output now
+uses OBCM v16 with compiled landmark content. The initial Swiss regional output remains pending.
 It does not prove that an Assistant feature or a hardware test passed.
 
 ## Acquire and verify
@@ -24,23 +24,66 @@ runs during map generation.
 
 ## Offline maps
 
-Build the tools once while Cargo dependencies are available. Then build from cached inputs:
+Build the shipping tools once while Cargo dependencies are available, then use cached inputs:
 
 ```sh
-cargo build --release -p obc-pack -p obc-dem
-bash fixtures/build-map-package.sh assistant all
+cargo build --locked --release -p obc-bake -p obc-dem -p obcm-assemble
+python3 fixtures/build-assistant-package.py west-cork
 ```
 
-The script uses `cargo --offline`, the pinned OSM PBF, the pinned Copernicus tiles, the current
-preset, `obc-dem bake`, and `obc-pack --bbox --terrain`. It writes initial OBCM/OBCT maps and GPX
-motion to `fixtures/build/maps/sim-assistant-{meiringen,west-cork}`. An existing output is refused.
-Set `OBC_FIXTURE_BUILD_DIR` to an empty directory for a second build. Compare the output hashes
-at the same source commit and preset. This is the initial map revision; RA09 and RA13 must use
-the normal pack/cut/assemble path to add landmark map content and publish new revisions.
+The recipe verifies the selected region's input packages before work. Cork runs the offline
+landmark compiler; Switzerland loads its compiled input package. Both then run `obc-bake` with
+the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly uses
+the normal catalog selection, verifies every cell hash, and explicitly accepts partial cells at
+the authored crop boundary. It does not accept missing cells or skip the final map verification.
+The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
 
-The existing `monaco-upahead` scenario keeps its registered 2026-08-17 map. The new raw Monaco
-source is 2026-09-13, so its later rebuild is a deliberate source refresh. The old upstream
-2026-08-17 download returned HTTP 404 at capture time.
+The Cork compiler input has four review sites. The Swiss recipe uses verified
+`assistant-switzerland-content`: 1,495 texts, 1,119 RGB222 photos, and their source notices.
+`--landmarks PATH/content.json` can use another production compiler output with its own source coverage declaration. It must include
+its referenced photos. This does not turn the regional crop into full-country map coverage.
+No country raw archive is needed or published by the scenario.
+
+Outputs go to `fixtures/build/maps`. An existing work or package directory is refused. Use
+`OBC_FIXTURE_BUILD_DIR` for another build and `--bin-dir` for existing shipping tool binaries.
+No Cargo build or external request runs implicitly. Build provenance records `recipe_commit`
+for this checkout and separate SHA-256 hashes for `obc-bake`, `obc-dem`, and `obcm-assemble`.
+A recipe commit does not assert the source revision of prebuilt binaries supplied by `--bin-dir`.
+To package completed work without a rebake:
+
+```sh
+python3 fixtures/build-assistant-package.py west-cork \
+  --assembled-map PATH/west-cork.obcm \
+  --provenance fixtures/sources/ride-assistant/west-cork-v16.json
+```
+
+The published Cork map is 4,746,240 bytes, SHA-256
+`a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23`.
+[The retained record](west-cork-v16.json) has source and executable hashes, the regional boundary,
+compiler coverage, and normal assembly counts. Source commit attribution uses retained build times
+and Git reflog; it is not an embedded binary build stamp. The new metadata adapter reproduced the
+completed map byte for byte from the retained tree and native terrain; the bake was not repeated.
+Monaco also uses its pinned 2026-09-13 v16 output. The published Swiss regional map is
+44,643,264 bytes, SHA-256 `ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba`.
+[Its retained record](meiringen-v16.json) pins the full source PBF, polygon, content, producer
+executables, 18 selected cells, four native terrain cells and normal assembly result. The map
+contains 65 landmark records and 2,632 services. The completed tree was assembled without a rebake.
+
+## Swiss compiled input
+
+`assistant-switzerland-content` is a 10,554,318-byte immutable archive. Its SHA-256 is
+`cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1`.
+[The source record](switzerland-content.json) pins the compiled manifest, input tree, compiler
+policy, counts, and coverage. The 1,120 content members are `content.json` and 1,119 RGB222 photos, plus the package manifest.
+Each published article and photo keeps its original source and license notice. Raw requests,
+article captures, and full-resolution photos remain in the local acquisition cache.
+
+The Swiss map recipe gives the full pinned national PBF to the shipping baker. It selects cells
+that intersect longitude 8.1–8.4 and latitude 46.5–46.8. It does not pre-extract the PBF: a pre-extract
+would change data in the boundary cells. These map-selection bounds are separate from the wider
+acquisition/replay bounds in `regions.geojson`. The catalog region ID is `europe/switzerland`, with
+a validation-crop name; the assembled simulator package remains `sim-assistant-meiringen`.
+This regional map is not a full-country map. The completed country source census is separate.
 
 ## Source boundaries and provenance
 
@@ -94,28 +137,56 @@ those timestamps. The other traces use distance-derived sampling times to contro
 | `dunlough-access` | Castle approach and return | 2026-09-14 10:00 | +01:00 |
 
 These are motion inputs for interactive visits, not preselected navigation plans. The rider
-must still select a place and accept a computed route. RA13 must apply the declared clock and
-offset through normal simulator ports: the initial simulator supports headless `--clock`, but
-has no deterministic GUI clock/offset argument. Do not present that missing wiring as complete.
+must still select a place and accept a computed route. The scenario clock is an explicit UTC
+validation clock, separate from GPX timestamps. All five scenarios use `--clock` with
+`--utc-offset-min` to establish trusted UTC and the declared local offset in GUI and headless mode.
+The GUI disables ambient GPS time for an explicit initial clock unless the user enables it.
+No host timezone is inferred.
 Dunlough paths have `sac_scale=mountain_hiking` and mud/ground surfaces. They do not explicitly
 set `bicycle=no`. The planner must use actual access and profile suitability; unknown access
 must remain unknown. Hours are absent on the selected landmark objects. No data was edited to
 produce a closed place, a bicycle prohibition, or an easier alternative.
 
-## Initial simulator scenarios
+## Cached production scenarios
 
 ```sh
-tools/obc fixtures sync assistant
-tools/obc fixtures verify assistant
+tools/obc fixtures sync assistant-dunlough-access
+tools/obc fixtures verify assistant-dunlough-access
+tools/obc sim assistant-dunlough-access
+tools/obc sim assistant-monaco-dense
+```
+
+These commands use ordinary map loading and authored GPS replay. They do not select a place,
+accept a plan, inject arrival, or enable a study model. After the packages and Cargo dependencies
+are cached, they require no live source API. The Cork and Swiss fixtures were also synced, verified and resolved with network requests disabled
+after fresh-cache downloads.
+
+Dunlough Castle is Wikidata `Q5315471`, linked by OSM way `300189816`. It has real article and photo
+Sources. Its captured way has no opening-hours or bicycle/access tags. The walking approach has
+mountain-hiking and mud/ground tags; this does not prove a rideable approach. A truthful unavailable
+Visit is a valid result. Read the stored Sources and verify the selected graph approach in the
+integrated simulator before claiming navigation or hardware acceptance.
+
+For a persistent Unix card, start with a path that does not exist:
+
+```sh
+tools/obc sim assistant-dunlough-access -- --create-card .artifacts/west-cork.obc
+cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
+  --clock 2026-09-14T10:00 --utc-offset-min 60
+```
+
+The second command reopens saved routes and recordings without importing the fixture again.
+See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording recovery.
+The card is user state; fixture sync does not replace it. Create a new card to test a new package.
+
+The three Swiss scenarios use the same v16 crop and the +02:00 local clock offset:
+
+```sh
 tools/obc sim assistant-out-and-back
 tools/obc sim assistant-forward-rejoin
 tools/obc sim assistant-loop-crossing
-tools/obc sim assistant-monaco-dense
-tools/obc sim assistant-dunlough-access
 ```
 
-These commands open the real maps and motion with the current simulator. They do not enable a
-mock Assistant. The regional maps are built at source commit `3b7bf18b`; their `build.json`
-records each source package digest. The map and terrain files are ordinary fixture members,
-so subsequent format changes must produce new package hashes. RA13 adds the integrated
-Assistant navigation and deterministic clock/offset behavior before simulator acceptance.
+The runtime menu, real route acceptance, recorder traces, final resource
+and pixel checks, and physical-device acceptance remain integrated work. A package or replay is
+not evidence that those checks passed.
