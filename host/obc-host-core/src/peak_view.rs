@@ -171,3 +171,45 @@ impl Runtime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_app::AppState;
+
+    const MAP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel-demo.obcm");
+
+    /// Every sector of the circle is built — what the runtime reports as `Status::Ready`. The
+    /// status goes into the screen, which keeps no getter, so the panorama itself is asked.
+    fn complete(runtime: &Runtime) -> bool {
+        runtime
+            .panorama()
+            .is_some_and(|panorama| (0..1440).step_by(10).all(|bearing| panorama.ready_at_bearing_q4(bearing)))
+    }
+
+    /// The card path end to end: the map's OBCT surface region as an owned source, the parse that
+    /// borrows it, and bounded steps that build a real skyline out of the card's own bytes.
+    #[test]
+    fn a_card_maps_surface_builds_a_panorama_in_bounded_steps() {
+        let bytes = std::fs::read(MAP).expect("the demo map is checked in");
+        let owner = crate::flat_store::HostStore::memory().unwrap();
+        let map = FlatMap::from_bytes_in(&owner, &bytes).expect("the demo map imports");
+        let mut runtime = Runtime::over_map(&map).expect("the demo map carries surface terrain");
+
+        let (cam_lon, cam_lat, zoom) = crate::initial_camera(&map.reader(), 240);
+        let mut app = Box::new(obc_app::App::new(AppState::new(cam_lon, cam_lat, zoom)));
+        app.state.user_fix = Some(obc_ports::Fix::at(46_560_000, 8_340_000));
+        app.state.peak_view_profile = Some(PeakViewProfile::at(0, 0, 0));
+        assert!(app.show_peak_view());
+
+        let mut steps = 0;
+        while !complete(&runtime) && steps < 4_000 {
+            runtime.update(&mut app, &map.reader());
+            steps += 1;
+        }
+        assert!(complete(&runtime), "the card's own terrain builds the whole circle in bounded steps");
+        assert!(steps > 1, "and it yields between steps rather than building it all in one");
+        assert!(app.state.peak_view_peak_count > 0, "named summits come from the same map");
+        assert!(app.state.peak_view_profile.unwrap().observer_elevation_m > 1_000, "ground height from the DEM");
+    }
+}
