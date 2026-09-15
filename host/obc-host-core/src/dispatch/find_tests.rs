@@ -135,6 +135,7 @@ fn run_find(scenario: Scenario) {
     let mut choices_frame = Vec::new();
     let mut reentered = false;
     let mut recording_before_mode = false;
+    let mut pending_without_render = 0;
     let mut calculated = Vec::new();
     let mut ordinary = None;
     let cancel_at = match scenario {
@@ -211,7 +212,17 @@ fn run_find(scenario: Scenario) {
                 }
             }
         }
-        if !free_ride || (plan.render.map && !app.reroute_freeze_active()) {
+        let mode_cycle = (19..=21).contains(&phase);
+        if mode_cycle && app.assistant_route_pending() && !host.owns_navigation() {
+            assert_eq!(app.ms_until_next_wake(tick * 100), Some(1));
+            app.prepare_find(Some(&map.reader()), pass_route);
+            if !app.assistant_route_pending() {
+                plan.render.map = true;
+            }
+        }
+        let defer_preview = mode_cycle && app.assistant_route_pending();
+        pending_without_render += usize::from(defer_preview);
+        if !defer_preview && ((!free_ride && !mode_cycle) || (plan.render.map && !app.reroute_freeze_active())) {
             app.render_frame(Some(&mut scratch), &mut frame, &map.reader(), pass_route, 240.0, 320.0, |c| {
                 embedded_graphics::pixelcolor::Rgb888::from(embedded_graphics::pixelcolor::Rgb565::from(
                     embedded_graphics::pixelcolor::raw::RawU16::new(c),
@@ -459,6 +470,10 @@ fn run_find(scenario: Scenario) {
                 assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
                 assert_eq!(routes.unaccepted_routes(), 0);
                 if scenario == Scenario::ModeCycle {
+                    assert!(
+                        pending_without_render > 0,
+                        "deferred mode changes advance while preview redraws are withheld"
+                    );
                     assert!(routes.read_checkpoint().unwrap().unwrap().original.is_none());
                     assert_eq!(app.recorder.recording(), recording_before_mode);
                 }

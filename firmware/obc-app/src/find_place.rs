@@ -984,10 +984,17 @@ mod tests {
             });
             assert!(app.ui.stack.push(Screen::VisitReview(screen)).is_ok());
             app.ui.find.review = ReviewStatus::Planning;
+            app.advance_animations(obc_ports::InputClock(0));
+            assert!(app.assistant_route_pending());
+            assert_eq!(app.ms_until_next_wake(0), Some(1));
+            assert!(app.reroute_banner_rows(320.0).is_some());
+            assert!(!app.reroute_freeze_active(), "waiting for release does not claim the planner arena");
             app.navigator.review_failed(error);
             let expected = app.assistant_review_status();
             app.prepare_find(None, None);
             assert_eq!(app.ui.find.review, expected);
+            assert!(!app.assistant_route_pending());
+            assert!(app.reroute_banner_rows(320.0).is_none());
             assert!(matches!(app.top_screen(), Screen::VisitReview(screen) if screen.pending_target.is_none()));
             assert!(app.assistant_planner_released());
             assert!(app.assistant_review_context().is_none());
