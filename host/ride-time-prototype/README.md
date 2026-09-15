@@ -53,6 +53,8 @@ integration remain separate work.
 | `komoot_data.py`, `komoot_protocol.py` | Private GPX preparation, gap audit, and frozen chronological evaluation plan |
 | `komoot_replay.py`, `komoot_report.py` | Frozen recorded-motion replay, paired history budgets, and private HTML report |
 | `komoot_explore.py`, `komoot_explore_report.py` | Private speed distributions, matched-gradient changes within rides, and two controlled live-pace probes |
+| `komoot_misses.py`, `komoot_misses_report.py` | Remaining-error decomposition, fixed-distance horizons, and private case figures |
+| `komoot_motion.py`, `komoot_motion_sensitivity.py` | Geometry-only stationary candidates and a separate motion-proxy sensitivity |
 
 ## Private Komoot preparation
 
@@ -138,6 +140,32 @@ Regenerate the report without repeating computation. Optional private `context.j
 contains a `rider_context` string. Optional `interpretation.json` contains a `findings`
 list of strings and a `next_step` string. The report records hashes for these inputs and
 embeds all six figures for offline use. Keep these files and personal results local.
+
+To examine the remaining misses at the same one-hour checkpoints:
+
+```sh
+python3 host/ride-time-prototype/komoot_misses.py
+python3 host/ride-time-prototype/komoot_misses_report.py audit
+python3 host/ride-time-prototype/komoot_motion_sensitivity.py
+python3 host/ride-time-prototype/komoot_misses_report.py report
+```
+
+These commands write to `.artifacts/ride-time-komoot-misses`. Each computation records a
+separate plan and refuses to replace it. The report can be regenerated. The diagnostics
+compare aggregate pace with the last 30 moving minutes and supported first-hour gradient
+factors. They report full remaining time and 5/10/20 km horizons, with separate counts for
+targets that contain no unknown intervals. Signed error is split into grade-factor/mix
+sensitivity and changes within gradient bands, including unsupported terrain. These terms
+do not identify physical causes or an irreducible error floor.
+
+The motion audit flags approximately two-minute spans confined to a 30 m box diagonal.
+It does not label them as verified stops. Positive GPS displacement can contain stationary
+drift; agreement with a source moving-time summary does not prove real movement. The
+separate sensitivity excludes completed candidate spans from past observations and tests
+an alternate outcome with candidate time removed. It keeps the original forecast instants,
+cohort, and remaining route costs. Future spans cannot change past observations. Results
+under this changed motion proxy are not validated moving-time accuracy. Preserve pushing
+when designing a real motion detector; do not replace it with a minimum-speed threshold.
 
 ## Small long-ride corrections
 
