@@ -73,7 +73,17 @@ The iOS application command needs Xcode 26.5, XcodeGen and an iPhone 17 Pro simu
 `OBC_TEST_DEVICE` to use another available simulator. It runs each application class once, without
 parallel test execution or retries. The weekly result artifact is `ios-application-ATTEMPT`.
 Required screenshot runs retain `ios-screenshots-ATTEMPT`. Both contain the native `.xcresult`
-bundle. Open it in Xcode to inspect identities, outcomes and durations. A missing expected bundle
+bundle contents. Restore the bundle suffix when downloading, then open it in Xcode to inspect
+identities, outcomes and durations:
+
+```sh
+gh run download RUN_ID --name ios-screenshots-ATTEMPT --dir ios-screenshots.xcresult
+gh run download RUN_ID --name ios-application-ATTEMPT --dir ios-application.xcresult
+```
+
+Weekly storage runs retain the original Cargo output as `storage-weekly-ATTEMPT`. The log contains
+native test identities, outcomes and aggregate durations; it has no per-case durations or coverage.
+A missing expected bundle
 fails the upload; setup failure can leave no bundle. The screenshot script also accepts
 `OBC_XCRESULT_PATH` for local retention. A workflow declaration alone does not establish a passing
 run. TS6 still owns the remaining critical application journeys.
@@ -433,8 +443,9 @@ Runner-minutes sum active job intervals without billing multipliers. Native suit
 reported as supplied; missing suite times remain unknown. In particular, nextest reports its whole
 run time and per-case times, but does not supply binary wall times. Do not sum concurrent case times
 into wall time. A successful-run sample can omit slow failures and repeat the same PR. Its sample
-percentiles do not establish a population service level. XCTest and other missing artifacts remain
-coverage gaps until their native result routes are available.
+percentiles do not establish a population service level. This XML reader does not ingest native
+XCTest bundles or Cargo text logs; inspect those artifacts with their native tools. Missing artifacts
+remain report gaps and must not be counted as passing suites.
 
 The guidance stays informational: required PR elapsed time at most 10 minutes, p95 at most
 20 minutes, cross-surface cost at most 40 runner-minutes, a required binary/file at most 30 seconds,
