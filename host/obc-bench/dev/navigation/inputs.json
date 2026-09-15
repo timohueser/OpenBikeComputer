@@ -1,7 +1,7 @@
 {
   "baseline_source_commit": "f2429aa60742f7b51d3b6e44aeb092489cbdc097",
   "format_version": 16,
-  "objective": "Default (profile-weighted)",
+  "objective": "Objective::Profile (default profile-weighted search)",
   "elevation": "NullElevation; isolates graph operations, no terrain reads",
   "repeats": 3,
   "cache_reset": "New planner/scratch/cache per process; planner resets cache at initial snap. OS file cache is uncontrolled; input is loaded into RAM before timing. No artificial warm plan. Retries retain shipping in-plan cache.",
@@ -25,7 +25,8 @@
       "bytes": 44643264,
       "archive_url": "https://fixtures.openbikecomputer.com/v1/packages/96cb46be8727abf10d5a085e820d4cc6ec9e35142760174037a8ce98fd5ce53c.tar.gz",
       "archive_sha256": "96cb46be8727abf10d5a085e820d4cc6ec9e35142760174037a8ce98fd5ce53c",
-      "producer_source": "OBCM v16 Swiss regional crop selected by 8.1..8.4 E, 46.5..46.8 N from the full pinned 2026-09-13 Switzerland PBF. Shipping bake/cut/assemble with compiled country content and four native Copernicus terrain cells. Not a full-country map. Exact hashes and attribution: sources/ride-assistant/meiringen-v16.json and packaged build.json."
+      "producer_source": "OBCM v16 Swiss regional crop selected by 8.1..8.4 E, 46.5..46.8 N from the full pinned 2026-09-13 Switzerland PBF. Shipping bake/cut/assemble with compiled country content and four native Copernicus terrain cells. Not a full-country map. Exact hashes and attribution: sources/ride-assistant/meiringen-v16.json and packaged build.json.",
+      "build_manifest": "fixtures/sources/ride-assistant/meiringen-v16.json"
     }
   },
   "cases": [
@@ -115,5 +116,7 @@
       "outcome": "ok:2944",
       "original": "monaco-dense"
     }
-  ]
+  ],
+  "producer_source_limit": "sim-grimsel and sim-monaco archives have no embedded producer build stamp. Their immutable archive and map digests pin bytes. Meiringen build.json records recipe commit and executable digests; source attribution is inferred from retained executable times and branch reflog, not cryptographic source proof.",
+  "nav_max_nodes": 1536
 }

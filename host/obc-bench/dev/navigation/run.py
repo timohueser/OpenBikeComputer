@@ -33,6 +33,8 @@ for case in manifest['cases']:
         run = {}
         for line in process.stdout.splitlines():
             run.update(json.loads(line))
+        assert sum(run['phase_reads']) == run['source_calls'], 'Read-call attribution mismatch'
+        assert sum(run['phase_bytes']) == run['source_bytes'], 'Read-byte attribution mismatch'
         if run['outcome'] != case['outcome']:
             raise SystemExit(f'{case["name"]}: unexpected outcome {run["outcome"]}')
         if case.get('interior') and not run['from_interior']:
@@ -41,6 +43,6 @@ for case in manifest['cases']:
         runs.append(run)
     assert len({r['output_sha256'] for r in runs}) == 1, 'Nondeterministic route output'
     results.append({'case': case['name'], 'input_sha256': digest, 'runs': runs})
-report = {'platform': platform.platform(), 'machine': platform.machine(), 'binary_sha256': hashlib.sha256(args.binary.read_bytes()).hexdigest(), 'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'results': results}
+report = {'environment_rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(), 'platform': platform.platform(), 'machine': platform.machine(), 'binary_sha256': hashlib.sha256(args.binary.read_bytes()).hexdigest(), 'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'results': results}
 (args.output / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
 print(args.output / 'results.json')
