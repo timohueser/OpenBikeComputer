@@ -244,6 +244,11 @@ impl ObcrEmitter {
         self.enc.distance as u32
     }
 
+    /// End of the geometry and index after `finish` with no waypoint records.
+    pub(crate) fn geometry_end(&self) -> u32 {
+        self.enc.data_pos + self.enc.index.len() as u32 * CHUNK_META_LEN as u32
+    }
+
     /// Feed one raw point: accumulate distance/bbox, then run the decimator — each kept
     /// point is emitted (densified) to the encoder.
     pub(crate) fn push(&mut self, sink: &mut dyn ByteSink, lon: i32, lat: i32, ele: i16) -> Result<(), Error> {
