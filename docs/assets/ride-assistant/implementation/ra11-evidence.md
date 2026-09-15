@@ -85,3 +85,47 @@ Unresolved; the disabled review reports the unknown status. Only explicit Back r
 The App test now recovers both possible exact heads: the committed head returns activation without
 an extra clear, and the old head restores the preview without a clear. The whole App suite, scoped
 App Clippy, and registry check pass after this correction. Board code is unchanged from `a77ec8a0`.
+
+
+## Normal entry and named frames
+
+The Ride context now has an Easier action on Statistics, Climb and Ride control. The Map context
+retains its five rows. The action waits for the host or board map owner to supply the exact current
+source key. It does not add resident source storage. Pending or refused entry cannot cancel an
+unrelated review, active Visit or uncertain save. Cancellation requires the admitted Easier context.
+RA12 replaces this entry with its approved question page during composition.
+
+The named `easier-routes.png` recipe uses the existing Grimsel map, its stored climb route and its
+GPX position at 30 seconds. It starts the route through ordinary controls, polls that GPX position
+through the normal location input with `T`, opens the Ride context, and selects Easier. The source
+bind and comparison complete. The result is **No easier route**, over the fitted remaining route.
+This is not evidence that a useful alternative exists on this input. Useful real climb and surface
+alternatives remain part of integrated acceptance.
+
+Only `easier-routes.png` and the changed `ride-context.png` were captured and visually inspected.
+Their hashes are in `firmware/ui-snapshots.sha256`. Both use the normal cached map and the existing
+`ETAROUTE` fixture directory. The latter now uses the real Grimsel route instead of importing every
+format vector: that directory contains intentionally invalid route records. The other existing
+snapshot recipes still need the central valid-route fixture staging correction before the final
+sweep. No format-rejection vector was removed.
+
+Validation on the entry delta:
+
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra05-visits/target ./tools/obc test -p obc-app -p obc-host-core -p obc-sim`
+  passed all selected whole suites: App 885 library tests, host 59 library tests, simulator 62 tests,
+  and their integration suites. Existing captured-only tests stayed ignored.
+- The same packages passed `cargo clippy --all-targets -- -D warnings`.
+- `python3 -m unittest discover -s firmware/tools/tests -v` passed all 86 tests, including screen
+  coverage, recipe-to-manifest consistency and duplicate-frame policy.
+- `./tools/obc suites check` passed: 68 suites and 321 execution units.
+- `cargo fmt --all`, standalone board formatting and `git diff --check` passed.
+- No full snapshot sweep, shipping image, local resource build or physical-device test ran.
+  Independent delta review and CI remain the merge gates.
+
+Retained logs are `/tmp/ra11-entry-final-tests.log`, `/tmp/ra11-entry-final-clippy.log`,
+`/tmp/ra11-entry-tools-tests.log`, `/tmp/ra11-entry-registry.log`, `/tmp/ra11-entry-frame.log`
+and `/tmp/ra11-entry-drawer.log`. The two inspected PNGs are in the implementation worktree at
+`.artifacts/ra11-entry/frames/`. The map input is the immutable `sim-grimsel` package
+`b427bce15e08993ebb07d12b5284fb9ad6c20dfb26cfa7aebaa94399b37b87f5` from this branch's catalog.
+The track and route are the package's pinned authored Grimsel inputs; the map uses captured OSM
+and real terrain. The replay motion is authored, not a recorded field ride.

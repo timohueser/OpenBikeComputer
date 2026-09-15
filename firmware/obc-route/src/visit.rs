@@ -548,7 +548,11 @@ impl VisitBuilder {
         if found.is_none() {
             return Ok(true);
         }
-        if !self.segment_started && self.last.is_some_and(|last| points.first().is_none_or(|p| last != (p.lon, p.lat)))
+        let seam = !self.segment_started && self.last.is_some();
+        if seam
+            && self.last.is_some_and(|last| {
+                points.first().is_none_or(|p| obc_map_scene::ground_dist_m(last, (p.lon, p.lat)) > APPROACH_TOLERANCE_M)
+            })
         {
             self.phase = Phase::RejectedGeometry;
             return Err(Error::BadOffset);
@@ -557,8 +561,9 @@ impl VisitBuilder {
         let source_surface = route.attribution_map()? == self.em.attribution_map();
         for (i, p) in points.iter().enumerate() {
             let coord = (p.lon, p.lat);
-            if i == 0 && self.last == Some(coord) {
-                self.seam_incomplete |= self.last_ele != p.ele;
+            if i == 0 && (seam || self.last == Some(coord)) {
+                // Coalesce sub-metre quantization at the existing endpoint; add no connector.
+                self.seam_incomplete |= self.last != Some(coord) || self.last_ele != p.ele;
                 continue;
             }
             self.em.set_surface(if source_surface { p.surface } else { 0 });

@@ -921,7 +921,7 @@ mod tests {
     /// sequences — the ambient ride, a demo-style app rebuild + mid-climb `GpxPlayer::seek` per
     /// `enter`, the climb demo's Back-cycle, the reroute-to-POI demo including the frame-stepped
     /// planner, and the ambient reset's backward seek — dwelling ≥300 presents on each tour screen
-    /// (Map, Statistics, Climb, Ride menu, PoiList, PoiDetail, RouteOverview). Every frame presents
+    /// (Map, Statistics, Climb, FindPlace, PoiDetail, VisitReview). Every frame presents
     /// under the oracle (debug asserts on) *and* the full byte-equality postcondition in
     /// [`tour_frame`], so any diff miss — the pre-fix panic — fails here with row diagnostics.
     #[test]
@@ -951,7 +951,7 @@ mod tests {
 
         let track = Track::load(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx"
+            "/../../fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx"
         )))
         .expect("gpx");
         let mut player = GpxPlayer::new(track);
@@ -987,7 +987,10 @@ mod tests {
         // stale forever). Panics if the target screen is never reached: the sequences below must
         // not drift, or the dwell wouldn't be testing the screen it claims.
         macro_rules! until_then_dwell {
-            ($app:expr, $label:expr, $pat:pat, $dwell:expr) => {{
+            ($app:expr, $label:expr, $pat:pat, $dwell:expr) => {
+                until_then_dwell!($app, $label, $pat, $dwell, true)
+            };
+            ($app:expr, $label:expr, $pat:pat, $dwell:expr, $ready:expr) => {{
                 let mut reached = false;
                 for _ in 0..1200 {
                     tour_frame(
@@ -1005,12 +1008,19 @@ mod tests {
                         &mut frame_no,
                         $label,
                     );
-                    if matches!($app.top_screen(), $pat) {
+                    if matches!($app.top_screen(), $pat) && $ready {
                         reached = true;
                         break;
                     }
                 }
-                assert!(reached, "never reached {}", $label);
+                assert!(
+                    reached,
+                    "never reached {}: find={:?}, review={:?}, origin={:?}",
+                    $label,
+                    $app.find_place_state(),
+                    $app.assistant_review_status(),
+                    $app.current_review_origin()
+                );
                 for _ in 0..$dwell {
                     tour_frame(
                         $app,
@@ -1054,8 +1064,7 @@ mod tests {
         }
 
         // --- The "See the climb ahead" demo (`enter` → Back-cycle to the Climb park). Runs first,
-        // while route 0 is still the demo climb (after the reroute demo below, `_nav.obcr` sorts
-        // to index 0 and no climb is active, so Climb would leave the Back-cycle). ---
+        // while the active route is still the demo climb, before the Visit changes its geometry. ---
         app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
         player.seek(1500.0);
         player.play();
@@ -1067,28 +1076,52 @@ mod tests {
         app.apply_gesture(Gesture::Back);
         until_then_dwell!(&mut app, "climb: Map again", Screen::Map(_), 60);
 
-        // --- The "Reroute to a POI" demo. Its `enter` is a demo-style reset from deep in the
+        // --- The "Add a stop" demo. Its `enter` is a demo-style reset from deep in the
         // previous demo's session — the app rebuild plus a BACKWARD `GpxPlayer::seek`. ---
         app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
         player.seek(1500.0);
         player.play();
         until_then_dwell!(&mut app, "reroute: Map", Screen::Map(_), 60);
-        app.apply_chord(obc_app::Chord::Context);
-        until_then_dwell!(&mut app, "reroute: ContextDrawer", Screen::ContextDrawer(_), 300);
-        app.apply_gesture(Gesture::Step(2));
+        player.pause();
+        let original = app.route_ids()[app.active_route_index().unwrap()];
+        app.apply_chord(obc_app::input::Chord::Context);
         app.apply_gesture(Gesture::Press);
-        until_then_dwell!(&mut app, "reroute: PoiMenu", Screen::PoiMenu(_), 45);
-        app.apply_gesture(Gesture::Step(2));
         app.apply_gesture(Gesture::Press);
-        until_then_dwell!(&mut app, "reroute: PoiList", Screen::PoiList(_), 300);
+        until_then_dwell!(&mut app, "visit: category", Screen::FindPlace(_), 45);
+        app.apply_gesture(Gesture::Step(6));
         app.apply_gesture(Gesture::Press);
-        until_then_dwell!(&mut app, "reroute: PoiDetail", Screen::PoiDetail(_), 300);
+        until_then_dwell!(
+            &mut app,
+            "visit: station choices",
+            Screen::FindPlace(_),
+            300,
+            app.find_place_state() == obc_app::find_place::State::Ready
+                && app.find_place_result_count() > 0
+                && app.assistant_planner_released()
+        );
         app.apply_gesture(Gesture::Press);
-        until_then_dwell!(&mut app, "reroute: NavConfirm", Screen::NavConfirm(_), 45);
+        until_then_dwell!(&mut app, "visit: PoiDetail", Screen::PoiDetail(_), 300);
         app.apply_gesture(Gesture::Press);
-        // The frame-stepped planner runs inside the `until` frames; grimsel routes fine, so the
-        // outcome must be the computed-route overview, parked like the page's final step.
-        until_then_dwell!(&mut app, "reroute: RouteOverview", Screen::RouteOverview(_), 300);
+        until_then_dwell!(
+            &mut app,
+            "visit: immutable preview",
+            Screen::VisitReview(_),
+            300,
+            app.assistant_review_status() == obc_app::navigator::ReviewStatus::Preview
+        );
+        let preview = app.assistant_preview().unwrap();
+        assert!(preview.visit_costs.is_some() && preview.distance_m > 0);
+        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], original);
+        app.apply_gesture(Gesture::Press);
+        until_then_dwell!(
+            &mut app,
+            "visit: accepted Map",
+            Screen::Map(_),
+            300,
+            app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
+        );
+        assert_eq!(store.read_checkpoint().unwrap().unwrap().route, preview.source);
+        assert_eq!(app.route_ids()[app.active_route_index().unwrap()], preview.source.object);
 
         // --- Back to the interactive page: ambient reset (seek 0 — a big backward jump). ---
         app = build_app(Settings::default(), &store);

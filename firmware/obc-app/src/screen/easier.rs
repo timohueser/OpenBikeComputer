@@ -129,7 +129,11 @@ impl EasierScreen {
             }
             return;
         }
-        let vp = fit(self.bounds, rx.w, rx.h);
+        let vp = if self.bounds.min_lon == self.bounds.max_lon && self.bounds.min_lat == self.bounds.max_lat {
+            rx.state.viewport(rx.w as f32, rx.h as f32)
+        } else {
+            fit(self.bounds, rx.w, rx.h)
+        };
         let active = rx.route.take();
         super::map::draw_map_scene(cv, rx, &vp, None);
         rx.route = active;
