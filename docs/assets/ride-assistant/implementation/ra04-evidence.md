@@ -56,9 +56,15 @@ gate must account for these bytes before acceptance.
 ## Validation
 
 - `./tools/obc test -p obc-app -p obc-storage -p obc-route -p obc-host-core`: App library 1,003 tests,
-  22 App integration binaries, and host-core library 65 tests pass. The run stops at six existing
-  `board_detour` Plan(NoPath) failures also present in the concurrent integration branch. The
-  integration agent is investigating that shared routing fixture failure.
+  22 App integration binaries, and host-core library 65 tests pass. The initial run found six
+  `board_detour` failures caused by a stale staged-write header offset. The shared correction
+  uses the current format constants and is included in this branch.
+- Final owner change: `./tools/obc test -p obc-app --lib` passes all 1,003 tests;
+  `./tools/obc test -p obc-host-core --lib --test device_core_conformance --test board_detour`
+  passes 65 library, 36 conformance and all 6 detour tests. Effect and outcome slots meet their
+  existing 216-byte and 248-byte ceilings. Preview figures stay in Navigator under the current
+  commit token; the outcome carries only that token.
+- `./tools/obc test -p obc-link --test flat_engine`: all 55 tests pass.
 - `./tools/obc test -p obc-storage -p obc-route`: all selected suites pass, including 195 storage
   tests and the complete route codec, planner, transform and contract binaries.
 - `cargo clippy -p obc-app -p obc-storage -p obc-route -p obc-host-core --all-targets -- -D warnings`: passes.
@@ -83,7 +89,7 @@ eligibility and verifies reboot offers Resume without activation.
 Independent adversarial review and CI remain required. The orchestrator owns the integrated
 resource build, final UI snapshot sweep and simulator replay with the final offline data package.
 No full CI mirror, snapshot sweep, resource image build or hardware test was run here. The shared
-board_detour failure remains explicit; it is not hidden by filtering a test function.
+detour header correction passed its whole suite. The orchestrator owns separate review of that delta.
 
 RA05 must connect descriptor-backed visit construction, phase matching and fix replay to these
 hooks. RA10 connects the approved review layouts and explicit Resume controls. RA13 supplies final
