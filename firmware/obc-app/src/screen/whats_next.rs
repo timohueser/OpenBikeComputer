@@ -38,11 +38,13 @@ impl WhatsNextScreen {
             (Page::Detail, Gesture::Back) => a.page = Page::Timeline,
             (Page::Timeline, Gesture::Step(n)) if !a.pending() && n != 0 => {
                 if n > 0 && a.selected + 1 >= a.rows.len() {
-                    if a.more {
+                    if a.has_next() {
                         a.turn_page(false);
                     }
                 } else if n < 0 && a.selected == 0 {
-                    a.turn_page(true);
+                    if a.has_previous() {
+                        a.turn_page(true);
+                    }
                 } else {
                     a.selected = (a.selected as i32 + n).clamp(0, a.rows.len().saturating_sub(1) as i32) as usize;
                 }
@@ -71,16 +73,22 @@ impl WhatsNextScreen {
         let mut title = heapless::String::<24>::new();
         let _ = write!(
             title,
-            "{} {}km",
+            "{} {}",
             if a.page == Page::Overview { rx.t(Msg::AheadNext) } else { rx.t(Msg::AheadAhead) },
-            a.range.meters() / 1000
+            distance(a.range.meters(), rx.settings.units)
         );
         cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
         label(cv, &title, 12, 6, Font::Body, PARCHMENT);
         if a.window.is_none() {
             label(
                 cv,
-                if a.stale { rx.t(Msg::AheadChanged) } else { rx.t(Msg::AheadNoRoute) },
+                if a.stale {
+                    rx.t(Msg::AheadChanged)
+                } else if matches!(a.status, QueryProgress::Failed(_)) {
+                    rx.t(Msg::AheadReadFailed)
+                } else {
+                    rx.t(Msg::AheadNoRoute)
+                },
                 14,
                 108,
                 Font::Body,
@@ -301,7 +309,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
         if let Some(m) = row.ascent_m {
             let _ = write!(ascent, "+{}{}", rx.settings.units.elev(m as f32) as u32, rx.settings.units.elev_label());
         } else {
-            let _ = ascent.push_str("+?m");
+            let _ = write!(ascent, "+?{}", rx.settings.units.elev_label());
         }
         label(cv, &ascent, 90, y + 33, Font::Label, INK);
         let offset = match &row.item {
@@ -320,7 +328,7 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
             cv.text(&s, Point::new(224, y + 33), Font::Label, TextAlign::Right, INK);
         }
     }
-    if a.more {
+    if a.has_next() {
         cv.triangle(Point::new(234, 298), Point::new(228, 290), Point::new(239, 290), WOOD);
     }
 }
@@ -350,7 +358,13 @@ fn detail(cv: &mut impl Surface, rx: &Render) {
             );
             label(cv, &s, 14, 126, Font::Body, INK);
             s.clear();
-            let _ = write!(s, "+{}m ({})", c.gain_m, rx.t(Msg::AheadWholeClimb));
+            let _ = write!(
+                s,
+                "+{}{} ({})",
+                rx.settings.units.elev(c.gain_m as f32) as u32,
+                rx.settings.units.elev_label(),
+                rx.t(Msg::AheadWholeClimb)
+            );
             label(cv, &s, 14, 162, Font::Label, INK);
         }
         Item::Waypoint(w) => {

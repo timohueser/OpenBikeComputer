@@ -102,7 +102,7 @@ pub struct AheadState {
     ordinal: u16,
     authored_done: bool,
     places_done: bool,
-    pub(crate) more: bool,
+    more: bool,
     dirty: bool,
     settled: bool,
     pub(crate) stale: bool,
@@ -159,6 +159,20 @@ impl AheadState {
         self.window = None;
         self.boundary = None;
         self.dirty = true;
+    }
+    pub(crate) fn has_next(&self) -> bool {
+        if self.backwards {
+            self.boundary.is_some()
+        } else {
+            self.more
+        }
+    }
+    pub(crate) fn has_previous(&self) -> bool {
+        if self.backwards {
+            self.more
+        } else {
+            self.boundary.is_some()
+        }
     }
     pub(crate) fn turn_page(&mut self, backwards: bool) {
         let edge = if backwards { self.rows.first() } else { self.rows.last() };
@@ -249,34 +263,40 @@ impl AheadState {
         };
         let window = RouteWindow::new(route, self.anchor, self.range);
         if self.window != Some(window) {
-            self.window = Some(window);
             self.boundary = None;
             self.backwards = false;
             self.dirty = true;
-            match window.facts(route) {
-                Ok(f) => self.totals = f.complete_elevation().then_some((f.ascent_m, f.descent_m)),
+            let totals = match window.facts(route) {
+                Ok(f) => f.complete_elevation().then_some((f.ascent_m, f.descent_m)),
                 Err(e) => {
                     self.rows.clear();
                     self.totals = None;
+                    self.next_waypoint = None;
+                    scratch.disarm();
                     self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
                     self.dirty = false;
                     self.authored_done = true;
                     self.places_done = true;
                     return;
                 }
-            }
-            match window.next_waypoint(route) {
-                Ok(w) => self.next_waypoint = w.map(entry),
+            };
+            let next_waypoint = match window.next_waypoint(route) {
+                Ok(w) => w.map(entry),
                 Err(e) => {
                     self.rows.clear();
                     self.next_waypoint = None;
+                    self.totals = None;
+                    scratch.disarm();
                     self.status = QueryProgress::Failed(obc_reader::Error::Source(e));
                     self.dirty = false;
                     self.authored_done = true;
                     self.places_done = true;
                     return;
                 }
-            }
+            };
+            self.window = Some(window);
+            self.totals = totals;
+            self.next_waypoint = next_waypoint;
             self.climb = window.climb(climbs).copied();
         }
         if self.settled
@@ -656,6 +676,46 @@ mod tests {
             || matches!(r.item, Item::Place(_))));
     }
     #[test]
+    fn timeline_gestures_can_return_forward_after_reversing_to_the_first_page() {
+        use crate::{App, AppState, Gesture, Settings};
+        let mut bytes = route(false);
+        obc_formats::io::put_u16(&mut bytes, obc_formats::obcr::HEADER_LEN + 4, 8);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_settings(Settings { up_ahead_source: UpAheadSource::WaypointsOnly, ..Settings::default() });
+        app.set_routes_with_ids(&[route.summary()], &[7]);
+        app.navigator.set_active_route(Some(0));
+        app.navigator.sync_route_state(Some(&route));
+        app.open_whats_next();
+        app.apply_gesture(Gesture::Press);
+        let scope = scope(UpAheadSource::WaypointsOnly);
+        let mut scratch = CorridorScratch::new();
+        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
+        let first: std::vec::Vec<_> = app.ui.ahead.rows.iter().map(|r| r.key).collect();
+        assert_eq!(first.len(), 4);
+        app.apply_gesture(Gesture::Step(-1));
+        assert!(!app.ui.ahead.pending());
+        for _ in 0..4 {
+            app.apply_gesture(Gesture::Step(1));
+        }
+        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
+        let second: std::vec::Vec<_> = app.ui.ahead.rows.iter().map(|r| r.key).collect();
+        assert_eq!(second.len(), 4);
+        assert!(first[3] < second[0]);
+        assert!(!app.ui.ahead.has_next());
+        app.apply_gesture(Gesture::Step(-1));
+        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
+        assert_eq!(app.ui.ahead.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), first);
+        assert!(!app.ui.ahead.has_previous());
+        assert_eq!(app.ui.ahead.selected, 3);
+        app.apply_gesture(Gesture::Step(1));
+        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
+        assert_eq!(app.ui.ahead.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), second);
+        assert_eq!(app.navigator.route_state().active_route, Some(0));
+    }
+    #[test]
     fn clock_refresh_removes_closed_unselected_rows_without_moving_the_selection() {
         let bytes = route(false);
         let source = SliceSource(&bytes);
@@ -705,13 +765,17 @@ mod tests {
         struct Source<'a> {
             bytes: &'a [u8],
             failed: core::cell::Cell<bool>,
+            geometry_end: u64,
         }
         impl ByteSource for Source<'_> {
             fn len(&self) -> u64 {
                 self.bytes.len() as u64
             }
             fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
-                if self.failed.get() {
+                if self.failed.get()
+                    && offset >= obc_formats::obcr::HEADER_FULL_LEN as u64
+                    && offset < self.geometry_end
+                {
                     Err(Error::Io)
                 } else {
                     SliceSource(self.bytes).read_at(offset, out)
@@ -719,17 +783,31 @@ mod tests {
             }
         }
         let bytes = route(false);
-        let source = Source { bytes: &bytes, failed: core::cell::Cell::new(false) };
+        let source = Source {
+            bytes: &bytes,
+            failed: core::cell::Cell::new(false),
+            geometry_end: obc_formats::io::rd_u32(&bytes, obc_formats::obcr::HEADER_LEN) as u64,
+        };
         let index = RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
         source.failed.set(true);
         let mut a = AheadState::new();
+        a.explore();
         let mut scratch = CorridorScratch::new();
+        let mut cursor = route.waypoint_cursor().unwrap();
+        assert!(route.next_waypoint(&mut cursor).unwrap().is_some(), "authored bytes remain readable");
+        for _ in 0..3 {
+            settle(&mut a, None, &route, scope(UpAheadSource::WaypointsOnly), &mut scratch);
+            assert_eq!(a.status, QueryProgress::Failed(obc_reader::Error::Source(Error::Io)));
+            assert!(a.totals.is_none());
+            assert!(a.rows.is_empty());
+            assert!(a.next_waypoint.is_none());
+        }
+        source.failed.set(false);
         settle(&mut a, None, &route, scope(UpAheadSource::WaypointsOnly), &mut scratch);
-        assert_eq!(a.status, QueryProgress::Failed(obc_reader::Error::Source(Error::Io)));
-        assert!(a.totals.is_none());
-        assert!(a.rows.is_empty());
-        assert!(a.next_waypoint.is_none());
+        assert!(matches!(a.status, QueryProgress::Ready { .. }));
+        assert!(a.totals.is_some());
+        assert!(a.next_waypoint.is_some());
     }
     #[test]
     fn production_frames_keep_the_active_route_and_back_selection() {
