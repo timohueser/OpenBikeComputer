@@ -1836,7 +1836,6 @@ pub(crate) async fn run_app(
                                             );
                                             continue;
                                         }
-                                        review_publication = None;
                                         crate::flat_store::load_routes(flat, app);
                                     } else {
                                         RideExec::deliver(
