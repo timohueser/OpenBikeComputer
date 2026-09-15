@@ -25,14 +25,15 @@ final class LibraryStoreTests: XCTestCase {
     ) -> PlannedRouteRecord {
         let points = [
             RoutePoint(coordinate: Coordinate(latitude: 48.0, longitude: 8.0), elevationMeters: 500),
-            RoutePoint(coordinate: Coordinate(latitude: 48.1, longitude: 8.1), elevationMeters: 620),
+            RoutePoint(coordinate: Coordinate(latitude: 48.1, longitude: 8.1), elevationMeters: 620, surface: 3, elevationIncomplete: true),
             RoutePoint(coordinate: Coordinate(latitude: 48.2, longitude: 8.05)),
         ]
         let route = ImportedRoute(
             name: name, creator: "komoot", points: points,
             waypoints: [
                 Waypoint(index: 0, name: "Bakery", note: "coffee", distanceAlongMeters: 1_200,
-                         coordinate: Coordinate(latitude: 48.05, longitude: 8.02))
+                         coordinate: Coordinate(latitude: 48.05, longitude: 8.02),
+                         provenance: WaypointProvenance(store: Data(repeating: 1, count: 16), object: 2, revision: 3, ordinal: 4))
             ]
         )
         let summary = RouteSummary(

@@ -125,6 +125,18 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
+#[test]
+fn route_descriptor_envelopes_match_the_shared_overlap_contract() {
+    let bytes = fixture("route-visit.obcr");
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    assert!(RouteReader::new(&index, &source).visit_descriptor().unwrap().is_some());
+    for name in ["route-visit-waypoint-overlap.obcr", "route-visit-index-overlap.obcr"] {
+        let bytes = fixture(name);
+        assert!(RouteIndex::read(&SliceSource(&bytes)).is_err(), "{name} overlaps the descriptor envelope");
+    }
+}
+
 /// The sample-codec vector and the finished-ride GPX export. `track-log.obct` is exactly five
 /// complete 20-byte records used only to pin the sample codec. The exporter consumes
 /// `ride-v3.bin`; unfinished/headerless arrays are deliberately not a ride input.

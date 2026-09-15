@@ -622,6 +622,8 @@ private struct ImportedRouteDTO: Codable {
     /// `[lat, lon]` or `[lat, lon, ele]` per point.
     var points: [[Double]]
     var waypoints: [WaypointDTO]
+    var surfaces: [UInt8]?
+    var elevationIncomplete: [Bool]?
 
     init(_ route: ImportedRoute) {
         name = route.name
@@ -631,17 +633,21 @@ private struct ImportedRouteDTO: Codable {
             return point.elevationMeters.map { base + [$0] } ?? base
         }
         waypoints = route.waypoints.map(WaypointDTO.init)
+        surfaces = route.points.map(\.surface)
+        elevationIncomplete = route.points.map(\.elevationIncomplete)
     }
 
     var domain: ImportedRoute {
         ImportedRoute(
             name: name,
             creator: creator,
-            points: points.compactMap { values in
+            points: points.enumerated().compactMap { index, values in
                 guard values.count >= 2 else { return nil }
                 return RoutePoint(
                     coordinate: Coordinate(latitude: values[0], longitude: values[1]),
-                    elevationMeters: values.count >= 3 ? values[2] : nil
+                    elevationMeters: values.count >= 3 ? values[2] : nil,
+                    surface: surfaces.flatMap { index < $0.count ? $0[index] : nil } ?? 0,
+                    elevationIncomplete: elevationIncomplete.flatMap { index < $0.count ? $0[index] : nil } ?? false
                 )
             },
             waypoints: waypoints.map(\.domain)
@@ -662,6 +668,7 @@ private struct WaypointDTO: Codable {
     /// it re-derives nothing (the import is where those are fixed).
     var category: UInt8?
     var lateralOffsetMeters: Double?
+    var provenance: WaypointProvenance?
 
     init(_ waypoint: Waypoint) {
         index = waypoint.index
@@ -672,6 +679,7 @@ private struct WaypointDTO: Codable {
         lon = waypoint.coordinate.longitude
         category = waypoint.category?.rawValue
         lateralOffsetMeters = waypoint.lateralOffsetMeters
+        provenance = waypoint.provenance
     }
 
     var domain: Waypoint {
@@ -680,7 +688,7 @@ private struct WaypointDTO: Codable {
             distanceAlongMeters: distanceAlongMeters,
             coordinate: Coordinate(latitude: lat, longitude: lon),
             category: category.flatMap(WaypointCategory.init(wireID:)),
-            lateralOffsetMeters: lateralOffsetMeters ?? 0
+            lateralOffsetMeters: lateralOffsetMeters ?? 0, provenance: provenance
         )
     }
 }

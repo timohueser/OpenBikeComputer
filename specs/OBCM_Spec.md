@@ -158,16 +158,13 @@ ceiling a statement about the nav graph alone. **No sub-region ceiling sits unde
 change 3 is there so that the last `uint32` byte offset in the format did not quietly become the new
 limit the moment the old one lifted.
 
-**v15 is the only supported version**; earlier maps get repacked.
+**Version 15** expands POIs to 64-byte records with source identity and a validated
+routing approach (§7.3). Bit 15 of the edge point-count word records complete DEM
+integration (§8.4); the edge record length is unchanged.
 
-**The version byte is the hard cut, and it cuts in both directions.** A reader MUST check `Version`
-before it reads any byte behind it and MUST refuse anything other than `0x0E`, whether the value is
-older or newer than its own: a v13 file (`0x0D`) is refused by a v14 reader because its offsets mean
-bytes, and a v14 file is refused by every v13 reader because its offsets do not — the same
-mis-parse, seen from the two sides. The refusal is the file's, not the section's: nothing is
-partially readable across the cut, because a section offset that means the wrong unit lands
-somewhere plausible rather than somewhere obviously wrong. This is also now the **only** place the
-map version is stated, since the set manifest that used to carry a copy of it is gone.
+**v15 is the only supported version**; earlier maps get repacked. A reader MUST
+check `Version` before it reads any later field and MUST refuse every value other
+than `0x0F`. The header version applies to the whole file.
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
 flag bits gained meanings — bit 4 **fixed width** and bit 5 **terrain layer** (§2).
@@ -1222,6 +1219,7 @@ step(p):
     if p + 19 > 512:            refuse   # no record fits: 19 B is the format's smallest
     n = u16_at(p + 4)                    # Pt Count
     if n == 0xFFFF:             refuse   # end-of-chunk sentinel: no record here
+    n = n & 0x7FFF                       # low 15 bits are the point count
     if n < 2:                   refuse   # impossible count; also what stops 4*(n-1) underflowing
     len = 15 + 4 * (n - 1)
     if p + len > 512:           refuse   # record claims bytes past its chunk
@@ -1314,10 +1312,17 @@ chunk index, whatever a future record's size.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
+In v15, bit 15 of the count word records complete elevation integration. The
+packer sets it only when every sample in both directions resolved. The assembler
+preserves the bit. Readers check the sentinel before masking the count and reject
+impossible counts. A missing bit means incomplete or absent terrain, even when
+both endpoint heights are valid. Route output carries this as incoming-segment
+incompleteness; no extra graph or route-length resident array is required.
+
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
-| 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2); `0xFFFF` is the **end-of-chunk sentinel** (v14), never a real count |
+| 4 | Count / elevation validity | 2 | `uint16` | low 15 bits: vertex count (2..125); bit 15: all DEM integration samples present; `0xFFFF` remains the end-of-chunk sentinel |
 | 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
 | 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
