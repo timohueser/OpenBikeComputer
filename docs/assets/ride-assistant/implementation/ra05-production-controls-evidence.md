@@ -114,3 +114,32 @@ metadata change, inactive navigation, and the later explicit Resume request. App
 Clippy, suite registry, workspace formatting, and documentation links are the focused checks.
 The orchestrator owns the fresh real-card replay after this fix. No local snapshot sweep, board
 image, resource rebuild, or physical-device run is part of this correction.
+
+
+## Journey title fit
+
+The final real-card arrival capture showed the English title beyond the 240 px frame. Checking
+both Journey titles in all four languages also found the French arrival and French and Spanish
+Resume titles too wide. Commit `a8cf6684` shortens those four catalog values. It changes no layout
+or journey behavior. The existing Assistant caption guard now includes both Journey titles at the
+212 px header text budget.
+
+| Language | Arrival title / width | Resume title / width |
+| --- | --- | --- |
+| English | Arrived / 98 px | Resume journey / 196 px |
+| German | Ziel erreicht / 182 px | Tour fortsetzen / 210 px |
+| French | Arrivée / 98 px | Reprendre / 126 px |
+| Spanish | Has llegado / 154 px | Reanudar ruta / 182 px |
+
+All eight named cards were captured and checked on fresh clones of the accepted Swiss card,
+with network access denied. The normal recording Continue and explicit Journey Resume controls
+were used. Arrival ran the actual accepted Visit GPX from 0 to 1100 seconds with script
+`f p T f p f`; the Resume offer used `f p f` at 0 seconds. Both required the Journey screen.
+The clock was 2025-06-16 10:00 with UTC offset +120 minutes.
+
+The simulator used runtime source `a8cf6684`, SHA-256
+`e165c232d081ce3120aadfe79602a5103a6e815fa18c6e994b666ac46b550706`.
+The whole App unit library and whole i18n test binary pass: 909 and 7 tests. Simulator build,
+registry, formatting, and diff checks pass. The borrowed PHOTO target's original simulator was
+restored. No local snapshot sweep, board image, release workflow, or resource build was run.
+Public conceptual behavior is unchanged; hardware acceptance remains pending.
