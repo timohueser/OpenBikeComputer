@@ -141,6 +141,7 @@ fn visit_uses_real_legs_and_cancel_retracts_only_candidate() {
     let mut h = VisitHarness::new();
     h.settle(ReviewStatus::Preview);
     let preview = h.h.app.assistant_preview().unwrap();
+    assert!(!h.h.app.assistant_preview_shape().is_empty());
     assert_eq!(h.h.app.active_route_index(), Some(0));
     assert_ne!(preview.source.object, 1);
     let descriptor =
@@ -200,6 +201,7 @@ fn visit_return_uses_one_real_connector_and_keeps_original_tail() {
     let mut h = VisitHarness::new();
     h.settle(ReviewStatus::Preview);
     let preview = h.h.app.assistant_preview().unwrap();
+    assert!(!h.h.app.assistant_preview_shape().is_empty());
     let (bytes, rejoin) =
         h.h.store
             .with_source(ObjectId(preview.source.object), None, |source| {

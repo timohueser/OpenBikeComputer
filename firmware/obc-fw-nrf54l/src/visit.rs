@@ -564,11 +564,26 @@ impl Executor {
                         return self.fail(NavigatorError::DurabilityUnknown);
                     };
                     let preview = store.with_source(id, Some(Revision(1)), |source| {
-                        obc_app::navigator::ReviewedRoute::read(fingerprint, source, context)
+                        let preview = obc_app::navigator::ReviewedRoute::read(fingerprint, source, context)?;
+                        let shape = crate::assistant::preview_shape(
+                            guard.as_mut().ok_or(NavigatorError::Workspace)?.visit_parts().2,
+                            source,
+                        )
+                        .map_err(|_| NavigatorError::Store)?;
+                        Ok::<_, NavigatorError>((preview, shape))
                     });
                     let token = self.token.take()?;
                     return Some(match preview {
-                        Ok(Ok(p)) => app.assistant_preview_outcome(token, p),
+                        Ok(Ok((preview, shape))) => {
+                            let outcome = app.assistant_preview_outcome(token, preview);
+                            if matches!(outcome, NavigatorOutcome::ReviewReady { .. })
+                                && !app.set_assistant_preview_shape(token, preview.source, &shape)
+                            {
+                                NavigatorOutcome::Failed { token, error: NavigatorError::SourceChanged }
+                            } else {
+                                outcome
+                            }
+                        }
                         _ => {
                             self.uncertain = true;
                             NavigatorOutcome::Failed { token, error: NavigatorError::DurabilityUnknown }
