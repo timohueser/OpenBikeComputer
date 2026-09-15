@@ -617,7 +617,8 @@ no_matches = "Keine passenden Routen. Kürzeres Alter wählen oder Routen im Rou
 done = "Alte Routen gelöscht. Upload erneut versuchen. Zum Schließen drücken."
 
 [assistant]
-from_place = "bis zum Ort"
+route_end_to_pin = "Routenende bis Pin"
+straight_line = "Luftlinie"
 title = "Assistent"
 find = "Wo gibt es..."
 next = "Was kommt?"
@@ -711,7 +712,7 @@ no_road = "Kein Wegzugang"
 profile_blocked = "Radtyp gesperrt"
 blocked_route = "Route gesperrt"
 unmatched = "Abseits der Route"
-review_visit = "Besuch prüfen"
+review_visit = "Route ansehen"
 current_visit = "Aktueller Besuch"
 current_leg = "Aktueller Weg"
 save_unknown = "Speicherstand offen"

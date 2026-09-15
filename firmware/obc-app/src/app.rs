@@ -3026,11 +3026,7 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
-        let visit_gap_m = self.assistant_visit_target().and_then(|target| {
-            let approach = target.metadata.approach?;
-            let gap = obc_map_scene::ground_dist_m(target.display, (approach.lon, approach.lat)) as u32;
-            (gap > 100).then_some(gap)
-        });
+        let visit_target = self.assistant_visit_target();
 
         let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
             if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
@@ -3075,7 +3071,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
-            visit_gap_m,
+            visit_target,
             find: &ui.find,
             landmarks: &ui.landmarks,
             ahead: &ui.ahead,

@@ -616,7 +616,8 @@ no_matches = "Aucun parcours trouvé. Choisissez un âge plus court ou utilisez 
 done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."
 
 [assistant]
-from_place = "du lieu"
+route_end_to_pin = "Fin route au point"
+straight_line = "(direct)"
 title = "Assistant"
 find = "Où est..."
 next = "Et ensuite ?"
@@ -710,7 +711,7 @@ no_road = "Accès non carto"
 profile_blocked = "Profil bloqué"
 blocked_route = "Trajet bloqué"
 unmatched = "Hors du trajet"
-review_visit = "Vérifier visite"
+review_visit = "Voir le trajet"
 current_visit = "Visite en cours"
 current_leg = "Étape actuelle"
 save_unknown = "État inconnu"
