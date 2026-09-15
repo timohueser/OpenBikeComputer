@@ -560,9 +560,18 @@ impl crate::App {
         let local = self.place_local_time();
         if let Some(Screen::VisitReview(screen)) = self.ui.stack.last() {
             if let Some(target) = screen.pending_target {
+                let status = self.assistant_review_status();
+                if matches!(status, ReviewStatus::Failed(_) | ReviewStatus::Unresolved | ReviewStatus::ResumeAvailable)
+                {
+                    if let Some(Screen::VisitReview(screen)) = self.ui.stack.last_mut() {
+                        screen.pending_target = None;
+                    }
+                    self.ui.find.review = status;
+                    return;
+                }
                 if !self.assistant_planner_released()
                     || !self.catalogs.can_admit_intent()
-                    || !matches!(self.assistant_review_status(), ReviewStatus::Idle | ReviewStatus::Accepted)
+                    || !matches!(status, ReviewStatus::Idle | ReviewStatus::Accepted)
                 {
                     return;
                 }
