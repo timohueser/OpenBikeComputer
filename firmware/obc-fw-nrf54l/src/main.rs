@@ -68,6 +68,8 @@ mod assistant;
 #[cfg(has_nav)]
 mod detour;
 mod peak_view;
+#[cfg(has_nav)]
+mod visit;
 // LS021 FLPR backend — the display: `main.rs` runs the real app on the reflective LS021
 // panel via the FLPR (the VPR coprocessor). The FLPR presenter backend + launch live in
 // `ls021_flpr`; `com::com_task` free-runs the COM lines (the FLPR drives frames; only the COM
