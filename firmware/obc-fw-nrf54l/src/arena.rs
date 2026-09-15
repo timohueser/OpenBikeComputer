@@ -153,6 +153,28 @@ enum NavPhase {
     Sources,
     Trim,
     Splice,
+    VisitPlan,
+    VisitSources,
+}
+
+/// The final emitter survives leg searches. Only the leg scratch and parsed sources overlap.
+#[cfg(has_nav)]
+#[repr(C)]
+struct VisitArm {
+    builder: MaybeUninit<obc_route::visit::VisitBuilder>,
+    work: VisitWork,
+}
+#[cfg(has_nav)]
+union VisitWork {
+    plan: ManuallyDrop<NavArm>,
+    sources: ManuallyDrop<VisitSources>,
+}
+#[cfg(has_nav)]
+struct VisitSources {
+    original: obc_route::RouteIndex,
+    leg: obc_route::RouteIndex,
+    output: [u8; NAV_OUTPUT_STAGE_BYTES],
+    sealed: Option<obc_storage::flat::SealedAllocation<'static>>,
 }
 
 /// The arena itself: one block, three overlapping views.
@@ -170,6 +192,8 @@ union ScratchArena {
     nav: ManuallyDrop<NavArm>,
     #[cfg(has_nav)]
     detour: ManuallyDrop<DetourArm>,
+    #[cfg(has_nav)]
+    visit: ManuallyDrop<VisitArm>,
     /// USB upload bytes; written before read during one transfer grant.
     usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
 }
@@ -367,6 +391,108 @@ pub(crate) struct NavGuard {
 
 #[cfg(has_nav)]
 impl NavGuard {
+    #[inline(never)]
+    pub(crate) fn begin_visit(
+        &mut self,
+        context: obc_app::navigator::ReviewContext,
+        target: obc_route::visit::VisitTarget,
+        rejoin: u32,
+    ) -> Result<(), obc_formats::io::Error> {
+        let original = context.original.ok_or(obc_formats::io::Error::BadOffset)?;
+        let approach = target.approach(context.map, context.profile).ok_or(obc_formats::io::Error::BadOffset)?;
+        unsafe {
+            obc_route::visit::VisitBuilder::init_in_place(
+                (*(arena_ptr() as *mut VisitArm)).builder.as_mut_ptr(),
+                obc_formats::obcr::RouteSourceKey {
+                    store: context.store.bytes(),
+                    object: original.object,
+                    revision: original.revision,
+                },
+                context.map,
+                context.progress_m,
+                rejoin,
+                target.metadata.source,
+                approach,
+            )?;
+        }
+        self.visit_begin_sources();
+        Ok(())
+    }
+
+    pub(crate) fn visit_begin_sources(&mut self) {
+        unsafe {
+            let arm = core::ptr::addr_of_mut!((*(arena_ptr() as *mut VisitArm)).work.sources).cast::<VisitSources>();
+            core::ptr::addr_of_mut!((*arm).original).write(obc_route::RouteIndex::empty());
+            core::ptr::addr_of_mut!((*arm).leg).write(obc_route::RouteIndex::empty());
+            core::ptr::addr_of_mut!((*arm).sealed).write(None);
+            core::ptr::addr_of_mut!((*arm).output).write_bytes(0, 1);
+        }
+        self.phase = NavPhase::VisitSources;
+        self.planner_ready = false;
+    }
+
+    #[inline(never)]
+    pub(crate) fn visit_begin_plan(
+        &mut self,
+        from: (i32, i32),
+        to: (i32, i32),
+        context: obc_app::navigator::ReviewContext,
+    ) {
+        assert!(matches!(self.phase, NavPhase::VisitSources | NavPhase::VisitPlan));
+        unsafe {
+            let arm = core::ptr::addr_of_mut!((*(arena_ptr() as *mut VisitArm)).work.plan).cast::<NavArm>();
+            core::ptr::write_bytes(arm.cast::<u8>(), 0, core::mem::size_of::<NavArm>());
+            (*arm).tiles.reset();
+            let mut planner = obc_route::NavPlanner::new(from, to, "Visit leg", context.profile);
+            planner.set_attribution_map(context.map);
+            (*arm).planner.write(planner);
+        }
+        self.phase = NavPhase::VisitPlan;
+        self.planner_ready = true;
+    }
+
+    pub(crate) fn visit_plan_parts(
+        &mut self,
+    ) -> (
+        &mut obc_route::NavPlanner,
+        &mut obc_route::NavScratch,
+        &mut obc_reader::NavTileCache,
+        &mut [u8; NAV_OUTPUT_STAGE_BYTES],
+    ) {
+        assert!(self.phase == NavPhase::VisitPlan && self.planner_ready);
+        let arm =
+            unsafe { &mut *core::ptr::addr_of_mut!((*(arena_ptr() as *mut VisitArm)).work.plan).cast::<NavArm>() };
+        (unsafe { arm.planner.assume_init_mut() }, &mut arm.scratch, &mut arm.tiles, &mut arm.output)
+    }
+
+    pub(crate) fn visit_parts(
+        &mut self,
+    ) -> (
+        &mut obc_route::visit::VisitBuilder,
+        &mut obc_route::RouteIndex,
+        &mut obc_route::RouteIndex,
+        &mut [u8; NAV_OUTPUT_STAGE_BYTES],
+    ) {
+        assert!(self.phase == NavPhase::VisitSources);
+        let arm = unsafe { &mut *(arena_ptr() as *mut VisitArm) };
+        let source = unsafe { &mut *core::ptr::addr_of_mut!(arm.work.sources).cast::<VisitSources>() };
+        (unsafe { arm.builder.assume_init_mut() }, &mut source.original, &mut source.leg, &mut source.output)
+    }
+
+    pub(crate) fn visit_seal_request(
+        &mut self,
+        allocation: obc_storage::flat::Allocation,
+    ) -> crate::flat_store::Request {
+        assert!(self.phase == NavPhase::VisitSources);
+        let out = unsafe { &mut (*(*(arena_ptr() as *mut VisitArm)).work.sources).sealed };
+        assert!(out.is_none());
+        crate::flat_store::Request::Seal { allocation, out }
+    }
+    pub(crate) fn visit_take_sealed(&mut self) -> Option<obc_storage::flat::SealedAllocation<'static>> {
+        assert!(self.phase == NavPhase::VisitSources);
+        unsafe { (*(*(arena_ptr() as *mut VisitArm)).work.sources).sealed.take() }
+    }
+
     /// Write a fresh planner into the arm's slot — the **only** way it is ever initialized (#499's
     /// per-request `ptr::write` discipline, now with the fact recorded).
     ///
@@ -529,7 +655,11 @@ impl NavGuard {
 
     pub(crate) fn output(&self) -> &[u8; NAV_OUTPUT_STAGE_BYTES] {
         unsafe {
-            if self.phase == NavPhase::Plan {
+            if self.phase == NavPhase::VisitPlan {
+                &(&(*(arena_ptr() as *const VisitArm)).work.plan).output
+            } else if self.phase == NavPhase::VisitSources {
+                &(&(*(arena_ptr() as *const VisitArm)).work.sources).output
+            } else if self.phase == NavPhase::Plan {
                 &(*(arena_ptr() as *const NavArm)).output
             } else {
                 &(*(arena_ptr() as *const DetourArm)).output
@@ -606,7 +736,9 @@ impl DerefMut for NavGuard {
 #[cfg(has_nav)]
 impl Drop for NavGuard {
     fn drop(&mut self) {
-        if self.phase != NavPhase::Plan {
+        if self.phase == NavPhase::VisitSources {
+            debug_assert!(unsafe { (&(*(arena_ptr() as *const VisitArm)).work.sources).sealed.is_none() });
+        } else if matches!(self.phase, NavPhase::Sources | NavPhase::Trim | NavPhase::Splice) {
             debug_assert!(unsafe { (*(arena_ptr() as *const DetourArm)).sealed.is_none() });
         }
         release(ArenaOwner::Nav);
@@ -762,3 +894,10 @@ pub(crate) fn claim_peak(
     unsafe { obc_app::peak_view::surface::Builder::init_at(addr_of_mut!((*arm).builder), &framed) };
     Some(PeakGuard { _not_send: PhantomData })
 }
+
+#[cfg(has_nav)]
+const _: () = {
+    assert!(core::mem::size_of::<VisitArm>() <= RENDER_ARM_BYTES);
+    assert!(core::mem::align_of::<VisitArm>() <= core::mem::align_of::<ScratchArena>());
+    assert!(core::mem::offset_of!(VisitArm, work) >= core::mem::size_of::<obc_route::visit::VisitBuilder>());
+};
