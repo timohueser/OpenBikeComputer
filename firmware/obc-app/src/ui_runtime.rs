@@ -125,6 +125,7 @@ pub(crate) struct UiRuntime {
     /// by the POI list screen's first draw; invalidated in [`apply_gesture`](App::apply_gesture)
     /// when a POI list opens, so re-entering a category re-queries.
     pub(crate) poi_scratch: screen::PoiScratch,
+    pub(crate) find: crate::find_place::FindState,
     /// The single route-corridor snapshot buffer (epic #946, U2) — the map POIs near the route
     /// ahead, frozen on take. Held once here for the same reason as
     /// [`poi_scratch`](UiRuntime::poi_scratch): it must not multiply across the screen-stack union
@@ -178,6 +179,7 @@ impl UiRuntime {
             hold_progress_override: None,
             hold_cancel_pending: false,
             poi_scratch: PoiScratch::new(),
+            find: crate::find_place::FindState::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
             cards: CardScheduler::new(),
@@ -344,7 +346,9 @@ impl UiRuntime {
         // The App-owned corridor snapshot (epic #946, U2) resolves first: it belongs to no single
         // screen (U3's list and U5's stat fields both read it), so it runs at the boundary rather
         // than inside one screen's `prepare`. A no-op unless a screen armed it.
-        self.corridor_scratch.prepare(reader, route, place_local);
+        if !self.find.owns_pages() {
+            self.corridor_scratch.prepare(reader, route, place_local);
+        }
         // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
         // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
         // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
@@ -415,6 +419,9 @@ impl UiRuntime {
     /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
     /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
     pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope, fresh_open: bool) {
+        if self.find.owns_pages() {
+            return;
+        }
         match self.stack.iter().rev().find_map(|s| s.corridor_request(scope)) {
             Some(key) => {
                 self.corridor_scratch.arm(key);
@@ -757,6 +764,7 @@ impl UiRuntime {
             hold_progress_override,
             hold_cancel_pending,
             poi_scratch,
+            find,
             corridor_scratch,
             next_ahead,
             cards,
@@ -775,6 +783,7 @@ impl UiRuntime {
         assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
         assert!(*idle_return_timing, "idle time accumulates from the first pass");
         assert!(hold_progress_override.is_none() && !*hold_cancel_pending, "no hold charging or cancelled");
+        assert_eq!(find.state, crate::find_place::State::Idle);
         assert_eq!(poi_scratch.len(), 0, "the POI snapshot is empty");
         assert!(corridor_scratch.armed().is_none() && corridor_scratch.is_empty(), "the corridor is disarmed");
         assert!(next_ahead.request().is_none(), "the next-ahead cache asks for nothing");

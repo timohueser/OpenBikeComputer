@@ -39,6 +39,7 @@ mod device_status;
 pub mod dfu;
 pub mod dirty;
 pub mod fault;
+pub mod find_place;
 #[cfg(test)]
 mod harness;
 pub mod hold_hint;

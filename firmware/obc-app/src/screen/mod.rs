@@ -33,6 +33,7 @@ mod climb;
 pub(crate) mod context_drawer;
 mod detour;
 mod dfu;
+mod find_place;
 mod home;
 mod map;
 mod map_transfer;
@@ -68,6 +69,7 @@ pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
     DfuProgressScreen, DfuUpdatedScreen,
 };
+pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
@@ -208,6 +210,7 @@ pub fn apply(stack: &mut Stack, t: Transition) {
 /// Logic context handed to [`Screen::handle`]: the mutable app state a screen adjusts. The
 /// render half is [`Render`].
 pub struct Ctx<'a> {
+    pub find: &'a mut crate::find_place::FindState,
     pub place_local: Option<(u8, u16)>,
     pub state: &'a mut AppState,
     pub activity: &'a mut Activity,
@@ -290,6 +293,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
     static EMPTY_SCRATCH: PoiScratch = PoiScratch::new();
     static EMPTY_PROFILES: crate::NavProfiles = crate::NavProfiles::EMPTY;
     Ctx {
+        find: Box::leak(Box::new(crate::find_place::FindState::new())),
         place_local: None,
         state,
         activity,
@@ -330,6 +334,7 @@ pub struct ActiveClimb<'a> {
 /// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
+    pub find: &'a crate::find_place::FindState,
     pub peak_view: Option<&'a crate::peak_view::Panorama>,
     /// The frame's borrowed render scratch — the host owns it and lends it for this call (#1146).
     /// Only the map-drawing screens touch it; it carries nothing between frames, so a screen that
@@ -1035,6 +1040,8 @@ screens! {
     DetourPreview(DetourPreviewScreen) => Caps::map().remap(RemapKind::Route),
     /// The POIs browser's category list (Menu → POIs).
     PoiMenu(PoiMenuScreen) => Caps::nav(),
+    FindPlace(FindPlaceScreen) => Caps::map(),
+    VisitReview(VisitReviewScreen) => Caps::map(),
     /// One category's distance-sorted nearest-16 with live bearing arrows.
     PoiList(PoiListScreen) => Caps::nav().reader(ReaderNeed::PoiSnapshot),
     /// A single POI's detail: full name, subtype, live bearing arrow, today's hours + open/closed.
@@ -1255,7 +1262,7 @@ impl Screen {
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
             // planner already captured the profile) and not `RouteOverview` (its BIKE TYPE row
             // promises the profile the route was planned *under*).
-            Screen::NavConfirm(_) => Some(&context_drawer::ROUTE_PLAN),
+            Screen::NavConfirm(_) | Screen::PoiDetail(_) => Some(&context_drawer::ROUTE_PLAN),
             _ => None,
         }
     }
@@ -1698,7 +1705,7 @@ mod tests {
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview"],
+            ["Map", "Detour", "DetourPreview", "FindPlace", "VisitReview"],
             "the map-class screens, and only those — Statistics and the Climb view draw panels, \
              which are cheap enough to keep the recess"
         );

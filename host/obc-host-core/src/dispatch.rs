@@ -373,6 +373,12 @@ impl HostLoop {
     ) {
         // The keyed answers and their polylines were consumed by the pass that produced `plan`;
         // a later answer brings its own.
+        let source = map.source();
+        app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey {
+            store: source.store_id().0,
+            object: source.id().0,
+            revision: source.revision().0,
+        }));
         self.inbox.derived = DerivedInputs::NONE;
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
@@ -652,7 +658,16 @@ impl HostLoop {
                             );
                             feed_routes(app, routes, &mut NoTrace);
                             match preview {
-                                Ok(preview) => app.assistant_preview_outcome(token, preview),
+                                Ok(preview) => {
+                                    let outcome = app.assistant_preview_outcome(token, preview);
+                                    let source = obc_formats::io::SliceSource(bytes);
+                                    if let Ok(index) = obc_route::RouteIndex::read(&source) {
+                                        let points = obc_route::RouteReader::new(&index, &source)
+                                            .preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+                                        app.set_assistant_preview_shape(token, preview.source, &points);
+                                    }
+                                    outcome
+                                }
                                 Err(error) => NavigatorOutcome::Failed { token, error },
                             }
                         }
@@ -1618,7 +1633,7 @@ mod tests {
     }
 
     /// A host that can do everything — none of it reached by the recording path under test.
-    const SUPPORT: PlatformSupport = PlatformSupport {
+    pub(super) const SUPPORT: PlatformSupport = PlatformSupport {
         detour: true,
         settings_persistence: true,
         dfu: true,
@@ -1639,7 +1654,7 @@ mod tests {
     /// A ride object that keeps what it was handed: every appended sample, in order, and the footer
     /// the close wrote. Enough to ask whether the samples reached the object the rider saved.
     #[derive(Default)]
-    struct RecordingTrackStore {
+    pub(super) struct RecordingTrackStore {
         open: bool,
         points: Vec<TrackPoint>,
         footer: Option<RideStats>,
@@ -1888,3 +1903,6 @@ mod planner_tests;
 #[cfg(test)]
 #[path = "dispatch_ride_retention_tests.rs"]
 mod ride_retention_tests;
+
+#[cfg(test)]
+mod find_tests;

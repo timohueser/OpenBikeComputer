@@ -2531,6 +2531,7 @@ pub(crate) async fn run_app(
             // live across an await would instead become a permanent slot in this task's future
             // (#808/#1084 — `run_app` is `#[inline(always)]` into `__embassy_main`, whose task
             // storage is `.bss`, so "in the future" and "resident" are the same thing).
+            app.bind_place_map(Some(crate::flat_store::planner_map_key(flat)));
             let plan = {
                 // ── The keyed derived reads (#1437), answered immediately before the pass ──
                 //

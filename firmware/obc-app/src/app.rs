@@ -2704,6 +2704,9 @@ impl App {
     /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
     /// drop rule without consuming the hold-cancel latch a second input plane still owns.
     fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
+        if g == Gesture::Press && self.activate_place_detail() {
+            return true;
+        }
         // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
@@ -2729,6 +2732,7 @@ impl App {
         let backlight_available = self.backlight_available;
         let App { state, activity, settings, catalogs, nav_profiles, recorder, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
+            find: &mut ui.find,
             place_local,
             state,
             activity,
@@ -2764,6 +2768,7 @@ impl App {
         // Admit Start before the next gesture, after its requested screen transition, so a
         // recovery decision takes precedence over the requested riding view.
         self.advance_recorder_session();
+        self.handle_find_action();
         self.sync_detour_preview(detour_planned_before);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
@@ -2833,8 +2838,9 @@ impl App {
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
         let place_local = self.place_local_time();
-        if self.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_)))
-            && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
+        if self.ui.stack.iter().any(|screen| {
+            matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::FindPlace(_) | Screen::VisitReview(_))
+        }) && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
         {
             self.ui.map_dirty = true;
         }
@@ -2843,12 +2849,16 @@ impl App {
         {
             self.ui.map_dirty = true;
         }
-        if self
-            .ui
-            .stack
-            .iter()
-            .any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::UpAhead(_)))
-        {
+        if self.ui.stack.iter().any(|screen| {
+            matches!(
+                screen,
+                Screen::PoiList(_)
+                    | Screen::PoiDetail(_)
+                    | Screen::FindPlace(_)
+                    | Screen::VisitReview(_)
+                    | Screen::UpAhead(_)
+            )
+        }) {
             let deadline = ms_to_next_minute;
             self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(deadline, |wake| wake.min(deadline)));
         }
@@ -3015,6 +3025,7 @@ impl App {
         // Record the panel size for the screen ticks' region reporting (`advance_animations`) —
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
+        self.prepare_find(core_reader, route);
         // Route-relative pan steps are recorded by gesture handling as a cumulative-distance
         // cursor because `Ctx` deliberately owns no streamed reader. Resolve that cursor here,
         // once per dirty step, before `Render` borrows state read-only for the draw pass.
@@ -3064,7 +3075,16 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
-
+        let assistant_preview_index = self
+            .ui
+            .stack
+            .iter()
+            .any(|s| matches!(s, Screen::VisitReview(_)))
+            .then(|| {
+                self.assistant_preview()
+                    .and_then(|preview| self.route_ids().iter().position(|id| *id == preview.source.object))
+            })
+            .flatten();
         let App {
             state,
             activity,
@@ -3083,7 +3103,7 @@ impl App {
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
         let navigation = navigator.route_state();
-        let nav_key = catalogs.nav_preview_key(navigation.active_route);
+        let nav_key = catalogs.nav_preview_key(assistant_preview_index.or(navigation.active_route));
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
         let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
         let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
@@ -3096,6 +3116,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
+            find: &ui.find,
             peak_view,
             scratch,
 

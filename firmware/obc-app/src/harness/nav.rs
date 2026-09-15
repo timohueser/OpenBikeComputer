@@ -1,10 +1,4 @@
-//! The POI create-route flow (epic #116, R4): the detail's press → "Create a route?" confirm, the
-//! search the pass hands the executor (Navigator's `Acquire`), and the executor's terminal answer
-//! (`PlanFinished` / `Failed`) — success swaps the confirm for the computed-route overview
-//! (activated, length only), the locked two failure tiers swap it for the failure card, and the
-//! overview's accept honours the ride state (idle → start; tracking → the existing save/swap
-//! prompt). Screens are driven through the real gesture path with the POI harness's fixture map,
-//! exactly like `poi.rs`.
+//! Legacy route planner screens, cancellation, failure, and clipped redraw contracts.
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerWork};
@@ -16,7 +10,7 @@ use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
 
-mod common;
+use super::support as common;
 use common::{Buf, Planner};
 
 /// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` and query point — `poi.rs`'s.
@@ -68,12 +62,25 @@ fn open_detail(app: &mut App, bytes: &[u8]) {
     render(app, bytes); // load the schedule before accepting an action
 }
 
+// Keep the legacy planner contract covered without adding a public test-only entry point.
+fn open_confirm(app: &mut App) {
+    let Screen::PoiDetail(detail) = app.top_screen() else { panic!("detail required") };
+    let poi = detail.poi();
+    let name = if poi.name.is_empty() {
+        obc_formats::obcm::poi_label_of(poi.subtype).unwrap_or("Place")
+    } else {
+        poi.name.as_str()
+    };
+    let screen =
+        crate::screen::NavConfirmScreen::new((poi.lon, poi.lat), name, obc_formats::obcm::poi_category_of(poi.subtype));
+    let _ = app.ui.stack.push(Screen::NavConfirm(screen));
+}
+
 /// Drive the detail into the confirm and press *Create route*, returning the search the pass hands
 /// the executor. The confirm swaps itself for the **planning** screen (#499) — the spinner the
 /// answer lands in.
 fn request_route(app: &mut App, host: &mut Planner) -> NavRequest {
-    app.apply_gesture(Gesture::Press); // detail → confirm
-    assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "detail press opens the confirm");
+    open_confirm(app);
     app.apply_gesture(Gesture::Press); // Create route (row 0)
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "accepting swaps to the planning screen");
     plan_req(app, host).expect("Create route records the one-shot request")
@@ -119,7 +126,7 @@ fn nav_catalog(app: &mut App) {
 }
 
 #[test]
-fn detail_press_confirm_create_records_the_request() {
+fn confirm_create_records_the_request() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     common::mount_store(&mut app);
@@ -158,13 +165,13 @@ fn confirm_cancel_and_back_return_to_the_detail() {
     common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    app.apply_gesture(Gesture::Press); // → confirm
+    open_confirm(&mut app);
     app.apply_gesture(Gesture::Step(1)); // → Cancel
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Cancel returns to the detail");
     assert!(plan_req(&mut app, &mut host).is_none(), "cancel records nothing");
 
-    app.apply_gesture(Gesture::Press); // → confirm again
+    open_confirm(&mut app);
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Back = Cancel");
 }
@@ -291,7 +298,7 @@ fn create_without_any_position_degrades_to_the_generic_tier() {
     common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    app.apply_gesture(Gesture::Press); // → confirm
+    open_confirm(&mut app);
     app.state.user_fix = None; // genuinely no position (can't happen after a snapshot, but locked to degrade)
     app.apply_gesture(Gesture::Press); // Create route
     assert!(matches!(app.top_screen(), Screen::NavFail(_)), "no position ⇒ the generic failure tier, no request");
