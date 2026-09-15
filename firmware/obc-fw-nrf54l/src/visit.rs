@@ -846,7 +846,12 @@ impl Executor {
         })
     }
     pub(crate) fn accepted(&mut self, app: &App, store: &FlatStore<FlatCard>) {
-        if app.assistant_review_status() == ReviewStatus::Accepted && matches!(self.phase, Phase::Preview) {
+        if app.assistant_review_status() == ReviewStatus::Accepted
+            && matches!(self.phase, Phase::Preview)
+            && app.assistant_checkpoint().is_some_and(|checkpoint| {
+                self.published == Some((ObjectId(checkpoint.route.object), Revision(checkpoint.route.revision)))
+            })
+        {
             crate::assistant::release_original(store, &mut self.original, false);
             self.published = None;
             self.validated = None;

@@ -1637,7 +1637,12 @@ pub(crate) async fn run_app(
             #[allow(unused_mut, unused_assignments)]
             let mut nav_cancel = false;
             #[cfg(has_nav)]
-            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted && nav_run.is_none() {
+            if app.assistant_review_status() == obc_app::navigator::ReviewStatus::Accepted
+                && nav_run.is_none()
+                && review_publication.is_some_and(|source| {
+                    app.assistant_checkpoint().is_some_and(|checkpoint| checkpoint.route == source)
+                })
+            {
                 review_publication = None;
                 if let Some(source) = review_original.take() {
                     flat.close(source.release());
