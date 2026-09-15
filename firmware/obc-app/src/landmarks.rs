@@ -160,7 +160,9 @@ impl Landmarks {
         }
         self.text.clear();
         self.article_pages = credit_count(&directory, &section, record.article)?;
-        let photo_credits = if record.photo_attribution.is_absent() {
+        let photo_credits = if record.photo_attribution.is_absent()
+            || self.record.is_some_and(|r| r.qid == record.qid && r.photo_attribution.is_absent())
+        {
             None
         } else {
             credit_count(&directory, &section, record.photo_attribution).ok()
@@ -170,36 +172,41 @@ impl Landmarks {
             record.photo_attribution = ContentRef::default();
         }
         self.source_pages = self.article_pages + photo_credits.unwrap_or(0);
-        let reference = if sources {
-            if self.source_page < self.article_pages {
-                record.article
+        let photo_source = sources && self.source_page >= self.article_pages;
+        let (reference, index, count, limit) = if sources {
+            if photo_source {
+                (
+                    record.photo_attribution,
+                    self.source_page - self.article_pages + 4,
+                    photo_credits.unwrap_or(0) + 4,
+                    MAX_ATTRIBUTION_BYTES,
+                )
             } else {
-                record.photo_attribution
+                (record.article, self.source_page + 4, self.article_pages + 4, MAX_ATTRIBUTION_BYTES)
             }
         } else {
-            record.text
-        };
-        let limit = if sources { MAX_ATTRIBUTION_BYTES } else { MAX_TEXT_BYTES };
-        let content = directory.content(&section, reference, limit)?;
-        let (count, index) = if sources {
-            let mut count = [0; 2];
-            content.read_at(0, &mut count).map_err(Error::Source)?;
-            (
-                rd_u16(&count, 0),
-                4 + if self.source_page < self.article_pages {
-                    self.source_page
-                } else {
-                    self.source_page - self.article_pages
-                },
-            )
-        } else {
-            (record.text_pages as u16, self.page.min(record.text_pages as u16 - 1))
+            (record.text, self.page.min(record.text_pages as u16 - 1), record.text_pages as u16, MAX_TEXT_BYTES)
         };
         let mut bytes = [0; MAX_PAGE_BYTES];
-        let text = page(&content, count, index, &mut bytes)?;
-        if !display_page(text) {
-            return Err(Error::BadOffset);
-        }
+        let result = read_display_page(&directory, &section, reference, limit, count, index, &mut bytes);
+        let text = match result {
+            Err(_) if photo_source => {
+                record.photo = ContentRef::default();
+                record.photo_attribution = ContentRef::default();
+                self.source_pages = self.article_pages;
+                self.source_page = 0;
+                read_display_page(
+                    &directory,
+                    &section,
+                    record.article,
+                    MAX_ATTRIBUTION_BYTES,
+                    self.article_pages + 4,
+                    4,
+                    &mut bytes,
+                )?
+            }
+            other => other?,
+        };
         self.text.push_str(text).map_err(|_| Error::BadOffset)?;
         self.record = Some(record);
         self.loaded = Some(requested);
@@ -210,6 +217,22 @@ impl Default for Landmarks {
     fn default() -> Self {
         Self::new()
     }
+}
+fn read_display_page<'a>(
+    directory: &LandmarkDirectory,
+    section: &dyn ByteSource,
+    reference: ContentRef,
+    limit: u32,
+    count: u16,
+    index: u16,
+    bytes: &'a mut [u8; MAX_PAGE_BYTES],
+) -> Result<&'a str, Error> {
+    let content = directory.content(section, reference, limit)?;
+    let text = page(&content, count, index, bytes)?;
+    if !display_page(text) {
+        return Err(Error::BadOffset);
+    }
+    Ok(text)
 }
 fn credit_count(directory: &LandmarkDirectory, section: &dyn ByteSource, reference: ContentRef) -> Result<u16, Error> {
     let source = directory.content(section, reference, MAX_ATTRIBUTION_BYTES)?;
@@ -290,11 +313,22 @@ impl crate::App {
             state.text.clear();
             state.record = None;
         }
-        if state.loaded != before {
-            if let Some(record) = state.record {
+        if let Some(record) = state.record {
+            let source = record.osm.map_or(0, |m| m.source.0);
+            if state.loaded != before || self.ui.poi_scratch.detail_source != source {
                 let hours = reader.try_poi_hours(record.hours_ref);
+                self.ui.poi_scratch.detail_source = source;
                 self.ui.poi_scratch.detail_valid = hours.is_ok();
                 self.ui.poi_scratch.detail_schedule = hours.ok().flatten();
+            }
+        }
+        if let Some(record) = state.record.filter(|r| r.photo.is_absent()) {
+            for screen in &mut self.ui.stack {
+                if let Screen::LandmarkPhoto(photo) = screen {
+                    if photo.linked && photo.selection.qid == record.qid {
+                        photo.invalidate_source();
+                    }
+                }
             }
         }
         if state.status == Status::Loading {
@@ -326,6 +360,9 @@ mod tests {
         map_with_credits(&["Credit page one.", "Credit page two."])
     }
     fn map_with_credits(credits: &[&str]) -> Vec<u8> {
+        map_with_photo_credits(credits, &[])
+    }
+    fn map_with_photo_credits(credits: &[&str], photo_credits: &[&str]) -> Vec<u8> {
         let mut map = obcm_testkit::build_poi_map((0, 0, 1000, 1000), 512, &[]);
         let start = map.len().next_multiple_of(obcm_testkit::UNIT);
         map.resize(start, 0);
@@ -346,6 +383,14 @@ page.",
         let mut credit_fields = vec!["A", "URL", "License", "License URL"];
         credit_fields.extend_from_slice(credits);
         let article = append(&fields(&credit_fields));
+        let (photo, photo_attribution) = if photo_credits.is_empty() {
+            (ContentRef::default(), ContentRef::default())
+        } else {
+            let photo = append(&[0; 4]);
+            credit_fields.truncate(4);
+            credit_fields.extend_from_slice(photo_credits);
+            (photo, append(&fields(&credit_fields)))
+        };
         for i in 0..count {
             let record = LandmarkRecord {
                 qid: i as u64 + 1,
@@ -359,8 +404,8 @@ page.",
                 name,
                 text,
                 article,
-                photo: ContentRef::default(),
-                photo_attribution: ContentRef::default(),
+                photo,
+                photo_attribution,
             };
             section[SECTION_HEADER_LEN + i * RECORD_LEN..SECTION_HEADER_LEN + (i + 1) * RECORD_LEN]
                 .copy_from_slice(&record.encode());
@@ -470,6 +515,105 @@ page."
         assert!(state.record.unwrap().photo.is_absent());
         state.read_step(&reader, true).unwrap();
         assert_eq!(state.text.as_str(), "Credit page one.");
+    }
+    #[test]
+    fn later_photo_credit_failure_preserves_article_and_its_sources() {
+        let bytes = map_with_photo_credits(&["Article credit 1", "Article credit 2"], &["Photo credit 1", "雪"]);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        assert!(app.ui.stack.push(Screen::Landmarks(crate::screen::LandmarksScreen)).is_ok());
+        app.ui.landmarks.restart(false);
+        app.prepare_landmarks(Some(&reader));
+        app.ui.landmarks.reading = true;
+        app.ui.landmarks.page = 1;
+        app.prepare_landmarks(Some(&reader));
+        assert!(!app.ui.landmarks.record.unwrap().photo.is_absent());
+        assert!(app.ui.stack.push(Screen::LandmarkSources(crate::screen::LandmarkSourcesScreen)).is_ok());
+        app.ui.landmarks.source_page = 3;
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.landmarks.status, Status::Ready);
+        assert_eq!(app.ui.landmarks.text.as_str(), "Article credit 1");
+        assert_eq!(app.ui.landmarks.source_pages, 2);
+        assert!(app.ui.landmarks.record.unwrap().photo.is_absent());
+        app.apply_gesture(crate::Gesture::Step(1));
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.landmarks.text.as_str(), "Article credit 2");
+        app.apply_gesture(crate::Gesture::Back);
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.landmarks.page, 1);
+        assert_eq!(app.ui.landmarks.text.as_str(), "Second source\npage.");
+        assert!(app.ui.landmarks.record.unwrap().photo.is_absent(), "failed optional credit stays omitted");
+    }
+    #[test]
+    fn populated_failed_or_stale_card_refreshes_on_press() {
+        let bytes = map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        for failed in [false, true] {
+            let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 1, revision: 1 }));
+            assert!(app.ui.stack.push(Screen::Landmarks(crate::screen::LandmarksScreen)).is_ok());
+            app.ui.landmarks.restart(false);
+            app.prepare_landmarks(Some(&reader));
+            assert_eq!(app.ui.landmarks.rows.len(), 4);
+            if failed {
+                app.ui.landmarks.status = Status::Failed;
+                app.ui.landmarks.invalidate_selection();
+            } else {
+                app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 1, revision: 2 }));
+                assert_eq!(app.ui.landmarks.status, Status::Stale);
+            }
+            app.state.user_fix = Some(obc_ports::Fix::at(0, 0));
+            app.apply_gesture(crate::Gesture::Press);
+            assert_eq!(app.ui.landmarks.status, Status::Loading);
+            app.prepare_landmarks(Some(&reader));
+            assert_eq!(app.ui.landmarks.status, Status::Ready);
+            assert!(app.ui.landmarks.record.is_some());
+        }
+    }
+    #[test]
+    fn landmark_hours_replace_cache_ownership_and_retained_details_reprepare() {
+        let bytes = map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        let poi = obc_reader::Poi {
+            opening: obc_reader::hours::OpeningStatus::Unknown,
+            metadata: obcm::PoiMetadata { source: obcm::SourceId(42), approach: None },
+            lon: 0,
+            lat: 0,
+            subtype: 1,
+            name: heapless::String::new(),
+            hours_ref: obcm::POI_HOURS_REF_NONE,
+            distance_m: 0,
+        };
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(poi))).is_ok());
+        let mut frame = crate::harness::support::Buf::new(240, 320);
+        app.render_frame(None, &mut frame, &reader, None, 240.0, 320.0, |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+        });
+        assert_eq!(app.ui.poi_scratch.detail_source, 42);
+        assert!(app.ui.stack.push(Screen::Landmarks(crate::screen::LandmarksScreen)).is_ok());
+        app.ui.landmarks.restart(false);
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.poi_scratch.detail_source, 0, "information-only article owns its own cached hours");
+        app.ui.poi_scratch.detail_source = 42;
+        app.ui.poi_scratch.detail_valid = false;
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.poi_scratch.detail_source, 0, "unchanged article reloads an overwritten cache");
+        assert!(app.ui.poi_scratch.detail_valid);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(detail) if detail.hours_pending(&app.ui.poi_scratch)));
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "another site's cached hours cannot activate Visit");
     }
     #[test]
     fn represented_pages_reject_unsupported_glyphs_and_overflow_without_replacement() {
