@@ -131,8 +131,7 @@ pub fn render_frame<D, F>(
     scratch: &mut obc_render::RenderScratch,
     target: &mut D,
     scene: Scene<'_, '_>,
-    rain: Option<&mut dyn obc_render::RainOverlaySource>,
-    weather: Option<&obc_app::WeatherSnapshot>,
+
     peak_view: Option<&obc_app::peak_view::Panorama>,
     (w, h): (f32, f32),
     color_fn: F,
@@ -142,17 +141,13 @@ where
     F: Fn(u16) -> D::Color,
 {
     let Scene { reader, route } = scene;
-    // A real microsecond clock so the returned stats carry the per-stage map timings (including
-    // `rain_us`, the WX10 overlay's own wall time) — the panel and the headless log both read them.
     let clock = StdClock(std::time::Instant::now());
-    let stats = app.render_scene_map_rain_timed(
+    let stats = app.render_scene_map_timed(
         Some(scratch),
         target,
         Some(reader),
         Some(reader),
         route,
-        rain,
-        weather,
         peak_view,
         w,
         h,
@@ -299,7 +294,6 @@ mod terrain_tests {
                 PassClock { ride: RideClock(now), ui: InputClock(now) },
                 &[],
                 Sensors::new(&mut Location),
-                None,
                 None,
                 PlatformSupport::default(),
             );

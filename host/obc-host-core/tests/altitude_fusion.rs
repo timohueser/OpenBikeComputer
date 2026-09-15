@@ -6,11 +6,11 @@
 //! actually cancels the one error the device's barometer really has.
 //!
 //! The experiment is a **paired replay**: the same 35 minutes of the Grimsel climb, ridden twice,
-//! differing only in a synthetic barometric weather drift injected through
+//! differing only in a synthetic barometric air pressure drift injected through
 //! [`BaroSensor::set_drift`]. The control ride has none. Then:
 //!
 //! - the **raw** barometric reading must diverge between the two by exactly the injected drift —
-//!   that is what a weather front does to `bmp581.rs`'s fixed-`P0` altitude, and why the Elevation
+//!   that is what a air pressure front does to `bmp581.rs`'s fixed-`P0` altitude, and why the Elevation
 //!   tile could not be trusted before this epic;
 //! - the **shown** elevation must not, because the terrain under each fix keeps re-pinning it.
 //!
@@ -47,7 +47,7 @@ struct Reading {
     gated: u32,
 }
 
-/// Ride the Grimsel replay for `until_s` at 1 Hz with `drift_m_per_h` of injected weather, sampling
+/// Ride the Grimsel replay for `until_s` at 1 Hz with `drift_m_per_h` of injected air pressure, sampling
 /// terrain behind every tick exactly as the board's ride loop does. Returns a reading at each
 /// checkpoint in `at_s` (ascending).
 fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx: &str) -> Vec<Reading> {
@@ -97,7 +97,7 @@ fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx:
 /// Run with `cargo test -p obc-host-core --test altitude_fusion -- --nocapture` to print the table
 /// that goes in the PR.
 #[test]
-fn injected_weather_drift_walks_the_barometer_away_but_not_the_shown_elevation() {
+fn injected_pressure_drift_walks_the_barometer_away_but_not_the_shown_elevation() {
     // −60 m/h ≈ −7 hPa/h: a front several times harsher than the classic storm threshold, chosen so
     // the divergence is unambiguous rather than realistic.
     const DRIFT_M_PER_H: f32 = -60.0;
@@ -137,7 +137,7 @@ fn injected_weather_drift_walks_the_barometer_away_but_not_the_shown_elevation()
         );
         // The tile does not. Its residual error is the EMA's steady-state lag against a
         // *continuously* drifting reference — `rate × τ` = 60 m/h × 5 min = **5 m**, a constant,
-        // whatever the ride's length. (Real weather at ~8 m/h leaves ~0.7 m, under the tile's own
+        // whatever the ride's length. (Real air pressure at ~8 m/h leaves ~0.7 m, under the tile's own
         // 1 m rounding.) That constant-vs-linear split is the whole result.
         assert!(
             shown_delta.abs() < 6.0,

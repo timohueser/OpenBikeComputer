@@ -20,7 +20,6 @@ The dependency direction is:
 ```text
 OBCDomain -> OBCTransport -> OBCMock
          \-> OBCFormats
-         \-> OBCWeatherWire -> OBCWeather
 OBCUI -> OBCDomain + OBCTransport
 ```
 
@@ -48,7 +47,7 @@ gitignored `project.local.yml`.
 Debug uses `MockTransport` by default. The authoritative launch arguments live in
 `OBCMock/MockLaunchOptions.swift`; scenario presets live in `OBCMock/Scenario.swift`. Useful entry
 points include `-OBCScenario`, `-OBCFixtures`, `-OBCConnection`, `-OBCImportSample`,
-`-OBCWeatherDemo`, `-OBCShowDevPanel`, and `-OBCShowUIGallery`.
+`-OBCShowDevPanel`, and `-OBCShowUIGallery`.
 
 `-OBCHideMockHUD`, `-OBCDisableAnimations`, and `-OBCHoldConfirmations` make automated captures
 deterministic. Website captures are generated and checked by

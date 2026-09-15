@@ -1,29 +1,3 @@
-//! Elevation dead-band integrator.
-//!
-//! Ascent/descent totals must ignore the small up-and-down wiggle of sampled or sensed
-//! elevation, or GPS/barometric noise inflates them. This hysteresis integrator only
-//! books a change once it exceeds a threshold from the last booked reference, then
-//! re-anchors there.
-//!
-//! **Why it's shared.** Every elevation path must agree on this dead-band or their numbers
-//! silently diverge:
-//! - the GPX converter (`obc_route::convert`) precomputes a route's total ascent/descent,
-//! - the elevation profile (`obc_route::profile`) integrates the same climb per column so the
-//!   "to climb" stat reaches 0 exactly at the route's end,
-//! - the app's actually-ridden barometric climb must land near that precomputed ascent
-//!   when the rider follows the route,
-//! - and (epic #1068) the packer's per-edge ascent and the device's emit-time profile must agree
-//!   with all three, or a climb-aware route costs one number and displays another.
-//!
-//! One definition, so tuning the dead-band can't leave one copy behind. Generic over the
-//! sample type so the converter's `f64` and the profile/app `f32` share the code.
-//!
-//! **The threshold is a parameter, not only a constant.** [`ELE_DEADBAND_M`] stays the default and
-//! is what every rider-facing total uses, but a DEM resample and a barometer are different error
-//! models — a raster's jitter is a function of posting and slope, a baro's of weather and vibration
-//! — so a caller that has measured its own may hand it in with [`DeadBand::with_threshold`]. A
-//! consumer that does MUST state the value it pinned and why (epic #1068's named risk).
-
 use core::ops::{Add, Neg, Sub};
 
 /// Default elevation dead-band (m): a move smaller than this is treated as noise — it neither
