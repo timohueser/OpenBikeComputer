@@ -102,3 +102,21 @@ tests, suite registry, workspace formatting, and diff checks. Documentation link
 The orchestrator owns the next CI gate and final integrated App checks. No local sweep, shipping
 image, resource measurement, or hardware test ran for this correction. Public conceptual prose
 is unchanged.
+
+
+## Header and no-route delta review
+
+Independent review found that the Spanish Ahead title also reached the right-side status marker.
+Commit `fe59940d` keeps the short title layout and uses the existing smaller label font and caption
+fit helper when needed. Only the caption can be shortened. The range stays complete, with space
+reserved before the timeline's filter and coverage markers. The same measured body wrapping now
+covers no-route and loading messages; German and French no-route text otherwise exceeded the
+available width.
+
+Six named captures verify Spanish 10 km context and filter editor, Spanish 5 km context, and the
+German, French, and Spanish no-route messages. The two existing Spanish context hashes are
+updated. The other four captures are focused visual evidence, not new sweep entries. Their binary
+SHA-256 is `f5e71a8a9ea068ee7d1c48a76d1a0fa172045deb572cd9d5be73009586724714`, built from the
+runtime source in `fe59940d`. App all-targets Clippy, simulator build, registry, formatting, diff
+checks, and the combined 258-frame evidence check pass. The full App suite and snapshot sweep
+were not repeated for this small review delta.
