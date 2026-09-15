@@ -1,6 +1,6 @@
 # Accepted journey production controls
 
-Implementation: `b388a284`, based on the RA12 production entry at `26b8f70b`.
+Implementation: `b388a284`, with recovery fix `c0306a6f`. The branch includes the RA12 production entry and CI fixes through `2680ba23`.
 
 The ordinary Assistant context opens Current visit. Its detail has Back to map and Cancel visit
 rows. Cancel calls the existing Visit owner with the current route reader and map identity.
@@ -15,8 +15,7 @@ arrival during recovery.
 
 A recovered checkpoint offers a Resume card. Back keeps guidance inactive. The Assistant context
 can reopen the card. Select queues a read through the existing route reader/index. Both the shared
-host executor and board reuse that index and the Navigator matcher. The match is limited to the
-saved phase and the existing 50 m movement window. No fix leaves Resume available for retry.
+host executor and board reuse that index and the Navigator matcher. The match scans the full saved phase with the existing chunk buffer. A second scan rejects separated near-equal projections and repeated coordinates. No fix, an unmatched position, or a source-read refusal leaves Resume available for retry.
 The existing Resume intent and Metadata operation then check exact route and map sources before
 activation. There is no extra route buffer, route owner, or Recorder start.
 
@@ -34,7 +33,7 @@ Passed from this worktree:
 The App contracts cover cancellation before departure and after departure, checkpoint-gated
 restoration, Back during save, arrival dismissal, ignored arrival at rejoin, and fresh explicit
 Resume. The two existing flat-store executor tests now continue through a fresh App boot and
-Select on the normal Resume card. They verify exact accepted route activation, no recording,
+Select on the normal Resume card, more than 50 m from the acceptance position. They verify exact accepted route activation, an updated durable progress anchor, no recording,
 and suppressed arrival. These are component tests with a real flat store and small graph.
 
 The first runs exposed two stale RA12 test recipes. The final RA12 parent `26b8f70b` already fixes
@@ -59,3 +58,19 @@ Use the production map/card and normal controls for these named scenarios:
 The orchestrator owns real offline simulator captures, final integrated review, CI resource
 records, and the single final snapshot sweep and shipping build. This change runs neither sweep
 nor image build. Physical-device acceptance remains pending; no hardware is connected.
+
+## Adversarial recovery delta
+
+The first independent review found that the frozen-preview movement tolerance was also used for
+restart. A checkpoint records phase boundaries, so it can be far behind ordinary progress. The
+recovery fix scans the full persisted phase. It stores the uniquely matched progress, occurrence,
+and coordinate in the checkpoint before activation. The 50 m acceptance tolerance is unchanged.
+
+The whole `obc-route`, `obc-app`, and `obc-host-core` suites pass after this fix. Added cases recover
+more than 500 m into outbound and return phases, refuse an overlapping loop without a unique phase
+match, allow a later retry, and find a position beyond the live matcher's 64-segment window. The
+existing nonzero-occurrence test now expects the newly matched coordinate in the checkpoint.
+
+Delta validation also includes scoped all-targets Clippy, standalone board Clippy, the suite
+registry, formatting, and the documentation link check. The simulator suite was already passed
+for the initial control patch; the orchestrator owns final real-data simulator acceptance.
