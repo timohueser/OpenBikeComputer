@@ -133,3 +133,21 @@ including the durable clear acknowledgment. No resource build or snapshot sweep 
 The independently reviewed parent `bd0da43f` is merged after this batch. It includes the 1,792-byte
 profile memory reclaim without zoom or layout changes. The earlier census in this note predates
 that reclaim. The orchestrator owns the final integrated resource measurement and acceptance.
+
+## Fresh-owner remount delta
+
+A remount creates a new host owner. Rebinding now compares the frozen map key and complete stored
+map fingerprint, plus the original route's StoreId and complete fingerprint. It does not compare
+owner allocation addresses. Both sources are validated before either lease changes. A changed
+source makes the preview stale, and acceptance also checks the frozen map key.
+
+The actual HostLoop test now takes the pending checkpoint through a fresh FlatStore mount over the
+same card bytes, with a new Owner Arc and a fenced old owner. It covers unchanged sources with and
+without an original, changed maps with and without an original, and a changed original. Unchanged
+sources permit acceptance retry. Changed sources cannot publish a checkpoint. The test injects the
+uncertain executor response; the existing storage fault-cut suite covers physical commit failure.
+
+`./tools/obc test -p obc-host-core --lib` passes all 66 tests.
+`cargo clippy -p obc-app -p obc-host-core --all-targets -- -D warnings`,
+`./tools/obc suites check`, and documentation link checks pass. No resource, snapshot or board image
+build was repeated for this host rebinding delta.
