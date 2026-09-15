@@ -129,3 +129,29 @@ accesses. Each now binds the correct phase's arm once before field access.
 This does not change the arena layout or ownership. Parent snapshot format and
 detail preparation fixes are included. Final CI and independent delta review
 remain required. No local image, sweep, or base rebuild ran.
+
+## Quantized return seam
+
+Code commit `c54f2e5b` coalesces leg and tail endpoints within the existing 1 m mapped-approach
+tolerance. It retains the preceding endpoint and omits the duplicate point. It adds no connector.
+A coordinate change marks the boundary elevation as incomplete. Larger gaps still reject the
+candidate. Source identity, route occurrence, original anchors, and access checks do not change.
+
+The real Grimsel web journey exposed this boundary: the stored return endpoint is
+`(8337028, 46576671)` and the imported GPX tail begins at `(8337021, 46576670)`.
+The gap is about 0.55 m. The new contract uses these coordinates, checks the exact emitted point
+sequence and original anchors, and rejects a tail outside the 1 m tolerance.
+
+Validation on this code:
+
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra06-find-place/target ./tools/obc test -p obc-route`: all selected whole suites pass.
+- `CARGO_TARGET_DIR=/Users/timo/Documents/OSM-agents/ra06-find-place/target cargo clippy -p obc-route --all-targets -- -D warnings`: passes.
+- `./tools/obc suites check`: passes.
+- `cargo fmt --all` and formatting in each standalone Cargo root: pass.
+- `python3 docs/build_docs.py --check-links`: passes.
+
+Exact logs are `/Users/timo/Documents/OSM-agents/ra05-seam-{tests,clippy,registry,docs}.log`.
+The diagnostic real-map run is `/Users/timo/Documents/OSM-agents/ra06-tour-seam-diagnosis.log`;
+it records the rejected seam before this fix. The separate tour integration records the final
+production acceptance result. No UI sweep, resource image, full CI mirror, or device test was run.
+No public conceptual documentation changed.
