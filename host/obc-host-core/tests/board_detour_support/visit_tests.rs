@@ -166,6 +166,74 @@ fn visit_uses_real_legs_and_cancel_retracts_only_candidate() {
 }
 
 #[test]
+fn stored_visit_restores_without_planning_and_rejects_changed_identity() {
+    struct Fixed;
+    impl obc_ports::LocationSource for Fixed {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            Some(obc_ports::Fix::at(500_000, 500_000))
+        }
+    }
+    for wrong_revision in [false, true] {
+        let mut h = VisitHarness::new();
+        h.settle(ReviewStatus::Preview);
+        let preview = h.h.app.assistant_preview().unwrap();
+        let context = h.h.app.assistant_review_context().unwrap();
+        let target = h.h.app.assistant_visit_target().unwrap();
+        let bytes =
+            h.h.store
+                .with_source(ObjectId(preview.source.object), None, |source| {
+                    let mut bytes = vec![0; source.len() as usize];
+                    source.read_at(0, &mut bytes).unwrap();
+                    bytes
+                })
+                .unwrap();
+        h.h.app.cancel_assistant();
+        h.settle(ReviewStatus::Idle);
+        let id = put(h.h.store, ObjectKind::Route, &bytes, None);
+        flat_store::load_routes(h.h.store, &mut h.h.app);
+        let original = h.h.original.as_ref().unwrap();
+        let index = obc_route::RouteIndex::read(original).unwrap();
+        let route = obc_route::RouteReader::new(&index, original);
+        let plan = h.h.app.run_pass(PassInputs {
+            now: PassClock { ride: obc_ports::RideClock(h.now), ui: obc_ports::InputClock(h.now) },
+            gestures: &[],
+            sensors: obc_ports::Sensors::new(&mut Fixed),
+            route: Some(&route),
+            support: PlatformSupport::default(),
+            outcomes: &mut h.outcomes,
+            facts: &mut h.facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
+        assert!(plan.effects.navigator.is_none());
+        let source = obc_formats::obcr::RouteSourceKey {
+            store: h.h.store.store_id().0,
+            object: id.0,
+            revision: if wrong_revision { 2 } else { 1 },
+        };
+        assert!(h.h.app.restore_visit(target, context, source));
+        let writes = h.h.writer.transport().completed.borrow().len();
+        h.settle(if wrong_revision {
+            ReviewStatus::Failed(NavigatorError::SourceChanged)
+        } else {
+            ReviewStatus::Preview
+        });
+        assert_eq!(
+            h.h.writer.transport().completed.borrow().len(),
+            writes,
+            "restore must not plan, allocate, or publish"
+        );
+        if wrong_revision {
+            assert!(h.h.store.entries().any(|entry| entry.id == id), "a different revision is not ours to remove");
+        } else {
+            assert_eq!(h.h.app.assistant_preview().unwrap().source.object, id.0);
+            h.h.app.cancel_assistant();
+            h.settle(ReviewStatus::Idle);
+            assert!(!h.h.store.entries().any(|entry| entry.id == id));
+        }
+    }
+}
+#[test]
 fn visit_cancellation_drains_owned_tickets_before_releasing_arena() {
     for kind in [Kind::Allocate, Kind::Write, Kind::Seal, Kind::ReleaseSealed, Kind::Publish] {
         let mut h = VisitHarness::new();
