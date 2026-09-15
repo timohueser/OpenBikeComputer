@@ -7,7 +7,7 @@ copy: ai
 # System architecture
 
 OpenBikeComputer puts hardware-specific code at the system boundary.
-The device, simulator, and [browser demo](../../) use the same `no_std` application core.
+The device, the simulator, the [browser demo](../../) and the iPhone use the same `no_std` application core.
 Each host supplies storage, sensors, input, and display functions.
 
 ## Runtime layers
