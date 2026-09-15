@@ -838,7 +838,7 @@ geometry, so the header and interval facts use the same route.
 | Geometry chunks | Coordinates, elevation or an explicit unknown value, incoming surface and coverage |
 | Chunk index | Bounded random access and cumulative anchors |
 | Waypoints | Names, categories, offsets, and optional original route provenance |
-| Accepted visit descriptor | Reserved schema for the original route, accepted anchors, and target identity |
+| Accepted visit descriptor | Exact original route, original and accepted phase anchors, and mapped target identity |
 
 A valid zero elevation differs from missing data. Elevation gaps remain empty in
 profiles and pause ascent integration. A segment can be incomplete even when its
