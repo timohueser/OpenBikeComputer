@@ -163,7 +163,14 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
 ### Storage inputs
 
 - `--gpx PATH` replays a GPX track as the location source.
-- `--at SECONDS` chooses the GPX playback instant for a headless frame (default: midpoint).
+- `--at SECONDS` chooses the GPX playback endpoint for a headless frame (default: midpoint).
+- `--script-at SECONDS` sets the GPX position during `--script`, including its `T` inputs.
+  It requires `--gpx`, `--png`, and `--script`. After the script, replay advances from this
+  position to `--at`; both positions must be within the track and the endpoint cannot be earlier.
+  Ride time starts at zero at the selected position. For example, `--script-at 30 --at 120`
+  runs the script at second 30, then replays 90 seconds of actual GPS motion. Equal start and
+  end positions run the script without further motion. Without `--script-at`, the script uses
+  the endpoint position and the subsequent replay starts at the beginning, as before.
 - `--routes-dir DIR` imports sorted `.obcr` and `.obt` fixtures once (default `routes/`). It cannot be combined with `--card`. Trip stage references are remapped to committed route IDs; missing stages remain missing.
 - `--tracks-dir DIR` selects saved-ride import inputs and GPX export output (default `tracks/`).
   A new session imports valid `ride-{number}.obcr` files without changing them. `--card` does not
@@ -203,7 +210,7 @@ fixtures, synthetic routes, scripted arrival events, or `--assistant-*` controls
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
   Up+Select chord that opens the universal quick drawer, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
-  With `--gpx`, `T` samples the actual track position selected by `--at` through the normal location
+  With `--gpx`, `T` samples the actual track position selected by `--script-at` (or `--at` when omitted) through the normal location
   input and active-route matcher. Use it after starting a route and before opening a route action.
   It keeps the interaction clock and the pre-replay ride epoch; the full GPX replay still follows
   the script.
