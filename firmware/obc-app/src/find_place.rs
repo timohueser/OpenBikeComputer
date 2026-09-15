@@ -982,7 +982,7 @@ mod tests {
                 },
                 display: (0, 0),
             });
-            app.ui.stack.push(Screen::VisitReview(screen)).unwrap();
+            assert!(app.ui.stack.push(Screen::VisitReview(screen)).is_ok());
             app.ui.find.review = ReviewStatus::Planning;
             app.navigator.review_failed(error);
             let expected = app.assistant_review_status();
