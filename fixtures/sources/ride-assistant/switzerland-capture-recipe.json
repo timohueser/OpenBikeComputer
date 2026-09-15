@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "rank": "best-rank",
+  "boundary_sha256": "1b36c21d52a4419d410893ea41dd522d36238ada0b253c7fe78b81d2ef1edd5b",
+  "policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
+  "languages": [
+    "en",
+    "de",
+    "fr",
+    "it",
+    "ga"
+  ]
+}
