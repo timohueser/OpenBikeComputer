@@ -489,6 +489,11 @@ directed route searches connect that point to the place and back. The original r
 after the excursion, including its waypoints and loops, stays in the visit. A place on the route
 can have no return leg distance; guidance continues after the rider leaves the stop.
 
+An imported route can differ from the road graph. At departure and return, a connection within
+the normal 100 m snap limit retains both coordinates and counts toward the visit distance.
+Its surface and elevation are unknown. A larger gap refuses the visit. The preview fits the path
+through the place and back to the original route; the stored journey retains the full continuation.
+
 The card shows route distance and ascent to arrival. Added costs compare the complete visit,
 including its return, with the remaining accepted route. With no accepted route, the review is a
 direct destination and has no return cost. Membership, order, map bounds, and cost origin stay fixed
