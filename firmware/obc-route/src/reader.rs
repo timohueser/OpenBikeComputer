@@ -623,13 +623,16 @@ impl<'a> RouteReader<'a> {
     ) -> Result<(), Error> {
         let mut count = 0;
         self.preview_span(lo, hi, |_| count += 1)?;
-        let keep = limit.min(N - shape.len() + usize::from(!shape.is_empty())).min(count);
+        let continues = !shape.is_empty();
+        let keep = limit.min(N - shape.len() + usize::from(continues)).min(count);
         let mut ordinal = 0;
         let mut selected = 0;
         self.preview_span(lo, hi, |point| {
             let next = if keep > 1 { selected * (count - 1) / (keep - 1) } else { 0 };
             if selected < keep && ordinal == next {
-                if shape.last() != Some(&point) {
+                // Both spans share the stop occurrence. Keep its first representation even when
+                // a chunk boundary quantizes the second span's start to a different coordinate.
+                if !(continues && selected == 0) && shape.last() != Some(&point) {
                     let _ = shape.push(point);
                 }
                 selected += 1;
