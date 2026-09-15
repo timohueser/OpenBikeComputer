@@ -84,8 +84,7 @@ impl FindPlaceScreen {
         S: obc_map_scene::MapScene,
     {
         let Some(category) = self.category else {
-            title_frame(cv, rx.w, rx.h, "", "");
-            super::assistant::draw_find_title(cv, rx.t(Msg::AssistantFind), Point::new(14, 10), PARCHMENT);
+            title_frame(cv, rx.w, rx.h, rx.t(Msg::AssistantFind), "");
             let first = list::window_start(self.selected, 6, PoiCategory::ALL.len());
             for (slot, cat) in PoiCategory::ALL.iter().skip(first).take(6).enumerate() {
                 let y = 43 + slot as i32 * 44;
