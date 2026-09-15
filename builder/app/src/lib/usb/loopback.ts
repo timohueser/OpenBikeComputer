@@ -882,15 +882,10 @@ export class MockDevice {
         const head = creating ? null : this.head(objectId);
         const revision = head ? head.meta.revision + 1n : 1n;
 
-        // A replace leaves at most what it asked for: any revision the object was already keeping
-        // retained is freed, and the displaced one is kept only when the flag asked for it.
+        // Replace the head and release any retained revision.
         for (let i = this.catalog.length - 1; i >= 0; i--) {
             const row = this.catalog[i];
             if (row.meta.objectId !== objectId) continue;
-            if (head && row.meta.revision === head.meta.revision && request.retainPrevious) {
-                this.catalog[i] = { ...row, meta: { ...row.meta, flags: row.meta.flags | EntryFlags.Retained } };
-                continue;
-            }
             this.catalog.splice(i, 1);
         }
 

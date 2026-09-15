@@ -28,7 +28,7 @@ fn kind_out(kind: ObjectKind) -> v4::ObjectKind {
         ObjectKind::Route => v4::ObjectKind::Route,
         ObjectKind::Trip => v4::ObjectKind::Trip,
         ObjectKind::Ride => v4::ObjectKind::Ride,
-        ObjectKind::WeatherBundle => v4::ObjectKind::WeatherBundle,
+
         ObjectKind::MapShard => v4::ObjectKind::MapShard,
         ObjectKind::MapSetManifest => v4::ObjectKind::MapSetManifest,
         ObjectKind::UpdatePackage => v4::ObjectKind::UpdatePackage,
@@ -42,7 +42,7 @@ fn kind_in(kind: v4::ObjectKind) -> ObjectKind {
         v4::ObjectKind::Route => ObjectKind::Route,
         v4::ObjectKind::Trip => ObjectKind::Trip,
         v4::ObjectKind::Ride => ObjectKind::Ride,
-        v4::ObjectKind::WeatherBundle => ObjectKind::WeatherBundle,
+
         v4::ObjectKind::MapShard => ObjectKind::MapShard,
         v4::ObjectKind::MapSetManifest => ObjectKind::MapSetManifest,
         v4::ObjectKind::UpdatePackage => ObjectKind::UpdatePackage,
@@ -257,7 +257,7 @@ mod tests {
     /// fact: every kind and every flag bit, across the seam and back.
     #[test]
     fn the_wire_and_the_card_register_the_same_kinds_and_flags() {
-        for value in 1..=8u16 {
+        for value in [1u16, 2, 3, 5, 6, 7, 8, 9] {
             let mine = ObjectKind::decode(value).unwrap();
             let theirs = v4::ObjectKind::decode(value).unwrap();
             assert_eq!(kind_out(mine), theirs, "kind {value} crosses the seam unchanged");
@@ -277,7 +277,7 @@ mod tests {
         let meta = EntryMeta {
             id: ObjectId(7),
             revision: Revision(3),
-            kind: ObjectKind::WeatherBundle,
+            kind: ObjectKind::Route,
             flags: EntryFlags::RETAINED,
             payload_len: 42_137,
             payload_crc: 0x9C4A_7E21,

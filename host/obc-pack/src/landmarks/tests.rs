@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn a_mutable_commons_url_must_still_match_the_captured_image_revision() {
+fn photo_revision_and_required_creator_come_from_captured_metadata() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "photo-revision");
     let image = image::DynamicImage::new_rgb8(2, 2);
     let mut bytes = std::io::Cursor::new(Vec::new());
@@ -13,11 +13,23 @@ fn a_mutable_commons_url_must_still_match_the_captured_image_revision() {
     let capture = json!({"path":"image.png", "metadata_path":"metadata.json"});
     let allowed = BTreeSet::from(["Image.png".into()]);
     fs::write(root.join("image.png"), &bytes).unwrap();
-    for (expected_sha1, valid) in [(upstream.as_str(), true), ("0000000000000000000000000000000000000000", false)] {
+    for (expected_sha1, license, artist, error) in [
+        (upstream.as_str(), "licenses/by/4.0", Some("Example"), None),
+        (
+            "0000000000000000000000000000000000000000",
+            "licenses/by/4.0",
+            Some("Example"),
+            Some("photo_revision_mismatch"),
+        ),
+        (upstream.as_str(), "licenses/by/4.0", None, Some("photo_creator_missing")),
+        (upstream.as_str(), "licenses/by-sa/3.0", Some("<span> </span>"), Some("photo_creator_missing")),
+        (upstream.as_str(), "publicdomain/zero/1.0", None, None),
+    ] {
         let metadata = json!({"query":{"pages":{"1":{"title":"File:Image.png","imageinfo":[{
             "url":"https://upload.wikimedia.org/image.png", "descriptionurl":"https://commons.wikimedia.org/wiki/File:Image.png",
             "timestamp":"2026-01-01T00:00:00Z", "sha1":expected_sha1,
-            "extmetadata":{"Artist":{"value":"Example"}, "LicenseUrl":{"value":"https://creativecommons.org/licenses/by/4.0/"}}
+            "extmetadata":{"Artist":{"value":artist}, "Credit":{"value":"Own work"},
+                "LicenseUrl":{"value":format!("https://creativecommons.org/{license}/")}}
         }]}}}});
         let raw = serde_json::to_vec(&metadata).unwrap();
         fs::write(root.join("metadata.json"), &raw).unwrap();
@@ -36,10 +48,10 @@ fn a_mutable_commons_url_must_still_match_the_captured_image_revision() {
             },
         ];
         let result = assets::photo(&root, &sources, &capture, &allowed, "Q1");
-        if valid {
-            assert_eq!(result.unwrap().0.bytes, 51_840);
+        if let Some(error) = error {
+            assert_eq!(result.unwrap_err(), error);
         } else {
-            assert_eq!(result.unwrap_err(), "photo_revision_mismatch");
+            assert_eq!(result.unwrap().0.bytes, 51_840);
         }
     }
     fs::remove_dir_all(root).unwrap();

@@ -500,20 +500,6 @@ impl HostStore {
                 return Err(StoreError::Busy.into());
             }
         }
-        if kind == ObjectKind::WeatherBundle {
-            let mut current = None;
-            for entry in store.entries().filter(|entry| entry.kind == kind && entry.flags == EntryFlags::NONE) {
-                if current.replace((entry.id, entry.revision)).is_some() {
-                    return Err(StoreError::Invalid.into());
-                }
-            }
-            if !store.entries_ok() {
-                return Err(StoreError::Media.into());
-            }
-            if current != previous {
-                return Err(StoreError::NotFound.into());
-            }
-        }
         let id = previous.map_or_else(|| store.next_object_id(), |(id, _)| id);
         let revision = previous.map_or(Ok(Revision(1)), |(_, revision)| {
             revision.0.checked_add(1).map(Revision).ok_or(StoreError::ReadOnly)
