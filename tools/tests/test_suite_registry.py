@@ -965,6 +965,14 @@ class CargoCadenceTests(unittest.TestCase):
                                 "        run: echo run\n")
             self.assertEqual(registry.workflow_jobs(root)['test'].gates_on, 'test')
 
+    def test_level_selection_never_runs_manual_fixture_writers(self):
+        suites = [{'id': name, 'level': 'contract', 'surface': 'support', 'scheduled': cadence,
+                   'pull_request': 'never' if cadence == 'manual' else 'affected', 'command': 'false'}
+                  for name, cadence in [('required', 'none'), ('writer', 'manual')]]
+        inventory = registry.Inventory(suites, [], [], {})
+        plan = registry.select_by_level(inventory, {'required': ['test']}, 'contract', 'support')
+        self.assertEqual([item.suite['id'] for item in plan.selected], ['required'])
+
     def test_xcuitest_file_owners_do_not_overlap(self):
         unit = registry.Discovered('xcuitest', 'WebsiteScreenshotTests', 'ios/WebsiteScreenshotTests.swift')
         owner = {'kind': 'path', 'source': 'xcuitest', 'pattern': 'ios/*.swift', 'exclude': [unit.path]}
