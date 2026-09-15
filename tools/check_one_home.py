@@ -29,16 +29,12 @@ SCREEN = ROOT / "firmware/obc-app/src/screen"
 SETTINGS = SCREEN / "settings"
 DRAWERS = [SCREEN / "context_drawer.rs", SCREEN / "quick_drawer.rs"]
 
-# `Settings` fields a drawer and a settings screen may both write, and why.
-#
-# `ble_enabled` — #1515 rules the quick drawer owns the radio switch while "detailed Bluetooth
-# pairing/device management can remain a settings screen". That screen is the pairing surface and
-# keeps its own switch beside the bond it manages (#1515 D2). The rule holds for every other field.
-ALLOWED_SHARED_FIELDS = {"ble_enabled"}
+# Bluetooth has one home in Settings; no drawer setting needs a duplicate editor.
+ALLOWED_SHARED_FIELDS: set[str] = set()
 
 # Update these floors when controls are added or removed. A parser change must not lower them.
 MIN_ROW_LABELS = 11
-MIN_DRAWER_FIELDS = 7
+MIN_DRAWER_FIELDS = 6
 
 # `cx.settings.<field> = …` — the one production write path a screen has into the persisted record.
 # `=(?!=)` so an equality test is not read as a write.
