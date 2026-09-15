@@ -6,11 +6,16 @@ use crate::{
 use obc_app::device_core::{NavigatorTag, OperationToken};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlanFamily, PlannerProgress, PlannerWork};
 use obc_app::{App, DetourRequest};
-use obc_formats::io::ByteSource;
+use obc_formats::{
+    io::ByteSource,
+    obcr::{CHUNK_META_LEN, HEADER_FULL_LEN, POINT_RECORD_LEN, WAYPOINT_LEN},
+};
 use obc_reader::{MapCache, MapTables, Reader};
 use obc_route::{RouteReader, SpliceStep, Step, TrimStep};
 use obc_storage::flat::{Allocation, FlatStore, ObjectId, Revision, SealedAllocation, StoreError, StoreSource};
-const RESERVE: u64 = 128 + 256 * (1530 + 44) + 32 * 50;
+const RESERVE: u64 = (HEADER_FULL_LEN
+    + obc_route::MAX_ROUTE_CHUNKS * ((obc_route::MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN + CHUNK_META_LEN)
+    + obc_route::MAX_WAYPOINTS * WAYPOINT_LEN) as u64;
 
 #[derive(Clone, Copy)]
 pub(crate) enum TransformStep {
@@ -355,7 +360,10 @@ impl Executor {
                 let base = g.output().as_ptr();
                 // The held guard and pending ticket exclude every arena read/write until completion.
                 let (bytes, header) = unsafe {
-                    (core::slice::from_raw_parts(base.add(128), appended), core::slice::from_raw_parts(base, patch))
+                    (
+                        core::slice::from_raw_parts(base.add(HEADER_FULL_LEN), appended),
+                        core::slice::from_raw_parts(base, patch),
+                    )
                 };
                 if let Ok(ticket) = writer.try_call(Request::WriteComputedRoute { allocation, bytes, header }, reply) {
                     self.phase = Phase::Await(ticket, after);
