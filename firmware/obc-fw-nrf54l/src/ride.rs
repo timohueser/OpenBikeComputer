@@ -1794,9 +1794,14 @@ pub(crate) async fn run_app(
                                 "navigator",
                             );
                         }
-                        NavigatorEffect::Acquire { token, work: PlannerWork::Detour(_) }
+                        NavigatorEffect::Acquire {
+                            token,
+                            work: PlannerWork::Detour(_) | PlannerWork::RestoreReview(_),
+                        }
                         | NavigatorEffect::CommitDetour { token } => {
-                            defmt::warn!("nav: detour is not supported on this board — refusing the operation");
+                            defmt::warn!(
+                                "nav: planner operation is not supported on this board — refusing the operation"
+                            );
                             RideExec::deliver(
                                 &mut exec.outcomes.navigator,
                                 NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
