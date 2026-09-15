@@ -2639,6 +2639,7 @@ pub(crate) async fn run_app(
                 // the effects split the two arms across consecutive passes, so the bit was armed,
                 // spent, and armed again, and the domain read the store twice for one save.
                 exec.facts.note_store_revision(crate::flat_store::catalog_scope(flat));
+                app.prepare_easier_entry(crate::flat_store::planner_map_key(flat));
                 peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
