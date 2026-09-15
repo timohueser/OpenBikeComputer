@@ -1,7 +1,8 @@
 # Ride Assistant integrated handoff
 
-Software integration: `115f3804` on `codex/ra13-offline-scenarios`. Its runtime tree is identical
-to the reviewed acceptance head `fb48e40c`. The final title code is `a8cf6684` (also
+Software integration: `7ce64484` on `codex/ride-assistant-production`, merged into `develop`
+as `1e16c246` through [PR #1766](https://github.com/timohueser/OpenBikeComputer/pull/1766). Its runtime tree is identical
+to the reviewed acceptance head `fb48e40c` and scenario head `115f3804`. The final title code is `a8cf6684` (also
 `ae4b2741` in the production controls PR). Physical acceptance remains pending.
 
 ## Run the production simulator
@@ -49,7 +50,7 @@ The [artifact manifest](final-artifacts.json) identifies the exact bytes. Binari
 artifacts, not a published release. Map package hashes and clean-cache instructions are in the
 source README; the card inspector and complete replay recipe are tracked with the Visit evidence.
 
-The simulator `obc-sim-final` is from `a8cf6684`. Its SHA-256 is
+The simulator `obc-sim-final` is a macOS arm64 executable from `a8cf6684`. Its SHA-256 is
 `e165c232d081ce3120aadfe79602a5103a6e815fa18c6e994b666ac46b550706`.
 The runtime trees at that source and the integration head match.
 
@@ -93,6 +94,30 @@ The regional Swiss terrain covers 71.6% of its selected whole native cells; miss
 surface facts remain unknown. Many real service objects lack explicit mapped approaches, so
 some Visit requests correctly remain unavailable.
 
-The final affected-selection and snapshot log summary will be added when the ongoing run ends.
+The [exact selected-suite record](final-verification.json) accounts for all 64 suites from
+`tools/obc test affected --base a2906514476a5c6bb143f145784839047129ea3b`. It records each
+registry command, actual execution or reuse, source revision, omission and retained log hash.
+The first six package suites ran at `a53ad86e`; the later title delta passed the complete
+909-test App library and seven-test i18n binary. The remaining integration used `fb48e40c`.
+
+- 36 whole Rust package suites passed and were retained without repetition.
+- 20 other suites passed, including the real Chromium journey, Vitest, Python, Swift,
+  formatting, Clippy, dependency checks, documentation, policy guards and final screenshots.
+- The frontend gate completed its missing commands and reused already successful builds.
+- Two Linux-only suites were skipped on macOS. The duplicate workspace-test command and
+  another shipping build were deliberately omitted. The literal WASM bridge/size command
+  was not repeated; its prior build prerequisites were reused, with CI retaining its size gate.
+- The iOS app and UI runner compiled. No XCUITest case started: the new simulator stalled
+  during startup and reported a runner launch error. The owned processes were stopped after
+  ten minutes, without retry. [The diagnostic](ios-environment-blocked.json) records this as
+  environment-blocked. The final CI ran and passed iOS unit tests; iOS app/UI tests were not
+  selected there. No local or final-CI XCUITest pass is claimed.
+
+The single final local sweep produced 259 screens; all 259 match the committed manifest.
+It used the final simulator above. Independent review spot-checked nine named frames and found
+no layout issue. The [sweep result](ui-sweep-summary.txt) and [budget record](ui-sweep-consumed.json)
+retain the run boundary.
 No physical session, base rebuild, wake isolation, mutant test, or second local shipping image
-was run. The final CI aggregate remains the merge gate.
+was run. The [final selected CI aggregate](https://github.com/timohueser/OpenBikeComputer/actions/runs/34961259955/job/104356591360)
+passed before the production merge. The [implementation ledger](implementation-review-ledger.md)
+links the 13 child implementations and their independent reviews.

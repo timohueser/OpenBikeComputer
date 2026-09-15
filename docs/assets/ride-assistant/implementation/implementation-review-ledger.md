@@ -1,7 +1,7 @@
 # Ride Assistant implementation and review ledger
 
-Status snapshot: 2026-09-15, after controls #1769 and scenarios #1767 merged. This ledger combines
-RA13 `115f3804` with catalog evidence `dc34410a`. It records implementation and
+Status snapshot: 2026-09-15, after production #1766 merged into `develop` as `1e16c246`.
+This ledger combines RA13 `115f3804` with catalog evidence `dc34410a`. It records implementation and
 independent adversarial reviews; it is not a new review or a CI approval.
 
 The [reviewed plan](README.md) at `0b5f50eb` is the scope reference. Its plan-review
@@ -29,25 +29,21 @@ changes; they are not claims that each listed commit was the final CI head.
 
 ## Merge and CI boundary
 
-At this snapshot, GitHub reports these PRs merged: #1750, #1751, #1752, #1753,
-#1754, #1755, #1756, #1757, #1759 and #1761. Production-entry #1768 and Easier
-acceptance #1770 are merged into the production line. Replay #1771 is merged
-into the controls line. A merge into a stacked branch does not establish a
-merge of the final feature into `develop`.
+Implementation PRs #1750, #1751, #1752, #1753, #1754, #1755, #1756, #1757, #1759 and #1761
+merged into their reviewed parents. Production entry #1768, Easier acceptance #1770, replay #1771,
+controls #1769 and scenarios #1767 then merged with green CI and completed reviews.
 
-Controls #1769 and scenarios #1767 have since merged after their final CI passed.
-Integration #1766 is open at pushed head `7ce64484`; final production CI is running.
-Its runtime is unchanged from `115f3804`; the develop merge adds four historical
-evidence documents. No final integrated green-CI claim is made here. The
-[public integration review](https://github.com/timohueser/OpenBikeComputer/pull/1766#issuecomment-5679149209)
-records this source and review boundary.
+Production #1766 passed its selected final CI at `7ce64484` and merged into `develop` as
+`1e16c246`. Its runtime is unchanged from `115f3804`; the develop composition adds four historical
+evidence documents. The [CI aggregate](https://github.com/timohueser/OpenBikeComputer/actions/runs/34961259955/job/104356591360)
+and [integration review](https://github.com/timohueser/OpenBikeComputer/pull/1766#issuecomment-5679149209)
+record the merge gates. The one final local sweep passed all 259 frames, and independent named-frame
+review found no layout issue.
 
-The earlier study #1749 and implementation PRs #1758, #1762, #1763, #1764 and
-#1765 remain open at this snapshot. Their code is carried into production.
-They are to be closed as superseded only after final integration is green.
-Their older failing checks are not waived, changed to passed, or used as final
-acceptance. In particular, the old photo branch lacked production screen
-recipes; the later production entry owns that coverage.
+The earlier study #1749 and overlapping implementation PRs #1758, #1762, #1763, #1764 and #1765
+were closed without merging their obsolete standalone heads, after final integration was green.
+Their code and fixes are in production. Their earlier failing checks were not relabeled as passed.
+Production entry and final integration own the current recipes and source composition.
 
 ## Integrated evidence and open acceptance
 
@@ -71,13 +67,11 @@ The [integrated review](https://github.com/timohueser/OpenBikeComputer/pull/1766
 and [controls review](https://github.com/timohueser/OpenBikeComputer/pull/1769#issuecomment-5679149529)
 report no remaining correctness finding. They include near-stop Resume, refused
 and uncertain writes, recording recovery, real-card evidence and title-fit deltas.
-They do not replace final production CI. The artifact documentation at `b1ff8209`
-is independently reviewed but is not part of this ledger commit. Its retained
-shipping ELF predates the four shorter titles and has no emitted linker map;
-those limits remain explicit in the artifact handoff.
+The [artifact handoff](final-handoff.md) is independently reviewed. Its retained shipping ELF
+predates the four shorter titles and has no emitted linker map; those limits remain explicit.
 
 Physical-device acceptance is pending. No device was connected. The
 [device checklist](device-test-checklist.md) carries SD timing, physical buttons,
 readability, power/card failure, sensor continuity and measured stack high-water.
-The integration owner supplies final image identities, resource evidence and
-snapshot acceptance separately. This ledger adds no build, test, image or sweep.
+The handoff supplies exact image identities, resource evidence and snapshot acceptance.
+This ledger adds no build, test, image or sweep.
