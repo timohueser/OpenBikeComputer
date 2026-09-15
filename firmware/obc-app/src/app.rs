@@ -1499,7 +1499,8 @@ impl App {
                 self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
-                if self.navigator.released(&mut self.mode) {
+                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Releasing
+                {
                     self.ui.map_dirty = true;
                 }
             }
