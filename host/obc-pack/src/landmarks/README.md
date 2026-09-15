@@ -21,6 +21,9 @@ responses are in `classes/`. Article captures identify a language, title, revisi
 URL, query JSON path and rendered HTML path. Image captures identify a P18 or Wikipedia lead source,
 Commons metadata and original image path. The compiler verifies registered source bytes before it
 selects sites. It derives coordinates and types from raw entities, not the manifest's display data.
+Raw `wbgetentities` class responses can contain an explicit redirect. The compiler preserves
+the edge to the canonical class before it follows parent classes, so redirected category or
+exclusion roots retain their meaning.
 
 The boundary is GeoJSON Polygon, MultiPolygon or a FeatureCollection of these geometries. Border
 points are included. Country claims do not select sites. `policy.json` owns category roots and
@@ -42,6 +45,11 @@ gives the actual language.
 - Separate article and photo source, revision, license, exact original notices and readable Sources
   pages. Each asset permits at most 8 KiB of attribution; the pair permits at most 256 pages.
 - Omissions with QID, asset and reason. A rejected photo leaves usable text available.
+
+CC BY and CC BY-SA photos require a nonempty captured Artist identity. A generic source credit
+such as "Own work" does not identify the creator. Missing or empty Artist metadata produces
+`photo_creator_missing`; the compiler does not infer an author from a filename or linked page.
+CC0 does not require this field. Supplied notices still pass the separate representation limits.
 
 Each photo file contains exactly 51,840 row-major bytes: 216 columns by 240 rows, one RGB222 pixel
 per byte (`00RRGGBB`). The host applies orientation, Lanczos3 fit, white padding and the fixed 4×4
