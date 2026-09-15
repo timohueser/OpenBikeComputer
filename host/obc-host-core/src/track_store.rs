@@ -1,7 +1,7 @@
-//! Native recording uses the session card; GPX files are post-commit convenience exports.
+//! Recording goes to the session card; a committed ride is also exported as a GPX file.
 
+use crate::{flat_store::HostStore, AppendStatus, FlatRideRecorder, TrackRepository, VecSink};
 use obc_app::recorder::{CheckpointStatus, RecorderError, RideClose, RideContinuation};
-use obc_host_core::{flat_store::HostStore, AppendStatus, FlatRideRecorder, TrackRepository, VecSink};
 use obc_ports::TrackPoint;
 use obc_route::{RideInfo, RideStats};
 use obc_storage::flat::{ObjectId, Revision};

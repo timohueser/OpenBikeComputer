@@ -22,9 +22,7 @@ use obc_host_core::{
 };
 use obc_host_core::{RideRepository, RouteRepository};
 use obc_ports::InputClock;
-use obc_reader::rgb565_to_device64;
-#[cfg(test)]
-use obc_reader::{MapTables, SliceSource};
+use obc_reader::{rgb565_to_device64, MapTables, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
 
@@ -38,6 +36,14 @@ pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 pub(crate) const DEMO_MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
 const DEMO_ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 const DEMO_RIDE_GPX: &str = include_str!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx");
+
+/// The demo map's terrain region — the elevation the map-referenced altimeter samples and the
+/// surface Peak View builds its panorama from.
+static TERRAIN: std::sync::LazyLock<SliceSource<'static>> = std::sync::LazyLock::new(|| {
+    let tables = MapTables::parse(&SliceSource(DEMO_MAP)).expect("demo map parses");
+    let region = tables.terrain().expect("demo map contains terrain");
+    SliceSource(&DEMO_MAP[region.offset as usize..(region.offset + region.len) as usize])
+});
 
 /// Replay-speed multiplier: 3× a normal climbing pace keeps the map moving without a blur.
 const DEMO_SPEED: f32 = 3.0;
@@ -209,7 +215,7 @@ pub struct Demo {
     session: ActiveRouteSession,
     frame: RgbaFrame,
     photo: obc_host_core::photo::Preparer,
-    peaks: crate::peak_view::Runtime,
+    peaks: obc_host_core::peak_view::Runtime,
     elevation: obc_elevation::TerrainElevation<'static, 4>,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
     /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
@@ -286,9 +292,9 @@ impl Demo {
             session: ActiveRouteSession::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
             photo: obc_host_core::photo::Preparer::default(),
-            peaks: crate::peak_view::Runtime::new(),
-            elevation: obc_elevation::TerrainElevation::parse(&*crate::peak_view::TERRAIN)
-                .expect("demo elevation parses"),
+            peaks: obc_host_core::peak_view::Runtime::new(Box::new(SliceSource(TERRAIN.0)))
+                .expect("demo surface terrain parses"),
+            elevation: obc_elevation::TerrainElevation::parse(&*TERRAIN).expect("demo elevation parses"),
             queue: Vec::new(),
             last_now_ms: None,
             ui_offset_ms: 0,
