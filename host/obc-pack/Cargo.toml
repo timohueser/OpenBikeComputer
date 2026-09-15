@@ -74,6 +74,11 @@ ureq = "3"
 # is the *last* native dependency in the tree. `deflate-flate2` is flate2 on its
 # default miniz_oxide backend — pure Rust.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+scraper = { version = "0.27", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+obc-render = { version = "0.1.0", path = "../../firmware/obc-render" }
+percent-encoding = "2"
+sha1 = "0.10.6"
 
 [dev-dependencies]
 obc-fixtures = { path = "../obc-fixtures" }
