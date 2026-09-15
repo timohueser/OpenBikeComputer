@@ -31,7 +31,7 @@ LEVEL_ALIASES = {"fixtures": "fixture", "e2e": "end-to-end"}
 # lockfile policy rather than package execution, so it never routes a package to a job.
 # `nextest` is the test runner the workspace test jobs use; it takes the same package-selection
 # flags as `test`, which is all this resolver reads.
-CARGO_EXECUTION_VERBS = {"build", "clippy", "fmt", "nextest", "run", "test"}
+CARGO_EXECUTION_VERBS = {"build", "check", "clippy", "fmt", "nextest", "run", "test"}
 PLATFORMS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
 PR_CADENCES = {"always", "affected", "never"}
 SCHEDULED_CADENCES = {"none", "nightly", "weekly", "manual", "release"}
@@ -97,6 +97,7 @@ CODE_OR_POLICY_SUFFIXES = {
 WORKFLOW_MARKERS = (
     "cargo test",
     "cargo nextest run",
+    "cargo check",
     "cargo clippy",
     "cargo fmt",
     "cargo deny",

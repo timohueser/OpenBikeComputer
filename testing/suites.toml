@@ -850,6 +850,19 @@ extra_triggers = ["tools/check_retired_map_stack.py"]
 ownership = [{ kind = "workflow", pattern = "python3 tools/check_retired_map_stack.py" }]
 
 [[suite]]
+id = "ci.ios-host-portability"
+surface = "ios"
+level = "contract"
+command = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+# Only a Mac can link or run the iOS host, so Linux type-checks it instead. No build graph carries
+# the target edge: the crate and the shared host modules it composes trigger the check directly.
+extra_triggers = ["apps/obc-ios-host/**", "host/obc-host-core/**"]
+ownership = [{ kind = "workflow", pattern = "cargo check -p obc-ios-host --target aarch64-apple-ios --locked" }]
+
+[[suite]]
 id = "ci.ios-app-build"
 surface = "ios"
 level = "contract"
