@@ -2,18 +2,63 @@
 
 use crate::{
     hours::Schedule,
-    landmarks::{Attribution, Content, Record},
+    landmarks::{Attribution, Content, Photo, Record},
     poi::LandmarkLink,
 };
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 #[derive(Clone)]
 pub struct Landmark {
     pub record: LandmarkRecord,
     pub hours: Option<Schedule>,
     pub content: [Vec<u8>; 5],
+}
+
+/// Declared photo digests are part of content.json; load verifies their bytes.
+/// Encoder code and dependencies also belong to the cell cache identity.
+pub fn fingerprint(path: &Path) -> Result<String, String> {
+    let mut hash = Sha256::new();
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    let content: Content = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let root = path.parent().ok_or("landmark content has no directory")?;
+    for photo in content.records.iter().filter_map(|record| record.photo.as_ref()) {
+        photo_pixels(root, photo)?;
+    }
+    hash.update(bytes);
+    hash.update(include_bytes!("landmark_map.rs"));
+    hash.update(include_bytes!("../../../firmware/obc-formats/src/obcm/landmarks.rs"));
+    hash.update(include_bytes!("../../../Cargo.lock"));
+    Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn photo_pixels(root: &Path, photo: &Photo) -> Result<Vec<u8>, String> {
+    if Path::new(&photo.path).components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return Err("invalid landmark photo path".into());
+    }
+    let file = root.join(&photo.path);
+    let metadata = fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
+    if !metadata.is_file()
+        || metadata.len() != PHOTO_PIXELS as u64
+        || !file.canonicalize().map_err(|e| e.to_string())?.starts_with(root.canonicalize().map_err(|e| e.to_string())?)
+    {
+        return Err("invalid landmark photo file".into());
+    }
+    let pixels = fs::read(file).map_err(|e| e.to_string())?;
+    let digest = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if pixels.len() != PHOTO_PIXELS
+        || photo.bytes != PHOTO_PIXELS
+        || digest != photo.sha256
+        || pixels.iter().any(|&p| p >= 64)
+    {
+        return Err("invalid landmark photo pixels or digest".into());
+    }
+    Ok(pixels)
 }
 
 fn pages(fields: &[String]) -> Result<Vec<u8>, String> {
@@ -73,10 +118,27 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
     }
     let root = path.parent().ok_or("landmark content has no directory")?;
     let mut output = Vec::new();
+    let mut qids = BTreeSet::new();
     for record in content.records {
+        let qid = record
+            .qid
+            .strip_prefix('Q')
+            .and_then(|id| id.parse::<u64>().ok())
+            .filter(|id| *id > 0)
+            .ok_or("invalid landmark QID")?;
+        if !qids.insert(qid) {
+            return Err("duplicate landmark QID".into());
+        }
+        if !record.longitude.is_finite()
+            || !record.latitude.is_finite()
+            || !(-180.0..=180.0).contains(&record.longitude)
+            || !(-90.0..=90.0).contains(&record.latitude)
+        {
+            return Err("invalid landmark coordinate".into());
+        }
         let lon = (record.longitude * 1_000_000.0).round_ties_even() as i32;
         let lat = (record.latitude * 1_000_000.0).round_ties_even() as i32;
-        if i64::from(lon) < bbox.0 || i64::from(lat) < bbox.1 || i64::from(lon) >= bbox.2 || i64::from(lat) >= bbox.3 {
+        if i64::from(lon) < bbox.0 || i64::from(lat) < bbox.1 || i64::from(lon) > bbox.2 || i64::from(lat) > bbox.3 {
             continue;
         }
         let article = article_link(&record);
@@ -91,7 +153,6 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
                             .is_some_and(|(a, b)| *a == b.replace('_', " ")))
             })
             .min_by_key(|link| (link.metadata.approach.is_none(), link.metadata.source));
-        let qid = record.qid.strip_prefix('Q').and_then(|id| id.parse().ok()).ok_or("invalid landmark QID")?;
         let language: [u8; 2] = record.language.as_bytes().try_into().map_err(|_| "invalid landmark language")?;
         if record.name.is_empty()
             || record.name.len() > MAX_NAME_BYTES as usize
@@ -125,18 +186,7 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
             Vec::new(),
         ];
         if let Some(photo) = record.photo {
-            if Path::new(&photo.path).components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
-                return Err("invalid landmark photo path".into());
-            }
-            let pixels = fs::read(root.join(&photo.path)).map_err(|e| e.to_string())?;
-            let digest = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect::<String>();
-            if pixels.len() != PHOTO_PIXELS
-                || photo.bytes != PHOTO_PIXELS
-                || digest != photo.sha256
-                || pixels.iter().any(|&p| p >= 64)
-            {
-                return Err("invalid landmark photo pixels or digest".into());
-            }
+            let pixels = photo_pixels(root, &photo)?;
             let mut buffer = vec![0; zlib_rs::compress_bound(pixels.len())];
             let (stream, code) = zlib_rs::compress_slice(
                 &mut buffer,
@@ -170,9 +220,21 @@ pub fn serialize(landmarks: &[Landmark], hours_refs: &[u16]) -> Result<Vec<u8>, 
     let payload = SECTION_HEADER_LEN + landmarks.len() * RECORD_LEN;
     let mut bytes = vec![0; payload];
     let mut pool: BTreeMap<&[u8], ContentRef> = BTreeMap::new();
+    let mut qids = BTreeSet::new();
+    let mut previous = None;
     for (index, (landmark, &hours_ref)) in landmarks.iter().zip(hours_refs).enumerate() {
         let mut record = landmark.record;
         record.hours_ref = hours_ref;
+        if !qids.insert(record.qid) || previous.is_some_and(|key| key >= record.key()) {
+            return Err("landmark records must be ordered with unique QIDs".into());
+        }
+        previous = Some(record.key());
+        if LandmarkRecord::decode(&record.encode()).is_none()
+            || landmark.content[..3].iter().any(Vec::is_empty)
+            || landmark.content[3].is_empty() != landmark.content[4].is_empty()
+        {
+            return Err("invalid landmark metadata or content".into());
+        }
         let mut refs = [ContentRef::default(); 5];
         for (slot, blob) in refs.iter_mut().zip(&landmark.content) {
             if blob.is_empty() {

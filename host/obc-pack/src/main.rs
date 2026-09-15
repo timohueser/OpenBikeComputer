@@ -53,6 +53,7 @@ fn parse_args() -> Result<Args, String> {
                 opts.terrain = Some(PathBuf::from(it.next().ok_or("--terrain needs a .obcd file or a directory")?));
             }
             "--dump-pois" => opts.dump_pois = true,
+            "--landmarks" => opts.landmarks = Some(PathBuf::from(it.next().ok_or("--landmarks needs content.json")?)),
             "--dump-hours" => opts.dump_hours = true,
             _ => positional.push(a),
         }
@@ -60,7 +61,7 @@ fn parse_args() -> Result<Args, String> {
     // `<pbf...> <config.json> <out.obcm>`: last two positionals are config + output.
     if positional.len() < 3 {
         return Err("usage: obc-pack <pbf...> <config.json> <out.obcm> [--bbox W,S,E,N] [--chunk-size N] [--no-land] \
-                    [--terrain <path>] [--dump-pois] [--dump-hours]\n       \
+                    [--terrain <path>] [--landmarks <content.json>] [--dump-pois] [--dump-hours]\n       \
                     obc-pack schema                                 (print the config JSON Schema envelope)\n       \
                     obc-pack catalog <bake-tree> --base-url <url>   (write a bake tree's catalog manifest)\n       \
                     obc-pack cells <pbf...> <config.json> <out-dir> (cut the extract into OBCA grid cells)"
@@ -157,7 +158,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack cells <pbf...> <config.json> <out-dir> [--bands <bands.json>] \
                          [--band <id>]... [--cell <log2/i/j>]... \
                          [--source <id>[@<snapshot>][=W,S,E,N]]... \
-                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>]";
+                         [--bbox W,S,E,N] [--chunk-size N] [--no-land] [--terrain <path>] [--landmarks <content.json>]";
     let mut positional: Vec<String> = Vec::new();
     let mut opts = CutOptions::default();
     let mut it = args.iter();
@@ -174,6 +175,7 @@ fn run_cells(args: &[String]) -> Result<(), String> {
             }
             "--no-land" => opts.no_land = true,
             "--terrain" => opts.terrain = Some(PathBuf::from(next("--terrain")?)),
+            "--landmarks" => opts.landmarks = Some(PathBuf::from(next("--landmarks")?)),
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
             other => positional.push(other.to_string()),
         }
