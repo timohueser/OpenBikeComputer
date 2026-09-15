@@ -582,6 +582,12 @@ impl crate::App {
         review.after = AfterCheckpoint::Phase;
         true
     }
+    /// A recovered preview cannot be accepted when its frozen sources no longer match.
+    pub fn invalidate_assistant_preview(&mut self) {
+        if self.navigator.review.preview.is_some() && self.navigator.review.change.is_none() {
+            self.navigator.review_failed(NavigatorError::SourceChanged);
+        }
+    }
     pub fn assistant_review_status(&self) -> ReviewStatus {
         self.navigator.review.status
     }
