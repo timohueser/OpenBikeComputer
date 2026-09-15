@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "package": "assistant-switzerland-content",
+  "bytes": 10554318,
+  "sha256": "cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1",
+  "content_manifest_sha256": "4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57",
+  "input_sha256": "41348f1c7613ac423b653b78f6cad4aa636ab1e0cd242331fb5f584ec7a4f775",
+  "policy_sha256": "ab0ca42e41851a6a032b630020ff39dd6695d1a8d711f04e1917e66ff8edc5e6",
+  "category_policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
+  "counts": {
+    "captured": 6221,
+    "candidates": 3508,
+    "texts": 1495,
+    "images": 1119,
+    "mapped_approaches": null,
+    "photo_bytes": 58008960
+  },
+  "source_coverage_kind": "geographic-policy-superset",
+  "country_complete": true,
+  "content_members": 1120,
+  "archive_members": 1121,
+  "scope": "Compiled content and RGB222 photos only. Raw country captures remain in the local acquisition cache. Text and photo source notices are retained per record."
+}

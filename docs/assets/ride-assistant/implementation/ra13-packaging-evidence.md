@@ -79,3 +79,38 @@ The same clock entry applies after GUI or headless settings load; explicit GUI c
 ambient time until the user enables it. The persistent-card reopen command also supplies the
 Cork clock and offset. Fresh-cache offline resolution and the normal simulator command dry runs
 confirm both scenario arguments. No map bytes, source captures, or archive hashes changed.
+
+
+## Completed Swiss regional package
+
+The completed shipping tree was assembled with its catalog-selected 18 cells and four native
+terrain cells. No bake or raster variant was run. The assembler used `--accept-partial`, checked
+all cell references, and completed its normal output verification in 4.48 seconds. It reported
+no warnings, dropped POIs or degree truncation. The result has 2,632 POIs, 64,202 graph nodes,
+75,948 edges and 65 landmark records. The native raster reports 71.6% coverage over its four
+whole cells; missing samples remain unavailable. No full-raster coverage is claimed.
+
+- Map: 44,643,264 bytes; SHA-256
+  `ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba`.
+- Immutable archive: 30,352,091 bytes; SHA-256
+  `96cb46be8727abf10d5a085e820d4cc6ec9e35142760174037a8ce98fd5ce53c`.
+- Input: the pinned 545,916,978-byte Switzerland PBF, without pre-extraction; polygon output
+  selection 8.1–8.4 E, 46.5–46.8 N; region ID `europe/switzerland`.
+- Content: the approved compiled country package `cf2a7ad2…1c9d33b1`. Country content coverage
+  does not make the assembled crop a full-country map.
+
+`fixtures/sources/ride-assistant/meiringen-v16.json` records exact source and executable hashes,
+source-attribution limits, native cell hashes, the catalog hash and build/assembly summaries.
+The package includes that provenance in `build.json`, the map and the three unchanged authored
+Swiss GPX files. No raw country capture was added to the package.
+
+The publisher verified the immutable public object. A new cache then downloaded and verified
+it. Cached sync, full verification and all three scenario resolutions passed with network access
+forced to fail. The normal simulator command dry run includes UTC 10:00 and offset +120 minutes.
+The complete repository Python suite passed (187 tests), as did the registry and documentation
+checks. No Rust build, image build, snapshot sweep or hardware run was performed for this package.
+
+Logs and the assembled map are retained under `.artifacts/ra13-swiss/` in the implementation
+worktree. The integration owner has the map path for normal runtime validation. Package integrity
+and coverage do not establish useful Easier alternatives, route acceptance, recorder continuity,
+photo rendering or physical-device acceptance; those remain separate integrated checks.
