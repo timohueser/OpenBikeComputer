@@ -1094,6 +1094,13 @@ mod tests {
 
     #[test]
     fn assistant_plans_reviews_and_accepts_exact_immutable_bytes_through_the_host_executor() {
+        immutable_assistant_replay(false);
+    }
+    #[test]
+    fn visit_accepts_complete_bytes_through_the_host_executor() {
+        immutable_assistant_replay(true);
+    }
+    fn immutable_assistant_replay(visit: bool) {
         use obc_app::navigator::{ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, REVIEW_FACTS_POLICY};
         use obc_pack::nav::{Edge, NavGraph, Node};
         let bbox = (0, 0, 1_000_000, 1_000_000);
@@ -1160,7 +1167,7 @@ mod tests {
         }
         let map_source = map.source();
         let context = ReviewContext {
-            purpose: ReviewPurpose::Destination,
+            purpose: if visit { ReviewPurpose::Visit } else { ReviewPurpose::Destination },
             map: obc_formats::obcr::RouteSourceKey {
                 store: map_source.store_id().0,
                 object: map_source.id().0,
@@ -1192,7 +1199,27 @@ mod tests {
             ),
             Some(NavigatorOutcome::Failed { .. })
         ));
-        app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
+        if visit {
+            use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+            assert!(app.plan_visit(
+                obc_route::visit::VisitTarget {
+                    map: context.map,
+                    display: points[1],
+                    metadata: PoiMetadata {
+                        source: SourceId::osm(1, 99),
+                        approach: Some(PoiApproach {
+                            source: SourceId::osm(1, 100),
+                            lon: points[1].0,
+                            lat: points[1].1,
+                            profile_mask: 1,
+                        }),
+                    },
+                },
+                context
+            ));
+        } else {
+            app.plan_assistant(obc_app::NavRequest::new(points[0], points[2], "Candidate"), context);
+        }
         for _ in 0..200 {
             frame(&mut host, &mut app, &mut routes);
             if app.assistant_review_status() == ReviewStatus::Preview && !host.is_planning() {
@@ -1217,6 +1244,7 @@ mod tests {
             )
             .unwrap();
         let info = obc_route::RouteObjectInfo::read(&bytes).unwrap();
+        assert_eq!(info.visit.is_some(), visit);
         assert_eq!(
             (preview.distance_m, preview.ascent_m, preview.descent_m),
             (info.distance_m, info.ascent_m, info.descent_m)
