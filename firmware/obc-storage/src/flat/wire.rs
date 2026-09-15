@@ -95,6 +95,7 @@ fn meta_out(meta: EntryMeta) -> v4::EntryMeta {
 
 fn meta_in(meta: v4::EntryMeta) -> EntryMeta {
     EntryMeta {
+        added_at_utc: 0,
         id: ObjectId(meta.id.0),
         revision: Revision(meta.revision.0),
         kind: kind_in(meta.kind),
@@ -267,6 +268,7 @@ mod tests {
     #[test]
     fn an_entry_crosses_the_seam_unchanged() {
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: ObjectId(7),
             revision: Revision(3),
             kind: ObjectKind::Route,

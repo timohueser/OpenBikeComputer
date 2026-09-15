@@ -69,20 +69,8 @@ struct PanelState {
     /// The "Delete trip" combo's selected trip row (epic #526, TR2) — which trip the panel's
     /// delete button removes (the `.obt`, non-cascading).
     trip_sel: usize,
-    /// **GPS time** (auto-expiry epic #638, S3): when on (the default), the sim feeds the host
-    /// wall-clock UTC (plus [`clock_offset_secs`](PanelState::clock_offset_secs)) as a `GpsTime`
-    /// poll each tick, so the device boots into a **trusted** clock exactly as a real fix would —
-    /// the precondition the deletion sweep gates on. Off leaves the clock untrusted (nothing
-    /// auto-deletes), the fresh-device state.
     gps_time: bool,
-    /// The accumulated clock fast-forward in seconds (auto-expiry epic #638, S3): the "+1 day"
-    /// button adds 86 400 so route/ride expiry is eyeball-testable in seconds rather than days.
     clock_offset_secs: u32,
-    /// The "Set route retention" combo's selected catalog row (auto-expiry epic #638, S3) — the
-    /// stand-in for the phone's `setRouteRetention` command until S4 gives it a wire.
-    retention_route_sel: usize,
-    /// The retention level the panel's "Set" button assigns to the selected route.
-    retention_level: obc_app::Retention,
 }
 
 /// In-progress 1:1 size calibration: the user measures the on-screen reference bar and
@@ -96,16 +84,8 @@ struct CalibState {
 /// device's development twin, and a capability withdrawn here would hide a screen the device has.
 /// The bounded work behind DFU is simply never answered ([`SimPlatform`]), exactly as the old
 /// command loop dropped that request — the headless `--png` path stages synthetic answers instead.
-pub(crate) const SIM_SUPPORT: PlatformSupport = PlatformSupport {
-    detour: true,
-    settings_persistence: true,
-    dfu: true,
-
-    bonding: true,
-    storage_space_report: true,
-    // The folder stores keep the retention sidecars beside their objects.
-    retention_metadata: true,
-};
+pub(crate) const SIM_SUPPORT: PlatformSupport =
+    PlatformSupport { detour: true, settings_persistence: true, dfu: true, bonding: true, storage_space_report: true };
 
 /// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed
 /// card-free figure (the desktop sim has no FAT to scan).
@@ -132,10 +112,6 @@ impl HostPlatform for SimPlatform<'_> {
     }
 }
 
-/// The simulator's GPS-time source (auto-expiry epic #638, S3): when `enabled`, each poll resolves
-/// the host wall-clock UTC (plus the accumulated `offset_secs` fast-forward) into a [`GpsTime`], so
-/// [`App::tick`](obc_app::App::tick) stamps a **trusted** clock exactly as a real fix would. When
-/// disabled it yields nothing — the fresh-device untrusted state, where nothing auto-deletes.
 struct SimClock {
     enabled: bool,
     offset_secs: u32,
@@ -381,8 +357,6 @@ impl SimGui {
                 trip_sel: 0,
                 gps_time: true,
                 clock_offset_secs: 0,
-                retention_route_sel: 0,
-                retention_level: obc_app::Retention::Day1,
             },
             None => PanelState {
                 lat_deg: 0.0,
@@ -394,8 +368,6 @@ impl SimGui {
                 trip_sel: 0,
                 gps_time: true,
                 clock_offset_secs: 0,
-                retention_route_sel: 0,
-                retention_level: obc_app::Retention::Day1,
             },
         };
 
@@ -622,10 +594,6 @@ impl SimGui {
                 // last fix had (~0).
                 let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
                 self.sim_sensors.feed(ui_now, speed_mps);
-                // The **GPS time** feed (auto-expiry epic #638, S3): with the control-panel toggle
-                // on (the default), stamp the device clock from the host wall clock (plus the
-                // "+1 day" offset) each pass — booting the sim into a trusted clock like a real fix
-                // would, the precondition the deletion sweep gates on.
                 let mut sim_clock =
                     SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
                 // Defaulted away: no thermometer in manual control (BMP581 temperature is
@@ -667,13 +635,6 @@ impl SimGui {
             }
         }
 
-        // ── The typed executor ───────────────────────────────────────────────────────────────
-        // The plan's bounded effects against the sim's folder-backed stores: the route/ride deletes
-        // and their catalog re-feeds, the resumable planner's lifecycle (one bounded step per
-        // frame), the retention sidecar stamps, the keyed ride-track fill, and the ride recorder's
-        // session reconcile (finalising a `Save` writes a desktop `ride-{id}.obcr` and re-feeds the
-        // Rides menu). What only this host can do — the card-free stand-in, the Bluetooth Forget,
-        // the RRAM stand-in file — is [`SimPlatform`]. Everything else lives in a domain.
         {
             let mut platform = SimPlatform { settings: &mut self.settings_store, panel: &mut self.panel };
             self.host.execute(

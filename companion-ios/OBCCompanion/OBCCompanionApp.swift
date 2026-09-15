@@ -62,7 +62,6 @@ struct OBCCompanionApp: App {
                 transport: Self.makeTransport(),
                 bondStore: Self.makeBondStore(),
                 library: Self.makeLibraryStore(),
-                retentionDefaults: Self.makeRetentionDefaultsStore(),
                 reachability: Self.makeReachability(),
                 updateSurface: Self.makeUpdateSurfaceStore(),
                 updateNotifier: SystemUpdateNotifier(),
@@ -96,10 +95,6 @@ struct OBCCompanionApp: App {
         }
     }
 
-    /// The proactive-update preference store (#773 U5): the auto-check toggle, the answered ledger,
-    /// and the last-seen device. Mock runs stay **in-memory** — the same determinism rule the
-    /// library and retention stores keep, so a scenario launch never inherits a previous run's
-    /// "already asked about v1.4.0" and the sheet is reproducible.
     static func makeUpdateSurfaceStore() -> any UpdateSurfaceStore {
         #if DEBUG
         if mockControl != nil { return InMemoryUpdateSurfaceStore() }
@@ -218,17 +213,5 @@ struct OBCCompanionApp: App {
 
         #endif
         return UserDefaultsBondStore()
-    }
-
-    /// The default-retention preference (epic #638). Mock runs stay **in-memory**
-    /// — every scenario-driven launch (XCUITests, previews, demos) starts from the
-    /// documented default (`After 2 weeks`), never a prior run's saved choice, the
-    /// same determinism the library store keeps. The real path persists in
-    /// `UserDefaults`.
-    static func makeRetentionDefaultsStore() -> any RetentionDefaultsStore {
-        #if DEBUG
-        if mockControl != nil { return InMemoryRetentionDefaultsStore() }
-        #endif
-        return UserDefaultsRetentionDefaultsStore()
     }
 }

@@ -38,7 +38,7 @@ pub(crate) fn receipt(owner: &HostStore, head: EntryMeta) -> u32 {
 }
 
 #[test]
-fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
+fn visible_catalog_accepts_larger_stores_and_refuses_unreadable_sources() {
     let owner = HostStore::memory().unwrap();
     let mut heads = Vec::new();
     for _ in 0..obc_app::MAX_RIDES {
@@ -49,11 +49,8 @@ fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
     receipt(&owner, *heads.last().unwrap());
     let mut rides = FlatRideStore::new(HostStore(owner.0.clone())).unwrap();
     assert_eq!(rides.catalog.len(), obc_app::UI_RIDES_CAP);
-    assert_eq!(rides.inventory.len(), obc_app::MAX_RIDES);
     assert_eq!(rides.catalog[0].id, heads.last().unwrap().id.0);
     assert!(rides.catalog[0].summary.synced);
-    assert!(rides.inventory[0].synced);
-    assert_eq!(rides.inventory[0].synced_at_utc, 0);
     let overflow = {
         let mounted = owner.0.lock().unwrap();
         let store = mounted.ready().unwrap();
@@ -63,6 +60,7 @@ fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
         let mut allocation = store.allocate(bytes.len() as u64).unwrap();
         store.write(&mut allocation, &bytes).unwrap();
         let meta = EntryMeta {
+            added_at_utc: 0,
             id: store.next_object_id(),
             revision: Revision(1),
             kind: ObjectKind::Ride,
@@ -74,14 +72,14 @@ fn complete_inventory_covers_128_and_refuses_overflow_or_unreadable_sources() {
         store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).unwrap();
         meta
     };
-    assert_eq!(rides.refresh_metadata(), Err(RetentionError::WriteFailed));
-    assert_eq!(rides.inventory.len(), obc_app::MAX_RIDES, "failure keeps the prior complete snapshot");
+    rides.refresh_metadata().unwrap();
+    assert_eq!(rides.catalog.len(), obc_app::UI_RIDES_CAP);
     owner.remove(ObjectKind::Ride, overflow.id, overflow.revision).unwrap();
     // Replace an old, non-menu ride with malformed bytes: the full scan must still refuse it.
     owner
         .import(ObjectKind::Ride, Some((heads[1].id, heads[1].revision)), &mut &b"bad"[..], 3, DisplayName::default())
         .unwrap();
-    assert_eq!(rides.refresh_metadata(), Err(RetentionError::WriteFailed));
+    assert_eq!(rides.refresh_metadata(), Err(MetadataError::WriteFailed));
 }
 
 #[test]
@@ -126,11 +124,6 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
         )
         .unwrap();
     let mut rides = FlatRideStore::new(HostStore(owner.0.clone())).unwrap();
-    assert_eq!(rides.inventory.len(), 1);
-    assert_eq!(rides.inventory[0].id, replaced.id.0);
-    assert!(!rides.inventory[0].synced);
-    let expected = rides.store_scope().unwrap();
-    assert_eq!(rides.expire_ride(replaced.id.0, expected), Err(CatalogError::Stale));
     assert!(!rides.open(1, None, 0));
     assert_eq!(rides.discard(), Err(obc_app::recorder::RecorderError::ReadOnly));
     let stats = RideStats {
@@ -163,5 +156,4 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
         assert!(store.open(replaced.id, None).is_err());
     }
     assert!(rides.refresh_metadata().is_err());
-    assert_eq!(rides.inventory.len(), 1);
 }

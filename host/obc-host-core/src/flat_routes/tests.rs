@@ -120,47 +120,6 @@ fn failed_route_write_and_delete_keep_committed_projection() {
     assert_eq!(routes.delete_by_id(id), Err(CatalogError::Unreadable));
     assert_eq!(routes.ids(), &[id], "media errors cannot remove a catalog row");
 }
-
-#[test]
-fn metadata_executor_commits_then_refreshes_and_refuses_stale_card_and_object_scopes() {
-    use obc_app::{
-        device_core::{RetentionTag, TokenSource},
-        retention::{RetentionEffect, RetentionError},
-        Retention, RouteRetentionMeta,
-    };
-    let owner = HostStore::memory().unwrap();
-    let mut routes = FlatRouteStore::new(HostStore(owner.0.clone()), &[ROUTE]).unwrap();
-    let original = routes.refresh_metadata().unwrap().unwrap();
-    let id = routes.ids()[0];
-    let mut tokens = TokenSource::<RetentionTag>::new();
-    let effect = RetentionEffect::WriteRouteMetadata {
-        token: tokens.issue(),
-        scope: Some(original),
-        id,
-        meta: RouteRetentionMeta::new(Retention::Day1, 1234),
-    };
-    routes.write_metadata(effect).unwrap();
-    assert_eq!(
-        routes.retention_metas()[0],
-        RouteRetentionMeta::default(),
-        "commit does not mutate the served projection"
-    );
-    let committed = routes.refresh_metadata().unwrap().unwrap();
-    assert_eq!(routes.retention_metas()[0].last_used_utc, 1234);
-    assert_eq!(routes.write_metadata(effect), Err(RetentionError::Stale));
-    let mut other_card = FlatRouteStore::from_bytes(&[ROUTE]).unwrap();
-    assert_eq!(other_card.ids()[0], id);
-    assert_eq!(other_card.write_metadata(effect), Err(RetentionError::Stale));
-    routes.write(ROUTE, Some((ObjectId(id), routes.revisions[0]))).unwrap();
-    assert_eq!(routes.expire_route(id, committed), Err(CatalogError::Stale));
-    routes.refresh_metadata().unwrap();
-    assert_eq!(routes.retention_metas()[0], RouteRetentionMeta::default(), "replacement has no old stamp authority");
-    let store = owner.0.lock().unwrap();
-    let mut count = 0;
-    obc_storage::flat::metadata::read_routes(&store.card, |_| count += 1).unwrap();
-    assert_eq!(count, 0, "reconciliation published the empty metadata image");
-}
-
 #[test]
 fn full_route_catalog_refuses_growth_but_keeps_replacement_and_complete_projection() {
     use obc_storage::flat::{EntryFlags, Mutation, PutSource, Store};
@@ -181,6 +140,7 @@ fn full_route_catalog_refuses_growth_but_keeps_replacement_and_complete_projecti
         card.write(&mut allocation, ROUTE).unwrap();
         card.commit(&[Mutation::Put {
             meta: EntryMeta {
+                added_at_utc: 0,
                 id: card.next_object_id(),
                 revision: Revision(1),
                 kind: ObjectKind::Route,
@@ -193,7 +153,7 @@ fn full_route_catalog_refuses_growth_but_keeps_replacement_and_complete_projecti
         }])
         .unwrap();
     }
-    assert!(routes.refresh_metadata().is_err());
-    assert_eq!(routes.ids(), ids, "an incomplete refresh keeps the previous complete projection");
-    assert!(FlatRouteStore::new(owner, &[]).is_err(), "reopen cannot hide excess routes");
+    assert!(routes.refresh_metadata().is_ok());
+    assert_eq!(routes.ids(), ids, "the menu stays bounded while the store can hold more routes");
+    assert_eq!(FlatRouteStore::new(owner, &[]).unwrap().ids().len(), obc_app::MAX_ROUTES);
 }

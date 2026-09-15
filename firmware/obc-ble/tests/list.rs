@@ -14,17 +14,14 @@ fn route_entry() -> RouteListEntry<'static> {
         waypoint_count: 2,
         name: "Vector Loop".as_bytes(),
         crc32: 0x1F66_C051,
-        // The auto-expiry tail (epic #638 S4): a live countdown + 2-week retention.
-        expires_at: 1_783_598_400,
-        retention: 3,
     }
 }
 
 #[test]
 fn header_layout_and_roundtrip() {
-    // version 2 · entry_len (routeList 84) · count LE · total LE — count < total, so truncated.
+    // version 2 · entry_len (routeList 76) · count LE · total LE — count < total, so truncated.
     let b = ListHeader { count: 3, total: 5 }.encode(RouteListEntry::ENTRY_LEN as u8);
-    assert_eq!(b, [2, 84, 3, 0, 5, 0]);
+    assert_eq!(b, [2, 76, 3, 0, 5, 0]);
 
     let (h, entry_len) = ListHeader::decode(&b).unwrap();
     assert_eq!(h.count, 3);
@@ -33,8 +30,8 @@ fn header_layout_and_roundtrip() {
     assert_eq!(entry_len, RouteListEntry::ENTRY_LEN);
 
     assert_eq!(ListHeader::entry_offset(0, entry_len), 6);
-    assert_eq!(ListHeader::entry_offset(2, entry_len), 6 + 2 * 84);
-    assert_eq!(ListHeader::object_len(3, entry_len), 6 + 3 * 84);
+    assert_eq!(ListHeader::entry_offset(2, entry_len), 6 + 2 * 76);
+    assert_eq!(ListHeader::object_len(3, entry_len), 6 + 3 * 76);
 
     // An untruncated header (count == total).
     let full = ListHeader { count: 2, total: 2 }.encode(RideListEntry::ENTRY_LEN as u8);
@@ -54,12 +51,9 @@ fn header_rejects_unknown_version_and_short_entries() {
 
 #[test]
 fn route_entry_layout() {
-    // Offsets by hand (spec §7.4): id, reserved, byte_len, distance, ascent, points, waypoints,
-    // name_len, name[48] zero-padded, trailing reserved byte, the content crc32, then the auto-expiry
-    // tail (expires_at, retention, 3 reserved) — device-computed volatile state OUTSIDE the crc32.
     let b = route_entry().encode();
     assert_eq!(b.len(), RouteListEntry::ENTRY_LEN);
-    assert_eq!(RouteListEntry::ENTRY_LEN, 84, "76-byte v2 core + the 8-byte auto-expiry tail");
+    assert_eq!(RouteListEntry::ENTRY_LEN, 76, "route catalog entry");
     assert_eq!(&b[0..2], &7u16.to_le_bytes());
     assert_eq!(&b[2..4], &[0, 0]);
     assert_eq!(&b[4..8], &300u32.to_le_bytes());
@@ -71,10 +65,6 @@ fn route_entry_layout() {
     assert_eq!(&b[23..34], b"Vector Loop");
     assert!(b[34..72].iter().all(|&x| x == 0)); // name padding + the reserved tail byte
     assert_eq!(&b[72..76], &0x1F66_C051u32.to_le_bytes()); // content crc32 (unchanged, offset 72)
-                                                           // The auto-expiry tail (epic #638 S4), appended after the content crc32.
-    assert_eq!(&b[76..80], &1_783_598_400u32.to_le_bytes()); // expires_at
-    assert_eq!(b[80], 3); // retention = 2 weeks
-    assert_eq!(&b[81..84], &[0, 0, 0]); // reserved
 }
 
 #[test]

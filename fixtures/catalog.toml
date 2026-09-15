@@ -8,7 +8,7 @@ summary = "Full Grimsel simulator map, terrain, routes, and tracks"
 archive = "packages/2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318.tar.gz"
 sha256 = "2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318"
 bytes = 3471573
-provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled assistant-wiki-switzerland landmark content. Canonical fixture bbox. See fixtures/README.md."
+provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled local Swiss landmark source content. Canonical fixture bbox. See fixtures/README.md."
 license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
@@ -149,16 +149,3 @@ args = ["--clock", "2026-09-14T10:00"]
 [profiles.assistant]
 summary = "Initial Ride Assistant maps and motion; production Assistant integration is pending"
 scenarios = ["assistant-out-and-back", "assistant-forward-rejoin", "assistant-loop-crossing", "assistant-monaco-dense", "assistant-dunlough-access"]
-
-[packages.assistant-wiki-switzerland]
-summary = "Geographic Swiss Wiki entities, exact article revisions, Commons originals and request outcomes"
-archive = "packages/1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8.tar.gz"
-sha256 = "1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8"
-bytes = 5348363006
-provenance = "Captured 2026-09-14 to 2026-09-15 from the pinned Swiss polygon bounding box, best-rank P31/P279 closure and no P17 filter. Includes 6221 entities, all 24 category queries and complete request outcomes. See packaged manifest.json and fixtures/sources/ride-assistant/CAPTURE.md."
-license = "CC0-1.0 (Wikidata); article and image licenses in captured source notices"
-tracked_sources = { "recipe.json" = "sources/ride-assistant/switzerland-capture-recipe.json" }
-
-[profiles.assistant-country]
-summary = "Full Swiss landmark sources for explicit country recounts; excluded from routine tests"
-packages = ["assistant-wiki-switzerland"]
