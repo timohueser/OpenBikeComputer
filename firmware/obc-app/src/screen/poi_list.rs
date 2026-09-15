@@ -5,8 +5,8 @@
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::poi_label_of;
 use obc_map_scene::cos_lat;
-use obc_reader::reader::places::{PlaceKey, PlaceQuery, PlaceWindow, QueryProgress};
-use obc_reader::{Poi, PoiCategory, MAX_POI_RESULTS};
+use obc_reader::reader::places::{PlaceKey, PlaceQuery, PlaceWindow, QueryProgress, PLACE_PAGE_SIZE};
+use obc_reader::{Poi, PoiCategory};
 use obc_render::{
     text::{Font, TextAlign},
     Surface,
@@ -23,22 +23,13 @@ use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
 /// Per-POI **nominal** row height — two lines (name above, bearing arrow + distance below) with
-/// margin to keep the distance clear of the row separator / selected-row fill; the nearest-16
-/// still page through the list widget. The drawn pitch stretches from this so the rows consume
+/// margin to keep the distance clear of the row separator / selected-row fill. Places
+/// page through the list widget. The drawn pitch stretches from this so the rows consume
 /// the whole viewport (owner review round 3: no dead band under the last row) — on the 320 px
 /// panel that's 68 px rows, four flush to the bottom margin.
 const ROW_H: i32 = 64;
 
-/// The [`App`](crate::App)-owned snapshot of one category's nearest-16. **One** buffer, shared by
-/// whatever POI-list screen is on top — never owned by the screen variant.
-///
-/// # Storage decision (issue #425)
-///
-/// A `heapless::Vec<Poi, 16>` is ~776 B. The [`Screen`](super::Screen) enum is a union sized to its
-/// largest variant (measured 40 B without this) held in a `Vec<Screen, MAX_DEPTH=10>` in `.bss`, so
-/// an inline snapshot would inflate **every** stack slot: 10 × ~784 B ≈ 7.7 KB resident. Held once in
-/// `App` it costs the buffer **once** (~800 B). Only one POI list is ever visible, and the
-/// static-snapshot contract already forbids two live snapshots, so the single buffer loses nothing.
+/// The App owns one bounded nearby page, outside the screen stack so each stack slot stays small.
 pub struct PoiScratch {
     query: Option<PlaceQuery>,
     pub(crate) detail_valid: bool,
@@ -53,9 +44,9 @@ pub struct PoiScratch {
     /// is empty (so the screen can tell "queried, empty category" from "not queried yet"). `None`
     /// on a fresh/invalidated scratch.
     taken_for: Option<PoiCategory>,
-    /// The nearest-16 for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
+    /// The current page for [`taken_for`](PoiScratch::taken_for), ascending by distance. Frozen once
     /// filled; the query owns the ordering.
-    pois: heapless::Vec<obc_reader::CorridorPoi, MAX_POI_RESULTS>,
+    pois: heapless::Vec<obc_reader::CorridorPoi, PLACE_PAGE_SIZE>,
 }
 
 impl PoiScratch {
@@ -188,7 +179,7 @@ impl PoiListScreen {
                 if !scratch.holds(self.category) || self.page != scratch.page || n == 0 {
                     return Transition::None;
                 }
-                let visible: heapless::Vec<usize, MAX_POI_RESULTS> = scratch
+                let visible: heapless::Vec<usize, PLACE_PAGE_SIZE> = scratch
                     .pois
                     .iter()
                     .enumerate()
@@ -246,7 +237,7 @@ impl PoiListScreen {
         let queried =
             rx.poi_scratch.holds(self.category) && matches!(rx.poi_scratch.status, QueryProgress::Ready { .. });
         let pois: &[obc_reader::CorridorPoi] = if queried { &rx.poi_scratch.pois } else { &[] };
-        let visible: heapless::Vec<usize, MAX_POI_RESULTS> = pois
+        let visible: heapless::Vec<usize, PLACE_PAGE_SIZE> = pois
             .iter()
             .enumerate()
             .filter(|(i, p)| *i == self.selected || p.poi.opening != obc_reader::hours::OpeningStatus::Closed)
@@ -586,8 +577,8 @@ mod tests {
         };
         finish(&mut screen, &mut scratch);
         let first_boundary = scratch.query.as_ref().unwrap().key(scratch.pois.last().unwrap());
-        scratch.pois[15].poi.opening = obc_reader::hours::OpeningStatus::Closed;
-        screen.selected = 14;
+        scratch.pois[PLACE_PAGE_SIZE - 1].poi.opening = obc_reader::hours::OpeningStatus::Closed;
+        screen.selected = PLACE_PAGE_SIZE - 2;
         step(&mut screen, &scratch, 1);
         assert_eq!(screen.page, Some((first_boundary, false)), "closed final row must not trap the page");
         finish(&mut screen, &mut scratch);
@@ -600,7 +591,7 @@ mod tests {
         screen.selected = 0;
         step(&mut screen, &scratch, -1);
         assert_eq!(screen.page, first_page, "a reverse first page has no preceding page");
-        assert_eq!(screen.selected, 15);
+        assert_eq!(screen.selected, PLACE_PAGE_SIZE - 1);
         for hit in &mut scratch.pois {
             hit.poi.opening = obc_reader::hours::OpeningStatus::Closed;
         }
@@ -634,7 +625,7 @@ mod tests {
         assert_eq!(screen.selected, 2, "turning moves to the next eligible identity");
     }
 
-    /// The step wraps over the **real** snapshot count, not the 16-record cap: on a 5-result list
+    /// The step wraps over the **real** snapshot count, not the page capacity: on a 5-result list
     /// every step moves exactly one real row and the wrap is immediate at both ends — no dead
     /// steps on phantom rows past the last item (the pre-#678 bug the owner hit: the cursor
     /// walked the cap's empty slots and looked stuck on the last row).

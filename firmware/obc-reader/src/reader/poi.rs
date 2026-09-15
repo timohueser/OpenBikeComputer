@@ -215,7 +215,7 @@ impl<'a> Reader<'a> {
             super::places::PlaceWindow::Nearby { position: pos, radius_m },
             None,
         );
-        let mut page = Vec::new();
+        let mut page = Vec::<CorridorPoi, MAX_POI_RESULTS>::new();
         loop {
             match query.step(self, None, 0, &mut page) {
                 super::places::QueryProgress::Pending => {}
