@@ -886,6 +886,28 @@ coverage_component = "ios"
 ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]
 
 [[suite]]
+id = "ci.ios-device-build"
+surface = "ios"
+level = "contract"
+command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCDevice"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+# The shell links the Rust host through an XCFramework and no Swift dependency graph carries that
+# edge: a change in the host crate, in the shared host modules under it, or in the script that
+# packs the slices breaks this build without touching a file under OBCDevice/.
+extra_triggers = [
+  "companion-ios/OBCDevice/**",
+  "companion-ios/project.yml",
+  "apps/obc-ios-host/**",
+  "host/obc-host-core/**",
+  "tools/build-ios-host.sh",
+]
+platforms = ["macos"]
+coverage_component = "ios"
+ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCDevice" }]
+
+[[suite]]
 id = "e2e.desktop-linux-launch"
 surface = "desktop"
 level = "end-to-end"

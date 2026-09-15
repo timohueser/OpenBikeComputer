@@ -887,6 +887,18 @@ jobs:
           persist-credentials: false
       - name: Install XcodeGen and WebP tools
         run: brew install xcodegen webp
+      # The OBCDevice shell links the Rust host, so this job needs a Rust toolchain and the
+      # simulator slice packed before xcodebuild plans a build: Xcode resolves an XCFramework
+      # before any of the target's own script phases run.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          key: ios-host
+      - name: Pack the iOS host (simulator slice)
+        run: tools/build-ios-host.sh --sim-only
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
@@ -902,6 +914,12 @@ jobs:
       - name: Mock marker present in Debug
         working-directory: companion-ios
         run: grep -raq "OBCMock:DEBUG-only" DerivedData/Build/Products/Debug-iphonesimulator/OBCCompanion.app
+      - name: Build OBCDevice (Debug, simulator SDK)
+        working-directory: companion-ios
+        run: |
+          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCDevice \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
       - name: Companion website screenshots are current
         id: ios-screenshots
         env:
