@@ -36,7 +36,7 @@ mod flat_rides;
 pub use flat_recorder::FlatRideRecorder;
 mod flat_routes;
 mod flat_trips;
-pub mod flat_weather;
+
 pub use flat_rides::FlatRideStore;
 pub use flat_trips::FlatTripStore;
 pub mod flat_store;

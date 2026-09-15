@@ -17,7 +17,7 @@ use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
 const ROUTE: u16 = 1;
-const WEATHER: u16 = 4;
+
 const RIDE: u16 = 3;
 const UPDATE: u16 = 7;
 const MAP: u16 = 5;
@@ -45,7 +45,7 @@ fn upload<D: BlockDevice>(
     kind: u16,
     name: &str,
 ) -> Answer {
-    let wire = device.control(&client::put(request, id, expected, bytes, kind, false, name));
+    let wire = device.control(&client::put(request, id, expected, bytes, kind, name));
     assert!(wire.control.is_empty(), "an admitted PUT answers nothing until the last byte");
     let mut last = None;
     for record in client::stream_all(request, bytes, 1_008) {
@@ -172,9 +172,9 @@ fn a_second_transfer_is_busy_and_names_the_live_one() {
     let disk = formatted_card(4);
     let mut device = boot(&disk);
     let bytes = body();
-    device.control(&client::put(0x11, 0, 0, &bytes, ROUTE, false, "first"));
+    device.control(&client::put(0x11, 0, 0, &bytes, ROUTE, "first"));
 
-    let answer = Answer::of(device.control(&client::put(0x22, 0, 0, &bytes, ROUTE, false, "second")).answer());
+    let answer = Answer::of(device.control(&client::put(0x22, 0, 0, &bytes, ROUTE, "second")).answer());
     assert_eq!(error(&answer), (ErrorCode::Busy.value(), detail::busy::TRANSFER, 0x11));
 
     let answer = Answer::of(device.control(&client::get(0x33, 1, 0)).answer());
@@ -191,10 +191,10 @@ fn a_replace_is_a_compare_and_swap_on_the_head_revision() {
     let bytes = body();
     device.seed(ObjectKind::Route, &bytes, "first");
 
-    let answer = Answer::of(device.control(&client::put(1, 1, 7, &bytes, ROUTE, false, "wrong")).answer());
+    let answer = Answer::of(device.control(&client::put(1, 1, 7, &bytes, ROUTE, "wrong")).answer());
     assert_eq!(error(&answer), (ErrorCode::RevisionConflict.value(), detail::revision_conflict::HEAD_DIFFERS, 1));
 
-    let answer = Answer::of(device.control(&client::put(2, 9, 1, &bytes, ROUTE, false, "absent")).answer());
+    let answer = Answer::of(device.control(&client::put(2, 9, 1, &bytes, ROUTE, "absent")).answer());
     expect_error(&answer, ErrorCode::RevisionConflict, detail::revision_conflict::HEAD_ABSENT);
 
     let answer = upload(&mut device, 3, 1, 1, &bytes, ROUTE, "second");
@@ -206,68 +206,6 @@ fn a_replace_is_a_compare_and_swap_on_the_head_revision() {
     );
     assert_eq!(device.entries().len(), 1, "an ordinary replace leaves a head and nothing else");
     assert_eq!(device.entry(1).unwrap().name.as_bytes(), b"second");
-}
-
-#[test]
-fn a_retaining_replace_keeps_the_displaced_revision_and_frees_the_previous_one() {
-    let disk = formatted_card(6);
-    let mut device = boot(&disk);
-    let bytes = body();
-    device.seed(ObjectKind::WeatherBundle, &bytes, "one");
-
-    let wire = device.control(&client::put(1, 1, 1, &bytes, WEATHER, true, "two"));
-    assert!(wire.control.is_empty());
-    for record in client::stream_all(1, &bytes, 1_008) {
-        device.stream(&record);
-    }
-    let entries = device.entries();
-    assert_eq!(entries.len(), 2, "the displaced revision is still there");
-    assert_eq!(entries[0].revision.0, 1);
-    assert!(entries[0].flags.has(obc_storage::flat::EntryFlags::RETAINED));
-    assert_eq!(entries[1].revision.0, 2);
-
-    // A second retaining replace frees the first retained revision.
-    let bytes2 = payload(1_500);
-    let wire = device.control(&client::put(2, 1, 2, &bytes2, WEATHER, true, "three"));
-    assert!(wire.control.is_empty());
-    for record in client::stream_all(2, &bytes2, 1_008) {
-        device.stream(&record);
-    }
-    let entries = device.entries();
-    assert_eq!(entries.len(), 2, "at most one retained revision survives");
-    assert_eq!(entries[0].revision.0, 2);
-    assert_eq!(entries[1].revision.0, 3);
-
-    // §3.6: retention is legal only for a kind whose reader needs continuity.
-    let answer = Answer::of(device.control(&client::put(3, 0, 0, &bytes, ROUTE, true, "route")).answer());
-    expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
-}
-
-#[test]
-fn a_remove_takes_the_retained_revision_with_it() {
-    let disk = formatted_card(7);
-    let mut device = boot(&disk);
-    let bytes = body();
-    device.seed(ObjectKind::WeatherBundle, &bytes, "one");
-    let wire = device.control(&client::put(1, 1, 1, &bytes, WEATHER, true, "two"));
-    assert!(wire.control.is_empty());
-    for record in client::stream_all(1, &bytes, 1_008) {
-        device.stream(&record);
-    }
-    assert_eq!(device.entries().len(), 2);
-    let free = device.free_extents();
-
-    let answer = Answer::of(device.control(&client::remove(2, 1, 1)).answer());
-    expect_error(&answer, ErrorCode::RevisionConflict, detail::revision_conflict::HEAD_DIFFERS);
-
-    let answer = Answer::of(device.control(&client::remove(3, 1, 2)).answer());
-    assert!(!answer.is_error(), "{answer:?}");
-    assert_eq!(answer.body.len(), 8, "the answer is the new commit sequence");
-    assert!(device.entries().is_empty(), "the retained revision went with the head");
-    assert_eq!(device.free_extents(), free + 2, "both revisions' extents came back");
-
-    let answer = Answer::of(device.control(&client::remove(4, 1, 2)).answer());
-    expect_error(&answer, ErrorCode::NotFound, detail::not_found::OBJECT);
 }
 
 #[test]
@@ -299,7 +237,7 @@ fn a_cancel_answers_both_sides_and_leaves_the_card_untouched() {
     let bytes = body();
     let free = device.free_extents();
 
-    device.control(&client::put(0x50, 0, 0, &bytes, ROUTE, false, "half"));
+    device.control(&client::put(0x50, 0, 0, &bytes, ROUTE, "half"));
     device.stream(&client::stream(0x50, 0, &bytes[..1_008]));
     assert_eq!(device.free_extents(), free - 1, "the allocation is holding an extent");
 
@@ -344,7 +282,7 @@ fn a_payload_that_fails_its_crc_commits_nothing() {
     let mut device = boot(&disk);
     let bytes = body();
     let free = device.free_extents();
-    let announced = client::put(1, 0, 0, &bytes, ROUTE, false, "corrupt");
+    let announced = client::put(1, 0, 0, &bytes, ROUTE, "corrupt");
 
     device.control(&announced);
     let mut corrupted = bytes.clone();
@@ -372,7 +310,7 @@ fn a_usb_map_relies_on_the_cables_integrity_instead_of_rehashing_the_payload() {
     let mut device = boot_on(&disk, usb);
     device.link_up(Link::Usb, usb);
     let bytes = body();
-    let announced = client::put(1, 0, 0, &bytes, MAP, false, "cable map");
+    let announced = client::put(1, 0, 0, &bytes, MAP, "cable map");
 
     device.control_on(Link::Usb, &announced);
     let mut changed = bytes.clone();
@@ -399,7 +337,7 @@ fn a_gap_or_an_overlap_in_the_stream_terminates_the_transfer() {
         let mut device = boot(&disk);
         let bytes = body();
         let free = device.free_extents();
-        device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "gap"));
+        device.control(&client::put(1, 0, 0, &bytes, ROUTE, "gap"));
         device.stream(&client::stream(1, 0, &bytes[..1_008]));
         let wire = device.stream(&client::stream(1, offset, &bytes[..8]));
         let answer = Answer::of(wire.answer());
@@ -417,7 +355,7 @@ fn a_stream_record_for_no_live_transfer_is_discarded_in_silence() {
     assert!(wire.control.is_empty() && wire.stream.is_empty(), "late frames are ordinary in-flight traffic");
 
     let bytes = body();
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "live"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "live"));
     let wire = device.stream(&client::stream(2, 0, &bytes[..16]));
     assert!(wire.control.is_empty(), "a frame naming another request is not this transfer's");
     assert_eq!(device.free_extents(), 63, "and it did not disturb the live one");
@@ -431,14 +369,14 @@ fn the_device_owned_kinds_and_the_flagged_entries_are_refused() {
     let (ride, _) = device.seed_recording(4 * 1_024 * 1_024);
 
     for kind in [RIDE, 8, 9] {
-        let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, kind, false, "no")).answer());
+        let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, kind, "no")).answer());
         expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     }
     let answer = Answer::of(device.control(&client::get(2, ride, 0)).answer());
     expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     let answer = Answer::of(device.control(&client::remove(3, ride, 1)).answer());
     expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
-    let answer = Answer::of(device.control(&client::put(4, ride, 1, &bytes, RIDE, false, "no")).answer());
+    let answer = Answer::of(device.control(&client::put(4, ride, 1, &bytes, RIDE, "no")).answer());
     expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
 
     // A ride is still listed — a client syncs it once RECORDING has cleared.
@@ -456,7 +394,7 @@ fn metadata_is_readable_but_only_the_device_can_mutate_it() {
     assert_eq!(answer.body.len(), 24 + 88);
     assert_eq!(u16::from_le_bytes(answer.body[52..54].try_into().unwrap()), 9);
     assert_eq!(device.control(&client::get(2, id, revision)).payload(), bytes);
-    for command in [client::remove(3, id, revision), client::put(4, id, revision, bytes, 9, false, "")] {
+    for command in [client::remove(3, id, revision), client::put(4, id, revision, bytes, 9, "")] {
         let answer = Answer::of(device.control(&command).answer());
         expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     }
@@ -488,7 +426,7 @@ fn a_finished_journal_ride_is_the_exact_v3_object_served_by_normal_get() {
 fn an_object_with_no_bytes_is_a_remove_and_never_a_put() {
     let disk = formatted_card(15);
     let mut device = boot(&disk);
-    let answer = Answer::of(device.control(&client::put(1, 0, 0, &[], ROUTE, false, "empty")).answer());
+    let answer = Answer::of(device.control(&client::put(1, 0, 0, &[], ROUTE, "empty")).answer());
     expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     assert_eq!(device.free_extents(), 64, "nothing was reserved for it");
 }
@@ -501,7 +439,7 @@ fn a_full_reservation_table_is_busy_and_never_invalid_request() {
     let first = device.hog(1_024);
     let second = device.hog(1_024);
 
-    let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "no room")).answer());
+    let answer = Answer::of(device.control(&client::put(1, 0, 0, &bytes, ROUTE, "no room")).answer());
     assert_eq!(error(&answer).0, ErrorCode::Busy.value(), "a full table is transient, not the client's fault");
 
     device.release(first);
@@ -519,7 +457,7 @@ fn a_card_with_no_flat_store_answers_read_only_to_everything() {
         client::list(1, None),
         client::status(2, 1, 1),
         client::get(3, 1, 0),
-        client::put(4, 0, 0, &bytes, ROUTE, false, "no"),
+        client::put(4, 0, 0, &bytes, ROUTE, "no"),
         client::remove(5, 1, 1),
         client::arm(6, 1, 1),
     ] {
@@ -584,7 +522,7 @@ fn the_link_going_away_releases_everything_and_answers_nobody() {
     let bytes = body();
     let free = device.free_extents();
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "half"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "half"));
     device.stream(&client::stream(1, 0, &bytes[..1_008]));
     device.link_lost();
     assert!(device.is_quiet(), "no error is owed to a peer that is gone");
@@ -706,7 +644,7 @@ fn an_unknown_opcode_and_an_unknown_kind_are_unsupported() {
         detail::unsupported::WIRE_MAJOR,
     );
 
-    let record = client::put(3, 0, 0, &payload(64), 99, false, "x");
+    let record = client::put(3, 0, 0, &payload(64), 99, "x");
     expect_error(&Answer::of(device.control(&record).answer()), ErrorCode::Unsupported, detail::unsupported::KIND);
     let _ = UPDATE;
 }
@@ -754,7 +692,7 @@ fn the_device_can_cancel_the_live_transfer_itself() {
 
     assert!(!device.cancel_live(CancelCause::Device), "nothing is live");
 
-    device.control(&client::put(0x70, 0, 0, &bytes, ROUTE, false, "interrupted"));
+    device.control(&client::put(0x70, 0, 0, &bytes, ROUTE, "interrupted"));
     device.stream(&client::stream(0x70, 0, &bytes[..1_008]));
     assert!(device.cancel_live(CancelCause::Device));
     let wire = device.pump();
@@ -788,7 +726,7 @@ fn a_transfer_that_stops_moving_is_abandoned_when_its_deadline_passes() {
 
     assert_eq!(device.watch_stall(0), Stall::Idle, "an idle engine has nothing to watch and no wake to schedule");
 
-    device.control(&client::put(0x80, 0, 0, &bytes, ROUTE, false, "wedged"));
+    device.control(&client::put(0x80, 0, 0, &bytes, ROUTE, "wedged"));
     device.stream(&client::stream(0x80, 0, &bytes[..1_008]));
 
     // The deadline anchors on the first look and is re-anchored only by bytes. This peer sends none.
@@ -823,7 +761,7 @@ fn a_slow_but_progressing_transfer_is_never_abandoned() {
     let mut device = boot(&disk);
     let bytes = body();
 
-    device.control(&client::put(0x81, 0, 0, &bytes, ROUTE, false, "dawdling"));
+    device.control(&client::put(0x81, 0, 0, &bytes, ROUTE, "dawdling"));
     let mut now = 0;
     let mut last = None;
     for record in client::stream_all(0x81, &bytes, 1_008) {
@@ -852,7 +790,7 @@ fn a_device_local_commit_during_an_upload_does_not_steal_the_creates_identity() 
     let bytes = body();
     let records = client::stream_all(1, &bytes, 1_008);
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "created"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "created"));
     device.stream(&records[0]);
     // The device starts a ride mid-upload. It commits, and takes ObjectId 1.
     let (ride, _) = device.seed_recording(4 * 1_024 * 1_024);
@@ -895,7 +833,7 @@ fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
         ("STATUS", client::status(2, id, revision)),
         ("GET", client::get(3, id, 0)),
         ("REMOVE", client::remove(4, id, revision)),
-        ("PUT", client::put(5, id, revision, &payload(600), ROUTE, false, "replace")),
+        ("PUT", client::put(5, id, revision, &payload(600), ROUTE, "replace")),
         ("ARM", client::arm(6, package, package_revision)),
     ] {
         faulty.fault_next(MediaOp::Read);
@@ -922,7 +860,7 @@ fn a_short_listing_at_the_pre_commit_re_check_refuses_rather_than_publishing() {
     let sequence = device.commit_sequence();
     let records = client::stream_all(1, &bytes, 1_008);
 
-    device.control(&client::put(1, id, revision, &bytes, ROUTE, false, "replacement"));
+    device.control(&client::put(1, id, revision, &bytes, ROUTE, "replacement"));
     for record in records.iter().take(records.len() - 1) {
         device.stream(record);
     }
@@ -988,7 +926,7 @@ fn a_write_that_fails_mid_stream_abandons_the_transfer_and_releases_it() {
     let free = device.free_extents();
     let records = client::stream_all(1, &bytes, 1_008);
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "half written"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "half written"));
     device.stream(&records[0]);
     // The second record crosses the staging buffer, so it is the one that reaches the card.
     faulty.fault_next(MediaOp::Write);
@@ -1012,7 +950,7 @@ fn a_commit_that_fails_leaves_the_catalog_alone_and_still_releases_the_allocatio
     let sequence = device.commit_sequence();
     let records = client::stream_all(1, &bytes, 1_008);
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "not committed"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "not committed"));
     for record in records.iter().take(records.len() - 1) {
         device.stream(record);
     }
@@ -1067,7 +1005,7 @@ fn a_live_upload_reports_its_progress_and_stops_when_it_ends() {
     let bytes = body();
 
     assert_eq!(device.live_upload(), None, "an idle engine has no upload to report");
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "watched"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "watched"));
     let admitted = device.live_upload().expect("an admitted PUT is a live upload");
     assert_eq!(admitted.request.0, 1);
     assert_eq!(admitted.kind, ObjectKind::Route);
@@ -1112,7 +1050,7 @@ fn an_upload_latches_its_verdict_exactly_once() {
 
     // A refusal latches the code its error response carried, and nothing narrower: a device turns
     // this into one of a handful of screens and every finer fact belongs to the client that asked.
-    let wire = device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "damaged"));
+    let wire = device.control(&client::put(2, 0, 0, &bytes, ROUTE, "damaged"));
     assert!(wire.control.is_empty());
     let mut corrupt = bytes.clone();
     corrupt[0] ^= 0xFF;
@@ -1136,13 +1074,13 @@ fn a_link_lost_and_a_cancel_leave_no_verdict_to_show() {
     let mut device = boot(&disk);
     let bytes = body();
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "cut"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "cut"));
     device.stream(&client::stream(1, 0, &bytes[..1_008]));
     device.link_lost();
     assert_eq!(device.live_upload(), None);
     assert_eq!(device.take_upload_end(), None, "a pulled cable is not a verdict");
 
-    device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled"));
+    device.control(&client::put(2, 0, 0, &bytes, ROUTE, "cancelled"));
     device.stream(&client::stream(2, 0, &bytes[..1_008]));
     assert!(device.cancel_live(CancelCause::Device));
     device.pump();
@@ -1167,7 +1105,7 @@ fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
     // whole payload would commit inside the same call and the commit's own writes would be counted.
     let bytes = payload(8 * 1_024);
 
-    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "one write"));
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, "one write"));
     let before = disk.write_widths().len();
     device.stream(&client::stream(1, 0, &bytes[..4 * 1_024]));
     let widths = disk.write_widths();
@@ -1191,7 +1129,7 @@ fn an_adapter_stage_coalesces_records_and_alternates_disjoint_banks() {
     let bytes = payload(2 * 64 * 1_024);
     let mut stage = vec![0; 2 * 64 * 1_024];
 
-    device.control_on(Link::Ble, &client::put(1, 0, 0, &bytes, ROUTE, false, "wide stage"));
+    device.control_on(Link::Ble, &client::put(1, 0, 0, &bytes, ROUTE, "wide stage"));
     let before = disk.write_widths().len();
     for offset in (0..bytes.len()).step_by(4 * 1_024) {
         let end = offset + 4 * 1_024;
@@ -1214,7 +1152,7 @@ fn a_ble_map_upload_never_admits_the_usb_only_stage() {
     device.link_up(Link::Ble, ble);
     let bytes = payload(8 * 1_024);
 
-    device.control_on(Link::Ble, &client::put(41, 0, 0, &bytes, MAP, false, "phone map"));
+    device.control_on(Link::Ble, &client::put(41, 0, 0, &bytes, MAP, "phone map"));
     assert!(device.upload_matches(Link::Ble, RequestId(41), ObjectKind::MapShard));
     assert!(
         !device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard),
@@ -1240,7 +1178,7 @@ fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
     device.link_up(Link::Ble, ble);
     let bytes = payload(8 * 1_024);
 
-    device.control_on(Link::Usb, &client::put(42, 0, 0, &bytes, MAP, false, "cable map"));
+    device.control_on(Link::Usb, &client::put(42, 0, 0, &bytes, MAP, "cable map"));
     assert!(device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
     for record in client::stream_all(42, &bytes, 4 * 1_024) {
         device.stream_on(Link::Usb, &record);
@@ -1250,7 +1188,7 @@ fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
     // BLE immediately replaces the app-facing `Receiving` projection with another map. The exact
     // cable admission still goes false, which is the edge that makes the USB task join DMA and
     // release its arena guard instead of mistaking the phone's progress for its own.
-    device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, false, "phone map"));
+    device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, "phone map"));
     assert!(device.upload_matches(Link::Ble, RequestId(43), ObjectKind::MapShard));
     assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 }
@@ -1278,7 +1216,7 @@ fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     let bytes = body();
 
     // The cable admits a `PUT` and streams part of it.
-    let wire = device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    let wire = device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, "over the cable"));
     assert!(wire.control.is_empty(), "an admitted PUT answers nothing until the last byte");
     device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
     let landed = device.live_upload().expect("the cable's upload is live").received;
@@ -1291,9 +1229,8 @@ fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
     assert_eq!(still.received, 1_008, "with the same bytes");
 
     // …and the phone's own `PUT` is refused the way §1 says, naming the live transfer.
-    let answer = Answer::of(
-        device.control_on(Link::Ble, &client::put(2, 0, 0, &bytes, ROUTE, false, "over the radio")).answer(),
-    );
+    let answer =
+        Answer::of(device.control_on(Link::Ble, &client::put(2, 0, 0, &bytes, ROUTE, "over the radio")).answer());
     let (code, detail, context) = error(&answer);
     assert_eq!(code, ErrorCode::Busy.value(), "the second transfer is busy whichever wire asked");
     assert_eq!(detail, detail::busy::TRANSFER);
@@ -1325,7 +1262,7 @@ fn a_link_going_away_releases_only_its_own_transfer() {
     device.link_up(Link::Ble, ble);
     let bytes = body();
 
-    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, "over the cable"));
     device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
 
     // The phone drops off. The cable is mid-upload and must not notice.
@@ -1361,7 +1298,7 @@ fn a_down_link_is_not_served_and_the_wrong_wires_stream_is_discarded() {
 
     // The cable's upload is live; a stream record arriving on the radio belongs to no transfer the
     // receiver can be sure of.
-    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, "over the cable"));
     let wire = device.stream_on(Link::Ble, &client::stream(1, 0, &bytes[..1_008]));
     assert!(wire.control.is_empty() && wire.stream.is_empty(), "discarded in silence");
     assert_eq!(device.live_upload().expect("still live").received, 0, "and absorbed nothing");
@@ -1387,7 +1324,7 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     let bytes = body();
 
     // The cable's `PUT` is transfer 1 — a perfectly ordinary identifier for a client to pick.
-    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, "over the cable"));
     device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
     assert_eq!(device.live_upload().expect("live").received, 1_008);
 
@@ -1421,7 +1358,7 @@ fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
     // bilateral, so this produces **two** control records on the cable: the `CANCEL`'s own answer
     // and the cancelled `PUT`'s `cancelled` error — which is the pair the radio wrongly received
     // half of before this fix.
-    device.control_on(Link::Usb, &client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled properly"));
+    device.control_on(Link::Usb, &client::put(2, 0, 0, &bytes, ROUTE, "cancelled properly"));
     let wire = device.control_on(Link::Usb, &client::cancel(3, 2));
     assert_eq!(wire.control.len(), 2, "the CANCEL is answered and the transfer is refused");
     let answered = Answer::of(&wire.control[0]);

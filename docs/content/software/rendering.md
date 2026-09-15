@@ -676,16 +676,6 @@ The renderer fills all polygons in one z-group first. It then draws all outlines
 
 This order keeps shared walls between adjacent buildings.
 
-## Rain layer
-
-The optional rain raster uses the gap between the ground and road z-bands. Roads, routes, markers, and UI chrome remain visible.
-
-Only the rain-map screen requests this layer. A frame without rain uses the normal paint path.
-
-The display path can use bilinear sampling. All weather decisions use nearest-neighbor samples from actual cells.
-
-No-data cells do not take part in interpolation. The renderer reports when the zoom is outside the supported rain regime.
-
 ## Map overlays
 
 The renderer draws moving map content after the base map:

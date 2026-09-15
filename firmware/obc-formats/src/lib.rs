@@ -11,18 +11,10 @@
 #[cfg(test)]
 extern crate std;
 
-// Only the host-only OBCG deflate codec (`obcg-deflate`) allocates: one inflate buffer per tile.
-// The device build never enables that feature and stays allocator-free.
-#[cfg(feature = "obcg-deflate")]
-extern crate alloc;
-
 pub mod cache;
 pub mod io;
-pub mod obcg;
 pub mod obcm;
 pub mod obcr;
 pub mod obct;
-pub mod obcw;
-pub mod precip4;
 pub mod ride;
 pub mod track;

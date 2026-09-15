@@ -213,6 +213,7 @@ pub struct MapPlan {
     pub landmark_bytes: u64,
     /// Surface tiles start on SD block boundaries in the complete map.
     pub surface_terrain: bool,
+
     /// Total bytes, computable before the write and re-checked after it (§5.7).
     pub bytes: u64,
     /// Filled by [`write`].
@@ -307,6 +308,7 @@ struct Layout {
     /// that the header's pair is `(offset, len)` in bytes and both scale by the same rule. `0`
     /// exactly when `terrain_offset` is — §1.3 makes a reader refuse a file that sets one alone.
     terrain_len: u64,
+
     total: u64,
 }
 
@@ -618,11 +620,6 @@ pub enum RestampError {
     LengthMismatch { count: usize, packed: usize },
     /// The image's style ids are not the skin's — the image belongs to another schema revision.
     IdMismatch { have: Vec<u8>, want: Vec<u8> },
-    /// The skin moves style `id` across the rain band boundary
-    /// ([`obc_map_scene::RAIN_BELOW_Z`]) relative to the image it stamps onto — which would let a
-    /// presentation-only restamp pull a road under the precipitation raster (or lift a ground
-    /// fill above it), breaking the locked "roads above rain" paint order with no repack.
-    RainBandMoved { id: u8, from: i8, to: i8 },
 }
 
 /// Stamp a resolved skin onto an OBCM image **in place**: its style table and the header's marker
@@ -666,16 +663,6 @@ pub fn restamp_style_table(
     let want: Vec<u8> = stamped.iter().map(|style| style.id).collect();
     if have != want {
         return Err(RestampError::IdMismatch { have, want });
-    }
-    // The rain band boundary (WX10): a restamp may restyle freely on either side of
-    // `RAIN_BELOW_Z`, but may not carry a style across it — the renderer draws precipitation at
-    // that z split, and "roads above rain" is locked UX a skin must not be able to undo.
-    for (record, style) in slot[1..].as_chunks::<STYLE_RECORD_LEN>().0.iter().zip(stamped) {
-        let from = record[1] as i8;
-        let to = style.z_index;
-        if (from >= obc_map_scene::RAIN_BELOW_Z) != (to >= obc_map_scene::RAIN_BELOW_Z) {
-            return Err(RestampError::RainBandMoved { id: style.id, from, to });
-        }
     }
     slot.copy_from_slice(&packed);
     map[HEADER_MARKER_COLOR_AT..HEADER_MARKER_COLOR_AT + 2].copy_from_slice(&marker_color.to_le_bytes());

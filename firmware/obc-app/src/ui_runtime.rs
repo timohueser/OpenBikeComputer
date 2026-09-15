@@ -37,8 +37,7 @@ pub(crate) struct UiRuntime {
     /// The screen stack (root = Home). The top screen receives input; drawing starts from the
     /// topmost opaque screen so overlays composite over the map.
     pub(crate) stack: Stack,
-    /// The ordinary map's zoom while the rain map is the visible base, including under drawers.
-    rain_zoom_return: Option<f32>,
+
     /// The input + overlay plane: gesture recognizer, long-press hint overlay, live hold-progress.
     /// Split off `App` so the firmware can run it on a *separate, high-priority* executor that
     /// preempts the map render. `App` keeps this one for the [`handle_input`](App::handle_input)
@@ -165,7 +164,6 @@ impl UiRuntime {
         pub(crate) unsafe fn init_in_place;
         fields {
             stack: Stack::new(),
-            rain_zoom_return: None,
             input: InputPlane::new(),
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
@@ -214,27 +212,6 @@ impl UiRuntime {
     ) {
         self.now_ms = now_ms;
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        // **The frozen base does not tick.** A drawer's render key shadows the base's, so no fact
-        // the base draws can move while a sheet is up; its *timed* content is frozen by the same
-        // rule and for the same reason — the panel keeps the base the sheet arrived over, and the
-        // close repaints it once. Without this the base's own timers (the Map's clock pill) would
-        // ask for a repaint of pixels a sheet-only frame does not draw, which is exactly the
-        // under-redraw the dirty contract forbids (#1559).
-        //
-        // **The line this draws, and the one place it is crossed.** What stops is *presentation*:
-        // a clock digit, a pager flip, a spinner needle, a compass sweep. Nothing that decides
-        // anything stops — recording, sensor staleness, the weather alerts, the router and the DFU
-        // task are all their own pass stages, and `advance_animations` still sweeps the cards and
-        // the idle return every pass whatever is on top.
-        //
-        // The crossing is the **upload popups** (`RouteReceived`, `RouteUpdated`, `TripReceived`,
-        // `RouteSwap`), which arm their 30 s auto-close *wake* from `tick_timers`, and over which a
-        // drawer is allowed. Under a sheet that wake is not armed, so the deadline is served by the
-        // next pass the device happens to take instead: on the board that is the watchdog feed cap,
-        // so such a popup outlives its 30 s by up to that, and by nothing at all if any input or
-        // sensor event lands first. It self-heals, it is invisible under the sheet, and it is the
-        // reason this rule is written as *presentation timers freeze, sweeps do not* — a base
-        // screen that grows a real deadline must put it in a pass stage, not in a tick.
         let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
@@ -299,45 +276,11 @@ impl UiRuntime {
             && !self.stack.iter().skip(base + 1).any(|s| s.needs_base())
     }
 
-    /// **This frame drew the base, so every sheet above it is square with the screen below**
-    /// (#1515 D5). Called at the frame boundary, from the one place that knows the draw happened —
-    /// the render's own `!sheet_only`, whose three exclusions are exactly the reasons the base is
-    /// drawn anyway.
-    ///
-    /// It is the only thing that clears [`Screen::needs_base`], which is a debt rather than a flag:
-    /// a pass that ticks and then drops its frame (the board holds the scratch arena, a weather
-    /// bind fails) leaves the obligation armed for the pass that renders. [`Screen::draw`] stays
-    /// `&self` and side-effect-free, so the mutation lives here instead.
     pub(crate) fn spend_base_draw(&mut self) {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         for scr in self.stack.iter_mut().skip(base + 1) {
             scr.clear_base_debt();
         }
-    }
-
-    /// Whether the base (lowest opaque) screen **wants the rain overlay** — its declared
-    /// [`Caps::rain_overlay`](crate::screen::Caps::rain_overlay), true only for the WX11 rain map.
-    /// The frame's rain lease is dropped when this is false, so the precipitation raster is a
-    /// property of the screen the rider is on rather than of the host's weather mount: leaving the
-    /// rain map leaves the Map clean with nothing to reset, and no rain *tile* is decoded on a
-    /// frame no screen would draw it on (a property that starts paying storage reads once the board
-    /// renders rain — today `obc-sim` is the only host that leases one).
-    pub(crate) fn base_wants_rain(&self) -> bool {
-        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-        self.stack.get(base).is_some_and(|s| s.caps().rain_overlay)
-    }
-
-    /// The rain zoom belongs to its visible base. Capture on entry and restore on exit, before
-    /// another screen can select a new riding camera. Live position and pan remain with AppState.
-    pub(crate) fn reconcile_rain_zoom(&mut self, state: &mut crate::AppState, floor: f32) {
-        let before = state.zoom;
-        if self.base_wants_rain() {
-            self.rain_zoom_return.get_or_insert(state.zoom);
-            state.clamp_rain_zoom(floor);
-        } else if let Some(zoom) = self.rain_zoom_return.take() {
-            state.zoom = zoom;
-        }
-        self.map_dirty |= state.zoom != before;
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
@@ -807,7 +750,7 @@ impl UiRuntime {
     pub(crate) fn assert_boot_state(&self) {
         let UiRuntime {
             stack,
-            rain_zoom_return,
+
             input,
             now_ms,
             map_dirty,
@@ -828,7 +771,6 @@ impl UiRuntime {
             sensor_scan_hits,
         } = self;
         assert_eq!(stack.len(), 1, "Home is the only screen");
-        assert!(rain_zoom_return.is_none(), "no rain-map visit");
         assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
         assert_eq!(*now_ms, 0, "the map plane's clock starts at the boot origin");

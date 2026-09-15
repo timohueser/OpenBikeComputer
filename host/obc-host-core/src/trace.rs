@@ -210,11 +210,10 @@ pub enum FeederKind {
     NavPreview,
     DetourPreview,
     Settings,
-    WeatherSnapshot,
 }
 
 /// Complete stable vocabulary of bulk feeder call sites.
-pub const ALL_FEEDER_KINDS: [FeederKind; 11] = [
+pub const ALL_FEEDER_KINDS: [FeederKind; 10] = [
     FeederKind::RouteCatalog,
     FeederKind::TripCatalog,
     FeederKind::RideCatalog,
@@ -225,7 +224,6 @@ pub const ALL_FEEDER_KINDS: [FeederKind; 11] = [
     FeederKind::NavPreview,
     FeederKind::DetourPreview,
     FeederKind::Settings,
-    FeederKind::WeatherSnapshot,
 ];
 
 /// One ordered bulk feeder call, recording only stable data identity and length.
@@ -727,6 +725,6 @@ mod tests {
     /// a kind, or a scenario that exercises it records nothing and no coverage assertion notices.
     #[test]
     fn the_feeder_table_is_exhaustive() {
-        assert_eq!(ALL_FEEDER_KINDS.len(), 11);
+        assert_eq!(ALL_FEEDER_KINDS.len(), 10);
     }
 }

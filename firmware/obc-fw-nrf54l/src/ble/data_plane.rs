@@ -1,19 +1,3 @@
-//! What is left of the BLE data plane after the protocol-v4 cutover (FS7.5-c3a, epic #1256).
-//!
-//! **The CoC transfer machinery is gone from here.** The L2CAP channel now carries
-//! `FLAT_Store_Protocol.md` §3.8 stream records rather than an unframed byte pipe, and it is driven
-//! by [`super::v4`] — which owns the channel, the engine round trips and the record boundaries. The
-//! v1 runners this module used to hold (echo loopback, route upload, download, weather upload), the
-//! `TRANSFER_ARM`/`TRANSFER_ABORT` signals that armed them and the one-transfer gate they claimed all
-//! went with that wire: protocol v4 has no descriptor to classify and no per-runner shape, because a
-//! transfer is a `PUT` or a `GET` and the engine is generic over object kinds.
-//!
-//! [`battery_task`] stayed because BAS level push is a SIG service and no business of the object
-//! protocol.
-//!
-//! [`notify_bounded`] is the shared send both use: one host notify, [`HOST_OP_TIMEOUT`]-bounded so a
-//! peer that stops draining its ATT queue cannot stall a plane past the link's supervision timeout.
-
 use defmt::warn;
 use embassy_time::{with_timeout, Timer};
 use nrf_sdc::{self as sdc};

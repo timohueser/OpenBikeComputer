@@ -380,7 +380,6 @@ pub struct PutRequest {
     pub payload_crc: u32,
     pub kind: ObjectKind,
     /// Leave the displaced revision `RETAINED`.
-    pub retain_previous: bool,
     pub name: DisplayName,
 }
 
@@ -536,19 +535,11 @@ fn decode_put(body: &[u8]) -> Result<PutRequest, Refusal> {
         return Err(Refusal::new(ErrorCode::Unsupported, detail::unsupported::KIND));
     };
     let flags = u16_at(body, 30);
-    if flags & !1 != 0 || !is_zero(&body[33..36]) {
+    if flags != 0 || !is_zero(&body[33..36]) {
         return Err(reserved_bits());
     }
     let name = decode_name(body[32], &body[36..36 + NAME_CAPACITY])?;
-    Ok(PutRequest {
-        id,
-        expected,
-        payload_len: u64_at(body, 16),
-        payload_crc: u32_at(body, 24),
-        kind,
-        retain_previous: flags & 1 != 0,
-        name,
-    })
+    Ok(PutRequest { id, expected, payload_len: u64_at(body, 16), payload_crc: u32_at(body, 24), kind, name })
 }
 
 /// §3.3 and §3.6 carry the same 49-byte name field: a length byte, then 48 bytes whose unused tail
@@ -944,7 +935,6 @@ mod tests {
         assert_eq!(put.payload_len, 42_137);
         assert_eq!(put.payload_crc, 0x9C4A_7E21);
         assert_eq!(put.kind, ObjectKind::Route);
-        assert!(!put.retain_previous);
         assert_eq!(put.name.as_bytes(), b"Grimsel Loop");
     }
 
@@ -1052,11 +1042,6 @@ mod tests {
         let mut flagged = PUT_VECTOR;
         flagged[46] = 0x02;
         assert_eq!(refusal_of(&flagged), reserved_bits(), "an undefined request flag");
-
-        let mut retaining = PUT_VECTOR;
-        retaining[46] = 0x01;
-        let Ok((_, Request::Put(put))) = decode_request(&retaining) else { panic!("not a PUT") };
-        assert!(put.retain_previous);
 
         let mut long_name = PUT_VECTOR;
         long_name[48] = 49;

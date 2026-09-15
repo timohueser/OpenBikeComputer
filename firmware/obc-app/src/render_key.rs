@@ -105,11 +105,6 @@ pub(crate) struct MapKey {
     /// Whether the top-left low-battery glyph is up — the one thing a map base draws off the gauge.
     /// The *cue*, not the level, so the 30 s poll only repaints the crossing.
     low_battery: bool,
-    /// The rain map's selected step and how many frames lie ahead of it, and `None` on every other
-    /// map base. Gated on the row's own [`rain_overlay`](crate::screen::Caps::rain_overlay)
-    /// declaration, because the raster is the property of the screen the rider is on: an ageing
-    /// bundle must never repaint the ordinary Map, which draws no raster at all.
-    rain: Option<(u8, u8)>,
 }
 
 /// The Statistics grid: the ride readouts, the route-relative fields, and the live sensor tiles —
@@ -164,27 +159,6 @@ pub(crate) struct SensorsKey {
     status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
 }
 
-/// The weather pages: which data is installed, which resample the card is drawn from, and whether
-/// the UPDATING cue is up.
-///
-/// The **rain map is not one of these** — it declares [`Map`](crate::screen::RenderKeyKind::Map),
-/// because what it draws is a map scene with a raster in it, and its selected step therefore lives
-/// in [`MapKey`] beside the camera it is drawn through.
-///
-/// [`sample`](Self::sample) is what deleted the last hand-written repaint mirror. A resample changes
-/// the card's contents with no other fact moving — the same product, the same revision, a new rider
-/// position — and a stack-local key cannot see a value the domain does not hold. It holds one now.
-///
-/// **`now` is deliberately absent.** The countdown and the expiry are time-driven, and the
-/// dashboard's own minute ticker already reports them as a `ScreenTick`; naming the clock here
-/// would repaint every pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WeatherKey {
-    installed: Option<crate::device_core::WeatherData>,
-    sample: crate::device_core::Revision,
-    refreshing: bool,
-}
-
 /// The Up-ahead timeline: the live progress every row's distance-to-go is measured from, the route
 /// length the ascent figures are taken over, and the corridor snapshot the rows are merged from.
 ///
@@ -202,13 +176,6 @@ pub(crate) struct UpAheadKey {
     corridor: (usize, bool),
 }
 
-/// A drawer's content: which page it shows, which row is selected on it, the value it has staged
-/// but not committed, and the value already committed underneath.
-///
-/// This key **shadows** the rest. While a drawer is visible [`App::render_key`] fills this slot and
-/// no other, so the base's camera, fix, weather and sensors are simply not part of the frame's
-/// identity any more — which is the whole of the frozen base. Closing the drawer changes the
-/// shape, so the base repaints exactly once, when it must.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DrawerKey {
     page: u8,
@@ -238,26 +205,11 @@ pub(crate) struct RenderKey {
     stats: Option<StatsKey>,
     climb: Option<ClimbKey>,
     sensors: Option<SensorsKey>,
-    weather: Option<WeatherKey>,
+
     up_ahead: Option<UpAheadKey>,
     drawer: Option<DrawerKey>,
 }
 
-// The pass keeps two of these on its own (non-`async`) frame, so growth here is residual stack, not
-// resident RAM and not a poll frame. It is still the ride loop's deepest frame, so it is pinned like
-// any arena arm: **304 B** on a 64-bit host, measured on the merged tree, less on the board, where
-// a `usize` is four bytes.
-//
-// The last 24 over #1447's 280 are two slices, and they have to be counted together because the
-// second one is only visible once the first has landed. `WeatherKey` grows 24 -> 40 for the
-// resample revision and the refresh cue (#1549) — the two facts that let the weather pages state
-// what they draw instead of a host asking for the repaint by hand. `Option<DrawerKey>` (#1547) is
-// 8 B, and it cost nothing while the struct still had a spare word of padding; `WeatherKey` takes
-// that word, so on the merged tree the drawer pays for itself. Neither slice alone measures 304.
-//
-// **#1515 D3 added `DrawerKey::enabled` and the figure did not move**: `Option<DrawerKey>` was five
-// `u8` inside an eight-byte slot, so the sixth is padding that was already paid for. Measured, not
-// reasoned: 304 on the same 64-bit host.
 const _: () =
     assert!(core::mem::size_of::<RenderKey>() <= 304, "a render key is the visible facts, not a copy of the app state");
 
@@ -279,7 +231,7 @@ impl App {
             stats: None,
             climb: None,
             sensors: None,
-            weather: None,
+
             up_ahead: None,
             drawer: None,
         };
@@ -291,11 +243,6 @@ impl App {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
             let _ = key.shape.push(screen.row());
         }
-        // **The frozen base.** A drawer's key shadows every other kind: with one on the stack the
-        // answer is the shape plus the drawer's own facts, and the loop below — which is where the
-        // camera, the fix, the weather and the sensors would be read — does not run at all. So a
-        // moving map under an open drawer asks for no repaint, and the close, which changes the
-        // shape, asks for exactly one.
         if let Some(drawer) = self.drawer_key() {
             key.drawer = Some(drawer);
             return key;
@@ -305,11 +252,11 @@ impl App {
             match caps.render_key {
                 RenderKeyKind::Static => {}
                 RenderKeyKind::Home => key.home = Some(self.home_key(screen)),
-                RenderKeyKind::Map => key.map = Some(self.map_key(no_fix, caps.rain_overlay)),
+                RenderKeyKind::Map => key.map = Some(self.map_key(no_fix)),
                 RenderKeyKind::Statistics => key.stats = Some(self.stats_key(no_fix)),
                 RenderKeyKind::Climb => key.climb = Some(self.climb_key()),
                 RenderKeyKind::SensorSettings => key.sensors = Some(self.sensors_key()),
-                RenderKeyKind::Weather => key.weather = Some(self.weather_key()),
+
                 RenderKeyKind::UpAhead => key.up_ahead = Some(self.up_ahead_key()),
                 // Unreachable: a `Drawer` row returned above. Named rather than wildcarded so a
                 // second drawer kind has to state where it belongs.
@@ -335,7 +282,7 @@ impl App {
                     navigation: self.navigator.route_state(),
                     settings: self.settings(),
                     recording: self.recorder.recording(),
-                    weather_request_outstanding: self.weather.request_outstanding(),
+
                     nav_profiles: self.nav_profiles(),
                 });
                 Some(DrawerKey { page, selected, staged, committed, enabled })
@@ -356,7 +303,7 @@ impl App {
         }
     }
 
-    fn map_key(&self, no_fix: bool, rain_overlay: bool) -> MapKey {
+    fn map_key(&self, no_fix: bool) -> MapKey {
         let navigation = self.navigator.route_state();
         MapKey {
             cam_lon: self.state.cam_lon,
@@ -373,7 +320,6 @@ impl App {
             no_fix,
             tracking: self.recorder.recording(),
             low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
-            rain: rain_overlay.then_some((self.state.rain_step, self.weather.steps_ahead())),
         }
     }
 
@@ -419,14 +365,6 @@ impl App {
             corridor: (self.ui.corridor_scratch.len(), !self.ui.corridor_scratch.pending()),
         }
     }
-
-    fn weather_key(&self) -> WeatherKey {
-        WeatherKey {
-            installed: self.weather.installed(),
-            sample: self.weather.sample(),
-            refreshing: self.weather.refreshing(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -435,9 +373,6 @@ mod tests {
     use crate::app::AppState;
     use crate::screen::{MenuScreen, RenderKeyKind};
 
-    /// Every row states what it draws. The four the archetypes cannot answer for — the Climb view
-    /// among the riding screens, the weather pages and the Sensors pages among the chrome — say so
-    /// on the row, and this is where a new dynamic screen that forgot to is caught.
     #[test]
     fn every_screen_row_declares_a_render_key_kind() {
         let declared: std::vec::Vec<(&str, RenderKeyKind)> = Screen::NAMES
@@ -458,9 +393,6 @@ mod tests {
                 ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),
-                ("Weather", RenderKeyKind::Weather),
-                ("WeatherHourly", RenderKeyKind::Weather),
-                ("WeatherRainMap", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),
@@ -503,42 +435,6 @@ mod tests {
             "the two rows declare one kind over one device, so the facts are the same value"
         );
         assert_ne!(app.render_key(), on_map, "…and the shape is what tells the two frames apart");
-    }
-
-    /// Sample a bundle of `frames` frames into the domain — the only producer of a step count.
-    fn sample_frames(app: &mut App, frames: usize) {
-        let now = app.wall_unix_now() as i64;
-        let snap = crate::harness::support::weather_snapshot(now, &vec![0u8; frames], None);
-        app.weather.note_sampled(Some(&snap), now, app.state.cam_lat);
-    }
-
-    /// The **rain gate**, in both directions — the whole reason the selected frame sits in the Map
-    /// key rather than in the weather pages'.
-    ///
-    /// The differential replay cannot pin this half: it fails on under-redraw, and an ungated rain
-    /// field is *over*-redraw, which it is built to tolerate. So the gate is asserted here, where a
-    /// bundle ageing under an ordinary map has to cost nothing.
-    #[test]
-    fn only_the_screen_that_draws_the_raster_has_the_rain_frame_in_its_key() {
-        // A rain bundle ages under the ordinary Map: it draws no raster, so nothing repaints. The
-        // ageing is fed through the domain, which is the only thing that derives a step count now.
-        let mut map = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
-        let quiet = map.render_key();
-        sample_frames(&mut map, 8);
-        map.state.rain_step = 3;
-        assert_eq!(map.render_key(), quiet, "an ageing bundle must never repaint the ordinary Map");
-
-        // On the one row that declares `rain_overlay`, the selected frame is part of the frame.
-        let mut rain = App::new(AppState::new(0, 0, 1.0));
-        rain.ui.stack[1] = Screen::WeatherRainMap(crate::screen::WeatherRainMapScreen::new());
-        sample_frames(&mut rain, 5);
-        let at_zero = rain.render_key();
-        rain.state.rain_step = 1;
-        assert_ne!(rain.render_key(), at_zero, "the rain map repaints when the selected frame moves");
-        rain.state.rain_step = 0;
-        assert_eq!(rain.render_key(), at_zero, "…and back to the same frame is the same frame");
-        sample_frames(&mut rain, 7);
-        assert_ne!(rain.render_key(), at_zero, "a changed count is a changed time strip");
     }
 
     /// **Exact, never hashed, and never IEEE.** A float goes into the key as its bit pattern, so a
@@ -591,7 +487,7 @@ mod tests {
             key.map.is_none() && key.home.is_none() && key.stats.is_none() && key.climb.is_none(),
             "no base fact survives under a drawer"
         );
-        assert!(key.sensors.is_none() && key.weather.is_none() && key.up_ahead.is_none());
+        assert!(key.sensors.is_none() && key.up_ahead.is_none());
         // The shape still carries the covered rows, which is what makes the *close* visible.
         assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
     }
@@ -643,7 +539,7 @@ mod tests {
         let key = app.render_key();
         assert!(key.drawer.is_some(), "the sheet names its own facts");
         assert!(key.map.is_none() && key.home.is_none() && key.stats.is_none() && key.climb.is_none());
-        assert!(key.sensors.is_none() && key.weather.is_none() && key.up_ahead.is_none());
+        assert!(key.sensors.is_none() && key.up_ahead.is_none());
         assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
     }
 
@@ -715,48 +611,6 @@ mod tests {
         let uncovered = app.render_key();
         assert_ne!(uncovered, flipped);
         assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "the base is back");
-        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
-    }
-
-    /// …the twin of the test above, on the **weather** sheet (#1515 D4b), where the row's live bit
-    /// is the one thing under a sheet that is allowed to move.
-    ///
-    /// The dashboard is the busiest base there is: a provider fetch can start, land and install new
-    /// data at any moment. Under the sheet none of that is in the frame's identity — except the
-    /// Refresh row's own cue, which is a pixel the *sheet* draws. So a fetch starting moves the key
-    /// through `enabled` and nothing else; new installed data moves nothing at all; and the close is
-    /// one invalidation.
-    #[test]
-    fn a_refresh_landing_under_the_sheet_moves_the_row_and_nothing_else() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Weather(crate::screen::WeatherScreen::new()));
-        assert!(app.apply_chord(crate::input::Chord::Context), "the dashboard declares a context");
-
-        let live = app.render_key();
-        assert!(live.weather.is_none(), "no weather fact survives under the sheet");
-        assert_eq!(live.drawer.map(|d| d.enabled), Some(0b11), "both rows live over an idle domain");
-
-        // A provider-cadence fetch starts under the sheet: the row goes recessed, which is the one
-        // base-derived cue the sheet draws — and it moves *only* `enabled`.
-        app.weather.note_refreshing(true);
-        let fetching = app.render_key();
-        assert_ne!(fetching, live, "the Refresh row went recessed — the sheet must redraw");
-        assert_eq!(fetching.drawer.map(|d| d.enabled), Some(0b10), "…only the Refresh row");
-
-        // New data landing under the sheet is not a pixel the sheet draws, so it moves nothing.
-        let quiet = app.render_key();
-        app.weather.note_installed(crate::device_core::WeatherData {
-            data: crate::device_core::DataIdentity::new(7),
-            revision: crate::device_core::Revision::new(3),
-        });
-        app.state.cam_lon += 5_000;
-        assert_eq!(app.render_key(), quiet, "installed data under a sheet asks for no repaint");
-
-        // …and the close is exactly one invalidation, with the base back in the key.
-        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
-        let uncovered = app.render_key();
-        assert_ne!(uncovered, quiet);
-        assert!(uncovered.drawer.is_none() && uncovered.weather.is_some(), "the base is back");
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
@@ -833,7 +687,7 @@ mod tests {
         // No map yet: the row is inert, and the frame holds no base fact of any kind.
         let inert = app.render_key();
         assert_eq!(inert.drawer.map(|d| d.enabled), Some(0), "with no map the row has no choice to offer");
-        assert!(inert.map.is_none() && inert.home.is_none() && inert.weather.is_none());
+        assert!(inert.map.is_none() && inert.home.is_none());
 
         // The host loads a map under the open sheet — through the real mirror, from a real parsed
         // §8.6 table. That is a pixel the *sheet* draws.

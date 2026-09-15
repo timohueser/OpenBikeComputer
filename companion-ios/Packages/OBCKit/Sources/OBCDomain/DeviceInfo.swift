@@ -27,14 +27,6 @@ public struct DeviceInfo: Equatable, Sendable {
     public let storeID: String?
     /// The map-format version when a transport explicitly supplies it. Unknown on BLE v4.
     public let obcmVersion: UInt8?
-    /// Optional capabilities when a transport explicitly supplies them. Unknown on BLE v4.
-    public let featureBits: UInt32?
-
-    /// Weather stays unavailable unless the device announces the contract.
-    public var supportsWeather: Bool {
-        guard let featureBits else { return false }
-        return featureBits & OBCProtocol.featureWeather != 0
-    }
 
     public init(
         name: String,
@@ -43,8 +35,7 @@ public struct DeviceInfo: Equatable, Sendable {
         serial: String = "",
         protocolVersion: UInt16 = OBCProtocol.version,
         storeID: String? = nil,
-        obcmVersion: UInt8? = nil,
-        featureBits: UInt32? = nil
+        obcmVersion: UInt8? = nil
     ) {
         self.name = name
         self.firmwareVersion = firmwareVersion
@@ -53,6 +44,5 @@ public struct DeviceInfo: Equatable, Sendable {
         self.protocolVersion = protocolVersion
         self.storeID = storeID
         self.obcmVersion = obcmVersion
-        self.featureBits = featureBits
     }
 }

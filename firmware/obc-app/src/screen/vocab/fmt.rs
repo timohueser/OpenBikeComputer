@@ -323,22 +323,6 @@ pub(crate) fn utc_offset(min: i16) -> heapless::String<8> {
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Weather, storage, addresses
-// ---------------------------------------------------------------------------------------------
-
-/// The temperature as a compact `14°` readout, or `None` on the wire sentinel — shared by the
-/// weather dashboard card and the hourly rows so the two can never round differently.
-pub(crate) fn temperature_short(deci_c: i16) -> Option<heapless::String<8>> {
-    if deci_c == obc_formats::obcw::TEMP_UNAVAILABLE {
-        return None;
-    }
-    let deg = ((deci_c as i32) + if deci_c >= 0 { 5 } else { -5 }) / 10;
-    let mut s: heapless::String<8> = heapless::String::new();
-    let _ = write!(s, "{}°", deg.clamp(-99, 99));
-    Some(s)
-}
-
 /// Append a byte count as a compact `N.N GB` / `NNN MB` / `NNN KB` — GB with one decimal at or
 /// above 1 GiB, whole MB / KB below (rounded). Binary units throughout.
 pub(crate) fn write_bytes_short(s: &mut heapless::String<16>, bytes: u64) {
@@ -612,19 +596,6 @@ mod tests {
         assert_eq!(utc_offset(330).as_str(), "+05:30");
         assert_eq!(utc_offset(-60).as_str(), "-01:00");
         assert_eq!(utc_offset(-570).as_str(), "-09:30");
-    }
-
-    /// Temperature rounds half away from zero, clamps to two digits, and reports the wire sentinel
-    /// as absent rather than as a number.
-    #[test]
-    fn temperature_short_rounds_and_clamps() {
-        assert_eq!(temperature_short(0).unwrap().as_str(), "0°");
-        assert_eq!(temperature_short(145).unwrap().as_str(), "15°", "half rounds away from zero");
-        assert_eq!(temperature_short(-145).unwrap().as_str(), "-15°");
-        assert_eq!(temperature_short(-55).unwrap().as_str(), "-6°");
-        assert_eq!(temperature_short(-54).unwrap().as_str(), "-5°");
-        assert_eq!(temperature_short(1500).unwrap().as_str(), "99°", "clamped to two digits");
-        assert_eq!(temperature_short(obc_formats::obcw::TEMP_UNAVAILABLE), None);
     }
 
     /// Each displayed byte-unit boundary, and the rounding at it.
