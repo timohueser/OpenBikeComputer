@@ -5,11 +5,11 @@ base_url = "https://fixtures.openbikecomputer.com/v1/"
 # pin one immutable revision; changing bytes means changing all three values.
 [packages.sim-grimsel]
 summary = "Full Grimsel simulator map, terrain, routes, and tracks"
-archive = "packages/a312858b96c89b11b2ab9ef0b59e943a4a771d942efcd55e38d0de9d3a4ce6ff.tar.gz"
-sha256 = "a312858b96c89b11b2ab9ef0b59e943a4a771d942efcd55e38d0de9d3a4ce6ff"
-bytes = 3417577
-provenance = "OBCM v14, packed from Switzerland OSM snapshot 2026-08-17; Copernicus GLO-30 terrain; authored Grimsel test routes. See fixtures/README.md."
-license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks)"
+archive = "packages/2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318.tar.gz"
+sha256 = "2844c9d5fdc917f49e0fba6bfcc745165717f3801085d4b6fd8472aeac959318"
+bytes = 3471573
+provenance = "OBCM v16, packed from pinned assistant-osm Switzerland snapshot 2026-09-13; unchanged Copernicus GLO-30 terrain; authored OBCR v4 route with route facts; compiled assistant-wiki-switzerland landmark content. Canonical fixture bbox. See fixtures/README.md."
+license = "ODbL-1.0 (map); Copernicus data terms (terrain); GPL-3.0-only (authored routes/tracks); CC-BY-SA and source-specific media licenses (landmarks, embedded credits)"
 tracked_sources = { "tracks/grimsel-climb.gpx" = "sources/sim-grimsel/tracks/grimsel-climb.gpx", "routes/grimsel-climb.obcr" = "sources/sim-grimsel/routes/grimsel-climb.obcr", "routes/TP1.OBT" = "sources/sim-grimsel/routes/TP1.OBT" }
 
 [packages.sim-peak-view]
@@ -23,10 +23,10 @@ tracked_sources = { "locations.json" = "sources/peak-view/locations.json" }
 
 [packages.sim-monaco]
 summary = "Monaco POI-dense simulator map and up-ahead track"
-archive = "packages/97f7c05195888cf1c5b19b85f0f59293b9c1c8ac5f4e60a271bcb02f0d305f57.tar.gz"
-sha256 = "97f7c05195888cf1c5b19b85f0f59293b9c1c8ac5f4e60a271bcb02f0d305f57"
-bytes = 442379
-provenance = "OBCM v14, packed from Monaco OSM snapshot 2026-08-17, and an authored 2.7 km up-ahead track. See fixtures/README.md."
+archive = "packages/f46cad5848f03d492b6ff87e2227c36b436fbe034439d0fbeb4a00aac972f34e.tar.gz"
+sha256 = "f46cad5848f03d492b6ff87e2227c36b436fbe034439d0fbeb4a00aac972f34e"
+bytes = 443210
+provenance = "OBCM v16, packed from pinned assistant-osm Monaco snapshot 2026-09-13; unchanged authored 2.7 km up-ahead track. Canonical fixture bbox. See fixtures/README.md."
 license = "ODbL-1.0 (map); GPL-3.0-only (authored track)"
 tracked_sources = { "tracks/monaco-upahead.gpx" = "sources/sim-monaco/tracks/monaco-upahead.gpx" }
 
@@ -187,3 +187,16 @@ args = ["--clock", "2026-09-14T10:00"]
 [profiles.assistant]
 summary = "Initial Ride Assistant maps and motion; production Assistant integration is pending"
 scenarios = ["assistant-out-and-back", "assistant-forward-rejoin", "assistant-loop-crossing", "assistant-monaco-dense", "assistant-dunlough-access"]
+
+[packages.assistant-wiki-switzerland]
+summary = "Geographic Swiss Wiki entities, exact article revisions, Commons originals and request outcomes"
+archive = "packages/1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8.tar.gz"
+sha256 = "1907429595fa7adaaf6288ae8b84df84453bd53da6b618bfbf14dc62562ad5c8"
+bytes = 5348363006
+provenance = "Captured 2026-09-14 to 2026-09-15 from the pinned Swiss polygon bounding box, best-rank P31/P279 closure and no P17 filter. Includes 6221 entities, all 24 category queries and complete request outcomes. See packaged manifest.json and fixtures/sources/ride-assistant/CAPTURE.md."
+license = "CC0-1.0 (Wikidata); article and image licenses in captured source notices"
+tracked_sources = { "recipe.json" = "sources/ride-assistant/switzerland-capture-recipe.json" }
+
+[profiles.assistant-country]
+summary = "Full Swiss landmark sources for explicit country recounts; excluded from routine tests"
+packages = ["assistant-wiki-switzerland"]

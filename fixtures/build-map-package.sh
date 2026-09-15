@@ -73,6 +73,9 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     # contours. The sidecar itself never changes here — this script's `terrain`
     # owns it, on the DEM's own revision track.
     [[ -n "$terrain" ]] && extra=(--terrain "$terrain")
+    if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_LANDMARKS:-}" ]]; then
+        extra+=(--landmarks "$OBC_DEMO_LANDMARKS")
+    fi
     local output
     case "$name" in
       grimsel) output="$BUILD_DIR/sim-grimsel/grimsel.obcm" ;;

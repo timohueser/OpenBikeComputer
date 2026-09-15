@@ -297,10 +297,21 @@ pub fn cut_ingested(
         }
     }
     let extract = opts.source_extent.unwrap_or_else(|| crate::pipeline::compute_bbox(ing));
+    let landmark_bounds = opts.bbox.map_or_else(
+        || {
+            opts.select
+                .iter()
+                .copied()
+                .map(CellId::square)
+                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+                .unwrap_or(extract)
+        },
+        Bbox::microdegree_bounds,
+    );
     let landmarks = opts
         .landmarks
         .as_ref()
-        .map(|path| crate::landmark_map::load(path, &ing.landmark_links, extract))
+        .map(|path| crate::landmark_map::load(path, &ing.landmark_links, landmark_bounds))
         .transpose()?
         .unwrap_or_default();
     // Opened once for the whole run and shared by every cell: validating a hundred containers per
@@ -1016,7 +1027,7 @@ fn write_cell(
         pois: pois.len(),
         nav_nodes: graph.nodes.len(),
         nav_edges: graph.edges.len(),
-        empty: !had_geometry && pois.is_empty() && graph.nodes.is_empty() && dropped == 0,
+        empty: !had_geometry && pois.is_empty() && landmarks.is_empty() && graph.nodes.is_empty() && dropped == 0,
     })
 }
 
