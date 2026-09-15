@@ -493,7 +493,7 @@ UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
 UPROUTES="$(mktemp -d)"; trap 'rm -rf "$ROUTES" "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES" "$ETAROUTE" "$ETAFLAT"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
-UPBASE="p p p p T Q d p d p f p f"
+UPBASE="p p p p T Q d p d p f p f f f f f f f f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
 # on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE" --expect-screen WhatsNext --png "$OUT/up-ahead.png"
@@ -501,9 +501,8 @@ UPBASE="p p p p T Q d p d p f p f"
 # `UPFILTER n` opens the sheet, presses its Filter row into the nested editor, stages `n` steps and
 # commits, then closes the sheet — so the list comes back filtered. Every `p` that starts a page
 # slide is followed by `w`, because the sheet owns its input while a slide runs.
-UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f"; }
-# (b) The same list filtered to Water, scrolled onto the custom "Fontaine du port" waypoint sitting
-# between two map fountains — the source-colour + pip check the epic wanted eyeballed.
+UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f f f f f f f f"; }
+# (b) The same list filtered to Water, with authored and mapped sources retained.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPFILTER 1) d d d d d d d d d" --expect-screen WhatsNext --png "$OUT/up-ahead-water.png"
 # (c1) The context sheet itself: two value rows, Filter and Sources, each a door into its editor.
@@ -520,7 +519,7 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
     --expect-screen ContextDrawer --png "$OUT/up-ahead-sources-editor.png"
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE C d p w d d p w b f p f" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
+    --script "$UPBASE C d p w d d p w b f f f f f f f f p f" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
 # (e) No-route and outside-map states. The plain vector route is outside Monaco;
 # the coverage guard takes precedence over map-place filters.
 "$SIM" "$UPMAP" --boot --script "Q d p d p f p f" --expect-screen WhatsNext --png "$OUT/up-ahead-noroute.png"
@@ -531,7 +530,7 @@ UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; ec
 # closes. Waypoints-only must show no map-POI row (every row keeps its amber icon + diamond pip) and
 # Map-POIs-only no waypoint row; each also pins the scope-named empty sub-line on the plain route,
 # where "No stops on route" would be a lie.
-UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f"; }
+UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f f f f f f f f"; }
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE $(UPSCOPE 1)" --expect-screen WhatsNext --png "$OUT/up-ahead-waypoints-only.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
@@ -643,8 +642,8 @@ U5CLIMBOFF="B u p p d d p b b b"
 
 # The universal quick drawer (#1515 D2): the Up+Select squeeze (`Q`) over the **riding Map**, which
 # is the base worth judging — the sheet's contrast, the four unlabelled icons, and the device-64 dim
-# LUT recessing a real map rather than a flat menu. Five states: the icon row, the row with the BLE
-# radio switched off, the nested brightness editor, the guarded power confirmation, and that
+# LUT recessing a real map. Five states: the icon row, the Assistant entry,
+# the nested brightness editor, the guarded power confirmation, and that
 # confirmation with the hold part-way through (`H`).
 QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root.png"
@@ -653,7 +652,7 @@ QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold.png"
 # The **other** root row: a platform whose panel has no controllable light offers three controls,
-# not four, and opens on the radio instead of on brightness. That is the shipping board today (no
+# not four, and opens on Assistant instead of brightness. That is the shipping board today (no
 # light line exists on it — see `PanelBacklight`), so this frame is the arrangement a rider actually
 # gets on hardware. English only: it is an arrangement, and the copy is already swept in four
 # languages above.

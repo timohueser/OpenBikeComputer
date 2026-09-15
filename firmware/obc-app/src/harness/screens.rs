@@ -215,8 +215,8 @@ fn the_map_declares_the_ride_actions_plus_its_own_display_row() {
         assert!(core::ptr::eq(table(sibling), &RIDE), "the other three riding views keep the ride table");
     }
 
-    assert_eq!(map.rows.len(), RIDE.rows.len(), "each view has five actions");
-    for (m, r) in map.rows[..4].iter().zip(&RIDE.rows[..4]) {
+    assert_eq!(map.rows.len(), RIDE.rows.len() + 1, "Map adds its display row");
+    for (m, r) in map.rows[..3].iter().zip(&RIDE.rows[..3]) {
         let lang = crate::settings::Language::En;
         assert_eq!(crate::i18n::t(m.label, lang), crate::i18n::t(r.label, lang), "the ride actions must not drift");
     }
