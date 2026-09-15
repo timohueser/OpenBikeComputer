@@ -20,6 +20,7 @@ use obc_ports::Fix;
 use super::vocab::chrome::{empty_state, stroke2};
 use super::vocab::fmt::write_distance_coarse;
 use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::marquee::MarqueeFrame;
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
 /// Per-POI **nominal** row height — two lines (name above, bearing arrow + distance below) with
@@ -285,7 +286,8 @@ impl PoiListScreen {
             draw_poi_row(
                 cv,
                 &pois[visible[row.index]].poi,
-                row.area,
+                &row,
+                &rx.marquee,
                 w,
                 fix,
                 heading,
@@ -386,7 +388,8 @@ impl PoiListScreen {
 fn draw_poi_row(
     cv: &mut impl Surface,
     poi: &Poi,
-    area: embedded_graphics::primitives::Rectangle,
+    row: &list::RowCtx,
+    marquee: &MarqueeFrame,
     w: i32,
     fix: Option<Fix>,
     heading: Option<f32>,
@@ -394,15 +397,15 @@ fn draw_poi_row(
     closed: &str,
 ) {
     use palette::*;
-    let x = area.top_left.x + 8;
-    let top = area.top_left.y;
+    let x = row.area.top_left.x + 8;
+    let top = row.area.top_left.y;
 
     // Line 1 — the name, the row's primary element, now on its own full-width line so most names
     // fit whole (only a genuinely long one still gets the ".." from `fit`).
     let name = if poi.name.is_empty() { poi_label_of(poi.subtype).unwrap_or("POI") } else { poi.name.as_str() };
     let name_top = top + 6;
     let name_max = ((w - x - 12) / Font::Body.char_width() as i32).max(6) as usize;
-    cv.text(&fit(name, name_max), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
+    cv.text(&marquee.fit(name, name_max, row.scroll()), Point::new(x, name_top), Font::Body, TextAlign::Left, INK);
 
     // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
     let line2_top = name_top + Font::Body.cap_bottom() as i32 + 4;
@@ -484,21 +487,6 @@ pub(super) fn draw_bearing_arrow(
     for da in [3.0 * FRAC_PI_4, -3.0 * FRAC_PI_4] {
         stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
     }
-}
-
-/// Fit `s` into `max` chars, appending ".." when truncated (no ellipsis glyph). Truncates on a char
-/// boundary. A local twin of the Route menu's `fit_name`, capped for a POI name (≤ 20 bytes).
-pub(super) fn fit(s: &str, max: usize) -> heapless::String<24> {
-    let mut out = heapless::String::new();
-    if s.chars().count() <= max {
-        let _ = out.push_str(s);
-    } else {
-        for ch in s.chars().take(max.saturating_sub(2)) {
-            let _ = out.push(ch);
-        }
-        let _ = out.push_str("..");
-    }
-    out
 }
 
 #[cfg(test)]

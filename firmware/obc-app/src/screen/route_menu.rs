@@ -19,7 +19,7 @@
 
 use core::fmt::Write;
 
-use embedded_graphics::{prelude::Point, primitives::Rectangle};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     rect,
     text::{text_width, Font, TextAlign},
@@ -33,6 +33,7 @@ use crate::Msg;
 
 use super::vocab::chrome::empty_state;
 use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::marquee::{fit, MarqueeFrame};
 use super::{
     palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition, TripDeleteScreen,
 };
@@ -282,7 +283,7 @@ impl RouteMenuScreen {
                 Some(t) => {
                     // Leave room for the scroll counter the title bar's right slot may show.
                     let max = (((w - 72) / Font::Body.char_width() as i32).max(6)) as usize;
-                    title_buf = fit_name(&t.name, max);
+                    title_buf = fit(&t.name, max);
                     &title_buf
                 }
                 None => rx.t(Msg::RouteMenuTitle),
@@ -308,12 +309,13 @@ impl RouteMenuScreen {
         list::draw_rows(cv, geo, total, sel, first, |cv, row| {
             let accent = if row.selected { INK } else { SUBTEXT };
             match rows[row.index] {
-                Row::Folder(ti) => draw_folder_row(cv, &row.area, &trips[ti], w, accent),
+                Row::Folder(ti) => draw_folder_row(cv, &row, &rx.marquee, &trips[ti], w, accent),
                 Row::Route(ri) => {
                     let unaccepted = rx.unaccepted_routes & (1 << ri) != 0;
                     draw_route_row(
                         cv,
-                        &row.area,
+                        &row,
+                        &rx.marquee,
                         &routes[ri],
                         w,
                         accent,
@@ -335,17 +337,19 @@ fn climb_col_x(area_x: i32, w: i32) -> i32 {
 /// the fixed second column. Unchanged from the flat menu — used verbatim inside a folder.
 fn draw_route_row(
     cv: &mut impl Surface,
-    area: &Rectangle,
+    row: &list::RowCtx,
+    marquee: &MarqueeFrame,
     route: &RouteSummary,
     w: i32,
     accent: u16,
     unavailable: Option<&str>,
 ) {
     use palette::*;
+    let area = &row.area;
     let y = area.top_left.y;
     let name_x = area.top_left.x + NAME_INSET;
     let name_max = (((w - 20) - name_x) / Font::Body.char_width() as i32).max(6) as usize;
-    let name = fit_name(&route.name, name_max);
+    let name = marquee.fit(&route.name, name_max, row.scroll());
     cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
     let sy = y + 35;
@@ -376,8 +380,16 @@ fn climb_group(cv: &mut impl Surface, x: i32, sy: i32, climb_m: u32, accent: u16
 /// on the name line, which buys the name the full remaining width. Line 2 carries the summed
 /// `km` / climb in the **same two columns as a route row**, so the stats align down the list.
 /// An empty folder (all refs dangled) wears a `0` badge and zeroed stats.
-fn draw_folder_row(cv: &mut impl Surface, area: &Rectangle, t: &TripSummary, w: i32, accent: u16) {
+fn draw_folder_row(
+    cv: &mut impl Surface,
+    row: &list::RowCtx,
+    marquee: &MarqueeFrame,
+    t: &TripSummary,
+    w: i32,
+    accent: u16,
+) {
     use palette::*;
+    let area = &row.area;
     let y = area.top_left.y;
     let n = t.stage_indices.len();
     let name_x = area.top_left.x + NAME_INSET;
@@ -395,7 +407,7 @@ fn draw_folder_row(cv: &mut impl Surface, area: &Rectangle, t: &TripSummary, w: 
 
     // The name owns line 1 up to the badge (the whole point of dropping the pictogram).
     let name_max = (((badge_x - 8) - name_x) / Font::Body.char_width() as i32).max(4) as usize;
-    let name = fit_name(&t.name, name_max);
+    let name = marquee.fit(&t.name, name_max, row.scroll());
     cv.text(&name, Point::new(name_x, y + 9), Font::Body, TextAlign::Left, INK);
 
     // Line 2: distance in col 1, climb group in col 2 — the route-row layout, aligned down the list.
@@ -404,22 +416,6 @@ fn draw_folder_row(cv: &mut impl Surface, area: &Rectangle, t: &TripSummary, w: 
     let _ = write!(dist, "{} km", t.distance_km);
     cv.text(&dist, Point::new(name_x, sy), Font::Label, TextAlign::Left, accent);
     climb_group(cv, climb_col_x(area.top_left.x, w), sy, t.climb_m, accent);
-}
-
-/// Fit a route name into `max_chars`, appending ".." when truncated (no ellipsis glyph).
-/// Truncates on a char boundary. Shared with the Route overview's title, the swap card, and the
-/// trip-delete confirm.
-pub(crate) fn fit_name(name: &str, max_chars: usize) -> heapless::String<64> {
-    let mut s = heapless::String::new();
-    if name.chars().count() <= max_chars {
-        let _ = s.push_str(name);
-    } else {
-        for c in name.chars().take(max_chars.saturating_sub(2)) {
-            let _ = s.push(c);
-        }
-        let _ = s.push_str("..");
-    }
-    s
 }
 
 #[cfg(test)]

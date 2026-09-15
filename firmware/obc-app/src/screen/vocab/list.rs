@@ -112,6 +112,14 @@ pub(crate) struct RowCtx {
     pub selected: bool,
 }
 
+impl RowCtx {
+    /// The row area when this is the highlighted row — where a list scrolls its one long name
+    /// (see [`marquee`](super::marquee)); `None` on every other row, which keeps the `..` cut.
+    pub(crate) fn scroll(&self) -> Option<Rectangle> {
+        self.selected.then_some(self.area)
+    }
+}
+
 /// Draw a windowed list: for each visible slot, the amber cursor fill (on the selected row),
 /// the screen's row body, and the separator rule; then the right-edge scrollbar. `first` is
 /// signed — a window may start virtually before the list, and slots mapping outside `0..total`

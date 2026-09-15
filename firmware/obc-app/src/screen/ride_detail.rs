@@ -146,7 +146,9 @@ impl RideDetailScreen {
         title_frame(cv, w, h, rx.t(Msg::RideStartTitle), sync);
 
         // Ride name (Body, left inset, two-dot truncation at full card width).
-        let name = super::route_menu::fit_name(&ride.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
+        let chars = ((w - 28) / Font::Body.char_width() as i32) as usize;
+        let name_row = rect(14, LIST_TOP + 2, w - 28, Font::Body.line_height() as i32);
+        let name = rx.marquee.fit(&ride.name, chars, Some(name_row));
         cv.text(&name, Point::new(14, LIST_TOP + 2), Font::Body, TextAlign::Left, INK);
 
         // Date + start time on one olive Label line, e.g. `2025-07-02 · 14:12` — the list rows'

@@ -36,6 +36,7 @@ use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 use obc_ports::Fix;
 
+use super::vocab::marquee::fit;
 use super::{Ctx, RenderFrame, Screen, ScreenTick, StatisticsScreen, Transition};
 
 /// Fallback backdrop when a map carries no backdrop style.
@@ -598,30 +599,6 @@ fn waypoint_chip(
     }
 }
 
-/// Fit `name` into `budget_px` at [`Font::Body`], dropping trailing chars and appending a two-dot
-/// ASCII ellipsis (`..` — the device font is printable-ASCII only, so `…` would render as tofu) when
-/// it genuinely overflows. Writes the result into `buf` and returns it. Pure integer geometry over
-/// the monospace cell width, so the truncation is deterministic and testable.
-fn fit_name<'b>(name: &str, budget_px: i32, buf: &'b mut heapless::String<28>) -> &'b str {
-    buf.clear();
-    let char_w = Font::Body.char_width() as i32;
-    let chars = name.chars().count() as i32;
-    if chars * char_w <= budget_px {
-        let _ = buf.push_str(name); // fits whole (name ≤ WAYPOINT_NAME_CAP bytes ≤ buf)
-        return buf.as_str();
-    }
-    const ELL: &str = "..";
-    let ell_w = text_width(ELL, Font::Body) as i32;
-    let keep = ((budget_px - ell_w) / char_w).max(0) as usize;
-    for ch in name.chars().take(keep) {
-        if buf.push(ch).is_err() {
-            break;
-        }
-    }
-    let _ = buf.push_str(ELL);
-    buf.as_str()
-}
-
 /// Draw the calm bottom-centre waypoint pill: `◆ NAME  <dist>` in [`INK`](super::palette::INK) on
 /// parchment (warning-orange stays reserved for the alert chip, matching the muted clock). Same
 /// pill geometry as [`draw_status_chip`]; a filled ink diamond at the left, the (truncated-to-fit)
@@ -635,9 +612,8 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     // Everything but the name is fixed; the name gets whatever remains inside the max pill width.
     let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
     let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-    let mut buf = heapless::String::<28>::new();
-    let name = fit_name(name, name_budget, &mut buf);
-    let name_w = text_width(name, font) as i32;
+    let name = fit(name, (name_budget / font.char_width() as i32).max(0) as usize);
+    let name_w = text_width(&name, font) as i32;
 
     let pw = fixed_w + name_w;
     let px = (w - pw) / 2;
@@ -657,7 +633,7 @@ fn draw_waypoint_chip(cv: &mut impl Surface, w: i32, h: i32, name: &str, dist: &
     // top at `py + 5` centres Body in the 36 px band, matching `draw_status_chip`.
     let ty = py + 5;
     let name_x = px + WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D;
-    cv.text(name, Point::new(name_x, ty), font, TextAlign::Left, INK);
+    cv.text(&name, Point::new(name_x, ty), font, TextAlign::Left, INK);
     cv.text(dist, Point::new(px + pw - WPT_CHIP_PAD_X, ty), font, TextAlign::Right, INK);
 }
 
@@ -1424,19 +1400,6 @@ mod tests {
         assert_eq!(crate::screen::vocab::fmt::distance_short(0, Units::Metric).as_str(), "0m", "…rendering as 0m");
     }
 
-    /// The chip name fits its pixel budget: short names pass through verbatim, long ones are cut to
-    /// leading chars + an ASCII ellipsis (the device font is ASCII-only) that stays within budget.
-    #[test]
-    fn waypoint_chip_name_truncation_fits_the_budget() {
-        let cw = Font::Body.char_width() as i32;
-        let mut buf = heapless::String::<28>::new();
-        assert_eq!(fit_name("Brunnen", 100 * cw, &mut buf), "Brunnen", "a name within budget is verbatim");
-        let mut buf = heapless::String::<28>::new();
-        let fitted = fit_name("Pass Summit Overlook", 10 * cw, &mut buf);
-        assert_eq!(fitted, "Pass Sum..", "8 leading chars + two-dot ellipsis fill the 10-cell budget");
-        assert!((text_width(fitted, Font::Body) as i32) <= 10 * cw, "and it stays within budget");
-    }
-
     /// The T10 acceptance case: the canonical `◆ Pass Summit  299m` chip on the 240 px panel gives
     /// the name its whole remaining width, so "Pass Summit" reads in full — never a truncated
     /// `Pass ..`. Recomputes the name budget the way [`draw_waypoint_chip`] does.
@@ -1448,7 +1411,7 @@ mod tests {
         let dist_w = text_width("299m", font) as i32;
         let fixed_w = 2 * WPT_CHIP_PAD_X + diamond_w + WPT_CHIP_GAP_D + WPT_CHIP_GAP_N + dist_w;
         let name_budget = (w - 2 * WPT_CHIP_INSET_X) - fixed_w;
-        let mut buf = heapless::String::<28>::new();
-        assert_eq!(fit_name("Pass Summit", name_budget, &mut buf), "Pass Summit", "the full name fits, no ellipsis");
+        let chars = (name_budget / font.char_width() as i32) as usize;
+        assert_eq!(fit("Pass Summit", chars).as_str(), "Pass Summit", "the full name fits, no ellipsis");
     }
 }

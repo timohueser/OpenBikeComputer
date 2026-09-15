@@ -2,6 +2,7 @@
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::POI_NAME_LEN;
 use obc_render::{
+    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -98,7 +99,8 @@ impl NavPlanningScreen {
         // its rejoin point was just shown on the chooser).
         if !self.name.is_empty() {
             let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
-            let name = super::route_menu::fit_name(&self.name, max);
+            let name_row = rect(12, TITLE_BAR_H + 16, w - 24, Font::Label.line_height() as i32);
+            let name = rx.marquee.fit(&self.name, max, Some(name_row));
             cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
         }
 

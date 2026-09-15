@@ -2738,7 +2738,7 @@ pub(crate) async fn run_app(
             // three fields the tail needs are copied out here and the plan is dropped inside the
             // store phase. Only the staged `EffectSlots` and the small executor state survive to the
             // present and sleep phases.
-            let obc_app::device_core::PassPlan { render, next_wake_ms, derived_needs, sources, effects, immediate } =
+            let obc_app::device_core::PassPlan { render, next_wake_ms: _, derived_needs, sources, effects, immediate } =
                 plan;
             peak_view.reconcile(app);
 
@@ -3107,7 +3107,9 @@ pub(crate) async fn run_app(
             } else {
                 None
             };
-            (rendered, dirty.map, hold_p, next_wake_ms, immediate, t_store.elapsed().as_micros())
+            // The deadline is read after the render, not from the plan: a frame's draw can arm a
+            // wake of its own (a long name that starts scrolling), and the plan predates the draw.
+            (rendered, dirty.map, hold_p, app.ms_until_next_wake(now), immediate, t_store.elapsed().as_micros())
         };
 
         // ═══ Present phase (#809): guard-free — the FLPR scans the frame (~44 ms full-frame)
@@ -3356,7 +3358,7 @@ pub(crate) async fn run_app(
         // board derived this a second way.
         let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
         let animating = charging || planning || pending_map_redraw || display.overlay_owed() || overlay_span.is_some();
-        // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
+        // The app's deadline (read after the render), plus the reasons to come straight back: the
         // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
         // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
         // to consume, an effect to serve, or a derived read it was asked for.

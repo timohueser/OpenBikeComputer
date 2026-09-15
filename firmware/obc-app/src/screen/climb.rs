@@ -204,6 +204,7 @@ impl ClimbScreen {
             tile(
                 cv,
                 rect(x, y, col_w, row_h),
+                &rx.marquee,
                 &cell.caption,
                 &cell.value,
                 cell.arrow,
