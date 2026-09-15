@@ -427,6 +427,14 @@ desktop *args:
       _run cargo run --release
     fi
 
+# Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only] (simulator only)
+ios-host *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run "$OBC_TOOLS/build-ios-host.sh" "$@"
+
 # Show and validate human ownership of documentation prose. Args: [status|check]
 docs *args:
     #!/usr/bin/env bash

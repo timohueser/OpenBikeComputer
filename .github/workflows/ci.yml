@@ -243,6 +243,10 @@ jobs:
       - uses: ./.github/actions/setup-host-deps
       - name: cargo clippy (workspace, all targets + features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # The iOS host's portability gate: the shared stack has to keep type-checking for the phone,
+      # and only a Mac can link or run it. A type-check is cheap enough to ride this Linux job.
+      - name: cargo check (iOS host, aarch64-apple-ios)
+        run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
 
   test:
     env:
