@@ -134,7 +134,7 @@ public actor TransferClient {
 
     public func put(
         _ payload: Data, objectID: ObjectID? = nil, expectedRevision: Revision? = nil,
-        kind: ObjectKind, retainPrevious: Bool = false, displayName: String,
+        kind: ObjectKind, displayName: String,
         progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
     ) async throws -> PutResult {
         await acquire()
@@ -144,7 +144,7 @@ public actor TransferClient {
         let request = PutRequest(
             objectID: objectID, expectedRevision: expectedRevision,
             payloadLength: UInt64(payload.count), payloadCRC32: crc, kind: kind,
-            retainPrevious: retainPrevious, displayName: displayName)
+            displayName: displayName)
         do {
             return try await putOnLiveLink(request, payload: payload, progress: progress)
         } catch is TransferLinkLost {

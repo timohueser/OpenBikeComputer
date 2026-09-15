@@ -49,8 +49,7 @@ pub enum LegacyOwner {
     Navigator,
     /// `SettingsMachine` — the dirty revision and the persist handshake.
     Settings,
-    /// `WeatherDomain` — visible freshness, alerts, and installed-data identity.
-    Weather,
+
     /// `DfuState` — update scan, install admission, and terminal state.
     Dfu,
     /// The bond domain in `ble.rs` — bond removal.
@@ -70,11 +69,6 @@ pub enum LegacyOwner {
 /// be invisible to every test in this file.
 macro_rules! feeders {
     ($( $(#[$meta:meta])* $variant:ident ),+ $(,)?) => {
-        /// One public bulk feeder on `App`, named after the method.
-        ///
-        /// The list is the complete public feeding surface: every `App::set_*`, plus the in-place
-        /// ride profile fill pair and the weather snapshot pulse, which feed data without being
-        /// named `set_`.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Feeder {
             $( $(#[$meta])* $variant, )+
@@ -131,7 +125,7 @@ feeders! {
     /// `App::set_sensor_scan_hits`
     SensorScanHits,
     /// `AppState::clamp_rain_zoom` — what is left of `App::set_rain_view` (#1549).
-    RainView,
+
     /// `App::set_hold_progress`
     HoldProgress,
     /// `App::set_render_clip`
@@ -255,16 +249,6 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::SensorStatus | Feeder::SensorScanHits => {
             row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::BootAndFacts)
         }
-        // What #1549 left behind. The step range and the zoom floor are `WeatherDomain`'s now,
-        // derived at stage 10 from the pass's own snapshot; what survives is the camera re-clamp,
-        // a runtime UI seam over a weather figure rather than weather ownership — so this retires
-        // with the rest of the fact-shaped setters.
-        Feeder::RainView => row(
-            Kind::ExternalFact,
-            Own::Weather,
-            "ExternalFacts::weather_sample + a UiRuntime rain-zoom clamp",
-            When::BootAndFacts,
-        ),
 
         // ---- boot inputs: supplied once, before any pass.
         Feeder::Settings => row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::BootAndFacts),
@@ -315,9 +299,6 @@ mod tests {
         // The detour preview looks like the nav preview and is not: it answers an operation.
         assert_eq!(feeder_migration(Feeder::DetourPreview).kind, FeederKind::BoundedTarget);
         assert_eq!(feeder_migration(Feeder::NavPreview).kind, FeederKind::DerivedInput);
-
-        // #1549 moved the weather decisions; the camera re-clamp is what is left of this row.
-        assert_eq!(feeder_migration(Feeder::RainView).deletes_in, DeletingSlice::BootAndFacts);
 
         // Nothing a domain owns survives the migration.
         let kept = Feeder::ALL.iter().filter(|&&f| feeder_migration(f).deletes_in == DeletingSlice::Kept).count();

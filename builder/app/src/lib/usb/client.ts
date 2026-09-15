@@ -327,7 +327,6 @@ export interface PutTarget {
     /** Up to 48 UTF-8 bytes (§3.6). The caller trims; this refuses a longer one. */
     displayName: string;
     /** Ask the same commit to leave the displaced revision `RETAINED` (§3.6). */
-    retainPrevious?: boolean;
 }
 
 /** A downloaded object: its bytes, and what the device said it served. */
@@ -655,7 +654,6 @@ export class FlatStoreClient {
                     payloadLength: BigInt(src.totalLen),
                     payloadCrc32: src.crc32,
                     kind: target.kind,
-                    retainPrevious: target.retainPrevious ?? false,
                     displayName: target.displayName,
                 }),
                 signal,

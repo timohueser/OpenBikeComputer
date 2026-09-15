@@ -355,7 +355,7 @@ describe("refusals arrive as sentences", () => {
 
 
 describe("custom skin admission", () => {
-    it("keeps the selected saved skin and storage unchanged when an edit crosses the rain band", () => {
+    it("keeps the selected saved skin and storage unchanged when an edit has an invalid drawing order", () => {
         let saved: string | null = null;
         const storage = {
             getItem: (key: string) => key === CUSTOM_SKINS_KEY ? saved : null,
@@ -366,8 +366,8 @@ describe("custom skin admission", () => {
         const skin = store.saveCustomSkin(store.catalog.skins[0], "Mine", "default");
         const before = saved;
         const draft = cloneSkin(skin);
-        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 16;
-        expect(() => store.saveCustomSkin(draft, "Bad edit", "default")).toThrow(/at least 24/);
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 128;
+        expect(() => store.saveCustomSkin(draft, "Bad edit", "default")).toThrow(/drawing order/i);
         expect(store.skinId).toBe(skin.id);
         expect(store.customSkinRecords).toEqual([{ skin, based_on: "default" }]);
         expect(saved).toBe(before);

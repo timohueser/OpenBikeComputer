@@ -1,4 +1,4 @@
-// Canonical assignment inputs for skin admission tests; expected band decisions stay in the tests.
+// Canonical assignment inputs for skin admission tests; expected validation decisions stay in the tests.
 import preset from "../../../../presets/schema.json";
 import type { SchemaEntry, SkinEntry } from "../catalog/manifest";
 import { exampleCatalog } from "../catalog/testdata";

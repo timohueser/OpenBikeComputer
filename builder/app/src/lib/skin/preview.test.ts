@@ -109,9 +109,9 @@ describe("live preview skin admission", () => {
         bridge.open.mockClear();
         const fetchImpl = vi.fn();
         const draft = cloneSkin(canonicalSkin);
-        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 16;
+        draft.styles.find((style) => style.feature_type === "highway.primary")!.z_index = 128;
         await expect(openLiveSkinPreview(JSON.stringify(canonicalSchema), JSON.stringify(draft), { fetchImpl }))
-            .rejects.toThrow(/at least 24/);
+            .rejects.toThrow(/drawing order/i);
         expect(bridge.open).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
         for (const unknown of [{ ...canonicalSchema, id: "unknown" }, { ...canonicalSchema, revision: 2 }]) {
@@ -122,7 +122,7 @@ describe("live preview skin admission", () => {
         expect(fetchImpl).not.toHaveBeenCalled();
     });
 
-    it("uses the canonical band for each draft update and keeps the last accepted skin on refusal", async () => {
+    it("keeps the last accepted skin when a drawing order is out of range", async () => {
         bridge.setSkin.mockClear();
         const preview = await openLiveSkinPreview(JSON.stringify({ schema: canonicalSchema }), JSON.stringify(canonicalSkin), { map: new Uint8Array() });
         const draft = cloneSkin(canonicalSkin);
@@ -130,9 +130,9 @@ describe("live preview skin admission", () => {
         water.z_index = 16;
         preview.setSkin(JSON.stringify(draft));
         expect(bridge.setSkin).toHaveBeenCalledTimes(1);
-        for (const z of [17, 23, 24]) {
+        for (const z of [-129, 128, 1.5]) {
             water.z_index = z;
-            expect(() => preview.setSkin(JSON.stringify(draft))).toThrow(/drawing order/);
+            expect(() => preview.setSkin(JSON.stringify(draft))).toThrow(/drawing order/i);
         }
         expect(bridge.setSkin).toHaveBeenCalledTimes(1);
         water.z_index = -128;

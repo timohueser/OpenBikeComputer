@@ -17,15 +17,6 @@ obc-reader = { path = "../../firmware/obc-reader" }
 # (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
-# Shared production OBCW reader/cache + generation selector. The sim adds a direct fixture-file
-# seam; WX14 owns simulator controls and companion behavior.
-obc-weather = { path = "../../firmware/obc-weather" }
-# `--weather live` (WX14): the host weather client — manifest + OBCG corridor Range reads + MET,
-# assembled into the same OBCW bundle the phone uploads. Fixtures and CI never reach the network;
-# the flag is the only thing that does.
-obc-wx-client = { path = "../../host/obc-wx-client" }
-# The frozen §11 weather request semantics (WX3/WX8): the sim's companion drives the *real*
-# `DueScheduler` and `classify_upload`, so the device-side lifecycle is exercised truthfully.
 obc-ble = { path = "../../firmware/obc-ble" }
 chrono = { version = "0.4.34", default-features = false, features = ["std", "clock"] }
 obc-render = { path = "../../firmware/obc-render" }
@@ -59,8 +50,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.14"
 
 [dev-dependencies]
-# The differential replay builds sampled weather snapshots by hand, whose frame table is the
-# `heapless::Vec` the device's own snapshot carries.
 heapless = "0.8"
 # The presenter suite in `present.rs` runs obc-display's reusable contract checks; the
 # `conformance` feature exists so that scaffolding stays out of the device image, and this

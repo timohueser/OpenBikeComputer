@@ -401,7 +401,6 @@ struct Upload<A> {
     name: DisplayName,
     declared_len: u64,
     declared_crc: u32,
-    retain_previous: bool,
     /// The head this replaces, if any. Re-checked immediately before the commit (§3.6).
     displaced: Option<Revision>,
     received: u64,
@@ -1131,10 +1130,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if put.kind.is_device_owned() {
             return Err(bad_combination());
         }
-        // "legal only for kinds whose reader needs continuity — weather, today".
-        if put.retain_previous && put.kind != ObjectKind::WeatherBundle {
-            return Err(bad_combination());
-        }
         let (id, revision, displaced) = if put.id.is_some() {
             let found = lookup(store, put.id);
             if !store.entries_ok() {
@@ -1180,7 +1175,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             declared_len: put.payload_len,
             declared_crc: put.payload_crc,
             // A create has no displaced revision to retain, so the flag has nothing to ask for.
-            retain_previous: put.retain_previous && displaced.is_some(),
             displaced,
             received: 0,
             staged: 0,
@@ -1508,19 +1502,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             name: upload.name,
         };
         let publish = Mutation::Put { meta, source: PutSource::Fresh(upload.allocation) };
-        // What the displaced head becomes. A replace leaves at most what it asked for: a retaining
-        // one keeps exactly the revision it displaced, and an ordinary one leaves the object with a
-        // head and nothing else.
-        let displace = found.head.map(|head| {
-            if upload.retain_previous {
-                let retained = EntryMeta { flags: head.flags.with(EntryFlags::RETAINED), ..head };
-                Mutation::Put { meta: retained, source: PutSource::Amend }
-            } else {
-                Mutation::Remove { id: head.id, revision: head.revision }
-            }
-        });
-        // A revision the object already kept retained goes either way: a second retaining replace
-        // frees the first, and an ordinary replace clears retention altogether.
+        let displace = found.head.map(|head| Mutation::Remove { id: head.id, revision: head.revision });
         let free = found.retained.map(|meta| Mutation::Remove { id: meta.id, revision: meta.revision });
         let sequence = match (displace, free) {
             (None, _) => store.commit(&[publish]),

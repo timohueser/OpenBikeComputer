@@ -1,17 +1,3 @@
-//! The Menu overlay — **layout prototype pass**: two candidate designs behind the [`COMPASS`]
-//! switch. Both show the normal six entries plus Peak View when a platform installed a panorama,
-//! and keep
-//! the list semantics: `turn` moves the selection (wrapping), `press` enters, `back` returns to
-//! the caller. Most stations open a menu; the **Map** station opens the Map screen directly (see
-//! [`open_map`]) — the live riding map while tracking, else a route-less browse map — and the
-//! **Weather** station opens the WX11 dashboard.
-//!
-//! * Compass dial: a wood bezel ring with the entries as stations evenly spaced around the
-//!   ring (60° apart, starting from N — see [`station_dir`]), an amber needle that *sweeps* to the
-//!   selection (an ease-out driven through [`tick_timers`](MenuScreen::tick_timers)), and the
-//!   selected name in Display type below.
-//! * Card grid: the conventional icon-card layout under the standard title bar.
-
 use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
@@ -38,21 +24,14 @@ enum MenuItem {
     Pois,
     Map,
     Peaks,
-    Weather,
+
     Settings,
 }
 
-const BASE_ITEMS: [MenuItem; 6] =
-    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Weather, MenuItem::Settings];
-const PEAK_ITEMS: [MenuItem; 7] = [
-    MenuItem::Routes,
-    MenuItem::Rides,
-    MenuItem::Pois,
-    MenuItem::Map,
-    MenuItem::Peaks,
-    MenuItem::Weather,
-    MenuItem::Settings,
-];
+const BASE_ITEMS: [MenuItem; 5] =
+    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Settings];
+const PEAK_ITEMS: [MenuItem; 6] =
+    [MenuItem::Routes, MenuItem::Rides, MenuItem::Pois, MenuItem::Map, MenuItem::Peaks, MenuItem::Settings];
 
 fn menu_items(state: &crate::AppState) -> &'static [MenuItem] {
     if state.peak_view_profile.is_some() {
@@ -81,7 +60,7 @@ impl MenuText {
                 MenuItem::Pois => rx.t(Msg::MenuPois),
                 MenuItem::Map => rx.t(Msg::MenuMap),
                 MenuItem::Peaks => rx.t(Msg::MenuPeaks),
-                MenuItem::Weather => rx.t(Msg::MenuWeather),
+
                 MenuItem::Settings => rx.t(Msg::MenuSettings),
             };
         }
@@ -188,15 +167,7 @@ impl MenuScreen {
                     MenuItem::Pois => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),
                     MenuItem::Map => open_map(cx),
                     MenuItem::Peaks => Transition::Push(Screen::PeakView(PeakViewScreen::default())),
-                    // Weather (WX11). Opening the dashboard is worth a radio trip, so the row that
-                    // opens it says so — the same way the System row names its free-space refresh.
-                    // This is the **only** push site of `Screen::Weather`, which is what makes it the
-                    // entry edge: Back from Hourly or the rain map does not pass through here, so it
-                    // cannot manufacture a second urgent request.
-                    MenuItem::Weather => {
-                        cx.weather.apply_intent(crate::weather::WeatherIntent::RefreshRequested);
-                        Transition::Push(Screen::Weather(super::WeatherScreen::new()))
-                    }
+
                     MenuItem::Settings => Transition::Push(Screen::Settings(SettingsScreen::new())),
                 }
             }
@@ -393,7 +364,7 @@ fn draw_icon(cv: &mut impl Surface, item: MenuItem, c: Point, k: f32, color: u16
         MenuItem::Pois => icon_poi(cv, c, k, color, bg),
         MenuItem::Map => icon_map(cv, c, k, color),
         MenuItem::Peaks => icon_peaks(cv, c, k, color, bg),
-        MenuItem::Weather => icon_weather(cv, c, k, color, bg),
+
         MenuItem::Settings => icon_sliders(cv, c, k, color),
     }
 }
@@ -418,25 +389,6 @@ fn icon_peaks(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
         Point::new(c.x, c.y - si(k, 4.0)),
         bg,
     );
-}
-
-/// The Weather station glyph: a sun disc peeking over a simple cloud silhouette — the dial's
-/// single-ink glyph language (the WX17 content icons stay on the weather screens themselves,
-/// where their two-color art belongs).
-fn icon_weather(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
-    // Sun: a filled disc up-right, with four short diagonal rays (drawn as small discs so they
-    // survive the dial's scale).
-    let sun = Point::new(c.x + si(k, 5.0), c.y + si(k, -6.0));
-    cv.disc(sun, si(k, 5.0) as u32, color);
-    for (dx, dy) in [(-7.0, -7.0), (7.0, -7.0), (7.0, 7.0), (-7.0, 7.0)] {
-        cv.disc(Point::new(sun.x + si(k, dx), sun.y + si(k, dy)), si(k, 1.5).max(1) as u32, color);
-    }
-    // Cloud: two overlapped lobes over a flat base, punched apart from the sun by the bg gap.
-    let base_y = c.y + si(k, 6.0);
-    cv.disc(Point::new(c.x - si(k, 5.0), base_y - si(k, 3.0)), si(k, 5.5) as u32, color);
-    cv.disc(Point::new(c.x + si(k, 2.0), base_y - si(k, 5.0)), si(k, 4.5) as u32, color);
-    cv.fill(rect(c.x - si(k, 10.0), base_y - si(k, 2.0), si(k, 20.0), si(k, 5.0)), color);
-    let _ = bg; // same signature family as the punched glyphs; this one needs no cutout
 }
 
 /// The Rides glyph: a stopwatch — a round face with a top stem/button and a single hand, reading as
