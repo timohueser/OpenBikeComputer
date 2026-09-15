@@ -2834,11 +2834,13 @@ pub(crate) async fn run_app(
                     // map-transfer card the only explanation for a saturated SD bus.
                     let draws_map = app.base_draws_map();
                     let mut render_guard = if draws_map { crate::arena::claim_render().ok() } else { None };
+                    let photo_active = app.photo_base_active();
+                    let mut photo_guard = if photo_active { crate::arena::claim_photo() } else { None };
                     // Unreachable on the ordinary path (the freeze above skips map frames during a
                     // search, and a transfer puts its card over the map), so a refusal is a gating
                     // bug — already reported loudly by `arena::claim_render`. Degrade the way every
                     // other transient render failure does: keep the frame on glass, retry next pass.
-                    if draws_map && render_guard.is_none() {
+                    if (draws_map && render_guard.is_none()) || (photo_active && photo_guard.is_none()) {
                         pending_map_redraw = true;
                         defmt::warn!(
                             "map: the scratch arena is held by {} — skipping this map redraw, retrying next frame",
@@ -2868,7 +2870,7 @@ pub(crate) async fn run_app(
                         // every frame of an open comes through with `None` and clips nothing. A region does
                         // survive on a settled sheet whose *own* overlay ticked one, and clipping that frame
                         // to it is exactly right: the sheet is all that is drawn, and only that part moved.
-                        let clip = if needs_map || app.photo_status().is_some() { None } else { dirty.region };
+                        let clip = if needs_map || photo_active { None } else { dirty.region };
                         app.set_render_clip(clip);
                         // Sampled before the render closure borrows `app`; nothing between here and the log
                         // below moves the screen stack.
@@ -2914,7 +2916,7 @@ pub(crate) async fn run_app(
                                 // `MountedSet` as the scene and the core `Reader` for everything else
                                 // — is gone with the set mount (FS7.5-c2, #1420).
                                 let panorama = peak_view.panorama();
-                                let stats = app.render_scene_map_rain_timed(
+                                let stats = app.render_scene_map_rain_photo_timed(
                                     render_guard.as_deref_mut(),
                                     &mut fbdev,
                                     reader.as_ref(),
@@ -2929,14 +2931,11 @@ pub(crate) async fn run_app(
                                     FRAME_H as f32,
                                     color_fn,
                                     &InstantClock,
+                                    photo_guard
+                                        .as_deref_mut()
+                                        .map(|runtime| obc_app::photo::FramePhoto::interactive(runtime, true)),
                                 );
-                                drop(render_guard.take());
-                                if app.photo_pending() {
-                                    if let Some(mut photo) = crate::arena::claim_photo() {
-                                        let reader = Reader::new(flat_map, map_tables, map_cache);
-                                        app.prepare_photo_step(&mut photo, Some(&reader), &mut fbdev, color_fn);
-                                    }
-                                }
+
                                 stats
                             });
                             #[cfg(feature = "sd-bench")]
@@ -2965,8 +2964,21 @@ pub(crate) async fn run_app(
                     let reader = Reader::new(flat_map, map_tables, map_cache);
                     let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                         let mut target = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
-                        app.prepare_photo_step(&mut photo, Some(&reader), &mut target, color_fn);
-                        obc_render::RenderStats::default()
+                        app.render_scene_map_rain_photo_timed(
+                            None,
+                            &mut target,
+                            Some(&reader),
+                            Some(&reader),
+                            route.as_ref(),
+                            None,
+                            weather_snapshot.as_ref(),
+                            None,
+                            FRAME_W as f32,
+                            FRAME_H as f32,
+                            color_fn,
+                            &InstantClock,
+                            Some(obc_app::photo::FramePhoto::interactive(&mut photo, false)),
+                        )
                     });
                     Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
                 } else {

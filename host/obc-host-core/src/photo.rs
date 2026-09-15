@@ -1,6 +1,10 @@
 //! Host scratch ownership for the same bounded phase used by the board.
+#[cfg(test)]
 use embedded_graphics::draw_target::DrawTarget;
-use obc_app::{photo::Runtime, App};
+use obc_app::photo::Runtime;
+#[cfg(test)]
+use obc_app::App;
+#[cfg(test)]
 use obc_reader::Reader;
 
 pub struct Preparer {
@@ -19,30 +23,56 @@ impl Default for Preparer {
     }
 }
 impl Preparer {
-    pub fn step<D, F>(&mut self, app: &mut App, reader: Option<&Reader<'_>>, target: &mut D, color: F)
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
-        app.prepare_photo_step(&mut self.runtime, reader, target, color);
+    pub fn interactive(&mut self, redraw: bool) -> obc_app::photo::FramePhoto<'_> {
+        obc_app::photo::FramePhoto::interactive(&mut self.runtime, redraw)
+    }
+    pub fn capture(&mut self) -> obc_app::photo::FramePhoto<'_> {
+        obc_app::photo::FramePhoto::capture(&mut self.runtime)
     }
 
-    /// A fresh headless frame runs ordinary steps until it reaches a terminal state.
-    /// Every pending decoder step consumes input or produces output, so this bound
-    /// covers the format's maximum input and output without an unbounded loop.
-    pub fn finish<D, F>(&mut self, app: &mut App, reader: Option<&Reader<'_>>, target: &mut D, color: F)
+    #[cfg(test)]
+    fn step<D, F>(&mut self, app: &mut App, reader: Option<&Reader<'_>>, target: &mut D, color: F)
     where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        use obc_formats::obcm::landmarks::{PHOTO_MAX_COMPRESSED, PHOTO_PIXELS};
-        for _ in 0..=PHOTO_MAX_COMPRESSED + PHOTO_PIXELS {
-            if !app.photo_pending() {
-                break;
-            }
-            self.step(app, reader, target, &color);
-        }
-        debug_assert!(!app.photo_pending());
+        app.render_scene_map_rain_photo_timed(
+            None,
+            target,
+            reader,
+            reader,
+            None,
+            None,
+            None,
+            None,
+            240.0,
+            320.0,
+            color,
+            &obc_render::NoopClock,
+            Some(self.interactive(false)),
+        );
+    }
+    #[cfg(test)]
+    fn finish<D, F>(&mut self, app: &mut App, reader: Option<&Reader<'_>>, target: &mut D, color: F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        app.render_scene_map_rain_photo_timed(
+            None,
+            target,
+            reader,
+            reader,
+            None,
+            None,
+            None,
+            None,
+            240.0,
+            320.0,
+            color,
+            &obc_render::NoopClock,
+            Some(self.capture()),
+        );
     }
 }
 
@@ -226,6 +256,69 @@ mod tests {
         phase.step(&mut app, Some(&reader), &mut frame, color);
         assert_eq!(frame.as_rgba(), exited);
         assert!(!app.photo_pending());
+    }
+
+    #[test]
+    fn fresh_covered_capture_and_covered_base_redraw_keep_photo_and_drawer() {
+        let bytes = map(true);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+        app.set_backlight_available(true);
+        app.set_resident_frame(true);
+        select(&mut app, &reader);
+        let mut phase = Preparer::default();
+        let mut retained = RgbaFrame::new(240, 320);
+        phase.finish(&mut app, Some(&reader), &mut retained, color);
+        app.apply_chord(Chord::Quick);
+        app.advance_animations(obc_ports::InputClock(0));
+        app.advance_animations(obc_ports::InputClock(1000));
+        phase.step(&mut app, Some(&reader), &mut retained, color);
+        let expected = retained.as_rgba().to_vec();
+        app.set_resident_frame(false);
+        let mut fresh = RgbaFrame::new(240, 320);
+        phase.finish(&mut app, Some(&reader), &mut fresh, color);
+        assert_eq!(
+            fresh.as_rgba(),
+            expected,
+            "fresh covered frame must reconstruct exposed photo pixels and preserve the drawer"
+        );
+
+        app.set_resident_frame(true);
+        app.apply_gesture(Gesture::Press); // Brightness editor requests its base for the page slide.
+        assert!(!app.sheet_only(), "the actual drawer transition requests a base redraw");
+        app.render_scene_map_rain_photo_timed(
+            None,
+            &mut retained,
+            Some(&reader),
+            Some(&reader),
+            None,
+            None,
+            None,
+            None,
+            240.0,
+            320.0,
+            color,
+            &obc_render::NoopClock,
+            Some(phase.interactive(true)),
+        );
+        assert!(app.photo_pending(), "one bounded step cannot finish this stored-block photo");
+        for _ in 0..1024 {
+            if !app.photo_pending() {
+                break;
+            }
+            phase.step(&mut app, Some(&reader), &mut retained, color);
+        }
+        assert!(!app.photo_pending());
+        app.set_resident_frame(false);
+        phase.finish(&mut app, Some(&reader), &mut fresh, color);
+        assert_eq!(
+            retained.as_rgba(),
+            fresh.as_rgba(),
+            "bounded covered reconstruction must match a complete fresh composition"
+        );
     }
 
     struct Fault {

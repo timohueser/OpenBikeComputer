@@ -29,6 +29,21 @@ pub enum Status {
     Unavailable,
 }
 
+/// Photo work within one base-before-overlay render pass.
+pub struct FramePhoto<'a> {
+    pub(crate) runtime: &'a mut Runtime,
+    pub(crate) steps: usize,
+    pub(crate) redraw: bool,
+}
+impl<'a> FramePhoto<'a> {
+    pub fn interactive(runtime: &'a mut Runtime, redraw: bool) -> Self {
+        Self { runtime, steps: 1, redraw }
+    }
+    pub fn capture(runtime: &'a mut Runtime) -> Self {
+        Self { runtime, steps: PHOTO_MAX_COMPRESSED + obc_formats::obcm::landmarks::PHOTO_PIXELS + 1, redraw: true }
+    }
+}
+
 /// The only retained decode work; the board places it in its shared scratch arena.
 pub struct Runtime {
     decoder: PhotoDecoder,
@@ -66,8 +81,13 @@ impl Runtime {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
+        if reader.is_none_or(|reader| reader.generation() != page.selection.map_generation) {
+            page.status = Status::Unavailable;
+            clear(target, &color);
+        }
         if !matches!(page.status, Status::Fresh | Status::Pending) {
             self.cancel();
+            page.draw_status(target, &color);
             return;
         }
         if page.status == Status::Fresh || self.selection != Some(page.selection) || self.revision != page.revision {
@@ -120,6 +140,7 @@ impl Runtime {
         if page.status != Status::Pending {
             self.cancel();
         }
+        page.draw_status(target, &color);
     }
 }
 
@@ -153,49 +174,20 @@ impl crate::App {
         }
     }
 
-    pub fn photo_pending(&self) -> bool {
-        !self.overlay_active() && matches!(self.photo_status(), Some(Status::Fresh | Status::Pending))
+    pub fn photo_base_active(&self) -> bool {
+        matches!(
+            self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()),
+            Some(crate::screen::Screen::LandmarkPhoto(_))
+        )
     }
 
-    /// Run after base drawing, before transient overlays and presentation. Continuation
-    /// passes use the retained frame without redrawing the base. An ordinary base draw
-    /// invalidates progress, including when a Sources page or drawer is dismissed.
-    pub fn prepare_photo_step<D, F>(
-        &mut self,
-        runtime: &mut Runtime,
-        reader: Option<&Reader<'_>>,
-        target: &mut D,
-        color: F,
-    ) where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-    {
+    pub fn photo_pending(&self) -> bool {
         if self.overlay_active() {
-            runtime.cancel();
-            return;
+            return false;
         }
-        let Some(crate::screen::Screen::LandmarkPhoto(page)) = self.ui.stack.last_mut() else {
-            runtime.cancel();
-            return;
-        };
-        if reader.is_none_or(|reader| reader.generation() != page.selection.map_generation) {
-            page.status = Status::Unavailable;
-            clear(target, &color);
-            runtime.cancel();
-        }
-        runtime.step(page, reader, target, &color);
-        let message = match page.status {
-            Status::Missing => Some("No photo available"),
-            Status::Unavailable => Some("Photo unavailable"),
-            _ => None,
-        };
-        if let Some(message) = message {
-            use obc_render::{
-                text::{Font, TextAlign},
-                Surface,
-            };
-            let mut canvas = obc_render::Canvas::new(target, &color);
-            canvas.text(message, Point::new(120, 142), Font::Label, TextAlign::Center, crate::screen::palette::INK);
-        }
+        let base = self.ui.stack.iter().rev().find(|screen| !screen.is_overlay());
+        matches!(base, Some(crate::screen::Screen::LandmarkPhoto(page))
+            if (self.photo_status().is_some() || page.covered_rebuild)
+            && matches!(page.status, Status::Fresh | Status::Pending))
     }
 }

@@ -15,6 +15,7 @@ pub struct LandmarkPhotoScreen {
     pub(crate) selection: Selection,
     pub(crate) revision: u32,
     pub(crate) status: Status,
+    pub(crate) covered_rebuild: bool,
     title: heapless::String<32>,
 }
 
@@ -26,12 +27,26 @@ impl LandmarkPhotoScreen {
                 break;
             }
         }
-        Self { selection, revision: 0, status: Status::Fresh, title: label }
+        Self { selection, revision: 0, status: Status::Fresh, covered_rebuild: false, title: label }
     }
 
-    pub(crate) fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self, covered: bool) {
         self.revision = self.revision.wrapping_add(1);
         self.status = Status::Fresh;
+        self.covered_rebuild = covered;
+    }
+
+    pub(crate) fn draw_status<D, F>(&self, target: &mut D, color: &F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        let message = match self.status {
+            Status::Missing => "No photo available",
+            Status::Unavailable => "Photo unavailable",
+            _ => return,
+        };
+        Canvas::new(target, color).text(message, Point::new(120, 142), Font::Label, TextAlign::Center, INK);
     }
 
     pub fn handle(&mut self, gesture: Gesture, _cx: &mut Ctx) -> Transition {
