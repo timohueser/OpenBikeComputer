@@ -4,7 +4,7 @@
 //! the single-call [`App::handle_input`] the simulator uses, with the firmware's own-plane overlay
 //! staying in lock-step with the gestures the map plane applies.
 
-use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary};
+use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary, Screen};
 use obc_map_scene::BBox;
 use obc_ports::{Button, InputClock, InputEvent};
 
@@ -25,9 +25,14 @@ fn one_route() -> RouteSummary {
 /// draining the gesture channel.
 fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]) {
     let mut pending: Vec<Gesture> = Vec::new();
-    plane.recognize(InputClock(t), &mut keys(evs), |g| pending.push(g));
+    if let Some(chord) = plane.recognize(InputClock(t), &mut keys(evs), |g| pending.push(g)) {
+        app.apply_chord(chord);
+    }
     for g in pending {
         app.apply_gesture(g);
+    }
+    if app.take_hold_cancel() {
+        plane.cancel_holds();
     }
     app.advance_animations(InputClock(t));
 }
@@ -136,4 +141,69 @@ fn multiple_events_in_one_poll_all_fire_in_order() {
         vec![Gesture::Step(1), Gesture::Step(2), Gesture::Step(-1), Gesture::Press],
         "every queued event surfaces once, in arrival order, from a single frame"
     );
+}
+
+#[test]
+fn assistant_hold_matches_both_input_planes_without_opening_the_drawer_first() {
+    for (first, second) in [(Button::Up, Button::Select), (Button::Select, Button::Up)] {
+        let mut single = App::new_idle(AppState::new(0, 0, 0.05));
+        let mut split = App::new_idle(AppState::new(0, 0, 0.05));
+        let mut plane = InputPlane::new();
+        for (t, evs) in [
+            (0, vec![down(first)]),
+            (40, vec![down(second)]),
+            (539, vec![]),
+            (540, vec![]),
+            (700, vec![up(first)]),
+            (720, vec![up(second)]),
+        ] {
+            single.handle_input(InputClock(t), &mut keys(&evs));
+            drive_split(&mut split, &mut plane, t, &evs);
+            for app in [&single, &split] {
+                if t < 540 {
+                    assert!(matches!(app.top_screen(), Screen::Home(_)), "no intermediate drawer at {t}");
+                } else {
+                    assert!(matches!(app.top_screen(), Screen::Assistant(_)), "Assistant at {t}");
+                }
+                assert_eq!(app.last_gesture(), None, "no constituent gesture at {t}");
+            }
+            if t == 40 || t == 539 {
+                assert_eq!(single.ms_until_next_wake(t), Some(540 - t));
+                assert_eq!(plane.chord_remaining_ms(t), Some(540 - t));
+            }
+        }
+        single.apply_gesture(Gesture::Back);
+        split.apply_gesture(Gesture::Back);
+        if split.take_hold_cancel() {
+            plane.cancel_holds();
+        }
+        assert!(matches!(single.top_screen(), Screen::Home(_)));
+        assert!(matches!(split.top_screen(), Screen::Home(_)));
+
+        // The same buttons are ready for the quick drawer after both releases.
+        for (t, evs) in [(800, vec![down(first)]), (840, vec![down(second)]), (900, vec![up(second), up(first)])] {
+            single.handle_input(InputClock(t), &mut keys(&evs));
+            drive_split(&mut split, &mut plane, t, &evs);
+        }
+        assert!(matches!(single.top_screen(), Screen::QuickDrawer(_)));
+        assert!(matches!(split.top_screen(), Screen::QuickDrawer(_)));
+    }
+}
+
+#[test]
+fn assistant_chord_respects_a_blocking_transfer_and_releases_silently() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.set_map_transfer(Some(obc_app::screen::MapTransfer::Receiving { received_kib: 10, total_kib: 100 }));
+    app.advance_animations(InputClock(0));
+    assert!(matches!(app.top_screen(), Screen::MapTransfer(_)));
+    for (t, evs) in [
+        (100, vec![down(Button::Up)]),
+        (140, vec![down(Button::Select)]),
+        (640, vec![]),
+        (700, vec![up(Button::Select), up(Button::Up)]),
+    ] {
+        app.handle_input(InputClock(t), &mut keys(&evs));
+        assert!(matches!(app.top_screen(), Screen::MapTransfer(_)));
+        assert_eq!(app.last_gesture(), None);
+    }
 }
