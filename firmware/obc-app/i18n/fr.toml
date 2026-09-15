@@ -616,8 +616,9 @@ no_matches = "Aucun parcours trouvé. Choisissez un âge plus court ou utilisez 
 done = "Anciens parcours supprimés. Renvoyez le parcours. Appuyez pour fermer."
 
 [assistant]
+from_place = "du lieu"
 title = "Assistant"
-find = "Où est le prochain..."
+find = "Où est..."
 next = "Et ensuite ?"
 easier = "Route douce"
 blocked = "Route barrée"
