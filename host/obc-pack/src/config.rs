@@ -1830,11 +1830,7 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(
-            env["format_version"].as_u64(),
-            Some(15),
-            "stable place identities and explicit approaches require OBCM v15"
-        );
+        assert_eq!(env["format_version"].as_u64(), Some(16), "optional landmark content requires OBCM v16");
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

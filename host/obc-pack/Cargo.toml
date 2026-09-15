@@ -79,6 +79,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 obc-render = { version = "0.1.0", path = "../../firmware/obc-render" }
 percent-encoding = "2"
 sha1 = "0.10.6"
+zlib-rs = "0.6.7"
+url = "2"
 
 [dev-dependencies]
 obc-fixtures = { path = "../obc-fixtures" }

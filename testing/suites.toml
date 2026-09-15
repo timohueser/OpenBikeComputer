@@ -880,18 +880,6 @@ coverage_component = "host-tools"
 ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-inputs.py" }]
 
 [[suite]]
-id = "fixtures.assistant-places"
-surface = "map-tools"
-level = "fixture"
-command = "python3 fixtures/verify-assistant-places.py"
-fixtures = ["assistant-osm"]
-pull_request = "never"
-scheduled = "manual"
-extra_triggers = ["host/obc-pack/tests/assistant_places.rs", "firmware/obc-reader/src/reader/places.rs"]
-coverage_component = "host-tools"
-ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-places.py" }]
-
-[[suite]]
 id = "fixtures.landmark-content"
 surface = "map-tools"
 level = "fixture"
@@ -902,3 +890,15 @@ scheduled = "manual"
 extra_triggers = ["host/obc-pack/src/landmarks/**", "fixtures/sources/ride-assistant/assistant-wiki.json"]
 coverage_component = "host-tools"
 ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-landmark-content.py" }]
+
+[[suite]]
+id = "fixtures.assistant-places"
+surface = "map-tools"
+level = "fixture"
+command = "python3 fixtures/verify-assistant-places.py"
+fixtures = ["assistant-osm"]
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["host/obc-pack/tests/assistant_places.rs", "firmware/obc-reader/src/reader/places.rs"]
+coverage_component = "host-tools"
+ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-assistant-places.py" }]

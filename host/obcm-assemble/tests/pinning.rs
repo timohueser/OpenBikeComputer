@@ -122,7 +122,7 @@ fn packed() -> (Vec<u8>, Vec<Style>, Vec<StyleRecord>, u16) {
     (bytes, pack_styles, engine_styles, marker_color)
 }
 
-/// The header (`OBCM_Spec.md` §1): 49 bytes of magic, version, bbox in lat/lon/lat/lon order, five
+/// The header (`OBCM_Spec.md` §1): 57 bytes of magic, version, bbox in lat/lon/lat/lon order, five
 /// **scaled** offsets, the `Offset Scale` byte and the terrain pair. The engine writes it from a
 /// [`AlignedBox`] and the packer from a raw bbox tuple, so this is the one place their *interfaces*
 /// differ and their bytes may not.
@@ -140,7 +140,7 @@ fn the_header_matches_the_packers_byte_for_byte() {
         emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0).expect("in range");
     assert_eq!(got, want, "the restated OBCM header diverged from obc-pack's");
     // …and the field the offsets were read from is the one the engine writes there: v14's style
-    // table does not begin where the 49-byte header ends, it begins at the first unit boundary at
+    // table does not begin where the 57-byte header ends, it begins at the first unit boundary at
     // or after it, and the LOD table follows the style table by the same rule.
     assert_eq!(at(21), emit::STYLE_OFFSET, "the style table is at align_up(HEADER_LEN)");
     assert_eq!(emit::STYLE_OFFSET, 64, "…which at U = 16 is 64, so `Style Offset` reads 4");
@@ -158,7 +158,7 @@ fn the_header_matches_the_packers_byte_for_byte() {
 }
 
 /// The §1.2 gap the header now leaves behind it. Every offset in the header above resolves the same
-/// whether these fifteen bytes are `0xFF`, zeros, or anything else — the reader never looks at them
+/// whether these seven bytes are `0xFF`, zeros, or anything else — the reader never looks at them
 /// — so the pin has to name the fill byte or a writer could quietly stop agreeing with the packer's
 /// bytes while every field still read correctly.
 #[test]
@@ -167,9 +167,9 @@ fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
     let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap()) as u64 * unit;
     let block = emit::header_bytes(BOX, 3, marker_color, at(26), at(32), at(36), 0, 0).expect("in range");
-    assert_eq!(block.len(), HEADER_LEN, "the header itself is 49 bytes, filler excluded");
+    assert_eq!(block.len(), HEADER_LEN, "the header itself is 57 bytes, filler excluded");
     let gap = emit::STYLE_OFFSET as usize - HEADER_LEN;
-    assert_eq!(gap, 15);
+    assert_eq!(gap, 7);
     assert_eq!(&bytes[HEADER_LEN..HEADER_LEN + gap], &vec![obc_formats::obcm::FILLER; gap][..], "§1.2's fill byte");
 
     // …and the same again behind the style table, where the LOD table's own boundary is bought.

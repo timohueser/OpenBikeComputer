@@ -661,14 +661,14 @@ fn walk_caps_depth_on_forward_chain() {
 /// hours pool, and an empty nav section (40-byte directory + filler + the always-present profile
 /// table) at the tail.
 #[test]
-fn header_is_49_bytes_with_scaled_poi_and_nav_offsets() {
+fn header_has_scaled_section_offsets() {
     let bytes = two_lod_file();
 
-    // v14: the header is 49 bytes, which is no whole number of units, so the style table begins at
+    // The header is 57 bytes, which is no whole number of units, so the style table begins at
     // the first unit boundary at or after it — 64 at `U = 16`, giving `Style Offset = 4` — and
-    // `49..64` is `0xFF` filler. Reading the field rather than assuming the table follows the
+    // `57..64` is `0xFF` filler. Reading the field rather than assuming the table follows the
     // header is what it was always for; this is the first version where the two differ.
-    assert_eq!(HEADER_LEN, 49);
+    assert_eq!(HEADER_LEN, 57);
     assert_eq!(bytes[4], obc_formats::obcm::VERSION);
     assert_eq!(bytes[HEADER_OFFSET_SCALE_OFF], OFFSET_SCALE, "the scale byte producers write");
     assert_eq!(u32::from_le_bytes(bytes[21..25].try_into().unwrap()), scaled(STYLE_OFFSET), "Style Offset in units");
@@ -883,10 +883,7 @@ fn old_version_file_is_rejected() {
     assert!(matches!(MapTables::parse(&SliceSource(&bytes)), Err(Error::BadVersion)));
 }
 
-/// **The version cut goes both ways.** A v13 file (`0x0D`) and a hypothetical v15 one (`0x0F`) are
-/// each `BadVersion`, and neither is partially readable: a v13 file's offsets mean bytes and a
-/// v14 file's mean units, so an offset carried across the cut lands somewhere plausible rather than
-/// somewhere obviously wrong. The refusal is the file's, not the section's.
+/// Refuse both adjacent versions before any section is read.
 #[test]
 fn the_version_cut_refuses_both_neighbours() {
     for version in [obc_formats::obcm::VERSION - 1, obc_formats::obcm::VERSION + 1] {

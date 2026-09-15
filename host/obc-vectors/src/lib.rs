@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
+pub mod landmarks;
+
 /// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../specs/vectors")
@@ -717,6 +719,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // manifest.json, force the Swift + TS consumers of that number to be looked at) rather than
         // leave three implementations pinned to a number the firmware stopped saying.
         ("place-train-v15.bin", place_record()),
+        ("landmark-section-v16.bin", landmarks::section()),
         ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
         // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
         // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.

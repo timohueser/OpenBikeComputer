@@ -959,9 +959,16 @@ impl PlanetBake<'_> {
             self.leaves.len(),
             self.opts.schema_id
         ));
+        let landmark_key = self
+            .opts
+            .landmarks
+            .as_deref()
+            .map(obc_pack::landmark_map::fingerprint)
+            .transpose()?
+            .unwrap_or_else(|| "none".into());
         for (number, leaf) in self.leaves.iter().enumerate() {
             let cells = leaf_cells(leaf.id, &self.opts.bands);
-            let pack_key = self.pack_key(leaf);
+            let pack_key = self.pack_key(leaf, &landmark_key);
             progress.log(format!(
                 "\n--- planet leaf {}/{} ({}/{}, {}, {} cell-band outputs) ---",
                 number + 1,
@@ -1089,13 +1096,13 @@ impl PlanetBake<'_> {
         )
     }
 
-    fn pack_key(&self, leaf: &PlanetLeaf) -> String {
+    fn pack_key(&self, leaf: &PlanetLeaf, landmark_key: &str) -> String {
         let bands = serde_json::to_string(&self.opts.bands).unwrap_or_default();
         // `terrain` is here for the same reason it is in the curated key: the nav graph's per-edge
         // ascent is integrated from that raster, so a terrain re-bake really does move these bytes.
         let terrain = self.opts.terrain.as_ref().map_or("none".to_string(), |t| t.revision.to_string());
         crate::hash::text(&format!(
-            "planet-recipe={PLANET_BAKE_STATE_VERSION}\ncell-recipe={}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\nleaf={}\nextent={:?}\n",
+            "planet-recipe={PLANET_BAKE_STATE_VERSION}\ncell-recipe={}\nobcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\nlandmarks={landmark_key}\nleaf={}\nextent={:?}\n",
             crate::cells::CELL_RECIPE_VERSION,
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
@@ -1188,6 +1195,7 @@ impl PlanetBake<'_> {
             // no terrain writes `Ascent M = 0`, which is a decode-valid v12 map and exactly what
             // v11 was.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
+            landmarks: self.opts.landmarks.clone(),
             bbox: None,
             source_extent: Some(leaf.logical_bbox),
         };
@@ -1805,6 +1813,7 @@ mod tests {
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
                 terrain: None,
+                landmarks: None,
             },
         };
         let first = run().run_inner(&Progress::silent()).unwrap();
@@ -1843,6 +1852,7 @@ mod tests {
                 schema_id: "bikepacking".into(),
                 schema_revision: 1,
                 terrain: None,
+                landmarks: None,
             },
         }
         .run_inner(&Progress::silent())
@@ -1933,6 +1943,7 @@ mod tests {
                 schema_id: "typo".into(),
                 schema_revision: 1,
                 terrain: None,
+                landmarks: None,
             },
         }
         .run(&Progress::silent())
