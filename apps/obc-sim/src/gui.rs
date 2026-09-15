@@ -171,8 +171,9 @@ pub fn run(
     // so the body has room around the framebuffer.
     let dev = housing::HousingStyle::default().window_size_px(egui::vec2(args.width as f32, args.height as f32));
     let win = [dev.x * args.scale as f32, dev.y * args.scale as f32];
+    let title = if args.assistant_demo { "OBC Simulator — Ride Assistant study" } else { "OBC Simulator" };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("OBC Simulator").with_inner_size(win),
+        viewport: egui::ViewportBuilder::default().with_title(title).with_inner_size(win),
         ..Default::default()
     };
     eframe::run_native(
@@ -203,6 +204,7 @@ struct DeviceHit {
 }
 
 struct SimGui {
+    assistant_scenario: crate::assistant_demo::Scenario,
     peak_view: crate::peak_view::Runtime,
     /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
     /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
@@ -216,7 +218,7 @@ struct SimGui {
     /// for the duration of a render call and keeps nothing across frames). Boxed so it never rides
     /// this struct's moves through the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
-
+    photo: obc_host_core::photo::Preparer,
     /// The card route projection and its retained active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -438,9 +440,11 @@ impl SimGui {
         let physical = args.physical && points_per_mm.is_some();
         let colorway = Colorway::Forest;
         let mut gui = SimGui {
+            assistant_scenario: args.assistant.scenario,
             peak_view,
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
+            photo: obc_host_core::photo::Preparer::default(),
             store,
             trip_store,
             ride_store,
@@ -489,11 +493,29 @@ impl SimGui {
         gui.app.set_routes_with_ids(gui.store.catalog(), gui.store.ids());
         gui.app.set_trips(&gui.trip_store.inputs());
         gui.app.set_rides(gui.ride_store.catalog());
+        if args.assistant_demo {
+            crate::assistant_demo::install(&mut gui.app, &mut gui.store, gui.map.tables(), &args).unwrap_or_else(
+                |error| {
+                    eprintln!("assistant demo: {error}");
+                    std::process::exit(1)
+                },
+            );
+            gui.note_card_commit();
+            gui.sync_assistant_position();
+        }
         // `--gpx` opens with a track loaded, paused at the start.
         if let Some(path) = &args.gpx {
             gui.load_gpx(Path::new(path));
         }
         gui
+    }
+
+    fn sync_assistant_position(&mut self) {
+        if let Some(fix) = self.app.state.user_fix {
+            self.loc.set_position(fix.lat, fix.lon);
+            self.panel.lat_deg = fix.lat as f64 / 1e6;
+            self.panel.lon_deg = fix.lon as f64 / 1e6;
+        }
     }
 
     /// Parse a GPX file and load it as the active replay (paused at the start), or record the
@@ -553,6 +575,7 @@ impl SimGui {
         // The active route is opened once from the resident session (no per-frame `RouteIndex`
         // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
         // The render below re-opens it: the executor may commit new bytes under it.
+        self.app.start_assistant_demo_if_ready();
         self.session.sync(&self.app, &mut self.store);
         let ui_now = self.input.now_ms();
         let gestures = core::mem::take(&mut self.pending_gestures);
@@ -694,7 +717,7 @@ impl SimGui {
         // The frame renders the very snapshot this pass decided over — sampled before it, not after
         // — so the card, the step count and the raster are one decision.
         let (app, scratch) = (&mut self.app, &mut *self.scratch);
-        let mut stats = crate::map_file::render_frame(
+        let mut stats = crate::map_file::render_base_frame(
             app,
             scratch,
             &mut fbdev,
@@ -702,6 +725,7 @@ impl SimGui {
             panorama,
             (dev_w as f32, dev_h as f32),
             |c| Rgb565::from(RawU16::new(c)),
+            Some(self.photo.interactive(plan.render.map)),
         );
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;

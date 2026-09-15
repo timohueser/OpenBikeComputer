@@ -791,6 +791,16 @@ RenderScratch contains fixed-capacity buffers. The device initializes it in plac
 
 The board build checks the complete scratch size against its arena budget. Increasing a capacity is a device-memory decision.
 
+## Landmark photo preparation
+
+A selected landmark photo uses the same resident frame as the map. The screen stores the map generation, record index, QID, title and render state. It does not store image pixels or a decoder.
+
+The base draw clears the photo rectangle and draws its header. A separate mutable phase then reads the selected photo through the normal map reader. Each step reads at most 256 compressed bytes and produces at most 4,096 pixels. Header and record reads also remain bounded. The board borrows its shared scratch arena for one step and releases it before presentation or any await. No source or frame reference survives the step.
+
+The next step preserves completed pixels. A full base redraw, a fresh capture or a return from a covering page starts the photo again. An ordinary drawer preserves the prepared photo and suspends its work. When a fresh frame or a drawer transition requires the base to be rebuilt, the shared frame pipeline prepares photo pixels before it draws the drawer. Interactive reconstruction advances one bounded step per pass; the drawer is composed after each step. A fresh headless capture finishes the background photo before it composes the drawer. If another arena user replaces the decoder state, the next photo step clears the rectangle and starts again. A map generation or QID mismatch removes the previous image. An unreadable photo shows **Photo unavailable**; an absent photo shows **No photo available**.
+
+The simulator and browser use the same preparation phase. Interactive hosts advance one step per frame. A fresh headless capture runs bounded steps until the image is complete or unavailable. Text pages, Visit actions and Sources navigation use the content screen's own controls.
+
 ## Source map
 
 - Renderer and scratch budgets: [lib.rs](src:firmware/obc-render/src/lib.rs)

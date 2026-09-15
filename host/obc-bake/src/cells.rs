@@ -115,7 +115,7 @@ use crate::util::{human_bytes, write_json};
 
 /// Bumped when a cutter change alters cell bytes for unchanged inputs, forcing a
 /// re-cut that content hashing alone would not.
-pub const CELL_RECIPE_VERSION: u32 = 2;
+pub const CELL_RECIPE_VERSION: u32 = 3;
 
 /// Bumped only when the in-process bbox selection changes. Planet leaves do not crop
 /// in the cutter, so folding this into [`CELL_RECIPE_VERSION`] would force a re-cut
@@ -213,6 +213,7 @@ pub struct CellBakeOptions {
     /// [`crate::terrain`] reads a schema fact, so a schema bump re-cuts cells and
     /// leaves every terrain object alone.
     pub terrain: Option<crate::terrain::TerrainInput>,
+    pub landmarks: Option<PathBuf>,
 }
 
 /// How one cell ended.
@@ -455,6 +456,13 @@ impl CellBakery<'_> {
             return Err("--schema-revision starts at 1 — a cell store has no revision zero".into());
         }
         self.check_skins()?;
+        let landmark_key = self
+            .opts
+            .landmarks
+            .as_deref()
+            .map(obc_pack::landmark_map::fingerprint)
+            .transpose()?
+            .unwrap_or_else(|| "none".into());
         check_schema_id(self.schema, &self.opts)?;
         progress.log(format!("cell bakery: {} region(s), schema `{}`", self.regions.len(), self.opts.schema_id));
         progress.log(format!("  source:  {}", self.source.describe()));
@@ -476,7 +484,7 @@ impl CellBakery<'_> {
             let started = Instant::now();
             let names: Vec<String> = plan.sources.iter().map(|&k| resolved[k].region.id.clone()).collect();
             progress.log(format!("\n--- {} ({} cells) ---", names.join(" + "), plan.cells.len()));
-            let mut outcome = match self.run_plan(plan, &resolved, &mut known_empty, progress) {
+            let mut outcome = match self.run_plan(plan, &resolved, &mut known_empty, &landmark_key, progress) {
                 Ok(cells) => {
                     PlanOutcome { sources: names, cells_planned: plan.cells.len(), cells, seconds: 0.0, error: None }
                 }
@@ -622,6 +630,7 @@ impl CellBakery<'_> {
         plan: &Plan,
         resolved: &[Resolved],
         known_empty: &mut KnownEmptyIndex,
+        landmark_key: &str,
         progress: &Progress,
     ) -> Result<Vec<CellOutcome>, String> {
         let sources: Vec<&Resolved> = plan.sources.iter().map(|&k| &resolved[k]).collect();
@@ -652,7 +661,7 @@ impl CellBakery<'_> {
         // uncropped or union-cropped rule is stale by key and re-cuts once — no mixed
         // provenance.
         let crop = crop_box(&plan.cells)?;
-        let pack_key = self.pack_key(&sources, crop.as_deref());
+        let pack_key = self.pack_key(&sources, crop.as_deref(), landmark_key);
 
         // Which cells this plan still owes, and which only need a sidecar rewrite.
         let mut stale: Vec<CellId> = Vec::new();
@@ -700,6 +709,7 @@ impl CellBakery<'_> {
             // The terrain already published in this tree, or nothing. A tree with no terrain bakes
             // `Ascent M = 0` throughout, which is a decode-valid v12 map and exactly what v11 was.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
+            landmarks: self.opts.landmarks.clone(),
             bbox: crop.as_deref().map(Bbox::parse).transpose()?,
             source_extent: None,
         };
@@ -760,7 +770,7 @@ impl CellBakery<'_> {
     /// text. (The schema's `_meta.revision` and band table *are* in the key, but as
     /// the run's own `--schema-revision` and `--bands`, which is where they come from
     /// on this path.)
-    fn pack_key(&self, sources: &[&Resolved], crop: Option<&str>) -> String {
+    fn pack_key(&self, sources: &[&Resolved], crop: Option<&str>, landmark_key: &str) -> String {
         let ids: Vec<String> = sources
             .iter()
             .map(|r| format!("{}:{}", r.region.id, r.extract_sha.as_deref().expect("a plan source has an extract sha")))
@@ -775,7 +785,7 @@ impl CellBakery<'_> {
         // and hashing thousands of 2 MiB rasters on every run to rediscover it would be absurd.
         let terrain = self.opts.terrain.as_ref().map_or("none".to_string(), |t| t.revision.to_string());
         crate::hash::text(&format!(
-            "recipe={CELL_RECIPE_VERSION}\n{crop_recipe}obcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\ncrop={}\nsources={}\n",
+            "recipe={CELL_RECIPE_VERSION}\n{crop_recipe}obcm={}\ncutter={}\nschema={}\nrevision={}\nbands={bands}\nterrain={terrain}\nlandmarks={landmark_key}\ncrop={}\nsources={}\n",
             obc_formats::obcm::VERSION,
             self.cutter.recipe(),
             self.schema.body_sha256,

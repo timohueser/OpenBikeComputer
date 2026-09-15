@@ -29,12 +29,14 @@ use crate::ride::RideEntry;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
+mod assistant;
 mod climb;
 pub(crate) mod context_drawer;
 mod detour;
 mod dfu;
 mod find_place;
 mod home;
+mod landmark_photo;
 mod map;
 mod map_transfer;
 mod menu;
@@ -61,6 +63,7 @@ pub(crate) mod up_ahead;
 pub(crate) mod vocab;
 mod warning;
 
+pub use assistant::AssistantScreen;
 pub use climb::ClimbScreen;
 pub(crate) use context_drawer::ContextFacts;
 pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
@@ -71,6 +74,7 @@ pub use dfu::{
 };
 pub use find_place::{FindPlaceScreen, VisitReviewScreen};
 pub use home::HomeScreen;
+pub use landmark_photo::LandmarkPhotoScreen;
 pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
@@ -661,6 +665,8 @@ pub enum ReaderNeed {
     PoiSnapshot,
     /// Needs it until the POI detail's opening-hours read has resolved (issue #444).
     PoiHours,
+    /// Reads selected photo content during bounded preparation.
+    Photo,
 }
 
 /// The **render key** a screen's content is made of — the exact facts its draw reads, declared in
@@ -759,7 +765,8 @@ pub struct Caps {
     /// Whether a drawer **recesses** this screen: the sheet lifts off a base drawn one device-64
     /// level down ([`dim_color`]), so the eye reads the sheet as being in front of a page.
     ///
-    /// `true` for chrome — a menu, a list, a settings page — where the second draw is a handful of
+    /// Prepared photos retain their pixels while covered; they cannot decode in draw.
+    /// `true` for other chrome — a menu, a list, a settings page — where the second draw is a handful of
     /// rules and glyphs and the recess costs nothing. `false` for a **map base** (#1559): its
     /// second draw is the streamed map, and dimming it means re-rendering it, which is tens of
     /// milliseconds at near zoom and far more at far zoom. On the panel the map under an open
@@ -1011,6 +1018,8 @@ macro_rules! screens {
 screens! {
     Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
+    Assistant(AssistantScreen) => Caps::map(),
+    LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
@@ -1257,6 +1266,8 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
+            Screen::Assistant(s) if s.has_landmark_context() => Some(&context_drawer::LANDMARKS),
+            Screen::Assistant(s) if s.has_ahead_context() => Some(&context_drawer::UP_AHEAD),
 
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
             // *Create route* row records the request the host plans with. Not `NavPlanning` (the
@@ -1626,7 +1637,7 @@ mod tests {
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
-                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours => {
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
                     assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
                 }
@@ -1666,8 +1677,8 @@ mod tests {
             // screen cannot arrive dimmed by accident (#1559).
             assert_eq!(
                 c.recess,
-                c.base != BaseContent::Map,
-                "{name}: a map base is left alone under a sheet; anything cheaper recedes"
+                c.base != BaseContent::Map && c.reader != ReaderNeed::Photo,
+                "{name}: streamed maps and prepared photos retain their pixels under a sheet"
             );
             // A drawer is an overlay sheet, and the two halves of that are one declaration: the
             // frame recesses a base that asks for it under any `Overlay` row, and the pass freezes
@@ -1700,14 +1711,14 @@ mod tests {
     /// property to the base content; this is the list that ties it to the rider's experience, so a
     /// change to either shows up in review as a change to both.
     #[test]
-    fn only_the_map_class_screens_are_left_undimmed_under_a_sheet() {
+    fn streamed_map_and_photo_screens_are_left_undimmed_under_a_sheet() {
         let undimmed: std::vec::Vec<&str> =
             Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
         assert_eq!(
             undimmed,
-            ["Map", "Detour", "DetourPreview", "FindPlace", "VisitReview"],
-            "the map-class screens, and only those — Statistics and the Climb view draw panels, \
-             which are cheap enough to keep the recess"
+            ["Map", "Assistant", "LandmarkPhoto", "Detour", "DetourPreview", "FindPlace", "VisitReview"],
+            "streamed map and prepared photo pixels stay unchanged while covered"
+
         );
     }
 

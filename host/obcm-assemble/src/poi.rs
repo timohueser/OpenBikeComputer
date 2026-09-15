@@ -63,6 +63,27 @@ pub struct MergedPois {
     pub duplicates: usize,
 }
 
+impl MergedPois {
+    /// Add landmark-only schedules and remap the service records before layout.
+    pub(crate) fn add_hours(&mut self, schedules: impl Iterator<Item = [u8; POI_HOURS_BLOB_LEN]>) -> Result<()> {
+        let mut pool = self.pool.clone();
+        pool.extend(schedules);
+        pool.sort_unstable();
+        pool.dedup();
+        if pool.len() >= POI_HOURS_REF_NONE as usize {
+            return Err(Error::Capacity("shared hours pool exceeds the format limit".into()));
+        }
+        for poi in &mut self.pois {
+            if poi.subtype != SUMMIT_SUBTYPE_ID && poi.payload != POI_HOURS_REF_NONE {
+                poi.payload =
+                    pool.binary_search(&self.pool[poi.payload as usize]).expect("existing service schedule") as u16;
+            }
+        }
+        self.pool = pool;
+        Ok(())
+    }
+}
+
 /// Collect every POI record from `cells`, deduplicate by `(lat, lon, subtype)`, and rebuild the
 /// hours pool with `HoursRef` remapped (§4.5.1–§4.5.3).
 ///
@@ -159,7 +180,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 }
 
 /// Read one cell's hours pool (`OBCM_Spec.md` §7.5).
-fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
+pub(crate) fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
     let count = cell.pois.hours_pool_count;
     if count == 0 {
         return Ok(Vec::new());
@@ -367,6 +388,29 @@ mod tests {
                 .expect("the section serialises");
         }
         bytes
+    }
+
+    #[test]
+    fn landmark_schedules_remap_services_without_changing_summit_heights() {
+        let mut open = [0; POI_HOURS_BLOB_LEN];
+        open[2] = 96;
+        let poi = |subtype, payload| MergedPoi {
+            metadata: Default::default(),
+            lat: 100,
+            lon: 100,
+            subtype,
+            name: [0; 25],
+            payload,
+        };
+        let mut merged = MergedPois {
+            pois: vec![poi(1, 0), poi(1, POI_HOURS_REF_NONE), poi(SUMMIT_SUBTYPE_ID, 1700)],
+            pool: vec![open],
+            duplicates: 0,
+        };
+        merged.add_hours([[0; POI_HOURS_BLOB_LEN], open].into_iter()).unwrap();
+        assert_eq!(merged.pool.len(), 2);
+        assert_eq!(merged.pois.iter().map(|p| p.payload).collect::<Vec<_>>(), vec![1, POI_HOURS_REF_NONE, 1700]);
+        assert_eq!(merged.pool[merged.pois[0].payload as usize], open);
     }
 
     #[test]

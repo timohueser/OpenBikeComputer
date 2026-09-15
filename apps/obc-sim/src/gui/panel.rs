@@ -97,6 +97,85 @@ impl SimGui {
                         ui.separator();
                         ui.add_space(6.0);
 
+                        if self.app.state.assistant_demo.is_some() {
+                            ui.heading("Ride Assistant study");
+                            ui.label("Synthetic shops and access paths. Real firmware screens and route objects.");
+                            ui.label("Candidate set");
+                            let previous = self.assistant_scenario;
+                            egui::ComboBox::from_id_salt("assistant-scenario")
+                                .selected_text(self.assistant_scenario.key())
+                                .show_ui(ui, |ui| {
+                                    for (scenario, key) in crate::assistant_demo::Scenario::ALL {
+                                        ui.selectable_value(&mut self.assistant_scenario, scenario, key);
+                                    }
+                                });
+                            if previous != self.assistant_scenario {
+                                self.app.set_assistant_candidates(self.assistant_scenario.candidates());
+                                self.sync_assistant_position();
+                            }
+                            let demo = self.app.state.assistant_demo.unwrap();
+                            ui.label(format!(
+                                "{} available, {} suggested",
+                                self.assistant_scenario.candidates().len(),
+                                demo.candidates.len
+                            ));
+                            let mut selected = demo.selected as usize;
+                            if demo.candidates.len > 0 {
+                                egui::ComboBox::from_id_salt("assistant-option")
+                                    .selected_text(format!("{}: {}", selected + 1, demo.stop().name))
+                                    .show_ui(ui, |ui| {
+                                        for (i, stop) in demo.stops().enumerate() {
+                                            ui.selectable_value(&mut selected, i, format!("{}: {}", i + 1, stop.name));
+                                        }
+                                    });
+                                if selected != demo.selected as usize {
+                                    self.app.show_assistant_demo(obc_app::assistant_demo::Stage::Choices, selected);
+                                    self.sync_assistant_position();
+                                }
+                            } else {
+                                ui.label("No results in this candidate set.");
+                            }
+                            use obc_app::assistant_demo::{Phase, Stage};
+                            egui::ComboBox::from_id_salt("assistant-stage").selected_text("Jump to stage…").show_ui(
+                                ui,
+                                |ui| {
+                                    for (stage, key) in Stage::ALL {
+                                        if ui
+                                            .add_enabled(
+                                                !stage.needs_stop() || demo.candidates.len > 0,
+                                                egui::Button::new(key),
+                                            )
+                                            .clicked()
+                                        {
+                                            let option = if matches!(stage, Stage::Easier | Stage::EasierReview) {
+                                                0
+                                            } else {
+                                                selected
+                                            };
+                                            self.app.show_assistant_demo(stage, option);
+                                            self.sync_assistant_position();
+                                            ui.close_menu();
+                                        }
+                                    }
+                                },
+                            );
+                            let phase = self.app.state.assistant_demo.unwrap().phase;
+                            let event = match phase {
+                                Phase::ToStop => Some("Arrive at place"),
+                                Phase::Returning => Some("Rejoin original route"),
+                                _ => None,
+                            };
+                            if let Some(label) = event {
+                                if ui.button(label).clicked() {
+                                    self.app.advance_assistant_demo();
+                                    self.sync_assistant_position();
+                                }
+                            } else {
+                                ui.label("Up + Select opens the drawer. Choose Ride Assistant to find places.");
+                            }
+                            separator_above(ui);
+                        }
+
                         // Let sliders span the panel width, leaving room for the value box.
                         ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(140.0);
 
