@@ -87,6 +87,8 @@ current leg. Select **Cancel visit** to leave the visit. Before departure, the o
 after the card confirms the saved change. After departure, review the real connector and select
 **Use this route**. Back from the connector preview keeps the accepted visit. Back while a save is
 pending only closes the view; it does not revoke the requested change.
+If the card confirms that a cancellation was not saved, the visit stays active. Retry from
+Current visit. A refused phase save keeps the last confirmed phase and retries the latest position.
 
 The arrival card is informational. Select or Back closes it. Guidance and recording continue.
 Rejoining the original journey clears an arrival card that is still open.
@@ -94,9 +96,11 @@ Rejoining the original journey clears an arrival card that is still open.
 After a restart, a saved Assistant journey offers **Resume route**. This needs a fresh position
 inside the saved route phase and exact source validation. A loop or crossing with more than one
 matching position remains unavailable. Move to a clear part of the route and retry. Select resumes
-guidance only after the
-saved change is confirmed. It does not start recording. Back leaves navigation inactive. Open the
+guidance only after the saved change is confirmed. A refused save leaves Resume available.
+It does not start recording. Back leaves navigation inactive. Open the
 Assistant context drawer to reach the Resume card again. Ordinary routes do not resume on their own.
+The recording recovery card makes a separate decision. Continue or Discard there keeps the saved
+Assistant journey. Guidance stays inactive until you select Resume route.
 
 ## Easier route
 
