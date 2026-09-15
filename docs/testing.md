@@ -41,6 +41,47 @@ The current conflicts and their owners live in `testing/suites.toml`. Use `obc s
 `obc suites explain SUITE_ID` to inspect them. A declared cadence does not prove that a workflow
 executes it; unresolved execution routes remain explicit conflicts until the implementation lands.
 
+## Explicit cadence routes
+
+The Rust fast and captured-fixture runs use separate nextest invocations and result files.
+`cargo-filter --tier fast|fixtures` derives expressions over whole Cargo binaries from registry
+ownership. It does not select test functions. Cargo owners can use `targets` or `exclude_targets`
+to split one package into distinct execution units. Captured navigation, POI, altitude, terrain
+and simulator scenarios have separate binaries. Live Copernicus tests and the captured assistant
+places check run only through their explicit manual commands. Their ignored status prevents a
+broad Cargo command from contacting a live service or starting the manual captured-source check.
+
+Level commands omit manual suites. Run a manual suite through its declared command, or select
+its explicit cadence with `run --scheduled manual --surface NAME`. Captured Rust suite commands
+use the existing `obc test fixtures -p` wrapper to prepare inputs before they run locally.
+
+Vector and assembly writers are Cargo examples. They run only through the manual commands in
+`obc suites explain manual.obc-link`, `manual.obc-vectors` and `manual.obc-web-assemble`.
+`manual.obc-display` runs the row-hash timing probe. These commands can write fixtures or print
+measurements; they are not required test passes.
+
+The required iOS suite owns `WebsiteScreenshotTests.swift`. The separate weekly application suite
+owns the other XCUITest classes. `test-weekly.yml` runs the registered weekly iOS and storage
+suites each Monday and on manual dispatch. Run the same cadence locally with:
+
+```sh
+python3 tools/suite_registry.py run --scheduled weekly --surface ios
+python3 tools/suite_registry.py run --scheduled weekly --surface storage
+```
+
+The iOS application command needs Xcode 26.5, XcodeGen and an iPhone 17 Pro simulator. Set
+`OBC_TEST_DEVICE` to use another available simulator. It runs each application class once, without
+parallel test execution or retries. The weekly result artifact is `ios-application-ATTEMPT`.
+Required screenshot runs retain `ios-screenshots-ATTEMPT`. Both contain the native `.xcresult`
+bundle. Open it in Xcode to inspect identities, outcomes and durations. A missing expected bundle
+fails the upload; setup failure can leave no bundle. The screenshot script also accepts
+`OBC_XCRESULT_PATH` for local retention. A workflow declaration alone does not establish a passing
+run. TS6 still owns the remaining critical application journeys.
+
+The UI snapshot sweep runs only when its registry input triggers match the change. A broad
+coverage or workflow change does not cause an unrelated sweep. Its existing rendering, screen
+and snapshot-input triggers remain the single selection source.
+
 ## Suite registry fields
 
 Every `[[suite]]` entry uses these fields:
@@ -187,19 +228,19 @@ request that the run did not reproduce, with the reason. It makes no unqualified
 
 ## Rust CI result artifacts
 
-The `cargo nextest run` command in `test` uses
-`NEXTEST_PROFILE=ci`. The profile in `.config/nextest.toml` writes native JUnit XML to
-`target/nextest/ci/junit.xml`. Each test case retains its binary and test identity, result, and
+The two `cargo nextest run` commands in `test` use `NEXTEST_PROFILE=ci` for fast binaries
+and `NEXTEST_PROFILE=fixtures` for captured fixtures. The profiles in `.config/nextest.toml` write
+native JUnit XML to `target/nextest/ci/junit.xml` and `target/nextest/fixtures/junit.xml`. Each test case retains its binary and test identity, result, and
 elapsed duration. Failed tests also retain their output. Test selection, retries, and failure
 handling keep their existing settings; a failed run can contain only the tests completed before
 it stopped. Filtered and ignored tests are absent from the report, not recorded as passes.
 
 CI uploads the report after test success or failure. The artifact name is `rust-test-ATTEMPT`,
-where `ATTEMPT` is the GitHub run attempt. Open a workflow run's
+and `rust-fixtures-ATTEMPT`, where `ATTEMPT` is the GitHub run attempt. Open a workflow run's
 **Artifacts** section, or download all its Rust reports with:
 
 ```sh
-gh run download RUN_ID --pattern 'rust-test-*' --dir test-results
+gh run download RUN_ID --pattern 'rust-*' --dir test-results
 ```
 
 Each command removes an old report before it starts. A skipped job uploads nothing. A build or
@@ -365,3 +406,36 @@ owns and, for Cargo packages, from the workflow steps that compile them.
 The aggregate gate reports pass, fail, not selected, selected but not run, or blocked by an upstream
 failure for every suite. A skipped selected job is a failure, never evidence that the suite passed,
 and a failed or cancelled `selection` job fails the gate because no plan can then be trusted.
+
+## On-demand timing comparison
+
+`tools/test_cost.py` reads saved GitHub workflow-run/job responses and downloaded native XML.
+It does not run tests, fetch data, write a second result format or fail a run against runtime guidance.
+Save each attempt's job response as `jobs-RUN_ID.json`; request up to 100 jobs and check pagination.
+For example:
+
+```sh
+gh api 'repos/timohueser/OpenBikeComputer/actions/workflows/ci.yml/runs?event=pull_request&status=success&per_page=20' > runs.json
+gh api 'repos/timohueser/OpenBikeComputer/actions/runs/RUN_ID/attempts/ATTEMPT/jobs?per_page=100' > jobs-RUN_ID.json
+gh run download RUN_ID --pattern 'rust-*' --dir reports
+python3 tools/test_cost.py --runs runs.json --jobs-dir . --reports reports
+python3 tools/test_cost.py --reports head-reports --compare-reports base-reports
+```
+
+Download jobs for every run in `runs.json`. Download native artifacts for each language that the
+comparison needs. Keep the relative report paths equal across the two report directories; changing
+native timestamp identities remain unmatched. The output lists added and missing identities.
+Malformed XML and incomplete job pagination fail visibly.
+
+Elapsed workflow time includes queue and dependency waits through the final active job. It is a
+conservative elapsed measure, not a reconstruction of the job dependency critical path.
+Runner-minutes sum active job intervals without billing multipliers. Native suite times are
+reported as supplied; missing suite times remain unknown. In particular, nextest reports its whole
+run time and per-case times, but does not supply binary wall times. Do not sum concurrent case times
+into wall time. A successful-run sample can omit slow failures and repeat the same PR. Its sample
+percentiles do not establish a population service level. XCTest and other missing artifacts remain
+coverage gaps until their native result routes are available.
+
+The guidance stays informational: required PR elapsed time at most 10 minutes, p95 at most
+20 minutes, cross-surface cost at most 40 runner-minutes, a required binary/file at most 30 seconds,
+and a unit suite near two seconds. Explain any remaining exception in its open owner issue.

@@ -117,18 +117,23 @@ These are design requirements, not measured proof that every cell-block layout i
 complex or too slow. The current no-adopt decision applies to the tested cell-order
 alternative. A future cell-block experiment needs its own bounded design and evidence.
 
-## Follow-up: browser input reads
+## Browser input reads
 
-A later comparison used the same shipping worker and pinned input with its existing
-read-block option. Reducing the block from 64 KiB to 4 KiB reduced median total
-assembly time from 19.278 to 10.853 seconds across three fixed pairs. All six
-outputs passed full validation and had the same independent digest. Logical input
-read bytes fell by 92.2%, while input call count increased. Verification alone
-became slower because the option also changes its read cache.
+The browser input cache uses 4 KiB windows. Sealed-output verification uses a
+separate 64 KiB cache. Each cache holds sixteen shared slots, independent of the
+number of source cells. Their default data residency is 64 KiB for inputs and
+1 MiB for verification. The memory estimate includes both.
 
-This result identifies input caching as a smaller implementation opportunity.
-The production default remains unchanged. The Chromium profile used persistent
-OPFS on a memory-backed host filesystem; physical storage performance and other
-workloads remain unmeasured. The
-[follow-up record](https://github.com/timohueser/OpenBikeComputer/tree/develop/host/obcm-assemble/dev/followup)
-contains all samples, source identities, and limits.
+Small records read in final graph order can have poor source locality. A smaller
+input window reduces unused reads on a cache miss. Large source reads bypass the
+cache and fill the caller's buffer directly. Full output verification, typed
+storage failures, and worker ownership are unchanged.
+
+The smaller window can increase host calls for sequential small records. This is
+a choice for the measured assembly workload, not a claim that smaller blocks are
+always faster. The
+[browser cache record](https://github.com/timohueser/OpenBikeComputer/tree/develop/host/obcm-assemble/dev/browser-cache)
+contains the fixed paired comparisons, source identities, sequential-read
+tradeoffs, and limits. Browser measurements use persistent OPFS on a btrfs host
+filesystem with warm operating-system caches. They do not measure physical device
+throughput, browser process memory, or country-scale acceptance.

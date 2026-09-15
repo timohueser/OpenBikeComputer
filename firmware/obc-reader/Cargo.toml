@@ -29,3 +29,7 @@ miniz_oxide = { version = "0.8.9", default-features = false }
 obcm-testkit = { path = "../../host/obcm-testkit" }
 obc-fixtures = { path = "../../host/obc-fixtures" }
 zlib-rs = "0.6.7"
+
+[[test]]
+name = "poi_fixtures"
+required-features = ["external-fixtures"]

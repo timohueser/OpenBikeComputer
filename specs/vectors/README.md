@@ -78,7 +78,7 @@ GPX→OBCR converter; everything else is built from spec constants). After a
 **deliberate** spec change:
 
 ```bash
-cargo test -p obc-vectors regenerate -- --ignored
+cargo run -p obc-vectors --example regenerate --locked
 ```
 
 …then update `manifest.json` to match and flag the app side **and** the web
