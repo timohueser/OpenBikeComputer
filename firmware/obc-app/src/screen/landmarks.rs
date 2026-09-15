@@ -41,8 +41,11 @@ impl LandmarksScreen {
                     list::step_selection(state.selected, n, state.rows.len() + usize::from(state.more) + 1);
                 state.invalidate_selection();
             }
-            Gesture::Press if !state.reading && state.selected >= state.rows.len() => {
-                let next = state.more && state.selected == state.rows.len();
+            Gesture::Press
+                if (!state.ready() && state.status != Status::Loading)
+                    || (!state.reading && state.selected >= state.rows.len()) =>
+            {
+                let next = state.ready() && state.more && state.selected == state.rows.len();
                 if !next {
                     if let Some(fix) = cx.state.user_fix {
                         state.origin = (fix.lon, fix.lat);
@@ -208,19 +211,7 @@ where
         let _ = write!(label, "Back  {}/{}", state.source_page + 1, state.source_pages);
     } else {
         let record = state.record.unwrap();
-        let action = if !rx.poi_scratch.detail_valid {
-            "Access unavailable"
-        } else if rx
-            .poi_scratch
-            .detail_schedule
-            .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed)
-        {
-            "Closed"
-        } else if record.osm.and_then(|m| m.approach).is_some() {
-            "Visit"
-        } else {
-            "No mapped access"
-        };
+        let action = visit_action(state, rx.poi_scratch, rx.place_local);
         let _ = write!(
             label,
             "{} {}/{}",
@@ -231,6 +222,25 @@ where
     }
     cv.round(rect(4, 282, 232, 34), 6, AMBER);
     cv.text(&label, Point::new(120, 286), Font::Label, TextAlign::Center, INK);
+}
+pub(super) fn visit_action(
+    state: &crate::landmarks::Landmarks,
+    scratch: &super::poi_list::PoiScratch,
+    local: Option<(u8, u16)>,
+) -> &'static str {
+    if !state.ready() || state.record.is_none() || !scratch.detail_valid {
+        "Access unavailable"
+    } else if scratch
+        .detail_schedule
+        .as_ref()
+        .is_some_and(|s| s.status(local) == obc_reader::hours::OpeningStatus::Closed)
+    {
+        "Closed"
+    } else if state.record.and_then(|r| r.osm).and_then(|m| m.approach).is_some() {
+        "Visit"
+    } else {
+        "No mapped access"
+    }
 }
 fn header(cv: &mut impl Surface, title: &str) {
     cv.fill(rect(0, 0, 240, 40), PARCHMENT);
