@@ -399,7 +399,17 @@ impl StatisticsScreen {
                 Some(cat) => {
                     category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
                 }
-                None => tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, PARCHMENT_SHADE, INK),
+                None => tile(
+                    cv,
+                    area,
+                    &rx.marquee,
+                    &cell.caption,
+                    &cell.value,
+                    cell.arrow,
+                    cell.value_align,
+                    PARCHMENT_SHADE,
+                    INK,
+                ),
             }
         }
     }

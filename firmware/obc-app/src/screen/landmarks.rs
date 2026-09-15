@@ -122,7 +122,9 @@ impl LandmarksScreen {
             let mut label = heapless::String::<40>::new();
             let _ = write!(label, "{}  {}", letter(state.selected), rx.t(kind(record.category)));
             cv.text(&label, Point::new(12, 212), Font::Label, TextAlign::Left, SUBTEXT);
-            cv.text(&super::poi_list::fit(&state.name, 18), Point::new(12, 238), Font::Label, TextAlign::Left, INK);
+            let name_row = rect(12, 238, 18 * Font::Label.char_width() as i32, Font::Label.line_height() as i32);
+            let name = rx.marquee.fit(&state.name, 18, Some(name_row));
+            cv.text(&name, Point::new(12, 238), Font::Label, TextAlign::Left, INK);
             label.clear();
             super::vocab::fmt::write_distance_coarse(
                 &mut label,
@@ -203,7 +205,14 @@ where
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    header(cv, if sources { rx.t(Msg::RideContextSources) } else { &state.name });
+    let name;
+    let title = if sources {
+        rx.t(Msg::RideContextSources)
+    } else {
+        name = rx.marquee.fit(&state.name, 18, Some(rect(4, 4, 232, 34)));
+        &name
+    };
+    header(cv, title);
     if !state.ready() || state.record.is_none() {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
@@ -266,7 +275,7 @@ pub(super) fn visit_action(
 fn header(cv: &mut impl Surface, title: &str) {
     cv.fill(rect(0, 0, 240, 40), PARCHMENT);
     cv.round(rect(4, 4, 232, 34), 6, WOOD);
-    cv.text(&super::poi_list::fit(title, 18), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
+    cv.text(&super::vocab::marquee::fit(title, 18), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
 }
 fn letter(i: usize) -> &'static str {
     ["A", "B", "C", "D"][i.min(3)]

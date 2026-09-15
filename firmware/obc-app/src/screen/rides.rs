@@ -28,7 +28,6 @@ use crate::input::Gesture;
 use crate::settings::{Language, Units};
 use crate::Msg;
 
-use super::route_menu::fit_name;
 use super::vocab::chrome::empty_state;
 use super::vocab::fmt::{write_date_short, write_distance_spaced};
 use super::vocab::list::{self, ListGeometry, Separators};
@@ -116,7 +115,7 @@ impl RidesScreen {
             let mark_cx = bx + row.area.size.width as i32 - MARK_RIGHT_GAP - MARK_HALF;
             let name_px = (mark_cx - MARK_HALF - 8) - text_x; // mark's left edge − gap − name start
             let name_max = (name_px / Font::Body.char_width() as i32).max(6) as usize;
-            let name = fit_name(&ride.name, name_max);
+            let name = rx.marquee.fit(&ride.name, name_max, row.scroll());
             cv.text(&name, Point::new(text_x, y + 9), Font::Body, TextAlign::Left, INK);
             if ride.synced {
                 let mark_c = Point::new(mark_cx, y + 9 + Font::Body.cap_mid() as i32);

@@ -28,6 +28,7 @@ use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
 use crate::next_ahead::NextAhead;
 use crate::placement::define_placement_constructors;
+use crate::screen::vocab::marquee::Marquee;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
@@ -90,6 +91,9 @@ pub(crate) struct UiRuntime {
     /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
     /// [`ms_until_next_wake`](App::ms_until_next_wake). `None` when nothing is time-animating.
     pub(crate) next_wake_ms: Option<u32>,
+    /// The one scrolling name of the frame (see [`marquee`](screen::vocab::marquee)): adopted
+    /// from each frame's draw by the render, stepped here beside the screen ticks.
+    pub(crate) marquee: Marquee,
     /// Map-plane millis of the last **user input** — any recognised gesture (see
     /// [`apply_gesture`](App::apply_gesture)), plus a per-tick refresh while a hold charges (a
     /// gesture in progress counts as activity). Drives the **idle-return** timeout
@@ -176,6 +180,7 @@ impl UiRuntime {
             frame_size: (0, 0),
             render_clip: None,
             next_wake_ms: None,
+            marquee: Marquee::default(),
             last_input_ms: 0,
             idle_return_timing: true,
             hold_progress_override: None,
@@ -221,8 +226,11 @@ impl UiRuntime {
         let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
-        for scr in self.stack.iter_mut().skip(first) {
-            let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking);
+        let screens = self.stack.iter_mut().skip(first);
+        let ticks = screens
+            .map(|scr| scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking))
+            .chain(core::iter::once(self.marquee.tick(self.now_ms)));
+        for tick in ticks {
             // A change that promises a containing region accumulates apart from the full-frame
             // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
             // every region, so a region-clipped repaint happens only when region ticks were the
@@ -740,6 +748,7 @@ impl UiRuntime {
             render_clip,
             resident_frame,
             next_wake_ms,
+            marquee,
             last_input_ms,
             idle_return_timing,
             hold_progress_override,
@@ -763,6 +772,7 @@ impl UiRuntime {
         assert!(region_dirty.is_none(), "no accumulated region demand");
         assert_eq!(*frame_size, (0, 0), "no frame rendered yet");
         assert!(render_clip.is_none() && next_wake_ms.is_none(), "no clip armed, nothing time-animating");
+        assert_eq!(*marquee, Marquee::default(), "no name scrolling");
         assert!(!*resident_frame, "no host has claimed a resident frame yet");
         assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
         assert!(*idle_return_timing, "idle time accumulates from the first pass");

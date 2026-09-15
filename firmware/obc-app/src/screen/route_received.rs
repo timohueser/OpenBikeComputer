@@ -21,6 +21,7 @@ use core::fmt::Write as _;
 
 use embedded_graphics::prelude::Point;
 use obc_render::{
+    rect,
     text::{Font, TextAlign},
     Surface,
 };
@@ -152,7 +153,8 @@ impl RouteReceivedScreen {
             Some(route) => {
                 // Name first (names > metadata), one stats line under it.
                 let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
-                let name = super::route_menu::fit_name(&route.name, max);
+                let name_row = rect(12, TITLE_BAR_H + 14, w - 24, Font::Body.line_height() as i32);
+                let name = rx.marquee.fit(&route.name, max, Some(name_row));
                 cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let stats = route_stats(route);
                 cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
@@ -283,7 +285,8 @@ impl TripReceivedScreen {
                 // exact anatomy — then the member count, the "all N landed" confirmation the
                 // per-route parade never gave.
                 let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
-                let name = super::route_menu::fit_name(&trip.name, max);
+                let name_row = rect(12, TITLE_BAR_H + 14, w - 24, Font::Body.line_height() as i32);
+                let name = rx.marquee.fit(&trip.name, max, Some(name_row));
                 cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let mut stats: heapless::String<24> = heapless::String::new();
                 let _ = write!(stats, "{} km, +{} m", trip.distance_km, trip.climb_m);
@@ -370,7 +373,8 @@ impl RouteUpdatedScreen {
         match self.route.and_then(|i| rx.routes.get(i)) {
             Some(route) => {
                 let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
-                let name = super::route_menu::fit_name(&route.name, max);
+                let name_row = rect(12, name_top, w - 24, Font::Body.line_height() as i32);
+                let name = rx.marquee.fit(&route.name, max, Some(name_row));
                 cv.text(&name, Point::new(w / 2, name_top), Font::Body, TextAlign::Center, INK);
             }
             None => {

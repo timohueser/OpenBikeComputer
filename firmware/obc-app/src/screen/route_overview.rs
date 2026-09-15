@@ -35,7 +35,7 @@ use obc_render::{
 };
 
 use super::vocab::band::{ElevationBand, PeakLabel};
-use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
+use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP, TITLE_BAR_H};
 use super::vocab::fmt::{duration_hms, write_distance_split};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
@@ -226,8 +226,9 @@ impl RouteOverviewScreen {
             // at full card width (#685 §4 — a title-bar name truncated to `Carrefour Mar..`).
             title_frame(cv, w, h, rx.t(Msg::RouteOverviewNewRoute), "");
             let x = 16;
-            let name =
-                super::route_menu::fit_name(&summary.name, ((w - 2 * x) / Font::Body.char_width() as i32) as usize);
+            let chars = ((w - 2 * x) / Font::Body.char_width() as i32) as usize;
+            let name_row = rect(x, LIST_TOP + 4, w - 2 * x, Font::Body.line_height() as i32);
+            let name = rx.marquee.fit(&summary.name, chars, Some(name_row));
             cv.text(&name, Point::new(x, LIST_TOP + 4), Font::Body, TextAlign::Left, INK);
 
             let units = rx.settings.units;
@@ -256,7 +257,8 @@ impl RouteOverviewScreen {
             return;
         }
 
-        let name = super::route_menu::fit_name(&summary.name, ((w - 28) / Font::Body.char_width() as i32) as usize);
+        let chars = ((w - 28) / Font::Body.char_width() as i32) as usize;
+        let name = rx.marquee.fit(&summary.name, chars, Some(rect(0, 0, w, TITLE_BAR_H)));
         title_frame(cv, w, h, &name, "");
 
         let band_top = BAND_TOP;

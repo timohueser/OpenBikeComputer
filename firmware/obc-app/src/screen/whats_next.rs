@@ -82,13 +82,10 @@ impl WhatsNextScreen {
             let _ = write!(title, "{caption} {range}");
             Font::Body
         } else {
-            let mut fitted = heapless::String::new();
-            let caption = super::vocab::tiles::fit_caption(
-                caption,
-                budget - obc_render::text::text_width(&range, Font::Label) as i32 - Font::Label.char_width() as i32,
-                &mut fitted,
-                Font::Label,
-            );
+            let chars = (budget - obc_render::text::text_width(&range, Font::Label) as i32)
+                / Font::Label.char_width() as i32
+                - 1;
+            let caption = super::vocab::marquee::fit(caption, chars.max(0) as usize);
             let _ = write!(title, "{caption} {range}");
             Font::Label
         };
@@ -224,14 +221,11 @@ fn overview(cv: &mut impl Surface, rx: &Render) {
         icon(cv, wpt.category, 20, 240, PARCHMENT);
         let distance = distance(wpt.dist_along_m.saturating_sub(w.start_m), rx.settings.units);
         let budget = 228 - obc_render::text::text_width(&distance, Font::Label) as i32 - 8 - 38;
-        let mut fitted = heapless::String::new();
-        let name = super::vocab::tiles::fit_caption(
+        let name = super::vocab::marquee::fit(
             if wpt.name.is_empty() { rx.t(Msg::AheadWaypoint) } else { &wpt.name },
-            budget,
-            &mut fitted,
-            Font::Body,
+            (budget / Font::Body.char_width() as i32).max(0) as usize,
         );
-        label(cv, name, 38, 226, Font::Body, INK);
+        label(cv, &name, 38, 226, Font::Body, INK);
         cv.text(&distance, Point::new(228, 228), Font::Label, TextAlign::Right, INK);
     } else {
         label(cv, rx.t(Msg::AheadNoWaypoint), 12, 226, Font::Label, SUBTEXT);
@@ -304,9 +298,9 @@ fn timeline(cv: &mut impl Surface, rx: &Render) {
             Item::Climb(_) => None,
         };
         icon(cv, category, 23, y + 19, bg);
-        let mut fitted = heapless::String::new();
-        let name = super::vocab::tiles::fit_caption(row_name(row, rx), 184, &mut fitted, Font::Body);
-        label(cv, name, 40, y + 3, Font::Body, INK);
+        let name_row = selected.then(|| rect(40, y + 3, 184, Font::Body.line_height() as i32));
+        let name = rx.marquee.fit(row_name(row, rx), 184 / Font::Body.char_width() as usize, name_row);
+        label(cv, &name, 40, y + 3, Font::Body, INK);
         if row.key.distance() < rx.navigation.progress_m {
             label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, SUBTEXT);
         } else {

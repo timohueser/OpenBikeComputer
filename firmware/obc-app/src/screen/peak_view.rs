@@ -13,7 +13,7 @@ use crate::peak_view::{runtime::Status, PeakViewProfile};
 use crate::Msg;
 
 use super::vocab::spinner::Spinner;
-use super::{palette, vocab::fmt::distance_short, Ctx, Render, Transition};
+use super::{palette, vocab::fmt::distance_short, vocab::marquee::fit, Ctx, Render, Transition};
 
 const FULL_Q4: i32 = 360 * 4;
 const HALF_Q4: i32 = FULL_Q4 / 2;
@@ -272,23 +272,6 @@ fn angle_y(profile: &PeakViewProfile, angle_q4: i16, bottom: i32) -> i32 {
     (bottom - above_bottom * height / span).clamp(COMPASS_H, bottom - 1)
 }
 
-fn vertical_name<'a>(name: &str, cells: i32, out: &'a mut heapless::String<24>) -> &'a str {
-    out.clear();
-    let cells = cells.max(2) as usize;
-    if name.chars().count() <= cells {
-        let _ = out.push_str(name);
-    } else {
-        for ch in name.chars().take(cells - 2) {
-            let _ = out.push(ch);
-        }
-        while out.ends_with(' ') {
-            out.pop();
-        }
-        let _ = out.push_str("..");
-    }
-    out.as_str()
-}
-
 /// Show every name that fits. Apparent elevation breaks collisions; selection does not rearrange labels.
 fn annotation_indices(profile: &PeakViewProfile, heading: u16, w: i32) -> heapless::Vec<usize, 64> {
     let mut indices = visible_indices(profile, heading);
@@ -327,13 +310,12 @@ fn draw_peak_annotations(
         let x = bearing_x(peak.azimuth_q4, heading_q4, w, profile.horizontal_fov_q4()).unwrap_or(0);
         let summit_y = angle_y(profile, peak.angle_q4, bottom);
         let headroom = (summit_y - LABEL_GAP - COMPASS_H - 2).max(12);
-        let mut caption = heapless::String::<24>::new();
-        let name = vertical_name(peak.name.as_str(), headroom / 6, &mut caption);
+        let name = fit(peak.name.as_str(), (headroom / 6).max(2) as usize);
         let label_bottom = (summit_y - LABEL_GAP).max(COMPASS_H + 14);
         let color = if Some(i) == selected { palette::WOOD } else { palette::INK };
         let leader_top = (summit_y - LABEL_GAP + 1).max(COMPASS_H + 2);
         cv.vline(x, leader_top, (summit_y - leader_top).max(0), 1, color);
-        cv.text_ccw(name, Point::new((x - 6).clamp(0, (w - 12).max(0)), label_bottom), Font::Label, 2, color);
+        cv.text_ccw(&name, Point::new((x - 6).clamp(0, (w - 12).max(0)), label_bottom), Font::Label, 2, color);
     }
 
     if let Some(i) = selected {
@@ -351,25 +333,20 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
     let top = rx.h - LEDGER_H;
     cv.fill(rect(0, top, rx.w, LEDGER_H), palette::PARCHMENT);
     cv.hline(0, top, rx.w, palette::WOOD);
+    let chars = ((rx.w - 20) / Font::Label.char_width() as i32) as usize;
     let Some(peak) = selected.and_then(|i| profile.peaks.get(i)) else {
         let pending = rx.peak_view.is_none_or(|terrain| !terrain.view_ready(heading, profile.horizontal_fov_q4()));
         if !pending && !visible_indices(profile, heading).is_empty() {
             return;
         }
-        let mut caption = heapless::String::new();
-        let status = super::vocab::tiles::fit_caption(
-            rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }),
-            rx.w - 20,
-            &mut caption,
-            Font::Label,
-        );
-        cv.text(status, Point::new(10, top + 7), Font::Label, TextAlign::Left, palette::SUBTEXT);
+        let status = fit(rx.t(if pending { Msg::PeakViewPreparing } else { Msg::PeakViewNoPeaks }), chars);
+        cv.text(&status, Point::new(10, top + 7), Font::Label, TextAlign::Left, palette::SUBTEXT);
         return;
     };
 
-    let mut caption = heapless::String::new();
-    let name = super::vocab::tiles::fit_caption(peak.name.as_str(), rx.w - 20, &mut caption, Font::Label);
-    cv.text(name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
+    let name_row = rect(10, top + 5, rx.w - 20, Font::Label.line_height() as i32);
+    let name = rx.marquee.fit(peak.name.as_str(), chars, Some(name_row));
+    cv.text(&name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
     let mut details: heapless::String<40> = heapless::String::new();
     if let Some(meters) = peak.elevation_m {
         let elevation = libm::roundf(rx.settings.units.elev(meters as f32)) as i32;
@@ -623,11 +600,10 @@ mod tests {
 
     #[test]
     fn vertical_labels_keep_utf8_and_fit_even_the_smallest_headroom() {
-        let mut out = heapless::String::new();
-        assert_eq!(vertical_name("Grossglockner", 6, &mut out), "Gros..");
-        assert_eq!(vertical_name("Älplerhorn", 4, &mut out), "Äl..");
-        assert_eq!(vertical_name("Peak", 0, &mut out), "..");
-        assert_eq!(vertical_name("Peak", 4, &mut out), "Peak");
+        assert_eq!(fit("Grossglockner", 6).as_str(), "Gros..");
+        assert_eq!(fit("Älplerhorn", 4).as_str(), "Äl..");
+        assert_eq!(fit("Peak", 2).as_str(), "..", "the smallest headroom keeps the dots alone");
+        assert_eq!(fit("Peak", 4).as_str(), "Peak");
     }
 
     #[test]

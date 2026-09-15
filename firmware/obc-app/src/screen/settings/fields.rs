@@ -174,7 +174,17 @@ impl StatFieldsScreen {
                     ghost_value(*f, &mut cell, rdt.language);
                     match f.category() {
                         Some(cat) => category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT),
-                        None => tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg, SUBTEXT),
+                        None => tile(
+                            cv,
+                            area,
+                            &rx.marquee,
+                            &cell.caption,
+                            &cell.value,
+                            cell.arrow,
+                            cell.value_align,
+                            bg,
+                            SUBTEXT,
+                        ),
                     }
                 }
                 if is_sel && self.grabbed {
