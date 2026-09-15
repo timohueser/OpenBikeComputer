@@ -80,7 +80,7 @@ async fn run() -> Result<(), String> {
     eprintln!("Device: {label}");
     eprintln!("Card:   {state}");
     eprintln!();
-    eprintln!("This permanently deletes the map, routes, trips, rides, weather and update packages.");
+
     if !args.yes {
         eprint!("Type FORMAT to erase and initialize this card: ");
         io::stderr().flush().map_err(|error| format!("could not show the confirmation prompt: {error}"))?;

@@ -32,20 +32,6 @@ pub enum DecodeError {
     Layout,
 }
 
-/// A random-access, read-only byte source.
-///
-/// **Offsets and lengths are `u64`, and that is a deliberate widening rather than generosity.**
-/// This trait is the whole tree's read interface: every format parser — OBCM, OBCR, OBCT, OBCW —
-/// reaches its bytes through it and through nothing else, so whatever width it speaks *is* the
-/// largest file anything here can open. It spoke `u32` until FS7.5-seam, which put the practical
-/// wall at 4 GiB no matter what a format's own offsets could express (OBCM v14's interior is
-/// `2^32 × U` = 64 GiB at the default scale). A `u64` here is what makes DACH-scale single files
-/// addressable.
-///
-/// A **medium** may still be narrower than the seam and must say so through [`Error`] rather than
-/// by truncating: an in-memory [`SliceSource`] cannot exceed the host's address space (32-bit on
-/// wasm32 and on the MCU), and a store's object may end before an offset the caller asks for.
-/// Both refuse; neither wraps.
 pub trait ByteSource {
     /// Fill `buf` from `offset`.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;

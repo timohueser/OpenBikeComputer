@@ -32,17 +32,14 @@ mod collect;
 mod fill;
 mod font_data;
 mod overlay;
-mod rain;
+
 mod stroke;
 pub mod surface;
 pub mod text;
 mod viewport;
 pub use canvas::{rect, Canvas};
 pub use overlay::{OverlayChunk, RouteOverlaySource};
-pub use rain::{
-    rain_in_regime, rain_min_zoom, rain_style, RainGrid, RainOverlaySource, RainSampling, RAIN_BELOW_Z,
-    RAIN_MAX_CELL_STEP, RAIN_SAMPLING, RAIN_STYLE, RAIN_TILE_CELLS, RAIN_TILE_EDGE, RAIN_TILE_SLOTS,
-};
+
 pub use surface::Surface;
 pub use text::{draw_text, glyph_supported, text_width, Font, TextAlign};
 pub use viewport::{mpp_for_zoom, round_coord, zoom_for_mpp, Viewport};
@@ -82,9 +79,7 @@ pub const MAX_SPANS: usize = 3072;
 /// Maximum total retained vertices across all visible features per frame — one of the two budgets
 /// `select()` actually enforces. These are already-projected signed-16-bit screen coordinates
 /// ([`ScreenPoint`]), four bytes per vertex instead of the former eight-byte map coordinates. The
-/// recovered bytes are reinvested here and in the span/ring reservoirs; 16,323 is deliberately the
-/// exact capacity that fills the board's 128 KiB arena arm after alignment rather than leaving a
-/// second, smaller render limit inside it.
+/// vertex and span/ring capacities fit within the board's 128 KiB scratch arena.
 pub const MAX_FRAME_POINTS: usize = 16323;
 
 /// Maximum total ring entries across all visible features per frame. Every admitted feature costs
@@ -138,19 +133,13 @@ const _: () = assert!(MAX_SCREEN_POINTS >= MAX_DECODE_POINTS, "`screen` must hol
 /// Static RAM a [`RenderScratch`]'s buffers occupy on the 32-bit MCU target (`usize` = 4
 /// bytes there). `pub` so a board crate's RAM-budget assert can add it to the framebuffer + caches
 /// without re-deriving the formula. (`ScreenPoint` is 4 bytes, `(i32, i32)` / `Point` are 8,
-/// frame ring lengths are `u16`, and `usize`/`f32` are 4 on the MCU.) Exactly fills the 128 KiB
-/// board arena arm after `RenderScratch`'s alignment, including [`rain::RainScratch`].
+/// frame ring lengths are `u16`, and `usize`/`f32` are 4 on the MCU.)
 pub const MCU_SCRATCH_BYTES: usize = MAX_DECODE_POINTS * 8
     + MAX_DECODE_RINGS * 4
     + MAX_FRAME_POINTS * core::mem::size_of::<ScreenPoint>()
     + MAX_FRAME_RINGS * 2
     + MAX_SPANS * core::mem::size_of::<Span>()
-    + MAX_CROSSINGS * 4
-    // WX10: the rain overlay's per-frame decoded-tile cache (16 slots, ~4.1 KB; the slots over the
-    // original twelve keep a smoothing kernel's wider reach inside one decode per visible tile —
-    // see `RAIN_TILE_SLOTS`). It shares the render arm with the buffers above; the board assertion
-    // is the byte-accurate authority that the complete arm remains under USB's 128 KiB ceiling.
-    + core::mem::size_of::<rain::RainScratch>();
+    + MAX_CROSSINGS * 4;
 // Loose per-crate ceiling catching an accidental cap blow-up; the binding fit check is the board
 // crate's whole-resident-set budget assert.
 const _: () = assert!(MCU_SCRATCH_BYTES <= 200 * 1024, "RenderScratch exceeds the 200 KB MCU budget");
@@ -380,17 +369,6 @@ pub struct RenderStats {
     pub collect_us: u32,
     pub sort_us: u32,
     pub draw_us: u32,
-    /// Rain overlay accounting (WX10): tiles decoded through the per-frame cache (== the source's
-    /// own fetch count; each visible tile at most once per frame), pixels actually painted, and the
-    /// overlay's wall time in µs (inside `draw_us`, timed only on the rain-lending path).
-    pub rain_tiles: u32,
-    pub rain_px: u32,
-    pub rain_us: u32,
-    /// The rain overlay was lent but declined to draw: outside its zoom regime
-    /// ([`RAIN_MAX_CELL_STEP`]) or degenerate/overflowing grid geometry. The owning screen must
-    /// surface this as its explicit out-of-regime state — a frame with this flag set must never
-    /// be presented as a dry map ([`rain_in_regime`] is the same predicate, queryable up front).
-    pub rain_out_of_regime: bool,
 }
 
 /// What a render call should draw — the presentation switches, stated **per frame** by the caller.
@@ -433,7 +411,7 @@ impl Default for RenderConfig {
 /// decides what a frame looks like ([`RenderConfig`] does), and nothing here means anything between
 /// frames: every buffer is written before it is read.
 ///
-/// **Never construct one by value on a device stack.** It is 128 KiB of `heapless::Vec`s
+/// **Never construct one by value on a device stack.** It contains large `heapless::Vec`s
 /// ([`MCU_SCRATCH_BYTES`]); a by-value constructor only stays off the stack via return-value
 /// optimization, a guarantee a debug build or a different toolchain can decline — the way
 /// `RouteIndex::read_into` earned its own in-place constructor after a STKOF HardFault. The device
@@ -446,9 +424,6 @@ pub struct RenderScratch {
     /// Draw scratch (projected points / polyline runs + scanline crossings), shared by the map
     /// draw phase and the marker/route/breadcrumb overlays.
     pub(crate) draw: DrawScratch,
-    /// The rain overlay's per-frame decoded-tile cache (WX10) — reset at overlay start, so like
-    /// every other buffer here it is written before it is read and carries nothing between frames.
-    rain: rain::RainScratch,
 }
 
 impl RenderScratch {
@@ -458,7 +433,7 @@ impl RenderScratch {
 
     /// Initialize a scratch **in place** at `slot` as the empty, ready-to-render state — the MCU
     /// placement path, building the resident scratch straight into a fixed RAM region without ever
-    /// materializing its 128 KiB of buffers on the stack.
+    /// materializing its buffers on the stack.
     ///
     /// Every buffer is a [`heapless::Vec`], whose empty state (`len = 0` over an uninitialized
     /// backing array) is exactly the all-zero bit pattern, so `write_bytes(0, 1)` lowers to a
@@ -468,10 +443,10 @@ impl RenderScratch {
     /// `slot` must be valid for writes, aligned, and exclusively owned for the call.
     /// On return the slot holds a fully initialized, empty [`RenderScratch`].
     pub unsafe fn init_zeroed(slot: *mut Self) {
-        // SAFETY: a scratch is only `heapless::Vec`s plus the rain tile cache's plain arrays — no
+        // SAFETY: scratch contains only `heapless::Vec`s — no
         // references, no non-zero-discriminant enum, and (since #1146 moved the terrain switch into
         // `RenderConfig`) no settings at all — so the all-zero bit pattern is the empty scratch:
-        // `len = 0` over write-before-read buffers, and an all-empty (`key = 0`) rain cache. The
+        // `len = 0` over write-before-read buffers. The
         // caller guarantees a valid, owned, aligned slot.
         unsafe { slot.write_bytes(0u8, 1) }
     }
@@ -510,62 +485,6 @@ impl RenderScratch {
         vp: &Viewport,
         bg: D::Color,
         cfg: RenderConfig,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        self.render_rain_timed(target, scene, vp, bg, cfg, None, color_fn, clock)
-    }
-
-    /// Like [`render_timed`](RenderScratch::render_timed), with the optional **rain overlay**
-    /// (WX10): when `rain` is `Some`, the precipitation raster is drawn inside the base-map paint
-    /// order — after every span below [`RAIN_BELOW_Z`] (the ground fills) and before the road band
-    /// and everything above it — through the format-agnostic [`RainOverlaySource`] seam. `None` is
-    /// **byte-identical** to [`render_timed`](RenderScratch::render_timed): the rain path is not
-    /// entered at all.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_rain_timed<D, F, S>(
-        &mut self,
-        target: &mut D,
-        scene: &S,
-        vp: &Viewport,
-        bg: D::Color,
-        cfg: RenderConfig,
-        rain: Option<&mut dyn RainOverlaySource>,
-        color_fn: F,
-        clock: &dyn Clock,
-    ) -> RenderStats
-    where
-        D: DrawTarget,
-        F: Fn(u16) -> D::Color,
-        S: MapScene,
-    {
-        self.render_rain_sampled_timed(target, scene, vp, bg, cfg, rain, RAIN_SAMPLING, color_fn, clock)
-    }
-
-    /// [`render_rain_timed`](RenderScratch::render_rain_timed) with the overlay's spatial sampling
-    /// mode passed in rather than taken from [`RAIN_SAMPLING`].
-    ///
-    /// Every shipped caller goes through `render_rain_timed`, so [`RAIN_SAMPLING`] stays the one
-    /// switch that decides what a rider sees. This exists for the two callers that must span the
-    /// modes rather than obey the const: the host binary that renders one frame in all four for a
-    /// side-by-side look round, and `obc-app`'s
-    /// `the_decision_path_is_identical_in_every_sampling_mode`, which proves no display mode can
-    /// move a claim (OBCW §5, OBCG §6).
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_rain_sampled_timed<D, F, S>(
-        &mut self,
-        target: &mut D,
-        scene: &S,
-        vp: &Viewport,
-        bg: D::Color,
-        cfg: RenderConfig,
-        rain: Option<&mut dyn RainOverlaySource>,
-        rain_sampling: RainSampling,
         color_fn: F,
         clock: &dyn Clock,
     ) -> RenderStats
@@ -613,7 +532,7 @@ impl RenderScratch {
         self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
         let t_sorted = clock.now_us();
 
-        self.draw_map(target, scene, is_finest, vp, &color_fn, rain, rain_sampling, clock, &mut stats);
+        self.draw_map(target, scene, is_finest, vp, &color_fn);
         let t_drawn = clock.now_us();
 
         // The clear is a framebuffer write, so it counts toward `draw` even though it ran first.
@@ -652,24 +571,14 @@ impl RenderScratch {
     /// today's single pass → **byte-identical** output at zero extra per-span cost. Coarser LODs skip
     /// step 2 outright (`is_finest` gate). Polygons are never cased (that's #560).
     #[allow(clippy::too_many_arguments)]
-    fn draw_map<D, F, S>(
-        &mut self,
-        target: &mut D,
-        scene: &S,
-        is_finest: bool,
-        vp: &Viewport,
-        color_fn: &F,
-        rain: Option<&mut dyn RainOverlaySource>,
-        rain_sampling: RainSampling,
-        clock: &dyn Clock,
-        stats: &mut RenderStats,
-    ) where
+    fn draw_map<D, F, S>(&mut self, target: &mut D, scene: &S, is_finest: bool, vp: &Viewport, color_fn: &F)
+    where
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
         // Disjoint borrows: spans/geometry read from `frame`, draw scratch written to `draw`.
-        let Self { frame, draw, rain: rain_scratch } = self;
+        let Self { frame, draw } = self;
         let spans = frame.spans();
 
         // One zoom→width multiplier for the whole frame (#579, `width_scale`): a style's nominal
@@ -702,36 +611,6 @@ impl RenderScratch {
         }
         let any_cased = cased_mask.iter().any(|&w| w != 0);
         let is_cased = |sid: u8| cased_mask[(sid >> 5) as usize] & (1 << (sid & 31)) != 0;
-
-        // **Rain overlay insertion (WX10).** With a rain source lent, everything strictly below
-        // [`RAIN_BELOW_Z`] — the ground fills, water, buildings, terrain — paints first, then the
-        // dithered precipitation raster, then the rest of the frame (the road band upward) on top
-        // of it. `None` keeps `rain_at == 0`: the scan is skipped, the slice below is empty, and
-        // the frame draws exactly today's path, byte for byte. (A skin that cased a line *below*
-        // the rain boundary would lose that casing's under-stroke on rain frames only — no shipped
-        // or plausible skin does; the road band starts at z 24 and every cased style sits in it.)
-        let rain_at = match rain {
-            Some(_) => spans.iter().position(|s| s.z >= rain::RAIN_BELOW_Z).unwrap_or(spans.len()),
-            None => 0,
-        };
-        if let Some(source) = rain {
-            Self::draw_spans(
-                frame,
-                draw,
-                target,
-                scene,
-                is_finest,
-                vp,
-                color_fn,
-                wscale,
-                &outlined_mask,
-                &spans[..rain_at],
-            );
-            let t_rain = clock.now_us();
-            rain::draw_rain(target, vp, rain_scratch, source, color_fn, stats, rain_sampling);
-            stats.rain_us = clock.now_us().saturating_sub(t_rain) as u32;
-        }
-        let spans = &spans[rain_at..];
 
         // The z boundary: the first cased road **line** span. Everything before it is the low-z band
         // (land / water / landuse / buildings / low-z lines). No cased style ⇒ `split == spans.len()`,

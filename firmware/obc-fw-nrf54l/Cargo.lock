@@ -1267,7 +1267,6 @@ dependencies = [
  "obc-reader",
  "obc-render",
  "obc-route",
- "obc-weather",
 ]
 
 [[package]]
@@ -1349,7 +1348,6 @@ dependencies = [
  "obc-route",
  "obc-sensors",
  "obc-storage",
- "obc-weather",
  "panic-probe",
  "static_cell",
  "trouble-host",
@@ -1439,14 +1437,6 @@ dependencies = [
  "obc-crc",
  "obc-formats",
  "obc-link",
-]
-
-[[package]]
-name = "obc-weather"
-version = "0.1.0"
-dependencies = [
- "obc-crc",
- "obc-formats",
 ]
 
 [[package]]
