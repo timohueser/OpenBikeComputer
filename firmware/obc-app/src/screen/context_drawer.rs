@@ -323,6 +323,7 @@ fn filter_choice(filter: PoiCategorySet) -> u8 {
 pub enum ContextAction {
     LandmarkSources,
     CurrentVisit,
+    ResumeJourney,
     /// The merged waypoint + corridor-POI timeline, anchored on live progress at entry.
     Assistant,
     /// The rejoin chooser (#882). Inert without a route, a nav graph and an on-route rider.
@@ -354,7 +355,7 @@ impl ContextAction {
     /// it is [`ContextValue::accepts`], the same answer the commit obeys.
     fn available(self, f: &ContextFacts) -> bool {
         match self {
-            ContextAction::LandmarkSources => true,
+            ContextAction::LandmarkSources | ContextAction::ResumeJourney => true,
             ContextAction::CurrentVisit => f.navigation.active_route.is_some(),
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
@@ -378,6 +379,7 @@ impl ContextAction {
                 cx.landmarks.source_page = 0;
                 Screen::LandmarkSources(super::LandmarkSourcesScreen)
             }
+            ContextAction::ResumeJourney => Screen::Journey(super::JourneyScreen::new(true)),
             ContextAction::CurrentVisit => {
                 cx.find.action = crate::find_place::Action::OpenAccepted;
                 return Some(Transition::Pop);
@@ -446,13 +448,16 @@ pub static MAP_DISPLAY: ContextMenu = ContextMenu {
     ],
 };
 
+pub(crate) static ASSISTANT_RESUME: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::AssistantResumeJourney, action: ContextAction::ResumeJourney }] };
+
+pub static ASSISTANT_VISIT: ContextMenu =
+    ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
+
 /// The **Up-ahead context** (#1515 D4a): the two controls that scope the timeline, and the only
 /// home either of them has. *Filter* is the category picker the list's Select-hold used to open —
 /// a hold is a local action on a focused object, never the generic way into a menu — and *Sources*
 /// is the scope the Ride settings screen used to cycle.
-pub static ASSISTANT_VISIT: ContextMenu =
-    ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
-
 pub static UP_AHEAD: ContextMenu = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextFilter, action: ContextAction::Edit(ContextValue::UpAheadFilter) },
