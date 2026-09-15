@@ -138,6 +138,40 @@ fn near_place_anchor_keeps_occurrence_prefix_waypoints_and_two_search_limit() {
     assert!(choice.search().is_err());
 }
 #[test]
+fn preview_keeps_a_short_excursion_after_a_dense_prefix() {
+    let original = route((0..=200).map(|i| (i * 100, 0, 0)).collect(), &[], 2223);
+    let source = SliceSource(&original);
+    let index = RouteIndex::read(&source).unwrap();
+    let reader = RouteReader::new(&index, &source);
+    let anchor = 1500;
+    let at = reader.position_at(anchor).unwrap();
+    let stop = (at.lon, 10);
+    let outbound = route(vec![(at.lon, at.lat, 0), (stop.0, stop.1, 0)], &[], 1);
+    let returning = route(vec![(stop.0, stop.1, 0), (at.lon, at.lat, 0)], &[], 1);
+    let mut builder = VisitBuilder::new(key(2), key(3), 0, anchor, SourceId::osm(1, 99), stop).unwrap();
+    builder.keep_prefix(anchor).unwrap();
+    let mut sink = VecSink::default();
+    builder.begin(&mut sink).unwrap();
+    while !builder.append_prefix_step(&reader, &mut sink).unwrap() {}
+    append(&mut builder, &outbound, &mut sink);
+    append(&mut builder, &returning, &mut sink);
+    while builder.finish_step(&reader, &mut sink).unwrap().is_none() {}
+    let source = SliceSource(&sink.buf);
+    let index = RouteIndex::read(&source).unwrap();
+    let reader = RouteReader::new(&index, &source);
+    let anchors = reader.visit_descriptor().unwrap().unwrap().accepted_anchors_m;
+    let target = reader.position_at(anchors[1]).unwrap();
+    let rejoin = reader.position_at(anchors[2]).unwrap();
+    let preview = reader.assistant_preview_polyline::<64>().unwrap();
+    assert!(preview.len() <= 64);
+    assert_eq!(preview.first(), Some(&(0, 0)));
+    assert!(preview.contains(&(target.lon, target.lat)), "sampling must retain the stop occurrence");
+    assert_eq!(preview.last(), Some(&(rejoin.lon, rejoin.lat)));
+    let three = reader.assistant_preview_polyline::<3>().unwrap();
+    assert_eq!(three.as_slice(), &[(0, 0), (target.lon, target.lat), (rejoin.lon, rejoin.lat)]);
+}
+
+#[test]
 fn on_route_stop_needs_no_artificial_excursion() {
     let bytes = route(vec![(0, 0, 0), (2000, 0, 0)], &[], 222);
     let source = SliceSource(&bytes);

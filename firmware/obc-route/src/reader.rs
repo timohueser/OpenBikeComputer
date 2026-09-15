@@ -603,23 +603,39 @@ impl<'a> RouteReader<'a> {
             let count = if self.chunks().is_empty() { 0 } else { self.idx.segment_count() as usize + 1 };
             return if shape.len() == count.min(N) { Ok(shape) } else { Err(Error::BadOffset) };
         };
-        let [lo, _, hi] = visit.accepted_anchors_m;
+        let [lo, stop, hi] = visit.accepted_anchors_m;
         let mut shape = Vec::new();
-        if N == 0 {
-            return Ok(shape);
+        if N >= 3 {
+            self.append_preview_span(lo, stop, N / 2 + 1, &mut shape)?;
+            self.append_preview_span(stop, hi, N, &mut shape)?;
+        } else if N > 0 {
+            self.append_preview_span(lo, hi, N, &mut shape)?;
         }
+        Ok(shape)
+    }
+
+    fn append_preview_span<const N: usize>(
+        &self,
+        lo: u32,
+        hi: u32,
+        limit: usize,
+        shape: &mut Vec<(i32, i32), N>,
+    ) -> Result<(), Error> {
         let mut count = 0;
         self.preview_span(lo, hi, |_| count += 1)?;
-        let keep = N.min(count);
+        let keep = limit.min(N - shape.len() + usize::from(!shape.is_empty())).min(count);
         let mut ordinal = 0;
+        let mut selected = 0;
         self.preview_span(lo, hi, |point| {
-            let next = if keep > 1 { shape.len() * (count - 1) / (keep - 1) } else { 0 };
-            if shape.len() < keep && ordinal == next {
-                let _ = shape.push(point);
+            let next = if keep > 1 { selected * (count - 1) / (keep - 1) } else { 0 };
+            if selected < keep && ordinal == next {
+                if shape.last() != Some(&point) {
+                    let _ = shape.push(point);
+                }
+                selected += 1;
             }
             ordinal += 1;
-        })?;
-        Ok(shape)
+        })
     }
 
     #[inline(never)]
