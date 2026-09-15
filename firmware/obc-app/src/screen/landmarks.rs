@@ -211,7 +211,7 @@ where
         let _ = write!(label, "Back  {}/{}", state.source_page + 1, state.source_pages);
     } else {
         let record = state.record.unwrap();
-        let action = visit_action(state, rx.poi_scratch, rx.place_local);
+        let action = visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx);
         let _ = write!(
             label,
             "{} {}/{}",
@@ -227,8 +227,13 @@ pub(super) fn visit_action(
     state: &crate::landmarks::Landmarks,
     scratch: &super::poi_list::PoiScratch,
     local: Option<(u8, u16)>,
+    profile: u8,
 ) -> &'static str {
-    if !state.ready() || state.record.is_none() || !scratch.detail_valid {
+    if !state.ready()
+        || state.record.is_none()
+        || !scratch.detail_valid
+        || scratch.detail_source != state.record.and_then(|r| r.osm).map_or(0, |m| m.source.0)
+    {
         "Access unavailable"
     } else if scratch
         .detail_schedule
@@ -236,7 +241,12 @@ pub(super) fn visit_action(
         .is_some_and(|s| s.status(local) == obc_reader::hours::OpeningStatus::Closed)
     {
         "Closed"
-    } else if state.record.and_then(|r| r.osm).and_then(|m| m.approach).is_some() {
+    } else if state
+        .record
+        .and_then(|r| r.osm)
+        .and_then(|m| m.approach)
+        .is_some_and(|a| a.profile_mask & (1 << profile.min(7)) != 0)
+    {
         "Visit"
     } else {
         "No mapped access"
@@ -273,5 +283,48 @@ fn status(status: Status) -> &'static str {
         Status::Stale => "Map changed: refresh",
         Status::Empty => "None within 10km",
         _ => "Select a landmark",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_formats::obcm::{landmarks::*, PoiApproach, PoiMetadata, SourceId};
+
+    #[test]
+    fn article_and_photo_visit_availability_require_the_selected_sources_access() {
+        let mut state = crate::landmarks::Landmarks::new();
+        state.status = Status::Ready;
+        state.record = Some(LandmarkRecord {
+            qid: 1,
+            lon: 0,
+            lat: 0,
+            category: 2,
+            language: *b"en",
+            text_pages: 1,
+            hours_ref: 0,
+            osm: None,
+            name: ContentRef::default(),
+            text: ContentRef::default(),
+            article: ContentRef::default(),
+            photo: ContentRef::default(),
+            photo_attribution: ContentRef::default(),
+        });
+        let mut scratch = super::super::PoiScratch::new();
+        scratch.detail_valid = true;
+        assert_eq!(visit_action(&state, &scratch, None, 0), "No mapped access");
+        state.record.as_mut().unwrap().osm = Some(PoiMetadata {
+            source: SourceId(42),
+            approach: Some(PoiApproach { source: SourceId(43), lat: 0, lon: 0, profile_mask: 1 }),
+        });
+        assert_eq!(visit_action(&state, &scratch, None, 0), "Access unavailable");
+        scratch.detail_source = 42;
+        assert_eq!(visit_action(&state, &scratch, None, 0), "Visit");
+        assert_eq!(visit_action(&state, &scratch, None, 1), "No mapped access");
+        scratch.detail_schedule = obc_reader::WeeklySchedule::decode(&[0; 29]);
+        assert_eq!(visit_action(&state, &scratch, Some((0, 30)), 0), "Closed");
+        assert_eq!(visit_action(&state, &scratch, None, 0), "Visit", "unknown time does not claim closure");
+        state.invalidate();
+        assert_eq!(visit_action(&state, &scratch, None, 0), "Access unavailable");
     }
 }

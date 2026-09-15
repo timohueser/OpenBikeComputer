@@ -313,9 +313,11 @@ impl crate::App {
             state.text.clear();
             state.record = None;
         }
-        if state.loaded != before {
-            if let Some(record) = state.record {
+        if let Some(record) = state.record {
+            let source = record.osm.map_or(0, |m| m.source.0);
+            if state.loaded != before || self.ui.poi_scratch.detail_source != source {
                 let hours = reader.try_poi_hours(record.hours_ref);
+                self.ui.poi_scratch.detail_source = source;
                 self.ui.poi_scratch.detail_valid = hours.is_ok();
                 self.ui.poi_scratch.detail_schedule = hours.ok().flatten();
             }
@@ -554,6 +556,7 @@ page."
         let reader = Reader::new(&source, &tables, &cache);
         for failed in [false, true] {
             let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+            app.bind_place_map(Some(obc_formats::obcr::RouteSourceKey { store: [1; 16], object: 1, revision: 1 }));
             assert!(app.ui.stack.push(Screen::Landmarks(crate::screen::LandmarksScreen)).is_ok());
             app.ui.landmarks.restart(false);
             app.prepare_landmarks(Some(&reader));
@@ -572,6 +575,45 @@ page."
             assert_eq!(app.ui.landmarks.status, Status::Ready);
             assert!(app.ui.landmarks.record.is_some());
         }
+    }
+    #[test]
+    fn landmark_hours_replace_cache_ownership_and_retained_details_reprepare() {
+        let bytes = map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+        let poi = obc_reader::Poi {
+            opening: obc_reader::hours::OpeningStatus::Unknown,
+            metadata: obcm::PoiMetadata { source: obcm::SourceId(42), approach: None },
+            lon: 0,
+            lat: 0,
+            subtype: 1,
+            name: heapless::String::new(),
+            hours_ref: obcm::POI_HOURS_REF_NONE,
+            distance_m: 0,
+        };
+        assert!(app.ui.stack.push(Screen::PoiDetail(crate::screen::PoiDetailScreen::new(poi))).is_ok());
+        let mut frame = crate::harness::support::Buf::new(240, 320);
+        app.render_frame(None, &mut frame, &reader, None, 240.0, 320.0, |color| {
+            let (r, g, b) = obc_reader::rgb565_to_rgb888(color);
+            embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+        });
+        assert_eq!(app.ui.poi_scratch.detail_source, 42);
+        assert!(app.ui.stack.push(Screen::Landmarks(crate::screen::LandmarksScreen)).is_ok());
+        app.ui.landmarks.restart(false);
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.poi_scratch.detail_source, 0, "information-only article owns its own cached hours");
+        app.ui.poi_scratch.detail_source = 42;
+        app.ui.poi_scratch.detail_valid = false;
+        app.prepare_landmarks(Some(&reader));
+        assert_eq!(app.ui.poi_scratch.detail_source, 0, "unchanged article reloads an overwritten cache");
+        assert!(app.ui.poi_scratch.detail_valid);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(detail) if detail.hours_pending(&app.ui.poi_scratch)));
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "another site's cached hours cannot activate Visit");
     }
     #[test]
     fn represented_pages_reject_unsupported_glyphs_and_overflow_without_replacement() {

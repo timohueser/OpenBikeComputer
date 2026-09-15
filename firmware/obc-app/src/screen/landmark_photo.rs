@@ -106,7 +106,12 @@ impl LandmarkPhotoScreen {
         cv.text(self.title.as_str(), Point::new(12, 9), Font::Label, TextAlign::Left, PARCHMENT);
         if self.linked {
             cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
-            let label = match super::landmarks::visit_action(rx.landmarks, rx.poi_scratch, rx.place_local) {
+            let label = match super::landmarks::visit_action(
+                rx.landmarks,
+                rx.poi_scratch,
+                rx.place_local,
+                rx.settings.bike_profile_idx,
+            ) {
                 "Visit" => "Visit / Up or Down",
                 "Closed" => "Closed / Up or Down",
                 "No mapped access" => "No access / Up/Down",
