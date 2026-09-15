@@ -135,7 +135,7 @@ pub struct PassPlan {
 
 /// The **overlay plane's** two levels, as one value (#1447).
 ///
-/// The overlay is the cheap transient layer: the hold bulge and the Recalculating banner. Its
+/// The overlay is the cheap transient layer: the hold bulge and the planning banner. Its
 /// repaint rule is not the map's — it is two rules over two levels, which used to be three separate
 /// level-to-edge converters, one on the input plane, one on the UI runtime and one on the mode
 /// machine, producing a single boolean per frame between them.

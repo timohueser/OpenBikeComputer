@@ -972,7 +972,7 @@ impl App {
     /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
     /// live *and* the base screen would draw the map. While it is, a render-on-demand host must
     /// **skip the map redraw** — the last frame stays on the reflective glass — and paint only
-    /// [`render_overlay`](App::render_overlay), which raises the "Recalculating..." banner over it.
+    /// [`render_overlay`](App::render_overlay), which raises a planning banner over it.
     /// [`tick`](App::tick) stops advancing route-match progress for the same span (everything else
     /// about a fix keeps recording).
     ///
@@ -3258,7 +3258,7 @@ impl App {
         }
     }
 
-    /// The Recalculating banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
+    /// The planning banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
     /// the freeze is not engaged — the twin of [`InputPlane::overlay_rows`](crate::InputPlane::overlay_rows)
     /// for a partial-overlay host (the board re-presents overlay *rows*, not whole frames). A host
     /// that pushes the union of this and the bulge's rows presents exactly what changed.
@@ -3288,7 +3288,7 @@ impl App {
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
     ///
-    /// The overlay plane is **derived here, from levels** — the hold bulge's and the Recalculating
+    /// The overlay plane is **derived here, from levels** — the hold bulge's and the planning
     /// freeze's, read as one [`OverlayKey`](crate::device_core::pass::OverlayKey) and folded against
     /// the level this same call last saw. Both rules live in that one converter: see its doc for why
     /// the banner keys on the engaged level rather than on the plan's own start edge.
