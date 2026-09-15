@@ -26,7 +26,7 @@ use crate::screen::{
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
-use crate::DeviceStatus;
+use crate::{DeviceStatus, Msg};
 use obc_map_scene::MapScene;
 use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
@@ -972,7 +972,7 @@ impl App {
     /// Whether the **Recalculating freeze** is engaged (issue #1146, P2): a host planner run is
     /// live *and* the base screen would draw the map. While it is, a render-on-demand host must
     /// **skip the map redraw** — the last frame stays on the reflective glass — and paint only
-    /// [`render_overlay`](App::render_overlay), which raises the "Recalculating..." banner over it.
+    /// [`render_overlay`](App::render_overlay), which raises a planning banner over it.
     /// [`tick`](App::tick) stops advancing route-match progress for the same span (everything else
     /// about a fix keeps recording).
     ///
@@ -983,6 +983,30 @@ impl App {
     /// [`ArenaGate::claim_nav`](crate::arena_gate::ArenaGate::claim_nav).
     pub fn reroute_freeze_active(&self) -> bool {
         self.mode.frozen(self.ui.base_draws_map())
+    }
+
+    fn find_preparing(&self) -> bool {
+        use crate::find_place::{Action, State};
+        matches!(self.top_screen(), Screen::FindPlace(screen) if screen.choices())
+            && (matches!(self.ui.find.action, Action::Refresh | Action::Preview(_))
+                || matches!(self.ui.find.state, State::Start | State::Querying | State::Planning | State::Releasing))
+    }
+
+    fn planning_banner(&self) -> Option<Msg> {
+        if self.find_preparing() {
+            Some(Msg::AssistantFinding)
+        } else if self.reroute_freeze_active()
+            || (matches!(self.top_screen(), Screen::VisitReview(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
+        {
+            Some(if self.requested_assistant_restore().is_some() {
+                Msg::AssistantLoadingRoute
+            } else {
+                Msg::AssistantPlanningRoute
+            })
+        } else {
+            None
+        }
     }
 
     /// What the device is busy with, ranked and payload-free — [`CoreMode`]'s one public read.
@@ -1475,7 +1499,8 @@ impl App {
                 self.ui.map_dirty = true;
             }
             NavigatorOutcome::Released { .. } => {
-                if self.navigator.released(&mut self.mode) {
+                if self.navigator.released(&mut self.mode) || self.ui.find.state == crate::find_place::State::Releasing
+                {
                     self.ui.map_dirty = true;
                 }
             }
@@ -2798,7 +2823,12 @@ impl App {
             now_ms, self.ui.now_ms,
             "ms_until_next_wake must follow advance_animations in the same frame, with the same now_ms"
         );
-        if self.photo_pending() || self.landmarks_pending() {
+        if self.photo_pending()
+            || self.landmarks_pending()
+            || self.find_preparing()
+            || (matches!(self.top_screen(), Screen::VisitReview(_))
+                && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
+        {
             Some(self.ui.next_wake_ms.unwrap_or(1).min(1))
         } else {
             self.ui.next_wake_ms
@@ -3026,11 +3056,7 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
-        let visit_gap_m = self.assistant_visit_target().and_then(|target| {
-            let approach = target.metadata.approach?;
-            let gap = obc_map_scene::ground_dist_m(target.display, (approach.lon, approach.lat)) as u32;
-            (gap > 100).then_some(gap)
-        });
+        let visit_target = self.assistant_visit_target();
 
         let assistant_preview = matches!(&self.ui.stack[base], Screen::Easier(_) | Screen::VisitReview(_)).then(|| {
             if matches!(&self.ui.stack[base], Screen::VisitReview(s) if s.accepted) {
@@ -3075,7 +3101,7 @@ impl App {
             .and_then(|i| navigator.climbs().as_slice().get(i))
             .map(|seg| screen::ActiveClimb { seg, profile: navigator.climb_profile() });
         let rx = Render {
-            visit_gap_m,
+            visit_target,
             find: &ui.find,
             landmarks: &ui.landmarks,
             ahead: &ui.ahead,
@@ -3218,28 +3244,34 @@ impl App {
         F: Fn(u16) -> D::Color,
     {
         self.ui.input.render_overlay(target, w, h, &color_fn);
-        // The Recalculating banner (issue #1146, P2) rides the same plane as the bulge, and for the
-        // same reason: it must appear over a frame the map plane is *not* redrawing. Drawn last so
-        // a hold charging during a search still bulges over it.
-        if self.reroute_freeze_active() {
-            let text = crate::i18n::t(crate::Msg::MapRecalculating, self.settings.language);
+        self.render_planning_banner(target, w, h, color_fn);
+    }
+
+    /// Paint the request's busy label after a base redraw, including gaps between planner runs.
+    pub fn render_planning_banner<D, F>(&self, target: &mut D, w: f32, h: f32, color_fn: F)
+    where
+        D: DrawTarget,
+        F: Fn(u16) -> D::Color,
+    {
+        if let Some(message) = self.planning_banner() {
+            let text = crate::i18n::t(message, self.settings.language);
             crate::screen::vocab::chrome::recalculating_banner(target, &color_fn, w, h, text);
         }
     }
 
-    /// The Recalculating banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
+    /// The planning banner's bounding rows `[y0, y0 + rows)` in a `w`×`h` frame, or `None` when
     /// the freeze is not engaged — the twin of [`InputPlane::overlay_rows`](crate::InputPlane::overlay_rows)
     /// for a partial-overlay host (the board re-presents overlay *rows*, not whole frames). A host
     /// that pushes the union of this and the bulge's rows presents exactly what changed.
     pub fn reroute_banner_rows(&self, h: f32) -> Option<(u16, u16)> {
-        self.reroute_freeze_active().then(|| crate::screen::vocab::chrome::recalculating_banner_rows(h))
+        self.planning_banner().map(|_| crate::screen::vocab::chrome::recalculating_banner_rows(h))
     }
 
     /// Whether the overlay plane has live content this frame — a hold bulge charging, popping, or
     /// retracting. `false` exactly when [`render_overlay`](App::render_overlay) would draw nothing,
     /// so a host driving the overlay as a separate layer can leave it idle.
     pub fn overlay_active(&self) -> bool {
-        self.ui.input.overlay_active() || self.reroute_freeze_active()
+        self.ui.input.overlay_active() || self.planning_banner().is_some()
     }
 
     /// Drain the repaint demand accumulated since the last call, resetting to [`Dirty::CLEAN`]. The
@@ -3257,14 +3289,14 @@ impl App {
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
     ///
-    /// The overlay plane is **derived here, from levels** — the hold bulge's and the Recalculating
+    /// The overlay plane is **derived here, from levels** — the hold bulge's and the planning
     /// freeze's, read as one [`OverlayKey`](crate::device_core::pass::OverlayKey) and folded against
     /// the level this same call last saw. Both rules live in that one converter: see its doc for why
     /// the banner keys on the engaged level rather than on the plan's own start edge.
     pub fn take_dirty(&mut self) -> Dirty {
         let overlay = crate::device_core::pass::OverlayKey {
             hold: self.ui.input.overlay_active(),
-            freeze: self.mode.frozen(self.ui.base_draws_map()),
+            banner: self.planning_banner().is_some(),
         };
         let overlay = self.pass.overlay_repaint(overlay);
         let mut dirty = self.ui.take_dirty();
@@ -5051,6 +5083,38 @@ mod tests {
     /// Home it's the wall-clock minute boundary; on a static menu the idle-return timeout is the
     /// only pending wake (the menu itself animates on nothing). With the idle return disabled a
     /// static menu reports `None` — sleep until input.
+    #[test]
+    fn find_banner_and_wake_cover_the_complete_candidate_batch() {
+        use crate::find_place::{Action, State};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Assistant);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.advance_animations(InputClock(0));
+        assert!(app.find_preparing());
+        assert_eq!(app.ms_until_next_wake(0), Some(1));
+        assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
+        app.take_dirty();
+        app.ui.find.action = Action::None;
+        for state in [State::Querying, State::Planning, State::Releasing] {
+            app.ui.find.state = state;
+            app.mode.search_started(PlanFamily::Route);
+            assert!(!app.take_dirty().overlay, "a new candidate does not replace the banner");
+            app.mode.search_ended(PlanFamily::Route);
+            assert!(!app.reroute_freeze_active(), "arena admission still follows the actual planner");
+            assert!(matches!(app.planning_banner(), Some(Msg::AssistantFinding)));
+            assert!(!app.take_dirty().overlay, "releasing a candidate does not clear the banner");
+            assert_eq!(app.ms_until_next_wake(0), Some(1), "queued work cannot wait for another GPS fix");
+        }
+        app.ui.find.state = State::Ready;
+        assert!(app.planning_banner().is_none());
+        assert!(app.take_dirty().overlay, "the completed batch clears its banner");
+        assert_ne!(app.ms_until_next_wake(0), Some(1), "a ready result does not poll");
+        app.ui.find.state = State::Planning;
+        app.apply_gesture(Gesture::Back);
+        assert!(app.planning_banner().is_none(), "leaving choices removes the banner");
+    }
+
     #[test]
     fn ms_until_next_wake_reports_the_home_minute_then_the_idle_deadline_on_a_static_menu() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home

@@ -519,6 +519,9 @@ use crate::device_core::{CatalogTag, OperationToken, StoreRevision};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
+    RemoveReview {
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupRoutes {
         before_utc: u32,
         store: crate::device_core::StoreIdentity,
@@ -550,6 +553,10 @@ pub enum CatalogObjectKind {
 /// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogEffect {
+    RemoveReview {
+        token: OperationToken<CatalogTag>,
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupRoute {
         token: OperationToken<CatalogTag>,
         before_utc: u32,
@@ -573,7 +580,8 @@ impl CatalogEffect {
         match self {
             CatalogEffect::CleanupRoute { token, .. }
             | CatalogEffect::ReadCatalog { token }
-            | CatalogEffect::RemoveObject { token, .. } => *token,
+            | CatalogEffect::RemoveObject { token, .. }
+            | CatalogEffect::RemoveReview { token, .. } => *token,
         }
     }
 }
@@ -594,6 +602,10 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
+    ReviewRemoved {
+        token: OperationToken<CatalogTag>,
+        source: obc_formats::obcr::RouteSourceKey,
+    },
     CleanupFinished {
         token: OperationToken<CatalogTag>,
     },
@@ -629,6 +641,7 @@ impl CatalogOutcome {
             CatalogOutcome::CleanupFinished { token }
             | CatalogOutcome::CatalogRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
+            | CatalogOutcome::ReviewRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
         }
@@ -642,6 +655,10 @@ impl CatalogOutcome {
 /// may be in flight — plus the one ordering no single bounded operation can express: the **trip
 /// cascade**, member routes first and the folder last.
 impl CatalogState {
+    pub(crate) fn can_admit_intent(&self) -> bool {
+        self.pending.is_none() && !self.in_flight && !self.refresh_owed && !self.remount_required
+    }
+
     /// Admit `intent`, or refuse it and hand it back.
     ///
     /// One refusal, and it is backpressure rather than failure: something is already in the slot —
@@ -715,6 +732,7 @@ impl CatalogState {
             return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
         };
         let effect = match intent {
+            CatalogIntent::RemoveReview { source } => CatalogEffect::RemoveReview { token: self.ops.issue(), source },
             CatalogIntent::CleanupRoutes { before_utc, store } => {
                 self.cleanup_running = true;
                 self.pending = Some(intent);
@@ -795,6 +813,11 @@ impl CatalogState {
             CatalogOutcome::CatalogRead { scope, .. } => {
                 self.loaded_scope = scope;
                 self.read_retry_at = None;
+                None
+            }
+            CatalogOutcome::ReviewRemoved { .. } => {
+                self.loaded_scope = None;
+                self.refresh_owed = true;
                 None
             }
             CatalogOutcome::ObjectRemoved { object, .. } => {
@@ -1099,7 +1122,7 @@ mod tests {
         for _ in 0..=steps.capacity() {
             let Some(effect) = catalogs.next_effect() else { break };
             match effect {
-                CatalogEffect::CleanupRoute { .. } => panic!("unexpected cleanup"),
+                CatalogEffect::CleanupRoute { .. } | CatalogEffect::RemoveReview { .. } => panic!("unexpected cleanup"),
                 CatalogEffect::RemoveObject { token, object, .. } => {
                     let _ = steps.push(Some(object));
                     catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });

@@ -346,7 +346,7 @@ pub struct ActiveClimb<'a> {
 /// `Reader`, the host's borrowed `RenderScratch`, and the in-flight Select hold-progress
 /// (0.0–1.0) the guarded-action confirm ring fills with.
 pub struct Render<'a> {
-    pub visit_gap_m: Option<u32>,
+    pub visit_target: Option<obc_route::visit::VisitTarget>,
     pub find: &'a crate::find_place::FindState,
     pub landmarks: &'a crate::landmarks::Landmarks,
     pub ahead: &'a crate::whats_next::AheadState,
