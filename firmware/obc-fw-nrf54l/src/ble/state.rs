@@ -12,7 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant};
 
 // ============================ Link status → the status UI ============================
 
@@ -93,7 +92,6 @@ pub(crate) fn publish(f: impl FnOnce(&mut Status)) {
     wake_status();
 }
 
-/// Wake the app when BLE-owned facts change, including weather activity.
 pub(crate) fn wake_status() {
     STATUS_EDGE.signal(());
 }
@@ -147,47 +145,6 @@ static USB_RADIO_INHIBITED: AtomicBool = AtomicBool::new(true);
 /// a `Signal` payload) so a toggle bounced off-and-on between polls degrades to a harmless
 /// re-advertise, never a stuck state.
 static RADIO_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-// ============================ Secondary advertising intent ============================
-
-/// A pending request for the peripheral advertiser to expose the dedicated **Weather Request**
-/// service instead of OBC Control (spec §11). The GATT database always contains both services; this
-/// intent only selects the one UUID that fits in the single legacy primary advertisement — which is
-/// why it is a swap rather than a second advertised UUID.
-static WEATHER_REQUEST_BUDGET: BlockingMutex<CriticalSectionRawMutex, Cell<Option<obc_ble::WeatherRequestBudget>>> =
-    BlockingMutex::new(Cell::new(None));
-// Only raising or clearing the intent wakes the advertiser; replacing a live budget does not.
-static WEATHER_REQUEST_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-// The arming seam: the production due scheduler ([`super::weather`]) arms it on every raise, and
-// the `ble-weather-request` harness once at boot.
-pub(crate) fn arm_weather_request(window: Duration) {
-    let raised = WEATHER_REQUEST_BUDGET.lock(|budget| {
-        budget.replace(Some(obc_ble::WeatherRequestBudget::new(Instant::now().as_ticks(), window.as_ticks()))).is_none()
-    });
-    if raised {
-        WEATHER_REQUEST_EDGE.signal(());
-    }
-}
-
-pub(crate) fn clear_weather_request() {
-    if WEATHER_REQUEST_BUDGET.lock(|budget| budget.take().is_some()) {
-        WEATHER_REQUEST_EDGE.signal(());
-    }
-}
-
-pub(crate) fn weather_request_pending() -> bool {
-    WEATHER_REQUEST_BUDGET.lock(|budget| budget.get().is_some())
-}
-
-pub(crate) async fn weather_request_changed() {
-    WEATHER_REQUEST_EDGE.wait().await;
-}
-
-pub(crate) fn weather_request_remaining() -> Option<Duration> {
-    let now = Instant::now().as_ticks();
-    WEATHER_REQUEST_BUDGET.lock(|budget| budget.get().map(|budget| Duration::from_ticks(budget.remaining_ticks(now))))
-}
 
 /// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
 /// the pass: the lifecycle loop clears the RRAM bond

@@ -9,7 +9,7 @@
 
 import type { InitInput } from "./pkg/obc_skin_preview.js";
 import type { SkinEntry } from "../catalog/manifest";
-import { skinBandError } from "./bands";
+import { skinStyleError } from "./validation";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
@@ -98,7 +98,7 @@ export async function openLiveSkinPreview(
         const parsed = JSON.parse(schemaJson);
         const schema = parsed.schema ?? parsed;
         const admit = (json: string): void => {
-            const error = skinBandError(schema, JSON.parse(json).styles);
+            const error = skinStyleError(schema, JSON.parse(json).styles);
             if (error) throw new Error(error);
         };
         admit(skinJson);

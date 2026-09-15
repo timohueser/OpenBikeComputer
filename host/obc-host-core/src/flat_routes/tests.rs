@@ -69,13 +69,15 @@ fn shared_map_and_routes_pin_revisions_and_reuse_sparse_pages() {
 
 #[test]
 fn committed_revision_survives_busy_open_and_retries_without_stale_source() {
-    let mut routes = FlatRouteStore::from_bytes(&[ROUTE; 5]).unwrap();
+    let mut routes = FlatRouteStore::from_bytes(&[ROUTE; obc_storage::flat::store::MAX_OPEN_OBJECTS - 1]).unwrap();
     let id = routes.write_nav_route(ROUTE).unwrap();
     let index = routes.ids().len() - 1;
     routes.sync_active(Some(index));
     let old = routes.active.as_ref().unwrap().clone();
-    let mut held: Vec<_> =
-        routes.ids[..5].iter().map(|&id| routes.owner.open(ObjectId(id), Revision(1)).unwrap()).collect();
+    let mut held: Vec<_> = routes.ids[..obc_storage::flat::store::MAX_OPEN_OBJECTS - 1]
+        .iter()
+        .map(|&id| routes.owner.open(ObjectId(id), Revision(1)).unwrap())
+        .collect();
     assert_eq!(routes.write_nav_route(ROUTE), Some(id), "commit does not need another reader slot");
     assert!(routes.sync_active(Some(index)), "failed open clears the old active binding");
     assert!(routes.active_source().is_none());

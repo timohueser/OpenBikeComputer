@@ -64,7 +64,6 @@ KINDS = {
     "route": 1,
     "trip": 2,
     "ride": 3,
-    "weather": 4,
     "map": 5,
     "map-set": 6,
     "update": 7,
@@ -115,18 +114,14 @@ GONE_REASONS = {
     "this is NOT a --baud mismatch: at the wrong baud this host never transmits at all",
 }
 
-
 class IngestError(RuntimeError):
     """The transfer did not complete. The device has cancelled whatever it held."""
-
 
 class RetriableError(IngestError):
     """A failure the device cleaned up after, so sending the object again is worth doing."""
 
-
 class LinkTimeout(RetriableError):
     pass
-
 
 class DeviceGone(IngestError):
     """The device said it has stopped listening, and why. Retrying will not help until it is reset."""
@@ -135,11 +130,9 @@ class DeviceGone(IngestError):
         self.reason = reason
         super().__init__(f"the device has stopped listening: {GONE_REASONS.get(reason, f'reason {reason}')}")
 
-
 def crc32(data: bytes) -> int:
     """CRC-32/IEEE, the one `obc-crc` implements. `crc32(b"123456789") == 0xCBF43926`."""
     return zlib.crc32(data) & 0xFFFF_FFFF
-
 
 def header_frame(kind: int, name: str, payload: bytes) -> bytes:
     """The 72-byte HEADER for one object."""
@@ -160,7 +153,6 @@ def header_frame(kind: int, name: str, payload: bytes) -> bytes:
     frame[68:72] = crc32(bytes(frame[:68])).to_bytes(4, "little")
     return bytes(frame)
 
-
 def ready_frame(chunk: int) -> bytes:
     """The device's 14-byte READY. Here so the tests can build one; the device is what sends it."""
     frame = bytearray(READY_BYTES)
@@ -170,7 +162,6 @@ def ready_frame(chunk: int) -> bytes:
     frame[6:10] = chunk.to_bytes(4, "little")
     frame[10:14] = crc32(bytes(frame[:10])).to_bytes(4, "little")
     return bytes(frame)
-
 
 def parse_short(frame: bytes) -> tuple[int, int]:
     """A 14-byte READY or GONE, as `(tag, value)`. They share a shape so one reader decodes both."""
@@ -182,7 +173,6 @@ def parse_short(frame: bytes) -> tuple[int, int]:
         raise IngestError("the frame's CRC did not check")
     return frame[5], int.from_bytes(frame[6:10], "little")
 
-
 def parse_ready(frame: bytes) -> int:
     """The chunk size a READY advertises."""
     tag, chunk = parse_short(frame)
@@ -193,7 +183,6 @@ def parse_ready(frame: bytes) -> int:
     if not 0 < chunk <= 1 << 20:
         raise IngestError(f"the device advertised an implausible chunk size of {chunk}")
     return chunk
-
 
 @dataclass(frozen=True)
 class Result:
@@ -215,7 +204,6 @@ class Result:
             )
         return f"the device refused the object: {REASONS.get(self.reason, f'reason {self.reason}')}"
 
-
 def parse_result(frame: bytes) -> Result:
     """The 42-byte RESULT that closes an object out."""
     if len(frame) != RESULT_BYTES or frame[:4] != MAGIC:
@@ -236,7 +224,6 @@ def parse_result(frame: bytes) -> Result:
         entries=int.from_bytes(frame[36:38], "little"),
     )
 
-
 def chunk_plan(total: int, chunk: int) -> list[int]:
     """The chunk lengths both sides compute, which is why no chunk carries a length field."""
     if chunk <= 0:
@@ -247,9 +234,7 @@ def chunk_plan(total: int, chunk: int) -> list[int]:
         plan.append(remainder)
     return plan
 
-
 # ── the link ────────────────────────────────────────────────────────────────────────────────────
-
 
 class Link:
     """A byte pipe to the device. `SerialLink` is the real one; the tests supply a fake."""
@@ -260,7 +245,6 @@ class Link:
     def read_exact(self, count: int, timeout: float) -> bytes:
         """Exactly `count` bytes, or `LinkTimeout`."""
         raise NotImplementedError
-
 
 class SerialLink(Link):
     def __init__(self, port: str, baud: int):
@@ -298,9 +282,7 @@ class SerialLink(Link):
     def close(self) -> None:
         self._port.close()
 
-
 # ── the transfer ────────────────────────────────────────────────────────────────────────────────
-
 
 def await_ready(link: Link, wait: float) -> int:
     """Scan the line for the device's READY advertisement and return its chunk size.
@@ -364,7 +346,6 @@ def await_ready(link: Link, wait: float) -> int:
             except IngestError:
                 continue  # a damaged advertisement; another is 500 ms away
 
-
 def expect_ack(link: Link, timeout: float, what: str) -> None:
     """One STATUS byte pair.
 
@@ -382,7 +363,6 @@ def expect_ack(link: Link, timeout: float, what: str) -> None:
         message = f"the device refused {what}: {REASONS.get(reason, f'reason {reason}')}"
         raise (RetriableError if reason in RETRIABLE else IngestError)(message)
     raise IngestError(f"the device answered {what} with {status[0]:#04x}, which is not a status byte")
-
 
 def send(
     link: Link,
@@ -415,9 +395,7 @@ def send(
             progress(sent, len(payload))
     return parse_result(link.read_exact(RESULT_BYTES, timeout))
 
-
 # ── the command line ────────────────────────────────────────────────────────────────────────────
-
 
 def _progress(started: float):
     def report(done: int, total: int) -> None:
@@ -429,7 +407,6 @@ def _progress(started: float):
         print(line, end=end, file=sys.stderr, flush=True)
 
     return report
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -528,7 +505,6 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     finally:
         link.close()
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

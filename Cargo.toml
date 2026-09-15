@@ -9,7 +9,6 @@ members = [
     "firmware/obc-ports",
     "firmware/obc-map-scene",
     "firmware/obc-reader",
-    "firmware/obc-weather",
     "firmware/obc-elevation",
     "firmware/obc-route",
     "firmware/obc-render",
@@ -37,8 +36,6 @@ members = [
     "host/obc-replay",
     "host/obc-usb-host",
     "host/obc-usb",
-    "host/obc-wx-bake",
-    "host/obc-wx-client",
     # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
     "apps/obc-sim",
     "apps/obc-web-demo",
@@ -59,34 +56,7 @@ resolver = "2"
 [patch.crates-io]
 embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
 
-# The weather-bakery numeric suites (canonical mosaic, event-pack replay scoring) are
-# debug-hostile. Current durations come from test result artifacts; inspect the suite with
-# `python3 tools/suite_registry.py explain rust.obc-wx-bake`. Optimizing just these packages'
-# dev/test builds restores the budget without touching any test. `profile.test`
-# inherits these package overrides from `dev`.
-[profile.dev.package.obc-wx-bake]
-opt-level = 2
-[profile.dev.package.obc-wx-client]
-opt-level = 2
-[profile.dev.package.obc-formats]
-opt-level = 2
-# The captured weather products arrive inside bzip2, HDF5 and gzip containers, and each bake that
-# does not reuse a cached fixture read decodes them again. That uncached decode is the largest
-# remaining cost in `canonical_mosaic` and it is entirely third-party inner loops. `bzip2-rs` carries most of it;
-# gzip belongs to `miniz_oxide`, which is where flate2's `rust_backend` actually inflates, so an
-# override on flate2 itself would reach nothing but stream plumbing.
-[profile.dev.package.bzip2-rs]
-opt-level = 2
-[profile.dev.package.hdf5-pure]
-opt-level = 2
-[profile.dev.package.miniz_oxide]
-opt-level = 2
-# `obc-crc` is the hottest inner loop in the whole test run, and it is not a weather crate. Every
-# storage checkpoint, every media cut in the crash matrices, and every OBCG frame the bakery writes
-# runs a CRC over its bytes, so an unoptimized `obc-crc` taxes suites that do not look like numeric
-# work at all. Measured with `cargo nextest run --workspace --all-features`: this one override takes
-# `obc-storage`'s 490 tests from 137.1 s to 5.4 s, and the whole run's test CPU from 1,329 s to
-# 697 s. `obc-storage` itself follows for its own crash matrices, 28.0 s to 13.5 s of test CPU.
+# Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
 opt-level = 2
 [profile.dev.package.obc-storage]

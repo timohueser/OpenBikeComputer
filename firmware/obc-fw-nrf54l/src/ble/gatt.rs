@@ -1,19 +1,3 @@
-//! The GATT control-plane surface: the attribute table the radio exposes.
-//!
-//! The GATT table is the **real** control plane the iOS app discovers on connect (see
-//! `obc-ble-interface-spec.md`): **DIS** (real firmware revision / board id / FICR serial), **BAS**
-//! (battery, notify — fed from the `FuelGauge` seam), the custom **OBC Control** service
-//! ([`ObcControlService`]) with its characteristics (protocol v2 retired the `objectStore` digest and
-//! reserved `diagnostics` blocks; protocol v4 retired `transferControl` and added `objectControl`), and the **Weather Request** service
-//! ([`WeatherRequestService`], spec §11) with its one authenticated read. This module owns the
-//! `#[gatt_server]`/`#[gatt_service]` tables and the BLE static-random address. The writes
-//! themselves are answered by [`super::control`].
-//!
-//! The identity strings and blob codecs are **not** here: they are the same bytes on any transport
-//! and live in [`crate::link::identity`]. What is left below is the thin adaptation into
-//! trouble-host's attribute-value types — the `#[gatt_service]` derive impls `AsGatt` for *its*
-//! heapless (0.9) `String`/`Vec`, so a shared heapless-0.8 value has to be re-packed here.
-
 use trouble_host::prelude::*;
 
 use crate::link::identity;
@@ -39,7 +23,6 @@ pub(crate) struct Server {
     pub dis: DeviceInformationService,
     pub bas: BatteryService,
     pub obc: ObcControlService,
-    pub weather_request: WeatherRequestService,
 }
 
 /// Device Information Service. All read-only strings, seeded at boot; `value` can't hold a runtime
@@ -77,11 +60,6 @@ pub(crate) struct ObcControlService {
     /// possession lists across writes (the command is idempotent and order-free).
     #[characteristic(uuid = "3C920001-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated))]
     pub command: heapless09::Vec<u8, 64>,
-    /// Typed device → app messages. Notify-only — protocol v2's **sole** device → app control channel,
-    /// so it also carries a download's announce (`downloadAnnounce`, `msg = 4`) and a live-link
-    /// weather wake-up (`weatherRequest`, `msg = 5`). Sized to
-    /// [`StatusMessage::MAX_ENCODED_LEN`](obc_ble::StatusMessage::MAX_ENCODED_LEN) (13 bytes, the
-    /// announce) so any message fits one notify.
     #[characteristic(uuid = "3C920002-9916-4EBA-ABC2-342FE08F6B10", notify, permissions(authenticated))]
     pub status: heapless09::Vec<u8, { obc_ble::StatusMessage::MAX_ENCODED_LEN }>,
     // `…0003` (the `objectStore` digest) is **retired** in protocol v2 — `storeChanged` (status
@@ -123,29 +101,6 @@ pub(crate) struct ObcControlService {
     /// carries as many 88-byte entries as the ceiling allows.
     #[characteristic(uuid = "3C920009-9916-4EBA-ABC2-342FE08F6B10", write, indicate, permissions(authenticated))]
     pub object_control: heapless09::Vec<u8, 244>,
-}
-
-/// The **Weather Request** service (spec §11): the dedicated UUID the device advertises *instead of*
-/// OBC Control while a weather refresh is due, so a disconnected peripheral can wake the companion.
-///
-/// It lives in the GATT table of **every** BLE build, unconditionally — not only when the harness
-/// feature is on. That is not defensive padding: advertising a service the connected database does
-/// not contain is precisely the trap #1188 forbids, and a table that holds the advertised service
-/// only in some builds is a table that works only in some builds.
-///
-/// The one characteristic is an [`obc_ble::WeatherRequestContext`] — 52 little-endian bytes
-/// describing the request and the rider. `authenticated` because the value carries the rider's
-/// coordinates: an unbonded peer that connects to the advertisement gets an ATT security error and,
-/// per [`super::control`], does not consume the pending request either.
-#[gatt_service(uuid = "B3B60000-33B4-4F02-A5FF-E5954D54B5AA")]
-pub(crate) struct WeatherRequestService {
-    #[characteristic(
-        uuid = "B3B60001-33B4-4F02-A5FF-E5954D54B5AA",
-        read,
-        permissions(authenticated),
-        value = [0u8; obc_ble::WeatherRequestContext::ENCODED_LEN]
-    )]
-    pub context: [u8; obc_ble::WeatherRequestContext::ENCODED_LEN],
 }
 
 // ============================ Radio identity ============================

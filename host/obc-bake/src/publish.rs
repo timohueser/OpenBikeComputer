@@ -220,12 +220,6 @@ pub fn publish(
     Ok(report(warnings))
 }
 
-/// Commit an already-built plan without knowing how the catalog was generated.
-///
-/// This is the publication boundary #1293 will share with the weather bakery: all
-/// immutable/mutable content is uploaded, every destination size is proved, and
-/// only then is the single manifest object written. Keeping that ordering in one
-/// function also gives the refusal contract a credential-free test seam.
 fn publish_planned_objects(store: &dyn ObjectStore, objects: &[PlannedObject], verbose: bool) -> Result<(), String> {
     let (root_object, content) = objects.split_last().ok_or("nothing to publish")?;
     debug_assert_eq!(root_object.kind, ObjectKind::Manifest);
@@ -567,30 +561,6 @@ impl ObjectStore for RcloneStore {
         Ok(())
     }
 
-    /// The pre-swap fetchability proof, and **`count` is what answers it — not
-    /// `bytes`, and not rclone's stderr wording.**
-    ///
-    /// Some rclone versions do not fail this command for a key that is not
-    /// there; they treat the path as an empty directory and exit 0:
-    ///
-    /// ```text
-    /// $ rclone size --json obcr2:obc-maps/cells/fine/1204/1052.obcm   # no such object
-    /// {"count":0,"bytes":0,"sizeless":0}
-    /// EXIT=0
-    /// ```
-    ///
-    /// Debian 13's packaged v1.60.1 is one of them, which is not a hypothetical:
-    /// it is what the weather VPS runs, and the same substring match there cost a
-    /// live bootstrap before `obc-wx-bake`'s copy of this store was fixed the same
-    /// way. Here it is milder — an object that never uploaded reports 0 bytes, the
-    /// caller's length compare still refuses to swap `catalog.json` in, and the
-    /// only casualty is the "not fetchable after upload" arm never being taken and
-    /// the operator reading a length mismatch instead. Milder is not correct.
-    ///
-    /// `count` separates the two states on every version: `0` is absent, `1` is
-    /// present — including a real zero-byte object, which prints the same
-    /// `"bytes":0`. The stderr match stays as a *second* answer for versions that
-    /// do fail the command.
     fn head(&self, key: &str) -> Result<Option<u64>, String> {
         let args = vec!["size".to_string(), "--json".to_string(), self.target(key)];
         let out = self.run(&args)?;
@@ -784,10 +754,6 @@ mod tests {
         assert!(preview.cache_control().contains("immutable"));
     }
 
-    /// `bytes` is `0` in two of these three and they mean different things: no
-    /// object at all, and a real zero-byte one. Only `count` separates them, and
-    /// reading absence off `bytes` — or off a stderr some rclone versions never
-    /// write — is what wedged the weather baker on 2026-08-11.
     #[test]
     fn count_not_bytes_tells_an_absent_object_from_an_empty_one() {
         let key = "cells/fine/1204/1052.obcm";

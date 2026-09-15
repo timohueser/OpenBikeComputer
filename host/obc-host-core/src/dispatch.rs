@@ -1,29 +1,3 @@
-//! The shared **typed executor** for the frame-stepped hosts (the desktop sim GUI, the sim's
-//! headless driver, and the web demo) — #1397 S6a.
-//!
-//! One [`HostLoop`] owns everything a host needs between two DeviceCore passes: the outcomes and
-//! facts the next pass reads, the in-flight resumable planner, a planned-but-uncommitted detour,
-//! and the resident active-route parse. A frame is two calls:
-//!
-//! ```text
-//!   let plan = host.pass(app, now, gestures, sensors, route, weather, support); // one App::run_pass
-//!   host.execute(app, &mut plan, routes, rides, tracks, trips, map, elev, platform);
-//! ```
-//!
-//! [`pass`](HostLoop::pass) hands `App` this frame's inputs and returns its [`PassPlan`];
-//! [`execute`](HostLoop::execute) performs the plan's **bounded effects** against the caller's
-//! repositories and leaves token-carrying outcomes for the next pass. There is one arm per domain
-//! effect, and the executor performs no product policy: no ordering decision, no cascade, no
-//! replacement rule — those belong to the domain that decided the effect.
-//!
-//! ## What stays with the caller
-//!
-//! Input recognition, rendering, the frame's own clock — and the [`ActiveRouteSession`]. The
-//! resident route parse lives with the *host*, not in this struct, because the
-//! [`RouteReader`](obc_route::RouteReader) built over it is borrowed **across** the pass and the
-//! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
-//! [`ActiveRouteSession::sync`] and lends it to both.
-
 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogObjectKind, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
@@ -36,8 +10,7 @@ use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, Plan
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
-use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
-use obc_app::weather_alerts::AlertMarks;
+
 use obc_app::{App, Gesture};
 use obc_ports::{Sensors, SettingsSaveError};
 
@@ -194,15 +167,6 @@ pub trait HostPlatform {
         Ok(())
     }
 
-    /// Persist the weather alert-mark record as `revision` — the second durable record (#1542), on
-    /// the same terms as [`persist_settings`](HostPlatform::persist_settings) and defaulted for the
-    /// same reason: a host with no durable store has nothing that can fail, and an unanswered write
-    /// would park the handshake.
-    fn persist_alert_marks(&mut self, marks: &AlertMarks, revision: u16) -> Result<(), SettingsSaveError> {
-        let _ = (marks, revision);
-        Ok(())
-    }
-
     /// Bytes still free on the mounted medium, or the reason there is no figure.
     fn measure_free_space(&mut self) -> Result<u64, StorageInfoError> {
         Err(StorageInfoError::NotMounted)
@@ -224,14 +188,6 @@ pub trait HostPlatform {
     /// a progress spinner with no terminal swap behind it is.
     fn arm_install(&mut self) -> Option<Result<(), DfuInstallError>> {
         None
-    }
-
-    /// **Raise** a weather refresh with whatever plane schedules the radio, and report whether
-    /// there was anything to raise it with. `false` — the default, because a host with no companion
-    /// has nothing to ask — is answered as [`WeatherError::LinkLost`]. What comes back, and when,
-    /// arrives as the installed-data fact; this call never waits for a bundle.
-    fn request_weather_refresh(&mut self) -> bool {
-        false
     }
 }
 
@@ -369,16 +325,6 @@ impl HostLoop {
             .note_store_revision(StoreRevision { store: REPOSITORY_STORE, revision: Revision::new(self.revision) });
     }
 
-    /// Run **one** DeviceCore pass: whatever the executor handed back, this frame's input, and the
-    /// fourteen stages.
-    ///
-    /// `route` is the active route opened over the host's [`ActiveRouteSession`] — the same reader
-    /// the caller's render uses, so the map-matcher and the map draw agree about the geometry;
-    /// `weather` is the frame's sampled weather snapshot on the same terms.
-    /// The lifetime is one region covering the whole frame: `Sensors` is invariant, so the pass's
-    /// borrows — this loop's inbox, the frame's gestures, the sensor ports and the open route —
-    /// have to be the *same* region. Every host already holds them as sibling fields, which is what
-    /// makes that free.
     #[allow(clippy::too_many_arguments)]
     pub fn pass<'a>(
         &'a mut self,
@@ -387,7 +333,7 @@ impl HostLoop {
         gestures: &'a [Gesture],
         sensors: Sensors<'a>,
         route: Option<&'a obc_route::RouteReader<'a>>,
-        weather: Option<&'a obc_app::WeatherSnapshot>,
+
         support: PlatformSupport,
     ) -> PassPlan {
         let Inbox { outcomes, facts, derived, ride_preview, nav_preview } = &mut self.inbox;
@@ -396,7 +342,7 @@ impl HostLoop {
             gestures,
             sensors,
             route,
-            weather,
+
             support,
             outcomes,
             facts,
@@ -548,12 +494,6 @@ impl HostLoop {
                         Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
                     }
                 }
-                SettingsEffect::PersistAlertMarks { token, revision } => {
-                    match platform.persist_alert_marks(app.alert_marks(), revision) {
-                        Ok(()) => SettingsOutcome::MarksPersisted { token, revision },
-                        Err(error) => SettingsOutcome::MarksPersistFailed { token, revision, error },
-                    }
-                }
             };
             deliver(&mut self.inbox.outcomes.settings, outcome, "settings");
         }
@@ -579,13 +519,7 @@ impl HostLoop {
             };
             deliver(&mut self.inbox.outcomes.storage_info, outcome, "storage");
         }
-        if let Some(WeatherEffect::RequestRefresh { token }) = plan.effects.weather.take() {
-            let outcome = match platform.request_weather_refresh() {
-                true => WeatherOutcome::Raised { token },
-                false => WeatherOutcome::Failed { token, error: WeatherError::LinkLost },
-            };
-            deliver(&mut self.inbox.outcomes.weather, outcome, "weather");
-        }
+
         if let Some(obc_app::ble::BondEffect::Forget { token }) = plan.effects.bond.take() {
             let outcome = obc_app::ble::BondOutcome::from_result(token, platform.forget_bond());
             deliver(&mut self.inbox.outcomes.bond, outcome, "bond");
@@ -1496,7 +1430,6 @@ mod tests {
                 &[],
                 Sensors::new(&mut loc),
                 None,
-                None,
                 SUPPORT,
             );
             let effect = plan.effects.bond.take().unwrap();
@@ -1605,7 +1538,7 @@ mod tests {
         detour: true,
         settings_persistence: true,
         dfu: true,
-        weather: true,
+
         bonding: true,
         storage_space_report: true,
         retention_metadata: true,
@@ -1709,7 +1642,6 @@ mod tests {
                 &[],
                 Sensors::new(&mut loc),
                 None,
-                None,
                 SUPPORT,
             );
             // Refuse every append, so the samples stay staged. A refusal is a delay, not a loss.
@@ -1751,7 +1683,6 @@ mod tests {
                     PassClock { ride: RideClock(now), ui: InputClock(now) },
                     &[],
                     Sensors::new(&mut loc),
-                    None,
                     None,
                     SUPPORT,
                 );
@@ -1824,7 +1755,6 @@ mod tests {
                     PassClock { ride: RideClock(now), ui: InputClock(now) },
                     &[],
                     Sensors::new(&mut loc),
-                    None,
                     None,
                     SUPPORT,
                 );
