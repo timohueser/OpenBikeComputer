@@ -33,7 +33,7 @@
     ],
     "reason": "Initial sub-millisecond samples had large overlapping ranges; predeclared cold batches amortize process/frequency noise. No further parameter tuning or repeat campaign."
   },
-  "production_commit": "1758d491c5349e24f380846b00b5cccdb72f3b9d",
+  "production_commit": "d55811b84414a637618f8bf135d84d04b837b633",
   "candidate_commit_note": "Unpublished local measured source commit. Replay patches and per-file SHA-256 values reproduce these exact sources without access to that commit. Production commit removes optional counters only.",
   "original_raw_artifact_sha256": {
     "counts.json": "030774afe19bc445ba9bf2e67651783a5933eac018d2636a547b8e9dd148d126",
