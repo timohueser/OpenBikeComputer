@@ -665,6 +665,51 @@ mod tests {
         }
     }
     #[test]
+    fn recording_recovery_preserves_the_separate_assistant_resume_decision() {
+        use crate::{screen::Screen, Gesture, RideContinuation, RideDamage};
+        let checkpoint = app().assistant_checkpoint();
+        for assistant_first in [false, true] {
+            for choice in 0..3 {
+                let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
+                let store = crate::device_core::StoreIdentity::from_bytes([1; 16]);
+                if assistant_first {
+                    app.offer_assistant_checkpoint(store, checkpoint);
+                }
+                // The recording offer must also suspend any ordinary guidance already selected.
+                app.navigator.following.active_route = Some(0);
+                if choice == 2 {
+                    assert!(app.offer_damaged_ride(RideDamage::Payload));
+                } else {
+                    assert!(app.offer_recovered_ride(RideContinuation::default()));
+                }
+                if !assistant_first {
+                    app.offer_assistant_checkpoint(store, checkpoint);
+                }
+                assert!(app.active_route_index().is_none());
+                assert_eq!(app.assistant_checkpoint(), checkpoint);
+                assert!(app.navigator.review.change.is_none(), "a recording offer cannot cancel a journey");
+                assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
+                if choice == 1 {
+                    app.apply_gesture(Gesture::Step(1));
+                }
+                app.apply_gesture(if choice == 0 { Gesture::Press } else { Gesture::Hold });
+                app.advance_animations(obc_ports::InputClock(0));
+                app.prepare_find(None, None);
+                assert!(app.active_route_index().is_none(), "recording recovery cannot resume guidance");
+                assert_eq!(app.assistant_checkpoint(), checkpoint);
+                assert!(app.navigator.review.change.is_none(), "the recording choice cannot write journey metadata");
+                assert_eq!(app.assistant_review_status(), ReviewStatus::ResumeAvailable);
+                assert!(app.requested_assistant_resume().is_none());
+                if choice == 0 {
+                    assert!(matches!(app.top_screen(), Screen::Journey(s) if s.resume));
+                    app.apply_gesture(Gesture::Press);
+                    assert_eq!(app.requested_assistant_resume(), checkpoint.map(|c| c.route));
+                    assert!(app.active_route_index().is_none(), "Resume still needs the exact-source save gate");
+                }
+            }
+        }
+    }
+    #[test]
     fn recovery_card_requires_a_fresh_phase_match_and_explicit_press() {
         use crate::{screen::Screen, Gesture};
         let bytes = route();
