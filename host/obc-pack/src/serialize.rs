@@ -6,7 +6,7 @@
 //! the chunk / offset-table / index / LOD-table / header bytes. Geometry chunks are
 //! packed **tight** and addressed by a per-LOD offset table (v11 §5,
 //! [`serialize_tree`]); POI and nav chunks keep their fixed strides. The **POI section** (§7 of the
-//! spec) is a per-category quadtree over fixed 36-byte point records (each carrying
+//! spec) is a per-category quadtree over fixed 64-byte point records (each carrying
 //! a `hours_ref` u16 into the shared hours-pool section), reusing the same
 //! BFS-flatten + u32 node encoding as the geometry tree. The trailing **nav-graph
 //! section** (v8, §8) tiles the routable graph ([`crate::nav`]): a node quadtree
@@ -28,9 +28,9 @@ use obc_formats::obcm::{
     nav_edge_id, nav_index_padding, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE,
     NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE,
     NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
-    NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CATEGORY_COUNT,
-    POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
-    SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
+    NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CAT_ENTRY_LEN,
+    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SUMMIT_CATEGORY_ID,
+    SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID, VERSION as OBCM_VERSION,
 };
 
 /// The `Offset Scale` every `.obcm` this packer writes carries (§1.1): `U = 16`, a 64 GiB
@@ -717,9 +717,10 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
 // --- POI section (v7, spec §7) ------------------------------------------------
 
 /// A POI record's absolute microdegree coordinates + the fields packed into its
-/// 36-byte record (§7.3). Owned so the tree can move records into leaves.
+/// 64-byte record (§7.3). Owned so the tree can move records into leaves.
 /// The trailer stores either a service hours reference or a signed summit height.
 struct PoiPoint {
+    metadata: obc_formats::obcm::PoiMetadata,
     lon_udeg: i32,
     lat_udeg: i32,
     subtype: u8,
@@ -754,7 +755,7 @@ impl FlattenTree for PoiNode {
     }
 }
 
-/// Pack one 36-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
+/// Pack one 64-byte POI record (§7.3): absolute `int32 lat, int32 lon`, `u8
 /// subtype`, `u8 name_len`, a 24-byte `0xFF`-padded name, and the subtype-specific
 /// two-byte trailer. Names truncate only at UTF-8 character boundaries.
 fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
@@ -772,15 +773,16 @@ fn pack_poi_record(p: &PoiPoint) -> [u8; POI_RECORD_LEN] {
     rec[10..10 + len].copy_from_slice(&bytes[..len]);
     // rec[10 + len .. 34] stays 0xFF (name pad).
     rec[34..36].copy_from_slice(&p.payload.to_le_bytes());
+    rec[36..64].copy_from_slice(&p.metadata.encode());
     rec
 }
 
 /// Pack a leaf's POI records into one `chunk_size`-byte chunk (§7.3): as many fixed
-/// 36-byte records as fit, back-to-back, then a `0xFF` **subtype** sentinel + `0xFF`
+/// 64-byte records as fit, back-to-back, then a `0xFF` **subtype** sentinel + `0xFF`
 /// padding to `chunk_size`. Returns `(bytes, dropped)`. `build_poi_tree` splits a
 /// leaf before it exceeds the chunk capacity, so `dropped` is 0 in practice; the cap
 /// is the safety net for the one case the tree can't split away — more than
-/// `chunk_size / 36` distinct POIs inside the 10-µdeg (~1 m) recursion floor, which
+/// `chunk_size / 64` distinct POIs inside the 10-µdeg (~1 m) recursion floor, which
 /// dedup makes effectively impossible. Truncating loudly beats corrupting the chunk.
 fn pack_poi_chunk(points: &[PoiPoint], chunk_size: usize) -> (Vec<u8>, usize) {
     let capacity = chunk_size / POI_RECORD_LEN;
@@ -842,7 +844,7 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 /// (§7.5) at the tail. `pois` is the deduped classified list; each is bucketed by
 /// its subtype's category ([`crate::poi::table_row`]). Category ids are
 /// `1..=POI_CATEGORY_COUNT` and every one gets a directory entry, empty or not
-/// (§7.1). Named summits add category 7. A map with no POIs writes six empty entries.
+/// (§7.1). Named summits add category 7. A map with no POIs writes seven empty entries.
 /// `section_offset` is the section's absolute byte offset in the file, needed so the
 /// directory's per-category `index_offset` fields and the `hours_pool_offset` are
 /// file-absolute.
@@ -853,20 +855,40 @@ fn build_poi_tree(points: Vec<PoiPoint>, bbox: (i64, i64, i64, i64), capacity: u
 /// tree-building so it travels into the right leaf. The pool bytes (`count u16` +
 /// `count × 29-byte blobs`) are appended after every category's index+chunks, and
 /// the directory records the pool's absolute offset + count.
-pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), section_offset: usize) -> Vec<u8> {
+pub fn serialize_poi_section(
+    pois: &[Poi],
+    global_bbox: (i64, i64, i64, i64),
+    section_offset: usize,
+) -> io::Result<Vec<u8>> {
     // Dedup the weekly schedules into a pool once over the whole list; `refs[k]` is
     // POI k's 0-based pool index (or `None` ⇒ no hours). Aligned to `pois`.
     let (pool, refs) = crate::hours::build_hours_pool(pois, |p| {
         (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten()
     });
-    let category_count =
-        if pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) { SUMMIT_CATEGORY_ID } else { POI_CATEGORY_COUNT };
+    serialize_poi_pool(pois, global_bbox, section_offset, &pool, &refs)
+}
 
-    // Services occupy categories 1..6; named summits add category 7 when present.
-    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=category_count as usize).map(|_| Vec::new()).collect();
+fn serialize_poi_pool(
+    pois: &[Poi],
+    global_bbox: (i64, i64, i64, i64),
+    section_offset: usize,
+    pool: &[[u8; POI_HOURS_BLOB_LEN]],
+    refs: &[Option<u16>],
+) -> io::Result<Vec<u8>> {
+    if pool.len() >= POI_HOURS_REF_NONE as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "hours pool exceeds its record limit"));
+    }
+    let mut category_ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
+    if pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
+        category_ids.push(SUMMIT_CATEGORY_ID);
+    }
+    category_ids.sort_unstable();
+    let category_count = category_ids.len();
+    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=obc_formats::obcm::TRAIN_CATEGORY_ID).map(|_| Vec::new()).collect();
     for (p, hours_ref) in pois.iter().zip(refs.iter()) {
         let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {
+            metadata: p.metadata,
             lon_udeg: p.lon_udeg,
             lat_udeg: p.lat_udeg,
             subtype: p.subtype,
@@ -879,7 +901,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         });
     }
 
-    // Records per chunk = chunk_size / record_len (512 / 36 = 14), so a leaf holds
+    // Records per chunk = chunk_size / record_len (512 / 64 = 8), so a leaf holds
     // at most that many before the tree splits.
     let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN;
 
@@ -892,8 +914,8 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         chunks: Vec<u8>,
         chunk_count: u32,
     }
-    let mut blocks = Vec::with_capacity(category_count as usize);
-    for cat_id in 1..=category_count {
+    let mut blocks = Vec::with_capacity(category_count);
+    for cat_id in category_ids {
         let pts = std::mem::take(&mut by_cat[cat_id as usize]);
         if pts.is_empty() {
             blocks.push(CatBlock { cat_id, index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0 });
@@ -901,7 +923,9 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         }
         let root = build_poi_tree(pts, global_bbox, capacity);
         let (index, node_count, chunks, dropped) = flatten_tree(&root, POI_CHUNK_SIZE);
-        debug_assert_eq!(dropped, 0, "fixed-size POI records never overflow a split leaf");
+        if dropped != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "POI density exceeds the chunk capacity"));
+        }
         // POI chunks keep the fixed `POI_CHUNK_SIZE` stride (§7.3) — no offset table, so the reader's
         // `PoiCatEntry::chunk_range` stays the plain `k * chunk_size` it has been since v6.
         let chunk_count = chunks.len() as u32;
@@ -910,7 +934,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
 
     // Directory size: count byte + chunk_size u16 + one entry per category + the two
     // v7 hours-pool fields (offset u32 + count u16).
-    let dir_len = 1 + 2 + category_count as usize * POI_CAT_ENTRY_LEN + 4 + 2;
+    let dir_len = 1 + 2 + category_count * POI_CAT_ENTRY_LEN + 4 + 2;
 
     // Lay categories out sequentially after the directory: [index][filler][chunks] per category,
     // empties contributing nothing but their directory entry. Every `Index Offset` is scaled, so
@@ -923,7 +947,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     // The cursor starts past the directory because the directory's own bytes cannot be written
     // until this walk has resolved the offsets they carry.
     let (payload, (cat_entries, hours_pool_offset)) = lay_out(section_offset + dir_len, |w| {
-        let mut cat_entries = Vec::with_capacity(category_count as usize);
+        let mut cat_entries = Vec::with_capacity(category_count);
         for b in &blocks {
             cat_entries.push((b.cat_id, scaled(w.begin_section()? as usize), b.node_count, b.chunk_count));
             w.put(&b.index)?;
@@ -932,14 +956,14 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
         }
         // The hours pool, then the run that leaves the nav directory behind it nameable.
         let hours_pool_offset = w.begin_section()? as usize;
-        w.put(&pack_hours_pool(&pool))?;
+        w.put(&pack_hours_pool(pool))?;
         w.begin_section()?;
         Ok((cat_entries, hours_pool_offset))
     });
 
     // Now emit the directory with the resolved offsets + pool fields.
     let mut out = Vec::with_capacity(dir_len + payload.len());
-    out.push(category_count);
+    out.push(category_count as u8);
     out.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
     for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
         out.push(cat_id);
@@ -951,7 +975,7 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
     debug_assert_eq!(out.len(), dir_len);
     out.extend_from_slice(&payload);
-    out
+    Ok(out)
 }
 
 /// Pack the hours-pool section (§7.5): `count u16` then `count × 29-byte` blobs,
@@ -1321,9 +1345,9 @@ fn densify_polyline(pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
 /// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. `length_m` **stays** in v9 (N3
 /// sums it at emit for the displayed distance — weighted `g` is no longer a distance). The polyline
 /// is already densified, so every delta fits.
-fn pack_edge_record(e: &WorkEdge, out: &mut Vec<u8>) {
+fn pack_edge_record(e: &WorkEdge, elevation_complete: bool, out: &mut Vec<u8>) {
     out.extend_from_slice(&e.cost_m.to_le_bytes());
-    out.extend_from_slice(&(e.polyline.len() as u16).to_le_bytes());
+    out.extend_from_slice(&((e.polyline.len() as u16) | if elevation_complete { 0x8000 } else { 0 }).to_le_bytes());
     out.push(e.kind);
     out.extend_from_slice(&e.polyline[0].1.to_le_bytes()); // anchor lat
     out.extend_from_slice(&e.polyline[0].0.to_le_bytes()); // anchor lon
@@ -1622,10 +1646,11 @@ pub fn serialize_nav_section(
     // Edge pool: records back-to-back in `edges` order, each pushed to the next chunk start if it
     // would straddle a boundary. Since v14 the wire `edge_id` is the packed `(chunk, ordinal)` pair
     // (§8.4), minted by [`EdgeIds`] from the byte the record lands on.
+    let edge_facts: Vec<_> = edges.iter().map(|e| crate::nav::integrate_edge_facts(&e.polyline, terrain)).collect();
     let mut pool: Vec<u8> = Vec::new();
     let mut edge_ids: Vec<u32> = Vec::with_capacity(edges.len());
     let mut ids = EdgeIds::default();
-    for e in &edges {
+    for (e, facts) in edges.iter().zip(&edge_facts) {
         let rec_len = NAV_EDGE_FIXED_LEN + (e.polyline.len() - 1) * 4;
         debug_assert!(rec_len <= NAV_CHUNK_SIZE, "split bounded every record to one chunk");
         let within = pool.len() % NAV_CHUNK_SIZE;
@@ -1633,7 +1658,7 @@ pub fn serialize_nav_section(
             pool.resize(pool.len() + (NAV_CHUNK_SIZE - within), FILLER);
         }
         edge_ids.push(ids.mint(pool.len()));
-        pack_edge_record(e, &mut pool);
+        pack_edge_record(e, facts.2, &mut pool);
     }
     pool.resize(pool.len().div_ceil(NAV_CHUNK_SIZE) * NAV_CHUNK_SIZE, FILLER);
     let edge_chunk_count = (pool.len() / NAV_CHUNK_SIZE) as u32;
@@ -1645,11 +1670,10 @@ pub fn serialize_nav_section(
     // Adjacency with inline neighbor coords, capped at NAV_MAX_DEGREE.
     let mut adj: Vec<Vec<WireNeighbor>> = (0..coords.len()).map(|_| Vec::new()).collect();
     let mut truncated = 0usize;
-    for (e, &edge_id) in edges.iter().zip(&edge_ids) {
+    for ((e, &edge_id), &(ascent_ab, ascent_ba, _)) in edges.iter().zip(&edge_ids).zip(&edge_facts) {
         // §8.3 v12: the two entries of an edge differ in exactly one field. `a→b` books the climb of
         // riding the polyline forwards, `b→a` the climb of riding it backwards (= the forward
         // descent). A self-loop writes the forward one and nothing else, matching its single entry.
-        let (ascent_ab, ascent_ba) = crate::nav::integrate_edge_ascent(&e.polyline, terrain);
         let mut push = |from: u32, to: u32, ascent_m: u16| {
             let list = &mut adj[from as usize];
             if list.len() >= NAV_MAX_DEGREE {
@@ -1772,6 +1796,7 @@ fn header_bytes(
     out.push(SCALE.log2());
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — no embedded raster
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain length, `0` exactly when the offset is
+    out.extend_from_slice(&[0; 8]); // optional landmark section
     debug_assert_eq!(out.len(), HEADER_LEN);
     out
 }
@@ -1861,7 +1886,8 @@ pub fn serialize_lods(
     // The POI section starts right after the last LOD's chunks (`cursor`); the
     // nav-graph section follows it at the file tail.
     let poi_section_offset = cursor;
-    let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset);
+    let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset)
+        .expect("POI section must fit before emitting the in-memory map");
     let nav_section_offset = poi_section_offset + poi_section.len();
     let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
 
@@ -1941,6 +1967,7 @@ pub fn serialize_lods_streaming<W, F>(
     marker_color: u16,
     global_bbox: (i64, i64, i64, i64),
     pois: &[Poi],
+    landmarks: &[crate::landmark_map::Landmark],
     nav: &NavGraph,
     profiles: &[NavProfile],
     terrain: &mut dyn ElevationSource,
@@ -1955,7 +1982,19 @@ where
 
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut dropped = 0usize;
-    let (poi_section_offset, nav_section_offset, cursor) = {
+    let schedules: Vec<_> = pois
+        .iter()
+        .map(|p| (p.subtype != SUMMIT_SUBTYPE_ID).then_some(p.hours.as_ref()).flatten())
+        .chain(landmarks.iter().map(|p| p.hours.as_ref()))
+        .collect();
+    let (pool, refs) = crate::hours::build_hours_pool(&schedules, |schedule| *schedule);
+    if pool.len() >= POI_HOURS_REF_NONE as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "hours pool exceeds its record limit"));
+    }
+    let landmark_refs: Vec<_> = refs[pois.len()..].iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
+    let landmark_bytes = crate::landmark_map::serialize(landmarks, &landmark_refs)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, cursor) = {
         let mut sink = |bytes: &[u8]| w.write_all(bytes);
         let mut u = UnitWriter::new(SCALE, 0, &mut sink);
 
@@ -2011,10 +2050,18 @@ where
         // 4. The POI section begins at the current cursor (right after the last LOD);
         // the nav-graph section follows it at the file tail.
         let poi_section_offset = u.at() as usize;
-        u.put(&serialize_poi_section(pois, global_bbox, poi_section_offset))?;
+        u.put(&serialize_poi_pool(pois, global_bbox, poi_section_offset, &pool, &refs[..pois.len()])?)?;
         let nav_section_offset = u.at() as usize;
         u.put(&serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain))?;
-        (poi_section_offset, nav_section_offset, u.at() as usize)
+        let (landmark_offset, landmark_len) = if landmark_bytes.is_empty() {
+            (0, 0)
+        } else {
+            let start = u.begin_section()? as usize;
+            u.put(&landmark_bytes)?;
+            let end = u.begin_section()? as usize;
+            (start, end - start)
+        };
+        (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, u.at() as usize)
     };
 
     // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
@@ -2026,6 +2073,9 @@ where
     w.seek(SeekFrom::Start(32))?;
     w.write_all(&scaled(poi_section_offset).to_le_bytes())?;
     w.write_all(&scaled(nav_section_offset).to_le_bytes())?;
+    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_LANDMARK_OFFSET_OFF as u64))?;
+    w.write_all(&scaled(landmark_offset).to_le_bytes())?;
+    w.write_all(&scaled(landmark_len).to_le_bytes())?;
     w.seek(SeekFrom::Start(cursor as u64))?;
     Ok((cursor as u64, dropped))
 }
@@ -2211,6 +2261,13 @@ mod tests {
             },
         ];
         let poi = |subtype, lon, lat, name: Option<&str>, hours: Option<&str>| Poi {
+            metadata: obc_formats::obcm::PoiMetadata {
+                source: obc_formats::obcm::SourceId::osm(1, subtype as u64),
+                approach: None,
+            },
+            access_nodes: Vec::new(),
+            wikidata: None,
+            wikipedia: None,
             subtype,
             lon_udeg: lon,
             lat_udeg: lat,
@@ -2255,6 +2312,7 @@ mod tests {
             0xABCD,
             bbox,
             &pois,
+            &[],
             &nav,
             &profiles,
             &mut NullElevation,

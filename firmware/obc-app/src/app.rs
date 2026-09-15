@@ -1294,6 +1294,8 @@ impl App {
     /// Feed the loaded map's display name + OBCM format version (T8 item 6) — the host calls this on
     /// map load. The System screen's `Map` row reads it as `name · vN` (e.g. `grimsel · v10`).
     pub fn set_map_info(&mut self, name: &str, obcm_version: u8) {
+        self.ui.poi_scratch.cancel();
+        self.ui.corridor_scratch.cancel();
         self.map_name.clear();
         for ch in name.chars() {
             if self.map_name.push(ch).is_err() {
@@ -2598,6 +2600,18 @@ impl App {
         self.wall_clock.now(self.ui.now_ms)
     }
 
+    /// Authoritative local time for shared place eligibility. Persisted boot time is insufficient.
+    pub fn place_local_time(&self) -> Option<(u8, u16)> {
+        if !self.clock_trusted() || !self.settings.local_offset_known {
+            return None;
+        }
+        let now = self.wall_clock_now();
+        Some((
+            obc_reader::weekday_from_ymd(now.year, now.month, now.day),
+            u16::from(now.hour) * 60 + u16::from(now.minute),
+        ))
+    }
+
     /// Whether the wall clock has an **established** set-point — a persisted/GPS/BLE time has been
     /// applied, versus a fresh clock that has never been told the time (see
     /// [`WallClock::is_established`](crate::wall_clock::WallClock::is_established)). The Home date
@@ -2641,14 +2655,16 @@ impl App {
         // change from `offset_before` and drop the save. Either way the live `WallClock` re-stamps
         // below on *every* stamp, so the displayed time stays exact.
         let first_trusted_this_boot = self.clock_trust == ClockTrust::Untrusted;
-        let offset_before = self.settings.utc_offset_min;
+        let offset_before = (self.settings.utc_offset_min, self.settings.local_offset_known);
         if let Some(offset) = offset {
             self.settings.utc_offset_min = offset;
+            self.settings.local_offset_known = true;
         }
         self.settings.clock = utc;
         let epoch = self.ui.now_ms.wrapping_sub(second as u32 * 1000);
         self.wall_clock.set(self.settings.local_clock(), epoch);
-        if first_trusted_this_boot || self.settings.utc_offset_min != offset_before {
+        if first_trusted_this_boot || (self.settings.utc_offset_min, self.settings.local_offset_known) != offset_before
+        {
             self.settings_ops.note_edited();
         }
         self.clock_trust = source;
@@ -3003,6 +3019,7 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
+        let place_local = self.place_local_time();
         // Navigator's detour level before the screen speaks, so a cancellation it admits takes the
         // preview polyline with it (see `sync_detour_preview`).
         let detour_planned_before = self.navigator.detour_planned();
@@ -3022,6 +3039,7 @@ impl App {
             ..
         } = self;
         let mut cx = Ctx {
+            place_local,
             state,
             activity,
             settings,
@@ -3124,6 +3142,26 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        let place_local = self.place_local_time();
+        if self.ui.stack.iter().any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_)))
+            && self.ui.poi_scratch.clock_changed(place_local, self.settings.utc_offset_min)
+        {
+            self.ui.map_dirty = true;
+        }
+        if self.ui.corridor_scratch.armed().is_some()
+            && self.ui.corridor_scratch.clock_changed(place_local, self.settings.utc_offset_min)
+        {
+            self.ui.map_dirty = true;
+        }
+        if self
+            .ui
+            .stack
+            .iter()
+            .any(|screen| matches!(screen, Screen::PoiList(_) | Screen::PoiDetail(_) | Screen::UpAhead(_)))
+        {
+            let deadline = ms_to_next_minute;
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(deadline, |wake| wake.min(deadline)));
+        }
         // The one host-pushed-card sweep (epic #1397, S1): land anything a hold or a higher-ranked
         // card deferred on an earlier pass, and run the upload family's 30 s auto-close. Here — the
         // one hook every host runs each pass — rather than a new timer path; the popups'
@@ -3415,11 +3453,13 @@ impl App {
             navigation.progress_m,
             navigation.route_total_m,
             self.catalogs.detour_preview_for(navigation.active_route),
+            self.place_local_time(),
         );
 
         // Computed before the field borrow below splits `self`.
         let now = self.wall_clock.now(self.ui.now_ms);
         let clock_set = self.wall_clock.is_established();
+        let place_local = self.place_local_time();
         // The UTC instant the Route overview's expiry row counts down from. Display-only, so
         // (unlike the sweep) it isn't gated on the clock being trusted — a stale set-point just
         // yields a stale readout.
@@ -3507,7 +3547,7 @@ impl App {
             detour_preview,
             poi_scratch: &ui.poi_scratch,
             corridor: ui.corridor_scratch.entries(),
-            corridor_settled: !ui.corridor_scratch.pending(),
+            corridor_status: ui.corridor_scratch.status(),
             next_ahead: &ui.next_ahead,
             sensor_status: ui.sensor_status.as_slice(),
             sensor_scan_hits: ui.sensor_scan_hits.as_slice(),
@@ -3517,6 +3557,7 @@ impl App {
             now_utc,
             now,
             clock_set,
+            place_local,
             hold_progress,
             no_fix,
             clock,
@@ -4012,6 +4053,18 @@ mod tests {
         });
         assert!(app.clock_is_set(), "the seeded set-point is established (the Home date line shows)");
         assert!(!app.clock_trusted(), "but a stale persisted seed is never trusted");
+    }
+
+    #[test]
+    fn service_local_time_requires_clock_and_explicit_offset_authority() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        assert_eq!(app.place_local_time(), None);
+        tick_clock(&mut app, gps_time(14, 37, 0), 1000);
+        assert!(app.clock_trusted());
+        assert_eq!(app.place_local_time(), None, "GPS establishes UTC, not the local offset");
+        app.stamp_clock(gps_time(14, 37, 0).utc, 0, Some(0), ClockTrust::Ble);
+        assert!(app.place_local_time().is_some(), "an explicit zero offset is also authoritative");
+        assert!(app.settings.local_offset_known);
     }
 
     /// GPS **always** stamps now (#641, manual mode gone): a resolved GPS UTC re-stamps the wall
@@ -5374,7 +5427,16 @@ mod tests {
         app.ui.next_ahead.harvest(
             key,
             &[CorridorPoi {
-                poi: Poi { lat: 0, lon: 0, subtype: 1, name, hours_ref: 0xFFFF, distance_m: 5_000 },
+                poi: Poi {
+                    opening: Default::default(),
+                    metadata: Default::default(),
+                    lat: 0,
+                    lon: 0,
+                    subtype: 1,
+                    name,
+                    hours_ref: 0xFFFF,
+                    distance_m: 5_000,
+                },
                 dist_along_m: 5_000,
                 offset_m: 0,
             }],
@@ -5420,6 +5482,44 @@ mod tests {
         assert!(app.take_dirty().map, "the minute rolled over → exactly one repaint");
         app.advance_animations(InputClock(90_000));
         assert!(!app.take_dirty().map, "and it settles back to quiet until the next minute");
+    }
+
+    #[test]
+    fn place_detail_minute_and_unavailable_list_inputs_do_not_poll_at_one_millisecond() {
+        use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource};
+        let bytes = obcm_testkit::build_poi_map((0, 0, 1_000_000, 1_000_000), 512, &[]);
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = crate::settings::IdleReturn::Never;
+        app.stamp_clock(DateTime { year: 2025, month: 1, day: 6, hour: 12, minute: 0 }, 0, Some(0), ClockTrust::Ble);
+        app.ui.stack.clear();
+        let _ = app.ui.stack.push(Screen::PoiList(screen::PoiListScreen::new(PoiCategory::Water)));
+        let fix = obc_ports::Fix::at(500_000, 500_000);
+        for (map, position) in [(None, Some(fix)), (Some(&reader), None)] {
+            app.advance_animations(InputClock(0));
+            app.ui.prepare_base(map, None, position, None, 0, 0, &[], app.place_local_time());
+            assert_ne!(app.ms_until_next_wake(0), Some(1), "missing input must await an external update");
+        }
+        app.ui.prepare_base(Some(&reader), None, Some(fix), None, 0, 0, &[], app.place_local_time());
+        let _ = app.ui.stack.push(Screen::PoiDetail(screen::PoiDetailScreen::new(Poi {
+            metadata: Default::default(),
+            opening: Default::default(),
+            lat: fix.lat,
+            lon: fix.lon,
+            subtype: 1,
+            name: heapless::String::new(),
+            hours_ref: 0xffff,
+            distance_m: 0,
+        })));
+        app.ui.prepare_base(Some(&reader), None, Some(fix), None, 0, 0, &[], app.place_local_time());
+        for now in [60_000, 60_001, 120_000] {
+            app.advance_animations(InputClock(now));
+            app.ui.prepare_base(None, None, Some(fix), None, 0, 0, &[], app.place_local_time());
+            assert!(app.ms_until_next_wake(now).is_none_or(|ms| ms > 1), "cached detail only needs minute updates");
+        }
     }
 
     /// `ms_until_next_wake` reports the soonest timed-redraw deadline across the visible stack. On

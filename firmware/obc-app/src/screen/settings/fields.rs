@@ -298,6 +298,7 @@ fn ghost_value(
             PoiCategory::Resupply => "2.4km",
             PoiCategory::Pharmacy => "6.8km",
             PoiCategory::BikeShop => "12km",
+            PoiCategory::Train => "5km",
         });
         return;
     }

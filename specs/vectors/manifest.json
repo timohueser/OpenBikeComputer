@@ -26,16 +26,16 @@
   },
   "fixtures": {
     "route-waypoints.obcr": {
-      "format": "OBCR v3",
-      "byte_len": 308,
-      "crc32": "0x1BFB6E3C",
+      "format": "OBCR v4",
+      "byte_len": 420,
+      "crc32": "0x75A4426E",
       "name": "Vector Loop",
-      "version": 3,
+      "version": 4,
       "point_count": 9,
       "chunk_count": 1,
       "total_distance_m": 2207,
       "total_ascent_m": 76,
-      "waypoint_record_len": 44,
+      "waypoint_record_len": 80,
       "waypoints": [
         {
           "dist_along_m": 0,
@@ -60,11 +60,29 @@
       ]
     },
     "route-plain.obcr": {
-      "format": "OBCR v3",
-      "byte_len": 220,
-      "crc32": "0x1557AE0B",
+      "format": "OBCR v4",
+      "byte_len": 260,
+      "crc32": "0x1B26FEAF",
       "identical_ride_to": "route-waypoints.obcr",
       "waypoints": []
+    },
+    "route-visit.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 340,
+      "crc32": "0x6B264AEC",
+      "valid": true
+    },
+    "route-visit-waypoint-overlap.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 416,
+      "crc32": "0x592CE5D0",
+      "valid": false
+    },
+    "route-visit-index-overlap.obcr": {
+      "format": "OBCR v4 descriptor envelope",
+      "byte_len": 380,
+      "crc32": "0xFD29B876",
+      "valid": false
     },
     "terrain-shard.obcd": {
       "format": "OBCT v1 terrain shard (OBCT_Spec.md 4) \u2014 32-byte header + row-major uint32 cell directory + cell blocks of 16x16 int16 tiles",
@@ -272,8 +290,8 @@
       "op": 1,
       "type": 1,
       "object_id": 65535,
-      "total_len": 308,
-      "crc32": "0x1BFB6E3C"
+      "total_len": 420,
+      "crc32": "0x75A4426E"
     },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
@@ -296,7 +314,7 @@
       "msg": 1,
       "object_id": 7,
       "status": "committed (0)",
-      "committed_offset": 308
+      "committed_offset": 420
     },
     "status-transfer-storage-full.bin": {
       "format": "status msg 1 (spec 4.3)",
@@ -384,39 +402,39 @@
       "entries": [
         {
           "object_id": 7,
-          "byte_len": 308,
+          "byte_len": 420,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 2,
           "name": "Vector Loop",
-          "crc32": "0x1BFB6E3C",
+          "crc32": "0x75A4426E",
           "expires_at": 1784808000,
           "retention": 3,
           "retention_state": "live countdown (2 weeks)"
         },
         {
           "object_id": 8,
-          "byte_len": 220,
+          "byte_len": 260,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
+          "crc32": "0x1B26FEAF",
           "expires_at": 0,
           "retention": 1,
           "retention_state": "clock not yet started (last_used == 0)"
         },
         {
           "object_id": 9,
-          "byte_len": 220,
+          "byte_len": 260,
           "distance_m": 2207,
           "ascent_m": 76,
           "point_count": 9,
           "waypoint_count": 0,
           "name": "Vector Loop",
-          "crc32": "0x1557AE0B",
+          "crc32": "0x1B26FEAF",
           "expires_at": 0,
           "retention": 0,
           "retention_state": "never (synthetic entry \u2014 no .obcr file)"
@@ -429,21 +447,21 @@
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 14,
+      "obcm_version": 15,
       "feature_bits": null,
-      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose \u2014 and FS7.5b is one: obc_formats::obcm::VERSION is now 14 (OBCM v14, #1420) and this file was re-cut with it. That re-cut is the point of the self-sourcing, since it walks a change past the Swift and TS assertions on this byte. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
+      "_note": "The OBCM version byte follows obc_formats::obcm::VERSION. The two protocolVersion forms differ in their optional capability word."
     },
     "version-read-features.bin": {
       "format": "protocolVersion read (spec 1), WX3 #1188 \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8 \u00b7 feature_bits u32",
       "byte_len": 11,
       "version": 2,
       "store_epoch": "0xC0DEF00D",
-      "obcm_version": 14,
+      "obcm_version": 15,
       "feature_bits": "0x1",
       "features": [
         "weather"
       ],
-      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND \u2014 the protocol version underneath it does not move \u2014 and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings', and was re-cut to 14 by FS7.5b (OBCM v14, #1420). A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
+      "_note": "The OBCM version byte follows obc_formats::obcm::VERSION. The two protocolVersion forms differ in their optional capability word."
     },
     "version-read-noobcm.bin": {
       "format": "protocolVersion read (spec 1), pre-#911 \u2014 version u16 \u00b7 store_epoch u32",
@@ -468,8 +486,8 @@
       "op": 2,
       "type": 1,
       "object_id": 7,
-      "total_len": 308,
-      "crc32": "0x1BFB6E3C"
+      "total_len": 420,
+      "crc32": "0x75A4426E"
     },
     "trip-v2.bin": {
       "format": "trip object v2 (spec 7.7) \u2014 56-byte header + 8 bytes/stage, references flat ObjectIds",
@@ -635,6 +653,14 @@
       "bundle_generated_at": -1000003600,
       "bundle_crc32": "0x80000001",
       "_note": "Shaped for COVERAGE, NOT PLAUSIBILITY, like track-log.obct: no other fixture in the set carries a negative coordinate or a pre-1970 time, so until this file existed a mirror could read lat_udeg/lon_udeg as u32 and both timestamps as u64 and pass the whole suite. El Chalten, Patagonia \u2014 southern AND western hemisphere. Read unsigned, lat_udeg becomes 4245636407 (~4245N) and lon_udeg 4222081175; fix_utc (1938-04-24T22:13:20Z) and bundle_generated_at become ~1.8e19 seconds, a device whose clock is 585 billion years ahead. Visibly impossible rather than subtly wrong, which is what a sign fixture is for, and the two i64s sit at different offsets (20 and 40) so one correct sign extension cannot cover for the other. The bundle group runs the trap the other way: generation and crc32 both have their top bit set, so a mirror reading them SIGNED gets -2 and -2147483647 \u2014 a codec that 'fixed' signedness by flipping every field fails just as loudly. That group is synthetic (no checked-in OBCW has a pre-1970 generated_at), unlike the full context's, which names a real file. route_id is the one cleared group, so the file says something about a clear flag as well as the four it exercises. fix_utc is one 60-minute interval past bundle_generated_at, matching the refresh it reports"
+    },
+    "place-train-v15.bin": {
+      "format": "OBCM v15 service record, section 7.3",
+      "bytes": 64,
+      "subtype": 20,
+      "source_id": 4611686018427388027,
+      "approach_source_id": 4611686018427388360,
+      "profile_mask": 5
     }
   },
   "weather": {

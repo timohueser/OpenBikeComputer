@@ -2,12 +2,12 @@
 
 use crate::io::{rd_u16, validate_prefix, DecodeError};
 
+pub mod landmarks;
+
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 14;
-/// The v14 header (§1): the v13 40-byte layout plus `Offset Scale` and the `Terrain Offset` /
-/// `Terrain Length` pair. 49 is not a whole number of units at any scale above `0`, which is why
-/// the style table begins at the first unit boundary at or after it rather than at byte 49 (§1.2).
-pub const HEADER_LEN: usize = 49;
+pub const VERSION: u8 = 16;
+/// Fixed header, including optional terrain and landmark region pointers.
+pub const HEADER_LEN: usize = 57;
 /// Header offset of the v14 `Offset Scale` byte (§1.1).
 pub const HEADER_OFFSET_SCALE_OFF: usize = 40;
 /// Header offset of the v14 `Terrain Offset` field (§1.3).
@@ -15,6 +15,8 @@ pub const HEADER_TERRAIN_OFFSET_OFF: usize = 41;
 /// Header offset of the v14 `Terrain Length` field (§1.3), counted in **units** like the offset
 /// beside it.
 pub const HEADER_TERRAIN_LENGTH_OFF: usize = 45;
+pub const HEADER_LANDMARK_OFFSET_OFF: usize = 49;
+pub const HEADER_LANDMARK_LENGTH_OFF: usize = 53;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
 
@@ -364,6 +366,7 @@ pub fn nav_edge_step(chunk: &[u8], p: usize) -> Option<usize> {
     if n == NAV_EDGE_PT_COUNT_SENTINEL {
         return None;
     }
+    let n = n & NAV_EDGE_POINT_COUNT_MASK;
     if n < 2 {
         return None;
     }
@@ -392,12 +395,92 @@ pub fn nav_edge_record_range(chunk: &[u8], ordinal: u32) -> Option<(usize, usize
     Some((p, p + len))
 }
 
-pub const POI_CATEGORY_COUNT: u8 = 6;
-/// Geographic landmarks share the POI spatial index, outside the six service categories.
+pub const POI_CATEGORY_COUNT: u8 = 7;
+/// Geographic landmarks share the POI spatial index, outside the seven service categories.
 pub const SUMMIT_CATEGORY_ID: u8 = 7;
 pub const SUMMIT_SUBTYPE_ID: u8 = 19;
+pub const TRAIN_CATEGORY_ID: u8 = 8;
+pub const TRAIN_SUBTYPE_ID: u8 = 20;
 pub const SUMMIT_ELEVATION_UNKNOWN: i16 = i16::MIN;
-pub const POI_RECORD_LEN: usize = 36;
+pub const POI_RECORD_LEN: usize = 64;
+/// OSM identity: top two bits are node=1, way=2, relation=3; lower 62 bits are the ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct SourceId(pub u64);
+
+impl SourceId {
+    pub const fn is_valid(self) -> bool {
+        self.0 >> 62 != 0 && self.0 & ((1 << 62) - 1) != 0
+    }
+
+    pub const fn osm(kind: u8, id: u64) -> Self {
+        if kind == 0 || kind > 3 || id == 0 || id >= 1 << 62 {
+            Self(0)
+        } else {
+            Self((kind as u64) << 62 | id)
+        }
+    }
+}
+
+/// An explicit source-topology approach. Profile bits index the installed map's profile table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoiApproach {
+    pub source: SourceId,
+    pub lat: i32,
+    pub lon: i32,
+    pub profile_mask: u8,
+}
+
+/// Fixed metadata shared by service and landmark records. Identity is scoped to the map revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PoiMetadata {
+    pub source: SourceId,
+    pub approach: Option<PoiApproach>,
+}
+
+impl PoiMetadata {
+    pub const LEN: usize = 28;
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let mut bytes = [0; Self::LEN];
+        bytes[..8].copy_from_slice(&self.source.0.to_le_bytes());
+        if let Some(a) = self.approach {
+            bytes[8..16].copy_from_slice(&a.source.0.to_le_bytes());
+            bytes[16..20].copy_from_slice(&a.lat.to_le_bytes());
+            bytes[20..24].copy_from_slice(&a.lon.to_le_bytes());
+            bytes[24] = a.profile_mask;
+        }
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::LEN || bytes[25..].iter().any(|b| *b != 0) {
+            return None;
+        }
+        let source = SourceId(u64::from_le_bytes(bytes[..8].try_into().ok()?));
+        let access = SourceId(u64::from_le_bytes(bytes[8..16].try_into().ok()?));
+        if !source.is_valid() {
+            return None;
+        }
+        let approach = if access.0 != 0 {
+            if access.0 >> 62 != 1 || !access.is_valid() || bytes[24] == 0 {
+                return None;
+            }
+            let lat = i32::from_le_bytes(bytes[16..20].try_into().ok()?);
+            let lon = i32::from_le_bytes(bytes[20..24].try_into().ok()?);
+            if !(-90_000_000..=90_000_000).contains(&lat) || !(-180_000_000..=180_000_000).contains(&lon) {
+                return None;
+            }
+            Some(PoiApproach { source: access, lat, lon, profile_mask: bytes[24] })
+        } else {
+            if bytes[16..25].iter().any(|b| *b != 0) {
+                return None;
+            }
+            None
+        };
+        Some(Self { source, approach })
+    }
+}
+
 pub const POI_NAME_LEN: usize = 24;
 pub const POI_HOURS_REF_NONE: u16 = 0xFFFF;
 pub const POI_HOURS_BLOB_LEN: usize = 29;
@@ -422,6 +505,9 @@ pub const NAV_NEIGHBOR_LEN: usize = 17;
 /// carry different values (§8.3's one exception to "both sides agree").
 pub const NAV_NEIGHBOR_ASCENT_OFF: usize = 15;
 pub const NAV_EDGE_FIXED_LEN: usize = 15;
+/// All terrain integration samples were present for this edge.
+pub const NAV_EDGE_ELEVATION_COMPLETE: u16 = 0x8000;
+pub const NAV_EDGE_POINT_COUNT_MASK: u16 = 0x7fff;
 /// Width of one §8.6 profile record. **56 in v12** (#1073): the 52-byte v9 record plus
 /// [`NAV_PROFILE_CLIMB_WEIGHT_OFF`] and three reserved bytes written `0`.
 pub const NAV_PROFILE_LEN: usize = 56;
@@ -484,6 +570,7 @@ pub enum PoiCategory {
     Resupply = 4,
     Pharmacy = 5,
     BikeShop = 6,
+    Train = TRAIN_CATEGORY_ID,
 }
 
 impl PoiCategory {
@@ -494,6 +581,7 @@ impl PoiCategory {
         PoiCategory::Resupply,
         PoiCategory::Pharmacy,
         PoiCategory::BikeShop,
+        PoiCategory::Train,
     ];
 
     #[inline]
@@ -510,6 +598,7 @@ impl PoiCategory {
             4 => PoiCategory::Resupply,
             5 => PoiCategory::Pharmacy,
             6 => PoiCategory::BikeShop,
+            TRAIN_CATEGORY_ID => PoiCategory::Train,
             _ => return None,
         })
     }
@@ -524,6 +613,7 @@ impl PoiCategory {
             PoiCategory::Resupply => "Resupply",
             PoiCategory::Pharmacy => "Pharmacy",
             PoiCategory::BikeShop => "Bike shop",
+            PoiCategory::Train => "Train station",
         }
     }
 }
@@ -561,8 +651,13 @@ pub const POI_SUBTYPES: [PoiSubtype; 18] = [
     subtype(PoiCategory::BikeShop, "Bike shop"),
 ];
 
+const TRAIN_SUBTYPE: PoiSubtype = subtype(PoiCategory::Train, "Train station");
+
 #[inline]
 pub fn poi_subtype_row(subtype_id: u8) -> Option<&'static PoiSubtype> {
+    if subtype_id == TRAIN_SUBTYPE_ID {
+        return Some(&TRAIN_SUBTYPE);
+    }
     if subtype_id == 0 {
         return None;
     }
@@ -619,13 +714,13 @@ mod tests {
         let mut fixture = [0u8; HEADER_LEN];
         fixture[..4].copy_from_slice(&MAGIC);
         fixture[4] = VERSION;
-        // v14 §1.2: the header is 49 bytes, so the style table begins at the first unit boundary
+        // v14 §1.2: the header is 57 bytes, so the style table begins at the first unit boundary
         // at or after it — `64` at the default `U = 16`, giving `Style Offset = 4`.
         let style = OffsetScale::DEFAULT.scaled(OffsetScale::DEFAULT.align_up(HEADER_LEN as u64).unwrap()).unwrap();
         fixture[21..25].copy_from_slice(&style.units().to_le_bytes());
         fixture[HEADER_OFFSET_SCALE_OFF] = OFFSET_SCALE_DEFAULT;
         validate_header_prefix(&fixture).unwrap();
-        assert_eq!(fixture[4], 0x0E, "the version byte is the hard cut, and it cuts in both directions");
+        assert_eq!(fixture[4], 0x10, "the version byte is the hard cut, and it cuts in both directions");
         assert_eq!(style.units(), 4);
         assert_eq!(style.bytes(), 64);
     }
@@ -703,7 +798,7 @@ mod tests {
             };
             let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut sink);
             w.put(&[0u8; HEADER_LEN]).unwrap();
-            assert_eq!(w.at(), 49);
+            assert_eq!(w.at(), 57);
             let boundary = w.begin_section().unwrap();
             assert_eq!(w.at(), boundary, "the cursor is the boundary it just reached");
             w.put(b"style").unwrap();
@@ -714,9 +809,9 @@ mod tests {
             assert_eq!(w.begin_section().unwrap(), 80, "a second call at a boundary is a no-op");
             boundary
         };
-        assert_eq!(boundary, 64, "§1.2: the style table is the first unit boundary past the 49-byte header");
+        assert_eq!(boundary, 64, "§1.2: the style table is the first unit boundary past the 57-byte header");
         assert_eq!(OffsetScale::DEFAULT.scaled(boundary).map(ScaledOffset::units), Some(4), "…which is `4` in units");
-        assert_eq!(&out[49..64], &[FILLER; 15], "the gap is the format's one fill byte");
+        assert_eq!(&out[57..64], &[FILLER; 7], "the gap is the format's one fill byte");
         assert_eq!(&out[69..80], &[FILLER; 11]);
         assert_eq!(out.len(), 80);
     }
@@ -730,7 +825,7 @@ mod tests {
         w.put(&[0u8; HEADER_LEN]).unwrap();
         w.begin_section().unwrap();
         w.pad(3).unwrap();
-        assert_eq!(w.at(), 67, "49 rounded to 64, then three bytes of a computed run");
+        assert_eq!(w.at(), 67, "57 rounded to 64, then three bytes of a computed run");
         // §8.1's alignment run is a whole sector, which one `FILLER_RUN` covers without allocating.
         w.pad(512).unwrap();
         assert_eq!(w.at(), 579);
@@ -961,7 +1056,7 @@ mod tests {
         assert_eq!(STYLE_RECORD_LEN, 1 + 1 + 2 + 1 + 1 + 2);
         assert_eq!(FEATURE_HEADER_COMPACT_LEN, 1 + 1 + 1 + 2 + 2);
         assert_eq!(FEATURE_HEADER_WIDE_LEN, 1 + 1 + 2 + 4 + 4);
-        assert_eq!(POI_RECORD_LEN, 4 + 4 + 1 + 1 + POI_NAME_LEN + 2);
+        assert_eq!(POI_RECORD_LEN, 4 + 4 + 1 + 1 + POI_NAME_LEN + 2 + 28);
         // v12 §8.6: the v9 record (name + two multiplier tables) plus climb weight + reserved.
         assert_eq!(NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN + 32 + 8 + 1 + NAV_PROFILE_RESERVED_LEN);
         assert_eq!(NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_NAME_LEN + 32 + 8);
@@ -976,7 +1071,7 @@ mod tests {
     #[test]
     fn poi_id_tables_pin_the_append_only_contract() {
         assert_eq!(POI_SUBTYPES.len(), 18);
-        assert_eq!(PoiCategory::ALL.map(PoiCategory::id), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(PoiCategory::ALL.map(PoiCategory::id), [1, 2, 3, 4, 5, 6, 8]);
         for (index, row) in POI_SUBTYPES.iter().enumerate() {
             let subtype_id = (index + 1) as u8;
             assert_eq!(poi_subtype_row(subtype_id).map(|value| value.label), Some(row.label));
@@ -992,6 +1087,7 @@ mod tests {
         assert_eq!(poi_directory_category_of(SUMMIT_SUBTYPE_ID), Some(SUMMIT_CATEGORY_ID));
         assert_eq!(poi_category_of(SUMMIT_SUBTYPE_ID), None);
         assert_eq!(poi_label_of(SUMMIT_SUBTYPE_ID), Some("Summit"));
-        assert_eq!(poi_directory_category_of(20), None);
+        assert_eq!(poi_directory_category_of(20), Some(TRAIN_CATEGORY_ID));
+        assert_eq!(poi_label_of(20), Some("Train station"));
     }
 }

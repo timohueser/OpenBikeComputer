@@ -113,6 +113,13 @@ fn way(id_base: i64, kind: u8, pts: &[(i64, i64)]) -> RoutableWay {
 
 fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
     Poi {
+        metadata: obc_formats::obcm::PoiMetadata {
+            source: obc_formats::obcm::SourceId::osm(1, ((lat as u64) << 26) ^ ((lon as u64) << 5) ^ subtype as u64),
+            approach: None,
+        },
+        access_nodes: Vec::new(),
+        wikidata: None,
+        wikipedia: None,
         subtype,
         lon_udeg: lon as i32,
         lat_udeg: lat as i32,
@@ -155,7 +162,10 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         poi(1, LAT + 1_000, SEAM + 1_000, "East"),
         poi(5, LAT + 2_000, SEAM_E + 1_000, "Far East"),
     ];
-    (Ingested { features, coastlines: Vec::new(), pois, nav_graph: Default::default() }, ways)
+    (
+        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
+        ways,
+    )
 }
 
 /// A scratch directory that cleans up after itself.
@@ -506,7 +516,7 @@ fn sections_live_only_in_the_band_that_carries_them() {
         }
         // The POI directory and the profile table are present either way (§3.1: the sections exist,
         // they are merely empty), which is what keeps every cell an openable map.
-        assert_eq!(poi.entries.len(), 6, "{}: all six POI categories have a directory entry", artifact.path);
+        assert_eq!(poi.entries.len(), 7, "{}: all seven POI categories have a directory entry", artifact.path);
         assert!(nav.profile_count >= 1, "{}: the schema's profile table travels with every cell", artifact.path);
     }
     assert_eq!(network_pois, 3, "every POI landed in exactly one network cell");

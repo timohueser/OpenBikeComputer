@@ -264,8 +264,8 @@ Valid samples on each side can still contribute ascent in their segments.
 | Map rendering | Rendering continues. Baked contour geometry does not require the raster. |
 | Routing | Routing continues with the graph's baked ascent values. |
 | Imported GPX route | The route keeps its supplied heights. |
-| Device-planned route | Before the first valid sample, the route uses zero heights. After that sample, it carries the last valid height across gaps. |
-| Detour | The splice interpolates between the seam elevations. |
+| Device-planned route | Missing heights stay unknown. The route records incomplete segment coverage. |
+| Detour | Known seam heights can adjust sampled detour heights. Missing heights stay unknown. |
 | Ride recording | The recorder stores the barometer measurement. |
 | Current elevation | The UI uses the raw barometric estimate. |
 | Time estimate | The model uses zero remaining ascent. |
@@ -276,13 +276,11 @@ A bilinear query needs four sample corners.
 If one corner is `NODATA`, the query returns `None`.
 The sampler does not estimate a missing corner.
 
-Route elevation parity requires terrain coverage for the complete route.
-OBCR has no per-point unknown-height value.
-Points before coverage starts use zero height.
-The route integrator does not use these placeholder points as an ascent anchor.
-The packer applies the pause rule at coverage boundaries and `NODATA` gaps.
-Device route filling carries the last valid height after coverage starts.
-A resumed sample can add ascent from that carried height.
+OBCR v4 stores missing elevation explicitly. Zero metres remains valid elevation.
+An unknown point pauses ascent integration; the next valid run starts a new reference.
+The graph also records whether every terrain integration sample was present.
+A missing interior sample keeps an emitted segment incomplete even if its endpoints resolve.
+Profiles leave these gaps empty. Interval facts report the measured coverage with the totals.
 
 ## Attribution
 

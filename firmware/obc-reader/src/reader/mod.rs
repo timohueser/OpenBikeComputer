@@ -25,6 +25,7 @@ mod cache;
 mod errors;
 mod geometry;
 mod nav;
+pub mod places;
 mod poi;
 mod summit;
 
@@ -241,6 +242,7 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
             return Err(Error::BadOffset);
         }
     }
+    crate::landmarks::map_region(&header, total)?;
     // Checked: `lod_table_offset` is an arbitrary header u32 scaled by an arbitrary unit, so the
     // table-end can wrap `u64` and slip past the guard below.
     let lod_table_end = (lod_count as u64)

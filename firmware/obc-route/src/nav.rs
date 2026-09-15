@@ -120,51 +120,16 @@
 //! couldn't fit now succeeds. A step-count budget in the stepping host is the named
 //! future lever if the wait annoys.
 //!
-//! **Emit-time elevation fill** (EL7, epic #1068): every [`step`](NavPlanner::step) takes an
-//! [`ElevationSource`] and the emit phase samples it at each emitted vertex, so a planned route's
-//! OBCR carries real heights and its header the real min/max/ascent/descent. Nothing downstream
-//! changed to make that work — the Climb screen, the elevation profile, the ride stats and the GPX
-//! export have always read those fields; they were simply zero for a device-planned route. Three
-//! rules govern the fill:
-//!
-//! - **Densify to [`ELE_SAMPLE_STEP_M`] when there is terrain.** A nav edge's polyline is OSM way
-//!   geometry: it carries a vertex where the *road* bends, which on a straight alpine ramp can be
-//!   kilometres away (up to the packer's 30 000 µdeg ≈ 3.3 km densification bound). Sampling only
-//!   at those vertices would run a chord straight through a crest. Intermediate points are
-//!   interpolated linearly in µdeg and sampled like any other vertex — they are ordinary OBCR
-//!   points, and the emitter's decimator is free to drop the ones that carry neither shape nor
-//!   height (see [`ObcrEmitter::keep_elevation_detail`](crate::convert::ObcrEmitter)).
-//! - **A hole carries the last known height forward.** [`ElevationSource::sample`] answers `None`
-//!   for a coverage edge, a `NODATA` corner or no terrain file at all; OBCR has no per-point
-//!   "unknown" encoding, so the fill repeats the last resolved height — a flat segment across the
-//!   gap, honest enough, and one that books no phantom climb through the dead-band. A hole
-//!   **before the first resolved sample** has nothing to carry, so the integrator does not run at
-//!   all until coverage begins ([`EleFill::resolve`]): pushing the `0` placeholder would anchor the
-//!   band at sea level and book the whole first real height as ascent. If **no** sample ever
-//!   resolves, the header stats stay zeroed exactly as they were before EL7.
-//! - **The null source is bit-for-bit the old behaviour.** With
-//!   [`NullElevation`](obc_elevation::NullElevation) nothing densifies, every stored height is 0
-//!   and every stat is 0, so the emitted OBCR is byte-identical to the pre-EL7 one (pinned in
-//!   `tests/nav.rs`). That is the property that makes the terrain file removable.
-//!
-//! The totals go through the same [`DeadBand`] at the same [`ELE_DEADBAND_M`] threshold the GPX
-//! converter ([`crate::convert`]) runs over an imported track, so a route planned on the device and
-//! the same route exported to GPX and re-imported agree on their climb.
-//!
-//! **The one boundary on that parity**, stated rather than hidden: a route whose *opening* points
-//! fall outside terrain coverage still **stores** height `0` for them, because OBCR has no
-//! "unknown" encoding. The route's own stats are right — the integrator ignored those points — but
-//! an export of it re-imports as a `0 → first-real-height` step, which the converter's dead-band
-//! *will* book. Parity therefore holds for a route lying wholly inside coverage, which is every
-//! route on a map whose terrain was baked for it; the honest fix for the exception is a terrain
-//! file that covers the map's graph, never a fabricated height.
+//! Elevation is sampled at emitted vertices and bounded intermediate points. Missing samples
+//! remain unknown. Graph interior-gap validity follows every emitted incoming segment. The shared
+//! emitter measures retained geometry and pauses elevation integration at missing spans.
 
 use heapless::Vec;
 
-use crate::convert::{EmitStats, ObcrEmitter, RouteStats, WpPlace};
+use crate::convert::{ObcrEmitter, RouteStats, WpPlace};
 use crate::corridor::Corridor;
 use crate::reader::MAX_WAYPOINTS;
-use obc_elevation::{DeadBand, ElevationSource, ELE_DEADBAND_M};
+use obc_elevation::{ElevationSource, ELE_DEADBAND_M};
 use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m};
@@ -794,75 +759,29 @@ pub struct NavPlanner {
     /// height, accumulated across every emit step. ~40 B — it rides in the planner rather than a
     /// step frame because the fill spans steps, not because of its size.
     ele: EleFill,
+    map_source: Option<obc_formats::obcr::RouteSourceKey>,
 }
 
-/// The route's elevation as the emit phase builds it: the shared [`DeadBand`] over the emitted
-/// point stream, the raw min/max, and the last height that actually resolved.
-///
-/// The dead-band is the **same** integrator, at the **same** [`ELE_DEADBAND_M`] threshold, that
-/// [`crate::convert`] runs over an imported GPX's `<ele>` — the point of the shared crate. `f64`
-/// matches the converter's sample type exactly, so the two producers' totals differ by nothing at
-/// all, not merely by little.
-#[derive(Debug, Clone, Copy)]
+/// Whether a sample has resolved, used to continue bounded sampling through coverage gaps.
 struct EleFill {
-    band: DeadBand<f64>,
-    /// The last height a sample resolved, carried forward across a coverage hole; `0` until the
-    /// first one, which is what a null source leaves in every stored point.
-    last_m: i16,
-    /// Raw min/max over *resolved* samples only — never over the carried value, so a hole cannot
-    /// widen the band the profile scales to. Meaningless while `seen` is false.
-    min_m: i16,
-    max_m: i16,
-    /// Has any sample ever resolved? False ⇒ the header keeps the pre-EL7 zeroes.
     seen: bool,
 }
-
 impl EleFill {
     fn new() -> Self {
-        EleFill { band: DeadBand::new(), last_m: 0, min_m: i16::MAX, max_m: i16::MIN, seen: false }
+        Self { seen: false }
     }
-
-    /// Resolve one point's stored height: a real sample re-anchors the carry and grows the min/max,
-    /// a hole repeats the carry. Returns the height to store, having already integrated it.
-    ///
-    /// **Nothing is integrated before the first resolved sample.** The hole policy is *carry the
-    /// last known height forward* — and until one has resolved there is no known height to carry,
-    /// only the `0` placeholder. Pushing that into the band would anchor its reference at sea level
-    /// and book the entire first real height as ascent the moment coverage begins: a route whose
-    /// opening points fall outside the raster (the nav graph reaches past a terrain crop — complete-
-    /// way retention means the graph legally runs beyond the extract the sidecar was baked for)
-    /// would report a phantom +1400 m and poison every stored `cum_ascent` after it. Skipping the
-    /// push makes the first *resolved* sample the band's own first reference, which books nothing —
-    /// which is also exactly what the null source does forever.
     fn resolve(&mut self, sample: Option<i16>) -> i16 {
-        if let Some(h) = sample {
-            self.last_m = h;
-            self.min_m = self.min_m.min(h);
-            self.max_m = self.max_m.max(h);
-            self.seen = true;
-        }
-        if self.seen {
-            self.band.push(f64::from(self.last_m));
-        }
-        self.last_m
-    }
-
-    /// The cumulative dead-banded climb so far, as the emitter stores it per point (and per chunk).
-    fn cum_ascent(&self) -> u32 {
-        self.band.ascent() as u32
-    }
-
-    /// The header's `(min, max, ascent, descent)`. Zeroes when nothing ever resolved — the same
-    /// "no elevation" shape the converter writes for a GPX with no `<ele>` at all.
-    fn stats(&self) -> (i16, i16, u32, u32) {
-        if !self.seen {
-            return (0, 0, 0, 0);
-        }
-        (self.min_m, self.max_m, self.band.ascent() as u32, self.band.descent() as u32)
+        self.seen |= sample.is_some();
+        sample.unwrap_or(i16::MIN)
     }
 }
 
 impl NavPlanner {
+    /// Bind measured graph surfaces to the exact installed map used for this operation.
+    pub fn set_attribution_map(&mut self, source: obc_formats::obcr::RouteSourceKey) {
+        self.map_source = Some(source);
+    }
+
     /// A planner for one route request routed under bike profile `profile_idx` (§8.6; an
     /// out-of-range index falls back to profile 0 at the first step — never an error). Touches
     /// nothing yet — the first [`step`](NavPlanner::step) resets the caller's scratch + tile cache,
@@ -899,6 +818,7 @@ impl NavPlanner {
             em: None,
             corridor: None,
             ele: EleFill::new(),
+            map_source: None,
         }
     }
 
@@ -1258,7 +1178,8 @@ impl NavPlanner {
         elev: &mut dyn ElevationSource,
         sink: &mut dyn ByteSink,
     ) -> Result<bool, NavError> {
-        let em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
+        let mut em = ObcrEmitter::new(sink).map_err(|_| NavError::NoPath)?;
+        em.set_attribution_map(self.map_source);
         self.em = Some(em);
         if self.chain_len == 1 {
             let e = &scratch.entries[scratch.heap[0] as usize];
@@ -1266,7 +1187,7 @@ impl NavPlanner {
             // The degenerate route is one point, so it needs no densification — just its height
             // (0 under a null source, which keeps this arm byte-identical).
             let ele = self.ele.resolve(elev.sample(lat, lon));
-            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, ele, 0).is_err()) {
+            if self.em.as_mut().is_none_or(|em| em.push(sink, lon, lat, ele).is_err()) {
                 return Err(NavError::NoPath);
             }
             self.phase = PhaseState::Finish;
@@ -1277,30 +1198,14 @@ impl NavPlanner {
 
     /// Finish the emitter in place and patch the header — the plan's last writes.
     ///
-    /// The elevation figures are read off the emit phase's [`EleFill`] (EL7): the dead-banded
-    /// totals over the *emitted* point stream and the raw min/max over the samples that resolved.
-    /// The distance total is untouched — it stays the summed raw edge `length_m` (N3), never the
-    /// emitter's re-measured polyline, and densifying the polyline does not change it.
-    ///
+    /// The shared emitter measures retained geometry and its valid elevation spans.
     /// Keep the final chunk/index write scratch separate from the planner step frame.
     #[inline(never)]
     fn finish_emit(&mut self, sink: &mut dyn ByteSink) -> Result<RouteStats, NavError> {
-        let (min_ele_m, max_ele_m, ascent_m, descent_m) = self.ele.stats();
-        let stats = EmitStats {
-            min_ele_m,
-            max_ele_m,
-            ascent_m,
-            descent_m,
-            total_distance_m: Some(self.total_m),
-            // The fill's own `seen` latch, handed out verbatim — the explicit "terrain answered"
-            // signal a detour splice needs (#1091). Never inferred from the values: a route at
-            // `0 m` throughout is a real sea-level route, not an elevation-less one.
-            has_elevation: self.ele.seen,
-        };
         let Some(em) = self.em.as_mut() else {
             return Err(NavError::NoPath); // unreachable: Emit always arms it
         };
-        em.finish(sink, &self.name, stats, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
+        em.finish(sink, &self.name, &mut Vec::<WpPlace, MAX_WAYPOINTS>::new()).map_err(|_| NavError::NoPath)
     }
 
     /// Stage the found path goal→start in the (now dead) heap array — `came_from` holds **slot
@@ -1365,6 +1270,9 @@ impl NavPlanner {
             None
         };
         let em = self.em.as_mut().ok_or(NavError::NoPath)?;
+        let (surface, elevation_complete) = reader.nav_edge_facts(cur.edge_used).ok_or(NavError::NoPath)?;
+        em.set_surface(surface);
+        em.set_elevation_incomplete(!elevation_complete);
         let mut last = self.last;
         let mut werr = false;
         let ele = &mut self.ele;
@@ -1423,7 +1331,7 @@ impl NavPlanner {
 /// Samples `to`'s height once, and — **only when that sample resolved**, i.e. only where there is
 /// terrain — inserts linearly interpolated points so no two emitted points are more than
 /// [`ELE_SAMPLE_STEP_M`] of ground apart, sampling each of them in travel order. Every point (real
-/// or interpolated) goes through [`EleFill::resolve`], so the dead-band sees the whole stream and
+/// or interpolated) goes through [`EleFill::resolve`], and the emitter integrates retained points so
 /// the stored `cum_ascent` stays consistent with it.
 ///
 /// With a null source `sample` is `None`, the loop never runs and the pushed height is 0: the exact
@@ -1460,11 +1368,11 @@ fn fill_segment(
         for k in 1..steps {
             let mid = lerp_udeg(prev, to, k, steps);
             let h = ele.resolve(elev.sample(mid.1, mid.0));
-            em.push(sink, mid.0, mid.1, h, ele.cum_ascent())?;
+            em.push(sink, mid.0, mid.1, h)?;
         }
     }
     let h = ele.resolve(sample);
-    em.push(sink, to.0, to.1, h, ele.cum_ascent())
+    em.push(sink, to.0, to.1, h)
 }
 
 /// How many equal pieces a `dist_m` segment is split into to keep every emitted step at or under

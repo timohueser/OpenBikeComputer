@@ -37,6 +37,48 @@ impl ByteSink for VecSink {
     }
 }
 
+#[test]
+fn landmark_vector_uses_the_production_record_decoder() {
+    use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN};
+    let bytes = fixture("landmark-section-v16.bin");
+    let encoded: &[u8; RECORD_LEN] = bytes[16..108].try_into().unwrap();
+    let record = LandmarkRecord::decode(encoded).unwrap();
+    assert_eq!(record.qid, 123);
+    assert_eq!(record.language, *b"de");
+    assert_eq!((record.lon, record.lat), (8_000_000, 47_000_000));
+    assert!(record.osm.is_none());
+    assert!(record.photo.is_absent());
+    assert_eq!(record.encode(), *encoded);
+    for reference in [record.name, record.text, record.article] {
+        assert!(reference.range(108, bytes.len() as u32, 65_535).is_some());
+    }
+}
+
+#[test]
+fn place_vector_uses_the_production_metadata_decoder() {
+    use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
+    let bytes = fixture("place-train-v15.bin");
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(bytes[8], 20);
+    let expected = PoiMetadata {
+        source: SourceId::osm(1, 123),
+        approach: Some(PoiApproach { source: SourceId::osm(1, 456), lat: 46_561_320, lon: 8_361_490, profile_mask: 5 }),
+    };
+    assert_eq!(PoiMetadata::decode(&bytes[36..]), Some(expected));
+    assert_eq!(expected.encode().as_slice(), &bytes[36..]);
+    let mut invalid = bytes[36..].to_vec();
+    invalid[27] = 1;
+    assert_eq!(PoiMetadata::decode(&invalid), None);
+    for (range, value) in [(0..8, 0), (8..16, 0), (24..25, 0)] {
+        let mut invalid = bytes[36..].to_vec();
+        invalid[range].fill(value);
+        assert_eq!(PoiMetadata::decode(&invalid), None);
+    }
+    let mut invalid = bytes[36..].to_vec();
+    invalid[16..20].copy_from_slice(&90_000_001i32.to_le_bytes());
+    assert_eq!(PoiMetadata::decode(&invalid), None);
+}
+
 /// Spec §6's pinned check value — validates the vector crate's own CRC reference.
 #[test]
 fn crc32_check_value() {
@@ -335,6 +377,18 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(info.point_count, idx_w.point_count);
     assert_eq!(info.waypoint_count, 2);
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
+}
+
+#[test]
+fn route_descriptor_envelopes_match_the_shared_overlap_contract() {
+    let bytes = fixture("route-visit.obcr");
+    let source = SliceSource(&bytes);
+    let index = RouteIndex::read(&source).unwrap();
+    assert!(RouteReader::new(&index, &source).visit_descriptor().unwrap().is_some());
+    for name in ["route-visit-waypoint-overlap.obcr", "route-visit-index-overlap.obcr"] {
+        let bytes = fixture(name);
+        assert!(RouteIndex::read(&SliceSource(&bytes)).is_err(), "{name} overlaps the descriptor envelope");
+    }
 }
 
 /// The sample-codec vector and the finished-ride GPX export. `track-log.obct` is exactly five

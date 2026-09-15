@@ -6,7 +6,7 @@
 //! de-duplicated, re-binned into fresh per-category quadtrees over the assembly bbox, and their
 //! hours pool rebuilt with every `HoursRef` remapped.
 //!
-//! Records are 36 bytes and a whole country holds a few tens of thousands, so this is the cheap
+//! Records are 64 bytes and a whole country holds a few tens of thousands, so this is the cheap
 //! rebuild. The expensive one is the nav graph next door.
 
 use std::collections::BTreeMap;
@@ -31,6 +31,7 @@ fn directory_len(categories: usize) -> usize {
 
 /// One merged record, with service hours references remapped to the shared pool.
 pub struct MergedPoi {
+    metadata: obc_formats::obcm::PoiMetadata,
     pub lat: i32,
     pub lon: i32,
     pub subtype: u8,
@@ -62,6 +63,27 @@ pub struct MergedPois {
     pub duplicates: usize,
 }
 
+impl MergedPois {
+    /// Add landmark-only schedules and remap the service records before layout.
+    pub(crate) fn add_hours(&mut self, schedules: impl Iterator<Item = [u8; POI_HOURS_BLOB_LEN]>) -> Result<()> {
+        let mut pool = self.pool.clone();
+        pool.extend(schedules);
+        pool.sort_unstable();
+        pool.dedup();
+        if pool.len() >= POI_HOURS_REF_NONE as usize {
+            return Err(Error::Capacity("shared hours pool exceeds the format limit".into()));
+        }
+        for poi in &mut self.pois {
+            if poi.subtype != SUMMIT_SUBTYPE_ID && poi.payload != POI_HOURS_REF_NONE {
+                poi.payload =
+                    pool.binary_search(&self.pool[poi.payload as usize]).expect("existing service schedule") as u16;
+            }
+        }
+        self.pool = pool;
+        Ok(())
+    }
+}
+
 /// Collect every POI record from `cells`, deduplicate by `(lat, lon, subtype)`, and rebuild the
 /// hours pool with `HoursRef` remapped (§4.5.1–§4.5.3).
 ///
@@ -69,10 +91,10 @@ pub struct MergedPois {
 /// same cells produce the same bytes whatever order the cells arrived in.
 pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
     /// One deduplicated record's payload: its name bytes and the hours blob it referenced.
-    type Payload = ([u8; 25], Option<[u8; POI_HOURS_BLOB_LEN]>, u16);
+    type Payload = ([u8; 25], Option<[u8; POI_HOURS_BLOB_LEN]>, u16, i32, i32, u8, obc_formats::obcm::PoiMetadata);
     // (lat, lon, subtype) → payload. A BTreeMap keeps the output ordered by the §4.5.5 key without a
     // separate sort.
-    let mut by_key: BTreeMap<(i32, i32, u8), Payload> = BTreeMap::new();
+    let mut by_key: BTreeMap<obc_formats::obcm::SourceId, Payload> = BTreeMap::new();
     let mut duplicates = 0usize;
 
     for cell in cells {
@@ -110,7 +132,9 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                     };
                     let mut name = [0u8; 25];
                     name.copy_from_slice(&rec[9..34]);
-                    if by_key.insert((lat, lon, subtype), (name, blob, hours_ref)).is_some() {
+                    let metadata = obc_formats::obcm::PoiMetadata::decode(&rec[36..64])
+                        .ok_or_else(|| Error::Format(format!("cell {}: invalid POI metadata", cell.id)))?;
+                    if by_key.insert(metadata.source, (name, blob, hours_ref, lat, lon, subtype, metadata)).is_some() {
                         duplicates += 1;
                     }
                 }
@@ -120,7 +144,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 
     // Rebuild the pool: distinct blobs, ordered by content.
     let mut pool_index: BTreeMap<[u8; POI_HOURS_BLOB_LEN], u16> = BTreeMap::new();
-    for (_, blob, _) in by_key.values() {
+    for (_, blob, ..) in by_key.values() {
         if let Some(b) = blob {
             pool_index.entry(*b).or_insert(0);
         }
@@ -139,7 +163,8 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 
     let pois = by_key
         .into_iter()
-        .map(|((lat, lon, subtype), (name, blob, raw_payload))| MergedPoi {
+        .map(|(_, (name, blob, raw_payload, lat, lon, subtype, metadata))| MergedPoi {
+            metadata,
             lat,
             lon,
             subtype,
@@ -155,7 +180,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
 }
 
 /// Read one cell's hours pool (`OBCM_Spec.md` §7.5).
-fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
+pub(crate) fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
     let count = cell.pois.hours_pool_count;
     if count == 0 {
         return Ok(Vec::new());
@@ -210,22 +235,23 @@ impl PoiSection {
 /// at the directory's shared `Chunk Size` (§4.5.4). Records inside a chunk come out ordered by
 /// `(lat, lon, subtype)` — the merge's own key — so the output is deterministic (§4.5.5).
 pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
-    let category_count = if merged.pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
-        SUMMIT_CATEGORY_ID
-    } else {
-        POI_CATEGORY_COUNT
-    };
-    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=category_count as usize).map(|_| Vec::new()).collect();
+    let mut category_ids: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
+    if merged.pois.iter().any(|p| p.subtype == SUMMIT_SUBTYPE_ID) {
+        category_ids.push(SUMMIT_CATEGORY_ID);
+    }
+    category_ids.sort_unstable();
+    let category_count = category_ids.len();
+    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=obc_formats::obcm::TRAIN_CATEGORY_ID).map(|_| Vec::new()).collect();
     for p in &merged.pois {
         // Validated at merge time, so the category is known.
         let cat = poi_directory_category_of(p.subtype).expect("subtype validated at merge") as usize;
         by_cat[cat].push(p);
     }
 
-    let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN * POI_RECORD_LEN; // 14 records
-    let mut blocks = Vec::with_capacity(category_count as usize);
+    let capacity = POI_CHUNK_SIZE / POI_RECORD_LEN * POI_RECORD_LEN; // 8 records
+    let mut blocks = Vec::with_capacity(category_count);
     let mut dropped = 0usize;
-    for cat_id in 1..=category_count {
+    for cat_id in category_ids {
         let pts = std::mem::take(&mut by_cat[cat_id as usize]);
         if pts.is_empty() {
             blocks.push(Block { cat_id, index: Vec::new(), node_count: 0, chunks: Vec::new(), chunk_count: 0 });
@@ -236,6 +262,9 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
             qtree::flatten(&tree, POI_CHUNK_SIZE, false, &|p, out| out.extend_from_slice(&pack_record(p)));
         dropped += lost;
         blocks.push(Block { cat_id, index, node_count, chunks, chunk_count });
+    }
+    if dropped != 0 {
+        return Err(Error::Capacity(format!("{dropped} POIs exceed the spatial leaf capacity")));
     }
     let mut section = PoiSection { blocks, pool: merged.pool.clone(), len: 0, dropped };
     // The section's own length, measured by *laying it out* over a cursor that discards its bytes —
@@ -294,7 +323,7 @@ impl Directory {
 /// once with the real directory to write. Two runs of one walk, so nothing is staged and no
 /// projection can disagree with an emission.
 ///
-/// Every category gets a directory entry, empty or not — a map with no POIs writes six empty entries
+/// Every category gets a directory entry, empty or not — a map with no POIs writes seven empty entries
 /// and never a zero offset (§7.1). An empty category's `Index Offset` still points at where its
 /// zero-length index would start, so it is a boundary too.
 fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result<Directory> {
@@ -324,7 +353,7 @@ fn walk(section: &PoiSection, directory: &[u8], w: &mut MapWriter<'_>) -> Result
     Ok(Directory { entries, hours_pool_offset, pool_blobs: section.pool.len() })
 }
 
-/// The 36-byte §7.3 record. Name bytes travel verbatim from the source record; only `HoursRef` is
+/// The 64-byte §7.3 record. Name bytes travel verbatim from the source record; only `HoursRef` is
 /// new.
 fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     let mut rec = [CHUNK_END; POI_RECORD_LEN];
@@ -333,10 +362,11 @@ fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     rec[8] = p.subtype;
     rec[9..34].copy_from_slice(&p.name);
     rec[34..36].copy_from_slice(&p.payload.to_le_bytes());
+    rec[36..64].copy_from_slice(&p.metadata.encode());
     rec
 }
 
-/// The section a shard with no POIs writes: six empty categories and an empty pool (§5.1/§7.1).
+/// The section a shard with no POIs writes: seven empty categories and an empty pool (§5.1/§7.1).
 pub fn empty_layout(global_bbox: UBox) -> Result<PoiSection> {
     layout(&MergedPois { pois: Vec::new(), pool: Vec::new(), duplicates: 0 }, global_bbox)
 }
@@ -361,9 +391,33 @@ mod tests {
     }
 
     #[test]
+    fn landmark_schedules_remap_services_without_changing_summit_heights() {
+        let mut open = [0; POI_HOURS_BLOB_LEN];
+        open[2] = 96;
+        let poi = |subtype, payload| MergedPoi {
+            metadata: Default::default(),
+            lat: 100,
+            lon: 100,
+            subtype,
+            name: [0; 25],
+            payload,
+        };
+        let mut merged = MergedPois {
+            pois: vec![poi(1, 0), poi(1, POI_HOURS_REF_NONE), poi(SUMMIT_SUBTYPE_ID, 1700)],
+            pool: vec![open],
+            duplicates: 0,
+        };
+        merged.add_hours([[0; POI_HOURS_BLOB_LEN], open].into_iter()).unwrap();
+        assert_eq!(merged.pool.len(), 2);
+        assert_eq!(merged.pois.iter().map(|p| p.payload).collect::<Vec<_>>(), vec![1, POI_HOURS_REF_NONE, 1700]);
+        assert_eq!(merged.pool[merged.pois[0].payload as usize], open);
+    }
+
+    #[test]
     fn summit_overhead_equals_the_emitted_section_difference() {
         let mut pois: Vec<_> = (0..70)
             .map(|i| MergedPoi {
+                metadata: Default::default(),
                 lat: 10_000 + i * 10_000,
                 lon: 20_000 + i * 11_000,
                 subtype: SUMMIT_SUBTYPE_ID,
@@ -371,7 +425,14 @@ mod tests {
                 payload: i as u16,
             })
             .collect();
-        pois.push(MergedPoi { lat: 100, lon: 100, subtype: 1, name: [0; 25], payload: 0 });
+        pois.push(MergedPoi {
+            metadata: Default::default(),
+            lat: 100,
+            lon: 100,
+            subtype: 1,
+            name: [0; 25],
+            payload: 0,
+        });
         let mut merged = MergedPois { pois, pool: vec![[0; POI_HOURS_BLOB_LEN]], duplicates: 0 };
         let with_summits = layout(&merged, (0, 0, 1_000_000, 1_000_000)).unwrap();
         merged.pois.retain(|p| p.subtype != SUMMIT_SUBTYPE_ID);
@@ -386,7 +447,7 @@ mod tests {
         assert_eq!(services.summit_bytes(), 0);
     }
 
-    /// The section a shard with no POIs writes, at a unit-aligned offset — the six empty entries,
+    /// The section a shard with no POIs writes, at a unit-aligned offset — the seven empty entries,
     /// and v14's filler.
     ///
     /// The **gap** assertions are the point of the second half. Every directory field here would
@@ -405,7 +466,7 @@ mod tests {
         let dir_end = crate::emit::align_up((AT + POI_DIR_LEN) as u64) as usize;
         for c in 0..POI_CATEGORY_COUNT as usize {
             let at = 3 + c * POI_CAT_ENTRY_LEN;
-            assert_eq!(bytes[at], c as u8 + 1);
+            assert_eq!(bytes[at], obc_formats::obcm::PoiCategory::ALL[c].id());
             let index_offset = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
             assert_eq!(index_offset * unit, dir_end, "category {} names the first boundary past the directory", c + 1);
             assert_eq!(u32::from_le_bytes(bytes[at + 5..at + 9].try_into().unwrap()), 0, "node count");
@@ -416,14 +477,14 @@ mod tests {
 
         // --- the gaps, as bytes ---
         // 87 bytes of directory, then filler to the boundary the offsets above name.
-        assert_eq!(POI_DIR_LEN, 87, "the §7.1 directory is the width every gap here is measured from");
+        assert_eq!(POI_DIR_LEN, 100, "the §7.1 directory is the width every gap here is measured from");
         let dir_gap = dir_end - AT - POI_DIR_LEN;
-        assert_eq!(dir_gap, 9, "87 → 96 at U = 16");
-        assert_eq!(&bytes[POI_DIR_LEN..POI_DIR_LEN + dir_gap], &[obc_formats::obcm::FILLER; 9], "§1.2's fill byte");
+        assert_eq!(dir_gap, 12, "87 → 96 at U = 16");
+        assert_eq!(&bytes[POI_DIR_LEN..POI_DIR_LEN + dir_gap], &[obc_formats::obcm::FILLER; 12], "§1.2's fill byte");
         // The pool's own two `count` bytes, then the run that leaves the nav directory nameable.
         assert_eq!(&bytes[dir_gap + POI_DIR_LEN..][..2], &0u16.to_le_bytes(), "an empty pool is a bare count");
         assert_eq!(&bytes[dir_gap + POI_DIR_LEN + 2..], &[obc_formats::obcm::FILLER; 14], "the tail run");
-        assert_eq!(bytes.len(), 112, "96 (directory + filler) + 16 (the pool, rounded up)");
+        assert_eq!(bytes.len(), 128, "96 (directory + filler) + 16 (the pool, rounded up)");
         assert_eq!(
             bytes.len() as u64,
             empty_layout((0, 0, 1_000_000, 1_000_000)).expect("an empty section lays out").section_len()

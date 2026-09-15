@@ -25,6 +25,7 @@ public struct Waypoint: Identifiable, Equatable, Sendable {
     /// (`OBCR_Spec.md` §4) and stored in the route object, because a riding
     /// device cannot re-measure it from the decimated geometry it keeps.
     public var lateralOffsetMeters: Double
+    public var provenance: WaypointProvenance?
 
     public var id: Int { index }
 
@@ -35,7 +36,8 @@ public struct Waypoint: Identifiable, Equatable, Sendable {
         distanceAlongMeters: Double,
         coordinate: Coordinate,
         category: WaypointCategory? = nil,
-        lateralOffsetMeters: Double = 0
+        lateralOffsetMeters: Double = 0,
+        provenance: WaypointProvenance? = nil
     ) {
         self.index = index
         self.name = name
@@ -44,5 +46,16 @@ public struct Waypoint: Identifiable, Equatable, Sendable {
         self.coordinate = coordinate
         self.category = category
         self.lateralOffsetMeters = lateralOffsetMeters
+        self.provenance = provenance
+    }
+}
+
+public struct WaypointProvenance: Codable, Equatable, Sendable {
+    public let store: Data
+    public let object: UInt64
+    public let revision: UInt64
+    public let ordinal: UInt16
+    public init(store: Data, object: UInt64, revision: UInt64, ordinal: UInt16) {
+        self.store = store; self.object = object; self.revision = revision; self.ordinal = ordinal
     }
 }

@@ -326,12 +326,12 @@ fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
         gaps += (to > from) as usize;
     };
 
-    // §1: the 49-byte header, then the run to the style table's boundary.
-    assert_eq!(map[4], 14, "the version byte this walk is written against");
+    // §1: the 57-byte header, then the run to the style table's boundary.
+    assert_eq!(map[4], 15, "the version byte this walk is written against");
     assert_eq!(map[40], 4, "`Offset Scale`, so U = 16");
     let style_at = offset(map, 21);
-    assert_eq!(style_at, 64, "the style table starts at align_up(49)");
-    gap(49, style_at, "header → style table");
+    assert_eq!(style_at, 64, "the style table starts at align_up(57)");
+    gap(57, style_at, "header → style table");
 
     // §2 → §3: the style table's own tail, and the LOD table's.
     let lod_table_at = offset(map, 26);
@@ -1104,4 +1104,50 @@ fn the_read_back_is_cached_and_the_cache_changes_no_bytes() {
     assert_same_bytes(&uncached, &cached, "the map with the read-back cache off");
     eprintln!("read-back: {engine_reads} host reads with the cache off, {host_reads} at 64 KiB blocks");
     assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
+}
+
+#[path = "../../../host/obcm-assemble/tests/support/landmarks.rs"]
+mod landmark_fixture;
+
+#[test]
+fn landmarks_survive_the_normal_bridge_with_and_without_terrain() {
+    use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
+    let run = |with_terrain: bool, reverse: bool| {
+        let mut cells = cells();
+        let core = cells.iter_mut().find(|cell| cell.band == "network").expect("core cell");
+        landmark_fixture::attach(&mut core.bytes, vec![landmark_fixture::record(123)], true);
+        if reverse {
+            cells.reverse();
+        }
+        assemble_everything(
+            cells,
+            Vec::new(),
+            with_terrain.then(terrain_lattice),
+            if with_terrain { terrain_cells() } else { Vec::new() },
+            &sidecar(),
+            &skin(),
+            &options(),
+            &mut NoHooks,
+        )
+        .unwrap()
+    };
+    for terrain in [false, true] {
+        let out = run(terrain, false);
+        let bytes = taken(&out);
+        let start = u32::from_le_bytes(bytes[49..53].try_into().unwrap()) as usize * 16;
+        let len = u32::from_le_bytes(bytes[53..57].try_into().unwrap()) as usize * 16;
+        assert!(start > 0 && len > 12_000);
+        assert!(start + len <= bytes.len());
+        let record = LandmarkRecord::decode(
+            bytes[start + SECTION_HEADER_LEN..start + SECTION_HEADER_LEN + RECORD_LEN].try_into().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record.qid, 123);
+        let source = obc_formats::io::SliceSource(bytes);
+        landmark_fixture::assert_content(&obc_reader::landmarks::map_section(&source).unwrap().unwrap());
+        if terrain {
+            assert_eq!(start + len, u32::from_le_bytes(bytes[41..45].try_into().unwrap()) as usize * 16);
+        }
+        assert_same_bytes(taken(&run(terrain, true)), bytes, "landmark cell shuffle");
+    }
 }
