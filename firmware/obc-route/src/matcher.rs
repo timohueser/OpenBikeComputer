@@ -142,6 +142,12 @@ impl RouteMatch {
         ((self.chunk as u32) << 16) | self.seg as u32
     }
 
+    /// Resolve a persisted progress anchor without advancing the live match before its ACK.
+    pub fn occurrence_at(&mut self, route: &RouteReader, progress_m: u32) -> Option<u32> {
+        let pos = route.locate_progress(progress_m, &mut self.buf)?;
+        Some(((pos.chunk as u32) << 16) | pos.seg as u32)
+    }
+
     /// Ask the **next** match to search the wide (rejoin-sized) forward window once, then fall back
     /// to the tight one.
     ///
