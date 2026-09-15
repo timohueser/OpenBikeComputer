@@ -137,6 +137,11 @@ impl RouteMatch {
         self.started
     }
 
+    /// Stored chunk/segment occurrence, distinct at repeated coordinates on the same route.
+    pub fn occurrence(&self) -> u32 {
+        ((self.chunk as u32) << 16) | self.seg as u32
+    }
+
     /// Ask the **next** match to search the wide (rejoin-sized) forward window once, then fall back
     /// to the tight one.
     ///
@@ -160,6 +165,11 @@ impl RouteMatch {
     /// Match `(lon, lat)` (microdegrees) onto `route`, advancing the cursor. See the
     /// module docs for the forward-bias / off-route-freeze behaviour.
     pub fn update(&mut self, lon: i32, lat: i32, route: &RouteReader) -> Match {
+        self.update_to(lon, lat, route, u32::MAX)
+    }
+
+    /// Match only the accepted phase. A later overlapping return leg is not an outbound candidate.
+    pub fn update_to(&mut self, lon: i32, lat: i32, route: &RouteReader, ceiling_m: u32) -> Match {
         let chunks = route.chunks();
         if chunks.is_empty() {
             return Match { progress_m: 0, off_route: true, dist_m: u32::MAX };
@@ -207,9 +217,25 @@ impl RouteMatch {
                     let a = (self.buf[s].lon, self.buf[s].lat);
                     let b = (self.buf[s + 1].lon, self.buf[s + 1].lat);
                     let seg_len = ground_dist_m_cl(a, b, cl);
+                    if cum0 + intra > ceiling_m as f32 {
+                        break 'outer;
+                    }
                     if (!self.started || off >= -back) && global >= self.floor_global_seg {
                         let (mut t, mut dist) = project_to_segment(a, b, p, cl);
                         let mut progress = (cum0 + intra + t * seg_len) as u32;
+                        if progress > ceiling_m {
+                            t = if seg_len > 1e-3 {
+                                ((ceiling_m as f32 - cum0 - intra) / seg_len).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let ceiling = (
+                                a.0 + libm::roundf((b.0 - a.0) as f32 * t) as i32,
+                                a.1 + libm::roundf((b.1 - a.1) as f32 * t) as i32,
+                            );
+                            dist = ground_dist_m_cl(ceiling, p, cl);
+                            progress = ceiling_m;
+                        }
                         // The floor can sit inside its containing segment. A fix earlier on that
                         // same long segment must measure to the floor point, not project behind it
                         // and appear on-route inside the skipped stretch.

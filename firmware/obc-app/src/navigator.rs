@@ -17,11 +17,13 @@
 
 mod following;
 mod review;
+mod visit;
 use review::ReviewState;
 pub use review::{
     CheckpointChange, ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, ReviewedRoute,
     REVIEW_ALONG_TOLERANCE_M, REVIEW_FACTS_POLICY, REVIEW_LATERAL_TOLERANCE_M,
 };
+pub use visit::VisitUnavailable;
 
 pub use following::RouteState;
 
@@ -300,6 +302,7 @@ pub struct NavigatorMachine {
     /// token layer allows.
     ops: TokenSource<NavigatorTag>,
     review: ReviewState,
+    visit: visit::VisitState,
     /// The family that owns physical work, through the acknowledged release.
     live: Option<PlanFamily>,
     /// The route family's phase.
@@ -346,6 +349,7 @@ impl NavigatorMachine {
         fields {
             ops: TokenSource::new(),
             review: ReviewState::new(),
+            visit: visit::VisitState::new(),
             live: None,
             route: PlanPhase::Idle,
             detour: PlanPhase::Idle,
@@ -397,6 +401,9 @@ impl NavigatorMachine {
                 self.route = PlanPhase::Idle;
             }
             NavigatorIntent::PlanDetour(request) => {
+                if self.active_visit() {
+                    return;
+                }
                 self.supersede(PlanFamily::Detour);
                 self.detour_request = Some(request);
                 self.detour = PlanPhase::Requested;
