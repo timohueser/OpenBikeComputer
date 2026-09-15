@@ -56,7 +56,7 @@ fn explicit_gletsch_access_survives_packing_and_nearby_roads_do_not_create_acces
         PlaceWindow::Nearby { position: (8_184_271, 46_727_359), radius_m: 30_000 },
         None,
     );
-    let mut page = heapless::Vec::new();
+    let mut page = heapless::Vec::<_, { obc_reader::reader::places::PLACE_PAGE_SIZE }>::new();
     let mut found = std::collections::BTreeMap::new();
     let mut pages = 0;
     loop {
