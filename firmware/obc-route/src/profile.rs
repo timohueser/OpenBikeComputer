@@ -1,24 +1,8 @@
-//! Elevation profile: a route's height sampled to a fixed number of columns, as a
-//! small **multi-resolution pyramid** so the Statistics screen can zoom and pan the
-//! profile without ever re-reading the route geometry.
+//! Elevation bands and grades sampled once when a route loads.
 //!
-//! The Statistics screen draws the route as a filled band under a top line, with a
-//! "you are here" cursor and stat grid. It needs height-vs-distance, not the lon/lat
-//! geometry the Map draws — so [`RouteReader::elevation_profile`] reduces the route to
-//! a [`Profile`] of per-column min/max elevation.
-//!
-//! **Why a pyramid.** Zooming must not re-stream the route on every Up/Down step. One
-//! load-time pass builds a **fine base** level ([`PROFILE_COLS`] columns); the coarser
-//! levels are pure **min/max downsamples** of the finer one (merge adjacent column pairs —
-//! a few array passes, no extra chunk decodes), the same trick the OBCM map format uses
-//! (v5). Drawing a view then [picks the level](Profile::window) whose resolution matches
-//! the visible window and walks only ~chart-width columns, so the per-step cost is flat
-//! across every zoom level and touches no geometry.
-//!
-//! The resolution is decoupled from any display width: the screen maps columns onto its
-//! chart pixels, so the same profile draws to the 240-px device panel or a resized
-//! simulator window. Building streams every chunk, so it is built once on route load and
-//! cached (see the app's resident `profile`), never rebuilt per frame.
+//! The profile stores the finest min/max columns. Zoomed-out samples merge at most
+//! eight adjacent columns, so every zoom level preserves extrema and unknown gaps
+//! without storing duplicate bands or reading route geometry during rendering.
 
 use heapless::Vec;
 
@@ -28,49 +12,12 @@ use obc_formats::io::{ByteSource, Error};
 use obc_formats::obcr::CHUNK_META_LEN;
 use obc_map_scene::ground_dist_m;
 
-/// Columns in the **finest** (base) level — the resolution one load-time sweep fills, and the
-/// cap on zoom-in depth. Coarser levels halve from here, so keep this a power of two (each level
-/// must stay even for the pair-merge downsample). The one RAM/zoom-depth knob: doubling it
-/// doubles both (~4 KB for the whole pyramid at 512 — one clean zoom-in step over the 240-px
-/// panel; the freed RAM funds the all-features build's ≥65 KB stack reserve).
+/// Finest profile resolution; supports one zoom step over the 240-pixel panel.
 pub const PROFILE_COLS: usize = 512;
-
-/// Per-level column counts, finest first — each a clean halving so the pair-merge downsample
-/// lands exactly. The coarsest levels sit under the 240-px panel, so a full-route draw walks
-/// the 256 level, not the 512-wide base ([`Profile::window`] takes the coarsest level that
-/// still fills the target pixels, so nothing upsamples chunkily).
 const LEVEL_COLS: [usize; 4] = [PROFILE_COLS, PROFILE_COLS / 2, PROFILE_COLS / 4, PROFILE_COLS / 8];
-/// Number of pyramid levels (length of [`LEVEL_COLS`]).
 const NUM_LEVELS: usize = LEVEL_COLS.len();
-/// Total columns across all levels, packed back-to-back in one array (finest first).
-const TOTAL_COLS: usize = sum_levels();
-
-/// Resolution of the cumulative-ascent curve. Kept separate from (and coarser than) the
-/// band pyramid: ascent feeds only the live "to climb" stat, never the zoom drawing, so
-/// it needs no extra detail and pays no extra RAM as the base grows.
+/// Cumulative ascent serves the live remaining-climb statistic.
 const ASCENT_COLS: usize = 256;
-
-/// Sum of [`LEVEL_COLS`] — a `const fn` so [`TOTAL_COLS`] tracks the table automatically.
-const fn sum_levels() -> usize {
-    let mut total = 0;
-    let mut i = 0;
-    while i < LEVEL_COLS.len() {
-        total += LEVEL_COLS[i];
-        i += 1;
-    }
-    total
-}
-
-/// Offset of `level`'s columns within the packed [`Profile::cols`] array.
-const fn level_offset(level: usize) -> usize {
-    let mut off = 0;
-    let mut i = 0;
-    while i < level {
-        off += LEVEL_COLS[i];
-        i += 1;
-    }
-    off
-}
 
 /// The visible slice of the profile a zoomed/panned view should draw: which pyramid
 /// `level` to read and the fractional `[lo_frac, hi_frac]` route span it covers. Returned
@@ -87,17 +34,13 @@ pub struct Window {
     pub hi_frac: f32,
 }
 
-/// A route's elevation profile as a multi-resolution pyramid: per-column min/max height at
-/// several resolutions, plus the y-axis range, the peak, and a cumulative-ascent curve —
+/// A route's elevation bands, y-axis range, peak, and cumulative-ascent curve —
 /// everything the Statistics screen draws at any zoom without re-reading the route. Build with
 /// [`RouteReader::elevation_profile`] and cache it.
 #[derive(Debug, Clone)]
 pub struct Profile {
-    /// All pyramid levels packed finest-first (`level_offset`/`LEVEL_COLS` index in).
-    /// Each column is `(min_ele_m, max_ele_m)`; the base level's empty columns inherit
-    /// the nearest filled neighbour (gap-free at any sampling density), and coarser
-    /// levels are min/max merges of it, so every level is gap-free too.
-    cols: [(i16, i16); TOTAL_COLS],
+    /// Base min/max columns. `min > max` marks unknown elevation.
+    cols: [(i16, i16); PROFILE_COLS],
     /// Cumulative route ascent (m) through each column — monotonic non-decreasing,
     /// normalized so the last column equals the route's total ascent. Computed from the
     /// per-point elevations at [`ASCENT_COLS`] resolution (not the coarse per-chunk
@@ -116,7 +59,7 @@ impl Profile {
     /// Empty storage for hosts that build a profile directly into their resident cache.
     /// [`ride_track_into`] resets every field before filling it.
     pub const EMPTY: Self = Profile {
-        cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
+        cols: [(i16::MAX, i16::MIN); PROFILE_COLS],
         cum_ascent: [0; ASCENT_COLS],
         grades: [i8::MIN; PROFILE_COLS],
         min_ele_m: 0,
@@ -141,15 +84,7 @@ impl Profile {
     /// [`window`]: Profile::window
     #[inline]
     pub fn cols(&self) -> &[(i16, i16)] {
-        self.cols_at(0)
-    }
-
-    /// One pyramid level's columns (`0` = finest). Panics only on an out-of-range level,
-    /// which the crate's own callers never pass.
-    #[inline]
-    fn cols_at(&self, level: usize) -> &[(i16, i16)] {
-        let off = level_offset(level);
-        &self.cols[off..off + LEVEL_COLS[level]]
+        &self.cols
     }
 
     /// The `(min, max)` elevation at fractional position `t` along the route
@@ -165,10 +100,18 @@ impl Profile {
     #[inline]
     pub fn sample(&self, level: usize, t: f32) -> (i16, i16) {
         let level = level.min(NUM_LEVELS - 1);
-        let cols = self.cols_at(level);
-        let last = cols.len() - 1;
-        let col = (t.clamp(0.0, 1.0) * last as f32) as usize;
-        cols[col.min(last)]
+        let last = LEVEL_COLS[level] - 1;
+        let col = ((t.clamp(0.0, 1.0) * last as f32) as usize).min(last);
+        let width = 1 << level;
+        let bands = &self.cols[col * width..(col + 1) * width];
+        let mut result = bands[0];
+        for &(min, max) in bands {
+            if min > max {
+                return (i16::MAX, i16::MIN);
+            }
+            result = (result.0.min(min), result.1.max(max));
+        }
+        result
     }
 
     pub fn grade_at(&self, frac: f32) -> Option<i32> {
@@ -241,7 +184,7 @@ impl Profile {
     /// The visible span is `1/zoom` of the route, clamped to stay within `[0, 1]`. The
     /// level is the **coarsest** one that still puts at least `target_px` columns inside
     /// that span — so the draw has a source column per pixel without walking more than
-    /// ~`2·target_px`. Pure arithmetic over the cached pyramid: no geometry is read, so
+    /// ~`2·target_px`. Pure arithmetic over cached bands: no geometry is read, so
     /// this is cheap to call per step.
     pub fn window(&self, center_frac: f32, zoom: f32, target_px: u32) -> Window {
         let zoom = zoom.max(1.0);
@@ -268,7 +211,7 @@ impl Profile {
 impl RouteReader<'_> {
     /// Build the route's elevation [`Profile`] by streaming every chunk in order and
     /// bucketing each point into a base-level column by its cumulative distance from the
-    /// start, then downsampling the base into the coarser pyramid levels.
+    /// start. Coarser levels are merged when sampled.
     ///
     /// Each chunk re-anchors to its stored
     /// [`cum_distance_m`](crate::ChunkMeta::cum_distance_m) and accumulates per-segment
@@ -278,8 +221,8 @@ impl RouteReader<'_> {
     /// frame.
     pub fn elevation_profile(&self) -> Profile {
         // Sentinel for "no point landed here": an empty column has min > max. Only the
-        // base level is filled by the sweep; the coarser levels are derived after.
-        let mut cols = [(i16::MAX, i16::MIN); TOTAL_COLS];
+        // base level is filled by the sweep; coarser bands are merged when sampled.
+        let mut cols = [(i16::MAX, i16::MIN); PROFILE_COLS];
         let mut gaps = [false; PROFILE_COLS];
         let mut grades = [i8::MIN; PROFILE_COLS];
         let mut previous_sample: Option<(RoutePoint, usize)> = None;
@@ -357,7 +300,6 @@ impl RouteReader<'_> {
                 grades[i] = i8::MIN;
             }
         }
-        downsample_levels(&mut cols);
         let cum_ascent = cumulative_ascent(&casc, self.total_ascent_m);
         let peak_col = peak_column(&cols[..PROFILE_COLS]);
 
@@ -368,7 +310,7 @@ impl RouteReader<'_> {
 /// Fill a recorded ride's elevation [`Profile`] and preview from one pass over its 20-byte samples.
 ///
 /// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
-/// pyramid downsample, cumulative ascent, peak) and differs only in the sweep:
+/// cumulative ascent, peak) and differs only in the sweep:
 /// - points are the final object's 20-byte records (`lon, lat` in microdegrees, exactly as they
 ///   were recorded); the fixed summary footer is not part of the sweep;
 /// - columns bucket by the accumulated segment distance over the **header's** `distance` total
@@ -398,7 +340,7 @@ pub fn ride_track_into<const N: usize>(
     let mut next = 0usize;
 
     // Build the band **into the result value**, not a separate `cols` scratch: the array is
-    // `TOTAL_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
+    // `PROFILE_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
     // live in the frame at once. Written in place it exists once (the ascent curve stays a local
     // — it integrates as `f32` and is quantised into the struct's `u32` at the end).
     out.reset();
@@ -458,7 +400,6 @@ pub fn ride_track_into<const N: usize>(
         (min_ele, max_ele) = (0, 0);
     }
     fill_gaps(&mut out.cols[..PROFILE_COLS], band_fallback((min_ele, max_ele)), band_is_set);
-    downsample_levels(&mut out.cols);
     out.cum_ascent = cumulative_ascent(&casc, info.climb_m as u32);
     out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
     out.min_ele_m = min_ele;
@@ -551,27 +492,6 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
         *o = (((m as i32 - lo) * 255 / span).clamp(0, 255)) as u8;
     }
     Some(out)
-}
-
-/// Build the coarser pyramid levels in place: each level's column is the min/max merge of
-/// the two columns below it. The base level (already gap-filled) is read by level 1, level
-/// 1 by level 2, and so on — so every coarser level is gap-free without its own fill.
-fn downsample_levels(cols: &mut [(i16, i16); TOTAL_COLS]) {
-    for l in 1..NUM_LEVELS {
-        let src_off = level_offset(l - 1);
-        let dst_off = level_offset(l);
-        let dst_n = LEVEL_COLS[l];
-        // Source (level l-1) sits entirely before the destination (level l) in the packed
-        // array, so split at the destination to borrow both at once.
-        let (left, right) = cols.split_at_mut(dst_off);
-        let src = &left[src_off..src_off + LEVEL_COLS[l - 1]];
-        let dst = &mut right[..dst_n];
-        for (j, d) in dst.iter_mut().enumerate() {
-            let a = src[2 * j];
-            let b = src[2 * j + 1];
-            *d = if a.0 > a.1 || b.0 > b.1 { (i16::MAX, i16::MIN) } else { (a.0.min(b.0), a.1.max(b.1)) };
-        }
-    }
 }
 
 /// Turn the per-column running ascent (`casc`, set only where points landed) into a
