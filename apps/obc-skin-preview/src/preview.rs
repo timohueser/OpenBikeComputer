@@ -1,10 +1,10 @@
 //! Target-independent core for the skin editor's production-rendered scene.
 
-use embedded_graphics::pixelcolor::Rgb888;
 use obc_formats::io::SliceSource;
+use obc_host_core::frame::device_rgb888;
 use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
-use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
+use obc_reader::{Error as ReadError, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
 use obcm_assemble::emit::{restamp_style_table, RestampError};
 use obcm_assemble::schema::{Schema, Skin};
@@ -280,9 +280,9 @@ impl MapPreview {
                 &mut self.frame,
                 &reader,
                 &viewport,
-                device_color(background),
+                device_rgb888(background),
                 RenderConfig::default(),
-                device_color,
+                device_rgb888,
             );
             self.dirty = false;
         }
@@ -403,9 +403,9 @@ impl SchemaMapPreview {
                 &mut self.frame,
                 &reader,
                 &viewport,
-                device_color(background),
+                device_rgb888(background),
                 RenderConfig::default(),
-                device_color,
+                device_rgb888,
             );
             self.dirty = false;
         }
@@ -478,11 +478,6 @@ fn maximum_fitting_mpp(bbox: BBox, camera_bounds: BBox) -> f32 {
         }
     }
     low.max(f32::EPSILON)
-}
-
-fn device_color(color: u16) -> Rgb888 {
-    let (r, g, b) = rgb565_to_device64(color);
-    Rgb888::new(r, g, b)
 }
 
 #[cfg(test)]

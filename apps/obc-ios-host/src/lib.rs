@@ -17,19 +17,18 @@ mod tests;
 
 pub use sensors::PhoneSensors;
 
-use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::device_core::{PassClock, PlatformSupport};
 use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, CatalogObjectId, Screen};
 use obc_host_core::flat_map::{FlatMap, MapError};
 use obc_host_core::flat_store::HostStore;
+use obc_host_core::frame;
 use obc_host_core::{
     convert_gpx, initial_camera, ActiveRouteSession, DeviceInput, FileSettingsStore, FlatRideRecorder, FlatRideStore,
     FlatRouteStore, HostLoop, HostPlatform, RgbaFrame, RideRepository, RouteRepository, TrackStore,
 };
 use obc_ports::{Button, InputClock, RideClock, SettingsSaveError, SettingsStore};
-use obc_reader::rgb565_to_device64;
-use obc_route::{ElevationSource, NullElevation, RouteReader};
+use obc_route::{ElevationSource, NullElevation};
 use obc_storage::flat::StoreError;
 use std::path::Path;
 
@@ -109,15 +108,6 @@ fn missing_map(error: &MapError) -> bool {
 
 fn open_card(card: &Path) -> Result<HostStore, String> {
     HostStore::open_file(card).map_err(|error| format!("card {}: {error}", card.display()))
-}
-
-/// The resident active-route parse as a reader, when a route is active. A free function because a
-/// `&self` method would borrow the whole host for as long as the reader lives.
-fn active_route<'a>(session: &'a ActiveRouteSession, routes: &'a FlatRouteStore) -> Option<RouteReader<'a>> {
-    match (session.index(), routes.active_source()) {
-        (Some(index), Some(source)) => Some(RouteReader::new(index, source)),
-        _ => None,
-    }
 }
 
 /// The whole device, over one persistent card.
@@ -241,7 +231,7 @@ impl Host {
         // map-matcher reads the geometry the frame draws.
         self.session.sync(&self.app, &mut self.routes);
         let mut plan = {
-            let route = active_route(&self.session, &self.routes);
+            let route = frame::active_route(&self.session, &self.routes);
             self.host.pass(
                 &mut self.app,
                 PassClock { ride: RideClock(now), ui: InputClock(now) },
@@ -252,7 +242,8 @@ impl Host {
             )
         };
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
-        // latch the pass may have armed rather than leaving it set for a plane that does not exist.
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist
+        // — the same rule `App::handle_input` applies for the hosts that still go through it.
         let _ = self.app.take_hold_cancel();
         {
             let mut platform = PhonePlatform { settings: &mut self.settings };
@@ -276,31 +267,20 @@ impl Host {
         // the loop, and its next frame is already the "come straight back" an immediate wake asks
         // for. Render on demand otherwise — the same signal the firmware gates its repaints on.
         if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
-            // Re-open the active route: the executor may have committed new geometry under it (a
-            // planned route, a spliced detour), and the frame must draw what is there now.
             self.session.sync(&self.app, &mut self.routes);
-            let route = active_route(&self.session, &self.routes);
+            let route = frame::active_route(&self.session, &self.routes);
             let reader = self.map.reader();
-            self.app.render_scene_map_photo_timed(
-                Some(&mut self.scratch),
+            frame::render(
+                &mut self.app,
+                &mut self.scratch,
                 &mut self.frame,
-                Some(&reader),
-                Some(&reader),
-                route.as_ref(),
+                frame::Scene { reader: &reader, route: route.as_ref() },
                 self.peaks.as_ref().and_then(|peaks| peaks.panorama()),
-                FRAME_W as f32,
-                FRAME_H as f32,
-                |c| {
-                    let (r, g, b) = rgb565_to_device64(c);
-                    Rgb888::new(r, g, b)
-                },
+                (FRAME_W as f32, FRAME_H as f32),
+                frame::device_rgb888,
                 &obc_render::NoopClock,
                 Some(self.photo.interactive(plan.render.map || !self.ready)),
             );
-            self.app.render_overlay(&mut self.frame, FRAME_W as f32, FRAME_H as f32, |c| {
-                let (r, g, b) = rgb565_to_device64(c);
-                Rgb888::new(r, g, b)
-            });
             self.ready = true;
             return true;
         }
