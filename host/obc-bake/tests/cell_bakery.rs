@@ -279,6 +279,7 @@ impl Fixture {
                 // than hand-wired.
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
                 landmarks: self.landmarks.clone(),
+                peaks: None,
             },
         }
         .run(&Progress::silent())
@@ -302,6 +303,7 @@ impl Fixture {
                 schema_revision: revision,
                 terrain: obc_bake::terrain::in_tree(&self.tree).expect("the tree's terrain, if any"),
                 landmarks: self.landmarks.clone(),
+                peaks: None,
             },
         }
         .run(&Progress::silent())
@@ -919,6 +921,7 @@ fn a_skin_that_does_not_fit_the_schema_refuses_the_bake_before_any_cutting() {
             schema_revision: 1,
             terrain: None,
             landmarks: None,
+            peaks: None,
         },
     }
     .run(&Progress::silent())
@@ -968,6 +971,7 @@ fn a_skin_carrying_schema_data_refuses_the_bake_before_any_cutting() {
             schema_revision: 1,
             terrain: None,
             landmarks: None,
+            peaks: None,
         },
     }
     .run(&Progress::silent())
@@ -1006,6 +1010,7 @@ fn a_schema_id_that_disagrees_with_the_document_is_refused_not_overwritten() {
             schema_revision: 1,
             terrain: None,
             landmarks: None,
+            peaks: None,
         },
     }
     .run(&Progress::silent())
@@ -1051,6 +1056,7 @@ fn a_skin_the_run_no_longer_publishes_is_pruned_from_the_tree() {
                 schema_revision: 1,
                 terrain: None,
                 landmarks: None,
+                peaks: None,
             },
         }
         .run(&Progress::silent())

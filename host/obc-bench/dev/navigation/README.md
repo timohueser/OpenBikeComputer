@@ -1,26 +1,34 @@
 # Navigation cost measurement
 
 This host harness drives the shared `NavPlanner` with its shipping workspace and
-step budgets. `inputs.json` pins six current-format route cases. Coordinates are
+step budgets. `inputs.json` pins six route cases measured with frozen OBCM v16 maps.
+Its map hashes and recorded measurements remain fixed. Coordinates are
 `[longitude, latitude]` in microdegrees. Profiles are Road (0), MTB (2), and Touring
 (3), with the default profile-weighted objective.
 
 ## Reproduce
 
-From the repository root:
+For a candidate run with current registered maps, use the current checkout:
 
 ```sh
 obc fixtures sync test
 obc fixtures sync assistant
 cargo build --release -p obc-bench --example nav_cost --features nav-metrics
-python3 host/obc-bench/dev/navigation/run.py target/release/examples/nav_cost /tmp/ng-routes
+python3 host/obc-bench/dev/navigation/run.py target/release/examples/nav_cost /tmp/ng-routes --candidate
 ```
+
+For the frozen baseline, build the planner from `baseline_source_commit` in
+`inputs.json`. Restore the exact archives listed there into a separate directory
+with the recorded package/file layout. Pass that directory with `--maps DIR` and
+omit `--candidate`. These archives are retained benchmark inputs. A current
+fixture sync does not restore the frozen versions, and a current OBCM v17 reader
+does not accept them.
 
 The script checks map digests, runs three fresh processes per case, checks the
 recorded outcome and output repeatability, and saves raw JSON and OBCR files.
-`--maps DIR` uses the same package/file layout under a different root.
-`--candidate` records changed input hashes for an isolated format prototype.
-It does not select a production format or make candidate correctness claims.
+`--candidate` accepts the current input hashes and records them in the new report.
+It keeps the recorded outcome checks and does not change the frozen measurements
+or establish candidate correctness by itself.
 
 The Grimsel route and profile pair come from `obc-route/tests/nav.rs`. Monaco uses
 the registered dense ride's endpoints. The interior case adds a small offset to

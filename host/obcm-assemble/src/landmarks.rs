@@ -15,15 +15,15 @@ const COPY_BYTES: usize = 4096;
 type Schedule = [u8; POI_HOURS_BLOB_LEN];
 
 #[derive(Clone)]
-struct Blob {
-    cell: usize,
-    offset: u64,
-    len: u32,
-    hash: [u8; 32],
+pub(crate) struct Blob {
+    pub(crate) cell: usize,
+    pub(crate) offset: u64,
+    pub(crate) len: u32,
+    pub(crate) hash: [u8; 32],
 }
 
 impl Blob {
-    fn copy(&self, cells: &[&Cell<'_>], mut sink: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    pub(crate) fn copy(&self, cells: &[&Cell<'_>], mut sink: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
         let mut buffer = [0; COPY_BYTES];
         let mut done = 0;
         while done < self.len {
@@ -35,7 +35,7 @@ impl Blob {
         Ok(())
     }
 
-    fn same_bytes(&self, other: &Self, cells: &[&Cell<'_>]) -> Result<bool> {
+    pub(crate) fn same_bytes(&self, other: &Self, cells: &[&Cell<'_>]) -> Result<bool> {
         if self.len != other.len || self.hash != other.hash {
             return Ok(false);
         }
@@ -117,7 +117,7 @@ impl LandmarkSection {
     }
 }
 
-fn malformed(error: obc_reader::Error) -> Error {
+pub(crate) fn malformed(error: obc_reader::Error) -> Error {
     match error {
         obc_reader::Error::Source(error) => Error::Io(error),
         other => Error::Format(format!("invalid landmark section: {other:?}")),

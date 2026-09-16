@@ -111,8 +111,8 @@ pub fn scaled(at: usize) -> u32 {
 }
 
 /// Byte offset of the style table in every file this kit builds: the first unit boundary at or
-/// after the 49-byte header (§1.2), which at the default `U = 16` is `64` — so `Style Offset` is
-/// `4` and bytes `49..64` are [`FILLER`].
+/// after the 65-byte header (§1.2), which at the default `U = 16` is `80` — so `Style Offset` is
+/// `5` and bytes `65..80` are [`FILLER`].
 pub const STYLE_OFFSET: usize = align_up(HEADER_LEN);
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and its data chunks. Each chunk is the tight
@@ -189,7 +189,7 @@ fn obcm_header(
     let (terrain_off, terrain_len) = terrain.unwrap_or((0, 0));
     f.extend_from_slice(&scaled(terrain_off).to_le_bytes());
     f.extend_from_slice(&scaled(terrain_len).to_le_bytes());
-    f.extend_from_slice(&[0; 8]);
+    f.extend_from_slice(&[0; 16]);
     assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
     f
 }

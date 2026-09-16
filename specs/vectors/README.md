@@ -104,3 +104,9 @@ assertions on that number, which is exactly the review this change wants.
 That walk is only a review if the suites actually run: the Swift assertion sat a
 version behind for the whole of v12 because `specs/vectors/**` was missing from
 CI's iOS path filter (#1105 added it). A pin nobody runs is a comment.
+
+`peak-section-v17.bin` is an authored OBCM §10 section with three summit SourceIds and two
+article identities. Two summits share one English/German article; the third has French text only.
+The reader suite uses these bytes for language fallback, generation changes, bounded binary
+search, malformed indexes and valid-range content-reference swaps. The web assembly fixture
+passes a separate authored catalogue through the ordinary cutter and native assembler.

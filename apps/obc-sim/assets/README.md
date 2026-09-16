@@ -34,20 +34,22 @@ Set `OBC_DEMO_DEM_DIR` to reuse downloaded Copernicus tiles. The script packs
 roads and summits, samples ascent, traces contours, and embeds the geographic
 surface. It does not bake a panorama or change the software’s screen rendering.
 
-The current OBCM v16 map uses the pinned `assistant-osm` Switzerland extract
+The current OBCM v17 map uses the pinned `assistant-osm` Switzerland extract
 (source timestamp 2026-09-13T20:21:20Z, SHA-256
 `e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88`).
 The packer used the canonical demo box above and the existing embedded surface
 terrain (SHA-256 `2c46061b61a444df3b24350089551a38451a01a9729de062520458f0749ad9ab`)
 for contours and ascent. This terrain comes from Copernicus DEM GLO-30 tiles
 N46 E007 and N46 E008. The map SHA-256 is
-`de80b47f2e0d00b156aa997bb525d1c1a3f93f5451f08cc81cb159da2d05d95c`.
-The map also contains two landmark records from the pinned
-`assistant-wiki-switzerland` capture. Set `OBC_DEMO_LANDMARKS` to the compiled
-`content.json` to include them when you regenerate the map. The content SHA-256
-is `4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57`.
-Article and photo credits travel in the map. Grimsel Pass has text only because
-its source photo has no creator credit.
+`4d9fd8331569d89b01bfd0e841ff004760456e09a36d22a8abb366d036faceb0`.
+The map contains the same two landmark sites, Q114357029 and Q666668, from the pinned
+`assistant-switzerland-content` schema 2 package. They now contain four article variants
+in total and no photos. Set `OBC_DEMO_LANDMARKS` to its `content.json`.
+Set `OBC_DEMO_PEAKS` to the pinned `peak-content/peaks.json` to include Mönch's separate
+peak article, four language variants, photo and original Sources. The association uses
+OSM node 1372219824. The canonical crop and embedded terrain are unchanged.
+[The build record](../../../fixtures/sources/ride-assistant/grimsel-demo-v17.json) pins
+source packages, producer, terrain and output identities.
 
 OSM data is under ODbL-1.0.
 Terrain is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and

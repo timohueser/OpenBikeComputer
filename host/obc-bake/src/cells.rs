@@ -214,6 +214,7 @@ pub struct CellBakeOptions {
     /// leaves every terrain object alone.
     pub terrain: Option<crate::terrain::TerrainInput>,
     pub landmarks: Option<PathBuf>,
+    pub peaks: Option<PathBuf>,
 }
 
 /// How one cell ended.
@@ -463,6 +464,10 @@ impl CellBakery<'_> {
             .map(obc_pack::landmark_map::fingerprint)
             .transpose()?
             .unwrap_or_else(|| "none".into());
+        let landmark_key = format!(
+            "{landmark_key}\npeaks={}",
+            obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?
+        );
         check_schema_id(self.schema, &self.opts)?;
         progress.log(format!("cell bakery: {} region(s), schema `{}`", self.regions.len(), self.opts.schema_id));
         progress.log(format!("  source:  {}", self.source.describe()));
@@ -710,6 +715,7 @@ impl CellBakery<'_> {
             // `Ascent M = 0` throughout, which is a decode-valid v12 map and exactly what v11 was.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
             landmarks: self.opts.landmarks.clone(),
+            peaks: self.opts.peaks.clone().into_iter().collect(),
             bbox: crop.as_deref().map(Bbox::parse).transpose()?,
             source_extent: None,
         };

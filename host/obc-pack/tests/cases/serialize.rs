@@ -210,21 +210,21 @@ fn serialize_lods_header_single_empty_leaf() {
                                       // profiles (56 B each), always present.
     let profile_table_len = 4 * obc_formats::obcm::NAV_PROFILE_LEN;
     let nav_section_len = align_up(align_up(obc_formats::obcm::NAV_DIR_LEN) + profile_table_len);
-    assert_eq!(bin.len(), 128 + align_up(poi_dir_len) + hours_pool_len + nav_section_len);
+    assert_eq!(bin.len(), 144 + align_up(poi_dir_len) + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
     assert_eq!(bin[4], obc_formats::obcm::VERSION); // version
-    assert_eq!(scaled_at(&bin, 21), 64, "the style table is at the first unit boundary past the 49-byte header");
-    assert!(bin[obc_formats::obcm::HEADER_LEN..64].iter().all(|&b| b == FILLER), "and the gap behind it is 0xFF");
+    assert_eq!(scaled_at(&bin, 21), 80, "the style table is at the first unit boundary past the 65-byte header");
+    assert!(bin[obc_formats::obcm::HEADER_LEN..80].iter().all(|&b| b == FILLER), "and the gap behind it is 0xFF");
     assert_eq!(bin[40], 4, "producers write Offset Scale 4 (U = 16)");
     assert_eq!(u32::from_le_bytes(bin[41..45].try_into().unwrap()), 0, "obc-pack embeds no terrain");
     assert_eq!(u32::from_le_bytes(bin[45..49].try_into().unwrap()), 0, "…and its length is 0 exactly when it is");
     assert_eq!(bin[25], 1); // lod count
     let lod_tbl = scaled_at(&bin, 26);
-    assert_eq!(lod_tbl, 80); // 64 style table + 1 style-count byte, rounded up
+    assert_eq!(lod_tbl, 96); // 80 style table + 1 style-count byte, rounded up
 
     // The POI section offset (header byte 32) points just past the LOD payload.
     let poi_off = scaled_at(&bin, 32);
-    assert_eq!(poi_off, 128);
+    assert_eq!(poi_off, 144);
     assert_eq!(bin[poi_off], 7, "empty POI directory still declares 7 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 

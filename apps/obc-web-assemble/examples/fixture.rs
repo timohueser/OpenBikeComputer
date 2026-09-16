@@ -287,7 +287,7 @@ fn extract(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         // reaches the assembler alive, in two cells, and §4.6.4 is the pass that must drop it.
         way(7, &[(92, (LAT - 40_000, SEAM - 20_000)), (93, (LAT - 40_000, SEAM + 20_000))]),
     ];
-    let pois = vec![
+    let mut pois = vec![
         poi(1, LAT, SEAM - 20_000, "West water"),
         // Two POIs in **different cells sharing one schedule**, plus a third with its own: the
         // rebuilt hours pool must hold exactly two blobs and remap three `HoursRef`s across a seam.
@@ -295,6 +295,12 @@ fn extract(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         poi_with_hours(5, LAT + 5_000, SEAM - 15_000, "West camp", "Mo-Fr 08:00-18:00"),
         poi_with_hours(13, LAT + 25_000, SEAM + 60_000, "Shop", "Mo-Sa 09:00-12:00,14:00-19:00"),
     ];
+    for (id, lon) in [(101, SEAM - 20_000), (102, SEAM + 20_000)] {
+        let mut summit = poi(obc_formats::obcm::SUMMIT_SUBTYPE_ID, LAT + 15_000, lon, "Shared massif");
+        summit.metadata.source = obc_formats::obcm::SourceId::osm(1, id);
+        summit.elevation_m = Some(3000);
+        pois.push(summit);
+    }
     (
         Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
         ways,
@@ -336,12 +342,24 @@ fn skin_json(cfg: &Config) -> String {
 
 /// Regenerate `tests/fixture/cells/`, `cells.json` and `skin.json`. See the module header for the
 /// second half (the native CLI run that produces `expected/`).
+fn peak_catalogue(dir: &Path) -> PathBuf {
+    use serde_json::json;
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Source: Authors"]});
+    let source = json!({"schema":1,"collection":"peaks","input_sha256":"authored","policy_sha256":"authored","languages":["en","de","fr","es"],"source_coverage":{},"counts":obc_pack::landmarks::Counts::default(),"omissions":[],
+        "records":[{"id":"Q7","name":"Shared massif","default_language":"en","fallback_sources":[],"variants":[{"language":"en","text_pages":["A shared mountain."],"attribution":credit},{"language":"de","text_pages":["Ein gemeinsamer Berg."],"attribution":credit}],"photo":null}],
+        "associations":[{"node_id":101,"article_id":"Q7","latitude":0,"longitude":0},{"node_id":102,"article_id":"Q7","latitude":0,"longitude":0}]});
+    let path = dir.join("peaks.json");
+    std::fs::write(&path, serde_json::to_vec_pretty(&source).unwrap()).expect("write peak catalogue");
+    path
+}
+
 fn main() {
     let dir = fixture_dir();
     let cfg = Config::parse(CONFIG).expect("the fixture config parses");
     let (ing, ways) = extract(&cfg);
     let _ = std::fs::remove_dir_all(dir.join("cells"));
     let opts = CutOptions {
+        peaks: vec![peak_catalogue(&dir)],
         bands: BandTable::parse(BANDS).expect("band table"),
         // A coverage claim wide enough that the two `2^18` cells are whole; the `2^20` coarse cell
         // is necessarily not, which is why the assembly runs with `--accept-partial`.

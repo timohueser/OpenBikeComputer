@@ -113,7 +113,9 @@ from pathlib import Path
 # Budgets leave ~14 % headroom while still catching a second engine or accidental packer link.
 BUDGETS = {
     "convert": {"gzipped": 62 * 1024, "raw_wasm": 112 * 1024},
-    "assemble": {"gzipped": 276 * 1024, "raw_wasm": 744 * 1024},
+    # Peak association merging and guarded content references: 774,602 B raw / 292,376 B
+    # gzip + glue in CI. The WASM dependency graph is unchanged; retain about 10% headroom.
+    "assemble": {"gzipped": 320 * 1024, "raw_wasm": 832 * 1024},
     "preview": {"gzipped": 128 * 1024, "raw_wasm": 272 * 1024},
 }
 

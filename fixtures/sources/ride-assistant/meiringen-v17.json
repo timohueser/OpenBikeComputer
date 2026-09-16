@@ -1,0 +1,133 @@
+{
+  "schema": 3,
+  "package": "sim-assistant-meiringen",
+  "archive": {
+    "bytes": 30400331,
+    "sha256": "981a61aad338d198b30e818c2042e299e7ae84adfb5a9d25b9748b4054cfc861"
+  },
+  "producer": {
+    "source_commit": "65d124f6d0ba2e9aba6232fbbc396968be07e0d1",
+    "production_commit": "15c098af108e042e3db6d0b1a33abda305e19de1",
+    "executables_sha256": {
+      "obc-pack": "e2e07e1f3dcddbe36db5d18dd94b2a193bd36bed28282654071e597aed9488c9",
+      "obc-bake": "17631c17a9f810dda406178989166d137ffd3ac8070e1bb69fa1f94caee06d19",
+      "obc-dem": "da694f6dbd9badffb13551906b04d3aab3c943697c587fb7df7f5478d8980c38",
+      "obcm-assemble": "1f24e28b0d9c6c2f73def9faef514086aa79c462800fe6b4bbcc58c05c0bbb50"
+    }
+  },
+  "bounds_lon_lat": [
+    8.1,
+    46.5,
+    8.4,
+    46.8
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-terrain": "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+    "assistant-replays": "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "source_pbf": {
+    "path": "switzerland.osm.pbf",
+    "bytes": 545916978,
+    "sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88"
+  },
+  "map": {
+    "bytes": 44881840,
+    "sha256": "f878cf176c3416397a45920b19301d29822aaac1064cdea1ac87d95597fab36a",
+    "obcm_version": 17,
+    "landmark_records": 65,
+    "landmark_article_variants": 123,
+    "landmark_photos": 48,
+    "peak_associations": [
+      {
+        "osm_node_id": 26864921,
+        "name": "Titlis",
+        "variants": 4,
+        "photo": true
+      },
+      {
+        "osm_node_id": 31664302,
+        "name": "Eiger",
+        "variants": 2,
+        "photo": true
+      },
+      {
+        "osm_node_id": 1372219824,
+        "name": "M\u00f6nch",
+        "variants": 4,
+        "photo": true
+      }
+    ]
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "Denied by macOS sandbox-exec during map production; all source packages and land polygons were local.",
+  "recipe": "python3 fixtures/build-assistant-package.py meiringen",
+  "log_sha256": "445f7ab73b5da705d7ff0f0165fd612eb13caae80159485291585b219456fb74",
+  "packaged_build": {
+    "bytes": 13374,
+    "sha256": "991e85bf48aded6de498f9dd5782006d50d58ebd72992a932c46f5a3167dedd5"
+  },
+  "landmark_content_sha256": "07a318fa4c1891960d04e9c86b0ee0e24259cdc3f44058815b77db1e02675dc2",
+  "peak_content_sha256": "5674902c8beade7683787cc157618ed60636517dd012643f49cc8b97a2ab9b66",
+  "peak_reader_acceptance": {
+    "linked": {
+      "26864921": "Q15138",
+      "31664302": "Q4425",
+      "1372219824": "Q16525"
+    },
+    "unlinked_summit": 1244930329,
+    "selection": "Original OSM node SourceId; no name or coordinate matching."
+  },
+  "terrain": {
+    "bytes": 8388704,
+    "sha256": "91bc764ce3bd7ad774e1c0bb899c9f32245247d5e248332546e1230af811fa49",
+    "policy": "Byte-identical embedded terrain to the prior registered map."
+  },
+  "unchanged_sections": {
+    "terrain": {
+      "bytes": 8388704,
+      "sha256": "91bc764ce3bd7ad774e1c0bb899c9f32245247d5e248332546e1230af811fa49"
+    },
+    "landmarks": {
+      "bytes": 873920,
+      "sha256": "f76f73f56ee0153075a4c81c32c592a70b43869a9ed16d45b593fea734b8122e"
+    }
+  }
+}

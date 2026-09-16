@@ -400,7 +400,7 @@
       "byte_len": 7,
       "version": 2,
       "store_epoch": "0xA1B2C3D4",
-      "obcm_version": 16
+      "obcm_version": 17
     },
     "version-read-noobcm.bin": {
       "format": "protocolVersion read (spec 1), pre-#911 — version u16 · store_epoch u32",
@@ -474,6 +474,17 @@
       "source_id": 4611686018427388027,
       "approach_source_id": 4611686018427388360,
       "profile_mask": 5
+    },
+    "peak-section-v17.bin": {
+      "format": "OBCM v17 peak section, section 10",
+      "byte_len": 859,
+      "associations": 3,
+      "articles": 2,
+      "languages": [
+        "en",
+        "de",
+        "fr"
+      ]
     }
   }
 }

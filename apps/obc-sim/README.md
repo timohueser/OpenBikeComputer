@@ -137,7 +137,7 @@ Bluetooth on/off control. **Peak View** stays in the main menu; its screen repor
 terrain data. Bluetooth is also under **Settings → Connections → Phone**.
 The normal detour command remains in the map context. The three grey questions are inactive.
 
-Use an installed OBCM v16 map and an explicit simulator position, or play a captured GPS track.
+Use an installed OBCM v17 map and an explicit simulator position, or play a captured GPS track.
 Find lists all place categories. More places opens the complete bounded result list. What's next
 uses the accepted route; **Explore ahead** includes authored waypoints and map places. Its
 **Down + Back** drawer retains category and source filters. Authored waypoint details do not add
