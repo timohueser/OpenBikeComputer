@@ -21,6 +21,18 @@ test('API enforces prose ownership, origins, proposed link approval, and frozen 
   const ci: Actor = { name: 'ci', role: 'ci' };
   try {
     assert.equal((await request('bootstrap')).status, 401);
+    process.env.VERIFICATION_OWNER_USERNAME = 'owner';
+    store().db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run('a'.repeat(32) + ':' + 'b'.repeat(128));
+    const admin: Actor = { name: 'owner', role: 'owner', provider: 'local', userId: 'local', admin: true };
+    assert.equal((await request('users', 'GET', undefined, admin)).status, 200);
+    assert.equal((await request('users/123', 'DELETE', undefined, admin, 'https://attacker.example')).status, 403);
+    assert.equal((await request('account/password', 'POST', { currentPassword: 'wrong', newPassword: 'valid-new-password' }, admin)).status, 403);
+
+    assert.equal((await request('users', 'GET', undefined, agent)).status, 403);
+    assert.equal((await request('users', 'GET', undefined, ci)).status, 403);
+    assert.equal((await request('users', 'POST', { login: 'alice', admin: true }, owner)).status, 403);
+    assert.equal((await request('account/password', 'POST', { currentPassword: 'secret', newPassword: 'sixteen-characters' }, agent)).status, 403);
+    assert.equal((await request('users/123', 'DELETE', undefined, owner, 'https://attacker.example')).status, 403);
     const revision = store().latestRevision();
     const payload = { baseRevision: revision.id, requirements: revision.requirements };
     assert.equal((await request('requirements', 'PUT', payload, agent)).status, 403);

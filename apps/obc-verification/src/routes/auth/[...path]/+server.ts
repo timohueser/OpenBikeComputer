@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { json, type RequestHandler } from '@sveltejs/kit';
-import { cookieOptions, createSession, oauthEnabled, sameSecret } from '$lib/server/auth';
+import { type RequestHandler } from '@sveltejs/kit';
+import { cookieOptions, createSession, oauthEnabled, sameSecret, githubLogin } from '$lib/server/auth';
 import { assert, Problem } from '$lib/server/domain';
 
 export const GET: RequestHandler = async ({ params, cookies, url }) => {
@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
       const state = randomBytes(32).toString('base64url');
       cookies.set('obc_oauth', state, { ...cookieOptions(), maxAge: 600 });
       const target = new URL('https://github.com/login/oauth/authorize');
-      target.search = new URLSearchParams({ client_id: process.env.GITHUB_CLIENT_ID!, state, redirect_uri: `${process.env.ORIGIN}/auth/callback`, scope: 'read:user' }).toString();
+      target.search = new URLSearchParams({ client_id: process.env.GITHUB_CLIENT_ID!, state, redirect_uri: `${process.env.ORIGIN}/auth/callback`, scope: '' }).toString();
       return new Response(null, { status: 302, headers: { Location: target.toString() } });
     }
     assert(params.path === 'callback', 'Not found.', 404);
@@ -23,9 +23,11 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
     const token = await response.json(); assert(response.ok && token.access_token, 'GitHub login failed.', 502);
     const identity = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
     const user = await identity.json();
-    const owners = process.env.VERIFICATION_OWNERS!.split(',').map((v) => v.trim().toLowerCase());
-    assert(identity.ok && typeof user.login === 'string' && owners.includes(user.login.toLowerCase()), 'This account is not an approved owner.', 403);
-    createSession(cookies, { name: user.login, role: 'owner' });
+    assert(identity.ok, 'GitHub identity could not be read.', 502);
+    createSession(cookies, githubLogin(user));
     return new Response(null, { status: 302, headers: { Location: '/' } });
-  } catch (error) { return json({ error: error instanceof Problem ? error.message : 'Login failed.' }, { status: error instanceof Problem ? error.status : 500 }); }
+  } catch (error) {
+    const message = error instanceof Problem ? error.message : 'GitHub login failed. Please try again.';
+    return new Response(null, { status: 302, headers: { Location: `/login?error=${encodeURIComponent(message)}` } });
+  }
 };

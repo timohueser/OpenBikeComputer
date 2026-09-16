@@ -34,14 +34,14 @@ start the application or write credentials. Create `/etc/obc-verification/servic
 | Variable | Purpose |
 | --- | --- |
 | `ORIGIN` | `https://releases.openbikecomputer.com` |
-| `VERIFICATION_OWNER_USERNAME` | Local owner account name |
-| `VERIFICATION_OWNER_PASSWORD_HASH` | Run `python3 ops/password_hash.py` |
+| `VERIFICATION_OWNER_USERNAME` | Local admin fallback account name |
+| `VERIFICATION_OWNER_PASSWORD_HASH` | Initial local admin hash; run `python3 ops/password_hash.py` |
 | `VERIFICATION_CI_TOKEN` | Random bearer token used only by CI |
 | `VERIFICATION_AGENT_TOKEN` | Separate random token for agent reads and link proposals |
 | `GITHUB_REPOSITORY` | `timohueser/OpenBikeComputer` |
 | `GITHUB_TOKEN` | Repository-scoped token with Actions read/write and contents read access |
 | `VERIFICATION_SOURCE_BRANCH` | Allowed candidate branch; default `develop` |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `VERIFICATION_OWNERS` | Optional GitHub OAuth login and allowed owner logins |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth login credentials |
 
 The service sets its data directory, production mode, and localhost port 3100. Caddy terminates TLS
 and forwards the release subdomain to `127.0.0.1:3100`. Point the subdomain's DNS A record at the VPS
@@ -52,6 +52,42 @@ an HTTP origin.
 
 The environment file and SSH private keys are not application assets. Back them up separately in a
 private credential store. Rotate the CI, agent, and GitHub credentials independently.
+
+## Accounts
+
+GitHub is the primary sign-in method. Register an OAuth app in the administrator's GitHub account:
+
+- Homepage: `https://releases.openbikecomputer.com`
+- Callback: `https://releases.openbikecomputer.com/auth/callback`
+- Device flow: disabled. Keep the default token expiry setting.
+
+Put the client ID and secret in the server environment file and restart the service. This login
+requests only public identity, without repository access or private email permissions. The
+application stores the GitHub account ID and username. It does not store profile email addresses or
+GitHub access tokens. The workflow dispatch credential is separate from login credentials.
+
+Sign in with the local admin fallback, then open **Account → Users**. Add your own GitHub username
+with **Admin** selected. Add collaborators by their GitHub usernames. Approval is tied to GitHub's
+stable account ID, so a renamed account retains access and a reused username does not inherit it.
+All approved users can edit requirements, record test results, and manage releases. Admins can also
+add and remove users. You cannot remove your current GitHub account. Removal ends that account's
+sessions; it does not remove its historical test records or revisions.
+
+The local fallback always has admin access. Its initial password hash comes from the environment
+only when the database has no local admin hash. Change its password in **Account** while signed in
+with that local account. A change ends its other sessions. Use a password manager to save the new
+password. Subsequent deployments and restarts retain the changed password.
+
+If you lose the local password, use SSH to recover it. Copy `ops/password_hash.py` to the server,
+then run it as the application user, with the application's data directory:
+
+```sh
+sudo -u obc-verification python3 /path/to/password_hash.py --reset /var/lib/obc-verification
+```
+
+The command prompts for a new password without echoing it and ends local admin sessions. It does
+not change requirements or evidence. There is no email reset service. Database backups contain
+password hashes and session records; keep the backups private.
 
 ## Deployment
 
@@ -144,6 +180,8 @@ change. Manual results do not carry to another candidate.
 
 ## Agent and CI API
 
+On the maintainer Mac, the dedicated agent token is stored outside Git at
+`~/.config/openbikecomputer/verification-agent.token`. Read it into the request without printing it.
 Use `Authorization: Bearer TOKEN` with the dedicated agent token. The token can read
 `GET /api/bootstrap`, `/api/revisions`, `/api/revisions/ID`, `/api/catalog`, `/api/candidates`,
 and `/api/candidates/ID`. These responses use the same definitions as the owner interface.
