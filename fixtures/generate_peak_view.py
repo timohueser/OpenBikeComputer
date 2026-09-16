@@ -168,8 +168,9 @@ def combine_levels(source, output, site):
 
 
 def catalog_source(sites):
-    output = ["// Generated observer metadata. Geographic terrain lives in the fixture cache.",
+    output = ["// Generated observer metadata. Synthetic identities have no map content. Geographic terrain lives in the fixture cache.",
               "use obc_app::{PeakName, PeakViewPeak, PeakViewProfile};"]
+    identity = 0
     for site in sites:
         output.append(f"pub(super) static {site['key'].upper()}: PeakViewProfile<'static> = PeakViewProfile {{")
         output.extend(f"    {key}: {json.dumps(value, ensure_ascii=False)}," for key, value in site.items() if key not in ("key", "peaks"))
@@ -181,7 +182,8 @@ def catalog_source(sites):
             lon = peak.get("lon", round(site["observer_lon"] + peak["distance_m"] * math.sin(angle) /
                            (0.11132 * math.cos(math.radians(site["observer_lat"] / 1e6)))))
             values = dict(peak, lat=lat, lon=lon, visible=peak.get("visible", True), angle_q4=peak.get("angle_q4", 0))
-            fields = []
+            identity += 1
+            fields = [f"source: obc_formats::obcm::SourceId({identity})"]
             for key, value in values.items():
                 literal = json.dumps(value, ensure_ascii=False)
                 if key == "name": literal = f"PeakName::new({literal})"

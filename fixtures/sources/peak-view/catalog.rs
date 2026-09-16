@@ -1,4 +1,4 @@
-// Generated observer metadata. Geographic terrain lives in the fixture cache.
+// Generated observer metadata. Synthetic identities have no map content. Geographic terrain lives in the fixture cache.
 use obc_app::{PeakName, PeakViewPeak, PeakViewProfile};
 pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
     observer_lat: 45983400,
@@ -10,6 +10,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
     vertical_span_q4: 225,
     peaks: &[
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(1),
             name: PeakName::new("Rimpfischhorn"),
             elevation_m: Some(4198),
             distance_m: 8804,
@@ -21,6 +22,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(2),
             name: PeakName::new("Hohtälli"),
             elevation_m: Some(3286),
             distance_m: 1442,
@@ -32,6 +34,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(3),
             name: PeakName::new("Strahlhorn"),
             elevation_m: Some(4190),
             distance_m: 9610,
@@ -43,6 +46,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(4),
             name: PeakName::new("Rote Nase"),
             elevation_m: Some(3247),
             distance_m: 2131,
@@ -54,6 +58,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(5),
             name: PeakName::new("Stockhorn"),
             elevation_m: Some(3532),
             distance_m: 4058,
@@ -65,6 +70,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(6),
             name: PeakName::new("Cima di Jazzi"),
             elevation_m: Some(3803),
             distance_m: 8435,
@@ -76,6 +82,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(7),
             name: PeakName::new("Torre Castelfranco"),
             elevation_m: Some(3627),
             distance_m: 7361,
@@ -87,6 +94,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(8),
             name: PeakName::new("Grosses Fillarh."),
             elevation_m: Some(3676),
             distance_m: 7724,
@@ -98,6 +106,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(9),
             name: PeakName::new("Dufourspitze"),
             elevation_m: Some(4634),
             distance_m: 8138,
@@ -109,6 +118,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(10),
             name: PeakName::new("Liskamm East"),
             elevation_m: Some(4527),
             distance_m: 7806,
@@ -120,6 +130,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(11),
             name: PeakName::new("Castor"),
             elevation_m: Some(4228),
             distance_m: 6982,
@@ -131,6 +142,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(12),
             name: PeakName::new("Pollux"),
             elevation_m: Some(4092),
             distance_m: 6182,
@@ -142,6 +154,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(13),
             name: PeakName::new("Breithorn East"),
             elevation_m: Some(4139),
             distance_m: 5296,
@@ -153,6 +166,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(14),
             name: PeakName::new("Breithorn Central"),
             elevation_m: Some(4159),
             distance_m: 5433,
@@ -164,6 +178,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(15),
             name: PeakName::new("Breithorn West"),
             elevation_m: Some(4164),
             distance_m: 5539,
@@ -175,6 +190,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(16),
             name: PeakName::new("Furggen"),
             elevation_m: Some(3492),
             distance_m: 8572,
@@ -186,6 +202,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(17),
             name: PeakName::new("Punta Giordano"),
             elevation_m: Some(3878),
             distance_m: 15136,
@@ -197,6 +214,7 @@ pub(super) static GORNERGRAT: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(18),
             name: PeakName::new("Matterhorn"),
             elevation_m: Some(4478),
             distance_m: 9828,
@@ -219,6 +237,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
     vertical_span_q4: 276,
     peaks: &[
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(19),
             name: PeakName::new("Indri Sägissa"),
             elevation_m: Some(2462),
             distance_m: 9333,
@@ -230,6 +249,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(20),
             name: PeakName::new("Reeti"),
             elevation_m: Some(2757),
             distance_m: 9692,
@@ -241,6 +261,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(21),
             name: PeakName::new("Schwarzhoren"),
             elevation_m: Some(2927),
             distance_m: 14249,
@@ -252,6 +273,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(22),
             name: PeakName::new("Läuber"),
             elevation_m: Some(2491),
             distance_m: 29992,
@@ -263,6 +285,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(23),
             name: PeakName::new("Mittelhorn"),
             elevation_m: Some(3704),
             distance_m: 13694,
@@ -274,6 +297,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(24),
             name: PeakName::new("Eiger"),
             elevation_m: Some(3970),
             distance_m: 3496,
@@ -285,6 +309,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(25),
             name: PeakName::new("Chlyne Eiger"),
             elevation_m: Some(3467),
             distance_m: 3064,
@@ -296,6 +321,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(26),
             name: PeakName::new("Mönch"),
             elevation_m: Some(4107),
             distance_m: 4045,
@@ -307,6 +333,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(27),
             name: PeakName::new("Jungfrau"),
             elevation_m: Some(4158),
             distance_m: 5364,
@@ -318,6 +345,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(28),
             name: PeakName::new("Silberhorn"),
             elevation_m: Some(3690),
             distance_m: 4873,
@@ -329,6 +357,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(29),
             name: PeakName::new("Blüemlisalphorn"),
             elevation_m: Some(3663),
             distance_m: 17936,
@@ -340,6 +369,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(30),
             name: PeakName::new("Lauberhorn"),
             elevation_m: Some(2472),
             distance_m: 1297,
@@ -351,6 +381,7 @@ pub(super) static SCHEIDEGG: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(31),
             name: PeakName::new("Tschuggen"),
             elevation_m: Some(2520),
             distance_m: 1905,
@@ -373,6 +404,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
     vertical_span_q4: 253,
     peaks: &[
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(32),
             name: PeakName::new("Freiwandkopf"),
             elevation_m: Some(2854),
             distance_m: 685,
@@ -384,6 +416,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(33),
             name: PeakName::new("Magernigspitz"),
             elevation_m: Some(2640),
             distance_m: 22289,
@@ -395,6 +428,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(34),
             name: PeakName::new("Erster Leiterkopf"),
             elevation_m: Some(2483),
             distance_m: 2701,
@@ -406,6 +440,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(35),
             name: PeakName::new("Karlkamp"),
             elevation_m: Some(3114),
             distance_m: 9355,
@@ -417,6 +452,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(36),
             name: PeakName::new("Leiterkopf"),
             elevation_m: Some(2891),
             distance_m: 2190,
@@ -428,6 +464,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(37),
             name: PeakName::new("Schwertkopf"),
             elevation_m: Some(3099),
             distance_m: 2452,
@@ -439,6 +476,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(38),
             name: PeakName::new("Schwerteck"),
             elevation_m: Some(3247),
             distance_m: 2972,
@@ -450,6 +488,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(39),
             name: PeakName::new("Kellerskopf"),
             elevation_m: Some(3239),
             distance_m: 2684,
@@ -461,6 +500,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(40),
             name: PeakName::new("Kellersberg"),
             elevation_m: Some(3265),
             distance_m: 2924,
@@ -472,6 +512,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(41),
             name: PeakName::new("Großglockner"),
             elevation_m: Some(3798),
             distance_m: 4477,
@@ -483,6 +524,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(42),
             name: PeakName::new("Johannisberg"),
             elevation_m: Some(3453),
             distance_m: 7173,
@@ -494,6 +536,7 @@ pub(super) static GLOCKNER: PeakViewProfile<'static> = PeakViewProfile {
             angle_q4: 0,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(43),
             name: PeakName::new("Mittlerer Burgstall"),
             elevation_m: Some(2933),
             distance_m: 4466,

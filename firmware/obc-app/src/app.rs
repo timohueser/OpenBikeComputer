@@ -2045,6 +2045,10 @@ impl App {
         }
     }
 
+    pub fn peak_view_position(&self) -> Option<(i32, i32)> {
+        self.peak_view_base().and_then(|screen| screen.browse_position)
+    }
+
     pub fn peak_view_is_base(&self) -> bool {
         self.peak_view_base().is_some()
     }
@@ -3045,6 +3049,7 @@ impl App {
         // the one place every host states its real frame dimensions.
         self.ui.frame_size = (w as i16, h as i16);
         self.prepare_find(core_reader, route);
+        self.prepare_peak_article(core_reader);
         self.prepare_landmarks(core_reader);
         // Route-relative pan steps are recorded by gesture handling as a cumulative-distance
         // cursor because `Ctx` deliberately owns no streamed reader. Resolve that cursor here,

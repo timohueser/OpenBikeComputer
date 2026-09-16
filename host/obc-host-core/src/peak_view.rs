@@ -113,7 +113,9 @@ impl Runtime {
             }
             return;
         }
-        let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
+        let Some(position) =
+            app.peak_view_position().or_else(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).or(self.position)
+        else {
             app.set_peak_view_status(Status::Waiting);
             return;
         };
@@ -198,7 +200,8 @@ mod tests {
 
         let (cam_lon, cam_lat, zoom) = crate::initial_camera(&map.reader(), 240);
         let mut app = Box::new(obc_app::App::new(AppState::new(cam_lon, cam_lat, zoom)));
-        app.state.user_fix = Some(obc_ports::Fix::at(46_560_000, 8_340_000));
+        app.state.user_fix = Some(obc_ports::Fix::at(46_585_000, 7_961_000));
+        app.state.compass_deg = Some(141.25);
         app.state.peak_view_profile = Some(PeakViewProfile::at(0, 0, 0));
         assert!(app.show_peak_view());
 
@@ -211,5 +214,41 @@ mod tests {
         assert!(steps > 1, "and it yields between steps rather than building it all in one");
         assert!(app.state.peak_view_peak_count > 0, "named summits come from the same map");
         assert!(app.state.peak_view_profile.unwrap().observer_elevation_m > 1_000, "ground height from the DEM");
+        let mut frame = crate::RgbaFrame::new(240, 320);
+        let draw = |app: &mut App, frame: &mut crate::RgbaFrame| {
+            app.render_frame(None, frame, &map.reader(), None, 240.0, 320.0, |c| {
+                let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
+                embedded_graphics::pixelcolor::Rgb888::new(r, g, b)
+            });
+        };
+        app.apply_gesture(obc_app::Gesture::Press);
+        draw(&mut app, &mut frame);
+        let observer = app.peak_view_position().unwrap();
+        let heading = app.peak_view_heading_q4();
+        app.state.user_fix = Some(obc_ports::Fix::at(46_560_000, 8_340_000));
+        runtime.update(&mut app, &map.reader());
+        assert_eq!(runtime.position, Some(observer), "Browse retains the observer when GPS moves");
+        app.apply_gesture(obc_app::Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PeakArticle(_)), "Mönch's installed article opens");
+        runtime.update(&mut app, &map.reader());
+        assert!(runtime.builder.is_none(), "reading releases panorama work");
+        app.apply_gesture(obc_app::Gesture::Back);
+        for _ in 0..4_000 {
+            runtime.update(&mut app, &map.reader());
+            if complete(&runtime) {
+                break;
+            }
+        }
+        assert!(complete(&runtime));
+        assert_eq!(runtime.position, Some(observer), "Back rebuilds at the frozen Browse observer");
+        assert_eq!(app.peak_view_heading_q4(), heading);
+        app.apply_gesture(obc_app::Gesture::Back);
+        for _ in 0..4_000 {
+            runtime.update(&mut app, &map.reader());
+            if runtime.position == Some((46_560_000, 8_340_000)) {
+                break;
+            }
+        }
+        assert_eq!(runtime.position, Some((46_560_000, 8_340_000)), "Live resumes the current position");
     }
 }

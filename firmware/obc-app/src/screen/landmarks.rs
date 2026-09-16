@@ -21,18 +21,15 @@ impl LandmarksScreen {
             }
             Gesture::Back => return Transition::Pop,
             Gesture::Step(n) if state.reading => {
-                let Some(record) = state.record else {
-                    return Transition::None;
-                };
                 let Some(article) = state.article else {
                     return Transition::None;
                 };
-                let count = article.text_pages as usize + usize::from(!record.photo.is_absent());
+                let count = article.text_pages as usize + usize::from(state.photo_available);
                 let next = list::step_selection(state.page as usize, n, count);
                 if next == article.text_pages as usize {
                     if let Some(selection) = state.selection() {
                         return Transition::Push(Screen::LandmarkPhoto(
-                            super::LandmarkPhotoScreen::new(selection, &state.name).linked(),
+                            super::LandmarkPhotoScreen::content(selection, &state.name).linked(),
                         ));
                     }
                 } else {
@@ -200,7 +197,7 @@ pub(crate) fn detail(state: &crate::landmarks::Landmarks) -> Option<obc_reader::
         distance_m: state.selected()?.key.distance_m,
     })
 }
-fn reading<D, F, S>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, S>, sources: bool)
+pub(super) fn reading<D, F, S>(cv: &mut Canvas<D, F>, rx: &RenderFrame<'_, S>, sources: bool)
 where
     D: DrawTarget,
     F: Fn(u16) -> D::Color,
@@ -208,11 +205,11 @@ where
 {
     cv.clear(PARCHMENT);
     let state = rx.landmarks;
-    let page = state.record.filter(|_| state.ready()).map(|record| {
+    let page = state.article.filter(|_| state.ready()).map(|_| {
         if sources {
             (state.source_page + 1, state.source_pages)
         } else {
-            (state.page + 1, state.article.map_or(0, |a| a.text_pages as u16) + u16::from(!record.photo.is_absent()))
+            (state.page + 1, state.article.map_or(0, |a| a.text_pages as u16) + u16::from(state.photo_available))
         }
     });
     header(
@@ -221,7 +218,7 @@ where
         page,
         (!sources).then_some(&rx.marquee),
     );
-    if !state.ready() || state.record.is_none() {
+    if !state.ready() || state.article.is_none() {
         cv.text(rx.t(status(state.status)), Point::new(12, 100), Font::Label, TextAlign::Left, INK);
         return;
     }
@@ -234,7 +231,7 @@ where
             INK,
         );
     }
-    let label = if sources {
+    let label = if sources || state.peak.is_some() {
         rx.t(Msg::AssistantBack)
     } else {
         rx.t(visit_action(state, rx.poi_scratch, rx.place_local, rx.settings.bike_profile_idx))

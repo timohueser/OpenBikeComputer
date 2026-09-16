@@ -210,6 +210,12 @@ impl crate::App {
         if self.ui.find.bound_map.is_some() && self.ui.find.bound_map != map {
             self.ui.poi_scratch.cancel();
             self.ui.landmarks.invalidate();
+            self.state.peak_view_peak_count = 0;
+            for screen in &mut self.ui.stack {
+                if let Screen::PeakView(peak) = screen {
+                    peak.invalidate_map();
+                }
+            }
             for screen in &mut self.ui.stack {
                 if let Screen::LandmarkPhoto(photo) = screen {
                     photo.invalidate_source();

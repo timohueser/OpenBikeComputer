@@ -12,7 +12,7 @@ use obc_render::{
 };
 
 pub struct LandmarkPhotoScreen {
-    pub(crate) selection: Selection,
+    pub(crate) selection: crate::photo::ContentSelection,
     pub(crate) revision: u32,
     pub(crate) status: Status,
     pub(crate) covered_rebuild: bool,
@@ -23,6 +23,10 @@ pub struct LandmarkPhotoScreen {
 
 impl LandmarkPhotoScreen {
     pub fn new(selection: Selection, title: &str) -> Self {
+        Self::content(crate::photo::ContentSelection::Landmark(selection), title)
+    }
+
+    pub(crate) fn content(selection: crate::photo::ContentSelection, title: &str) -> Self {
         let mut label = heapless::String::new();
         for c in title.chars() {
             if label.push(c).is_err() {
@@ -84,6 +88,9 @@ impl LandmarkPhotoScreen {
                     }
                     return Transition::Pop;
                 }
+                Gesture::Press if matches!(self.selection, crate::photo::ContentSelection::Peak(_)) => {
+                    return Transition::Pop
+                }
                 Gesture::Press => {
                     if let Some(poi) = super::landmarks::detail(cx.landmarks) {
                         return Transition::Push(super::Screen::PoiDetail(
@@ -115,16 +122,20 @@ impl LandmarkPhotoScreen {
         super::landmarks::header(cv, self.title.as_str(), page, None);
         if self.linked {
             cv.round(obc_render::rect(4, 282, 232, 34), 6, AMBER);
-            let label = match super::landmarks::visit_action(
-                rx.landmarks,
-                rx.poi_scratch,
-                rx.place_local,
-                rx.settings.bike_profile_idx,
-            ) {
-                Msg::AssistantVisit => Msg::AssistantPhotoVisit,
-                Msg::AssistantClosed => Msg::AssistantPhotoClosed,
-                Msg::AssistantNoAccess => Msg::AssistantPhotoNoAccess,
-                _ => Msg::AssistantPhotoUnavailableHint,
+            let label = if matches!(self.selection, crate::photo::ContentSelection::Peak(_)) {
+                Msg::AssistantBack
+            } else {
+                match super::landmarks::visit_action(
+                    rx.landmarks,
+                    rx.poi_scratch,
+                    rx.place_local,
+                    rx.settings.bike_profile_idx,
+                ) {
+                    Msg::AssistantVisit => Msg::AssistantPhotoVisit,
+                    Msg::AssistantClosed => Msg::AssistantPhotoClosed,
+                    Msg::AssistantNoAccess => Msg::AssistantPhotoNoAccess,
+                    _ => Msg::AssistantPhotoUnavailableHint,
+                }
             };
             cv.text(rx.t(label), Point::new(120, 286), Font::Label, TextAlign::Center, INK);
         }
