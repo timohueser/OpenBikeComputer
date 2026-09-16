@@ -16,6 +16,10 @@
 //! harness's own pump in Rust), and a device that did them twice would be modelling its own
 //! transport.
 //!
+//! **Every TypeScript suite runs on `Link::Usb`**, because that is the cable the browser has. The
+//! BLE halves of the rules that differ per link — §5.1's much smaller record ceilings, and the
+//! whole-payload rehash a map skips only over USB — are covered by `obc-link`'s own suites.
+//!
 //! **No policy of its own.** [`OpenPolicy`] accepts every payload and refuses `ARM`, which is what a
 //! board without FS7 and FS9 runs. [`AllowArm`] is the one alternative, for the tests that need §4's
 //! success shape.
@@ -52,7 +56,7 @@ mod sim;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-pub use card::{Card, MediaOp};
+pub use card::Card;
 pub use json::{catalog_json, trace_json};
 pub use sim::{SimDevice, SimOptions};
 
@@ -198,11 +202,6 @@ impl<D: BlockDevice> Device<D> {
         };
         device.engine.on_link_up(link, &device.store, ceilings);
         device
-    }
-
-    /// The link this device answers on unless a caller names another.
-    pub fn link(&self) -> Link {
-        self.link
     }
 
     /// The ceilings that link came up with.
@@ -464,11 +463,6 @@ impl<D: BlockDevice> Device<D> {
     /// still traced; nothing comes back.
     pub fn stop_answering(&mut self) {
         self.answering = false;
-    }
-
-    /// Answer again.
-    pub fn resume_answering(&mut self) {
-        self.answering = true;
     }
 }
 
