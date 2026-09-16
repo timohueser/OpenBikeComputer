@@ -141,9 +141,10 @@ article links. Text uses the UI language, then English, then the default languag
 place. A missing or unreadable photo leaves the text available. All content comes from the installed
 map; the device does not request online content. A map change invalidates the open article and photo.
 
-The panorama and photo decoder use the same scratch arena. Opening the article releases the
-panorama. The selected summit identity, observer position and heading stay outside that arena.
-Returning to Browse regenerates the panorama at that observer position.
+Article text and Sources retain the panorama, so Back restores Browse without rebuilding it.
+The panorama and photo decoder use the same scratch arena. Opening a photo releases the panorama.
+The selected summit identity, observer position and heading stay outside that arena. After a photo,
+returning to Browse regenerates the panorama at that observer position.
 All visible names are considered for chart labels. There is no fixed label-count limit. Higher
 elevation angles take priority where names would overlap; labels keep at least 15 pixels of
 horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name

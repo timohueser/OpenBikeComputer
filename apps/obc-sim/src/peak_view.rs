@@ -348,6 +348,9 @@ impl Runtime {
     }
     pub fn finish(&mut self, app: &mut App) {
         self.update(app);
+        if !matches!(app.top_screen(), obc_app::screen::Screen::PeakView(_)) {
+            return;
+        }
         while let Some(receiver) = &self.job.receiver {
             let result = receiver.recv().unwrap_or_else(|_| Err("terrain worker stopped".into()));
             self.job.pending = Some(result);
@@ -420,6 +423,11 @@ mod tests {
         runtime.update(&mut app);
         let cancelled = Arc::clone(&runtime.job.cancel);
         assert!(runtime.job.receiver.is_some());
+        assert!(app.apply_chord(obc_app::Chord::Quick));
+        runtime.finish(&mut app);
+        assert!(runtime.job.receiver.is_some(), "a covered headless job stays retained without waiting");
+        assert!(!cancelled.load(Ordering::Relaxed));
+        assert!(app.apply_chord(obc_app::Chord::Quick));
         app.apply_gesture(obc_app::Gesture::Back);
         runtime.update(&mut app);
         assert!(cancelled.load(Ordering::Relaxed));

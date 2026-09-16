@@ -38,10 +38,10 @@ impl Lifecycle {
         self.active && matches!(self.status, Status::Building(_))
     }
 
-    /// Drawer pages retain their base job; leaving the base releases platform storage.
+    /// Pause under drawers, text and credits; release storage for photos or other screens.
     pub fn reconcile(&mut self, app: &App) -> bool {
         self.active = matches!(app.top_screen(), Screen::PeakView(_));
-        if !app.peak_view_is_base() {
+        if !app.peak_view_retains_panorama() {
             *self = Self::default();
             return true;
         }

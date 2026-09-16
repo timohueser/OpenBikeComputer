@@ -265,7 +265,7 @@ mod tests {
         assert!(!matches!(app.top_screen(), Screen::PeakView(_)));
     }
     #[test]
-    fn returning_from_photo_reclaims_the_panorama_arena_at_the_browse_observer() {
+    fn text_retains_the_panorama_and_photo_reclaims_its_arena() {
         use crate::{
             arena_gate::{ArenaGate, ArenaOwner},
             peak_view::runtime::{Failed, Lifecycle, Platform, Progress},
@@ -275,6 +275,8 @@ mod tests {
             gate: &'a RefCell<ArenaGate>,
             starts: Vec<(i32, i32)>,
             peaks: [PeakViewPeak; 3],
+            steps: u8,
+            complete: bool,
         }
         impl Platform for Job<'_> {
             fn start(&mut self, _: &mut App, position: (i32, i32)) -> bool {
@@ -283,9 +285,10 @@ mod tests {
                 true
             }
             fn step(&mut self, app: &mut App) -> Result<Progress, Failed> {
+                self.steps += 1;
                 app.state.peak_view_peaks[..3].copy_from_slice(&self.peaks);
                 app.state.peak_view_peak_count = 3;
-                Ok(Progress { complete: true, revision: 1 })
+                Ok(Progress { complete: self.complete, revision: 1 })
             }
             fn cancel(&mut self) {
                 let mut gate = self.gate.borrow_mut();
@@ -301,18 +304,48 @@ mod tests {
         let reader = Reader::new(&src, &tables, &cache);
         let mut app = app();
         let gate = RefCell::new(ArenaGate::new());
-        let mut job =
-            Job { gate: &gate, starts: Vec::new(), peaks: app.state.peak_view_peaks[..3].try_into().unwrap() };
+        let mut job = Job {
+            gate: &gate,
+            starts: Vec::new(),
+            peaks: app.state.peak_view_peaks[..3].try_into().unwrap(),
+            steps: 0,
+            complete: false,
+        };
         let mut lifecycle = Lifecycle::default();
         lifecycle.update(&mut app, &mut job, 0);
         app.apply_gesture(Gesture::Press);
         prepare(&mut app, &reader);
         app.apply_gesture(Gesture::Press);
         lifecycle.update(&mut app, &mut job, 10);
-        assert_ne!(gate.borrow().owner(), ArenaOwner::PeakView, "article entry releases the panorama");
+        assert!(!app.peak_view_is_base(), "text keeps its own screen and sensor semantics");
+        assert_eq!(gate.borrow().owner(), ArenaOwner::PeakView);
+        assert!(!lifecycle.busy(), "covered terrain work is paused");
+        assert!(app.apply_chord(Chord::Context));
+        lifecycle.update(&mut app, &mut job, 11);
+        app.apply_gesture(Gesture::Press);
+        prepare(&mut app, &reader);
+        assert!(matches!(app.top_screen(), Screen::LandmarkSources(_)));
+        lifecycle.update(&mut app, &mut job, 12);
+        assert_eq!(gate.borrow().owner(), ArenaOwner::PeakView, "text credits retain the panorama");
+        assert_eq!(job.steps, 1, "covered text and drawers do not advance terrain work");
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        job.complete = true;
+        lifecycle.update(&mut app, &mut job, 13);
+        assert_eq!(job.starts, [(200, 300)], "text and Sources return without another terrain job");
+        prepare(&mut app, &reader);
+        app.apply_gesture(Gesture::Press);
+        prepare(&mut app, &reader);
         app.apply_gesture(Gesture::Step(-1));
+        lifecycle.update(&mut app, &mut job, 14);
+        assert_ne!(gate.borrow().owner(), ArenaOwner::PeakView, "Photo releases the shared arena");
         gate.borrow_mut().claim_photo().unwrap();
         decode(&mut app, &reader);
+        assert!(app.apply_chord(Chord::Context));
+        app.apply_gesture(Gesture::Press);
+        lifecycle.update(&mut app, &mut job, 15);
+        assert!(!app.peak_view_retains_panorama(), "credits over Photo cannot retain the panorama");
+        app.apply_gesture(Gesture::Back);
         gate.borrow_mut().release(ArenaOwner::Photo).unwrap();
         app.state.user_fix = Some(obc_ports::Fix::at(40_000, 50_000));
         app.apply_gesture(Gesture::Back);
@@ -322,6 +355,28 @@ mod tests {
         assert_eq!(gate.borrow().owner(), ArenaOwner::PeakView);
         assert_eq!(job.starts, [(200, 300), (200, 300)]);
         assert_eq!(source(&app), Some(SourceId::osm(1, 101)));
+        app.apply_gesture(Gesture::Press);
+        app.open_landmarks();
+        lifecycle.update(&mut app, &mut job, 21);
+        assert_ne!(gate.borrow().owner(), ArenaOwner::PeakView, "an unrelated screen releases storage");
+        app.apply_gesture(Gesture::Back);
+        app.apply_gesture(Gesture::Back);
+        lifecycle.update(&mut app, &mut job, 22);
+        assert_eq!(job.starts.len(), 3);
+        for screen in [
+            Screen::NavPlanning(crate::screen::NavPlanningScreen::new("Route")),
+            Screen::MapTransfer(crate::screen::MapTransferScreen::new(crate::screen::MapTransfer::Receiving {
+                received_kib: 0,
+                total_kib: 1,
+            })),
+        ] {
+            assert!(app.ui.stack.push(screen).is_ok());
+            lifecycle.update(&mut app, &mut job, 23);
+            assert_ne!(gate.borrow().owner(), ArenaOwner::PeakView, "navigation and USB need the arena");
+            app.ui.stack.pop();
+            lifecycle.update(&mut app, &mut job, 24);
+            assert_eq!(gate.borrow().owner(), ArenaOwner::PeakView);
+        }
         app.apply_gesture(Gesture::Back);
         lifecycle.update(&mut app, &mut job, 30);
         assert_eq!(job.starts.last(), Some(&(40_000, 50_000)), "Live resumes the current fix");
