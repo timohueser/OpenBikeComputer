@@ -2,7 +2,7 @@
 
 use crate::{
     hours::Schedule,
-    landmarks::{Attribution, Content, Photo, Record},
+    landmarks::{Attribution, Content, Photo},
     poi::LandmarkLink,
 };
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
@@ -100,13 +100,13 @@ fn attribution(source: &Attribution) -> Result<Vec<u8>, String> {
 }
 
 /// Internal references are bundle-relative, so map assembly copies the bundle unchanged.
-fn article_bundle(record: &Record) -> Result<Vec<u8>, String> {
+fn article_bundle(default_language: &str, text_variants: &[crate::landmarks::TextVariant]) -> Result<Vec<u8>, String> {
     use obc_formats::articles::{self, ArticleVariant, LANGUAGES, VARIANT_LEN};
-    let default: [u8; 2] = record.default_language.as_bytes().try_into().map_err(|_| "invalid default language")?;
-    if record.variants.is_empty() || record.variants.len() > LANGUAGES.len() {
+    let default: [u8; 2] = default_language.as_bytes().try_into().map_err(|_| "invalid default language")?;
+    if text_variants.is_empty() || text_variants.len() > LANGUAGES.len() {
         return Err("article language count".into());
     }
-    let mut variants: Vec<_> = record.variants.iter().collect();
+    let mut variants: Vec<_> = text_variants.iter().collect();
     variants.sort_by_key(|v| LANGUAGES.iter().position(|l| l.as_slice() == v.language.as_bytes()));
     let mut seen = BTreeSet::new();
     let mut bytes = vec![0; articles::HEADER_LEN + variants.len() * VARIANT_LEN];
@@ -199,7 +199,8 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
         if record.name.is_empty() || record.name.len() > MAX_NAME_BYTES as usize {
             return Err("landmark name budget".into());
         }
-        let bundle = article_bundle(&record)?;
+        let blobs =
+            encode_content(root, &record.name, &record.default_language, &record.variants, record.photo.as_ref())?;
         let mut encoded = LandmarkRecord {
             qid,
             lon,
@@ -215,21 +216,6 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
         if LandmarkRecord::decode(&encoded.encode()).is_none() {
             return Err("invalid landmark metadata".into());
         }
-        let mut blobs = [record.name.into_bytes(), bundle, Vec::new(), Vec::new()];
-        if let Some(photo) = record.photo {
-            let pixels = photo_pixels(root, &photo)?;
-            let mut buffer = vec![0; zlib_rs::compress_bound(pixels.len())];
-            let (stream, code) = zlib_rs::compress_slice(
-                &mut buffer,
-                &pixels,
-                zlib_rs::DeflateConfig { level: 9, window_bits: i32::from(PHOTO_WINDOW_BITS), ..Default::default() },
-            );
-            if code != zlib_rs::ReturnCode::Ok || stream.len() > PHOTO_MAX_COMPRESSED {
-                return Err("landmark compression failed".into());
-            }
-            blobs[2] = stream.to_vec();
-            blobs[3] = attribution(&photo.attribution)?;
-        }
         // Offsets are assigned only when this cell's content pool is known.
         encoded.hours_ref = POI_HOURS_REF_NONE;
         output.push(Landmark { record: encoded, hours: link.and_then(|link| link.hours.clone()), content: blobs });
@@ -239,6 +225,35 @@ pub fn load(path: &Path, links: &[LandmarkLink], bbox: (i64, i64, i64, i64)) -> 
         return Err("landmark record budget".into());
     }
     Ok(output)
+}
+
+pub(crate) fn encode_content(
+    root: &Path,
+    name: &str,
+    default: &str,
+    variants: &[crate::landmarks::TextVariant],
+    photo: Option<&Photo>,
+) -> Result<[Vec<u8>; 4], String> {
+    if name.is_empty() || name.len() > MAX_NAME_BYTES as usize {
+        return Err("article name budget".into());
+    }
+    let bundle = article_bundle(default, variants)?;
+    let mut blobs = [name.as_bytes().to_vec(), bundle, Vec::new(), Vec::new()];
+    if let Some(photo) = photo {
+        let pixels = photo_pixels(root, photo)?;
+        let mut buffer = vec![0; zlib_rs::compress_bound(pixels.len())];
+        let (stream, code) = zlib_rs::compress_slice(
+            &mut buffer,
+            &pixels,
+            zlib_rs::DeflateConfig { level: 9, window_bits: i32::from(PHOTO_WINDOW_BITS), ..Default::default() },
+        );
+        if code != zlib_rs::ReturnCode::Ok || stream.len() > PHOTO_MAX_COMPRESSED {
+            return Err("landmark compression failed".into());
+        }
+        blobs[2] = stream.to_vec();
+        blobs[3] = attribution(&photo.attribution)?;
+    }
+    Ok(blobs)
 }
 
 pub fn serialize(landmarks: &[Landmark], hours_refs: &[u16]) -> Result<Vec<u8>, String> {

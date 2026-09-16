@@ -127,8 +127,8 @@ pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
 
 /// The byte offset of the style table in every shard this engine writes: the first unit boundary at
 /// or after the 57-byte header (§1.2), which at `U = 16` is `64` — so `Style Offset` is `4` and
-/// bytes `57..64` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
-pub const STYLE_OFFSET: u64 = 64;
+/// bytes `65..80` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
+pub const STYLE_OFFSET: u64 = 80;
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN as u64);
 
 /// The next unit boundary at or after `cursor` (§1.2's `align_up`). Every structure a header or
@@ -211,6 +211,7 @@ pub struct MapPlan {
     pub terrain_bytes: u64,
     /// Optional landmark region, including its final unit padding.
     pub landmark_bytes: u64,
+    pub peak_bytes: u64,
     /// Surface tiles start on SD block boundaries in the complete map.
     pub surface_terrain: bool,
 
@@ -255,6 +256,8 @@ impl MapPlan {
 
         let landmark_offset = if self.landmark_bytes == 0 { 0 } else { nav_end };
         let landmark_end = nav_end.checked_add(self.landmark_bytes).ok_or_else(|| self.past_u64())?;
+        let peak_offset = if self.peak_bytes == 0 { 0 } else { landmark_end };
+        let landmark_end = landmark_end.checked_add(self.peak_bytes).ok_or_else(|| self.past_u64())?;
         // §1.3: terrain sits last, precisely so that splicing it moves no other offset. A map with
         // no raster ends after its landmarks and writes `(0, 0)` — the header pair that means "this
         // map carries no elevation", which is unambiguous because byte 0 is the header itself.
@@ -272,6 +275,7 @@ impl MapPlan {
             poi_offset,
             nav_offset,
             landmark_offset,
+            peak_offset,
             terrain_offset,
             terrain_len,
             total,
@@ -302,6 +306,7 @@ struct Layout {
     poi_offset: u64,
     nav_offset: u64,
     landmark_offset: u64,
+    peak_offset: u64,
     /// Byte offset of the §1.3 terrain region, or `0` for a map with no elevation.
     terrain_offset: u64,
     /// The region's length **including** the filler `Terrain Length`'s unit count rounds up to, so
@@ -331,7 +336,7 @@ pub fn peak_view_prefix_bytes(
         .nav_offset
         .checked_sub(summit_bytes)
         .ok_or_else(|| Error::Capacity("summit section exceeds the map layout".into()))?;
-    let native_start = align_up(native_nav + nav.bytes_at(native_nav) + plan.landmark_bytes);
+    let native_start = align_up(native_nav + nav.bytes_at(native_nav) + plan.landmark_bytes + plan.peak_bytes);
     Ok(layout.terrain_offset - native_start)
 }
 
@@ -382,6 +387,7 @@ pub fn write(
     marker_color: u16,
     poi: &PoiSection,
     landmarks: &crate::landmarks::LandmarkSection,
+    peaks: &crate::peaks::PeakSection,
     nav: &MergedNav,
     profile_table: &[u8],
     terrain: Option<&crate::terrain::TerrainRegion<'_>>,
@@ -391,7 +397,7 @@ pub fn write(
     let style_bytes = pack_style_table(styles);
     let nav_projection = nav.projection(profile_table);
     let l = plan.layout(style_bytes.len(), poi.section_len(), nav_projection)?;
-    if plan.landmark_bytes != landmarks.section_len() {
+    if plan.landmark_bytes != landmarks.section_len() || plan.peak_bytes != peaks.section_len() {
         return Err(Error::Verify("landmark section differs from the map plan".into()));
     }
     debug_assert_eq!(
@@ -429,7 +435,7 @@ pub fn write(
         let mut w = MapWriter::new(SCALE, 0, &mut out);
 
         // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
-        //    carries the 57-byte header to the style table's unit boundary.
+        //    carries the 65-byte header to the style table's unit boundary.
         let mut header = header_bytes(
             plan.box_,
             plan.lods.len(),
@@ -444,6 +450,10 @@ pub fn write(
             .copy_from_slice(&scaled(l.landmark_offset)?.to_le_bytes());
         header[HEADER_LANDMARK_LENGTH_OFF..HEADER_LANDMARK_LENGTH_OFF + 4]
             .copy_from_slice(&scaled(plan.landmark_bytes)?.to_le_bytes());
+        header[obc_formats::obcm::HEADER_PEAK_OFFSET_OFF..obc_formats::obcm::HEADER_PEAK_OFFSET_OFF + 4]
+            .copy_from_slice(&scaled(l.peak_offset)?.to_le_bytes());
+        header[obc_formats::obcm::HEADER_PEAK_LENGTH_OFF..obc_formats::obcm::HEADER_PEAK_LENGTH_OFF + 4]
+            .copy_from_slice(&scaled(plan.peak_bytes)?.to_le_bytes());
         w.put(&header)?;
         w.begin_section()?;
 
@@ -473,6 +483,7 @@ pub fn write(
         crate::poi::emit(poi, &mut w)?;
         crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
         landmarks.emit(nav_cells, &mut w)?;
+        peaks.emit(nav_cells, &mut w)?;
 
         // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
         //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
@@ -552,7 +563,7 @@ pub fn header_bytes(
     head.push(SCALE.log2());
     head.extend_from_slice(&scaled(terrain_offset)?.to_le_bytes());
     head.extend_from_slice(&scaled(terrain_len)?.to_le_bytes());
-    head.extend_from_slice(&[0; 8]); // optional landmark section
+    head.extend_from_slice(&[0; 16]); // optional landmark and peak sections
     debug_assert_eq!(head.len(), HEADER_LEN);
     Ok(head)
 }
@@ -711,6 +722,7 @@ mod tests {
             box_: bx(),
             lods: Vec::new(),
             landmark_bytes: 0,
+            peak_bytes: 0,
             terrain_bytes: 0,
             surface_terrain: false,
             bytes: 1234,
@@ -813,6 +825,7 @@ mod tests {
             0,
             &poi,
             &crate::landmarks::LandmarkSection::default(),
+            &crate::peaks::PeakSection::default(),
             &nav,
             &[],
             None,

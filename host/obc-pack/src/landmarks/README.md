@@ -115,7 +115,16 @@ usable article records and photos. Link omissions identify `osm-node-ID`; articl
 omissions identify the canonical article in the shared omission record's `qid` field.
 
 Peak captures cannot enter the landmark compiler, and `peaks.json` cannot enter the landmark map
-serializer. OBCM peak references and Peak View access are separate work. Regional artifact
+serializer. The normal packer and cutter accept `--peaks PATH/peaks.json`; repeat this option for
+several compiled regional catalogues. They join only the full node identities of emitted summit
+POIs. A catalogue's association coordinates do not filter its article. Core cells keep every
+linked summit's complete article and shared photo; assembly deduplicates article identities while
+preserving all summit links. `obc-bake bake --peaks FILE` and the planet baker accept one global
+catalogue through the current bake seam. Their cache keys include the peak content fingerprint.
+
+The reader exposes the summit's existing SourceId and a separate generation-bound article lookup.
+Each content reference checks the article identity and payload type before it uses the shared
+multilingual text or photo reader. Peak View presentation is separate work. Regional artifact
 orchestration under [issue 1805](https://github.com/timohueser/OpenBikeComputer/issues/1805) is also
 still required for normal region-tree delivery. These commands extend the current shared capture
 and compile seam; they do not claim that orchestration exists.

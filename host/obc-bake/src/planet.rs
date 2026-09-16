@@ -966,6 +966,10 @@ impl PlanetBake<'_> {
             .map(obc_pack::landmark_map::fingerprint)
             .transpose()?
             .unwrap_or_else(|| "none".into());
+        let landmark_key = format!(
+            "{landmark_key}\npeaks={}",
+            obc_pack::peak_map::fingerprint(&self.opts.peaks.clone().into_iter().collect::<Vec<_>>())?
+        );
         for (number, leaf) in self.leaves.iter().enumerate() {
             let cells = leaf_cells(leaf.id, &self.opts.bands);
             let pack_key = self.pack_key(leaf, &landmark_key);
@@ -1196,6 +1200,7 @@ impl PlanetBake<'_> {
             // v11 was.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
             landmarks: self.opts.landmarks.clone(),
+            peaks: self.opts.peaks.clone().into_iter().collect(),
             bbox: None,
             source_extent: Some(leaf.logical_bbox),
         };
@@ -1814,6 +1819,7 @@ mod tests {
                 schema_revision: 1,
                 terrain: None,
                 landmarks: None,
+                peaks: None,
             },
         };
         let first = run().run_inner(&Progress::silent()).unwrap();
@@ -1853,6 +1859,7 @@ mod tests {
                 schema_revision: 1,
                 terrain: None,
                 landmarks: None,
+                peaks: None,
             },
         }
         .run_inner(&Progress::silent())
@@ -1944,6 +1951,7 @@ mod tests {
                 schema_revision: 1,
                 terrain: None,
                 landmarks: None,
+                peaks: None,
             },
         }
         .run(&Progress::silent())

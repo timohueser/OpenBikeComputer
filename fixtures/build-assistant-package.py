@@ -20,7 +20,8 @@ REGIONS = {"meiringen": "europe/switzerland", "west-cork": "europe/ireland/west-
 
 def input_packages(region: str) -> tuple[str, ...]:
     content = "assistant-switzerland-content" if region == "meiringen" else "assistant-wiki"
-    return ("assistant-osm", "assistant-terrain", "assistant-replays", content)
+    packages = ("assistant-osm", "assistant-terrain", "assistant-replays", content)
+    return packages + (("peak-content",) if region == "meiringen" else ())
 
 
 def write_json(path: Path, value: object) -> None:
@@ -63,7 +64,7 @@ def assembly_inputs(tree: Path, region_id: str, native: Path, out: Path) -> None
     write_json(out / "native-terrain.json", {"posting_log2": 9, "cell_log2": 19, "cells": terrain})
 
 
-def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path | None) -> tuple[Path, dict]:
+def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path | None, peaks: Path | None) -> tuple[Path, dict]:
     work.mkdir(parents=True)
     commands = []
     recipe_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -102,9 +103,12 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
         wiki = store.package_root("assistant-wiki")
         run(bin_dir / "obc-bake", "landmarks", "--snapshot", wiki / "manifest.json", "--boundary", wiki / "regions.geojson", "--out", work / "landmarks")
         landmarks = work / "landmarks/content.json"
+    if peaks is None and region == "meiringen":
+        peaks = store.package_root("peak-content") / "peaks.json"
+    peak_args = ["--peaks", peaks] if peaks else []
     tree = work / "tree"
     run(bin_dir / "obc-bake", "bake", region_id, "--regions", regions, "--source", local_source,
-        "--dem-sources", store.package_root("assistant-terrain"), "--landmarks", landmarks,
+        "--dem-sources", store.package_root("assistant-terrain"), "--landmarks", landmarks, *peak_args,
         "--presets-dir", ROOT / "builder/presets", "--skin", "default", "--out", tree, "--base-url", "http://localhost/assistant",
         "--generated-at", "2026-09-15T00:00:00Z", "--summary-json", work / "summary.json", "--fail-fast")
     native = work / "native-terrain"
@@ -119,14 +123,15 @@ def bake(region: str, work: Path, store: Store, bin_dir: Path, landmarks: Path |
     return result, {"recipe_commit": recipe_commit,
                     "executables": executables, "commands": commands, "bounds_lon_lat": [west, south, east, north],
                     "content_manifest_sha256": sha256_file(landmarks), "content_counts": content["counts"],
-                    "source_coverage": content["source_coverage"], "summary": json.loads((work / "summary.json").read_text())}
+                    "source_coverage": content["source_coverage"],
+                    "peak_content_sha256": sha256_file(peaks) if peaks else None, "summary": json.loads((work / "summary.json").read_text())}
 
 
 def package(region: str, output: Path, map_path: Path, provenance: dict, catalog: Catalog, store: Store) -> None:
     with map_path.open("rb") as source:
         header = source.read(5)
-    if len(header) != 5 or header[:4] != b"OBCM" or header[4] != 16:
-        raise FixtureError("the scenario requires an OBCM v16 map")
+    if len(header) != 5 or header[:4] != b"OBCM" or header[4] != 17:
+        raise FixtureError("the scenario requires an OBCM v17 map")
     digest = sha256_file(map_path)
     expected = provenance.get("map")
     if expected and (expected["sha256"] != digest or expected["bytes"] != map_path.stat().st_size):
@@ -143,7 +148,7 @@ def package(region: str, output: Path, map_path: Path, provenance: dict, catalog
             shutil.copyfile(replay_root / replay["gpx"], stage / replay["gpx"])
     write_json(stage / "build.json", {"schema": 2, "region": region, "coverage": "regional crop",
         "source_packages": {p: catalog.packages[p]["sha256"] for p in input_packages(region)}, "provenance": provenance,
-        "map": {"bytes": map_path.stat().st_size, "sha256": digest, "obcm_version": 16}})
+        "map": {"bytes": map_path.stat().st_size, "sha256": digest, "obcm_version": 17}})
     size, digest = build_package(package_id, stage, output / (package_id + ".tar.gz"))
     print(f"{package_id}: bytes={size} sha256={digest}")
 
@@ -153,6 +158,7 @@ def main() -> int:
     parser.add_argument("region", choices=(*REGIONS, "all"))
     parser.add_argument("--bin-dir", type=Path, default=ROOT / "target/release", help="prebuilt shipping host tools; no implicit Cargo build")
     parser.add_argument("--landmarks", type=Path, help="optional compiled content.json from the normal compiler")
+    parser.add_argument("--peaks", type=Path, help="optional compiled peaks.json; Meiringen defaults to verified peak-content")
     parser.add_argument("--assembled-map", type=Path, help="package an already completed shipping bake without repeating it")
     parser.add_argument("--provenance", type=Path, help="retained build evidence JSON, required with --assembled-map")
     args = parser.parse_args()
@@ -169,7 +175,7 @@ def main() -> int:
             if args.assembled_map:
                 result, provenance = args.assembled_map.resolve(), json.loads(args.provenance.read_text())
             else:
-                result, provenance = bake(region, output / (region + "-work"), store, args.bin_dir.resolve(), args.landmarks.resolve() if args.landmarks else None)
+                result, provenance = bake(region, output / (region + "-work"), store, args.bin_dir.resolve(), args.landmarks.resolve() if args.landmarks else None, args.peaks.resolve() if args.peaks else None)
             package(region, output, result, provenance, catalog, store)
     except (FixtureError, OSError, ValueError, KeyError, StopIteration, subprocess.CalledProcessError) as error:
         print(f"assistant fixture: {error}", file=sys.stderr)

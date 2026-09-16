@@ -1,0 +1,80 @@
+{
+  "schema": 3,
+  "package": "sim-monaco",
+  "archive": {
+    "bytes": 443213,
+    "sha256": "d7095dc33db8149b3da449453f98407ce8bc7ff32df4eb8f511c7c1231cb2600"
+  },
+  "producer": {
+    "source_commit": "65d124f6d0ba2e9aba6232fbbc396968be07e0d1",
+    "production_commit": "15c098af108e042e3db6d0b1a33abda305e19de1",
+    "executables_sha256": {
+      "obc-pack": "e2e07e1f3dcddbe36db5d18dd94b2a193bd36bed28282654071e597aed9488c9",
+      "obc-bake": "17631c17a9f810dda406178989166d137ffd3ac8070e1bb69fa1f94caee06d19",
+      "obc-dem": "da694f6dbd9badffb13551906b04d3aab3c943697c587fb7df7f5478d8980c38",
+      "obcm-assemble": "1f24e28b0d9c6c2f73def9faef514086aa79c462800fe6b4bbcc58c05c0bbb50"
+    }
+  },
+  "bounds_lon_lat": [
+    7.39,
+    43.71,
+    7.47,
+    43.77
+  ],
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224"
+  },
+  "source_pbf": {
+    "path": "monaco.osm.pbf",
+    "bytes": 691365,
+    "sha256": "5522a7e2ac8084d935302d78e2ec9bbec8ec5eba8740ea29050e1e02bcdaa9c6"
+  },
+  "map": {
+    "bytes": 724480,
+    "sha256": "428bbfed79d32f48ad6c416332b381760306125e8c972668405cc23a9218c89c",
+    "obcm_version": 17,
+    "landmark_records": 0,
+    "landmark_article_variants": 0,
+    "landmark_photos": 0,
+    "peak_associations": []
+  },
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
+  },
+  "network": "Denied by macOS sandbox-exec during map production; all source packages and land polygons were local.",
+  "recipe": "fixtures/build-map-package.sh monaco PINNED/monaco.osm.pbf",
+  "log_sha256": "261029b7bca2fc0707c8ad1d23bf092720a55903aa2084d518de39e53d9ee83a"
+}

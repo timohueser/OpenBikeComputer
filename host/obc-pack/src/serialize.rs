@@ -1740,12 +1740,12 @@ pub fn serialize_nav_section(
 }
 
 /// The byte offset of the style table in every file this packer writes: the first unit boundary at
-/// or after the 49-byte header (§1.2), which at the default `U = 16` is `64` — so `Style Offset` is
-/// `4` and bytes `49..64` are [`FILLER`]. Reading the field rather than assuming the table follows
+/// or after the 65-byte header (§1.2), which at the default `U = 16` is `80` — so `Style Offset` is
+/// `5` and bytes `65..80` are [`FILLER`]. Reading the field rather than assuming the table follows
 /// the header is what it was always for; v14 is simply the first version where the two differ.
-const STYLE_OFFSET: usize = 64;
+const STYLE_OFFSET: usize = 80;
 // Not just "past the header": §1.2 puts the style table on the *first unit boundary at or after*
-// it, so 64 is a derivation with two halves and both are asserted. A scale change that moved the
+// it, so 80 is a derivation with two halves and both are asserted. A scale change that moved the
 // boundary used to leave this literal silently one gap behind.
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN, "the style table cannot start inside the header");
 const _: () = assert!(
@@ -1796,7 +1796,7 @@ fn header_bytes(
     out.push(SCALE.log2());
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — no embedded raster
     out.extend_from_slice(&0u32.to_le_bytes()); // terrain length, `0` exactly when the offset is
-    out.extend_from_slice(&[0; 8]); // optional landmark section
+    out.extend_from_slice(&[0; 16]); // optional landmark and peak sections
     debug_assert_eq!(out.len(), HEADER_LEN);
     out
 }
@@ -1968,6 +1968,7 @@ pub fn serialize_lods_streaming<W, F>(
     global_bbox: (i64, i64, i64, i64),
     pois: &[Poi],
     landmarks: &[crate::landmark_map::Landmark],
+    peaks: &crate::peak_map::Peaks,
     nav: &NavGraph,
     profiles: &[NavProfile],
     terrain: &mut dyn ElevationSource,
@@ -1994,7 +1995,8 @@ where
     let landmark_refs: Vec<_> = refs[pois.len()..].iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
     let landmark_bytes = crate::landmark_map::serialize(landmarks, &landmark_refs)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, cursor) = {
+    let peak_bytes = crate::peak_map::serialize(peaks).map_err(io::Error::other)?;
+    let (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, peak_offset, peak_len, cursor) = {
         let mut sink = |bytes: &[u8]| w.write_all(bytes);
         let mut u = UnitWriter::new(SCALE, 0, &mut sink);
 
@@ -2061,7 +2063,15 @@ where
             let end = u.begin_section()? as usize;
             (start, end - start)
         };
-        (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, u.at() as usize)
+        let (peak_offset, peak_len) = if peak_bytes.is_empty() {
+            (0, 0)
+        } else {
+            let start = u.begin_section()? as usize;
+            u.put(&peak_bytes)?;
+            let end = u.begin_section()? as usize;
+            (start, end - start)
+        };
+        (poi_section_offset, nav_section_offset, landmark_offset, landmark_len, peak_offset, peak_len, u.at() as usize)
     };
 
     // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
@@ -2076,6 +2086,9 @@ where
     w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_LANDMARK_OFFSET_OFF as u64))?;
     w.write_all(&scaled(landmark_offset).to_le_bytes())?;
     w.write_all(&scaled(landmark_len).to_le_bytes())?;
+    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_PEAK_OFFSET_OFF as u64))?;
+    w.write_all(&scaled(peak_offset).to_le_bytes())?;
+    w.write_all(&scaled(peak_len).to_le_bytes())?;
     w.seek(SeekFrom::Start(cursor as u64))?;
     Ok((cursor as u64, dropped))
 }
@@ -2313,6 +2326,7 @@ mod tests {
             bbox,
             &pois,
             &[],
+            &crate::peak_map::Peaks::default(),
             &nav,
             &profiles,
             &mut NullElevation,

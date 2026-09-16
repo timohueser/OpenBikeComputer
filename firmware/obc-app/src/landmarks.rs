@@ -490,7 +490,7 @@ page."
         let bytes = map();
         let source = SliceSource(&bytes);
         let tables = MapTables::parse(&source).unwrap();
-        let cache = MapCache::new_boxed();
+        let cache = MapCache::new();
         let reader = Reader::new(&source, &tables, &cache);
         let mut state = Landmarks::new();
         state.generation = Some(reader.generation());

@@ -30,7 +30,8 @@
 # canonical camera coverage. Relation completion can recover polygons (and
 # therefore change bytes) when a fixture is next deliberately refreshed.
 #
-# Set OBC_GRIMSEL_LANDMARKS to the compiled content.json for Grimsel.
+# Set OBC_GRIMSEL_LANDMARKS to compiled content.json and OBC_GRIMSEL_PEAKS
+# to compiled peaks.json for Grimsel. OBC_DEMO_PEAKS selects demo peak content.
 # After re-packing, run the fixture consumer suites from docs/testing.md and
 # record source and output identities in fixtures/sources/.
 
@@ -78,6 +79,12 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     fi
     if [[ "$name" == grimsel && -n "${OBC_GRIMSEL_LANDMARKS:-}" ]]; then
         extra+=(--landmarks "$OBC_GRIMSEL_LANDMARKS")
+    fi
+    if [[ "$name" == grimsel && -n "${OBC_GRIMSEL_PEAKS:-}" ]]; then
+        extra+=(--peaks "$OBC_GRIMSEL_PEAKS")
+    fi
+    if [[ "$name" == grimsel-demo && -n "${OBC_DEMO_PEAKS:-}" ]]; then
+        extra+=(--peaks "$OBC_DEMO_PEAKS")
     fi
     local output
     case "$name" in
