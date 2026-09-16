@@ -29,9 +29,9 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 const FIX_DT_S: f64 = 1.0;
 
 fn fixtures() -> (Vec<u8>, Vec<u8>, String) {
-    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
-    let terrain = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
-    let gpx = obc_fixtures::read("sim-grimsel", "tracks/grimsel-climb.gpx").expect("full fixture suite requires track");
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
+    let terrain = obc_fixtures::read("sim-grimsel", "grimsel.obcd");
+    let gpx = obc_fixtures::read("sim-grimsel", "tracks/grimsel-climb.gpx");
     (map, terrain, String::from_utf8(gpx).expect("fixture GPX is UTF-8"))
 }
 
