@@ -74,7 +74,7 @@
   function create() {
     if (!leaveEditor()) return;
     let n = 1; while (requirements.some(r => r.id === `SYS-${String(n).padStart(3, '0')}`)) n++;
-    const r: Requirement = { ...(groupFilter.startsWith('group:') ? { group: groupFilter.slice(6) } : {}), id: `SYS-${String(n).padStart(3, '0')}`, title: '', statement: '', active: false, tests: [] };
+    const r: Requirement = { ...(groupFilter.startsWith('group:') ? { group: groupFilter.slice(6) } : {}), id: `SYS-${String(n).padStart(3, '0')}`, title: '', statement: '', active: true, tests: [] };
     requirements = [...requirements, r]; selected = r.id; query = ''; edit = true;
   }
   function update(r: Requirement) { requirements = requirements.map(value => value.id === r.id ? r : value); }
