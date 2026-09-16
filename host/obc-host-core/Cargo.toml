@@ -17,6 +17,7 @@ obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
 obc-storage = { path = "../../firmware/obc-storage" }
 obc-crc = { path = "../../firmware/obc-crc" }
 getrandom = "0.2"
+unicode-normalization = "0.1.25"
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
