@@ -117,8 +117,8 @@ active while Peak View is open. Leaving the screen cancels its pending position 
 Completed terrain replaces the hatch as generation progresses. Progress redraws occur at most twice per second.
 The renderer prepares the current field of view first, then fills the rest of the circle in the
 background. Static dots show that work remains. Turning toward an unfinished view gives that
-view priority. Completed views reuse the panorama in RAM. Movement above 20 m starts another
-panorama after the current job finishes. Leaving Peak View cancels generation and releases the arena.
+view priority. Completed views reuse the panorama in RAM. In Live, movement above 20 m starts another
+panorama after the current job finishes. Browse keeps its observer position. Leaving Peak View cancels generation and releases the arena.
 
 The normal view spans 90°; steep relief can make it wider. Live follows the compass and leaves the peak ledger empty. Select enters Browse on the visible
 peak with the highest elevation angle. A step to the right enters Browse on the leftmost visible
@@ -126,8 +126,24 @@ peak; a step to the left starts on the rightmost. Each further step selects the 
 in that direction without moving the view. If there is no next peak, the view turns by 15° and
 selects the first peak that enters. If no peak enters, the selected peak stays selected until it
 leaves the view. Further steps continue through empty areas. Reversing direction steps back
-through the visible peaks. Select returns to Live. Browse keeps its selected peak when new names
-become available.
+through the visible peaks. Back returns from Browse to Live; another Back leaves Peak View.
+Browse keeps its selected summit identity when new names become available.
+
+A small information mark appears in the selected peak's bottom panel when its installed article
+has readable text. Select opens that article. Without readable content, Select returns to Live.
+Up/Down moves through text pages and an optional photo. Select or Back leaves the photo for the
+article; Back from the article restores the selected summit and Browse heading. **Down + Back →
+Sources** opens the text and photo credits. There is no Visit action or landmark list in this path.
+Peak articles are available only through Peak View. Ride Assistant Landmarks contains other places.
+
+The map links an article by its original OSM summit identity. Names and coordinates do not make
+article links. Text uses the UI language, then English, then the default language stored for the
+place. A missing or unreadable photo leaves the text available. All content comes from the installed
+map; the device does not request online content. A map change invalidates the open article and photo.
+
+The panorama and photo decoder use the same scratch arena. Opening the article releases the
+panorama. The selected summit identity, observer position and heading stay outside that arena.
+Returning to Browse regenerates the panorama at that observer position.
 All visible names are considered for chart labels. There is no fixed label-count limit. Higher
 elevation angles take priority where names would overlap; labels keep at least 15 pixels of
 horizontal space. A chart name that does not fit above its summit is shortened with `..`. The selected peak's name
