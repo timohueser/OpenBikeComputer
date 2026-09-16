@@ -2,7 +2,7 @@
 
 These files describe the initial real inputs for Ride Assistant. Scenario inputs live in the
 immutable fixture store. Country-scale raw landmark captures stay in a local map-baker source
-cache; see [acquisition and recount commands](CAPTURE.md). The West Cork and Swiss regional simulator outputs use OBCM v16 with compiled landmark content.
+cache; see [acquisition and recount commands](CAPTURE.md). The West Cork and Swiss regional simulator outputs use OBCM v17 with compiled landmark content.
 It does not prove that an Assistant feature or a hardware test passed.
 
 ## Acquire and verify
@@ -27,7 +27,9 @@ Build the shipping tools once while Cargo dependencies are available, then use c
 
 ```sh
 cargo build --locked --release -p obc-bake -p obc-dem -p obcm-assemble
+tools/obc fixtures sync assistant-inputs peak-articles
 python3 fixtures/build-assistant-package.py west-cork
+python3 fixtures/build-assistant-package.py meiringen
 ```
 
 The recipe verifies the selected region's input packages before work. Cork runs the offline
@@ -36,6 +38,9 @@ the normal cut stage, a native `obc-dem bake`, and `obcm-assemble`. Assembly use
 the normal catalog selection, verifies every cell hash, and explicitly accepts partial cells at
 the authored crop boundary. It does not accept missing cells or skip the final map verification.
 The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
+Meiringen also uses the verified `peak-content` package. Its peak articles remain separate
+from landmarks and join only by emitted OSM summit node ID. `--peaks PATH/peaks.json` selects
+another compiled peak catalogue. The crop bounds and terrain are unchanged.
 
 The Cork compiler input has four review sites. The Swiss recipe uses verified
 `assistant-switzerland-content`: 1,478 sites, 2,391 article variants, 1,109 RGB222 photos, and their source notices.
@@ -53,21 +58,25 @@ To package completed work without a rebake:
 ```sh
 python3 fixtures/build-assistant-package.py west-cork \
   --assembled-map PATH/west-cork.obcm \
-  --provenance fixtures/sources/ride-assistant/west-cork-v16.json
+  --provenance fixtures/sources/ride-assistant/west-cork-v17.json
 ```
 
-The published Cork map is 4,749,504 bytes, SHA-256
-`4acbf4ba8588052c3a032b3a142eb5e25cd7dc187daf84a2c9b2dbc06c5512f2`.
-[The build record](west-cork-v16.json) pins the source and executable hashes, regional boundary,
-schema 2 content and compiler coverage. The shipping recipe rebuilt the map through the normal
-bake, cut and assembly stages, with native terrain.
-Monaco also uses its pinned 2026-09-13 v16 output. The Swiss regional map is
-44,818,976 bytes, SHA-256 `82dad944a7f1940832172a04e1ab0f530382594ba3377ad74a184d11f8acb16b`.
-[Its build record](meiringen-v16.json) pins the full source PBF, polygon, schema 2 content,
-producer executables, land polygons, 18 selected cells, four native terrain cells and assembly
-result. The full shipping recipe rebuilt this regional map with network access denied. It
-contains 65 landmark records, 123 article variants (37 English, 58 German and 28 French),
-48 photos and 2,632 services.
+The Cork map is 4,749,504 bytes, SHA-256
+`073117c7e5cbce4cc20a08b72133122b3fcc4c13535a7ad153e4c0f72dd658f4`.
+[The build record](west-cork-v17.json) pins the source, producer and output identities.
+The map retains its landmark content and byte-identical native terrain.
+
+The Swiss map is 44,881,840 bytes, SHA-256
+`f878cf176c3416397a45920b19301d29822aaac1064cdea1ac87d95597fab36a`.
+[Its build record](meiringen-v17.json) pins the full PBF, crop, compiled content, producer
+executables, land polygons and output. Packaged `build.json` records each shipping command
+and selected cell. The map contains 65 landmarks,
+123 landmark article variants and 48 landmark photos.
+The separate peak collection resolves Titlis (node 26864921), Eiger (node 31664302) and
+Mönch (node 1372219824). Gross Wendenstock (node 1244930329) has no article.
+The production reader checks these identities directly. No name or coordinate matching is used.
+Terrain and replay bytes remain unchanged. These checks establish map content and reader behavior;
+they do not establish Peak View user-interface or hardware acceptance.
 
 ## Swiss compiled input
 
@@ -187,7 +196,7 @@ The second command reopens saved routes and recordings without importing the fix
 See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording recovery.
 The card is user state; fixture sync does not replace it. Create a new card to test a new package.
 
-The three Swiss scenarios use the same v16 crop and the +02:00 local clock offset:
+The three Swiss scenarios use the same v17 crop and the +02:00 local clock offset:
 
 ```sh
 tools/obc sim assistant-out-and-back
