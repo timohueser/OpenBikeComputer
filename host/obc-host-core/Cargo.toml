@@ -27,6 +27,8 @@ obc-elevation = { path = "../../firmware/obc-elevation" }
 # Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
 # USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
 obc-replay = { path = "../obc-replay" }
+# The render scratch every host lends to `frame::render`, its `Clock` seam and its `RenderStats`.
+obc-render = { path = "../../firmware/obc-render" }
 # `DrawTarget` for `RgbaFrame` — the shared browser framebuffer. Same 0.8 the render path pins;
 # this crate adds no drawing of its own, only the buffer both wasm hosts draw into.
 embedded-graphics = "0.8"
@@ -35,7 +37,6 @@ embedded-graphics = "0.8"
 obc-link = { path = "../../firmware/obc-link" }
 obc-pack = { path = "../obc-pack" }
 obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
-obc-render = { path = "../../firmware/obc-render" }
 obcm-testkit = { path = "../obcm-testkit" }
 obc-fixtures = { path = "../obc-fixtures" }
 heapless = "0.8"
