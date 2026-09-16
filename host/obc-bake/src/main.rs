@@ -53,6 +53,7 @@ usage:
         --all                update/bake the whole planet through resumable source shards
         --no-terrain         skip the automatic terrain stage below
         --landmarks FILE     embed compiled landmark content.json and its photos
+        --peaks FILE         embed compiled peak peaks.json and its photos
         --dem-sources DIR    source DEM GeoTIFFs for it (default: fetched into <cache>/dem)
 
       A bake runs the terrain stage FIRST, automatically: contours are traced and the
@@ -195,6 +196,7 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "base-url",
             "dem-sources",
             "landmarks",
+            "peaks",
         ],
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
@@ -326,6 +328,7 @@ fn run_cell_bake(
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
             landmarks: flags.get("landmarks").map(PathBuf::from),
+            peaks: flags.get("peaks").map(PathBuf::from),
         },
     };
     let summary = bakery.run(&obc_pack::progress::Progress::stdout())?;
@@ -416,6 +419,7 @@ fn run_planet_bake(
             // publishes, and a flag would be a second place for the two to disagree.
             terrain: obc_bake::terrain::in_tree(&out)?,
             landmarks: flags.get("landmarks").map(PathBuf::from),
+            peaks: flags.get("peaks").map(PathBuf::from),
         },
     }
     .run(&progress)?;

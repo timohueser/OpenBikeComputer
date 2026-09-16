@@ -156,6 +156,7 @@ pub struct CutOptions {
     /// reproduces the identical bytes.
     pub terrain: Option<PathBuf>,
     pub landmarks: Option<PathBuf>,
+    pub peaks: Vec<PathBuf>,
     /// Logical source extent used for land generation and the cut manifest.
     ///
     /// Ordinarily the ingest derives this from the retained features. Planet
@@ -176,6 +177,7 @@ impl Default for CutOptions {
             bbox: None,
             terrain: None,
             landmarks: None,
+            peaks: Vec::new(),
             source_extent: None,
         }
     }
@@ -314,6 +316,7 @@ pub fn cut_ingested(
         .map(|path| crate::landmark_map::load(path, &ing.landmark_links, landmark_bounds))
         .transpose()?
         .unwrap_or_default();
+    let peaks = crate::peak_map::load(&opts.peaks)?;
     // Opened once for the whole run and shared by every cell: validating a hundred containers per
     // cell would dominate a cut. `sampler_for` is the per-cell part.
     let terrain_set = match &opts.terrain {
@@ -430,6 +433,7 @@ pub fn cut_ingested(
                     trees,
                     &pois,
                     &cell_landmarks,
+                    &peaks.select(&pois),
                     &graph,
                     terrain,
                     &opts.sources,
@@ -978,6 +982,7 @@ fn write_cell(
     trees: Vec<(usize, Node)>,
     pois: &[Poi],
     landmarks: &[crate::landmark_map::Landmark],
+    peaks: &crate::peak_map::Peaks,
     graph: &NavGraph,
     terrain: &mut dyn ElevationSource,
     sources: &[SourceExtent],
@@ -1000,6 +1005,7 @@ fn write_cell(
         square,
         pois,
         landmarks,
+        peaks,
         graph,
         &config.routing.profiles,
         terrain,

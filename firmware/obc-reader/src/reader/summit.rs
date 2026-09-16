@@ -14,6 +14,7 @@ pub const MAX_SUMMIT_RADIUS_M: u32 = 100_000;
 /// A named summit with the original map coordinates and optional signed height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summit {
+    pub source: obc_formats::obcm::SourceId,
     pub lat: i32,
     pub lon: i32,
     pub name: heapless::String<POI_NAME_LEN>,
@@ -69,7 +70,9 @@ impl Reader<'_> {
                     return;
                 }
                 let elevation = rd_u16(bytes, off + 34) as i16;
+                let Some(metadata) = obc_formats::obcm::PoiMetadata::decode(&bytes[off + 36..off + 64]) else { return };
                 visit(Summit {
+                    source: metadata.source,
                     lat,
                     lon,
                     name: heapless::String::try_from(name).expect("name fits its stored field"),

@@ -31,7 +31,7 @@ fn directory_len(categories: usize) -> usize {
 
 /// One merged record, with service hours references remapped to the shared pool.
 pub struct MergedPoi {
-    metadata: obc_formats::obcm::PoiMetadata,
+    pub(crate) metadata: obc_formats::obcm::PoiMetadata,
     pub lat: i32,
     pub lon: i32,
     pub subtype: u8,
