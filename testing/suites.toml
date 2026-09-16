@@ -148,7 +148,7 @@ route = "ordinary"
 command = "npm run verify --prefix apps/obc-verification"
 jobs = ["verification"]
 platforms = ["linux", "macos"]
-triggers = ["apps/obc-verification/**", "apps/obc-verification/tests/*.test.ts"]
+triggers = ["apps/obc-verification/**"]
 
 [[suite]]
 id = "web.builder-browser"
