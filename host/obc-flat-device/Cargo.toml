@@ -1,0 +1,33 @@
+[package]
+name = "obc-flat-device"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal test library — not published to crates.io
+description = "The real protocol-v4 engine over a real simulated card, behind one bounded adapter: native Rust plus a wasm binding, so the Rust harness and the TypeScript suites test the same device."
+
+# `cdylib` is what wasm-bindgen links; `rlib` keeps the crate an ordinary workspace library, which
+# is what `obc-link`'s harness and this crate's own tests build against.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The engine under test. `std` is on because this device only ever runs on a host or in a browser.
+obc-link = { path = "../../firmware/obc-link", features = ["std"] }
+# The card under test: the real flat store over the deterministic sparse disk and its fault gates.
+obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
+# The CRC the wire and the card both use, for the seeded payloads.
+obc-crc = { path = "../../firmware/obc-crc" }
+
+# --- Web (wasm32) surface. The native library above is target-independent, so `cargo test` and
+# `clippy` exercise the whole adapter on the host exactly as `obc-web-assemble` does.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# Surface Rust panics in the browser console instead of an opaque trap. An adapter panic is a test
+# failure, so it has to be legible.
+console_error_panic_hook = "0.1"
+
+# wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting. This package
+# ships to nobody — it is downloaded by Vitest and the dev harness only — so it carries no bundle
+# budget, just the same optimisation the three shipped bridges use.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz']
