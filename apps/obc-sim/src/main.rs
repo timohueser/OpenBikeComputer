@@ -1712,11 +1712,7 @@ fn main() {
         let mut scratch = Box::new(obc_render::RenderScratch::new());
 
         session.sync(&app, stores.routes);
-        let route_src = stores.routes.active_source();
-        let route = match (session.index(), route_src) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
+        let route = obc_host_core::frame::active_route(&session, stores.routes);
         let scene = obc_host_core::frame::Scene { reader: &reader, route: route.as_ref() };
 
         // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
