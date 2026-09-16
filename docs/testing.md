@@ -1,54 +1,55 @@
 # Testing policy
 
-`testing/suites.toml` is the machine-readable inventory of maintained test and validation
-suites. `testing/coverage-policy.toml` defines coverage ownership and exclusions. Both files are parsed and
-checked by `tools/suite_registry.py`; test counts, durations, and Cargo dependency edges are
-derived and never copied into either registry.
+`tools/test_plan.py` decides what a change must test. Cargo's own graph supplies every Rust
+package, every dependency edge and the split between the two test tiers, so none of that is
+written down. `testing/suites.toml` holds only what Cargo cannot see: the path triggers of
+Cargo packages that other languages or tools reach, and the suites no Cargo package owns.
+`testing/coverage-policy.toml` defines coverage ownership and exclusions. The planner checks
+both files.
 
-## Test levels
+## Routes
 
-| Level | Mechanical meaning |
+A route says when a piece of verification runs. There are five, and `route` in
+`testing/suites.toml` names one of them:
+
+| Route | Meaning |
 | --- | --- |
-| Unit | Hermetic module or pure-behavior test |
-| Component | Hermetic multi-module test in one process |
-| Contract | Stable format, protocol, vector, build, resource, or artifact check |
-| Fixture | Hermetic test over captured external or production-shaped data |
-| End-to-end | Shipping entry point in a real browser, application, simulator, or process |
-| Live | Test against a live external service |
-| Hardware | Test against a physical target |
+| `ordinary` | The change selects it |
+| `required` | It runs whenever one of its CI jobs starts |
+| `manual` | Explicitly invoked only: generators, probes, captured-source checks and the weekly application suite |
+| `live` | It contacts a live service; explicitly invoked only |
 
-Unit, component, and contract suites form the **fast hermetic tier**. The checker enforces the
-mechanical properties that affect execution: a fast or fixture command cannot visibly contact a
-live service, fixture suites declare their fixture sets, real sleeps need a reason and an open
-issue, and live or hardware suites never run for an unrelated pull request. It does not try to
-prove the subjective boundary between unit and component.
+There is no `weekly` route. A schedule belongs to the workflow that holds it: `test-weekly.yml`
+names the two commands it runs each Monday, and the suites they run are `manual`.
 
-“E2E” means only the end-to-end level. A host model test, in-process flow, headless component, or
-shared-vector test is not E2E even when an older test name contains that abbreviation.
+Every Rust package is on the ordinary route unless `testing/suites.toml` says otherwise.
+Its ordinary test binaries are every test target Cargo reports; its captured-fixture
+binaries are the targets gated on `required-features = ["external-fixtures"]`. Examples are
+generators and probes, so no tier compiles them.
 
 ## Suite granularity
 
-Selection is always at suite granularity, never at test-function granularity. A registry entry is
-one execution unit with one cadence. A new test belongs in the suite whose mechanical level and
-cadence match it; if none does, add a suite.
+Selection is always at suite granularity, never at test-function granularity. A plan unit is
+one execution unit with one route. A new test belongs in the unit whose route matches it; if
+none does, add a suite.
 
-A file or binary that mixes the fast tier with fixture, end-to-end, live, or hardware work must be
-split into separate execution units. Do not make a mixed binary look homogeneous by relabeling it
-and do not add test-level selection.
+A file or binary that mixes ordinary work with captured-fixture, live or manual work must be
+split into separate execution units. Do not make a mixed binary look homogeneous and do not add
+test-level selection.
 
 ## Explicit cadence routes
 
-The Rust fast and captured-fixture runs use separate nextest invocations and result files.
-`cargo-filter --tier fast|fixtures` derives expressions over whole Cargo binaries from registry
-ownership. It does not select test functions. Cargo owners can use `targets` or `exclude_targets`
-to split one package into distinct execution units. Captured navigation, POI, altitude, terrain
-and simulator scenarios have separate binaries. Live Copernicus tests and the captured assistant
-places check run only through their explicit manual commands. Their ignored status prevents a
-broad Cargo command from contacting a live service or starting the manual captured-source check.
+The Rust ordinary and captured-fixture runs use separate nextest invocations and result files.
+`cargo-filter --tier fast|fixtures` derives expressions over whole Cargo binaries from
+`cargo metadata`. It does not select test functions. A suite on the `manual` or `live` route can
+name a `package` and its `targets`, and those targets then belong to no tier. Captured
+navigation, POI, altitude, terrain and simulator scenarios have separate binaries. Live
+Copernicus tests and the captured assistant places check run only through their explicit
+commands; their ignored status is a second guard against a broad Cargo command contacting a
+live service.
 
-Level commands omit manual suites. Run a manual suite through its declared command, or select
-its explicit cadence with `run --scheduled manual --surface NAME`. Captured Rust suite commands
-use the existing `obc test fixtures -p` wrapper to prepare inputs before they run locally.
+Run a manual suite through the command `testing/suites.toml` declares for it. Captured Rust
+suites use the `obc test fixtures -p` wrapper to prepare inputs before they run locally.
 
 Vector and assembly writers are Cargo examples. They run only through the commands
 `testing/suites.toml` gives `manual.obc-link`, `manual.obc-vectors` and `manual.obc-web-assemble`.
@@ -63,19 +64,19 @@ and this table is the complete list:
 | `host/obc-dem` `decode` and `real_tile` (ignored, live Copernicus download) | `live.copernicus`, explicit command only |
 | `host/obc-pack` `assistant_places` (ignored, pinned 549 MB source) | `fixtures.assistant-places`, through `fixtures/verify-assistant-places.py` |
 | `manual.obc-display`, `manual.obc-vectors`, `manual.obc-link`, `manual.obc-web-assemble` | their own explicit commands; a generator writes, it never verifies |
-| `ios.application-weekly`, the weekly `rust.obc-storage` run | `test-weekly.yml` |
+| `ios.application-weekly`, the weekly `obc-storage` run | `test-weekly.yml` |
 
 A captured fixture is not on this list. Bounded fixture suites are ordinary work: they run in CI
 after an explicit sync, and a missing package fails with the exact `obc fixtures sync` command
 rather than skipping. No environment variable turns that failure on.
 
 The required iOS suite owns `WebsiteScreenshotTests.swift`. The separate weekly application suite
-owns the other XCUITest classes. `test-weekly.yml` runs the registered weekly iOS and storage
-suites each Monday and on manual dispatch. Run the same cadence locally with:
+owns the other XCUITest classes. `test-weekly.yml` runs the weekly iOS and storage work each
+Monday and on manual dispatch; it names the two commands directly:
 
 ```sh
-python3 tools/suite_registry.py run --scheduled weekly --surface ios
-python3 tools/suite_registry.py run --scheduled weekly --surface storage
+companion-ios/scripts/test-application.sh
+cargo test -p obc-storage --locked
 ```
 
 The iOS application command needs Xcode 26.5, XcodeGen and an iPhone 17 Pro simulator. Set
@@ -102,34 +103,46 @@ sweep step runs only when `ci.ui-snapshots` is selected, and that suite still se
 its own rendering, screen and snapshot-input triggers. A broad coverage or policy change does
 not run a sweep.
 
-## Suite registry fields
+## The plan documents
 
-Every `[[suite]]` entry uses these fields:
+`testing/suites.toml` has two kinds of entry. A `[[package]]` entry adds facts to a Cargo
+package Cargo itself cannot supply:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The Cargo package |
+| `route` | `ordinary` by default; `required` runs it whenever one of its jobs starts |
+| `triggers` | Paths whose edge no build graph carries |
+| `fixtures` | True when a change under `fixtures/` reaches the package |
+| `command` | The local command for a standalone Cargo root, which the workspace run misses |
+| `platforms` | Supported platform restriction, when one exists |
+
+A `[[suite]]` entry is a piece of verification no Cargo package owns:
 
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable suite identifier used by commands and reports |
-| `surface` | Product or development surface |
-| `level` | One level from the table above |
+| `route` | One route from the table above |
 | `command` | One repository-root command for local and CI use |
+| `jobs` | The CI jobs that execute it; an `ordinary` or `required` suite needs at least one |
+| `triggers` | Paths that select it, including its own test sources |
 | `fixtures` | Named captured or production-shaped inputs required by the suite |
-| `pull_request` | `always`, `affected`, or `never` |
-| `scheduled` | `none`, `nightly`, `weekly`, `manual`, or `release` |
-| `extra_triggers` | Paths whose edge is not available from a build graph |
 | `platforms` | Supported platform restriction, when one exists |
-| `coverage_component` | Coverage-policy component fed by the suite, when applicable |
-| `ownership` | Stable Cargo package, Swift target/package, test-root pattern, or workflow route |
+| `foundation` | True when a manifest, lockfile or toolchain change must select it |
+| `ci_only` | True when no `obc check` gate can reproduce it locally |
+| `package`, `targets` | Cargo test targets this suite owns, which then belong to no tier |
 | `budget_exception` | Temporary reason and open issue for a suite over budget |
 | `sleep_exception` | Approved bounded real sleep, with a reason and open issue |
 
-Ownership is routing information. It is not a copied source-file inventory. Cargo targets and
-library harnesses come from `cargo metadata`; files under the declared non-Rust roots come from
-filesystem, Swift package, and workflow discovery. An ownership pattern may not cross a product
-surface or cadence boundary.
+Neither entry may contain Rust dependencies, reverse dependencies, test counts, durations or
+source-file lists. Cargo supplies its graph. Result artifacts supply counts and durations.
 
-The registry must not contain Rust dependencies, reverse dependencies, test counts, durations, or
-source-file lists. Cargo supplies its graph. Result artifacts added by the later measurement step
-supply counts and durations. The drift checker rejects fields that try to store those facts.
+The job table lives in `tools/test_plan.py`. Each row names a CI job, the jobs it needs, and the
+Cargo product roots or individual packages it compiles. Only the builders whose package no
+`cargo` argument list names are written out: Trunk for the web demo and `wasm-pack` for the four
+bridges. `tools/tests/test_selection_plan.py` pins both against the build script and the Trunk
+page, and it runs in the unconditional `guards` job, so that pin is checked on every pull
+request.
 
 ## Coverage-policy fields
 
@@ -195,46 +208,55 @@ remain authoritative; reports from failed runs can be partial and are not accept
 
 ## Commands
 
-`tools/suite_registry.py` is the only selection implementation. `obc` and the CI workflow are thin
-entry points into it, so a developer and CI answer "which suites does this change require" with one
+`tools/test_plan.py` is the only selection implementation. `obc` and the CI workflow are thin
+entry points into it, so a developer and CI answer "which work does this change require" with one
 answer. CI calls the Python entry point directly because `just` is not installed on the runners;
 `obc test affected` is the same call with the same output.
 
 ```sh
-obc suites check                         # registry drift, discovery, and command resolution
-obc suites select --base REF [--head REF] [--format text|json]
-obc suites validate-filters              # plan and workflow describe the same jobs
+obc suites check                         # plan drift and command resolution
+obc suites select --base REF [--head REF] [--format text|json] [--release]
+obc suites validate-filters              # the job table and the workflow describe the same jobs
 ```
 
-`check` is the always-run CI policy command. It parses both registries, derives Cargo metadata and
-every supported non-Rust source, validates command and trigger resolution from the repository root,
-and requires exactly one registry owner for every discovered execution unit and required CI command.
-It does not contact a live service.
+`check` is the always-run CI policy command. It reads `cargo metadata`, parses both plan
+documents, and validates every trigger, platform, route, job name, carved target and command from
+the repository root. It does not contact a live service.
 
-`select` reads changed paths from Git, derives Rust package and reverse-dependency edges from Cargo
-metadata, applies only the extra cross-language edges declared by the registry, and prints every
-selected and non-selected suite with its reason and its CI jobs. Unknown production paths and
-selected suites without an executable CI route are errors; a selection error never degrades to
-"run everything".
+`select` reads changed paths from Git, derives Rust package and reverse-dependency edges from
+Cargo metadata, applies the non-Cargo edges the plan documents declare, and prints every selected
+and non-selected unit with its reason and its CI jobs. Unknown production paths and selected
+suites without an executable CI route are errors; a selection error never degrades to "run
+everything".
+
+`select --release` is what the release workflow passes. A release candidate is verified whole
+rather than by its diff, so it requires every unit that has a CI route. It still leaves out the
+snapshot sweep, which keeps its rendering-input budget, and every `manual` and `live` route.
+
+`validate-filters` parses `.github/workflows/ci.yml` with PyYAML and requires that every job in
+the table exists with a runner image, that every plan-gated job gates on its own name, that every
+job reaches the `ci` aggregate's `needs`, and that the workflow's `needs` graph is the table's.
+PyYAML is pinned in `tools/requirements-test.txt` and installed in the `guards` job; selection
+itself is standard library only.
 
 ### Running suites locally
 
 ```sh
 obc test affected --base origin/develop [--head REF] [--dry-run]
-obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
-obc test -p obc-app                      # focused package work, no registry involved
+obc test -p obc-app                      # focused package work, no plan involved
 obc test -p obc-app --lib                # the library target alone, no doctests
 obc test fixtures -p obc-route
 obc test full                            # cross-cutting changes only
 ```
 
-Every form prints the selected suite IDs with one reason each before it runs anything, and
-`--dry-run` prints that plan and executes nothing. `affected` runs each selected suite's registry
-command in registry order and stops at the first failure. `fixtures` means the `fixture` level and
-`e2e` means `end-to-end`; those are the only two aliases. A suite whose `platforms` exclude the
-current host is reported as skipped with that restriction, never as passed. `obc test fixtures`
-keeps its scoped meaning whenever a Cargo scope is present, and that path needs neither the
-registry, Git, nor Cargo metadata.
+`affected` prints the selected unit IDs with one reason each before it runs anything, and
+`--dry-run` prints that plan and executes nothing. It runs one nextest invocation over the
+selected root-workspace packages — package flags narrow compilation, the ordinary tier filter
+narrows execution — and then each selected suite's own command, stopping at the first failure. An
+empty package set produces no Cargo invocation; it never expands to the workspace. It also reads
+the working tree, so uncommitted and untracked source counts. A suite whose `platforms` exclude
+the current host is reported as skipped with that restriction, never as passed. `obc test
+fixtures -p` keeps its scoped meaning and needs neither the plan, Git nor Cargo metadata.
 
 A focused `obc test -p PACKAGE` runs that scope on nextest, the runner CI uses, and then the
 same scope's doctests. `--lib` runs the library test target alone and no doctests; Cargo rejects
@@ -242,18 +264,23 @@ it on a package with no library.
 
 ### Reproducing CI gates locally
 
-`obc check <gates>` runs the primitive commands of the named gates and prints the registry suites
-those gates reproduce; a gate that resolves to no registry suite fails before any work starts.
-`obc check full` runs every gate the registry declares and then names each suite required on a pull
-request that the run did not reproduce, with the reason. It makes no unqualified CI-parity claim.
+`obc check <gates>` runs the primitive commands of the named gates and prints the units those
+gates reproduce; a gate the job table does not know fails before any work starts. A gate names
+the CI jobs it re-runs, and it reproduces a unit when it runs every job that unit routes to.
+`obc check full` runs every gate and then names each suite required on a pull request that the
+run did not reproduce, with the reason. It makes no unqualified CI-parity claim.
 
 ## Rust CI result artifacts
 
 `tools/ci/test.sh` is the body of the `test` job, one section per CI step, and `obc check test`
-runs the same file. Compilation is workspace-wide. The per-pull-request coverage ratchet reads
-one LCOV report over the whole workspace and fails any critical file it never compiled, so a
-narrowed package set would fail the ratchet instead of saving time. Only the two nextest
-sections run under llvm-cov instrumentation, because their report is that evidence.
+runs the same file. Its two nextest steps stay `--workspace --all-features` with the tier filter
+expression, and they are deliberately not narrowed to the affected packages. The per-pull-request
+coverage ratchet in `tools/coverage_report.py` reads one LCOV report over the whole workspace and
+fails any critical file it never compiled, so a narrowed package set would fail the ratchet
+rather than save time. Moving that ratchet from pull requests to develop pushes would remove the
+constraint; that is the owner's call and has not been made. Package-level narrowing is therefore
+only on the local `obc test affected` route, where no ratchet reads the result. Only the two
+nextest sections run under llvm-cov instrumentation, because their report is that evidence.
 
 The two `cargo nextest run` commands in `test` use `NEXTEST_PROFILE=ci` for fast binaries
 and `NEXTEST_PROFILE=fixtures` for captured fixtures. The profiles in `.config/nextest.toml` write
@@ -292,7 +319,7 @@ python3 -m pip install -r builder/requirements-dev.txt
 ```
 
 The repository and firmware tool suites use pinned `unittest-xml-reporting` 4.0.0
-with standard unittest discovery. Their registry commands write to
+with standard unittest discovery. Their declared commands write to
 `.artifacts/python/repository-tools/` and `.artifacts/python/firmware-tools/`. Builder uses pytest's native `--junitxml` option and writes
 `.artifacts/python/builder.xml`. Builder still needs its existing `obc-pack` executable; use
 `OBC_PACK_BIN` to select a built binary. CI builds it before the test step.
@@ -312,7 +339,7 @@ and `python-builder-ATTEMPT`. Download them with:
 gh run download RUN_ID --pattern 'python-*-ATTEMPT' --dir test-results
 ```
 
-CI and local registry commands remove stale reports before execution. CI uploads after an
+CI and local suite commands remove stale reports before execution. CI uploads after an
 executed test step succeeds or fails. Setup failures, skipped steps and cancelled runs publish no
 report for that step. Missing expected output fails the upload. Collection or test failures keep
 their nonzero exit status and can leave partial results. No tests run again to produce reports.
@@ -381,7 +408,7 @@ with native JUnit and diagnostics, plus a screenshot and trace on failure. See t
 
 The `ios-unit` job runs the complete OBCKit package once with Xcode 26.5 on the macOS host.
 `xcodebuild test` disables parallel testing and collects coverage in the native
-`ios-unit.xcresult` bundle. The registry uses the same package scheme and serial test setting
+`ios-unit.xcresult` bundle. The declared command uses the same package scheme and serial test setting
 for local execution. No iOS simulator or physical device is required.
 
 The bundle contains XCTest and Swift Testing results, including test identities, outcomes,
@@ -428,16 +455,30 @@ signal to a fixed sleep; use a small bounded sleep only when its exception expla
 
 ## Change selection
 
-This table is implemented by `suite_registry.py select`, the shared local and CI selection core.
+This table is implemented by `test_plan.py select`, the shared local and CI selection core.
 CI's `selection` job publishes the plan and the list of workflow jobs it requires; every gated job
-starts only when that list names it, and the aggregate `ci` job evaluates the same plan. There is no
-path-filter selector — a suite's CI jobs are derived from the workflow commands the registry says it
-owns and, for Cargo packages, from the workflow steps that compile them.
+starts only when that list names it, and the aggregate `ci` job evaluates the same plan. There is
+no path-filter selector — a Cargo package reaches the jobs the job table says compile it, and
+every other suite names its jobs in `testing/suites.toml`.
+
+Five rules fail closed, each with its own test. A changed tracked path that no owner claims is an
+error. "No owner" is judged over source and policy files: a path under `docs/`, `artifacts/`,
+`.claude/` or `.repowise/`, a test file, and any path whose suffix is not one of the code and
+policy suffixes the planner lists are all outside the rule, so a new `hardware/notes.txt` selects
+nothing and reports nothing. A selected suite with no CI route is an error. A selection error publishes no plan, so the
+`selection` job exits nonzero and the aggregate fails on the missing plan. An empty root package
+set produces no Cargo invocation. A change to a manifest, the lockfile, the toolchain, the Cargo
+configuration, the planner, the workflow, `tools/ci/**` or `testing/suites.toml` selects the whole
+relevant graph.
+
+A deleted path is the one case that does not fail closed: its owner may have been deleted with it
+and the base tree's Cargo graph is not available, so an unowned deleted path selects the whole
+graph rather than nothing.
 
 | Change type | Required pull-request work |
 | --- | --- |
-| Test registry, selector, workflow, root manifest, lockfile, or toolchain | Full relevant build and fast-test graph |
-| One Rust crate | Unit and component tests for the crate; affected contracts and reverse-dependent suites |
+| Plan documents, selector, workflow, root manifest, lockfile, or toolchain | Full relevant build and ordinary-test graph |
+| One Rust crate | Ordinary tests for the crate; affected contracts and reverse-dependent suites |
 | Shared format, protocol, or vector | All affected Rust, Swift, and web contract consumers |
 | Fixture or fixture loader | Owner suite and each consumer contract suite |
 | Web-only source | Web unit and component tests |

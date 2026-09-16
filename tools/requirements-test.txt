@@ -1,3 +1,5 @@
 # unittest discovery with native XML results.
 unittest-xml-reporting==4.0.0
+# The one parsed-YAML check: `python3 tools/test_plan.py validate-filters`.
+PyYAML==6.0.2
 -r requirements-coverage.txt

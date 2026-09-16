@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate the suite selection plan against GitHub Actions `needs` results."""
+"""Evaluate the test selection plan against GitHub Actions `needs` results."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import suite_registry
+import test_plan
 
 
 class AggregateError(RuntimeError):
@@ -92,7 +92,7 @@ def evaluate(
                 SuiteResult(
                     suite_id,
                     "selected but not run",
-                    f"{reason}; the registry routes this suite to no workflow job",
+                    f"{reason}; the plan routes this suite to no workflow job",
                     (),
                 )
             )
@@ -188,10 +188,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def upstream_jobs() -> dict[str, tuple[str, ...]]:
-    """The blocking relation stays derived from the workflow `needs` graph."""
+    """The blocking relation is the job table's prerequisites."""
 
-    jobs = suite_registry.workflow_jobs(suite_registry.repository_root())
-    return {name: job.needs for name, job in jobs.items()}
+    return {name: job.needs for name, job in test_plan.JOBS.items()}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

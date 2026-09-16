@@ -35,7 +35,7 @@ def read_suites(root: Path) -> list[dict[str, Any]]:
 
 
 def block_errors(owner: str, block: Any) -> list[str]:
-    """The offline shape rule, shared with `suite_registry.py`'s always-run validation."""
+    """The offline shape rule, shared with `test_plan.py check`."""
 
     if not isinstance(block, dict):
         return [f"{owner}: must be a table"]
