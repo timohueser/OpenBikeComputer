@@ -3116,10 +3116,12 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
+ "obc-app",
  "obc-dem",
  "obc-display",
  "obc-elevation",
  "obc-formats",
+ "obc-host-core",
  "obc-map-scene",
  "obc-pack",
  "obc-reader",
