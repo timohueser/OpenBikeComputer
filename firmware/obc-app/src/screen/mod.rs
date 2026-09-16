@@ -44,6 +44,7 @@ mod map_transfer;
 mod menu;
 mod nav_route;
 mod passkey;
+mod peak_article;
 mod peak_view;
 mod poi_detail;
 pub(crate) mod poi_display;
@@ -87,6 +88,7 @@ pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
 pub use nav_route::{NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
+pub use peak_article::PeakArticleScreen;
 pub use peak_view::PeakViewScreen;
 pub use poi_detail::PoiDetailScreen;
 mod easier;
@@ -664,7 +666,8 @@ pub enum BaseContent {
 /// runtime pending check, but which check to run is chosen from this declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReaderNeed {
-    Landmarks,
+    /// Selected article text, attribution, or Peak View availability.
+    Articles,
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
     /// Always needs it — any [`Map`](BaseContent::Map) base screen.
@@ -1029,7 +1032,8 @@ screens! {
     Assistant(AssistantScreen) => Caps::nav(),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
-    LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Landmarks),
+    PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),
+    LandmarkSources(LandmarkSourcesScreen) => Caps::nav().reader(ReaderNeed::Articles),
     LandmarkPhoto(LandmarkPhotoScreen) => Caps { recess: false, ..Caps::nav().ride_view().reader(ReaderNeed::Photo) },
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
@@ -1048,7 +1052,7 @@ screens! {
     Menu(MenuScreen) => Caps::nav().timed(),
     /// Heading-relative three-depth terrain panorama with named summit selection. Its profile is
     /// platform-fed, so the row is unreachable when no panorama data is installed.
-    PeakView(PeakViewScreen) => Caps::riding(),
+    PeakView(PeakViewScreen) => Caps::riding().reader(ReaderNeed::Articles),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
     /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and
@@ -1248,7 +1252,7 @@ impl Screen {
             Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => Some(&context_drawer::RIDE),
             // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
             Screen::WhatsNext(_) => Some(&context_drawer::UP_AHEAD),
-            Screen::Landmarks(_) => Some(&context_drawer::LANDMARK_CONTENT),
+            Screen::Landmarks(_) | Screen::PeakArticle(_) => Some(&context_drawer::LANDMARK_CONTENT),
             Screen::LandmarkPhoto(photo) if photo.linked => Some(&context_drawer::LANDMARK_CONTENT),
 
             // The one screen whose *next press* consumes the routing profile (#1515 D4d): its
@@ -1620,7 +1624,8 @@ mod tests {
             match c.reader {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
-                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo | ReaderNeed::Landmarks => {
+                ReaderNeed::Articles => assert_ne!(c.base, BaseContent::Map, "{name}: article reads do not draw a map"),
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
                     assert_eq!(c.kind, ScreenKind::Nav, "{name}: a POI reader screen is Nav-kind");
                 }

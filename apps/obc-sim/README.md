@@ -101,7 +101,11 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   illustration lighting. It does not store viewpoints or show snow and current sunlight.
   Named summits are aligned and checked for visibility during generation.
   Live has no selection. Select enters Browse on the most prominent visible peak. Up/Down steps
-  through visible peaks and turns the view by 15° past an edge. Select returns to Live.
+  through visible peaks and turns the view by 15° past an edge. Back returns to Live.
+  For a selected map summit with readable installed text, an information mark appears and Select
+  opens its article. Up/Down moves through text and the optional photo; **Down + Back → Sources**
+  opens credits. Back restores the selected summit and Browse heading. Select on a peak without
+  content returns to Live. Explicit terrain presets use synthetic summit identities without articles.
 
   Fetch the checksummed terrain package once:
 
@@ -121,6 +125,18 @@ landmark. Explicit fixture frames retain their configured bounds. In a headless 
   target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --peak-view scheidegg \
     --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
   ```
+
+  To read Mönch through the normal installed-map path (without a terrain preset):
+
+  ```sh
+  target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm \
+    --center 7961000,46585000 --heading 141.25 \
+    --script "B d d d p f p f p f" --expect-screen PeakArticle --png peak-article.png
+  ```
+
+  Add `u f` to open its photo, or `u f b b f` to return from the photo to Browse.
+  Use `--expect-screen LandmarkPhoto` or `--expect-screen PeakView` for those destinations.
+  The photo screen name refers to the shared presentation. Peak articles do not offer Visit.
 
   The log separates generation time from the final cached frame's drawing time.
   These are host measurements. See the [board README](../../firmware/obc-fw-nrf54l/README.md)

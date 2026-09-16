@@ -62,7 +62,9 @@ impl Lifecycle {
         if app.peak_view_needs_position() {
             return;
         }
-        let Some(position) = app.state.user_fix.map(|fix| (fix.lat, fix.lon)).or(self.position) else {
+        let Some(position) =
+            app.peak_view_position().or_else(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).or(self.position)
+        else {
             self.status = Status::Waiting;
             app.set_peak_view_status(self.status);
             return;
