@@ -501,24 +501,11 @@ site *args:
     # *serving* directory and vanished the moment we left the repo root.
     _run python3 -m http.server "$port" --directory "$fe/dist/web"
 
-loc *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    source "{{lib}}"; obc_init
-    command -v tokei >/dev/null 2>&1 || {
-      _err "tokei is required for source statistics"
-      _hint "install it once: cargo install tokei --locked"
-      exit 1
-    }
-    cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_report.py" "$@"
-
-# Ledger one change's lines as production vs test/harness, with the rule that
-# classified each file. This is the committed counting basis for #1256's
-# 6,000-line storage budget — run it instead of hand-deriving a ledger, and
-# quote its number in the PR. Defaults to HEAD against the merge-base with
-# origin/develop; `--pr N` counts a merged PR, `--storage-series` adds the
-# budget line to post on the epic.
-# Production-vs-test LOC ledger for a change. Args: [--pr N | --base REF --head REF] [--storage-series]
+# Count the committed flat-store layer as production vs test/harness lines, with
+# the rule that classified each file. This is the acceptance command for #1256's
+# 6,000-line storage budget: `--check-budget` exits 1 above the limit. It reads
+# one commit, never the working tree, so commit before you measure.
+# Flat-store line budget. Args: --storage-total [--head REF] [--check-budget]
 loc-ledger *args:
     #!/usr/bin/env bash
     set -euo pipefail
