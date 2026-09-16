@@ -12,8 +12,7 @@ use obc_reader::{MapCache, MapTables, PoiCategorySet, Reader, SliceSource};
 #[test]
 #[ignore = "manual captured-source suite: fixtures/verify-assistant-places.py"]
 fn explicit_gletsch_access_survives_packing_and_nearby_roads_do_not_create_access() {
-    let source = obc_fixtures::file("assistant-osm", "switzerland.osm.pbf")
-        .expect("run tools/obc fixtures sync assistant-inputs");
+    let source = obc_fixtures::file_in("assistant-inputs", "assistant-osm", "switzerland.osm.pbf");
     let config = Config::parse(include_str!("../../../builder/presets/schema.json")).unwrap();
     let ing = ingest_osm(
         &[source.display().to_string()],

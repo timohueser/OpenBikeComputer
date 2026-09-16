@@ -10,7 +10,8 @@ use std::process::ExitCode;
 use obc_dem::bake::{bake_cells, bake_shard, BakeParams, BakeReport, V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::fetch::{fetch_tiles, Fetched};
 use obc_dem::geotiff::DemMosaic;
-use obc_dem::{BboxUdeg, COPERNICUS_ATTRIBUTION, SOURCE_DATASET};
+use obc_dem::BboxUdeg;
+use obc_elevation::{COPERNICUS_ATTRIBUTION, SOURCE_DATASET};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
