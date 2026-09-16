@@ -513,6 +513,23 @@ ownership = [
 ]
 
 [[suite]]
+id = "web.verification"
+surface = "verification"
+level = "component"
+command = "npm run verify --prefix apps/obc-verification"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["apps/obc-verification/**"]
+platforms = ["linux", "macos"]
+ownership = [
+  { kind = "path", source = "web-test", pattern = "apps/obc-verification/tests/*.test.ts" },
+  { kind = "workflow", pattern = "npm run check --prefix apps/obc-verification" },
+  { kind = "workflow", pattern = "npm run test:ci --prefix apps/obc-verification" },
+  { kind = "workflow", pattern = "npm run build --prefix apps/obc-verification" },
+]
+
+[[suite]]
 id = "python.repository-tools"
 surface = "dev-tools"
 level = "contract"

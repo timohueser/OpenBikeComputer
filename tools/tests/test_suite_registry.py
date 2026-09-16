@@ -373,6 +373,21 @@ class SuiteSelectionTests(unittest.TestCase):
     def selected(self, path):
         return {selection.suite["id"] for selection in self.plan(path).selected}
 
+    def test_release_selects_unchanged_ci_suites_without_live_or_snapshot_sweeps(self):
+        self.suites.extend([
+            self._suite("ci.ui-snapshots", "workflow", "snapshots"),
+            self._suite("hardware.board", "workflow", "board", level="hardware"),
+        ])
+        self.routes.update({"ci.ui-snapshots": ["snapshots"], "hardware.board": ["board"]})
+        plan = registry.select_release(self.plan("README.md"))
+        selected = {selection.suite["id"] for selection in plan.selected}
+        self.assertIn("rust.core", selected)
+        self.assertIn("swift.contract", selected)
+        self.assertNotIn("missing.route", selected)
+        self.assertNotIn("hardware.board", selected)
+        self.assertNotIn("ci.ui-snapshots", selected)
+        self.assertEqual(plan.errors, [])
+
     def test_required_path_and_graph_cases(self) -> None:
         cases = {
             "Cargo.toml": {"rust.core", "rust.leaf", "rust.consumer"},
@@ -853,12 +868,12 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.

@@ -1,0 +1,35 @@
+<script lang="ts">
+  import type { Candidate, Requirement, VerificationTest, Attachment, ManualRun } from '$lib/types';
+  import { api, date, message } from './api';
+  import Markdown from './Markdown.svelte';
+  import MarkdownField from './MarkdownField.svelte';
+  import Files from './Files.svelte';
+  export let candidate: Candidate;
+  export let requirement: Requirement;
+  export let test: VerificationTest;
+  export let onsaved: (candidate: Candidate) => void;
+  export let onback: () => void;
+  export let dirty = false;
+  let device = '';
+  let result: ManualRun['result'] | '' = '';
+  let notes = '';
+  let evidence: Attachment[] = [];
+  let busy = false;
+  let uploading = false;
+  let error = '';
+  $: runs = candidate.manualRuns.filter(r => r.testId === test.id && r.requirementId === requirement.id).slice().reverse();
+  $: dirty = !!(device || result || notes || evidence.length);
+  $: readonly = !!candidate.evidenceFrozen || candidate.status === 'published' || candidate.status === 'publishing';
+  async function save() {
+    busy = true; error = '';
+    try {
+      candidate = await api<Candidate>(`/api/candidates/${candidate.id}/runs`, 'POST', { requirementId: requirement.id, testId: test.id, device, result, notes, evidence });
+      device = ''; result = ''; notes = ''; evidence = []; dirty = false; onsaved(candidate); onback();
+    } catch (e) { error = message(e); } finally { busy = false; }
+  }
+</script>
+<button class="back" on:click={() => { if (!dirty || confirm('Discard this unsaved test result?')) { dirty = false; onback(); } }}>← Back to candidate</button>
+<div class="eyebrow">{requirement.id} · Manual verification</div><h2 class="requirement-title">{test.title}</h2><p class="muted small">Version {candidate.version} · <code>{candidate.sourceSha.slice(0,10)}</code> · requirements r{candidate.revision.id}</p>
+<div class="section"><h3>Procedure</h3><Markdown text={test.steps || ''} /><h3>Expected result</h3><Markdown text={test.expected || ''} /><Files label="Input files for this candidate" files={test.inputs} /></div>
+{#if !readonly}<form class="section" on:submit|preventDefault={save}><h2>Record result</h2><div class="columns"><label>Device / hardware revision<input required bind:value={device} placeholder="For example: prototype 2, firmware shown above" /></label><label>Result<select required bind:value={result}><option value="">Choose a result</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="blocked">Blocked</option></select></label></div><MarkdownField label={result === 'pass' ? 'Notes (optional)' : 'Notes'} bind:value={notes} required={result === 'fail' || result === 'blocked'} rows={3} /><Files label="Evidence" bind:files={evidence} editable onbusy={(value) => uploading = value} /><p class="muted small">This result is saved permanently. A later run can supersede it; the history is preserved.</p>{#if error}<p class="error" role="alert">{error}</p>{/if}<button class="primary" disabled={busy || uploading}>{busy ? 'Recording…' : 'Record result'}</button></form>{/if}
+<div class="section"><h2>Run history <span class="muted">{runs.length}</span></h2>{#each runs as run}<details class="test"><summary><span class:success={run.result === 'pass'} class:error={run.result === 'fail'} class:warning={run.result === 'blocked'}>{run.result}</span> · {date(run.createdAt)} · {run.author}</summary><p class="small">Device: {run.device}</p><Markdown text={run.notes} /><Files label="Evidence" files={run.evidence} /></details>{:else}<p class="muted">No result has been recorded for this candidate.</p>{/each}</div>
