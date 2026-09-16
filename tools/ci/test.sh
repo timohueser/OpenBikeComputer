@@ -9,6 +9,9 @@
 #   formats-default    obc-formats in the device's default feature shape
 #   bench-golden       render + read-counter golden gate
 #
+# Set OBC_COVERAGE=1 to run the instrumented path CI runs, for example
+# `OBC_COVERAGE=1 tools/ci/test.sh nextest-fast`. It needs `cargo llvm-cov`.
+#
 # Every section runs in a subshell, so one section's exported environment cannot reach
 # the next when several run in one invocation.
 #
