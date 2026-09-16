@@ -349,7 +349,9 @@ id = "ci.docs"
 route = "required"
 command = "obc check docs"
 jobs = ["docs"]
-triggers = ["docs/**"]
+# The agent on-ramps ride the documentation route: they are prose, and the docs job is the
+# only check they can fail.
+triggers = ["docs/**", "CLAUDE.md", "AGENTS.md"]
 
 [[suite]]
 id = "ci.licenses"
