@@ -8,8 +8,7 @@ use obc_app::{App, AppState, CameraMode};
 use obc_ports::{Fix, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-mod common;
-use common::{build_min_obcm, Buf, ReplayFix};
+use crate::common::{build_min_obcm, Buf, ReplayFix};
 
 /// Marker color baked into the test file (RGB565 red → Rgb888 (255,0,0)).
 const MARKER_565: u16 = 0xF800;

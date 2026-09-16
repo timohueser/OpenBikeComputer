@@ -3,8 +3,7 @@
 use obc_app::dfu::DfuEffect;
 use obc_app::{App, AppState};
 
-mod common;
-use common::quiet_pass;
+use crate::common::quiet_pass;
 
 /// A cancel queued while the store's synchronous publish is running must not turn the eventual
 /// `Published` reply into a visible route. The host compensates that exact id before it considers

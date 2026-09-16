@@ -5,8 +5,7 @@
 use obc_app::{AppState, CameraMode};
 use obc_ports::Fix;
 
-mod common;
-use common::ReplayFix;
+use crate::common::ReplayFix;
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) microdegrees
 

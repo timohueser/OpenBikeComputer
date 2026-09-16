@@ -23,8 +23,7 @@ use obc_app::settings::Language;
 use obc_app::{App, AppState, Gesture, Screen, Settings};
 use obc_ports::{Button, ButtonEvent, InputClock, InputEvent};
 
-mod common;
-use common::{build_min_obcm, build_min_obcm_profiles, keys, render_120};
+use crate::common::{build_min_obcm, build_min_obcm_profiles, keys, render_120};
 
 /// The four shipped languages, in `Language` discriminant order — the column order of
 /// [`obc_app::i18n::TABLE`].

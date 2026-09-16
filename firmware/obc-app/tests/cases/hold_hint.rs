@@ -9,8 +9,7 @@ use obc_app::{App, AppState};
 use obc_ports::{Button, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-mod common;
-use common::{build_min_obcm, down, keys, Buf};
+use crate::common::{build_min_obcm, down, keys, Buf};
 
 /// True-color palette color the host `color_fn` resolves a hint hue to.
 fn rgb(c: u16) -> Rgb888 {

@@ -25,8 +25,7 @@ use obc_ports::{Fix, LocationSource, RideClock, Sensors};
 use obc_reader::rgb565_to_rgb888;
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
-mod common;
-use common::Planner;
+use crate::common::Planner;
 
 /// The straight test road: lat 43.5°, lon 7.50° → 7.54° (~3 230 m ground). One `<trkpt>` per
 /// 0.004° so the converter keeps real vertices along the way.
@@ -138,7 +137,7 @@ fn answer_commit(app: &mut App, host: &mut Planner<'_>, result: Result<obc_app::
 /// Returns `(app, obcr_bytes)`; [`riding!`] wraps it with the reader and the executor.
 fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     let mut app = App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05));
-    common::mount_store(&mut app); // a device with a card — a ride cannot start without one
+    crate::common::mount_store(&mut app); // a device with a card — a ride cannot start without one
     app.set_map_nav_graph(true);
     app.set_routes_with_ids(&[summary("Road")], &[7]);
     app.state.user_fix = Some(road_at(0.0));
@@ -359,7 +358,7 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
     assert!(dirty.overlay, "the freeze edge asks for one overlay repaint");
     let (y0, rows) = app.reroute_banner_rows(320.0).expect("the banner has a row band to re-present");
 
-    let mut buf = common::Buf::new(240, 320);
+    let mut buf = crate::common::Buf::new(240, 320);
     app.render_overlay(&mut buf, 240.0, 320.0, rgb);
     let ink = buf.count(rgb(palette::INK));
     let parchment = buf.count(rgb(palette::PARCHMENT));
@@ -386,7 +385,7 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
     assert!(dirty.map, "the frozen map catches up");
     assert!(!app.overlay_active());
     assert!(app.reroute_banner_rows(320.0).is_none());
-    let mut buf = common::Buf::new(240, 320);
+    let mut buf = crate::common::Buf::new(240, 320);
     app.render_overlay(&mut buf, 240.0, 320.0, rgb);
     assert_eq!(buf.count(rgb(palette::PARCHMENT)), 0, "nothing is drawn once the run ends");
 }

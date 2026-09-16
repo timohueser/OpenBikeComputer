@@ -8,8 +8,7 @@ use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary, Screen};
 use obc_map_scene::BBox;
 use obc_ports::{Button, InputClock, InputEvent};
 
-mod common;
-use common::{down, keys, step, up};
+use crate::common::{down, keys, step, up};
 
 /// One minimal route summary so the Route menu has something to load.
 fn one_route() -> RouteSummary {

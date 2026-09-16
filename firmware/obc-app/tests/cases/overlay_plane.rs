@@ -12,8 +12,7 @@ use obc_app::{App, AppState};
 use obc_ports::{Button, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 
-mod common;
-use common::{build_min_obcm, down, keys, up, Buf};
+use crate::common::{build_min_obcm, down, keys, up, Buf};
 
 /// True-color palette color the host `color_fn` resolves a hint hue to.
 fn rgb(c: u16) -> Rgb888 {
@@ -182,14 +181,23 @@ fn a_map_base_without_a_scratch_skips_the_map_instead_of_inventing_one() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
     assert!(app.base_draws_map(), "the riding Map is a map base");
 
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {})); // the debug assert is expected: don't print its backtrace
+    // The debug assert below is expected, so its backtrace is silenced — but the panic hook is
+    // process-global and this binary now carries every other App test, so the quiet hook is scoped
+    // to this thread and every other thread keeps the hook it had.
+    let previous = std::sync::Arc::new(std::panic::take_hook());
+    let quiet = std::thread::current().id();
+    let others = std::sync::Arc::clone(&previous);
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() != quiet {
+            others(info);
+        }
+    }));
     let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut buf = Buf::new(w, h);
         let stats = app.render_map(None, &mut buf, &reader, None, w as f32, h as f32, rgb);
         (buf, stats)
     }));
-    std::panic::set_hook(previous);
+    std::panic::set_hook(Box::new(move |info| previous(info)));
 
     #[cfg(debug_assertions)]
     assert!(rendered.is_err(), "a debug build must say so loudly rather than skip in silence");
