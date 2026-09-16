@@ -2940,10 +2940,9 @@ pub(crate) async fn run_app(
                 // The banner rides the overlay plane, which on this board means: draw it straight
                 // into the resident framebuffer and let the self-diffing present push the handful of
                 // rows it changed. It deliberately does **not** go through the FLPR's
-                // `present_overlay` composite path the hold bulge uses — that path's scratch is
-                // bounded at 16 columns (`MAX_OVERLAY_COLS`), because the bulge is a 16 px strip at
-                // the right edge; a 240-px-wide banner band would need a ~26 KB transient on the
-                // overlay frame's stack, on the crate where transients overflow it. Painting into the
+                // `present_overlay` composite path the hold bulge uses. That scratch holds only
+                // twelve rows; the banner is resident content while the base stays frozen, so it
+                // does not need a transient save/restore composite. Painting into the
                 // frame is safe while its base is unchanged. The same path advances the activity
                 // dots between planner runs; a pending base redraw paints its banner in that pass.
                 match banner_rows.filter(|_| dirty.overlay) {
