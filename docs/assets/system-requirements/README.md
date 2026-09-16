@@ -4,13 +4,13 @@ Working draft completed on 16 September 2026 after owner review of the product s
 
 | Document | Purpose |
 | --- | --- |
-| [Requirements](requirements-draft.md) | 334 requirements in 22 groups, written for review and manual entry. |
+| [Requirements](requirements-draft.md) | 357 requirements in 27 groups, written for review and manual entry. REQ-336–358 come from the 16 September review and await owner decision. |
 | [Acceptance targets](acceptance-targets.md) | Capacity, accuracy, hardware, power, timing, platform, and integration criteria. Unset values are explicitly TODO. |
 | [Decisions and source notes](review-notes.md) | Accepted intent, deferred details, code findings, and the reasons behind the requirements. |
 
 ## Editing
 
-Keep requirement IDs stable when editing or moving entries. REQ-321 was retired when tunnel warnings were removed; do not reuse it. The last allocated ID is REQ-335. Update referenced acceptance criteria when a requirement changes. A TODO is unfinished acceptance work, not a waived requirement or a passing result.
+Keep requirement IDs stable when editing or moving entries. REQ-321 was retired when tunnel warnings were removed; do not reuse it. The last allocated ID is REQ-358. Update referenced acceptance criteria when a requirement changes. A TODO is unfinished acceptance work, not a waived requirement or a passing result.
 
 GitHub renders these Markdown files with tables and a document outline. Use its file editor on branch `codex/system-requirements-draft`, or check out the branch on another computer:
 

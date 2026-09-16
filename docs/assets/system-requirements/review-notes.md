@@ -2,7 +2,7 @@
 
 This file accompanies [requirements-draft.md](requirements-draft.md) and [acceptance-targets.md](acceptance-targets.md). Keep decisions, rationale, and source observations separate from the requirement text entered into the console.
 
-The revised draft contains 334 active requirements in 22 groups. IDs run through REQ-335; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
+The revised draft contains 357 active requirements in 27 groups. IDs run through REQ-358; REQ-321 is retired after tunnel warnings were removed from scope, and its ID is not reused. The owner's feedback resolves scope decisions, but it is not verification evidence. Some requirements describe current behavior and others describe required future work. No entry is assigned a passing status.
 
 ## Scope
 
@@ -192,6 +192,18 @@ A planned-route tunnel warning would not necessarily require a complete live roa
 
 For blazes, supported symbols and overlapping marked routes remain TODO; no broader hiking mode is implied.
 
+## Review additions (16 September)
+
+A review of the draft against the product envelope added entries REQ-336–358 and regrouped the draft into 27 groups. None of these is an owner decision yet.
+
+**Group splits.** Maps and map management became Map builder and map service, Map installation, and Map display on the device. Controls, settings, language, and time became Device controls and interaction, Languages and text rendering, and Settings, preferences, and factory reset. Supported applications and operating limits became Supported platforms and services and Capacity, performance, and robustness. Clock sources and local time (REQ-216–217) moved to Position, heading, and time. Sharp-turn and warning entries (REQ-320, 322, 323) moved to Navigation and detours; Emergency location stands alone. Each group follows one surface boundary so a group can carry one minimum evidence level in the requirements console.
+
+**Requirement splits.** Where one entry held clauses that need different tests, the second clause received a new ID: REQ-336 (reset deletion scope, from 214), REQ-337 (interrupted reset, from 306), REQ-338 (resume decision, from 096), REQ-339 (zero versus missing cadence, from 187), and REQ-340 (recovery continuation, from 146). 175 entries still contain two or more shall clauses; split further during owner review only where the clauses need different tests.
+
+**Proposed additions.** REQ-341–343 (card removal, storage status, diagnostics), REQ-344–345 (idle shutdown, charging while off), REQ-346–347 (sound control, button lock), REQ-348–349 (compass calibration, map orientation), REQ-350–351 (trip stage status, ride identity), REQ-352 (background transfer), REQ-353–354 (map compatibility after update, bootloader recovery), REQ-355–356 (time and date format, rider documentation), REQ-357 (card readability), and REQ-358 (emergency information). Entries marked PROPOSED (347, 349, 357, 358) need an explicit scope decision. New acceptance rows: PWR-15 and CLIMB-01.
+
+**Noted, not changed.** REQ-036 accepts TCX on the phone while REQ-037 accepts only GPX on the computer. REQ-187 keeps a numeric limit in its text while other limits live in the acceptance tables. REQ-294 is a negative scope statement, REQ-252 a design constraint, and REQ-089 starts a recording on visit acceptance next to REQ-088 and REQ-135; all three are decisions rather than errors.
+
 ## Deferred features
 
 The following remain outside the requirements:
@@ -270,7 +282,7 @@ Document checks cover the requirement IDs, shall statements, decision and table 
 
 Checks completed for this revision:
 
-- An inline Python check verified 334 unique active requirement IDs covering 001–335 except retired 321, a shall statement in every entry, 22 groups, definitions for all 23 decision references, 112 unique active table criterion IDs, excluding retired NAV-06, local document links, and whitespace/newline integrity.
+- An inline Python check verified 357 unique active requirement IDs covering 001–358 except retired 321, a shall statement in every entry, 27 groups, definitions for all 23 decision references, 112 unique active table criterion IDs, excluding retired NAV-06, local document links, and whitespace/newline integrity.
 - The final inline check also verified all four documents, including the editing README, and consistent column counts in each Markdown table.
 - `git diff --cached --check` verified the staged handoff files without whitespace diagnostics.
 
