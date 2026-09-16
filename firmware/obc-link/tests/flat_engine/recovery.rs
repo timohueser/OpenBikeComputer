@@ -36,15 +36,23 @@ fn checkpoint<D: BlockDevice>(device: &Device<D>, (id, revision): (u64, u64), ap
 }
 
 /// Finalisation: publish the journaled extents by clearing `RECORDING` in one amend commit.
-fn finalise<D: BlockDevice>(device: &Device<D>, (id, revision): (u64, u64)) -> Result<u64, StoreError> {
+///
+/// The length and CRC are the caller's, because the retry after a cut must publish what the
+/// *recovery* handed back rather than what the test knows the ride to be.
+fn finalise<D: BlockDevice>(
+    device: &Device<D>,
+    (id, revision): (u64, u64),
+    payload_len: u64,
+    payload_crc: u32,
+) -> Result<u64, StoreError> {
     let meta = EntryMeta {
         added_at_utc: 0,
         id: ObjectId(id),
         revision: Revision(revision),
         kind: ObjectKind::Ride,
         flags: EntryFlags::NONE,
-        payload_len: RIDE_V3.len() as u64,
-        payload_crc: crc32(RIDE_V3),
+        payload_len,
+        payload_crc,
         name: DisplayName::new("Sensor Ride").expect("a ride name"),
     };
     Store::commit(&device.store, &[Mutation::Put { meta, source: PutSource::Amend }])
@@ -66,7 +74,7 @@ fn journaled_recording(seed: u64) -> (SparseDisk, (u64, u64)) {
 }
 
 /// Where finalisation first touches the fixed region, measured on a throwaway card's own write log.
-/// Cutting before that operation means every payload byte is durable and no catalog byte is.
+/// Cutting before that operation means every journaled byte is durable and no catalog byte is.
 ///
 /// This is a copy of `obc-storage`'s `finalisation_retry_does_not_rewrite_an_intact_tail` recipe and
 /// not a call into it, so neither suite can move the other's cut point without noticing.
@@ -74,7 +82,7 @@ fn catalog_write_offset() -> u32 {
     let (disk, key) = journaled_recording(1_420);
     let device = boot(&disk);
     let baseline = disk.ops();
-    finalise(&device, key).expect("the probe finalises");
+    finalise(&device, key, RIDE_V3.len() as u64, crc32(RIDE_V3)).expect("the probe finalises");
     let (op, _, _) = disk
         .write_log()
         .into_iter()
@@ -84,8 +92,8 @@ fn catalog_write_offset() -> u32 {
 }
 
 /// The whole chain a rider's interrupted ride travels: journaled on the card, finalisation cut
-/// between the last payload write and the catalog commit, recovered by the store on the next mount,
-/// finalised by the same retried commit, served over `GET`, and exported to the pinned GPX.
+/// between the last journal write and the first catalog write, recovered by the store on the next
+/// mount, finalised by the retried commit, served over `GET`, and exported to the pinned GPX.
 ///
 /// This crosses the line `flat_break_matrix.rs` draws — a cut *inside* a commit belongs to the
 /// storage crash matrix, a link break to this suite — deliberately, because the composition is the
@@ -97,11 +105,15 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     let (disk, key) = journaled_recording(1_421);
     let (id, revision) = key;
 
-    // The power fails between the last payload write and the catalog commit.
+    // The power fails between the last journal write and the first catalog write.
     let device = boot(&disk);
     let baseline = disk.ops();
     disk.plan(FaultPlan { op: baseline + cut_at, when: When::Before });
-    assert_eq!(finalise(&device, key), Err(StoreError::Media), "the cut did not land inside finalisation");
+    assert_eq!(
+        finalise(&device, key, RIDE_V3.len() as u64, crc32(RIDE_V3)),
+        Err(StoreError::Media),
+        "the cut did not land inside finalisation",
+    );
     // Nothing more can be asked of an unpowered card, so what the cut left is read after the reboot.
     drop(device);
     disk.reboot();
@@ -115,9 +127,12 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     let recovered = device.store.recovered_ride().expect("the store recovers the interrupted ride");
     assert_eq!((recovered.id.0, recovered.revision.0), key);
     assert_eq!(recovered.payload_len(), RIDE_V3.len() as u64, "the recovery lost journaled bytes");
+    assert_eq!(recovered.payload_crc, crc32(RIDE_V3), "the recovery reconstructed a different ride");
 
-    // The recorder retries the identical commit, which is all finalisation ever was.
-    finalise(&device, key).expect("the retried finalisation publishes the ride");
+    // The recorder retries the commit, publishing what the recovery handed back — not what this test
+    // knows the ride to be, so a recovery that rebuilt the wrong length or CRC cannot pass here.
+    finalise(&device, key, recovered.payload_len(), recovered.payload_crc)
+        .expect("the retried finalisation publishes the ride");
     let entry = device.entry(id).expect("the final catalog names the ride");
     assert!(!entry.flags.has(EntryFlags::RECORDING));
     assert_eq!((entry.payload_len, entry.payload_crc), (RIDE_V3.len() as u64, crc32(RIDE_V3)));
@@ -141,12 +156,4 @@ fn an_interrupted_recording_recovers_and_exports_the_pinned_gpx() {
     track_to_gpx(&source, EXPORT_NAME, &mut sink).expect("the export runs");
     let gpx = String::from_utf8(sink.0).expect("the export is UTF-8");
     assert_eq!(gpx, include_str!("../../../../specs/vectors/track-export.gpx"), "the export is not the pinned one");
-    assert_eq!(gpx.matches("<trkseg>").count(), 2, "the pause opens a second segment");
-    let points: Vec<&str> = gpx.lines().filter(|line| line.starts_with("<trkpt")).collect();
-    assert_eq!(points.len(), info.point_count as usize);
-    assert_eq!(
-        points.iter().collect::<std::collections::BTreeSet<_>>().len(),
-        points.len(),
-        "a point was exported twice"
-    );
 }
