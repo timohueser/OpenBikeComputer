@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bundle-size budgets for the hosted builder's wasm bridges.
 
-Three modules, same argument. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
+Three budgeted modules, same argument, plus one that is measured and never gated. `apps/obc-web-convert` (#896) is what a visitor downloads the moment
 they drop a route; `apps/obc-web-assemble` (#1034) is what turns downloaded map cells into a map. Both are
 reached through a dynamic import. `apps/obc-skin-preview` (#1045) is the firmware reader + renderer
 opened only by the skin editor. Each is its own chunk rather than part of the initial page, and a
@@ -148,7 +148,14 @@ PKG_DIRS = {
     "convert": Path("builder/app/src/lib/convert/pkg"),
     "assemble": Path("builder/app/src/lib/assemble/pkg"),
     "preview": Path("builder/app/src/lib/skin/pkg"),
+    "flat-device": Path("builder/app/test-support/flat-device/pkg"),
 }
+
+# The test device (`host/obc-flat-device`) has no budget, on purpose. Every module above ships to a
+# visitor; this one is downloaded by Vitest and the builder's dev harness and by nobody else, which
+# is also why it lands outside `src/`. Its size is worth printing — a jump means a crate joined the
+# graph — and worth nothing as a gate.
+UNBUDGETED = {"flat-device"}
 
 
 def gzipped_len(data: bytes) -> int:
@@ -178,7 +185,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--module",
-        choices=sorted(BUDGETS),
+        choices=sorted(PKG_DIRS),
         default="convert",
         help="which wasm bridge to measure (default: convert)",
     )
@@ -200,6 +207,10 @@ def main() -> int:
     for name, raw, gz in rows:
         print(f"{name.ljust(width)}  {raw:>9,}  {gz:>9,}")
     print(f"{'total'.ljust(width)}  {sum(r for _, r, _ in rows):>9,}  {total_gzipped:>9,}")
+
+    if args.module in UNBUDGETED:
+        print(f"{args.module}: no budget - a test-only module, measured for information.")
+        return 0
 
     failed = False
     budgets = BUDGETS[args.module]

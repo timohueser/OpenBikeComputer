@@ -2767,6 +2767,17 @@ name = "obc-fixtures"
 version = "0.1.0"
 
 [[package]]
+name = "obc-flat-device"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "obc-crc",
+ "obc-link",
+ "obc-storage",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obc-formats"
 version = "0.1.0"
 dependencies = [
@@ -2822,6 +2833,7 @@ name = "obc-link"
 version = "0.1.0"
 dependencies = [
  "obc-crc",
+ "obc-flat-device",
  "obc-storage",
  "sha2",
 ]
@@ -3116,10 +3128,12 @@ version = "0.1.0"
 dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
+ "obc-app",
  "obc-dem",
  "obc-display",
  "obc-elevation",
  "obc-formats",
+ "obc-host-core",
  "obc-map-scene",
  "obc-pack",
  "obc-reader",

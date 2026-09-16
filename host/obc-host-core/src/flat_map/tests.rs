@@ -1,11 +1,11 @@
 use super::*;
 use crate::flat_store::{HostMedia, Lease, MountedStore, ObjectSource, IMPORT_BUFFER_BYTES, PAGE};
+use crate::test_support::CountedSource;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_formats::io::SliceSource;
 use obc_formats::io::{ByteSource, Error};
 use obc_storage::flat::{EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, Store, StoreId};
 use obcm_testkit::{build_file, pack_line, seal, LodSpec};
-use std::cell::Cell;
 use std::{
     cell::RefCell,
     io::Read,
@@ -21,24 +21,8 @@ fn map_bytes() -> Vec<u8> {
     )
 }
 
-struct Counted<'a> {
-    source: &'a dyn ByteSource,
-    reads: Cell<usize>,
-    bytes: Cell<usize>,
-}
-impl ByteSource for Counted<'_> {
-    fn len(&self) -> u64 {
-        self.source.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        self.reads.set(self.reads.get() + 1);
-        self.bytes.set(self.bytes.get() + buf.len());
-        self.source.read_at(offset, buf)
-    }
-}
-
 fn render(source: &dyn ByteSource) -> (Vec<u8>, usize, usize) {
-    let source = Counted { source, reads: Cell::new(0), bytes: Cell::new(0) };
+    let source = CountedSource::new(source);
     let tables = MapTables::parse(&source).unwrap();
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&source, &tables, &cache);
@@ -57,7 +41,7 @@ fn render(source: &dyn ByteSource) -> (Vec<u8>, usize, usize) {
     );
     assert_eq!(stats.features_drawn, 1);
     assert!(frame.as_rgba().as_chunks::<4>().0.iter().any(|pixel| pixel[..3] == [0, 255, 0]));
-    (frame.as_rgba().to_vec(), source.reads.get(), source.bytes.get())
+    (frame.as_rgba().to_vec(), source.reads(), source.bytes())
 }
 
 #[test]

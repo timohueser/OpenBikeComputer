@@ -26,14 +26,16 @@
  * were checked on glass.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FlatStoreClient } from "../usb/client";
 import { Crc32 } from "../usb/crc32";
-import { loopbackLink, MockDevice, type LoopbackLink, type LoopbackOptions, type MockDeviceOptions } from "../usb/loopback";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
+import { FlatDevice, type FlatDeviceOptions } from "../usb/flat-device";
+import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "../usb/loopback";
 import { PipeError, type BytePipe } from "../usb/pipe";
 import { MAX_HOST_STREAM_RECORD } from "../usb/records";
 import { HEAD_REVISION, ObjectKind } from "../usb/protocol";
@@ -63,7 +65,7 @@ let attached: Array<{
 /** The hot-plug channel the watcher handed `usb_watch` — a test pushes plug events through it. */
 let watchChannel: FakeChannel<import("./invoke").UsbEvent> | null = null;
 let wire: LoopbackLink | null = null;
-let device: MockDevice | null = null;
+let device: FlatDevice | null = null;
 /** Whether `usb_open` should refuse, and with what. `onlyId` scopes the fault to one device. */
 let openFault: { code: string; message: string; onlyId?: string } | null = null;
 /** Gates shifted per `usb_open` call — an entry parks that open until its promise resolves,
@@ -205,15 +207,17 @@ const DEVICE_B = {
 };
 
 /** A live simulated device behind the fake backend, and a watcher already connected to it. */
-async function connected(options: LoopbackOptions & MockDeviceOptions = {}) {
+async function connected(options: LoopbackOptions & FlatDeviceOptions = {}) {
     wire = loopbackLink(options);
-    device = new MockDevice(wire.device, options);
+    device = new FlatDevice(wire.device, options);
     void device.run();
     attached = [DEVICE];
     const watcher = new NativeWatcher();
     const ok = await watcher.start();
     return { watcher, ok };
 }
+
+beforeAll(loadFlatDevice);
 
 beforeEach(() => {
     calls.length = 0;
@@ -232,9 +236,11 @@ beforeEach(() => {
 describe("the native pipes under the flat-store client", () => {
     it("round-trips a specs/vectors object, byte for byte", async () => {
         // 64-byte packets, so every record of any size spans several transfers in both directions.
-        // A client that treated one `usb_read` as one record would pass on a mock that wrote whole
-        // records and fail here, which is the whole reason the loopback re-slices (§5.2).
-        const { watcher, ok } = await connected({ packetSize: 64, streamPayload: 256 });
+        // A client that treated one `usb_read` as one record would pass against a device that wrote
+        // whole records and fail here, which is the whole reason the loopback re-slices (§5.2). The
+        // record ceiling stays at §5.2's own number: it is the link's, in both directions, so
+        // shrinking it here would refuse the client's ordinary upload records rather than test them.
+        const { watcher, ok } = await connected({ packetSize: 64 });
         expect(ok).toBe(true);
         const client = watcher.current.client!;
         expect(watcher.current.status).toBe("ready");
@@ -421,7 +427,7 @@ describe("native discovery", () => {
         wire = loopbackLink();
         attached = [DEVICE];
         const watcher = new NativeWatcher({ timeoutMs: 20, hotplugRetryDelayMs: 1 });
-        // No MockDevice running, so the `LIST` times out.
+        // No device running, so the `LIST` times out.
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.status).toBe("error");
         expect(calls.some((c) => c.cmd === "usb_close")).toBe(true);
@@ -449,7 +455,7 @@ describe("native discovery", () => {
         expect(watcher.current.status).toBe("idle");
 
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         watchChannel!.onmessage!({ type: "connected", device: DEVICE });
@@ -467,7 +473,7 @@ describe("native discovery", () => {
         await watcher.start();
 
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         openFault = { code: "device-error", message: "Interface 0 could not be claimed: busy." };
@@ -524,7 +530,7 @@ describe("native discovery", () => {
         // not-yet-claimable window a hot-plug event does, and used to park in `error` with no
         // event ever coming to rescue it.
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         openFault = { code: "device-error", message: "not ready yet" };
@@ -556,7 +562,7 @@ describe("native discovery", () => {
         await watcher.start();
 
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         openFault = { code: "device-error", message: "busy" };
@@ -588,7 +594,7 @@ describe("native discovery", () => {
         await watcher.start();
 
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         let release!: () => void;
@@ -624,7 +630,7 @@ describe("native discovery", () => {
         await watcher.start();
 
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE, DEVICE_B];
         openFault = { code: "device-error", message: "gone", onlyId: DEVICE.id };
@@ -686,7 +692,7 @@ describe("native discovery", () => {
         const watcher = new NativeWatcher();
         await watcher.start();
         wire = loopbackLink();
-        device = new MockDevice(wire.device);
+        device = new FlatDevice(wire.device);
         void device.run();
         attached = [DEVICE];
         expect(await watcher.requestDevice()).toBe(true);

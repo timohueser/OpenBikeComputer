@@ -8,7 +8,7 @@
  * overtaken fails the compare-and-swap instead of clobbering.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
     MAX_TRIP_STAGE_ID,
@@ -24,8 +24,9 @@ import {
 } from "./manage";
 import { decodeRouteHeader } from "./route";
 import { decodeTripObject, type TripObject } from "../usb/objects";
-import { loopbackDevice } from "../usb/loopback";
-import { EntryFlags, ObjectKind } from "../usb/protocol";
+import { flatDevice } from "../usb/flat-device";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
+import { ObjectKind } from "../usb/protocol";
 
 /** A minimal, valid OBCR: the 160-byte header + no points — enough for the header codec. */
 function obcrWithName(name: string): Uint8Array {
@@ -94,12 +95,14 @@ describe("stageId", () => {
     });
 });
 
-describe("against the loopback device", () => {
-    async function withDevice(body: (rig: ReturnType<typeof loopbackDevice>) => Promise<void>) {
-        const rig = loopbackDevice({});
+describe("against the real device", () => {
+    beforeAll(loadFlatDevice);
+
+    async function withDevice(body: (rig: ReturnType<typeof flatDevice>) => Promise<void>) {
+        const rig = flatDevice({});
         try {
             await body(rig);
-            expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
+            expect(rig.device.faults, "the device adapter saw a reaction it did not expect").toEqual([]);
         } finally {
             await rig.close();
         }
@@ -127,13 +130,12 @@ describe("against the loopback device", () => {
         // revision readable while moving the head on, which is exactly the state where a client that
         // did not carry an expected revision would silently overwrite the newer bytes.
         await withDevice(async ({ client, device }) => {
-            const listed = { objectId: 4n, revision: 1n };
-            device.seed({ ...listed, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: obcrWithName("Listed") });
+            const listed = device.seed({ kind: ObjectKind.Route, bytes: obcrWithName("Listed") });
             const head = obcrWithName("Someone else's");
-            device.seed({ objectId: 4n, revision: 2n, kind: ObjectKind.Route, displayName: "Someone else's", bytes: head });
+            device.retain(listed, head, "Someone else's");
 
             await expect(renameRoute(client, listed, "Mine")).rejects.toMatchObject({ code: "revision-conflict" });
-            expect(device.payloadOf(4n)).toEqual(head);
+            expect(device.payloadOf(listed.objectId)).toEqual(head);
             expect(device.entries.map((entry) => [entry.revision, entry.displayName])).toEqual([
                 [1n, ""],
                 [2n, "Someone else's"],

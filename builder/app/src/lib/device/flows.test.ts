@@ -1,11 +1,11 @@
 /**
  * The three flows, end to end against the simulated device (C4, #903).
  *
- * The LM20's USB peripheral does not exist yet (#889), so this is where "it works" is decided.
- * `loopback.ts` is not an echo: it assigns ids, enforces §3.6's compare-and-swap, answers a second
- * transfer `busy`, refuses a payload the card cannot hold with the bytes it needed, hands bulk bytes
- * over in packet-sized slices and runs the bilateral cancel — so a flow that gets any of those wrong
- * fails here rather than on a rider's desk.
+ * The LM20's USB peripheral does not exist yet (#889), so this is where "it works" is decided. The
+ * device on the other end is the real protocol engine over a real flat store on a simulated card: it
+ * assigns the ids, enforces §3.6's compare-and-swap, answers a second transfer `busy`, refuses a
+ * payload its extents cannot hold with the bytes it needed, and runs the bilateral cancel — so a
+ * flow that gets any of those wrong fails here rather than on a rider's desk.
  *
  * A map is **one object**, exactly as a route and a firmware image are: one `PUT`, one stream, one
  * whole-payload CRC, one commit. There is no multi-file map upload to test — no manifest, no
@@ -27,10 +27,12 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, FlatStoreClient } from "../usb/client";
 import { Crc32 } from "../usb/crc32";
-import { MockDevice, loopbackDevice, loopbackLink } from "../usb/loopback";
+import { FlatDevice, flatDevice } from "../usb/flat-device";
+import { loopbackLink } from "../usb/loopback";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { prepareRoute } from "./route";
 import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
@@ -55,6 +57,7 @@ beforeAll(async () => {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }
     await initConvert(readFileSync(wasm));
+    await loadFlatDevice();
 });
 
 // --- a job context a test can watch -------------------------------------------
@@ -87,17 +90,17 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
     };
 }
 
-/** The rig every happy-path flow runs on, with the mock's own defect log checked on the way out. */
+/** The rig every happy-path flow runs on, with the adapter's own defect log checked on the way out. */
 async function withDevice<T>(
-    options: Parameters<typeof loopbackDevice>[0],
-    body: (rig: ReturnType<typeof loopbackDevice>) => Promise<T>,
+    options: Parameters<typeof flatDevice>[0],
+    body: (rig: ReturnType<typeof flatDevice>) => Promise<T>,
 ): Promise<T> {
-    const rig = loopbackDevice(options);
+    const rig = flatDevice(options);
     try {
         return await body(rig);
     } finally {
         await rig.close();
-        expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
+        expect(rig.device.faults, "the device adapter saw a reaction it did not expect").toEqual([]);
     }
 }
 
@@ -170,20 +173,26 @@ describe("map upload from a file", () => {
 
     it("replaces the active lowest-id map and leaves higher-id map objects alone", async () => {
         await withDevice({}, async ({ client, device }) => {
-            device.seed({ objectId: 9n, revision: 4n, kind: ObjectKind.MapShard, displayName: "secondary" });
-            device.seed({ objectId: 3n, revision: 7n, kind: ObjectKind.MapShard, displayName: "active" });
-            device.seed({ objectId: 1n, kind: ObjectKind.Route, displayName: "not a map" });
+            // The store assigns the ids in the order the card was seeded, so the active map is the
+            // first one on it and the secondary is the one after.
+            const active = device.seed({ kind: ObjectKind.MapShard, displayName: "active", bytes: syntheticBytes(1024) });
+            const secondary = device.seed({
+                kind: ObjectKind.MapShard,
+                displayName: "secondary",
+                bytes: syntheticBytes(2048),
+            });
+            device.seed({ kind: ObjectKind.Route, displayName: "not a map", bytes: syntheticBytes(512) });
 
             const bytes = syntheticBytes(32 * 1024);
             const result = await sendMapFile(client, new File([bytes], "replacement.obcm"), context());
 
-            expect(result.objectId).toBe(3n);
-            expect(result.revision).toBe(8n);
+            expect(result.objectId).toBe(active.objectId);
+            expect(result.revision).toBe(active.revision + 1n);
             expect(device.entries.filter((entry) => entry.kind === ObjectKind.MapShard)).toEqual([
-                expect.objectContaining({ objectId: 3n, revision: 8n, displayName: "replacement" }),
-                expect.objectContaining({ objectId: 9n, revision: 4n, displayName: "secondary" }),
+                expect.objectContaining({ objectId: active.objectId, revision: 2n, displayName: "replacement" }),
+                expect.objectContaining({ objectId: secondary.objectId, revision: 1n, displayName: "secondary" }),
             ]);
-            expect(device.payloadOf(3n)).toEqual(bytes);
+            expect(device.payloadOf(active.objectId)).toEqual(bytes);
         });
     });
 
@@ -191,18 +200,21 @@ describe("map upload from a file", () => {
         // §5.2.2 retires the free-space query, so nothing asks in advance. §3.6 answers at the point
         // of decision instead, and its context is what this upload actually needed — which is what
         // lets the page say how much has to go rather than "not enough room".
-        await withDevice({ cardBytes: 100_000 }, async ({ client, device }) => {
+        await withDevice({ extents: 1 }, async ({ client, device }) => {
+            // One extent, taken by the object below: allocation is extent-granular, so this is a real
+            // card with no room rather than a byte ceiling invented for the test.
+            const held = device.seed({ kind: ObjectKind.Route, displayName: "the only extent", bytes: syntheticBytes(64) });
             const file = new File([syntheticBytes(256 * 1024)], "too-big.obcm");
             const failure = await sendMapFile(client, file, context()).catch((cause: unknown) => cause);
             expect(failure).toBeInstanceOf(DeviceError);
             expect((failure as DeviceError).code).toBe("no-space");
             expect((failure as DeviceError).refusal?.context).toBe(BigInt(256 * 1024));
-            expect(device.entries, "a map that did not fit was committed anyway").toEqual([]);
+            expect(device.entries, "a map that did not fit was committed anyway").toEqual([held]);
         });
     });
 
     it("reports an unplug mid-transfer, and the next attempt is an ordinary one", async () => {
-        const first = loopbackDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
+        const first = flatDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const bytes = syntheticBytes(2 * 1024 * 1024);
         const file = new File([bytes], "big.obcm");
         const ctx = context({
@@ -253,32 +265,36 @@ describe("map upload from a file", () => {
         });
     }, 30_000);
 
-    it("surfaces a device checksum refusal, keeps nothing, and lets the file go again on the same link", async () => {
+    it("surfaces a device checksum refusal, keeps nothing, and lets the object go again on the same link", async () => {
         // The third failure shape, and the one that is neither a cancel nor an unplug: the device
         // took every announced byte, checked the whole-payload CRC it was promised (§3.6) and said
-        // no. Nothing about it is recoverable *inside* the flow — a map is one object, so there is
-        // no partial to resume — so what has to be true is that the refusal reaches the caller with
-        // the device's own code, that no half-map is on the card, and that the channel reset which
-        // follows leaves the link ordinary rather than desynchronised.
+        // no. Nothing about it is recoverable *inside* the flow — each of these is one object, so
+        // there is no partial to resume — so what has to be true is that the refusal reaches the
+        // caller with the device's own code, that nothing half-written is on the card, and that the
+        // channel reset which follows leaves the link ordinary rather than desynchronised.
         //
-        // That last part is why this runs against the loopback rather than a stubbed client: the
-        // retry is what proves the abandon path actually ran.
+        // The object is a **firmware package** rather than a map, because the device does not rehash
+        // a map that arrived over the cable: §5.2's packet CRC and its retries are the integrity
+        // boundary there, and recomputing 800 MiB on the M33 duplicated that work. Every other kind,
+        // and every kind over BLE, is verified end to end — so a package is where this refusal lives.
+        //
+        // It runs against the real device rather than a stubbed client because the retry is what
+        // proves the abandon path actually ran.
         const link = loopbackLink({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
-        const device = new MockDevice(link.device);
+        const device = new FlatDevice(link.device);
         void device.run();
         const wire = damageOneStreamWrite(link.host);
         const client = new FlatStoreClient(wire.link);
         try {
-            const bytes = syntheticBytes(256 * 1024);
-            const file = new File([bytes], "grimsel.obcm");
+            const container = vector("update-container-v2.bin");
 
             wire.arm();
-            await expect(sendMapFile(client, file, context())).rejects.toMatchObject({ code: "checksum" });
-            expect(device.entries, "a refused map was committed anyway").toEqual([]);
+            await expect(stageFirmware(client, container, context())).rejects.toMatchObject({ code: "checksum" });
+            expect(device.entries, "a refused package was committed anyway").toEqual([]);
 
-            const result = await sendMapFile(client, file, context());
-            expect(result.payloadLength).toBe(BigInt(bytes.length));
-            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            const { result } = await stageFirmware(client, container, context());
+            expect(result.payloadLength).toBe(BigInt(container.length));
+            expect(device.payloadOf(result.objectId)).toEqual(container);
         } finally {
             device.stop();
             await client.close();
