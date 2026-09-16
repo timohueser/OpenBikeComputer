@@ -8,9 +8,7 @@
 use std::rc::Rc;
 
 use obc_storage::flat::sim::{DiskError, SparseDisk};
-use obc_storage::flat::{BlockDevice, FlatStore};
-
-use crate::STORE;
+use obc_storage::flat::{BlockDevice, FlatStore, StoreId};
 
 /// A durable card several owners can hold: the store mounts one clone, the device keeps another to
 /// cut power with. `SparseDisk` is only a `BlockDevice` by reference, so this handle is what makes
@@ -24,10 +22,10 @@ impl Card {
         Card(Rc::new(SparseDisk::blank(blocks, seed)))
     }
 
-    /// A card this crate has formatted with [`STORE`].
-    pub fn formatted(blocks: u64, seed: u64) -> Card {
+    /// A card formatted with the identity the caller names.
+    pub fn formatted(blocks: u64, seed: u64, store: StoreId) -> Card {
         let card = Card::blank(blocks, seed);
-        FlatStore::initialize(card.clone(), STORE).expect("the test card formats");
+        FlatStore::initialize(card.clone(), store).expect("the test card formats");
         card
     }
 

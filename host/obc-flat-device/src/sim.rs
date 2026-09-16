@@ -10,7 +10,7 @@ use obc_link::flat::{Ceilings, Link};
 use obc_storage::flat::{EntryFlags, EntryMeta, StoreId};
 
 use crate::card::Card;
-use crate::{blocks_for, AllowArm, Device, OpenPolicy, Reaction, TracedRequest, EXTENTS, USB_RECORD_CEILING};
+use crate::{blocks_for, AllowArm, Device, OpenPolicy, Reaction, TracedRequest, EXTENTS, STORE, USB_RECORD_CEILING};
 
 /// How a [`SimDevice`] starts out. Everything has a working default: a formatted card of the usual
 /// geometry on a cable-shaped link, with `ARM` refused.
@@ -23,6 +23,9 @@ pub struct SimOptions {
     pub formatted: bool,
     /// The sparse disk's seed, so a scenario is reproducible.
     pub seed: u64,
+    /// The identity the card is formatted with. Two identities is how a client that caches per card
+    /// is held to noticing it is looking at a different card.
+    pub store: StoreId,
     /// The link the device answers on.
     pub link: Link,
     /// §5's record ceilings. Lowering the control one is how `LIST` pages.
@@ -38,6 +41,7 @@ impl Default for SimOptions {
             extents: EXTENTS,
             formatted: true,
             seed: 1,
+            store: STORE,
             link: Link::Usb,
             control_ceiling: USB_RECORD_CEILING,
             stream_ceiling: USB_RECORD_CEILING,
@@ -51,16 +55,22 @@ pub struct SimDevice {
     card: Card,
     device: Device<Card>,
     options: SimOptions,
+    /// Whether the request trace is armed. Kept here because a reboot builds a new [`Device`] and
+    /// the hook has to survive it, exactly as a trace of what the client sent should.
+    tracing: bool,
 }
 
 impl SimDevice {
     /// Format (or leave blank) a card and mount a device on it.
     pub fn boot(options: SimOptions) -> SimDevice {
         let blocks = blocks_for(options.extents);
-        let card =
-            if options.formatted { Card::formatted(blocks, options.seed) } else { Card::blank(blocks, options.seed) };
+        let card = if options.formatted {
+            Card::formatted(blocks, options.seed, options.store)
+        } else {
+            Card::blank(blocks, options.seed)
+        };
         let device = Device::boot_on(card.clone(), options.link, ceilings(&options));
-        SimDevice { card, device, options }
+        SimDevice { card, device, options, tracing: false }
     }
 
     // --- records ---------------------------------------------------------------
@@ -92,6 +102,9 @@ impl SimDevice {
 
     fn remount(&mut self) {
         self.device = Device::boot_on(self.card.clone(), self.options.link, ceilings(&self.options));
+        if self.tracing {
+            self.device.trace_requests();
+        }
     }
 
     // --- what the card holds ---------------------------------------------------
@@ -120,9 +133,14 @@ impl SimDevice {
         self.device.seed_reserved(kind, reserve, flags, name)
     }
 
+    pub fn seed_retained(&mut self, id: u64, bytes: &[u8], name: &str) -> EntryMeta {
+        self.device.seed_retained(id, bytes, name)
+    }
+
     // --- the two test hooks ----------------------------------------------------
 
     pub fn trace_requests(&mut self) {
+        self.tracing = true;
         self.device.trace_requests();
     }
 

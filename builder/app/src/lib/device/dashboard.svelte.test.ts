@@ -8,14 +8,17 @@
  * tests drive the chain with.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { DeviceDashboard } from "./dashboard.svelte";
 import type { RideScope } from "./rides";
 import { Crc32 } from "../usb/crc32";
 import { encodeTripObject } from "../usb/objects";
-import { MockDevice, loopbackDevice } from "../usb/loopback";
+import { FlatDevice, flatDevice } from "../usb/flat-device";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { EntryFlags, ObjectKind } from "../usb/protocol";
+
+beforeAll(loadFlatDevice);
 
 const SCOPE: RideScope = { serial: "0011223344556677", storeId: "a1b2c3d4000000000000000000000000" };
 
@@ -26,26 +29,22 @@ function routeBytes(seed: number): Uint8Array {
     return out;
 }
 
-function seedRoute(device: MockDevice, objectId: bigint, name: string) {
-    return device.seed({ objectId, kind: ObjectKind.Route, displayName: name, bytes: routeBytes(Number(objectId)) });
+/** The store assigns the id; `seed` is the payload's own, so a test can name the bytes it expects. */
+function seedRoute(device: FlatDevice, name: string, seed = 0) {
+    return device.seed({ kind: ObjectKind.Route, displayName: name, bytes: routeBytes(seed) });
 }
 
-function seedTrip(device: MockDevice, objectId: bigint, name: string, stages: bigint[]) {
-    return device.seed({
-        objectId,
-        kind: ObjectKind.Trip,
-        displayName: name,
-        bytes: encodeTripObject({ name, stages }),
-    });
+function seedTrip(device: FlatDevice, name: string, stages: bigint[]) {
+    return device.seed({ kind: ObjectKind.Trip, displayName: name, bytes: encodeTripObject({ name, stages }) });
 }
 
 async function withDevice(
-    body: (rig: ReturnType<typeof loopbackDevice>, dash: DeviceDashboard) => Promise<void>,
+    body: (rig: ReturnType<typeof flatDevice>, dash: DeviceDashboard) => Promise<void>,
 ): Promise<void> {
-    const rig = loopbackDevice({});
+    const rig = flatDevice({});
     try {
         await body(rig, new DeviceDashboard());
-        expect(rig.device.faults, "the simulated device hit a non-transport failure").toEqual([]);
+        expect(rig.device.faults, "the device adapter saw a reaction it did not expect").toEqual([]);
     } finally {
         await rig.close();
     }
@@ -54,15 +53,15 @@ async function withDevice(
 describe("DeviceDashboard", () => {
     it("loads and groups: trips resolve their stages, top-level excludes them", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            seedRoute(device, 1n, "Day 1");
-            seedRoute(device, 2n, "Day 2");
-            seedRoute(device, 3n, "Home loop");
-            seedTrip(device, 4n, "Jura Crest Trail", [1n, 2n]);
+            const first = seedRoute(device, "Day 1");
+            const second = seedRoute(device, "Day 2");
+            const loop = seedRoute(device, "Home loop");
+            seedTrip(device, "Jura Crest Trail", [first.objectId, second.objectId]);
 
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.error).toBeNull();
-            expect(dash.routes.map((r) => r.objectId)).toEqual([1n, 2n, 3n]);
-            expect(dash.topLevelRoutes.map((r) => r.objectId)).toEqual([3n]);
+            expect(dash.routes.map((r) => r.objectId)).toEqual([first.objectId, second.objectId, loop.objectId]);
+            expect(dash.topLevelRoutes.map((r) => r.objectId)).toEqual([loop.objectId]);
             expect(dash.trips).toHaveLength(1);
             expect(dash.stagesOf(dash.trips[0]).map((s) => s.route?.displayName)).toEqual(["Day 1", "Day 2"]);
         });
@@ -83,8 +82,9 @@ describe("DeviceDashboard", () => {
 
     it("marks a dangling stage instead of dropping it", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            seedRoute(device, 2n, "Still here");
-            seedTrip(device, 5n, "Half gone", [9n, 2n]);
+            const kept = seedRoute(device, "Still here");
+            // Stage 9 is a reference the trip's payload carries to an object that is not on the card.
+            seedTrip(device, "Half gone", [9n, kept.objectId]);
 
             await dash.ensureLoaded(client, SCOPE);
             const stages = dash.stagesOf(dash.trips[0]);
@@ -95,9 +95,9 @@ describe("DeviceDashboard", () => {
 
     it("does not re-list for the same scope, and reloads for a new one", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            seedRoute(device, 1n, "First");
+            seedRoute(device, "First");
             await dash.ensureLoaded(client, SCOPE);
-            seedRoute(device, 2n, "Second");
+            seedRoute(device, "Second");
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.routes, "same scope: the cached lists stand").toHaveLength(1);
             await dash.ensureLoaded(client, { ...SCOPE, storeId: "00000000000000000000000000000007" });
@@ -107,8 +107,8 @@ describe("DeviceDashboard", () => {
 
     it("serializes enqueued transfers instead of tripping §1's one-at-a-time rule", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            const first = seedRoute(device, 1n, "One");
-            const second = seedRoute(device, 2n, "Two");
+            const first = seedRoute(device, "One", 1);
+            const second = seedRoute(device, "Two", 2);
             // Fired together; without the chain the second `GET` would throw `busy` before it left.
             const [a, b] = await Promise.all([
                 dash.enqueue(() => client.get({ objectId: first.objectId, revision: first.revision })),
@@ -122,7 +122,7 @@ describe("DeviceDashboard", () => {
 
     it("keeps the chain alive after a failed operation", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            seedRoute(device, 1n, "Survivor");
+            seedRoute(device, "Survivor");
             await expect(dash.enqueue(() => client.get({ objectId: 99n, revision: 0n }))).rejects.toMatchObject({
                 code: "not-found",
             });
@@ -133,7 +133,7 @@ describe("DeviceDashboard", () => {
 
     it("flags busy when a foreign transfer holds the slot, and recovers after clearBusy", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            const route = seedRoute(device, 1n, "One");
+            const route = seedRoute(device, "One");
             // A transfer the page does not own: started directly on the client, outside the chain —
             // the builder tab's map send, in miniature. §1's rule is device-wide, so the page cannot
             // serialize its way out of this one; it renders it.
@@ -158,26 +158,26 @@ describe("DeviceDashboard", () => {
             await foreign;
             dash.clearBusy();
             const catalog = await dash.enqueue(() => client.list({ kind: ObjectKind.Route }));
-            expect(catalog.entries.map((entry) => entry.objectId)).toContain(1n);
+            expect(catalog.entries.map((entry) => entry.objectId)).toContain(route.objectId);
             expect(dash.busy).toBe(false);
         });
     });
 
     it("refresh after a remove drops the row", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            const doomed = seedRoute(device, 1n, "Doomed");
-            seedRoute(device, 2n, "Stays");
+            const doomed = seedRoute(device, "Doomed");
+            const stays = seedRoute(device, "Stays");
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.routes).toHaveLength(2);
             await dash.enqueue(() => client.remove({ objectId: doomed.objectId, revision: doomed.revision }));
             await dash.refresh(client);
-            expect(dash.routes.map((r) => r.objectId)).toEqual([2n]);
+            expect(dash.routes.map((r) => r.objectId)).toEqual([stays.objectId]);
         });
     });
 
     it("invalidate drops everything, so the next connect decides what to load", async () => {
         await withDevice(async ({ client, device }, dash) => {
-            seedRoute(device, 1n, "Loaded");
+            seedRoute(device, "Loaded");
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.routes).toHaveLength(1);
 

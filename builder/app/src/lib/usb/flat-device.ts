@@ -15,9 +15,9 @@
  * send, ask again. Everything else is this file's:
  *
  * - **Record framing** is `RecordChannel`'s, the same class the client uses on the other end.
- * - **Ordering** is per channel. Each channel owns one pump, so its records leave in order, and a
- *   reaction for the other channel is handed over rather than waited on — which is what keeps
- *   `CANCEL` serviceable while a download's stream write is parked on a full endpoint.
+ * - **Ordering** is one send queue per channel, so a channel's records leave in the order the device
+ *   produced them while the other channel is free to answer — which is what keeps `CANCEL`
+ *   serviceable when a download's stream write is parked on a full endpoint.
  * - **Backpressure** is the pipe's: a write resolves when the reader has taken the bytes, and the
  *   device is not polled for the next record until it does. Nothing buffers a whole download.
  */
@@ -25,19 +25,27 @@
 import init, { FlatDevice as WasmDevice, type DeviceReaction, type InitInput } from "../../../test-support/flat-device/pkg/obc_flat_device.js";
 import { FlatStoreClient } from "./client";
 import { PipeError, type DeviceLink } from "./pipe";
-import { MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD, RecordChannel } from "./records";
-import { EntryFlags, ObjectKind, type CatalogEntry } from "./protocol";
+import { MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD, RecordChannel, type DeviceInfo } from "./records";
+import {
+    EntryFlags,
+    HEADER_LEN,
+    LIST_ENTRY_LEN,
+    LIST_PREFIX_LEN,
+    STREAM_HEADER_LEN,
+    ObjectKind,
+    type CatalogEntry,
+} from "./protocol";
 import { loopbackLink, type LoopbackLink, type LoopbackOptions } from "./loopback";
 
 /**
  * Load the device's wasm module. Call once before constructing a {@link FlatDevice}.
  *
- * Node has no `fetch` for `file:` URLs, so a Vitest suite reads
- * `test-support/flat-device/pkg/obc_flat_device_bg.wasm` and passes the bytes, exactly as the
- * conversion bridge's suites do.
+ * Leave `source` out in the browser: the generated glue resolves the module next to itself, which is
+ * the form the bundler rewrites to a hashed asset URL. Node has no `fetch` for `file:` URLs, so a
+ * Vitest suite reads the `.wasm` and passes the bytes, exactly as the conversion bridge's suites do.
  */
-export async function initFlatDevice(source: InitInput): Promise<void> {
-    await init({ module_or_path: source });
+export async function initFlatDevice(source?: InitInput): Promise<void> {
+    await init(source === undefined ? undefined : { module_or_path: source });
 }
 
 /** How a {@link FlatDevice} starts out. Everything has a working default. */
@@ -48,6 +56,8 @@ export interface FlatDeviceOptions {
     formatted?: boolean;
     /** The sparse card's seed, so a scenario is reproducible. */
     seed?: number;
+    /** The identity the card is formatted with, as 32 hex characters. */
+    storeId?: string;
     /**
      * §5's control record ceiling. `LIST` pages at this number — it is the only thing that decides
      * how many entries fit in a page, so a test that wants two pages lowers it.
@@ -78,6 +88,24 @@ export interface Seed {
     flags?: number;
 }
 
+/** The identity a card formats with unless a test names another. */
+export const DEFAULT_STORE_ID = "11111111111111111111111111111111";
+
+/**
+ * The control ceiling at which `LIST` pages at exactly `entries` entries.
+ *
+ * The real device pages at its link's record ceiling and at nothing else — there is no page-size
+ * dial — so a test that wants two pages says how wide the link is.
+ */
+export function controlCeilingFor(entries: number): number {
+    return HEADER_LEN + LIST_PREFIX_LEN + entries * LIST_ENTRY_LEN;
+}
+
+/** The stream ceiling at which one `GET` record carries exactly `payload` bytes. */
+export function streamCeilingFor(payload: number): number {
+    return payload + STREAM_HEADER_LEN;
+}
+
 type Reaction = { kind: string; channel: string; bytes: Uint8Array };
 
 /** The reaction as plain JS, with the wasm object released. */
@@ -90,11 +118,14 @@ function taken(reaction: DeviceReaction): Reaction {
 export class FlatDevice {
     private readonly device: WasmDevice;
     private readonly channels: { control: RecordChannel; stream: RecordChannel };
-    /** One pump per channel: what keeps records in order without making the channels wait on each other. */
-    private readonly pumps = { control: Promise.resolve(), stream: Promise.resolve() };
+    /** One send queue per channel: what keeps a channel's records in order. */
+    private readonly sending = { control: Promise.resolve(), stream: Promise.resolve() };
     private readonly log: TracedRequest[] = [];
     private readonly tracing: boolean;
     private running = false;
+    /** Set when something may be pollable; cleared by the pump when it has drained the device. */
+    private owed = false;
+    private wake: (() => void) | null = null;
 
     /** Anything that failed which is not a disconnect — a defect in the adapter or the device. */
     readonly faults: unknown[] = [];
@@ -107,6 +138,7 @@ export class FlatDevice {
             options.controlCeiling ?? MAX_DEVICE_RECORD,
             options.streamCeiling ?? MAX_DEVICE_RECORD,
             options.armPolicy === "allow",
+            options.storeId ?? DEFAULT_STORE_ID,
         );
         this.channels = {
             control: new RecordChannel(link.control, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD),
@@ -116,26 +148,37 @@ export class FlatDevice {
         if (this.tracing) this.device.traceRequests();
     }
 
-    // --- the control loop ------------------------------------------------------
+    // --- serving ---------------------------------------------------------------
 
-    /** Serve until the link closes. Rejects only on a defect, never on a normal disconnect. */
+    /**
+     * Serve until the link closes: two readers and one pump.
+     *
+     * **Exactly one task polls.** The device has one live transfer, and its next record is whatever
+     * `poll` answers, so a second poller would take a record out of the middle of a download and
+     * send it after the rest. The readers therefore never poll: they hand one record to the device,
+     * queue whatever came back, and wake the pump.
+     *
+     * Rejects only on a defect, never on a normal disconnect.
+     */
     async run(): Promise<void> {
         this.running = true;
         await Promise.all([
             this.read("control", (record) => this.device.onControl(record)),
             this.read("stream", (record) => this.device.onStream(record)),
+            this.pump(),
         ]);
     }
 
     stop(): void {
         this.running = false;
+        this.nudge();
     }
 
     /**
      * Read whole records off one channel and hand each to the device.
      *
-     * The reaction is handed to a pump and this loop goes straight back to reading, which is what
-     * makes a `CANCEL` reach a device that is mid-download.
+     * The answer is queued rather than awaited, so this loop goes straight back to reading — which
+     * is what makes a `CANCEL` reach a device whose download is parked on a full endpoint.
      */
     private async read(channel: "control" | "stream", feed: (record: Uint8Array) => DeviceReaction): Promise<void> {
         while (this.running) {
@@ -143,59 +186,91 @@ export class FlatDevice {
             try {
                 record = await this.channels[channel].next();
             } catch {
-                this.running = false;
+                this.stop();
                 return;
             }
-            let first: Reaction;
+            if (!this.running) return;
+            let answer: Reaction;
             try {
-                first = taken(feed(record));
+                answer = taken(feed(record));
+                this.drainTrace();
             } catch (cause) {
                 // A wasm trap is never an expected answer: it is this adapter or the engine being
                 // wrong, and a test must see it rather than a silent stall.
                 this.faults.push(cause);
-                this.running = false;
+                this.stop();
                 return;
             }
-            this.hand(first);
+            void this.write(answer);
+            this.nudge();
         }
     }
 
-    /** Queue a reaction behind whatever its channel is already sending. */
-    private hand(reaction: Reaction): void {
+    /** The one poller: everything a live transfer still owes, one record at a time. */
+    private async pump(): Promise<void> {
+        while (this.running) {
+            if (!this.owed) {
+                await new Promise<void>((resume) => (this.wake = resume));
+                this.wake = null;
+                continue;
+            }
+            this.owed = false;
+            for (;;) {
+                let reaction: Reaction;
+                try {
+                    reaction = taken(this.device.poll());
+                } catch (cause) {
+                    this.faults.push(cause);
+                    this.stop();
+                    return;
+                }
+                if (reaction.kind === "idle") break;
+                // Awaited, so the device is not asked for the next record until the transport has
+                // taken this one. That await *is* the backpressure.
+                await this.write(reaction);
+                if (!this.running) return;
+            }
+        }
+    }
+
+    /** There may be something to poll for. */
+    private nudge(): void {
+        this.owed = true;
+        this.wake?.();
+    }
+
+    /** Send one reaction on its own channel, behind whatever that channel is already sending. */
+    private write(reaction: Reaction): Promise<void> {
         const channel = reaction.channel === "stream" ? "stream" : "control";
-        this.pumps[channel] = this.pumps[channel].then(() => this.pump(channel, reaction));
+        const sent = this.sending[channel].then(() => this.send(channel, reaction));
+        this.sending[channel] = sent.catch(() => undefined);
+        return sent;
     }
 
-    /** Send one reaction and keep asking the device for the next, while they are this channel's. */
-    private async pump(channel: "control" | "stream", first: Reaction): Promise<void> {
-        let reaction = first;
-        for (;;) {
-            if (reaction.kind === "idle") return;
-            if (reaction.kind === "close") {
-                // §3.1: an unanswerable record gets nothing at all and closes the record stream.
-                this.running = false;
-                return;
-            }
-            if (reaction.channel !== channel) {
-                // The other channel's turn, and its pump's: waiting for it here would put a control
-                // answer behind a stream write nobody is draining.
-                this.hand(reaction);
-                return;
-            }
-            try {
-                await this.channels[channel].send(reaction.bytes);
-            } catch (cause) {
-                // The link went away mid-answer. That is the ordinary end of a session.
-                if (!(cause instanceof PipeError)) this.faults.push(cause);
-                this.running = false;
-                return;
-            }
-            if (reaction.kind === "send-and-reboot") {
-                this.device.reboot();
-                return;
-            }
-            reaction = taken(this.device.poll());
+    private async send(channel: "control" | "stream", reaction: Reaction): Promise<void> {
+        if (reaction.kind === "idle") return;
+        if (reaction.kind === "close") {
+            // §3.1: an unanswerable record gets nothing at all and closes the record stream.
+            this.stop();
+            return;
         }
+        try {
+            await this.channels[channel].send(reaction.bytes);
+        } catch (cause) {
+            // The link went away mid-answer. That is the ordinary end of a session.
+            if (!(cause instanceof PipeError)) this.faults.push(cause);
+            this.stop();
+            return;
+        }
+        if (reaction.kind === "send-and-reboot") {
+            // §4 steps 4 and 5: the answer reached the transport, and now the device restarts.
+            this.device.reboot();
+        }
+    }
+
+    /** Take what the device traced before anything can drop it — a reboot starts a new trace. */
+    private drainTrace(): void {
+        if (this.tracing) this.log.push(...(JSON.parse(this.device.takeTrace()) as TracedRequest[]));
     }
 
     // --- the card --------------------------------------------------------------
@@ -211,6 +286,14 @@ export class FlatDevice {
         const flags = object.flags ?? (object.kind === ObjectKind.Ride ? EntryFlags.Recording : EntryFlags.Reserved);
         const reserve = BigInt(object.reserve ?? 1024 * 1024);
         return entriesOf(this.device.seedReserved(object.kind, name, reserve, flags))[0];
+    }
+
+    /**
+     * Publish a further revision of an object already on the card, keeping the previous one as
+     * `RETAINED` — the one catalog state no opcode produces.
+     */
+    retain(previous: CatalogEntry, bytes: Uint8Array, displayName = ""): CatalogEntry {
+        return entriesOf(this.device.seedRetained(previous.objectId, displayName, bytes))[0];
     }
 
     /** The whole catalog as the device would list it. */
@@ -237,7 +320,7 @@ export class FlatDevice {
 
     /** Every request the device was handed, in order. Lets a test assert what a flow did *not* send. */
     get requestLog(): readonly TracedRequest[] {
-        if (this.tracing) this.log.push(...(JSON.parse(this.device.takeTrace()) as TracedRequest[]));
+        this.drainTrace();
         return this.log;
     }
 
@@ -276,7 +359,7 @@ function entriesOf(json: string): CatalogEntry[] {
  * the client closes the link, which ends them.
  */
 export function flatDevice(
-    options: LoopbackOptions & FlatDeviceOptions & { clientTimeoutMs?: number } = {},
+    options: LoopbackOptions & FlatDeviceOptions & { deviceInfo?: DeviceInfo; clientTimeoutMs?: number } = {},
 ): {
     client: FlatStoreClient;
     device: FlatDevice;

@@ -8,21 +8,13 @@
  * id, and the bytes come back byte-for-byte.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { flatDevice, initFlatDevice } from "./flat-device";
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
+import { flatDevice } from "./flat-device";
 import { ObjectKind } from "./protocol";
 
-beforeAll(async () => {
-    const wasm = join(
-        dirname(fileURLToPath(import.meta.url)),
-        "../../../test-support/flat-device/pkg/obc_flat_device_bg.wasm",
-    );
-    await initFlatDevice(readFileSync(wasm));
-});
+beforeAll(loadFlatDevice);
 
 describe("the flat device", () => {
     it("lists an empty formatted card", async () => {

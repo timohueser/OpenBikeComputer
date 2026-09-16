@@ -2,24 +2,24 @@
  * A {@link DeviceSession} backed by the simulated device — **the dev harness only**.
  *
  * The LM20's USB peripheral does not exist yet (#889), so without this there is no way to click
- * through a map upload, a route drop or a firmware update at all. `loopback.ts` already models
- * protocol v4 properly (id allocation, compare-and-swap on revisions, `busy`, the cancel handshake,
- * paged `LIST`s and packet-sized record reads), so wiring it to a session drives the real UI
- * against a real protocol conversation — the only fiction is the cable.
+ * through a map upload, a route drop or a firmware update at all. The device on the far end is the
+ * real one — `obc_link::flat::Engine` over a real flat store on a simulated card, compiled to wasm —
+ * so the UI is driven against the protocol conversation the board will hold. The only fiction is the
+ * cable, and the pacing that stands in for a card's write speed.
  *
- * **Why it lives outside `src/`.** C3 drew a hard line: no shipping module may import
- * `lib/usb/loopback`, guarded twice — a source scan in `usb/vectors.test.ts` and a chunk assertion
- * in `platform/bundle.test.ts`. A dev-only dynamic import inside `src/` would satisfy neither, and the
- * chunk guard is right to refuse it: whether such a branch is tree-shaken depends on how the build
- * was invoked (`import.meta.env.DEV` is not `false` when Rollup runs under vitest), so "it gets
- * dropped in production" would be a property nothing in CI actually checks. A separate entry point
- * that no tier's build has as an input is a fact instead of a hope.
+ * **Why it lives outside `src/`.** C3 drew a hard line: no shipping module may import the simulated
+ * device, guarded by the chunk assertion in `platform/bundle.test.ts`. A dev-only dynamic import
+ * inside `src/` would not satisfy it, and the guard is right to refuse one: whether such a branch is
+ * tree-shaken depends on how the build was invoked (`import.meta.env.DEV` is not `false` when Rollup
+ * runs under vitest), so "it gets dropped in production" would be a property nothing in CI actually
+ * checks. A separate entry point that no tier's build has as an input is a fact instead of a hope.
  */
 
 import { gpxToObcr } from "../src/lib/convert/bridge";
 import { FlatStoreClient } from "../src/lib/usb/client";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
-import { MockDevice, loopbackLink } from "../src/lib/usb/loopback";
+import { FlatDevice, initFlatDevice } from "../src/lib/usb/flat-device";
+import { loopbackLink } from "../src/lib/usb/loopback";
 import { encodeRideObject, encodeTripObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 import type { BytePipe, DeviceLink } from "../src/lib/usb/pipe";
 import { EntryFlags, ObjectKind } from "../src/lib/usb/protocol";
@@ -96,18 +96,6 @@ function paced(link: DeviceLink): DeviceLink {
 }
 
 /**
- * The ids the seeds take.
- *
- * An `ObjectId` is **store-global** (`FLAT_Store_Format.md` §3): one allocation cursor for every
- * kind, never reused. So the routes, the trip and the rides here share one numbering — under the v1
- * wire each type had its own id space and a route 3 could sit beside a ride 3, which is exactly the
- * assumption a harness would otherwise carry forward into a screen nobody could reproduce on glass.
- */
-const ROUTE_IDS = { kaiserstuhl: 1n, leg1: 2n, leg2: 3n, leg3: 4n } as const;
-const TRIP_ID = 5n;
-const RIDE_IDS = { long: 6n, short: 7n, noClock: 8n, recording: 9n } as const;
-
-/**
  * Rides on the simulated card, so the ride surfaces have a catalog to render.
  *
  * A device with nothing on it renders one empty-state line, which is not the screen worth looking
@@ -121,26 +109,16 @@ const RIDE_IDS = { long: 6n, short: 7n, noClock: 8n, recording: 9n } as const;
  * bytes is what the device really holds, and it is what makes the "listed, not offered" path
  * something a developer can look at rather than reason about.
  */
-function seedRides(device: MockDevice): void {
-    const rides: Array<{ id: bigint; ride: RideObject }> = [
-        { id: RIDE_IDS.long, ride: syntheticRide("Schauinsland & back", 1_783_598_400, 40_000, true) },
-        { id: RIDE_IDS.short, ride: syntheticRide("Kaiserstuhl loop", 1_783_339_200, 1_100, false) },
-        { id: RIDE_IDS.noClock, ride: syntheticRide("Shakedown", 0, 320, false) },
+function seedRides(device: FlatDevice): void {
+    const rides: RideObject[] = [
+        syntheticRide("Schauinsland & back", 1_783_598_400, 40_000, true),
+        syntheticRide("Kaiserstuhl loop", 1_783_339_200, 1_100, false),
+        syntheticRide("Shakedown", 0, 320, false),
     ];
-    for (const { id, ride } of rides) {
-        device.seed({
-            objectId: id,
-            kind: ObjectKind.Ride,
-            displayName: ride.name,
-            bytes: encodeRideObject(ride),
-        });
+    for (const ride of rides) {
+        device.seed({ kind: ObjectKind.Ride, displayName: ride.name, bytes: encodeRideObject(ride) });
     }
-    device.seed({
-        objectId: RIDE_IDS.recording,
-        kind: ObjectKind.Ride,
-        displayName: "Today",
-        flags: EntryFlags.Recording,
-    });
+    device.seed({ kind: ObjectKind.Ride, displayName: "Today", flags: EntryFlags.Recording });
 }
 
 /**
@@ -153,9 +131,9 @@ function seedRides(device: MockDevice): void {
  * placement and all. The wasm module is local to the bundle, so this stays offline-safe; it is
  * the same prerequisite the harness's route-drop flow already has.
  */
-async function seedWaypointRoute(device: MockDevice): Promise<void> {
+async function seedWaypointRoute(device: FlatDevice): Promise<void> {
     try {
-        await seedGpxRoute(device, ROUTE_IDS.kaiserstuhl, "Kaiserstuhl loop", kaiserstuhlGpx());
+        await seedGpxRoute(device, "Kaiserstuhl loop", kaiserstuhlGpx());
     } catch (cause) {
         // A missing wasm artifact breaks route drops too; keep the rest of the harness usable.
         console.warn("dev-harness: could not seed the waypoint route (is the wasm bridge built?)", cause);
@@ -163,16 +141,16 @@ async function seedWaypointRoute(device: MockDevice): Promise<void> {
 }
 
 /**
- * Convert one inline GPX through the real wasm bridge and put it on the card under `id`.
+ * Convert one inline GPX through the real wasm bridge and put it on the card.
  *
  * The catalog entry is the whole of what a `LIST` carries — id, revision, payload length, payload
- * CRC, kind, flags and a display name (§3.3) — and `MockDevice.seed` derives the length and the CRC
- * from the bytes, so there is nothing else to state. A route's distance, ascent and point count are
+ * CRC, kind, flags and a display name (§3.3) — and the store derives every one of them, the id
+ * included, so there is nothing else to state. A route's distance, ascent and point count are
  * *payload* facts, in the OBCR header, and no seed here has to repeat them.
  */
-async function seedGpxRoute(device: MockDevice, id: bigint, name: string, gpx: string): Promise<void> {
+async function seedGpxRoute(device: FlatDevice, name: string, gpx: string): Promise<bigint> {
     const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name);
-    device.seed({ objectId: id, kind: ObjectKind.Route, displayName: name, bytes });
+    return device.seed({ kind: ObjectKind.Route, displayName: name, bytes }).objectId;
 }
 
 /**
@@ -184,25 +162,18 @@ async function seedGpxRoute(device: MockDevice, id: bigint, name: string, gpx: s
  * shape, and two of the three carry waypoints — so the merged card shows cumulative distances
  * across a stage that contributes none.
  *
- * The trip object names its stages with the store's full-width `u64` ObjectIds (`objects.ts`).
+ * The trip object names its stages with the store's full-width `u64` ObjectIds (`objects.ts`), read
+ * off the entries the store committed — an `ObjectId` is store-global (`FLAT_Store_Format.md` §3),
+ * so the routes, the trip and the rides here share one numbering and none of them chooses its own.
  */
-async function seedTour(device: MockDevice): Promise<void> {
+async function seedTour(device: FlatDevice): Promise<void> {
     try {
-        const stages: Array<{ id: bigint; spec: TourLeg }> = [
-            { id: ROUTE_IDS.leg1, spec: TOUR_LEGS[0] },
-            { id: ROUTE_IDS.leg2, spec: TOUR_LEGS[1] },
-            { id: ROUTE_IDS.leg3, spec: TOUR_LEGS[2] },
-        ];
-        for (const { id, spec } of stages) {
-            await seedGpxRoute(device, id, spec.name, legGpx(spec));
+        const stages: bigint[] = [];
+        for (const leg of TOUR_LEGS) {
+            stages.push(await seedGpxRoute(device, leg.name, legGpx(leg)));
         }
         const name = "Black Forest traverse";
-        device.seed({
-            objectId: TRIP_ID,
-            kind: ObjectKind.Trip,
-            displayName: name,
-            bytes: encodeTripObject({ name, stages: stages.map((s) => s.id) }),
-        });
+        device.seed({ kind: ObjectKind.Trip, displayName: name, bytes: encodeTripObject({ name, stages }) });
     } catch (cause) {
         console.warn("dev-harness: could not seed the tour (is the wasm bridge built?)", cause);
     }
@@ -346,7 +317,7 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
 class LoopbackWatcher implements DeviceWatcher {
     private state: DeviceState = IDLE;
     private readonly listeners = new Set<(state: DeviceState) => void>();
-    private open: { device: MockDevice; close: () => Promise<void> } | null = null;
+    private open: { device: FlatDevice; close: () => Promise<void> } | null = null;
 
     get current(): DeviceState {
         return this.state;
@@ -363,8 +334,11 @@ class LoopbackWatcher implements DeviceWatcher {
     async requestDevice(): Promise<boolean> {
         if (this.open) return true;
         this.publish({ ...IDLE, status: "connecting" });
+        // The module fetches its own wasm beside the harness bundle; no request trace, because
+        // nothing here reads one and a browser session is long.
+        await initFlatDevice();
         const link = loopbackLink();
-        const device = new MockDevice(paced(link.device));
+        const device = new FlatDevice(paced(link.device), { trace: false });
         seedRides(device);
         await seedWaypointRoute(device);
         await seedTour(device);

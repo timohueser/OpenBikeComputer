@@ -6,16 +6,18 @@
  * overtakes the last stream frame, a refusal that arrives while a 300 kB payload is still queued, a
  * cancel that has to go out while a download is running. None of that is visible in a frame.
  *
- * `MockDevice` is the counterpart and is held to the same bar: where it cannot model something it
- * refuses the way the device would rather than succeeding quietly, so a test that passes here is a
- * statement about the protocol and not about the mock's generosity.
+ * The device on the other end is the real one — `obc_link::flat::Engine` over a real flat store on
+ * a simulated card — so a test that passes here is a statement about the protocol rather than about
+ * a fake's generosity.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
+import { loadFlatDevice } from "../../../test-support/flat-device/load";
 import { Crc32 } from "./crc32";
 import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
-import { MockDevice, REFERENCE_STORE_ID, loopbackDevice, loopbackLink } from "./loopback";
+import { FlatDevice, controlCeilingFor, flatDevice, streamCeilingFor } from "./flat-device";
+import { loopbackLink } from "./loopback";
 import { RecordChannel, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD } from "./records";
 import {
     EntryFlags,
@@ -27,6 +29,15 @@ import {
     encodeGetRequest,
 } from "./protocol";
 
+beforeAll(loadFlatDevice);
+
+/** A card identity that is nothing like the default, so a test that mixes the two says so. */
+const CARD = "8f2c41d96b074ea3b1559c207de83466";
+
+/** A link that hands a download over in small records and blocks the device early, so a cancel or a
+ *  second transfer has something in flight to meet. */
+const SMALL_RECORDS = { streamCeiling: streamCeilingFor(512), streamHighWaterMark: 4 * 1024 };
+
 /** A payload with a distinct byte at every offset, so a misplaced record shows up as a wrong byte. */
 function payload(length: number, seed = 1): Uint8Array {
     const out = new Uint8Array(length);
@@ -35,15 +46,15 @@ function payload(length: number, seed = 1): Uint8Array {
 }
 
 async function withDevice<T>(
-    options: Parameters<typeof loopbackDevice>[0],
-    body: (rig: ReturnType<typeof loopbackDevice>) => Promise<T>,
+    options: Parameters<typeof flatDevice>[0],
+    body: (rig: ReturnType<typeof flatDevice>) => Promise<T>,
 ): Promise<T> {
-    const rig = loopbackDevice(options);
+    const rig = flatDevice(options);
     try {
         return await body(rig);
     } finally {
         await rig.close();
-        expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
+        expect(rig.device.faults, "the device adapter saw a reaction it did not expect").toEqual([]);
     }
 }
 
@@ -116,7 +127,7 @@ describe("what a connection learns before anything else", () => {
         // A transport with no EP0 path — the desktop bridge today. A fabricated revision would feed
         // "an update is available" a lie, so the honest answer is that nobody asked.
         const link = loopbackLink();
-        const device = new MockDevice(link.device);
+        const device = new FlatDevice(link.device);
         void device.run();
         const pathless = { control: link.host.control, stream: link.host.stream, close: () => link.host.close() };
         const client = new FlatStoreClient(pathless);
@@ -126,11 +137,14 @@ describe("what a connection learns before anything else", () => {
     });
 
     it("takes the store's identity and cache freshness from the first LIST, not from a read", async () => {
-        await withDevice({ storeId: REFERENCE_STORE_ID, commitSequence: 7n }, async ({ client }) => {
+        await withDevice({ storeId: CARD }, async ({ client, device }) => {
+            // Something has committed, so the sequence is not the one a fresh card starts at and the
+            // assertion below is about what `LIST` reported rather than about a constant.
+            device.seed({ kind: ObjectKind.Route, displayName: "one", bytes: payload(16) });
             const page = await client.listPage({});
-            expect(page.storeId).toBe(REFERENCE_STORE_ID);
-            expect(page.commitSequence).toBe(7n);
-            expect(page.entries).toEqual([]);
+            expect(page.storeId).toBe(CARD);
+            expect(page.commitSequence).toBe(device.sequence);
+            expect(page.entries).toHaveLength(1);
             expect(page.more).toBe(false);
         });
     });
@@ -140,10 +154,10 @@ describe("what a connection learns before anything else", () => {
 
 describe("FORMAT", () => {
     it("erases the catalog and starts the replacement store era", async () => {
-        await withDevice({ storeId: REFERENCE_STORE_ID, commitSequence: 7n }, async ({ client, device }) => {
+        await withDevice({ storeId: CARD }, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.Route, displayName: "erase me", bytes: payload(64) });
             const replacement = "2a7b16c4903145d8a6e2730fb94c5811";
-            await expect(client.format(REFERENCE_STORE_ID, { replacementStoreId: replacement })).resolves.toEqual({
+            await expect(client.format(CARD, { replacementStoreId: replacement })).resolves.toEqual({
                 storeId: replacement,
             });
             expect(device.entries).toEqual([]);
@@ -155,7 +169,7 @@ describe("FORMAT", () => {
     });
 
     it("does not erase a card whose identity changed under the confirmation", async () => {
-        await withDevice({ storeId: REFERENCE_STORE_ID }, async ({ client, device }) => {
+        await withDevice({ storeId: CARD }, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.Route, displayName: "keep me", bytes: payload(16) });
             await expect(
                 client.format("11111111111111111111111111111111", {
@@ -171,7 +185,7 @@ describe("FORMAT", () => {
 
 describe("LIST", () => {
     it("pages with the (ObjectId, Revision) cursor until the device stops setting `more`", async () => {
-        await withDevice({ pageEntries: 2 }, async ({ client, device }) => {
+        await withDevice({ controlCeiling: controlCeilingFor(2) }, async ({ client, device }) => {
             for (let i = 0; i < 5; i++) {
                 device.seed({ kind: ObjectKind.Route, displayName: `Route ${i}`, bytes: payload(16, i) });
             }
@@ -189,16 +203,17 @@ describe("LIST", () => {
     });
 
     it("resumes strictly after the pair, so a retained revision cannot hide the head behind it", async () => {
-        await withDevice({ pageEntries: 1 }, async ({ client, device }) => {
+        await withDevice({ controlCeiling: controlCeilingFor(1) }, async ({ client, device }) => {
             // The catalog sorts a retained revision before its head, so this page boundary is two
             // entries wide — exactly the case a cursor of `ObjectId` alone would skip.
-            device.seed({ objectId: 4n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: payload(8) });
-            device.seed({ objectId: 4n, revision: 2n, kind: ObjectKind.Route, bytes: payload(9) });
+            const first = device.seed({ kind: ObjectKind.Route, bytes: payload(8) });
+            const head = device.retain(first, payload(9));
             const catalog = await client.list();
             expect(catalog.entries.map((entry) => [entry.objectId, entry.revision])).toEqual([
-                [4n, 1n],
-                [4n, 2n],
+                [first.objectId, first.revision],
+                [head.objectId, head.revision],
             ]);
+            expect(head.revision).toBe(first.revision + 1n);
         });
     });
 
@@ -213,7 +228,7 @@ describe("LIST", () => {
     });
 
     it("restarts the listing when the catalog moves under it", async () => {
-        await withDevice({ pageEntries: 1 }, async ({ client, device }) => {
+        await withDevice({ controlCeiling: controlCeilingFor(1) }, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.Route, displayName: "one", bytes: payload(4) });
             device.seed({ kind: ObjectKind.Route, displayName: "two", bytes: payload(5) });
             // The commit sequence the first page declared is stale the moment anything commits, so
@@ -323,8 +338,12 @@ describe("PUT", () => {
         });
     });
 
-    it("answers a payload that does not fit with the bytes it needed", async () => {
-        await withDevice({ cardBytes: 1_000 }, async ({ client }) => {
+    it("answers a payload the card has no extent for with the bytes it needed", async () => {
+        await withDevice({ extents: 1 }, async ({ client, device }) => {
+            // One extent, and it is taken. Allocation is extent-granular, so the card is full after
+            // one small object however few bytes it holds — which is a real card being full rather
+            // than a byte ceiling invented for the test.
+            device.seed({ kind: ObjectKind.Route, displayName: "the only extent", bytes: payload(64) });
             const error = await client
                 .put({ kind: ObjectKind.MapShard, displayName: "too big" }, payload(4_096))
                 .then(() => null)
@@ -354,7 +373,8 @@ describe("PUT", () => {
         // §3.6 lets a client stream without waiting for an acceptance; the price is that a refusal
         // arrives mid-payload. A client that did not look would push a whole map at a device that
         // said no on the first megabyte.
-        await withDevice({ cardBytes: 1_000, streamHighWaterMark: 8 * 1024 }, async ({ client, link }) => {
+        await withDevice({ extents: 1, streamHighWaterMark: 8 * 1024 }, async ({ client, device, link }) => {
+            device.seed({ kind: ObjectKind.Route, displayName: "the only extent", bytes: payload(64) });
             let yielded = 0;
             const huge = 8 * 1024 * 1024;
             const source = {
@@ -394,10 +414,10 @@ describe("GET", () => {
         await withDevice({}, async ({ client, device }) => {
             const old = payload(32, 1);
             const head = payload(48, 2);
-            device.seed({ objectId: 9n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: old });
-            device.seed({ objectId: 9n, revision: 2n, kind: ObjectKind.Route, bytes: head });
-            expect((await client.get({ objectId: 9n, revision: 1n })).bytes).toEqual(old);
-            expect((await client.get({ objectId: 9n, revision: 0n })).bytes).toEqual(head);
+            const first = device.seed({ kind: ObjectKind.Route, bytes: old });
+            device.retain(first, head);
+            expect((await client.get({ objectId: first.objectId, revision: first.revision })).bytes).toEqual(old);
+            expect((await client.get({ objectId: first.objectId, revision: 0n })).bytes).toEqual(head);
         });
     });
 
@@ -421,7 +441,7 @@ describe("GET", () => {
     it("serves LIST beside a live transfer", async () => {
         // The control channel is not blocked by a transfer, which is what makes a mid-download
         // `CANCEL` possible at all — and is worth asserting directly rather than inferring.
-        await withDevice({ streamPayload: 1024 }, async ({ client, device }) => {
+        await withDevice({ streamCeiling: streamCeilingFor(1024) }, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(200_000) });
             const download = client.get({ objectId: 1n, revision: 0n });
             const listed = await client.listPage({});
@@ -435,7 +455,7 @@ describe("GET", () => {
 
 describe("CANCEL", () => {
     it("stops a running download and answers the transfer with `cancelled`", async () => {
-        await withDevice({ streamPayload: 512, streamHighWaterMark: 4 * 1024 }, async ({ client, device }) => {
+        await withDevice(SMALL_RECORDS, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(400_000) });
             const abort = new AbortController();
             // Cancelled from inside the download rather than after a timer: the loopback moves
@@ -470,7 +490,7 @@ describe("CANCEL", () => {
         // nothing and answers nothing, so an unbounded `CANCEL` inside `abandon` parks forever and
         // the client's one-transfer latch is never released. That is the exact wedge the latch's own
         // documentation claims to have retired, and it shipped one call deeper.
-        const rig = loopbackDevice({ clientTimeoutMs: 25 });
+        const rig = flatDevice({ clientTimeoutMs: 25 });
         rig.device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(200_000) });
         const abort = new AbortController();
         const download = rig.client.get(
@@ -480,8 +500,9 @@ describe("CANCEL", () => {
                 onProgress: (done) => {
                     if (done > 10_000) {
                         // Wedge the device *first*, so the `CANCEL` that `abandon` sends has nowhere
-                        // to go, and only then abort.
-                        rig.device.stop();
+                        // to go, and only then abort. It keeps taking records and answers none,
+                        // which is what an enumerated device that has hung does.
+                        rig.device.stopAnswering();
                         abort.abort();
                     }
                 },
@@ -512,9 +533,9 @@ describe("REMOVE", () => {
 
     it("takes a retained previous revision with the head", async () => {
         await withDevice({}, async ({ client, device }) => {
-            device.seed({ objectId: 3n, revision: 1n, kind: ObjectKind.Route, flags: EntryFlags.Retained, bytes: payload(8) });
-            device.seed({ objectId: 3n, revision: 2n, kind: ObjectKind.Route, bytes: payload(9) });
-            await client.remove({ objectId: 3n, revision: 2n });
+            const first = device.seed({ kind: ObjectKind.Route, bytes: payload(8) });
+            const head = device.retain(first, payload(9));
+            await client.remove({ objectId: head.objectId, revision: head.revision });
             expect(device.entries).toEqual([]);
         });
     });
@@ -614,7 +635,7 @@ describe("reconciling a break", () => {
 
 describe("§1's one transfer at a time", () => {
     it("refuses a second transfer from this client without a round trip", async () => {
-        await withDevice({ streamPayload: 512, streamHighWaterMark: 4 * 1024 }, async ({ client, device }) => {
+        await withDevice(SMALL_RECORDS, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, bytes: payload(300_000) });
             const first = client.get({ objectId: 1n, revision: 0n });
             await expect(client.get({ objectId: 1n, revision: 0n })).rejects.toMatchObject({ code: "busy" });
@@ -627,7 +648,7 @@ describe("§1's one transfer at a time", () => {
         // other transfer may be a phone's over BLE. Driven by hand here, because one loopback link
         // carries one client and the point is precisely that the refusal comes from the far end.
         const link = loopbackLink();
-        const device = new MockDevice(link.device, { streamPayload: 512 });
+        const device = new FlatDevice(link.device, { streamCeiling: streamCeilingFor(512) });
         void device.run();
         const control = new RecordChannel(link.host.control, MAX_HOST_CONTROL_RECORD, MAX_DEVICE_RECORD);
         const stream = new RecordChannel(link.host.stream, MAX_HOST_STREAM_RECORD, MAX_DEVICE_RECORD);
@@ -675,8 +696,8 @@ describe("the client's own obligations", () => {
         // about a request that is genuinely outstanding when the cable goes. The device is stopped
         // first — it serves nothing more, exactly as an unplugged one does — and the request then
         // has nowhere to be answered from until the link itself fails.
-        const rig = loopbackDevice({});
-        rig.device.stop();
+        const rig = flatDevice({});
+        rig.device.stopAnswering();
         const listing = rig.client.listPage({});
         await rig.link.device.close();
         await expect(listing).rejects.toMatchObject({ code: "link" });
@@ -684,7 +705,7 @@ describe("the client's own obligations", () => {
     });
 
     it("refuses to work after close", async () => {
-        const rig = loopbackDevice({});
+        const rig = flatDevice({});
         await rig.close();
         await expect(rig.client.listPage({})).rejects.toMatchObject({ code: "link" });
     });
