@@ -87,7 +87,11 @@ This layout lets the installed bootloader read current packages. See the [OBCU s
 
 ## Release publication
 
-Pushing a SemVer `v*` tag starts [`release.yml`](src:.github/workflows/release.yml). The tag version must match the board-crate version.
+An owner prepares a candidate in the [release console](https://releases.openbikecomputer.com).
+The candidate fixes a source commit and a requirement revision. Its SemVer version must match the
+board-crate version. [Candidate verification](src:.github/workflows/verification-candidate.yml)
+runs the complete ordinary CI suite and calls the [firmware build](src:.github/workflows/release.yml).
+A tag push does not publish firmware.
 
 A published release requires a public key that differs from the committed test key. It also requires the release signing seed.
 A manual dry run can use the test key, but it publishes nothing.
@@ -98,7 +102,18 @@ The workflow builds the bootloader and application. It converts the application 
 
 ### Release archive and download service
 
-The GitHub release is the versioned archive. It contains release notes, ELF files, the OBCU package, and checksums.
+Each active system requirement must have linked tests. Every linked automated test needs a pass
+from this candidate's CI run. Every linked manual test needs a recorded pass for this candidate.
+The owner can attach input files to manual procedures and evidence files to manual results. A new
+candidate needs new manual results. Missing tests, skipped tests, and failed checks block publication.
+
+When all checks pass, the owner can publish. The [publication workflow](src:.github/workflows/verification-publish.yml)
+checks the frozen evidence and retained file hashes again. It creates the tag at the tested commit
+and publishes the retained firmware without a rebuild.
+
+The GitHub release is the versioned archive. It contains ELF files, the OBCU package, checksums,
+and the frozen verification report in HTML and JSON. Requirement revisions and evidence live in
+the console database. Git contains the application and workflow code.
 
 The workflow copies the package and manifest to `updates.openbikecomputer.com`. This service permits browser downloads with CORS.
 
@@ -145,11 +160,11 @@ A development build reports a Git hash. Clients do not offer automatic updates w
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 416" role="img" aria-label="A version tag triggers a build, signature, and inspection. Packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. Current board policy rejects the following ARM request.">
+<svg viewBox="0 0 720 416" role="img" aria-label="A release candidate triggers a build, signature, and inspection. Verified packages are published to GitHub and the update service. The companion or builder can upload a published or local package with PUT. Current board policy rejects the following ARM request.">
   <defs><marker id="software-firmware-updates-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
   <text class="d-tag" x="20" y="26" text-anchor="start">Release and delivery</text>
   <rect class="d-panel" x="20" y="56" width="200" height="72" rx="8" />
-  <text class="d-title" x="120" y="81" text-anchor="middle">Version tag</text>
+  <text class="d-title" x="120" y="81" text-anchor="middle">Candidate</text>
   <text class="d-sub" x="120" y="101" text-anchor="middle">SemVer vX.Y.Z</text>
   <path class="d-flow" d="M220 92 L258 92" marker-end="url(#software-firmware-updates-2)" />
   <rect class="d-panel" x="260" y="56" width="200" height="72" rx="8" />

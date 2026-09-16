@@ -1,0 +1,60 @@
+name: Deploy verification
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'apps/obc-verification/**'
+      - '.github/workflows/deploy-verification.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-verification
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: verification
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: apps/obc-verification/package-lock.json
+      - name: Check, test, and build
+        working-directory: apps/obc-verification
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+          npm prune --omit=dev --ignore-scripts
+      - name: Package application without persistent data
+        working-directory: apps/obc-verification
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('deployment.json').write_text(json.dumps({'sourceSha': os.environ['SOURCE_SHA']}))
+          PY
+          tar -czf "$RUNNER_TEMP/verification.tar.gz" build node_modules package.json deployment.json
+      - name: Deploy with restricted SSH key
+        env:
+          DEPLOY_HOST: ${{ vars.OBC_VERIFICATION_SSH_HOST }}
+          DEPLOY_KEY: ${{ secrets.OBC_VERIFICATION_DEPLOY_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.OBC_VERIFICATION_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/verification"
+          chmod 0600 "$HOME/.ssh/verification"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh -i "$HOME/.ssh/verification" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "obc-verification-deploy@$DEPLOY_HOST" < "$RUNNER_TEMP/verification.tar.gz"

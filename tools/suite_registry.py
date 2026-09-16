@@ -241,6 +241,7 @@ def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dic
 def discover_paths(root: Path) -> list[Discovered]:
     rules = (
         ("fixture-validation", "fixtures", ("verify-*.py",)),
+        ("web-test", "apps/obc-verification/tests", ("*.test.ts",)),
         ("web-test", "builder/app", ("*.test.ts", "*.test.tsx", "*.test.js")),
         ("browser-test", "apps/obc-web-demo/tests/browser", ("*.test.js",)),
         ("python-test", "tools/tests", ("test_*.py",)),
@@ -1032,6 +1033,15 @@ def select_suites(
         errors=sorted(set(errors)),
     )
 
+def select_release(plan: SelectionPlan) -> SelectionPlan:
+    """Require all ordinary CI suites, preserving the rendering-only snapshot budget."""
+    for selection in plan.suites:
+        if (selection.jobs and selection.suite.get("pull_request") != "never"
+                and selection.suite["level"] not in {"live", "hardware"}
+                and selection.suite["id"] != "ci.ui-snapshots"):
+            _add_reason(selection, "release candidate requires the complete CI suite")
+    return plan
+
 NOT_SELECTED = "no changed path, Cargo edge, or required cadence selected this suite"
 
 def selection_plan_data(
@@ -1280,6 +1290,8 @@ def _affected_plan(root: Path, base: str, head: str) -> SelectionPlan:
 def command_select(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     plan = _affected_plan(root, args.base, args.head)
+    if args.release:
+        plan = select_release(plan)
     data = selection_plan_data(plan, workflow_jobs(root))
     if args.jobs_file:
         Path(args.jobs_file).write_text(json.dumps(data["required_jobs"]), encoding="utf-8")
@@ -1407,6 +1419,7 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--base", required=True, help="base Git revision")
     select.add_argument("--head", default="HEAD", help="head Git revision (default: HEAD)")
     select.add_argument("--format", choices=("text", "json"), default="text")
+    select.add_argument("--release", action="store_true", help="require all ordinary CI suites for a release candidate")
     select.add_argument("--jobs-file", help="also write the required workflow jobs as a JSON array")
     select.set_defaults(func=command_select)
     run = subparsers.add_parser("run", help="run the suites of a level, surface, or Git range")
