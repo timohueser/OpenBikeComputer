@@ -285,6 +285,19 @@ def discover_swift(root: Path) -> list[Discovered]:
             found.append(Discovered("swift-package", manifest.parent.name, relative))
     return sorted(found)
 
+SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)")
+JOB_BODY_RE = re.compile(r"(?:^|\s)(tools/ci/[\w.-]+\.sh)(?:\s|$)")
+
+def _job_body_lines(root: Path, command: str) -> list[str]:
+    """A `tools/ci/*.sh` script is a job body: its commands are the job's commands."""
+
+    lines: list[str] = []
+    for match in JOB_BODY_RE.finditer(command):
+        script = root / match.group(1)
+        if script.is_file():
+            lines.extend(line.strip() for line in script.read_text(encoding="utf-8").splitlines())
+    return lines
+
 def _strip_yaml_scalar(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
@@ -306,8 +319,11 @@ def scan_workflow(root: Path) -> list[WorkflowStep]:
     in_jobs = False
 
     def record(command: str) -> None:
-        if any(marker in command for marker in WORKFLOW_MARKERS):
-            steps.append(WorkflowStep(command, current_job, step_directory or job_directory))
+        for line in _job_body_lines(root, command) or [command]:
+            if line.startswith(("#", "export ")) or SHELL_ASSIGNMENT_RE.fullmatch(line):
+                continue
+            if any(marker in line for marker in WORKFLOW_MARKERS):
+                steps.append(WorkflowStep(line, current_job, step_directory or job_directory))
 
     for raw in workflow.read_text(encoding="utf-8").splitlines():
         indent = len(raw) - len(raw.lstrip())
@@ -327,7 +343,7 @@ def scan_workflow(root: Path) -> list[WorkflowStep]:
             continue
         if stripped.startswith("export "):
             continue
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)", stripped):
+        if SHELL_ASSIGNMENT_RE.fullmatch(stripped):
             # A whole-line variable assignment is shell state, not a command to route.
             continue
         if block_indent is not None:

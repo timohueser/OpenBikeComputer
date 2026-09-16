@@ -13,9 +13,8 @@
 //! The copy is **hand-wrapped constant lines**, not runtime-wrapped text: the legal formulas are
 //! fixed strings, so pre-wrapping makes the exact on-glass layout reviewable in the source, and
 //! the tests below enforce the two properties that matter — every line fits the panel width
-//! (the never-ellipsize rule), and the Copernicus lines re-join to `obc_dem`'s canonical
-//! [`COPERNICUS_ATTRIBUTION`] word for word (a dev-dependency, so the device build never sees the
-//! host crate).
+//! (the never-ellipsize rule), and the Copernicus lines re-join to `obc_elevation`'s canonical
+//! [`COPERNICUS_ATTRIBUTION`] word for word.
 //!
 //! The page is taller than the panel, so it **scrolls by line**: Rotate moves the window, Back
 //! climbs out, and a right-edge scrollbar shows where you are. Press does nothing — there is
@@ -53,7 +52,7 @@ const LINE_CHARS: usize = 17;
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
 
-/// `obc_dem::COPERNICUS_ATTRIBUTION`, pre-wrapped. The parity test re-joins these with single
+/// `obc_elevation::COPERNICUS_ATTRIBUTION`, pre-wrapped. The parity test re-joins these with single
 /// spaces and compares against the host crate's const, so the wording cannot drift and the wraps
 /// can only fall on word boundaries.
 const COPERNICUS_LINES: &[&str] = &[
@@ -196,11 +195,11 @@ mod tests {
         assert!(matches!(run(&mut scr, Gesture::Back), Transition::Pop));
     }
 
-    /// The Copernicus lines re-join to `obc_dem`'s canonical attribution word for word — the
-    /// single-copy-of-the-wording rule, held across the firmware/host boundary by a dev-dep the
-    /// device build never sees. If the wording ever changes in `obc-dem`, this fails here.
+    /// The Copernicus lines re-join to `obc_elevation`'s canonical attribution word for word —
+    /// the single-copy-of-the-wording rule. The credit lives in the elevation leaf this crate
+    /// already depends on, so the device text cannot drift from the one the bakery stamps.
     #[test]
-    fn copernicus_wording_matches_obc_dem() {
+    fn copernicus_wording_matches_obc_elevation() {
         let mut joined = std::string::String::new();
         for (i, line) in COPERNICUS_LINES.iter().enumerate() {
             if i > 0 {
@@ -208,7 +207,7 @@ mod tests {
             }
             joined.push_str(line);
         }
-        assert_eq!(joined, obc_dem::COPERNICUS_ATTRIBUTION);
+        assert_eq!(joined, obc_elevation::COPERNICUS_ATTRIBUTION);
     }
 
     /// Every pre-wrapped content line fits the Label-width budget, and every caption does so in

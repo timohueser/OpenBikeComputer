@@ -31,6 +31,9 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # into this tree. Declared here rather than inherited by workspace feature unification, so a
 # standalone `cargo check -p obc-bake` matches what the workspace builds.
 obc-dem = { path = "../obc-dem", default-features = false, features = ["geotiff", "fetch"] }
+# The Copernicus credit the terrain stage stamps into every catalog entry. It is a `const` in the
+# elevation leaf, which this crate reads through rather than copying the wording.
+obc-elevation = { path = "../../firmware/obc-elevation" }
 # Skin previews are not screenshots of a second renderer. The bakery restamps a
 # canonical tiny OBCM through the assembly engine's production skin resolver and
 # renders it through the same `RenderScratch` the device runs.
