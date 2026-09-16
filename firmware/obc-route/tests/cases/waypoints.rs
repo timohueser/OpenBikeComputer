@@ -8,8 +8,7 @@ use obc_formats::obcr::{WAYPOINT_ELE_NONE, WAYPOINT_LEN};
 use obc_reader::PoiCategory;
 use obc_route::{for_each_waypoint, gpx_to_obcr, RouteIndex, RouteReader, Waypoint, Waypoints, MAX_WAYPOINTS};
 
-mod common;
-use common::{build_obcr, convert, decode, ChunkIn, IndexPlacement, RouteSpec, VecSink, WpRec};
+use crate::common::{build_obcr, convert, decode, ChunkIn, IndexPlacement, RouteSpec, VecSink, WpRec};
 
 /// Collect every stored waypoint of an `.obcr` byte buffer.
 fn waypoints(bytes: &[u8]) -> Vec<Waypoint> {

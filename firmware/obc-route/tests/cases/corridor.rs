@@ -15,8 +15,7 @@ use obc_reader::{
 use obc_route::{RouteIndex, RouteReader};
 use obcm_testkit::{build_poi_map, PoiSpec};
 
-mod common;
-use common::convert;
+use crate::common::convert;
 
 /// The map bbox the POI fixtures pack into, and the POI chunk size (the packer's §7.1 default).
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 47_000_000, 9_000_000, 49_000_000);

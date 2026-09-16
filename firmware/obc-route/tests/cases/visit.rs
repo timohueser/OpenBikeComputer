@@ -1,5 +1,4 @@
-mod common;
-use common::{build_obcr, ChunkIn, RouteSpec, VecSink, WpRec};
+use crate::common::{build_obcr, ChunkIn, RouteSpec, VecSink, WpRec};
 use obc_formats::io::SliceSource;
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
 use obc_formats::obcr::RouteSourceKey;

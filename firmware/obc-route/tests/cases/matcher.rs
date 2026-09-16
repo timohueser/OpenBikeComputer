@@ -8,8 +8,7 @@ use heapless::Vec as HVec;
 use obc_formats::io::SliceSource;
 use obc_route::{RouteIndex, RouteMatch, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
 
-mod common;
-use common::convert;
+use crate::common::convert;
 
 /// Build GPX text from `(lat_deg, lon_deg, ele_m)` track points.
 fn gpx_from(pts: &[(f64, f64, f64)]) -> String {

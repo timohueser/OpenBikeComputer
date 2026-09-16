@@ -4,10 +4,9 @@
 //! exercised end to end over genuine on-wire bytes — snap, search, exhaustion, the
 //! graph-tile cache, and the emitted OBCR's round trip through `RouteReader`.
 
-mod common;
-use common::nav::{digest, plan_p};
+use crate::common::nav::{digest, plan_p};
 
-use common::{decode, route_points, VecSink};
+use crate::common::{decode, route_points, VecSink};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};

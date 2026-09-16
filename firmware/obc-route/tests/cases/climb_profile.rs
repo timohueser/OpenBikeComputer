@@ -21,8 +21,7 @@ use obc_formats::io::{ByteSource, Error, SliceSource};
 use obc_map_scene::ground_dist_m;
 use obc_route::{ClimbProfile, ClimbSeg, RouteIndex, RouteReader, CLIMB_PROFILE_COLS};
 
-mod common;
-use common::{ChunkExtent, ChunkIn, IndexPlacement, RouteSpec};
+use crate::common::{ChunkExtent, ChunkIn, IndexPlacement, RouteSpec};
 
 /// Serialize `chunks` into an in-memory `.obcr` through the shared hand-rolled writer, with the
 /// geometry right after the header and the index after it. Returns the bytes and each chunk's
@@ -32,7 +31,7 @@ use common::{ChunkExtent, ChunkIn, IndexPlacement, RouteSpec};
 /// longitude 0, told apart by its stamped cumulative distance, so the header's point count is the
 /// plain sum. Ascent fields stay zero — the climb profile reads heights, not the header totals.
 fn build_obcr(chunks: &[ChunkIn], total_distance_m: u32) -> (Vec<u8>, Vec<ChunkExtent>) {
-    common::build_obcr(&RouteSpec {
+    crate::common::build_obcr(&RouteSpec {
         chunks,
         totals: (total_distance_m, 0, 0),
         index: IndexPlacement::AfterData,

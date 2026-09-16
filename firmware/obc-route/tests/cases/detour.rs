@@ -8,9 +8,8 @@
 //! The corridor over the skipped span must force the plan onto the street; a grade-separated
 //! bridge chord crossing mid-span and the at-grade junction edges must stay usable.
 
-mod common;
 
-use common::{convert, route_points, VecSink};
+use crate::common::{convert, route_points, VecSink};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
 use obc_pack::nav::{Edge, NavGraph, Node};

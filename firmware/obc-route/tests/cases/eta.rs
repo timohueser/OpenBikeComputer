@@ -9,8 +9,7 @@ use obc_formats::io::SliceSource;
 use obc_route::eta::{K_CLIMB_S_PER_M, PROFILE_COUNT, V_FLAT_KMH};
 use obc_route::{ride_time_s, route_time_s, time_to_go_s, v_flat_mps, RouteIndex, RouteReader};
 
-mod common;
-use common::convert;
+use crate::common::convert;
 
 /// The four shipped profile indices (Road / Gravel / MTB / Touring — the §8.6 table order).
 const PROFILES: [u8; PROFILE_COUNT] = [0, 1, 2, 3];
