@@ -353,7 +353,26 @@ Each step removes its old report before it starts. A skipped step uploads nothin
 collection failures remain failures and can produce an incomplete report or no report; a missing
 file makes the upload step fail. A cancelled run does not upload these reports. CI does not create
 an empty report or run tests again to obtain results. These reports cover the builder Vitest suite,
-which uses Node and a simulated DOM; it is not real-browser evidence.
+which uses Node and a simulated DOM. The `web.builder-browser` journey below is the builder's
+real-browser evidence.
+
+## Builder browser journey
+
+`web.builder-browser` is an affected end-to-end suite for the map builder. The `web-browser` CI job
+runs it in Chromium on the `dist/web` build that ships. `tools/fixture_catalog.py` publishes the
+`obc-web-assemble` bridge fixture as a digest-pinned catalog on loopback, and serves the build on
+the same origin. The journey selects the region, lets the application verify the cells into OPFS,
+assembles them in the real worker with the real WebAssembly bridge, and downloads the map. The
+downloaded bytes must be the same as the checked-in `expected/map.obcm`, which the command-line
+assembler wrote from the same cells.
+
+The journey also makes sure that the run used the storage path that ships, that the application
+requested every published object, and that no request went to a host other than loopback. A
+console, page or worker error is a failure. The suite covers the download half only. The upload
+half to a device is not in it.
+
+The job requires the browser test step to succeed and publishes `web-builder-browser-ATTEMPT`,
+with native JUnit and diagnostics, plus a screenshot and trace on failure.
 
 ## Web demo browser journey
 
