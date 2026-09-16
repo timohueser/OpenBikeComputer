@@ -605,7 +605,9 @@ test *args:
           _hint "example: obc test -p obc-app"
           exit 2
         }
-        _run cargo nextest run --locked "$@"
+        # `--no-tests warn`: a package with no test yet is not a failed run. The workspace
+        # runs in `obc test full` and CI keep the default `fail`.
+        _run cargo nextest run --locked --no-tests warn "$@"
         # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
         # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
         # package with no library, so an unbuildable scope fails before anything runs.
