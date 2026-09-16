@@ -42,6 +42,7 @@ pub mod color;
 pub mod corridor;
 pub mod hours;
 pub mod landmarks;
+pub mod peaks;
 pub mod photo;
 pub mod reader;
 mod scene;

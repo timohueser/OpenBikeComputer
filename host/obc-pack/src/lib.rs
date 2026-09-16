@@ -43,6 +43,7 @@ pub mod landmarks;
 pub mod merge;
 pub mod nav;
 pub mod net;
+pub mod peak_map;
 pub mod pipeline;
 pub mod poi;
 pub mod progress;

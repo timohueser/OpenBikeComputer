@@ -78,6 +78,7 @@ pub mod grid;
 pub mod input;
 pub mod landmarks;
 pub mod nav;
+pub mod peaks;
 pub mod poi;
 pub mod prune;
 pub mod qtree;
@@ -489,6 +490,7 @@ pub fn assemble_full(
     let core_cells: Vec<&Cell<'_>> = cells.iter().filter(|c| c.band == core_band.id).collect();
     let mut merged_pois = poi::merge(&core_cells)?;
     let landmark_section = landmarks::merge(&core_cells, &mut merged_pois)?;
+    let peak_section = peaks::merge(&core_cells, &merged_pois)?;
     let poi_section = poi::layout(&merged_pois, assembly.ubox())?;
     let t_poi = clock.now_us();
     let merged_nav = nav::merge_profiled(
@@ -533,7 +535,7 @@ pub fn assemble_full(
         chunk_size,
         terrain_region.as_ref().map_or(0, |r| r.bytes()),
         terrain_region.as_ref().is_some_and(|r| r.has_surface()),
-        (style_len, poi_len, nav_projection, landmark_section.section_len()),
+        (style_len, poi_len, nav_projection, landmark_section.section_len(), peak_section.section_len()),
     )?;
     if let Some(region) = &terrain_region {
         region.check_map_budget(
@@ -628,6 +630,7 @@ pub fn assemble_full(
             skin.marker_color,
             &poi_section,
             &landmark_section,
+            &peak_section,
             &merged_nav,
             &profile_table,
             terrain_region.as_ref(),
@@ -771,13 +774,14 @@ fn plan_map(
     chunk_size: usize,
     terrain_bytes: u64,
     surface_terrain: bool,
-    lens: (usize, u64, nav::NavProjection, u64),
+    lens: (usize, u64, nav::NavProjection, u64, u64),
 ) -> Result<MapPlan> {
-    let (style_len, poi_len, nav_projection, landmark_bytes) = lens;
+    let (style_len, poi_len, nav_projection, landmark_bytes, peak_bytes) = lens;
     let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
     let mut plan = build_map(schema, cells, assembly, chunk_size, &all_lods, terrain_bytes)?;
     plan.surface_terrain = surface_terrain;
     plan.landmark_bytes = landmark_bytes;
+    plan.peak_bytes = peak_bytes;
     plan.bytes = emit::projected_bytes(&plan, style_len, poi_len, nav_projection)?;
     // **The gate is the refusal.** Taking this path means "this file may be written", and what a
     // file has to clear is `emit::fits_ceiling` and nothing else. Open-coding the comparison here
@@ -818,6 +822,7 @@ fn build_map(
         box_,
         lods: plans,
         landmark_bytes: 0,
+        peak_bytes: 0,
         terrain_bytes,
         surface_terrain: false,
         bytes: 0,

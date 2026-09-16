@@ -3,11 +3,12 @@
 use crate::io::{rd_u16, validate_prefix, DecodeError};
 
 pub mod landmarks;
+pub mod peaks;
 
 pub const MAGIC: [u8; 4] = *b"OBCM";
-pub const VERSION: u8 = 16;
+pub const VERSION: u8 = 17;
 /// Fixed header, including optional terrain and landmark region pointers.
-pub const HEADER_LEN: usize = 57;
+pub const HEADER_LEN: usize = 65;
 /// Header offset of the v14 `Offset Scale` byte (§1.1).
 pub const HEADER_OFFSET_SCALE_OFF: usize = 40;
 /// Header offset of the v14 `Terrain Offset` field (§1.3).
@@ -17,6 +18,8 @@ pub const HEADER_TERRAIN_OFFSET_OFF: usize = 41;
 pub const HEADER_TERRAIN_LENGTH_OFF: usize = 45;
 pub const HEADER_LANDMARK_OFFSET_OFF: usize = 49;
 pub const HEADER_LANDMARK_LENGTH_OFF: usize = 53;
+pub const HEADER_PEAK_OFFSET_OFF: usize = 57;
+pub const HEADER_PEAK_LENGTH_OFF: usize = 61;
 pub const LOD_ENTRY_LEN: usize = 18;
 pub const STYLE_RECORD_LEN: usize = 8;
 

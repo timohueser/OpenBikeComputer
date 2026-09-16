@@ -58,6 +58,7 @@ pub struct PackOptions {
     pub terrain: Option<PathBuf>,
     /// Offline compiler output embedded in the ordinary map.
     pub landmarks: Option<PathBuf>,
+    pub peaks: Vec<PathBuf>,
 }
 
 /// What a finished run produced.
@@ -143,6 +144,7 @@ fn run(
         .map(|path| crate::landmark_map::load(path, &ingested.landmark_links, landmark_bbox))
         .transpose()?
         .unwrap_or_default();
+    let peaks = crate::peak_map::load(&opts.peaks)?.select(&ingested.pois);
     for landmark in &landmarks {
         global_bbox.0 = global_bbox.0.min(i64::from(landmark.record.lon));
         global_bbox.1 = global_bbox.1.min(i64::from(landmark.record.lat));
@@ -221,6 +223,7 @@ fn run(
         global_bbox,
         &ingested.pois,
         &landmarks,
+        &peaks,
         &ingested.nav_graph,
         &config.routing.profiles,
         terrain,
