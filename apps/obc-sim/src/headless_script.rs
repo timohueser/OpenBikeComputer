@@ -64,8 +64,7 @@ impl Session<'_, '_> {
             );
             self.peak.finish(app);
             if what == ScriptHook::Render {
-                let source = self.stores.routes.active_source();
-                let route = self.route.index().zip(source).map(|(index, source)| RouteReader::new(index, source));
+                let route = obc_host_core::frame::active_route(self.route, self.stores.routes);
                 let mut fb = Framebuffer::new(self.size.0, self.size.1);
                 let _ = map_file::render_frame(
                     app,

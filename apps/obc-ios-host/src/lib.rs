@@ -22,7 +22,7 @@ use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, CatalogObjectId, Screen};
 use obc_host_core::flat_map::{FlatMap, MapError};
 use obc_host_core::flat_store::HostStore;
-use obc_host_core::frame::{self, active_route};
+use obc_host_core::frame;
 use obc_host_core::{
     convert_gpx, initial_camera, ActiveRouteSession, DeviceInput, FileSettingsStore, FlatRideRecorder, FlatRideStore,
     FlatRouteStore, HostLoop, HostPlatform, RgbaFrame, RideRepository, RouteRepository, TrackStore,
@@ -231,7 +231,7 @@ impl Host {
         // map-matcher reads the geometry the frame draws.
         self.session.sync(&self.app, &mut self.routes);
         let mut plan = {
-            let route = active_route(&self.session, &self.routes);
+            let route = frame::active_route(&self.session, &self.routes);
             self.host.pass(
                 &mut self.app,
                 PassClock { ride: RideClock(now), ui: InputClock(now) },
@@ -268,7 +268,7 @@ impl Host {
         // for. Render on demand otherwise — the same signal the firmware gates its repaints on.
         if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
             self.session.sync(&self.app, &mut self.routes);
-            let route = active_route(&self.session, &self.routes);
+            let route = frame::active_route(&self.session, &self.routes);
             let reader = self.map.reader();
             frame::render(
                 &mut self.app,

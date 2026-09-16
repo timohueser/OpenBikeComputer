@@ -57,6 +57,8 @@ firmware/obc-settings.bin
 # matches that one sweep directory.
 ui-snapshots/
 /OUT/
+# Per-branch working scratch (sweeps written elsewhere, logs, notes). Never committed.
+.scratch/
 .pytest_cache/
 user_config.json
 .artifacts/

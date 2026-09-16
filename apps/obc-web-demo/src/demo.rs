@@ -15,7 +15,7 @@ use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::recorder::RecorderOutcome;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::flat_map::FlatMap;
-use obc_host_core::frame::{self, active_route};
+use obc_host_core::frame;
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, FlatRideRecorder, FlatRideStore, FlatRouteStore, HostLoop,
     ReplaySensors, RgbaFrame,
@@ -439,7 +439,7 @@ impl Demo {
         // The first frame always renders (`ready` doubles as the page's poster-swap signal).
         if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
             self.session.sync(&self.app, &mut self.routes);
-            let route = active_route(&self.session, &self.routes);
+            let route = frame::active_route(&self.session, &self.routes);
             let reader = self.map.reader();
             frame::render(
                 &mut self.app,
