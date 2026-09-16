@@ -75,8 +75,9 @@ test('dispatch IDs bind CI evidence, retries distinguish rejection from uncertai
   }
 });
 test('standalone reports render Markdown without active content', () => {
-  const c: Candidate = { id: 'candidate', version: '<img src=x onerror=alert(1)>', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'queued', ciStatus: 'pending', revision: { id: 1, author: '', createdAt: '', requirements: [{ id: 'REQ-1', title: '<script>bad()</script>', statement: '**Bold** <script>bad()</script> [bad](javascript:bad())', active: true, tests: [] }] }, results: [], manualRuns: [], assets: [] };
+  const c: Candidate = { id: 'candidate', version: '<img src=x onerror=alert(1)>', sourceRef: 'develop', sourceSha: 'a'.repeat(40), createdAt: '', status: 'queued', ciStatus: 'pending', revision: { id: 1, author: '', createdAt: '', requirements: [{ id: 'REQ-1', title: '<script>bad()</script>', group: 'Navigation <script>bad()</script>', statement: '**Bold** <script>bad()</script> [bad](javascript:bad())', active: true, tests: [] }] }, results: [], manualRuns: [], assets: [] };
   const html = report(c);
   assert.match(html, /<strong>Bold<\/strong>/);
+  assert.match(html, /Group: Navigation &lt;script&gt;/);
   assert.doesNotMatch(html, /<script>|href="javascript:|<img/);
 });

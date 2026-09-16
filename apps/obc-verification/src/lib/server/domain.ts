@@ -39,8 +39,11 @@ export function requirements(value: unknown, lookup: (id: string) => Attachment)
     assert(!ids.has(id), 'Requirement IDs must be unique.'); ids.add(id);
     assert(typeof r.active === 'boolean', 'Active must be a boolean.');
     assert(Array.isArray(r.tests) && r.tests.length <= 100, 'At most 100 tests per requirement.');
+    assert(r.group === undefined || (typeof r.group === 'string' && r.group.length <= 80), 'Group must be a name of at most 80 characters.');
+    const group = r.group?.trim();
+    assert(!group || !/[\u0000-\u001f\u007f]/.test(group), 'Group must be a single line.');
     const tests = new Set<string>();
-    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), active: r.active,
+    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), active: r.active,
       tests: r.tests.map((t: Record<string, unknown>) => {
         const testId = identifier(t.id, 'Test ID');
         assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);

@@ -11,7 +11,7 @@ export interface VerificationTest {
   expected?: string;
   inputs: Attachment[];
 }
-export interface Requirement { id: string; title: string; statement: string; active: boolean; tests: VerificationTest[] }
+export interface Requirement { id: string; title: string; statement: string; group?: string; active: boolean; tests: VerificationTest[] }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }
 export interface CatalogCase { id: string; suite: string; name: string; file?: string }
 export interface Catalog { sourceSha: string; updatedAt: string; cases: CatalogCase[] }
