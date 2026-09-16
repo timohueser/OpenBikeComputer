@@ -19,8 +19,7 @@ use obcm_testkit::{
     terrain_stub, LodSpec, PoiCat, Style, FILLER, MARKER, OFFSET_SCALE, STYLE_OFFSET, UNIT,
 };
 
-mod common;
-use common::{decode_chunk, decode_filtered};
+use crate::common::{decode_chunk, decode_filtered};
 
 /// Collect every leaf `for_each_chunk` yields — the uncapped replacement for the
 /// removed `Reader::query` test convenience.

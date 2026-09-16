@@ -22,8 +22,7 @@ use obcm_testkit::{
 };
 use std::cell::Cell;
 
-mod common;
-use common::decode_chunk;
+use crate::common::decode_chunk;
 
 const CS: usize = 64;
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
