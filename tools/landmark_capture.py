@@ -261,7 +261,7 @@ def class_parents(value: dict, qid: str) -> list[str]:
 
 def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict | None, str | None, str]:
     path = f"articles/{language}-{qid}.json"
-    url = api(f"{language}.wikipedia.org", action="query", titles=title, prop="pageprops|revisions", rvprop="ids|timestamp|content", rvslots="main")
+    url = api(f"{language}.wikipedia.org", action="query", titles=title, redirects=1, prop="pageprops|revisions", rvprop="ids|timestamp|content", rvslots="main")
     raw = capture.json(path, url)
     if not raw:
         return None, None, "acquisition-failed"
@@ -329,6 +329,11 @@ def capture_place(capture: Capture, qid: str) -> dict:
     if not value or "missing" in value:
         place["outcomes"].append(dict(asset="entity", status="acquisition-failed"))
         return place
+    return capture_assets(capture, qid, value)
+
+
+def capture_assets(capture: Capture, qid: str, value: dict) -> dict:
+    place = dict(qid=qid, articles=[], images=[], outcomes=[])
     place["entity_revision"] = value.get("lastrevid")
     place["name"] = next((value.get("labels", {}).get(lang, {}).get("value") for lang in LANGUAGES if value.get("labels", {}).get(lang)), qid)
     coordinates = claim_values(value, "P625")
@@ -461,12 +466,18 @@ def run(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--boundary", required=True, type=Path)
-    parser.add_argument("--policy", required=True, type=Path)
+    parser.add_argument("--policy", type=Path, help="required for landmark policy discovery")
+    parser.add_argument("--peaks-osm", type=Path, help="capture a separate peak catalogue from this regional OSM extract")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--select-with", required=True, type=Path, help="built obc-bake binary; it selects entities before asset acquisition")
     parser.add_argument("--retry-failed", action="store_true", help="retry failed requests once, retaining their previous outcomes")
     args = parser.parse_args()
     try:
+        if args.peaks_osm:
+            from peak_capture import run as run_peaks
+            return run_peaks(args)
+        if args.policy is None:
+            raise ValueError("landmarks require --policy")
         return run(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")
