@@ -34,6 +34,21 @@ def read_suites(root: Path) -> list[dict[str, Any]]:
         return tomllib.load(handle)["suite"]
 
 
+def block_errors(owner: str, block: Any) -> list[str]:
+    """The offline shape rule, shared with `suite_registry.py`'s always-run validation."""
+
+    if not isinstance(block, dict):
+        return [f"{owner}: must be a table"]
+    errors: list[str] = []
+    reason = block.get("reason", "")
+    reference = block.get("issue", "")
+    if not isinstance(reason, str) or not reason.strip():
+        errors.append(f"{owner}: requires a reason")
+    if not isinstance(reference, str) or not ISSUE_RE.fullmatch(reference):
+        errors.append(f"{owner}: requires a GitHub issue reference")
+    return errors
+
+
 def collect_references(
     suites: Sequence[dict[str, Any]], repository: str
 ) -> tuple[dict[tuple[str, int], list[str]], list[str]]:
@@ -47,16 +62,11 @@ def collect_references(
                 continue
             owner = f"{suite['id']}.{field}"
             block = suite[field]
-            if not isinstance(block, dict):
-                errors.append(f"{owner}: must be a table")
+            shape = block_errors(owner, block)
+            errors.extend(shape)
+            if shape:
                 continue
-            reason = block.get("reason", "")
-            reference = block.get("issue", "")
-            if not isinstance(reason, str) or not reason.strip():
-                errors.append(f"{owner}: requires a reason")
-            if not isinstance(reference, str) or not ISSUE_RE.fullmatch(reference):
-                errors.append(f"{owner}: requires a GitHub issue reference")
-                continue
+            reference = block["issue"]
             if reference.startswith("#"):
                 repo, number = repository, reference[1:]
             else:

@@ -29,7 +29,8 @@ class ExceptionIssueStateTests(unittest.TestCase):
     def test_local_and_full_references_share_one_lookup(self, run) -> None:
         run.return_value = self.response({"state": "open"})
         suites = [self.suite("#7"), self.suite("https://github.com/OWNER/REPO/issues/007", "sleep_exception")]
-        self.assertEqual(self.check(suites), 0)
+        with patch("sys.stdout"):
+            self.assertEqual(self.check(suites), 0)
         run.assert_called_once_with(
             ["gh", "api", "repos/owner/repo/issues/7"],
             check=True, capture_output=True, text=True, timeout=20,

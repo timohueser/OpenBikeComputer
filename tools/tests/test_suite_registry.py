@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
+import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import sys
@@ -128,6 +130,7 @@ class SuiteRegistryTests(unittest.TestCase):
         case("invalid schedule", lambda s, c, d: s["suite"][0].update(scheduled="monthly"), "invalid scheduled cadence")
         case("fixture declaration", lambda s, c, d: s["suite"][0].update(level="fixture"), "must declare fixtures")
         case("derived fact", lambda s, c, d: s["suite"][0].update(test_count=3), "derived fields are forbidden")
+        case("budget issue", lambda s, c, d: s["suite"][0].update(budget_exception={"reason": "slow"}), "GitHub issue reference")
         case("global coverage exclusion", lambda s, c, d: c.update(exclude=[{"path": "src/**"}]), "global exclusion needs path and replacement evidence")
         case("unknown component", lambda s, c, d: s["suite"][0].update(coverage_component="missing"), "unknown coverage component")
         case("dead entry", lambda s, c, d: s["suite"].append({**copy.deepcopy(s["suite"][0]), "id": "dead", "ownership": [{"kind": "workflow", "pattern": "never"}]}), "dead registry entry")
@@ -891,3 +894,35 @@ class CargoCadenceTests(unittest.TestCase):
         owner = {'kind': 'path', 'source': 'xcuitest', 'pattern': 'ios/*.swift', 'exclude': [unit.path]}
         self.assertFalse(registry.ownership_matches(Path('.'), owner, unit))
         self.assertTrue(registry.ownership_matches(Path('.'), {**owner, 'exclude': []}, unit))
+
+class JobPackageTableTests(unittest.TestCase):
+    """`JOB_PACKAGES` states what the builders compile; nothing derives it, so pin it here."""
+
+    root = registry.repository_root()
+
+    def package_name(self, manifest_directory: Path) -> str:
+        with (manifest_directory / "Cargo.toml").open("rb") as handle:
+            return tomllib.load(handle)["package"]["name"]
+
+    def test_wasm_bridges_matches_the_build_script(self) -> None:
+        script = (self.root / "builder/build-wasm-bridges.sh").read_text(encoding="utf-8")
+        directories = re.findall(r"\bwasm-pack\s+build\s+(\S+)", script)
+        self.assertEqual(
+            {self.package_name(self.root / directory) for directory in directories},
+            registry.JOB_PACKAGES["wasm-bridges"],
+        )
+
+    def test_wasm_matches_the_trunk_target_page(self) -> None:
+        config = self.root / "docs/Trunk.toml"
+        with config.open("rb") as handle:
+            page = config.parent / tomllib.load(handle)["build"]["target"]
+        hrefs = re.findall(
+            r'<link[^>]*data-trunk[^>]*rel="rust"[^>]*href="([^"]+)"', page.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {self.package_name((page.parent / href).parent) for href in hrefs},
+            registry.JOB_PACKAGES["wasm"],
+        )
+
+if __name__ == "__main__":
+    unittest.main()
