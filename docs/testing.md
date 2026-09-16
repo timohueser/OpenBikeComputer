@@ -16,9 +16,11 @@ A route says when a piece of verification runs. There are five, and `route` in
 | --- | --- |
 | `ordinary` | The change selects it |
 | `required` | It runs whenever one of its CI jobs starts |
-| `manual` | Explicitly invoked only: generators, probes and captured-source checks |
-| `weekly` | `test-weekly.yml` runs it |
+| `manual` | Explicitly invoked only: generators, probes, captured-source checks and the weekly application suite |
 | `live` | It contacts a live service; explicitly invoked only |
+
+There is no `weekly` route. A schedule belongs to the workflow that holds it: `test-weekly.yml`
+names the two commands it runs each Monday, and the suites they run are `manual`.
 
 Every Rust package is on the ordinary route unless `testing/suites.toml` says otherwise.
 Its ordinary test binaries are every test target Cargo reports; its captured-fixture
@@ -213,7 +215,7 @@ answer. CI calls the Python entry point directly because `just` is not installed
 
 ```sh
 obc suites check                         # plan drift and command resolution
-obc suites select --base REF [--head REF] [--format text|json]
+obc suites select --base REF [--head REF] [--format text|json] [--release]
 obc suites validate-filters              # the job table and the workflow describe the same jobs
 ```
 
@@ -226,6 +228,10 @@ Cargo metadata, applies the non-Cargo edges the plan documents declare, and prin
 and non-selected unit with its reason and its CI jobs. Unknown production paths and selected
 suites without an executable CI route are errors; a selection error never degrades to "run
 everything".
+
+`select --release` is what the release workflow passes. A release candidate is verified whole
+rather than by its diff, so it requires every unit that has a CI route. It still leaves out the
+snapshot sweep, which keeps its rendering-input budget, and every `manual` and `live` route.
 
 `validate-filters` parses `.github/workflows/ci.yml` with PyYAML and requires that every job in
 the table exists with a runner image, that every plan-gated job gates on its own name, that every
@@ -456,7 +462,10 @@ no path-filter selector — a Cargo package reaches the jobs the job table says 
 every other suite names its jobs in `testing/suites.toml`.
 
 Five rules fail closed, each with its own test. A changed tracked path that no owner claims is an
-error. A selected suite with no CI route is an error. A selection error publishes no plan, so the
+error. "No owner" is judged over source and policy files: a path under `docs/`, `artifacts/`,
+`.claude/` or `.repowise/`, a test file, and any path whose suffix is not one of the code and
+policy suffixes the planner lists are all outside the rule, so a new `hardware/notes.txt` selects
+nothing and reports nothing. A selected suite with no CI route is an error. A selection error publishes no plan, so the
 `selection` job exits nonzero and the aggregate fails on the missing plan. An empty root package
 set produces no Cargo invocation. A change to a manifest, the lockfile, the toolchain, the Cargo
 configuration, the planner, the workflow, `tools/ci/**` or `testing/suites.toml` selects the whole
