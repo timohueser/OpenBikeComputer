@@ -122,10 +122,14 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(any("no executable CI route" in error for error in errored.errors))
 
     def test_a_deleted_path_with_no_owner_runs_the_whole_graph_instead_of_nothing(self) -> None:
+        self.units.append(unit("ci.ui-snapshots", ["ui-snapshots"], triggers=("render/**",)))
         deleted = self.plan_for("crates/gone/src/lib.rs", deleted={"crates/gone/src/lib.rs"})
         self.assertFalse(deleted.errors)
-        self.assertIn("rust.core", {item.id for item in deleted.selected})
-        self.assertIn("ci.docs", {item.id for item in deleted.selected})
+        selected = {item.id for item in deleted.selected}
+        self.assertIn("rust.core", selected)
+        self.assertIn("ci.docs", selected)
+        # The deleted file may have been a rendering input, so "whole graph" includes the sweep.
+        self.assertIn("ci.ui-snapshots", selected)
 
     def test_a_rename_selects_the_owner_it_left_and_the_owner_it_joined(self) -> None:
         moved = self.plan_for("crates/leaf/src/moved.rs", "crates/core/src/moved.rs", deleted={"crates/leaf/src/moved.rs"})
