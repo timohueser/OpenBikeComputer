@@ -1,6 +1,12 @@
-//! The host harness the protocol-v4 suites run on: a real flat store over a deterministic sparse
-//! card, the engine driven exactly as an adapter drives it, and a client that builds request bytes
-//! by hand.
+//! The host harness the protocol-v4 suites run on: the shared device from `obc-flat-device` — a
+//! real flat store over a deterministic sparse card with the engine on top — plus the pump, the
+//! probes and the hand-written client this suite drives it with.
+//!
+//! The split is the point. **The device** is the assembly the browser's tests run on too, so a
+//! behaviour proved here is proved against the same engine and the same card a TypeScript flow
+//! meets. **The harness** is everything only a Rust test wants: a pump that collects every record of
+//! one exchange into a [`Wire`], store probes that ask the card questions no opcode answers, and
+//! request bytes written at the offsets the spec states.
 //!
 //! Building requests here rather than through the codec is deliberate. The device never encodes a
 //! request, so `obc-link` has no encoder for one; writing the bytes at the offsets
@@ -8,70 +14,39 @@
 
 #![allow(dead_code)]
 
+use core::ops::{Deref, DerefMut};
+
+use obc_flat_device::Reaction;
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
-use obc_link::flat::{
-    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, Stall, StreamBuffers,
-};
-use obc_storage::flat::sim::{FaultOnce, SparseDisk};
-use obc_storage::flat::{
-    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision,
-    RideCheckpoint, StoreId, RIDE_RESUME_LEN,
-};
+use obc_link::flat::{Ceilings, Channel, Link, ObjectKind, OpenPolicy};
+use obc_storage::flat::sim::SparseDisk;
+use obc_storage::flat::{BlockDevice, EntryFlags, EntryMeta, ObjectId};
 
-/// `FLAT_Store_Format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
-/// after it.
-pub const EXTENT_AREA: u64 = 4_096;
-/// §6: one extent, in blocks. A card this size is well under 64 GiB, so §8 gives it the 1 MiB
-/// minimum — the harness never has to know the size is card-scaled, because everything it drives is
-/// byte-addressed at the seam.
-pub const EXTENT_BLOCKS: u64 = 2_048;
-/// Extents the test card holds. Enough for several objects and small enough to be free.
-pub const EXTENTS: u32 = 64;
-/// The card every suite runs on.
-pub const TOTAL_BLOCKS: u64 = EXTENT_AREA + EXTENT_BLOCKS * EXTENTS as u64;
-/// The catalog's two copies, gates included (§2), which is the byte image a break must not change.
-pub const CATALOG_BLOCKS: core::ops::Range<u64> = 64..1_088;
-
-/// The identity the harness formats with.
-pub const STORE: StoreId = StoreId([0x11; 16]);
-
-/// §5.1's BLE control ceiling at the device's preferred 247-byte MTU.
-pub const CONTROL_CEILING: usize = 244;
-/// A 1 KiB CoC SDU.
-pub const STREAM_CEILING: usize = 1_024;
-
-/// The staging buffer the suites run with: small enough that a few-KiB upload crosses it several
-/// times, which is the boundary worth exercising.
-const STAGE: usize = 1_024;
+use obc_flat_device::{CATALOG_BLOCKS, TOTAL_BLOCKS};
+// The two test targets compile this module separately and name different halves of it, which is the
+// same reason `dead_code` is allowed above.
+#[allow(unused_imports)]
+pub use obc_flat_device::{crc32, STORE};
 
 /// A device over a plain card.
 pub type Plain<'a> = Device<&'a SparseDisk>;
 /// A device over a card that refuses one media operation and then behaves.
-pub type Faulty<'a> = Device<&'a FaultOnce<&'a SparseDisk>>;
+pub type Faulty<'a> = Device<&'a obc_storage::flat::sim::FaultOnce<&'a SparseDisk>>;
 
 /// A blank card of the harness geometry.
 pub fn blank_card(seed: u64) -> SparseDisk {
-    SparseDisk::blank(TOTAL_BLOCKS, seed)
+    obc_flat_device::blank_card(TOTAL_BLOCKS, seed)
 }
 
 /// A card this harness has formatted.
 pub fn formatted_card(seed: u64) -> SparseDisk {
-    let disk = SparseDisk::blank(TOTAL_BLOCKS, seed);
-    FlatStore::initialize(&disk, STORE).expect("the harness card formats");
-    disk
+    obc_flat_device::formatted_card(TOTAL_BLOCKS, seed)
 }
 
 /// Deterministic payload bytes, so a stored CRC means something.
 pub fn payload(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index * 7 + 11) as u8).collect()
-}
-
-/// The CRC-32 the wire and the card both use.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = obc_crc::Crc32::new();
-    crc.update(bytes);
-    crc.finalize()
 }
 
 /// The catalog's byte image: what a break must leave exactly as it found it.
@@ -105,34 +80,40 @@ impl Wire {
     }
 }
 
-/// The device: one store and one engine, over whatever card the suite handed it.
+/// The shared device, plus this suite's pump and probes.
+///
+/// Everything the device itself offers — the store, the engine's own questions, the link and the
+/// seeding — reaches through [`Deref`], so `device.store`, `device.is_quiet()` and
+/// `device.watch_stall(..)` are the device's and are not restated here.
 pub struct Device<D: BlockDevice> {
-    pub store: FlatStore<D>,
-    engine: Engine<FlatStore<D>, STAGE>,
-    out: Vec<u8>,
-    /// What [`Device::link_lost`] brings the radio back up with. A link that is down cannot be
-    /// served at all now, so a helper that models a *break* has to model the reconnect too.
-    ceilings: Ceilings,
+    inner: obc_flat_device::Device<D>,
+}
+
+impl<D: BlockDevice> Deref for Device<D> {
+    type Target = obc_flat_device::Device<D>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<D: BlockDevice> DerefMut for Device<D> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 /// Mounts a card and puts an idle engine on a BLE-shaped link.
 pub fn boot<D: BlockDevice>(disk: D) -> Device<D> {
-    boot_on(disk, Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor"))
+    Device { inner: obc_flat_device::Device::boot(disk) }
 }
 
 /// The same on a link of the caller's shape — a USB one, where §5.2's ceiling is a constant of the
 /// binding and a stream record is whole stages wide rather than one radio SDU.
 pub fn boot_on<D: BlockDevice>(disk: D, ceilings: Ceilings) -> Device<D> {
-    let mut device = Device {
-        store: FlatStore::mount(disk),
-        out: vec![0; ceilings.stream().max(ceilings.control()) + STREAM_HEADER_LEN],
-        engine: Engine::new(),
-        ceilings,
-    };
     // Every test that does not care which wire it is on is on the radio, which is what the suite
     // meant before links had identities. `link_up` is what a test that *does* care calls.
-    device.engine.on_link_up(Link::Ble, &device.store, ceilings);
-    device
+    Device { inner: obc_flat_device::Device::boot_on(disk, Link::Ble, ceilings) }
 }
 
 impl<D: BlockDevice> Device<D> {
@@ -142,52 +123,38 @@ impl<D: BlockDevice> Device<D> {
         self.control_with(record, &mut OpenPolicy)
     }
 
-    /// Bring a link up (or back up) with its own ceilings — the two-link cases.
-    pub fn link_up(&mut self, link: Link, ceilings: Ceilings) {
-        self.engine.on_link_up(link, &self.store, ceilings);
-    }
-
     /// One control record from a named link.
     pub fn control_on(&mut self, link: Link, record: &[u8]) -> Wire {
-        let first = self.engine.on_control(link, &self.store, &mut OpenPolicy, record, &mut self.out);
+        let first = self.inner.on_control_with(link, &mut OpenPolicy, record);
         self.drive_on(link, first, usize::MAX)
     }
 
     /// One stream record from a named link.
     pub fn stream_on(&mut self, link: Link, record: &[u8]) -> Wire {
-        let first = self.engine.on_stream(link, &self.store, &mut OpenPolicy, record, &mut self.out);
+        let first = self.inner.on_stream_with(link, &mut OpenPolicy, record);
         self.drive_on(link, first, usize::MAX)
     }
 
     /// One stream record through an adapter-owned write-combining stage.
     pub fn stream_on_staged(&mut self, link: Link, record: &[u8], stage: &mut [u8]) -> Wire {
-        let bank = self.engine.upload_stage_bank().expect("staged stream owns an upload");
-        let half = stage.len() / 2;
-        let first = self.engine.on_stream_staged(
-            link,
-            &self.store,
-            &mut OpenPolicy,
-            StreamBuffers::new(record, &mut self.out),
-            bank,
-            &mut stage[bank * half..(bank + 1) * half],
-        );
+        let first = self.inner.on_stream_staged(link, record, stage);
         self.drive_on(link, first, usize::MAX)
     }
 
     /// Pump a named link once — what an adapter does until it is told there is nothing to do.
     pub fn pump_on(&mut self, link: Link) -> Wire {
-        let first = self.engine.poll(link, &self.store, &mut self.out);
+        let first = self.inner.poll_on(link);
         self.drive_on(link, first, usize::MAX)
     }
 
     /// That link went away.
     pub fn link_lost_on(&mut self, link: Link) {
-        self.engine.on_link_lost(link, &self.store);
+        self.inner.link_down(link);
     }
 
     /// The same on a device whose policy hooks are filled in.
     pub fn control_with<P: Policy>(&mut self, record: &[u8], policy: &mut P) -> Wire {
-        let first = self.engine.on_control(Link::Ble, &self.store, policy, record, &mut self.out);
+        let first = self.inner.on_control_with(Link::Ble, policy, record);
         self.drive(first, usize::MAX)
     }
 
@@ -199,31 +166,26 @@ impl<D: BlockDevice> Device<D> {
 
     /// Both at once, for a flow that arms an update and is then cut.
     pub fn control_with_upto<P: Policy>(&mut self, record: &[u8], policy: &mut P, budget: usize) -> Wire {
-        let first = self.engine.on_control(Link::Ble, &self.store, policy, record, &mut self.out);
+        let first = self.inner.on_control_with(Link::Ble, policy, record);
         self.drive(first, budget)
     }
 
     /// Pumps a live transfer until it goes quiet.
     pub fn pump(&mut self) -> Wire {
-        let first = self.engine.poll(Link::Ble, &self.store, &mut self.out);
+        let first = self.inner.poll();
         self.drive(first, usize::MAX)
     }
 
     /// Pumps exactly one record out of it.
     pub fn pump_once(&mut self) -> Wire {
-        let first = self.engine.poll(Link::Ble, &self.store, &mut self.out);
+        let first = self.inner.poll();
         self.drive(first, 1)
     }
 
     /// One stream record.
     pub fn stream(&mut self, record: &[u8]) -> Wire {
-        let first = self.engine.on_stream(Link::Ble, &self.store, &mut OpenPolicy, record, &mut self.out);
+        let first = self.inner.on_stream(record);
         self.drive(first, usize::MAX)
-    }
-
-    /// The catalog commit sequence.
-    pub fn commit_sequence(&self) -> u64 {
-        self.store.sequence()
     }
 
     /// The link went away.
@@ -233,41 +195,12 @@ impl<D: BlockDevice> Device<D> {
     /// unserved (`on_control` answers `Idle`), so a helper that only tore down would leave every
     /// following statement in those tests talking to a wire nobody is on.
     ///
-    /// [`link_lost_on`](Device::link_lost_on) is the un-reconnected half, for the two-link tests
-    /// that care about the difference.
+    /// [`link_down`](obc_flat_device::Device::link_down) is the un-reconnected half, for the two-link
+    /// tests that care about the difference.
     pub fn link_lost(&mut self) {
-        self.engine.on_link_lost(Link::Ble, &self.store);
-        self.engine.on_link_up(Link::Ble, &self.store, self.ceilings);
-    }
-
-    /// One turn of the stall watchdog, on the caller's own fake clock.
-    pub fn watch_stall(&mut self, now_ms: u32) -> Stall {
-        self.engine.watch_stall(&self.store, now_ms)
-    }
-
-    /// The device drops the live transfer of its own accord (§3.8's other direction).
-    pub fn cancel_live(&mut self, cause: CancelCause) -> bool {
-        self.engine.cancel_live(&self.store, cause)
-    }
-
-    /// True when nothing is live and nothing is owed.
-    pub fn is_quiet(&self) -> bool {
-        self.engine.is_quiet()
-    }
-
-    /// What the live upload has landed so far — the device-side progress report.
-    pub fn live_upload(&self) -> Option<obc_link::flat::UploadProgress> {
-        self.engine.live_upload()
-    }
-
-    /// Whether an exact upload owns the engine, used by adapter-resource admission tests.
-    pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
-        self.engine.upload_matches(link, request, kind)
-    }
-
-    /// The verdict on the last upload, taken.
-    pub fn take_upload_end(&mut self) -> Option<(ObjectKind, obc_link::flat::UploadEnd)> {
-        self.engine.take_upload_end()
+        let ceilings = self.inner.ceilings();
+        self.inner.link_down(Link::Ble);
+        self.inner.link_up(Link::Ble, ceilings);
     }
 
     fn drive(&mut self, first: Reaction, budget: usize) -> Wire {
@@ -285,15 +218,12 @@ impl<D: BlockDevice> Device<D> {
                     wire.closed = Some(channel);
                     break;
                 }
-                Reaction::Send { channel, len } => {
-                    let record = self.out[..len].to_vec();
-                    match channel {
-                        Channel::Control => wire.control.push(record),
-                        Channel::Stream => wire.stream.push(record),
-                    }
-                }
-                Reaction::SendAndReboot { len } => {
-                    wire.control.push(self.out[..len].to_vec());
+                Reaction::Send { channel, bytes } => match channel {
+                    Channel::Control => wire.control.push(bytes),
+                    Channel::Stream => wire.stream.push(bytes),
+                },
+                Reaction::SendAndReboot { bytes } => {
+                    wire.control.push(bytes);
                     wire.reboot = true;
                     break;
                 }
@@ -302,7 +232,7 @@ impl<D: BlockDevice> Device<D> {
             if sent >= budget {
                 break;
             }
-            reaction = self.engine.poll(link, &self.store, &mut self.out);
+            reaction = self.inner.poll_on(link);
         }
         wire
     }
@@ -310,72 +240,18 @@ impl<D: BlockDevice> Device<D> {
     /// Publishes an object straight through the seam, which is how a suite gets a card with
     /// something on it without spending a transfer on it.
     pub fn seed(&mut self, kind: ObjectKind, bytes: &[u8], name: &str) -> (u64, u64) {
-        let id = FlatStore::next_object_id(&self.store);
-        let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the seed allocates");
-        Store::write(&self.store, &mut allocation, bytes).expect("the seed writes");
-        let meta = EntryMeta {
-            added_at_utc: 0,
-            id,
-            revision: Revision(1),
-            kind: seam_kind(kind),
-            flags: EntryFlags::NONE,
-            payload_len: bytes.len() as u64,
-            payload_crc: crc32(bytes),
-            name: DisplayName::new(name).expect("a seed name"),
-        };
-        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
-            .expect("the seed commits");
-        (id.0, 1)
+        key(self.inner.seed(kind.value(), bytes, name))
     }
 
     /// Publishes the one entry a client may never touch: a ride, mid-recording, over a reserve.
     pub fn seed_recording(&mut self, reserve: u64) -> (u64, u64) {
-        let id = FlatStore::next_object_id(&self.store);
-        let allocation = Store::allocate(&self.store, reserve).expect("the ride reserves");
-        let meta = EntryMeta {
-            added_at_utc: 0,
-            id,
-            revision: Revision(1),
-            kind: obc_storage::flat::ObjectKind::Ride,
-            flags: EntryFlags::RECORDING,
-            payload_len: 0,
-            payload_crc: 0,
-            name: DisplayName::default(),
-        };
-        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
-            .expect("the ride starts");
-        (id.0, 1)
+        key(self.inner.seed_reserved(ObjectKind::Ride.value(), reserve, EntryFlags::RECORDING, ""))
     }
 
     /// Exercise the exact device-owned FS8 path: start a `RECORDING` reserve, journal the final
     /// bytes, then publish those same extents by clearing `RECORDING` in one amend commit.
     pub fn finish_recording(&mut self, bytes: &[u8], name: &str) -> (u64, u64) {
-        let (id, revision) = self.seed_recording(1024 * 1024);
-        let resume = [0u8; RIDE_RESUME_LEN];
-        Store::journal(
-            &self.store,
-            RideCheckpoint {
-                id: ObjectId(id),
-                revision: Revision(revision),
-                append: bytes,
-                payload_crc: crc32(bytes),
-                resume: &resume,
-            },
-        )
-        .expect("the final ride bytes journal");
-        let meta = EntryMeta {
-            added_at_utc: 0,
-            id: ObjectId(id),
-            revision: Revision(revision),
-            kind: obc_storage::flat::ObjectKind::Ride,
-            flags: EntryFlags::NONE,
-            payload_len: bytes.len() as u64,
-            payload_crc: crc32(bytes),
-            name: DisplayName::new(name).expect("a ride name"),
-        };
-        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Amend }])
-            .expect("one final commit publishes the ride");
-        (id, revision)
+        key(self.inner.finish_recording(bytes, name))
     }
 
     /// Takes a reservation row out from under the engine, which is how a full table is produced.
@@ -385,7 +261,7 @@ impl<D: BlockDevice> Device<D> {
 
     /// Gives one back.
     pub fn release(&mut self, allocation: obc_storage::flat::Allocation) {
-        FlatStore::cancel(&self.store, allocation);
+        obc_storage::flat::FlatStore::cancel(&self.store, allocation);
     }
 
     /// Free extents, which is what a leaked reservation or a leaked hold shows up in.
@@ -400,7 +276,7 @@ impl<D: BlockDevice> Device<D> {
 
     /// Every entry, in catalog order.
     pub fn entries(&self) -> Vec<EntryMeta> {
-        Store::entries(&self.store).collect()
+        self.inner.catalog()
     }
 
     /// Removes every entry of one `ObjectId` through the seam, and reports the extents that came
@@ -409,9 +285,9 @@ impl<D: BlockDevice> Device<D> {
     /// a retained revision is an object's only entry.
     pub fn remove_and_measure(&mut self, id: u64) -> u32 {
         let before = self.free_extents();
-        let batch: Vec<Mutation> = Store::entries(&self.store)
+        let batch: Vec<obc_storage::flat::Mutation> = Store::entries(&self.store)
             .filter(|meta| meta.id == ObjectId(id))
-            .map(|meta| Mutation::Remove { id: meta.id, revision: meta.revision })
+            .map(|meta| obc_storage::flat::Mutation::Remove { id: meta.id, revision: meta.revision })
             .collect();
         assert!(!batch.is_empty(), "the probe names an entry that is not there");
         Store::commit(&self.store, &batch).expect("the probe removes");
@@ -419,8 +295,9 @@ impl<D: BlockDevice> Device<D> {
     }
 }
 
-fn seam_kind(kind: ObjectKind) -> obc_storage::flat::ObjectKind {
-    obc_storage::flat::ObjectKind::decode(kind.value()).expect("the two tables are the same table")
+/// The `(id, revision)` pair the suites name an entry by.
+fn key(meta: EntryMeta) -> (u64, u64) {
+    (meta.id.0, meta.revision.0)
 }
 
 use obc_storage::flat::seam::Store;

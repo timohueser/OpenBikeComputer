@@ -36,6 +36,7 @@
       "obc-dem",
       "obc-desktop",
       "obc-fixtures",
+      "obc-flat-device",
       "obc-host-core",
       "obc-ios-host",
       "obc-mkimage",

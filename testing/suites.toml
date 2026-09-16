@@ -52,6 +52,18 @@ coverage_component = "format-protocol-codecs"
 ownership = [{ kind = "rust-package", name = "obc-link", exclude_targets = ["flat_vectors"] }]
 
 [[suite]]
+id = "rust.obc-flat-device"
+surface = "test-support"
+level = "unit"
+command = "cargo test -p obc-flat-device --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-flat-device" }]
+
+[[suite]]
 id = "rust.obc-storage"
 surface = "storage"
 level = "component"
@@ -491,7 +503,7 @@ command = "cd builder/app && npm test"
 fixtures = ["checked-in-web-fixtures"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/vite.config.ts", "specs/vectors/**"]
+extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/vite.config.ts", "specs/vectors/**", "host/obc-flat-device/**"]
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
@@ -725,6 +737,7 @@ extra_triggers = [
   "builder/app/package-lock.json",
   "builder/build-wasm-bridges.sh",
   "firmware/tools/wasm_size_guard.py",
+  "host/obc-flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
 ]
