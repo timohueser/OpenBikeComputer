@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
+  "obcm_version": 17,
+  "map": {
+    "bytes": 9946112,
+    "sha256": "4d9fd8331569d89b01bfd0e841ff004760456e09a36d22a8abb366d036faceb0"
+  },
+  "producer_commit": "65d124f6d0ba2e9aba6232fbbc396968be07e0d1",
+  "obc_pack_sha256": "e2e07e1f3dcddbe36db5d18dd94b2a193bd36bed28282654071e597aed9488c9",
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd",
+    "peak-content": "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+  },
+  "bounds_lon_lat": [
+    8.26,
+    46.54,
+    8.37,
+    46.67
+  ],
+  "terrain": {
+    "bytes": 7807488,
+    "sha256": "2c46061b61a444df3b24350089551a38451a01a9729de062520458f0749ad9ab",
+    "policy": "Existing embedded OBCT3 surface reused byte for byte for contours, ascent and final embedding."
+  },
+  "landmarks": [
+    {
+      "qid": 666668,
+      "variants": 3,
+      "photo": false
+    },
+    {
+      "qid": 114357029,
+      "variants": 1,
+      "photo": false
+    }
+  ],
+  "peak_associations": [
+    {
+      "osm_node_id": 1372219824,
+      "name": "M\u00f6nch",
+      "variants": 4,
+      "photo": true
+    }
+  ],
+  "command": "target/release/obc-pack PINNED/switzerland.osm.pbf builder/presets/schema.json OUTPUT.obcm --bbox 8.26,46.54,8.37,46.67 --terrain EXISTING-SURFACE.obcd --landmarks LANDMARKS/content.json --peaks PEAKS/peaks.json",
+  "embedding": "Terrain embedding uses the alignment and header writer from fixtures/build-map-package.sh grimsel-demo.",
+  "network": "Denied by macOS sandbox-exec during packing.",
+  "log_sha256": "e1d4eb53734adfc48d201961d5690482ec0697237585457181ac3db26bf482f7"
+}
