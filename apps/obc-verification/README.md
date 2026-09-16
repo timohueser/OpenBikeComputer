@@ -45,7 +45,10 @@ start the application or write credentials. Create `/etc/obc-verification/servic
 
 The service sets its data directory, production mode, and localhost port 3100. Caddy terminates TLS
 and forwards the release subdomain to `127.0.0.1:3100`. Point the subdomain's DNS A record at the VPS
-before enabling public access. Never enter credentials through an HTTP origin.
+before enabling public access. Use Cloudflare DNS-only mode. Caddy replaces incoming forwarded
+address headers, and the localhost-only service trusts one proxy hop for login rate limits. A
+second proxy requires an explicit trusted-address configuration. Never enter credentials through
+an HTTP origin.
 
 The environment file and SSH private keys are not application assets. Back them up separately in a
 private credential store. Rotate the CI, agent, and GitHub credentials independently.
