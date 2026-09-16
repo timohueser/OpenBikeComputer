@@ -9,7 +9,7 @@
 use obc_link::flat::{Ceilings, Link};
 use obc_storage::flat::{EntryFlags, EntryMeta, StoreId};
 
-use crate::card::{Card, MediaOp};
+use crate::card::Card;
 use crate::{blocks_for, AllowArm, Device, OpenPolicy, Reaction, TracedRequest, EXTENTS, USB_RECORD_CEILING};
 
 /// How a [`SimDevice`] starts out. Everything has a working default: a formatted card of the usual
@@ -83,43 +83,11 @@ impl SimDevice {
 
     // --- the wire and the power ------------------------------------------------
 
-    /// The link came (back) up.
-    pub fn link_up(&mut self) {
-        let (link, ceilings) = (self.options.link, ceilings(&self.options));
-        self.device.link_up(link, ceilings);
-    }
-
-    /// The cable was pulled. Only that: nothing reconnects on its own.
-    pub fn link_down(&mut self) {
-        self.device.link_down(self.options.link);
-    }
-
     /// Power was lost and came back. Whatever was never synced is gone; the durable card is the same
     /// card, and the store mounts it again.
     pub fn reboot(&mut self) {
         self.card.reboot();
         self.remount();
-    }
-
-    /// Both catalog copies are unreadable from the next mount on.
-    pub fn corrupt_catalog(&mut self) {
-        self.card.corrupt_catalog();
-        self.remount();
-    }
-
-    /// Refuse the next media operation of this kind.
-    pub fn fault_next(&self, op: MediaOp) {
-        self.card.fault_next(op);
-    }
-
-    /// Refuse one media operation of this kind, after letting `skip` of them through.
-    pub fn fault_after(&self, op: MediaOp, skip: u32) {
-        self.card.fault_after(op, skip);
-    }
-
-    /// True once the armed fault was delivered.
-    pub fn fault_fired(&self) -> bool {
-        self.card.fault_fired()
     }
 
     fn remount(&mut self) {
@@ -144,20 +112,12 @@ impl SimDevice {
         self.device.read_object(id, revision)
     }
 
-    pub fn free_extents(&self) -> u32 {
-        self.device.store.free_extents()
-    }
-
     pub fn seed(&mut self, kind: u16, bytes: &[u8], name: &str) -> EntryMeta {
         self.device.seed(kind, bytes, name)
     }
 
     pub fn seed_reserved(&mut self, kind: u16, reserve: u64, flags: EntryFlags, name: &str) -> EntryMeta {
         self.device.seed_reserved(kind, reserve, flags, name)
-    }
-
-    pub fn finish_recording(&mut self, bytes: &[u8], name: &str) -> EntryMeta {
-        self.device.finish_recording(bytes, name)
     }
 
     // --- the two test hooks ----------------------------------------------------
@@ -172,10 +132,6 @@ impl SimDevice {
 
     pub fn stop_answering(&mut self) {
         self.device.stop_answering();
-    }
-
-    pub fn resume_answering(&mut self) {
-        self.device.resume_answering();
     }
 }
 
