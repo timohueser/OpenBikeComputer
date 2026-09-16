@@ -517,6 +517,8 @@ def select(
 
     started = {job for unit in units if unit.selected for job in unit.jobs}
     always = {name for name, job in JOBS.items() if job.unconditional}
+    # A required unit rides the jobs a change already started. It is not affected by the
+    # change, so it never joins the package set the local run compiles.
     for unit in units:
         if unit.route != "required" or unit.selected:
             continue
@@ -549,7 +551,7 @@ def required_jobs(plan: Plan) -> list[str]:
                 pending.append(upstream)
     return sorted(required)
 
-NOT_SELECTED = "no changed path, Cargo edge, or required cadence selected this suite"
+NOT_SELECTED = "no changed path, Cargo edge, or required route selected this suite"
 
 def plan_data(plan: Plan) -> dict[str, Any]:
     return {
@@ -587,7 +589,7 @@ def render_text(plan: Plan) -> str:
         lines.extend(f"  - {error}" for error in plan.errors)
     return "\n".join(lines)
 
-# ────────────────────────────────────────────────────────────── executction ──
+# ─────────────────────────────────────────────────────────────── execution ──
 
 def cargo_filter(
     graph: CargoGraph,
