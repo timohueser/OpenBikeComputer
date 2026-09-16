@@ -15,9 +15,9 @@
  * send, ask again. Everything else is this file's:
  *
  * - **Record framing** is `RecordChannel`'s, the same class the client uses on the other end.
- * - **Ordering** is per channel. Each channel owns one pump, so its records leave in order, and a
- *   reaction for the other channel is handed over rather than waited on — which is what keeps
- *   `CANCEL` serviceable while a download's stream write is parked on a full endpoint.
+ * - **Ordering** is one send queue per channel, so a channel's records leave in the order the device
+ *   produced them while the other channel is free to answer — which is what keeps `CANCEL`
+ *   serviceable when a download's stream write is parked on a full endpoint.
  * - **Backpressure** is the pipe's: a write resolves when the reader has taken the bytes, and the
  *   device is not polled for the next record until it does. Nothing buffers a whole download.
  */
