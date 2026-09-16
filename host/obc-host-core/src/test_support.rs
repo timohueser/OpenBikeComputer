@@ -1,7 +1,7 @@
 //! Small oracles other suites borrow when they exercise a map through this crate.
 //!
 //! Compiled for this crate's own tests, and for a dependent that asks for the `test-support`
-//! feature from its `[dev-dependencies]`. Nothing here is in a host binary.
+//! feature from its `[dev-dependencies]`. Nothing here is reachable from a host binary.
 
 use obc_formats::io::{ByteSource, Error};
 use std::cell::Cell;
