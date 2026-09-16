@@ -106,9 +106,6 @@ export function streamCeilingFor(payload: number): number {
     return payload + STREAM_HEADER_LEN;
 }
 
-/** A media operation a test can make the card refuse. */
-export type MediaOp = "read" | "write" | "sync";
-
 type Reaction = { kind: string; channel: string; bytes: Uint8Array };
 
 /** The reaction as plain JS, with the wasm object released. */
@@ -299,11 +296,6 @@ export class FlatDevice {
         return entriesOf(this.device.seedRetained(previous.objectId, displayName, bytes))[0];
     }
 
-    /** The device's own path for a finished ride: reserve, journal, publish in one amend commit. */
-    finishRecording(bytes: Uint8Array, displayName = ""): CatalogEntry {
-        return entriesOf(this.device.finishRecording(displayName, bytes))[0];
-    }
-
     /** The whole catalog as the device would list it. */
     get entries(): readonly CatalogEntry[] {
         return entriesOf(this.device.catalog());
@@ -322,43 +314,6 @@ export class FlatDevice {
     /** The card's identity, as `LIST` reports it. */
     get storeId(): string {
         return this.device.storeId();
-    }
-
-    /** Extents nothing holds — what a leaked reservation shows up in. */
-    get freeExtents(): number {
-        return this.device.freeExtents();
-    }
-
-    // --- the wire, the power and the media -------------------------------------
-
-    /** The cable was pulled. Only that: nothing reconnects on its own. */
-    linkDown(): void {
-        this.device.linkDown();
-    }
-
-    /** The cable is back. */
-    linkUp(): void {
-        this.device.linkUp();
-    }
-
-    /** Power was lost and came back: the durable card is the same card, and the store remounts it. */
-    reboot(): void {
-        this.device.reboot();
-    }
-
-    /** Both catalog copies are unreadable from here on — a card that mounts and cannot be read. */
-    corruptCatalog(): void {
-        this.device.corruptCatalog();
-    }
-
-    /** Refuse the next media operation of this kind, after letting `skip` of them through. */
-    faultAfter(op: MediaOp, skip = 0): void {
-        this.device.faultAfter(op, skip);
-    }
-
-    /** True once an armed fault fired. A probe whose fault never fired proves nothing. */
-    get faultFired(): boolean {
-        return this.device.faultFired();
     }
 
     // --- the two test hooks ----------------------------------------------------
