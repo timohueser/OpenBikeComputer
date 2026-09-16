@@ -71,10 +71,10 @@ impl Session<'_, '_> {
                     app,
                     &mut scratch,
                     &mut fb,
-                    map_file::Scene { reader: self.reader, route: route.as_ref() },
+                    obc_host_core::frame::Scene { reader: self.reader, route: route.as_ref() },
                     self.peak.panorama(),
                     (self.size.0 as f32, self.size.1 as f32),
-                    color_of,
+                    device_rgb888,
                 );
             }
         };
