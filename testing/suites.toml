@@ -1091,3 +1091,15 @@ ownership = [
   { kind = "workflow", pattern = 'cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"' },
   { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
 ]
+
+[[suite]]
+id = "fixtures.peak-content"
+surface = "map-tools"
+level = "fixture"
+command = "python3 fixtures/verify-peak-content.py"
+fixtures = ["peak-wiki"]
+pull_request = "never"
+scheduled = "manual"
+extra_triggers = ["host/obc-pack/src/landmarks/**", "fixtures/sources/peak-view/peak-articles-source.json"]
+coverage_component = "host-tools"
+ownership = [{ kind = "path", source = "fixture-validation", pattern = "fixtures/verify-peak-content.py" }]
