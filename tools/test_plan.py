@@ -791,17 +791,18 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
             if name in suite:
                 errors.extend(test_exceptions.block_errors(f"{suite['id']}.{name}", suite[name]))
         package = graph.packages.get(suite.get("package", ""))
+        if package is None:
+            continue
+        known = package.ordinary_targets + package.fixture_targets + package.example_targets
         for target in suite.get("targets", ()):
-            known = package.ordinary_targets + package.fixture_targets + package.example_targets
-            if package and target not in known:
-                errors.append(f"{suite['id']}: {suite['package']} has no target {target}")
+            if target not in known:
+                errors.append(f"{suite['id']}: {package.name} has no target {target}")
     routed = {job for unit in units for job in unit.jobs}
     for name, job in JOBS.items():
-        if job.unconditional or job.roots or job.packages or name in routed:
-            continue
-        errors.append(f"job {name} runs no declared suite")
         if job.script and not (root / job.script).is_file():
             errors.append(f"job {name} names a missing script {job.script}")
+        if not (job.unconditional or job.roots or job.packages or name in routed):
+            errors.append(f"job {name} runs no declared suite")
     errors.extend(_coverage_errors(root))
     return errors
 
