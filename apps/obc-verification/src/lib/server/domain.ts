@@ -42,9 +42,10 @@ export function requirements(value: unknown, lookup: (id: string) => Attachment)
     assert(r.group === undefined || (typeof r.group === 'string' && r.group.length <= 80), 'Group must be a name of at most 80 characters.');
     const group = r.group?.trim();
     assert(!group || !/[\u0000-\u001f\u007f]/.test(group), 'Group must be a single line.');
-    assert(r.todo === undefined || typeof r.todo === 'boolean', 'To-do status must be a boolean.');
+    assert(r.todo === undefined || typeof r.todo === 'boolean', 'Definition status must be a boolean.');
+    assert(r.implementationNeeded === undefined || typeof r.implementationNeeded === 'boolean', 'Implementation status must be a boolean.');
     const tests = new Set<string>();
-    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), ...(r.todo ? { todo: true } : {}), active: r.active,
+    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), ...(r.todo ? { todo: true } : {}), ...(r.implementationNeeded ? { implementationNeeded: true } : {}), active: r.active,
       tests: r.tests.map((t: Record<string, unknown>) => {
         const testId = identifier(t.id, 'Test ID');
         assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
@@ -67,7 +68,8 @@ export function testResults(value: unknown): TestResult[] {
 }
 export function requirementIssues(candidate: Candidate, requirement: Requirement, results = new Map(candidate.results.map((r) => [r.caseId, r.status]))): string[] {
   const missing: string[] = [];
-  if (requirement.todo) missing.push(`${requirement.id}: definition is still to do.`);
+  if (requirement.todo) missing.push(`${requirement.id}: definition is incomplete.`);
+  if (requirement.implementationNeeded) missing.push(`${requirement.id}: implementation is incomplete.`);
   if (!requirement.tests.length) missing.push(`${requirement.id}: no verification defined.`);
   for (const test of requirement.tests) {
     if (test.kind === 'automated') {
@@ -96,7 +98,7 @@ export function readiness(candidate: Candidate): Readiness {
     else if (!issues.length) verified++;
     else missing.push(...issues);
   }
-  return { ready: missing.length === 0, missing, verified, total: active.length, excepted };
+  return { ready: missing.length === 0, missing, verified, total: active.length, excepted, excluded: candidate.revision.requirements.length - active.length };
 }
 export function refresh(candidate: Candidate): Candidate {
   if (candidate.status !== 'publishing' && candidate.status !== 'published') {

@@ -60,3 +60,27 @@ test('history cleanup keeps release references, rejects stale writers, and leave
     assert.deepEqual(reopened.latestRevision(), empty); reopened.db.close();
   } finally { db.db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+
+test('new labels and requirement deletion preserve existing revisions and candidate snapshots', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'obc-verification-delete-'));
+  const db = new Store(directory);
+  try {
+    const existing = db.latestRevision();
+    const original = { ...existing.requirements[0], id: 'REQ-1', title: 'Reviewed requirement', statement: 'Human-authored statement.', active: true, todo: true };
+    const saved = db.saveRevision(existing.id, 'owner', [original, { ...original, id: 'REQ-2', todo: false }]);
+    const snapshot = { revision: saved, status: 'failed' };
+    db.put('candidate', 'candidate', snapshot);
+    const labeled = db.saveRevision(saved.id, 'owner', saved.requirements.map((req) => ({ ...req, implementationNeeded: true })));
+    assert.deepEqual(db.revision(saved.id).requirements, saved.requirements);
+    assert.deepEqual(labeled.requirements[0], { ...original, implementationNeeded: true });
+    const deleted = db.saveRevision(labeled.id, 'owner', labeled.requirements.filter((req) => req.id !== 'REQ-1'));
+    assert.deepEqual(deleted.requirements.map((req) => req.id), ['REQ-2']);
+    assert.equal(db.revision(labeled.id).requirements.length, 2);
+    assert.deepEqual(db.get('candidate', 'candidate'), snapshot);
+    const reopened = new Store(directory);
+    assert.deepEqual(reopened.latestRevision(), deleted);
+    assert.deepEqual(reopened.get('candidate', 'candidate'), snapshot);
+    reopened.db.close();
+  } finally { db.db.close(); rmSync(directory, { recursive: true, force: true }); }
+});

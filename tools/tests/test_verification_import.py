@@ -24,6 +24,14 @@ class VerificationImportTests(unittest.TestCase):
         self.assertIn("not counted as verified", notes)
         self.assertIn("verification-report.html", notes)
         self.assertNotIn("Verified candidate", notes)
+        candidate["revision"] = {"requirements": [{"id": "SYS-002", "active": False}, {"id": "SYS-003", "active": True}]}
+        notes = publish.release_notes(candidate, "owner/repo")
+        self.assertIn("exceptions and exclusions", notes)
+        self.assertIn("Excluded requirements: 1", notes)
+        self.assertIn("`SYS-002`", notes)
+        self.assertNotIn("`SYS-003`", notes)
+        candidate["exceptions"] = []
+        self.assertIn("Candidate accepted with requirement exclusions", publish.release_notes(candidate, "owner/repo"))
 
     def test_native_statuses_and_stable_identities_ignore_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
