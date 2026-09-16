@@ -799,9 +799,13 @@ class ShippedRoutingTests(unittest.TestCase):
             "swift.obckit-host": ["ios-unit"],
             "ci.docs": ["docs"],
             "web.builder-vitest": ["web"],
-            "python.repository-tools": ["fixture-registry", "selection"],
+            "python.repository-tools": ["guards", "selection"],
             "python.firmware-tools": ["test"],
-            "python.builder": ["test"],
+            "python.builder": ["builder-python"],
+            "ci.ui-snapshots": ["ui-snapshots"],
+            # The sweep job compiles the simulator, so it is a route for the simulator's own
+            # suite as well: a job that builds a package runs whenever that package is selected.
+            "rust.obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "web.demo-browser": ["wasm"],
         }
         for suite_id, jobs in expected.items():
@@ -828,7 +832,7 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
+                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -849,12 +853,12 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
