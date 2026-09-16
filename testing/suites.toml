@@ -513,6 +513,25 @@ ownership = [
 ]
 
 [[suite]]
+id = "web.builder-browser"
+surface = "web"
+level = "end-to-end"
+command = "npm test --prefix builder/app/tests/browser"
+fixtures = ["checked-in-web-fixtures"]
+pull_request = "affected"
+scheduled = "none"
+# The whole app is the subject, the bridge fixture is the input, and the shared catalog generator
+# is what publishes it. The schema examples are not here: this catalog is cut from the bridge
+# fixture, and only the desktop smoke's half of the generator reads the examples.
+extra_triggers = ["builder/app/**", "apps/obc-web-assemble/**", "tools/fixture_catalog.py"]
+platforms = ["linux", "macos"]
+coverage_component = "web"
+ownership = [
+  { kind = "path", source = "web-test", pattern = "builder/app/tests/browser/*.test.js" },
+  { kind = "workflow", pattern = "npm test --prefix builder/app/tests/browser" },
+]
+
+[[suite]]
 id = "python.repository-tools"
 surface = "dev-tools"
 level = "contract"
@@ -929,7 +948,7 @@ fixtures = []
 pull_request = "affected"
 scheduled = "none"
 platforms = ["linux"]
-extra_triggers = ["apps/obc-desktop/**", "builder/app/**", "host/obc-pack/schema/*.example.json"]
+extra_triggers = ["apps/obc-desktop/**", "builder/app/**", "host/obc-pack/schema/*.example.json", "tools/fixture_catalog.py"]
 ownership = [{ kind = "workflow", pattern = "xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py" }]
 
 [[suite]]

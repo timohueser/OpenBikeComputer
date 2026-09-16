@@ -807,6 +807,7 @@ class ShippedRoutingTests(unittest.TestCase):
             # suite as well: a job that builds a package runs whenever that package is selected.
             "rust.obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "web.demo-browser": ["wasm"],
+            "web.builder-browser": ["web-browser"],
         }
         for suite_id, jobs in expected.items():
             with self.subTest(suite=suite_id):
@@ -848,17 +849,17 @@ class ShippedRoutingTests(unittest.TestCase):
             (
                 "web only",
                 ["builder/app/src/lib/panel.ts"],
-                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web"],
+                ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
             # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.

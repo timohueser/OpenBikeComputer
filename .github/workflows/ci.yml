@@ -1034,6 +1034,67 @@ jobs:
           name: web-builder-${{ github.run_attempt }}
           path: ${{ runner.temp }}/web-builder-junit.xml
           if-no-files-found: error
+
+  # The builder's download journey in a real browser: the shipped `dist/web` build, the real
+  # assembly worker, real OPFS, and the checked-in bridge fixture served as a loopback catalog.
+  #
+  # Its own job rather than a step on `web`, because the registry routes a suite to the job whose
+  # step executes it: sharing `web` would make the component tier and this end-to-end journey one
+  # route, and neither could be selected without the other. It needs the three shipped bridges and
+  # deliberately not the flat test device — the shipped build must not contain it, and
+  # `bundle.test.ts` is what says so.
+  #
+  # `npm test` builds `dist/web` itself (the package's `pretest`), so the bundle under test can
+  # never be stale or built against a different catalog URL.
+  web-browser:
+    needs: [selection, wasm-bridges]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'web-browser')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-convert-pkg
+          path: builder/app/src/lib/convert/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-web-assemble-pkg
+          path: builder/app/src/lib/assemble/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-skin-preview-pkg
+          path: builder/app/src/lib/skin/pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: builder/app/package-lock.json
+      - name: Install the builder's build dependencies
+        working-directory: builder/app
+        run: npm ci
+      - name: Install builder browser runner
+        working-directory: builder/app/tests/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+      - name: Builder assemble and download journey
+        id: browser-journey
+        run: npm test --prefix builder/app/tests/browser
+      - name: Require browser journey execution
+        if: ${{ !cancelled() }}
+        env:
+          JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
+        run: test "$JOURNEY_OUTCOME" = success
+      - name: Upload builder browser evidence
+        if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-builder-browser-${{ github.run_attempt }}
+          path: .artifacts/web-builder/
+          if-no-files-found: error
+
   desktop-frontend:
     needs: [selection, wasm-bridges]
     if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-frontend')
@@ -1258,7 +1319,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop, desktop-launch]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, web-browser, desktop-frontend, desktop, desktop-launch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
