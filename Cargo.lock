@@ -3069,6 +3069,7 @@ dependencies = [
  "obc-reader",
  "obc-vectors",
  "obcm-assemble",
+ "obcm-testkit",
  "serde_json",
  "sha2",
  "wasm-bindgen",
