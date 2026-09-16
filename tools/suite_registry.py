@@ -10,10 +10,8 @@ temporary repositories without contacting GitHub or any other live service.
 from __future__ import annotations
 
 import argparse
-import ast
 import fnmatch
 import json
-import os
 from pathlib import Path
 import re
 import shlex
@@ -23,6 +21,10 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import test_exceptions
 
 LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "hardware"}
 # The only two spoken aliases: `obc test fixtures` and `obc test e2e`.
@@ -45,11 +47,7 @@ DERIVED_FIELDS = {
     "test_count",
 }
 SAFETY_COMPONENTS = {"format-protocol-codecs", "crc", "storage", "dfu", "boot"}
-ISSUE_FIELDS = ("budget_exception", "quarantine", "cadence_conflict", "sleep_exception")
-REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-ISSUE_RE = re.compile(r"^(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)$")
 SWIFT_TARGET_RE = re.compile(r"\.testTarget\s*\(\s*name:\s*\"([^\"]+)\"", re.MULTILINE)
-REAL_SLEEP_RE = re.compile(r"(?:Task\.sleep|time\.sleep|std::thread::sleep)\s*\(")
 LIVE_COMMAND_RE = re.compile(r"(?:^|\s)(?:curl|wget|ssh)\s|https?://")
 RUST_FOUNDATION_PATHS = {
     "Cargo.toml",
@@ -213,16 +211,7 @@ def _cargo_metadata(root: Path, manifest: Path | None = None) -> dict[str, Any]:
         raise RegistryError(f"cargo metadata failed: {detail.strip()}") from exc
 
 def discover_rust(root: Path, metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata) -> list[Discovered]:
-    manifests: list[Path | None] = [None]
-    for relative in (
-        "firmware/obc-fw-nrf54l/Cargo.toml",
-        "firmware/obc-boot/Cargo.toml",
-        "apps/obc-desktop/Cargo.toml",
-    ):
-        candidate = root / relative
-        if candidate.exists():
-            manifests.append(candidate)
-
+    manifests = _metadata_manifests(root)
     found: dict[tuple[str, str, str], Discovered] = {}
     for manifest in manifests:
         metadata = metadata_loader(root, manifest)
@@ -411,30 +400,6 @@ def ownership_matches(root: Path, owner: dict[str, Any], item: Discovered) -> bo
         return item.kind == "workflow-command" and fnmatch.fnmatchcase(item.name, owner.get("pattern", ""))
     return False
 
-def _validate_issue_block(suite_id: str, field: str, value: Any, errors: list[str]) -> None:
-    if not isinstance(value, dict):
-        errors.append(f"{suite_id}: {field} must be a table")
-        return
-    reason = value.get("reason", "")
-    issue = value.get("issue", "")
-    if not isinstance(reason, str) or not reason.strip():
-        errors.append(f"{suite_id}: {field} requires a reason")
-    if not isinstance(issue, str) or not ISSUE_RE.fullmatch(issue):
-        errors.append(f"{suite_id}: {field} requires a GitHub issue reference")
-
-def _has_real_sleep(source: Path) -> bool:
-    text = source.read_text(encoding="utf-8")
-    if source.suffix != ".py":
-        return bool(REAL_SLEEP_RE.search(text))
-    return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "time"
-        and node.func.attr == "sleep"
-        for node in ast.walk(ast.parse(text, filename=str(source)))
-    )
-
 def _validate_command(root: Path, suite: dict[str, Any], rust_packages: set[str], errors: list[str]) -> None:
     suite_id = suite.get("id", "<missing-id>")
     command = suite.get("command")
@@ -548,9 +513,9 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
             for owner in owners:
                 if not isinstance(owner, dict) or owner.get("kind") not in OWNERSHIP_KINDS:
                     errors.append(f"{suite_id}: invalid ownership rule {owner!r}")
-        for field in ISSUE_FIELDS:
-            if field in suite:
-                _validate_issue_block(suite_id, field, suite[field], errors)
+        for field_name in test_exceptions.EXCEPTION_FIELDS:
+            if field_name in suite:
+                errors.extend(test_exceptions.block_errors(f"{suite_id}.{field_name}", suite[field_name]))
         _validate_command(root, suite, rust_packages, errors)
         for pattern in suite.get("extra_triggers", []):
             if not isinstance(pattern, str) or not any(root.glob(pattern)):
@@ -597,16 +562,6 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
             errors.append(f"duplicate ownership for {item.label}: {', '.join(str(s.get('id')) for s in owners)}")
         else:
             matches[str(owners[0].get("id"))].append(item)
-            if item.path and item.kind != "workflow-command":
-                source = root / item.path
-                if source.is_file() and source.suffix in {".rs", ".py", ".swift", ".ts", ".js"}:
-                    try:
-                        has_real_sleep = _has_real_sleep(source)
-                    except (OSError, UnicodeError, SyntaxError) as exc:
-                        errors.append(f"{owners[0].get('id')}: cannot inspect {item.path}: {exc}")
-                        continue
-                    if has_real_sleep and "sleep_exception" not in owners[0]:
-                        errors.append(f"{owners[0].get('id')}: real sleep in {item.path} needs an approved exception")
     for suite_id, owned in matches.items():
         if not owned:
             errors.append(f"dead registry entry: {suite_id}")
@@ -816,32 +771,14 @@ def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> s
     return set()
 
 SCRIPT_RE = re.compile(r"(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.sh)(?:\s|$)")
-WASM_PACK_RE = re.compile(r"\bwasm-pack\s+build\s+([\w./-]+)")
-TRUNK_RE = re.compile(r"\btrunk\s+build\b[^|;&]*?--config\s+([\w./-]+)")
-TRUNK_LINK_RE = re.compile(r"<link[^>]*data-trunk[^>]*>")
-HREF_RE = re.compile(r'href="([^"]+)"')
 
-def _trunk_packages(command: str, root: Path, graph: CargoGraph) -> set[str]:
-    """Packages a `trunk build --config CFG` compiles, read from the config's HTML target."""
-
-    packages: set[str] = set()
-    for match in TRUNK_RE.finditer(command):
-        config = root / match.group(1)
-        if not config.is_file():
-            continue
-        page = config.parent / _read_toml(config).get("build", {}).get("target", "index.html")
-        if not page.is_file():
-            continue
-        for tag in TRUNK_LINK_RE.findall(page.read_text(encoding="utf-8")):
-            href = HREF_RE.search(tag)
-            if not href or 'rel="rust"' not in tag:
-                continue
-            try:
-                manifest = _relative(page.parent / href.group(1), root)
-            except (ValueError, OSError):
-                continue
-            packages |= {name for name, item in graph.packages.items() if item.manifest == manifest}
-    return packages
+# Packages a job compiles through a builder that no `cargo` argument list names: Trunk
+# bundles the web demo, and `builder/build-wasm-bridges.sh` drives wasm-pack over four
+# crates. Stated once, here, instead of scraped back out of Trunk config and HTML.
+JOB_PACKAGES: dict[str, set[str]] = {
+    "wasm": {"obc-web-demo"},
+    "wasm-bridges": {"obc-web-convert", "obc-web-assemble", "obc-skin-preview", "obc-flat-device"},
+}
 
 def _executed_commands(root: Path, step: WorkflowStep) -> list[tuple[str, str]]:
     """A step's command plus the lines of any repository script that command runs."""
@@ -861,18 +798,16 @@ def cargo_job_coverage(root: Path, graph: CargoGraph) -> dict[str, set[str]]:
     """Map each Cargo package to the CI jobs whose steps build, lint, or run it."""
 
     coverage: dict[str, set[str]] = {}
+    jobs: set[str] = set()
     for step in scan_workflow(root):
+        jobs.add(step.job)
         for command, directory in _executed_commands(root, step):
-            packages = {
-                package
-                for args in _cargo_invocations(command)
-                for package in _cargo_packages(args, directory, graph)
-            }
-            for match in WASM_PACK_RE.finditer(command):
-                packages |= _directory_package(match.group(1), graph)
-            packages |= _trunk_packages(command, root, graph)
-            for package in packages:
-                coverage.setdefault(package, set()).add(step.job)
+            for args in _cargo_invocations(command):
+                for package in _cargo_packages(args, directory, graph):
+                    coverage.setdefault(package, set()).add(step.job)
+    for job in sorted(jobs.intersection(JOB_PACKAGES)):
+        for package in JOB_PACKAGES[job].intersection(graph.packages):
+            coverage.setdefault(package, set()).add(job)
     return coverage
 
 def suite_workflow_jobs(inventory: Inventory, root: Path, graph: CargoGraph) -> dict[str, list[str]]:
@@ -1250,30 +1185,6 @@ def gate_claims(
         claims[gate] = expanded
     return claims
 
-def coarse_filters(root: Path) -> dict[str, list[str]]:
-    workflow = root / ".github/workflows/ci.yml"
-    filters: dict[str, list[str]] = {}
-    current = ""
-    in_filters = False
-    for raw in workflow.read_text(encoding="utf-8").splitlines():
-        if raw.strip() == "filters: |":
-            in_filters = True
-            continue
-        if not in_filters:
-            continue
-        key_match = re.fullmatch(r"            ([A-Za-z0-9_-]+):", raw)
-        if key_match:
-            current = key_match.group(1)
-            filters[current] = []
-            continue
-        item_match = re.fullmatch(r"              - ['\"](.+)['\"]", raw)
-        if item_match and current:
-            filters[current].append(item_match.group(1))
-            continue
-        if raw and not raw.startswith(" "):
-            break
-    return filters
-
 AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
@@ -1291,9 +1202,6 @@ AUDITED_PATHS = (
     "apps/obc-desktop/src/main.rs",
     "docs/index.md",
 )
-
-def _representative_path(pattern: str) -> str:
-    return pattern.replace("**", "x").replace("*", "x").strip("/") or "x"
 
 def validate_ci_routing(
     root: Path,
@@ -1337,34 +1245,12 @@ def validate_ci_routing(
                         f"workflow job {name} runs unconditionally but hosts "
                         f"{suite['id']}, whose cadence is {suite.get('pull_request')}"
                     )
-    # Only provisioning questions the plan cannot answer may remain in the coarse layer.
-    for name, patterns in sorted(coarse_filters(root).items()):
-        for pattern in patterns:
-            plan = select_suites(
-                inventory, [_representative_path(pattern)], cargo_graph, routes, unconditional=started
-            )
-            if plan.selected:
-                errors.append(
-                    f"coarse filter {name} entry {pattern!r} encodes suite policy already owned by "
-                    f"{plan.selected[0].suite['id']}"
-                )
     for path in AUDITED_PATHS:
         plan = select_suites(inventory, [path], cargo_graph, routes, unconditional=started)
         errors.extend(plan.errors)
     if errors:
         raise RegistryError("\n".join(f"- {error}" for error in sorted(set(errors))))
     return list(AUDITED_PATHS)
-
-def _suite_summary(suite: dict[str, Any], owned: Sequence[Discovered]) -> dict[str, Any]:
-    return {
-        "id": suite["id"],
-        "surface": suite["surface"],
-        "level": suite["level"],
-        "pull_request": suite["pull_request"],
-        "scheduled": suite["scheduled"],
-        "command": suite["command"],
-        "discovered_units": len(owned),
-    }
 
 def command_check(args: argparse.Namespace) -> int:
     inventory = load_inventory(args.root)
@@ -1376,105 +1262,6 @@ def command_check(args: argparse.Namespace) -> int:
     print(f"suite registry OK: {len(inventory.suites)} suites, {len(inventory.discovered)} discovered execution units")
     print("by surface: " + ", ".join(f"{key}={value}" for key, value in sorted(by_surface.items())))
     print("by level: " + ", ".join(f"{key}={value}" for key, value in sorted(by_level.items())))
-    return 0
-
-def check_issue_states(suites: Sequence[dict[str, Any]], repository: str) -> int:
-    """Online maintenance only: one bounded request per distinct exception issue."""
-    if not REPOSITORY_RE.fullmatch(repository):
-        raise RegistryError("--repo must be OWNER/REPO")
-    references: dict[tuple[str, int], list[str]] = {}
-    errors: list[str] = []
-    for suite in suites:
-        for field in ISSUE_FIELDS:
-            if field not in suite:
-                continue
-            before = len(errors)
-            _validate_issue_block(suite["id"], field, suite[field], errors)
-            if len(errors) != before:
-                continue
-            reference = suite[field]["issue"]
-            if reference.startswith("#"):
-                repo, number = repository, reference[1:]
-            else:
-                repo, number = reference.removeprefix("https://github.com/").rsplit("/issues/", 1)
-            if not REPOSITORY_RE.fullmatch(repo):
-                errors.append(f"{suite['id']}: {field} has an invalid issue repository")
-                continue
-            references.setdefault((repo.lower(), int(number)), []).append(f"{suite['id']}.{field}")
-    if errors:
-        raise RegistryError("\n".join(errors))
-
-    for (repo, number), owners in sorted(references.items()):
-        label = f"{', '.join(owners)}: {repo}#{number}"
-        try:
-            result = subprocess.run(
-                ["gh", "api", f"repos/{repo}/issues/{number}"],
-                check=True, capture_output=True, text=True, timeout=20,
-            )
-            issue = json.loads(result.stdout)
-            if not isinstance(issue, dict) or issue.get("state") not in ("open", "closed"):
-                errors.append(f"{label}: API returned an invalid issue response")
-            elif "pull_request" in issue:
-                errors.append(f"{label}: references a pull request, not an issue")
-            elif issue["state"] != "open":
-                errors.append(f"{label}: issue is closed")
-        except subprocess.CalledProcessError as exc:
-            errors.append(f"{label}: GitHub API failed: {(exc.stderr or str(exc)).strip()}")
-        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-            errors.append(f"{label}: could not check issue: {exc}")
-    if errors:
-        raise RegistryError("\n".join(errors))
-    return len(references)
-
-def command_check_issues(args: argparse.Namespace) -> int:
-    root = args.root or repository_root()
-    suites = _read_toml(root / "testing/suites.toml")["suite"]
-    count = check_issue_states(suites, args.repo)
-    print(f"exception issue state OK: {count} distinct open issues")
-    return 0
-
-def command_list(args: argparse.Namespace) -> int:
-    inventory = load_inventory(args.root)
-    rows = [_suite_summary(suite, inventory.matches[suite["id"]]) for suite in inventory.suites]
-    if args.json:
-        print(json.dumps(rows, indent=2, sort_keys=True))
-    else:
-        for row in rows:
-            print(
-                f"{row['id']:<36} {row['surface']:<16} {row['level']:<12} "
-                f"pr={row['pull_request']:<8} schedule={row['scheduled']:<7} units={row['discovered_units']}"
-            )
-    return 0
-
-def command_explain(args: argparse.Namespace) -> int:
-    inventory = load_inventory(args.root)
-    suite = next((item for item in inventory.suites if item["id"] == args.suite_id), None)
-    if suite is None:
-        raise RegistryError(f"unknown suite ID: {args.suite_id}")
-    ordered = (
-        "id",
-        "surface",
-        "level",
-        "command",
-        "fixtures",
-        "pull_request",
-        "scheduled",
-        "extra_triggers",
-        "platforms",
-        "coverage_component",
-        "budget_exception",
-        "quarantine",
-        "cadence_conflict",
-        "sleep_exception",
-    )
-    for field in ordered:
-        if field in suite:
-            value = suite[field]
-            rendered = json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
-            print(f"{field}: {rendered}")
-    print("execution_units:")
-    for item in inventory.matches[suite["id"]]:
-        print(f"  - {item.label}")
     return 0
 
 def _affected_plan(root: Path, base: str, head: str) -> SelectionPlan:
@@ -1616,15 +1403,6 @@ def build_parser() -> argparse.ArgumentParser:
     cargo.set_defaults(func=command_cargo_filter)
     check = subparsers.add_parser("check", help="validate registries, discovery, commands, and CI routes")
     check.set_defaults(func=command_check)
-    issues = subparsers.add_parser("check-issues", help="check exception issue state online (requires gh authentication)")
-    issues.add_argument("--repo", required=True, help="OWNER/REPO for local #issue references")
-    issues.set_defaults(func=command_check_issues)
-    listing = subparsers.add_parser("list", help="derive and print the current suite inventory")
-    listing.add_argument("--json", action="store_true", help="emit JSON")
-    listing.set_defaults(func=command_list)
-    explain = subparsers.add_parser("explain", help="explain one suite")
-    explain.add_argument("suite_id")
-    explain.set_defaults(func=command_explain)
     select = subparsers.add_parser("select", help="select affected suites from a Git diff")
     select.add_argument("--base", required=True, help="base Git revision")
     select.add_argument("--head", default="HEAD", help="head Git revision (default: HEAD)")

@@ -33,13 +33,8 @@ one execution unit with one cadence. A new test belongs in the suite whose mecha
 cadence match it; if none does, add a suite.
 
 A file or binary that mixes the fast tier with fixture, end-to-end, live, or hardware work must be
-split into separate execution units. Until that source split can be made, the registry records a
-`cadence_conflict` with its reason and an open issue. Do not make a mixed binary look homogeneous
-by relabeling it and do not add test-level selection.
-
-The current conflicts and their owners live in `testing/suites.toml`. Use `obc suites list` and
-`obc suites explain SUITE_ID` to inspect them. A declared cadence does not prove that a workflow
-executes it; unresolved execution routes remain explicit conflicts until the implementation lands.
+split into separate execution units. Do not make a mixed binary look homogeneous by relabeling it
+and do not add test-level selection.
 
 ## Explicit cadence routes
 
@@ -55,8 +50,8 @@ Level commands omit manual suites. Run a manual suite through its declared comma
 its explicit cadence with `run --scheduled manual --surface NAME`. Captured Rust suite commands
 use the existing `obc test fixtures -p` wrapper to prepare inputs before they run locally.
 
-Vector and assembly writers are Cargo examples. They run only through the manual commands in
-`obc suites explain manual.obc-link`, `manual.obc-vectors` and `manual.obc-web-assemble`.
+Vector and assembly writers are Cargo examples. They run only through the commands
+`testing/suites.toml` gives `manual.obc-link`, `manual.obc-vectors` and `manual.obc-web-assemble`.
 `manual.obc-display` runs the row-hash timing probe. These commands can write fixtures or print
 measurements; they are not required test passes.
 
@@ -125,8 +120,6 @@ Every `[[suite]]` entry uses these fields:
 | `coverage_component` | Coverage-policy component fed by the suite, when applicable |
 | `ownership` | Stable Cargo package, Swift target/package, test-root pattern, or workflow route |
 | `budget_exception` | Temporary reason and open issue for a suite over budget |
-| `quarantine` | Temporary reason and open issue for quarantined behavior |
-| `cadence_conflict` | Mixed-cadence source that still needs to split, with an open issue |
 | `sleep_exception` | Approved bounded real sleep, with a reason and open issue |
 
 Ownership is routing information. It is not a copied source-file inventory. Cargo targets and
@@ -209,8 +202,6 @@ answer. CI calls the Python entry point directly because `just` is not installed
 
 ```sh
 obc suites check                         # registry drift, discovery, and command resolution
-obc suites list [--json]
-obc suites explain rust.obc-storage
 obc suites select --base REF [--head REF] [--format text|json]
 obc suites validate-filters              # plan and workflow describe the same jobs
 ```
@@ -398,22 +389,23 @@ result export. A build failure can produce an incomplete bundle or no test resul
 failures remain CI failures. Skipped or cancelled test steps do not publish results. The test
 exit status and CI log remain authoritative; an uploaded artifact does not prove a passing run.
 
-## Exceptions, quarantines, and sleeps
+## Exceptions
 
-Budget exceptions, quarantines, cadence conflicts, and real-sleep exceptions are temporary. Each
-must state a concrete reason and reference an open repository issue. A missing or malformed issue
-reference fails the checker. Normal validation stays offline. To check issue state, run
-`./tools/obc suites check-issues --repo OWNER/REPO` with authenticated `gh` access. This explicit
-online maintenance command checks each distinct issue once, with a 20-second request timeout. It
-fails on closed issues, pull requests, or API errors and names each owning suite and field.
+A suite over budget declares a `budget_exception`; a suite that waits on real time declares a
+`sleep_exception`. Both are temporary. Each must state a concrete reason and reference an open
+repository issue, so the exception expires with that issue.
 
-The Test exception issue health workflow runs this command each Monday at 07:17 UTC and on manual
-dispatch, with read-only permissions. It reads the same registry; it is separate from offline suite
-validation and does not claim that all scheduled test suites have execution routes.
+`tools/test_exceptions.py --repo OWNER/REPO` checks them. It validates every exception block
+offline, then asks GitHub once per distinct issue, with a 20-second request timeout, whether that
+issue is still open. It fails on closed issues, pull requests, or API errors and names each owning
+suite and field. It needs authenticated `gh` access.
 
-Do not retry a flaky test automatically. A quarantined behavior stays visible in the registry and
-its issue. Prefer observed state, a controllable clock, or a protocol signal to a fixed sleep; use
-a small bounded sleep only when its exception explains why.
+The Test exception issue health workflow runs it each Monday at 07:17 UTC and on manual dispatch,
+with read-only permissions. It is separate from offline suite validation and does not claim that
+all scheduled test suites have execution routes.
+
+Do not retry a flaky test automatically. Prefer observed state, a controllable clock, or a protocol
+signal to a fixed sleep; use a small bounded sleep only when its exception explains why.
 
 ## Change selection
 
@@ -443,35 +435,7 @@ The aggregate gate reports pass, fail, not selected, selected but not run, or bl
 failure for every suite. A skipped selected job is a failure, never evidence that the suite passed,
 and a failed or cancelled `selection` job fails the gate because no plan can then be trusted.
 
-## On-demand timing comparison
-
-`tools/test_cost.py` reads saved GitHub workflow-run/job responses and downloaded native XML.
-It does not run tests, fetch data, write a second result format or fail a run against runtime guidance.
-Save each attempt's job response as `jobs-RUN_ID.json`; request up to 100 jobs and check pagination.
-For example:
-
-```sh
-gh api 'repos/timohueser/OpenBikeComputer/actions/workflows/ci.yml/runs?event=pull_request&status=success&per_page=20' > runs.json
-gh api 'repos/timohueser/OpenBikeComputer/actions/runs/RUN_ID/attempts/ATTEMPT/jobs?per_page=100' > jobs-RUN_ID.json
-gh run download RUN_ID --pattern 'rust-*' --dir reports
-python3 tools/test_cost.py --runs runs.json --jobs-dir . --reports reports
-python3 tools/test_cost.py --reports head-reports --compare-reports base-reports
-```
-
-Download jobs for every run in `runs.json`. Download native artifacts for each language that the
-comparison needs. Keep the relative report paths equal across the two report directories; changing
-native timestamp identities remain unmatched. The output lists added and missing identities.
-Malformed XML and incomplete job pagination fail visibly.
-
-Elapsed workflow time includes queue and dependency waits through the final active job. It is a
-conservative elapsed measure, not a reconstruction of the job dependency critical path.
-Runner-minutes sum active job intervals without billing multipliers. Native suite times are
-reported as supplied; missing suite times remain unknown. In particular, nextest reports its whole
-run time and per-case times, but does not supply binary wall times. Do not sum concurrent case times
-into wall time. A successful-run sample can omit slow failures and repeat the same PR. Its sample
-percentiles do not establish a population service level. This XML reader does not ingest native
-XCTest bundles or Cargo text logs; inspect those artifacts with their native tools. Missing artifacts
-remain report gaps and must not be counted as passing suites.
+## Timing guidance
 
 The guidance stays informational: required PR elapsed time at most 10 minutes, p95 at most
 20 minutes, cross-surface cost at most 40 runner-minutes, a required binary/file at most 30 seconds,
