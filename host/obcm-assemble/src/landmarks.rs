@@ -54,7 +54,7 @@ impl Blob {
 
 struct Candidate {
     record: LandmarkRecord,
-    blobs: [Option<Blob>; 5],
+    blobs: [Option<Blob>; 4],
     schedule: Option<Schedule>,
     hash: [u8; 32],
 }
@@ -93,6 +93,7 @@ impl LandmarkSection {
         let mut header = [0; SECTION_HEADER_LEN];
         header[..4].copy_from_slice(&(self.records.len() as u32).to_le_bytes());
         header[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+        header[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
         header[8..12].copy_from_slice(
             &(SECTION_HEADER_LEN as u32 + self.records.len() as u32 * RECORD_LEN as u32).to_le_bytes(),
         );
@@ -123,12 +124,12 @@ fn malformed(error: obc_reader::Error) -> Error {
     }
 }
 
-fn references(record: &LandmarkRecord) -> [ContentRef; 5] {
-    [record.name, record.text, record.article, record.photo, record.photo_attribution]
+fn references(record: &LandmarkRecord) -> [ContentRef; 4] {
+    [record.name, record.articles, record.photo, record.photo_attribution]
 }
 
-fn set_references(record: &mut LandmarkRecord, refs: [ContentRef; 5]) {
-    [record.name, record.text, record.article, record.photo, record.photo_attribution] = refs;
+fn set_references(record: &mut LandmarkRecord, refs: [ContentRef; 4]) {
+    [record.name, record.articles, record.photo, record.photo_attribution] = refs;
 }
 
 /// Resolve file-local schedules before records or pools are laid out. Content precedence is independent of cell order.
@@ -144,6 +145,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
         let mut last = None;
         for index in 0..directory.count {
             let record = directory.record(&section, index).map_err(malformed)?;
+            directory.article(&section, &record, *b"en").map_err(malformed)?;
             if last.is_some_and(|key| key >= record.key()) {
                 return Err(Error::Format("landmark latitude index is not strictly ordered".into()));
             }
@@ -162,16 +164,11 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
                 }
                 Some(blob)
             };
-            let mut blobs: [Option<Blob>; 5] = std::array::from_fn(|_| None);
-            let limits = [
-                MAX_NAME_BYTES,
-                MAX_TEXT_BYTES,
-                MAX_ATTRIBUTION_BYTES,
-                PHOTO_MAX_COMPRESSED as u32,
-                MAX_ATTRIBUTION_BYTES,
-            ];
+            let mut blobs: [Option<Blob>; 4] = std::array::from_fn(|_| None);
+            let limits =
+                [MAX_NAME_BYTES, obc_formats::articles::MAX_BYTES, PHOTO_MAX_COMPRESSED as u32, MAX_ATTRIBUTION_BYTES];
             for (i, reference) in references(&record).into_iter().enumerate() {
-                if i >= 3 && reference.is_absent() {
+                if i >= 2 && reference.is_absent() {
                     continue;
                 }
                 let range = reference
@@ -229,7 +226,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
         candidate.record.hours_ref = candidate.schedule.map_or(POI_HOURS_REF_NONE, |blob| {
             pois.pool.binary_search(&blob).expect("landmark schedule joined the shared pool") as u16
         });
-        let mut refs = [ContentRef::default(); 5];
+        let mut refs = [ContentRef::default(); 4];
         for (i, blob) in candidate.blobs.into_iter().enumerate() {
             let Some(blob) = blob else { continue };
             let bucket = interned.entry(blob.hash).or_default();
@@ -337,8 +334,8 @@ mod tests {
         assert_eq!(section.records[0].hours_ref, 1);
         assert_eq!(section.records[1].hours_ref, 0);
         assert_eq!(section.records[0].photo, section.records[1].photo);
-        assert_eq!(section.records[0].article, section.records[1].article);
-        assert_eq!(section.blobs.len(), 5);
+        assert_eq!(section.records[0].articles, section.records[1].articles);
+        assert_eq!(section.blobs.len(), 4);
         let src = SliceSource(&bytes);
         let directory = LandmarkDirectory::read(&src).unwrap();
         fixture::assert_content(&src);
@@ -367,7 +364,7 @@ mod tests {
         }
         let a = fixture::record(1);
         let mut b = a;
-        b.language = *b"de";
+        b.category = 2;
         let mut inputs = [(WEST, source(WEST, vec![a], &[])), (EAST, source(EAST, vec![b], &[]))];
         let (_, _, bytes) = run(&inputs);
         inputs.reverse();
@@ -376,7 +373,7 @@ mod tests {
 
     #[test]
     fn invalid_references_fail_even_in_a_losing_duplicate() {
-        for field in [52, 60, 68, 76, 84, 20] {
+        for field in [52, 60, 68, 76, 20] {
             let mut bad = fixture::record(1);
             bad.osm = metadata(2, false);
             let mut bytes = source(EAST, vec![bad], &[]);

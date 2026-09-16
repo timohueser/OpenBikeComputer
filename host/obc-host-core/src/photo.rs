@@ -113,7 +113,6 @@ mod tests {
             reference
         };
         let name = append(b"Authored photo");
-        let text = append(&fields(&["A test image made for this test."]));
         let credit = fields(&[
             "Test author",
             "https://example.org/test",
@@ -121,7 +120,10 @@ mod tests {
             "https://creativecommons.org/publicdomain/zero/1.0/",
             "Test author. CC0.",
         ]);
-        let article = append(&credit);
+        let articles = append(&obcm_testkit::articles::bundle(
+            *b"en",
+            &[(*b"en", &["An authored photo fixture."], &["URL", "1", "License", "Authors", "Test author. CC0."])],
+        ));
         // Independently authored zlib: 4 KiB window, one stored DEFLATE block,
         // and an Adler-32 over a pattern containing every RGB222 value.
         let pixels: Vec<u8> = (0..PHOTO_PIXELS).map(|i| (i % 64) as u8).collect();
@@ -143,19 +145,17 @@ mod tests {
             lon: 0,
             lat: 0,
             category: 2,
-            language: *b"en",
-            text_pages: 1,
             hours_ref: obcm::POI_HOURS_REF_NONE,
             osm: None,
             name,
-            text,
-            article,
+            articles,
             photo,
             photo_attribution,
         };
         section[SECTION_HEADER_LEN..SECTION_HEADER_LEN + RECORD_LEN].copy_from_slice(&record.encode());
         section[..4].copy_from_slice(&1u32.to_le_bytes());
         section[4..6].copy_from_slice(&(RECORD_LEN as u16).to_le_bytes());
+        section[6..8].copy_from_slice(&SECTION_VERSION.to_le_bytes());
         section[8..12].copy_from_slice(&((SECTION_HEADER_LEN + RECORD_LEN) as u32).to_le_bytes());
         let exact = section.len() as u32;
         section[12..16].copy_from_slice(&exact.to_le_bytes());

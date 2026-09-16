@@ -4,7 +4,7 @@ use obc_formats::{
 };
 use obc_pack::{
     landmark_map,
-    landmarks::{Attribution, Content, Photo, Record},
+    landmarks::{Attribution, Content, Photo, Record, TextVariant},
     poi::LandmarkLink,
 };
 use obc_reader::{
@@ -35,9 +35,12 @@ fn source_join_content_pool_and_independent_photo_readback() {
         category: 1,
         latitude: 47.0,
         longitude: lon,
-        language: "de".into(),
-        text_pages: vec!["Eine Burg.".into()],
-        article: credit(),
+        default_language: "de".into(),
+        fallback_sources: vec![],
+        variants: vec![
+            TextVariant { language: "de".into(), text_pages: vec!["Eine Burg.".into()], attribution: credit() },
+            TextVariant { language: "en".into(), text_pages: vec!["A castle.".into()], attribution: credit() },
+        ],
         photo: Some(Photo {
             path: "photo.rgb222".into(),
             sha256: digest.clone(),
@@ -46,11 +49,11 @@ fn source_join_content_pool_and_independent_photo_readback() {
         }),
     };
     let mut content = Content {
-        schema: 1,
+        schema: 2,
         input_sha256: "input".into(),
         policy_sha256: "policy".into(),
         category_policy_sha256: "categories".into(),
-        language: "de".into(),
+        languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
         source_coverage: serde_json::json!({}),
         counts: Default::default(),
         candidate_qids: vec![],
@@ -89,8 +92,11 @@ fn source_join_content_pool_and_independent_photo_readback() {
     let second = directory.record(&source, 1).unwrap();
     assert_eq!(first.hours_ref, 3);
     assert_eq!(first.photo, second.photo, "identical content shares one compressed blob");
-    assert_eq!(first.article, first.photo_attribution);
-    let text = directory.content(&source, first.text, 4118).unwrap();
+    let article = directory.article(&source, &first, *b"de").unwrap();
+    let english = directory.article(&source, &first, *b"es").unwrap();
+    let english_text = directory.content(&source, english.text, MAX_TEXT_BYTES).unwrap();
+    assert_eq!(page(&english_text, 1, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "A castle.");
+    let text = directory.content(&source, article.text, MAX_TEXT_BYTES).unwrap();
     assert_eq!(page(&text, 1, 0, &mut [0; MAX_PAGE_BYTES]).unwrap(), "Eine Burg.");
     let photo = directory.content(&source, first.photo, PHOTO_MAX_COMPRESSED as u32).unwrap();
     let mut decoder = PhotoDecoder::new();

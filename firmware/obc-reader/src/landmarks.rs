@@ -53,9 +53,11 @@ impl LandmarkDirectory {
         let mut bytes = [0; SECTION_HEADER_LEN];
         source.read_at(0, &mut bytes).map_err(Error::Source)?;
         let directory = Self { count: rd_u32(&bytes, 0), payload: rd_u32(&bytes, 8), len: rd_u32(&bytes, 12) };
+        if rd_u16(&bytes, 6) != SECTION_VERSION {
+            return Err(Error::BadVersion);
+        }
         if directory.count > MAX_RECORDS
             || rd_u16(&bytes, 4) as usize != RECORD_LEN
-            || rd_u16(&bytes, 6) != 0
             || directory.payload != SECTION_HEADER_LEN as u32 + directory.count * RECORD_LEN as u32
             || directory.len < directory.payload
             || u64::from(directory.len) > source.len()
@@ -84,6 +86,20 @@ impl LandmarkDirectory {
     ) -> Result<WindowSource<'a>, Error> {
         let range = reference.range(self.payload, self.len, limit).ok_or(Error::BadOffset)?;
         WindowSource::new(source, range.start, range.end - range.start).ok_or(Error::BadOffset)
+    }
+
+    pub fn article(
+        &self,
+        source: &dyn ByteSource,
+        record: &LandmarkRecord,
+        preferred: [u8; 2],
+    ) -> Result<obc_formats::articles::ArticleVariant, Error> {
+        let bundle = self.content(source, record.articles, obc_formats::articles::MAX_BYTES)?;
+        let mut article = crate::articles::select(&bundle, preferred)?;
+        article.text.offset = article.text.offset.checked_add(record.articles.offset).ok_or(Error::BadOffset)?;
+        article.attribution.offset =
+            article.attribution.offset.checked_add(record.articles.offset).ok_or(Error::BadOffset)?;
+        Ok(article)
     }
 
     pub fn name<'a>(

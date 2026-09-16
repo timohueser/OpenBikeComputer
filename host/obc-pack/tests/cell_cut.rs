@@ -813,18 +813,19 @@ fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
     let scratch = Scratch::new("landmark-only");
     let path = scratch.path().join("content.json");
     let content = serde_json::json!({
-        "schema": 1, "input_sha256": "input", "policy_sha256": "policy",
-        "category_policy_sha256": "categories", "language": "en",
+        "schema": 2, "input_sha256": "input", "policy_sha256": "policy",
+        "category_policy_sha256": "categories", "languages": ["en", "de", "fr", "es"],
         "source_coverage": {}, "counts": obc_pack::landmarks::Counts::default(), "candidate_qids": [], "omissions": [],
         "records": [{
             "qid": "Q1", "name": "Castle", "category": 1,
-            "latitude": deg(LAT), "longitude": deg(SEAM), "language": "en",
-            "text_pages": ["A castle."], "photo": null,
-            "article": {
+            "latitude": deg(LAT), "longitude": deg(SEAM), "default_language": "en", "fallback_sources": [],
+            "photo": null, "variants": [{"language": "en",
+            "text_pages": ["A castle."],
+            "attribution": {
                 "source_url": "https://en.wikipedia.org/w/index.php?title=Castle&oldid=1",
                 "revision": "1", "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
                 "original_notices": "Authors", "display_pages": ["Wikipedia authors"]
-            }
+            }}]
         }]
     });
     std::fs::write(&path, serde_json::to_vec(&content).unwrap()).unwrap();

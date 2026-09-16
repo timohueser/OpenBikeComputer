@@ -1627,9 +1627,9 @@ All integers are little-endian. The directory is 16 bytes:
 | Offset | Field | Type | Constraint |
 | :-- | :-- | :-- | :-- |
 | 0 | Record count | `uint32` | 0..65,535 |
-| 4 | Record length | `uint16` | 92 |
-| 6 | Reserved | `uint16` | 0 |
-| 8 | Payload start | `uint32` | 16 + count × 92 |
+| 4 | Record length | `uint16` | 84 |
+| 6 | Section version | `uint16` | 1; other versions are unsupported |
+| 8 | Payload start | `uint32` | 16 + count × 84 |
 | 12 | Section length | `uint32` | At least payload start, within the header region |
 
 Fixed records follow the directory, sorted strictly by `(latitude, longitude, QID)`.
@@ -1644,16 +1644,14 @@ position and filter generation; changing any of these cancels the old query.
 | 8 | Longitude | 4 | Signed microdegrees, −180,000,000..180,000,000 |
 | 12 | Latitude | 4 | Signed microdegrees, −90,000,000..90,000,000 |
 | 16 | Category | 1 | 1..6, from the pinned landmark category policy |
-| 17 | Article language | 2 | Two lowercase ASCII language letters |
-| 19 | Text page count | 1 | 1..4 |
+| 17 | Reserved | 3 | Zero |
 | 20 | Hours reference | 2 | Shared §7.5 pool index, or `0xFFFF` |
 | 22 | Reserved | 2 | Zero |
 | 24 | OSM metadata | 28 | The §7 service identity/approach encoding; all zero means absent |
 | 52 | Name reference | 8 | Required, at most 256 UTF-8 bytes |
-| 60 | Text reference | 8 | Required page bundle, at most 4,118 bytes |
-| 68 | Article attribution reference | 8 | Required, at most 65,535 bytes |
-| 76 | Photo reference | 8 | Optional independent stream (§9.3), at most 52,096 bytes |
-| 84 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 65,535 bytes |
+| 60 | Article bundle reference | 8 | Required multilingual bundle (§9.2), at most 278,696 bytes |
+| 68 | Photo reference | 8 | Optional independent stream (§9.3), at most 52,096 bytes |
+| 76 | Photo attribution reference | 8 | Present exactly when the photo is present; at most 65,535 bytes |
 
 Each reference is `(offset uint32, length uint32)`. Only `(0, 0)` means absent. A present reference
 has nonzero length, starts at or after payload start, and ends within the exact section length.
@@ -1664,14 +1662,38 @@ explicit source-topology association and its allowed profile mask. Without OSM m
 reference must be `0xFFFF`. A linked non-service entity uses the same hours pool as service POIs.
 Missing, unsupported or failed hours remain Unknown under the shared §7 opening-status rules.
 
-### 9.2 Text and attribution bundles
+### 9.2 Multilingual article bundles
+
+Each article bundle is self-contained. Its header contains the default language (two ASCII bytes)
+and variant count (`uint16`, 1..4). Each following variant occupies 20 bytes:
+
+| Offset | Field | Size | Constraint |
+| :-- | :-- | :-- | :-- |
+| 0 | Language | 2 | One of `en`, `de`, `fr`, `es`; unique in the bundle |
+| 2 | Text page count | 1 | 1..4 |
+| 3 | Reserved | 1 | Zero |
+| 4 | Text reference | 8 | Required page bundle, at most 4,118 bytes |
+| 12 | Article attribution reference | 8 | Required, at most 65,535 bytes |
+
+References inside this directory are **relative to the article bundle**, not the landmark section.
+They start at or after `4 + count × 20` and end within the bundle. The default language must have a
+variant. Writers use the shared UI language order (`en`, `de`, `fr`, `es`); readers reject duplicate
+languages and invalid ranges. Selection prefers the device UI language, then English, then the
+stored default. The host selects the default from pinned local language facts and a fixed fallback
+rule. The device does not determine the country. Assembly copies the complete bundle unchanged.
+
+Each place has one name and one optional photo shared by all variants. Article attribution belongs
+to its variant; photo attribution belongs to the shared photo. A UI language change must invalidate
+the loaded text/credits and reset their page positions.
+
+Text and attribution use the same field-bundle layout:
 
 A bundle starts with `count uint16`, followed by `count + 1` byte offsets (`uint32`) relative to the
 bundle, then UTF-8 fields. The first offset equals `2 + (count + 1) × 4`; offsets are nondecreasing,
 and the final offset equals the bundle length. A selected field is the bytes between its two
 offsets. Readers check its range, UTF-8 and destination capacity before use.
 
-A text bundle has the record's 1..4 fields. Each field is one prepared page of at most 1,024 bytes.
+A text bundle has the variant's 1..4 fields. Each field is one prepared page of at most 1,024 bytes.
 The language identifies the actual article text. Attribution bundles have four original fields
 (source URL, revision, licence URL, original notices), then 1..256 prepared display pages of at most
 1,024 bytes each. All original fields remain available; display pagination must not drop them.
