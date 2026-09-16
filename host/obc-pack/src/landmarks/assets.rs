@@ -215,7 +215,7 @@ pub(super) fn photo(
 
 /// Check the API normalization and redirect chain against the requested title.
 pub(super) fn resolved_page<'a>(raw: &'a Value, title: &str) -> Result<&'a Value, String> {
-    let mut title = title.replace('_', " ");
+    let mut title = title.to_owned();
     for key in ["normalized", "redirects"] {
         let entries = raw["query"][key].as_array().map(Vec::as_slice).unwrap_or(&[]);
         let mut seen = BTreeSet::new();
@@ -240,6 +240,17 @@ pub(super) fn resolved_page<'a>(raw: &'a Value, title: &str) -> Result<&'a Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_article_normalization_starts_with_the_exact_osm_title() {
+        let raw = serde_json::json!({"query": {
+            "normalized": [{"from": "mount_Everest", "to": "Mount Everest"}],
+            "redirects": [{"from": "Mount Everest", "to": "Everest"}],
+            "pages": {"1": {"pageid": 1, "title": "Everest"}}
+        }});
+        assert_eq!(resolved_page(&raw, "mount_Everest").unwrap()["title"], "Everest");
+        assert!(resolved_page(&raw, "Different summit").is_err());
+    }
 
     #[test]
     fn a_local_wikipedia_lead_cannot_alias_a_commons_filename() {
