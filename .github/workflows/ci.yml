@@ -212,8 +212,6 @@ jobs:
   test:
     env:
       CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target
-      OBC_COVERAGE: "1"
-      OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
     runs-on: ubuntu-latest
@@ -248,16 +246,21 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
-      # Each section is one step so it keeps its own name and result artifact; the file is
-      # the same one `obc check test` runs. The package set comes from the selection plan,
-      # so a three-crate change compiles three crates and not the workspace.
+      # Each section is one step so it keeps its own step name and result artifact; the file
+      # is the same one `obc check test` runs. Only the two nextest steps are instrumented:
+      # their lcov is what the coverage ratchet reads, and the bench gate's release binary
+      # would otherwise merge its profile data into that evidence.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
+        env:
+          OBC_COVERAGE: "1"
         run: bash tools/ci/test.sh nextest-fast
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
+        env:
+          OBC_COVERAGE: "1"
         run: bash tools/ci/test.sh nextest-fixtures
-      - name: cargo test --doc (selected packages, all features)
+      - name: cargo test --doc (workspace, all features)
         run: bash tools/ci/test.sh doctests
       - name: cargo test (obc-formats, default features = the device's shape)
         run: bash tools/ci/test.sh formats-default
@@ -316,14 +319,14 @@ jobs:
             .artifacts/rust/
           if-no-files-found: error
       - name: Upload Rust test results
-        if: ${{ !cancelled() && steps.nextest.outputs.report == 'true' }}
+        if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-test-${{ github.run_attempt }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: error
       - name: Upload Rust fixture test results
-        if: ${{ !cancelled() && steps.nextest-fixtures.outputs.report == 'true' }}
+        if: ${{ !cancelled() && (steps.nextest-fixtures.outcome == 'success' || steps.nextest-fixtures.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-fixtures-${{ github.run_attempt }}
@@ -336,6 +339,10 @@ jobs:
   # refactor moves. It is its own job so the sweep is off the `test` job's serial path. The debug
   # binary is deliberate: its output is byte-identical to release. `update` is a developer command
   # and never runs here — a self-regenerating manifest records nothing.
+  #
+  # The job starts for every suite that routes to it, which includes each package it compiles.
+  # The sweep itself still runs only for `ci.ui-snapshots`, the suite that owns the rendering
+  # input triggers, so its selection budget is exactly what it was.
   ui-snapshots:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ui-snapshots')
@@ -360,6 +367,7 @@ jobs:
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       - name: ui-snapshots manifest check
         id: ui-snapshots
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ui-snapshots')
         run: |
           cargo build -p obc-sim --locked
           SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"

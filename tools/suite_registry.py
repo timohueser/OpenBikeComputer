@@ -796,9 +796,7 @@ def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> s
             continue
         if word.startswith("--package="):
             named.add(word.split("=", 1)[1])
-        elif word in {"--workspace", "--all"} or (word.startswith("$") and not word.startswith("$(")):
-            # A package set computed at run time can name any root-workspace package, and on a
-            # foundation change it is `--workspace`, so the command covers the whole workspace.
+        elif word in {"--workspace", "--all"}:
             workspace = True
         elif word == "--manifest-path" and following:
             manifest = following
