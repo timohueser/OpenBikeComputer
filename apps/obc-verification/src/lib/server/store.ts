@@ -30,6 +30,10 @@ export class Store {
       id: 'EXAMPLE-001', title: 'Example — large route upload', active: false,
       statement: '**Illustrative only.** Upload a GPX route containing up to 500,000 GPS points. Replace this example with a requirement you have reviewed before activating it.', tests: []
     }]);
+    this.atomic(() => this.rememberRequirementNumbers([
+      ...this.revisions().flatMap(r => r.requirements),
+      ...['candidate', 'publication'].flatMap(kind => this.list<Candidate>(kind).flatMap(c => c.revision.requirements))
+    ]));
   }
   atomic<T>(operation: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
@@ -45,10 +49,28 @@ export class Store {
     if (!result) throw new Problem(404, 'Revision not found.');
     return result;
   }
+  private rememberRequirementNumbers(requirements: Requirement[]): void {
+    const previous = this.maybe<number>('sequence', 'requirement') ?? 0;
+    const highest = requirements.reduce((highest, requirement) => {
+      const match = /^SYS-(\d+)$/.exec(requirement.id);
+      const number = match ? Number(match[1]) : 0;
+      return Number.isSafeInteger(number) ? Math.max(highest, number) : highest;
+    }, previous);
+    if (highest > previous) this.put('sequence', 'requirement', highest);
+  }
+  reserveRequirementId(): string {
+    return this.atomic(() => {
+      const next = (this.maybe<number>('sequence', 'requirement') ?? 0) + 1;
+      assert(Number.isSafeInteger(next), 'Requirement number limit reached.');
+      this.put('sequence', 'requirement', next);
+      return `SYS-${String(next).padStart(3, '0')}`;
+    });
+  }
   saveRevision(base: number, author: string, requirements: Requirement[]): Revision {
     return this.atomic(() => {
       const row = this.db.prepare('SELECT MAX(id) AS id FROM revisions').get();
       assert(Number(row?.id ?? 0) === base, 'Requirements changed. Reload before saving.', 409);
+      this.rememberRequirementNumbers(requirements);
       const createdAt = new Date().toISOString();
       const inserted = this.db.prepare('INSERT INTO revisions(created_at,author,body) VALUES (?,?,?)').run(createdAt, author, JSON.stringify(requirements));
       return { id: Number(inserted.lastInsertRowid), author, createdAt, requirements };
