@@ -132,6 +132,14 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 "$SIM" "$MAP" --boot --peak-view gornergrat --heading 90 --script "B d d d p f u u u" --expect-screen PeakView --png "$OUT/peak-view-inner-ridge.png"
 # Down enters Browse from the left edge and steps right. Generic labels stay in place.
 "$SIM" "$MAP" --boot --peak-view gornergrat --script "B d d d p f d d" --expect-screen PeakView --png "$OUT/peak-view-matterhorn.png"
+# Installed summit identity, shared reading/photo/Sources, and restored Browse panorama.
+PEAK_MAP="$repo_root/apps/obc-sim/assets/grimsel-demo.obcm"
+"$SIM" "$PEAK_MAP" --center 7961000,46585000 --heading 141.25 --script "B d d d p f p f" --expect-screen PeakView --png "$OUT/peak-article-indicator.png"
+"$SIM" "$PEAK_MAP" --center 7961000,46585000 --heading 141.25 --script "B d d d p f p f p f" --expect-screen PeakArticle --png "$OUT/peak-article.png"
+"$SIM" "$PEAK_MAP" --center 7961000,46585000 --heading 141.25 --script "B d d d p f p f p f u f" --expect-screen LandmarkPhoto --png "$OUT/peak-photo.png"
+"$SIM" "$PEAK_MAP" --center 7961000,46585000 --heading 141.25 --script "B d d d p f p f p f u f C p f" --expect-screen LandmarkSources --png "$OUT/peak-sources.png"
+"$SIM" "$PEAK_MAP" --center 7961000,46585000 --heading 141.25 --script "B d d d p f p f p f u f b b f" --expect-screen PeakView --png "$OUT/peak-article-back.png"
+
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
 # over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
 # synced/retention metadata boundary lands.

@@ -33,6 +33,7 @@ impl PeakName {
 /// north and above the observer's horizontal plane. Height and distance retain catalogue values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PeakViewPeak {
+    pub source: obc_formats::obcm::SourceId,
     pub name: PeakName,
     pub lat: i32,
     pub lon: i32,
@@ -57,6 +58,7 @@ impl PeakViewPeak {
     }
 
     pub const EMPTY: Self = Self {
+        source: obc_formats::obcm::SourceId(0),
         name: PeakName::new(""),
         lat: 0,
         lon: 0,
@@ -69,6 +71,7 @@ impl PeakViewPeak {
     };
 }
 
+mod articles;
 pub mod panorama;
 pub mod runtime;
 pub mod surface;
@@ -176,6 +179,7 @@ pub fn collect_summits(
     let mut landmarks = [None::<PeakViewPeak>; 16];
     reader.visit_summits_within((position.1, position.0), 100_000, |summit| {
         let mut peak = PeakViewPeak {
+            source: summit.source,
             name: PeakName::new(summit.name.as_str()),
             lat: summit.lat,
             lon: summit.lon,
@@ -203,6 +207,7 @@ pub fn collect_summits(
     // A second bounded scan fills all remaining slots, regardless of sector density.
     reader.visit_summits_within((position.1, position.0), 100_000, |summit| {
         let mut peak = PeakViewPeak {
+            source: summit.source,
             name: PeakName::new(summit.name.as_str()),
             lat: summit.lat,
             lon: summit.lon,

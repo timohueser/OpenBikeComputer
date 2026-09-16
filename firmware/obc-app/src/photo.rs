@@ -20,6 +20,56 @@ pub struct Selection {
     pub record_index: u32,
 }
 
+/// Distinct public lookup paths share only the photo decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContentSelection {
+    Landmark(Selection),
+    Peak(obc_reader::peaks::Selection),
+}
+impl ContentSelection {
+    fn valid(self, reader: &Reader<'_>) -> bool {
+        match self {
+            Self::Landmark(selection) => selection.map_generation == reader.generation(),
+            Self::Peak(selection) => reader.with_peak_article(selection, |_, _, _| Ok(())).is_ok(),
+        }
+    }
+    fn with_photo<T>(
+        self,
+        reader: &Reader<'_>,
+        read: impl FnOnce(Option<&dyn obc_formats::io::ByteSource>) -> Result<T, ()>,
+    ) -> Result<T, ()> {
+        match self {
+            Self::Peak(selection) => reader
+                .with_peak_article(selection, |section, directory, record| {
+                    if record.content[2].is_absent() {
+                        return read(None).map_err(|_| obc_reader::Error::BadOffset);
+                    }
+                    directory.content(section, &record, 3, MAX_ATTRIBUTION_BYTES)?;
+                    let source = directory.content(section, &record, 2, PHOTO_MAX_COMPRESSED as u32)?;
+                    read(Some(&source)).map_err(|_| obc_reader::Error::BadOffset)
+                })
+                .map_err(|_| ()),
+            Self::Landmark(selection) => {
+                if reader.generation() != selection.map_generation {
+                    return Err(());
+                }
+                let section = map_section(reader.source()).map_err(|_| ())?.ok_or(())?;
+                let directory = LandmarkDirectory::read(&section).map_err(|_| ())?;
+                let record = directory.record(&section, selection.record_index).map_err(|_| ())?;
+                if record.qid != selection.qid {
+                    return Err(());
+                }
+                if record.photo.is_absent() {
+                    return if record.photo_attribution.is_absent() { read(None) } else { Err(()) };
+                }
+                directory.content(&section, record.photo_attribution, MAX_ATTRIBUTION_BYTES).map_err(|_| ())?;
+                let source = directory.content(&section, record.photo, PHOTO_MAX_COMPRESSED as u32).map_err(|_| ())?;
+                read(Some(&source))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Fresh,
@@ -47,7 +97,7 @@ impl<'a> FramePhoto<'a> {
 /// The only retained decode work; the board places it in its shared scratch arena.
 pub struct Runtime {
     decoder: PhotoDecoder,
-    selection: Option<Selection>,
+    selection: Option<ContentSelection>,
     revision: u32,
 }
 
@@ -82,7 +132,7 @@ impl Runtime {
         D: DrawTarget,
         F: Fn(u16) -> D::Color,
     {
-        if !page.source_valid || reader.is_none_or(|reader| reader.generation() != page.selection.map_generation) {
+        if !page.source_valid || reader.is_none_or(|reader| !page.selection.valid(reader)) {
             page.status = Status::Unavailable;
             clear(target, &color);
         }
@@ -102,40 +152,31 @@ impl Runtime {
         }
         let result = (|| {
             let reader = reader.ok_or(())?;
-            if reader.generation() != page.selection.map_generation {
-                return Err(());
-            }
-            let section = map_section(reader.source()).map_err(|_| ())?.ok_or(())?;
-            let directory = LandmarkDirectory::read(&section).map_err(|_| ())?;
-            let record = directory.record(&section, page.selection.record_index).map_err(|_| ())?;
-            if record.qid != page.selection.qid {
-                return Err(());
-            }
-            if record.photo.is_absent() {
-                return if record.photo_attribution.is_absent() { Ok(Status::Missing) } else { Err(()) };
-            }
-            directory.content(&section, record.photo_attribution, MAX_ATTRIBUTION_BYTES).map_err(|_| ())?;
-            let source = directory.content(&section, record.photo, PHOTO_MAX_COMPRESSED as u32).map_err(|_| ())?;
-            self.decoder
-                .step(&source, |offset, bytes| {
-                    let _ = target.draw_iter(bytes.iter().enumerate().map(|(i, &pixel)| {
-                        let n = offset + i;
-                        let rgb = Rgb565::from(Rgb888::new(
-                            ((pixel >> 4) & 3) * 85,
-                            ((pixel >> 2) & 3) * 85,
-                            (pixel & 3) * 85,
-                        ));
-                        Pixel(
-                            Point::new(12 + (n % PHOTO_WIDTH) as i32, 40 + (n / PHOTO_WIDTH) as i32),
-                            color(RawU16::from(rgb).into_inner()),
-                        )
-                    }));
-                })
-                .map(|progress| match progress {
-                    Progress::Pending => Status::Pending,
-                    Progress::Complete => Status::Complete,
-                })
-                .map_err(|_| ())
+            page.selection.with_photo(reader, |source| {
+                let Some(source) = source else {
+                    return Ok(Status::Missing);
+                };
+                self.decoder
+                    .step(source, |offset, bytes| {
+                        let _ = target.draw_iter(bytes.iter().enumerate().map(|(i, &pixel)| {
+                            let n = offset + i;
+                            let rgb = Rgb565::from(Rgb888::new(
+                                ((pixel >> 4) & 3) * 85,
+                                ((pixel >> 2) & 3) * 85,
+                                (pixel & 3) * 85,
+                            ));
+                            Pixel(
+                                Point::new(12 + (n % PHOTO_WIDTH) as i32, 40 + (n / PHOTO_WIDTH) as i32),
+                                color(RawU16::from(rgb).into_inner()),
+                            )
+                        }));
+                    })
+                    .map(|progress| match progress {
+                        Progress::Pending => Status::Pending,
+                        Progress::Complete => Status::Complete,
+                    })
+                    .map_err(|_| ())
+            })
         })();
         page.status = result.unwrap_or(Status::Unavailable);
         if matches!(page.status, Status::Missing | Status::Unavailable) {
