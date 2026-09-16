@@ -3,7 +3,7 @@
 # (the repo root). Personal defaults (map/gpx/preset/toolchain paths) live in a gitignored
 # `tools/obc.local` — copy tools/obc.local.example and edit. `OBC_DRY_RUN=1 obc …` prints
 # the underlying commands without running them.
-# Test levels, suite cadence, and proportional verification are defined in docs/testing.md.
+# The test routes and proportional verification are defined in docs/testing.md.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments := true
