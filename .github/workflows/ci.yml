@@ -898,9 +898,15 @@ jobs:
   # compares them with the committed, compressed assets; this keeps the marketing surface honest
   # without paying for the full simulator suite on every PR.
   # The pbxproj is gitignored, so running xcodegen here also validates the fresh-clone setup
-  # and catches project.yml drift. The Debug/Release pair doubles as the mock-seam gate:
-  # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
-  # vacuous) and absent from Release (mock/dev-panel code must never ship).
+  # and catches project.yml drift. This job owns the Debug half of the mock-seam gate: OBCMock's
+  # build marker must be present in the Debug binary, which proves the `ios-release` grep is not
+  # vacuous.
+  #
+  # Two costs used to dominate the job and neither bought a check. The Debug build and the
+  # screenshot run each built the same app into the same DerivedData, so the app is now built
+  # once with `build-for-testing` and the capture only executes the test. A cold simulator needs
+  # about three minutes of data migration, so it starts booting beside that build instead of in
+  # front of the capture.
   ios-app:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-app')
@@ -914,6 +920,8 @@ jobs:
           persist-credentials: false
       - name: Install XcodeGen and WebP tools
         run: brew install xcodegen webp
+      - name: Start the screenshot simulator
+        run: companion-ios/scripts/capture-website-screenshots.sh --boot
       # The OBCDevice shell links the Rust host, so this job needs a Rust toolchain and the
       # simulator slice packed before xcodebuild plans a build: Xcode resolves an XCFramework
       # before any of the target's own script phases run.
@@ -929,10 +937,12 @@ jobs:
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
+      # build-for-testing, not build: the same pass produces the app and the
+      # OBCCompanionUITests bundle the screenshot step runs.
       - name: Build (Debug, simulator SDK)
         working-directory: companion-ios
         run: |
-          xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion \
+          xcodebuild build-for-testing -project OBCCompanion.xcodeproj -scheme OBCCompanion \
             -configuration Debug -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO
       # -r -a over the whole bundle: in Debug the app code lives in the debug dylib
@@ -960,6 +970,27 @@ jobs:
           name: ios-screenshots-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ios-screenshots.xcresult
           if-no-files-found: error
+
+  # The Release half of the mock-seam gate: mock and developer-panel code must never ship.
+  # It shares no build output with `ios-app` — a different configuration writes a different
+  # products directory — so it runs beside it instead of adding four minutes to the wall clock.
+  # The OBCCompanion scheme does not link the Rust host, so this job needs no toolchain.
+  ios-release:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-release')
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: xcodegen generate
+        working-directory: companion-ios
+        run: xcodegen generate
       - name: Build (Release, simulator SDK)
         working-directory: companion-ios
         run: |
@@ -1381,7 +1412,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, web-browser, desktop-frontend, desktop, desktop-launch, verification]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, ios-release, web, web-browser, desktop-frontend, desktop, desktop-launch, verification]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

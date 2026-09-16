@@ -9,12 +9,12 @@ device_name="${OBC_SCREENSHOT_DEVICE:-iPhone 17 Pro}"
 derived_data="${OBC_DERIVED_DATA_PATH:-$companion_dir/DerivedData}"
 mode="update"
 
-if [[ "${1:-}" == "--check" ]]; then
-  mode="check"
-  shift
-fi
+case "${1:-}" in
+  --check) mode="check"; shift ;;
+  --boot) mode="boot"; shift ;;
+esac
 if [[ $# -ne 0 ]]; then
-  echo "usage: $0 [--check]" >&2
+  echo "usage: $0 [--check | --boot]" >&2
   exit 2
 fi
 
@@ -24,6 +24,33 @@ for tool in xcodegen xcodebuild xcrun python3 cwebp dwebp; do
     exit 1
   fi
 done
+
+resolve_simulator() {
+  xcrun simctl list devices available -j | OBC_CAPTURE_DEVICE_NAME="$device_name" python3 -c '
+import json, os, sys
+data = json.load(sys.stdin)
+wanted = os.environ["OBC_CAPTURE_DEVICE_NAME"]
+for runtime, devices in sorted(data["devices"].items(), reverse=True):
+    if "iOS" not in runtime:
+        continue
+    for device in devices:
+        if device.get("isAvailable") and device.get("name") == wanted:
+            print(device["udid"])
+            raise SystemExit(0)
+raise SystemExit(f"no available iOS simulator named {wanted!r}")
+'
+}
+
+# A first boot of a fresh simulator takes minutes, almost all of it data migration. `--boot`
+# starts it and returns at once, so a caller can boot it beside the build it is going to need
+# it for; the capture below then finds it ready.
+if [[ "$mode" == "boot" ]]; then
+  # On its own line, so a device this runner does not have fails here and not minutes later.
+  boot_target="$(resolve_simulator)"
+  xcrun simctl boot "$boot_target" >/dev/null 2>&1 || true
+  echo "started the $device_name simulator"
+  exit 0
+fi
 
 # One Grimsel fixture family owns all three surfaces: full planned route on upload, then the shorter
 # browser replay as the finished ride. Update mode refreshes the derived SwiftPM resources; CI
@@ -47,22 +74,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-simulator_id="$(xcrun simctl list devices available -j | OBC_CAPTURE_DEVICE_NAME="$device_name" python3 -c '
-import json, os, sys
-data = json.load(sys.stdin)
-wanted = os.environ["OBC_CAPTURE_DEVICE_NAME"]
-for runtime, devices in sorted(data["devices"].items(), reverse=True):
-    if "iOS" not in runtime:
-        continue
-    for device in devices:
-        if device.get("isAvailable") and device.get("name") == wanted:
-            print(device["udid"])
-            raise SystemExit(0)
-raise SystemExit(f"no available iOS simulator named {wanted!r}")
-')"
+simulator_id="$(resolve_simulator)"
 
+boot_started="$SECONDS"
 xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simulator_id" -b
+echo "simulator ready after $((SECONDS - boot_started))s"
 xcrun simctl ui "$simulator_id" appearance light
 xcrun simctl ui "$simulator_id" content_size large
 xcrun simctl status_bar "$simulator_id" override \
@@ -70,10 +87,28 @@ xcrun simctl status_bar "$simulator_id" override \
   --cellularMode active --cellularBars 4 --operatorName '' \
   --batteryState charged --batteryLevel 100
 
+# CI builds the app and the UI-test bundle once with `build-for-testing` and points
+# OBC_DERIVED_DATA_PATH at the result, so a check run only executes the test. A standalone run
+# owns no prebuilt products and builds them here. Update mode always builds: it writes the
+# committed images, which must never come from a bundle somebody else built.
+action="test"
+if [[ "$mode" == "check" && -n "${OBC_DERIVED_DATA_PATH:-}" ]]; then
+  shopt -s nullglob
+  prebuilt=("$derived_data/Build/Products/"*.xctestrun)
+  shopt -u nullglob
+  if [[ ${#prebuilt[@]} -gt 0 ]]; then
+    action="test-without-building"
+  fi
+fi
+echo "screenshot capture runs xcodebuild $action"
+
 (
   cd "$companion_dir"
-  xcodegen generate
-  xcodebuild test \
+  # The prebuilt path reads no project file.
+  if [[ "$action" == "test" ]]; then
+    xcodegen generate
+  fi
+  xcodebuild "$action" \
     -quiet \
     -project OBCCompanion.xcodeproj \
     -scheme OBCCompanion \
