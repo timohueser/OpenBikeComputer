@@ -25,8 +25,14 @@ use std::path::{Path, PathBuf};
 
 use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
+use obc_app::{App, AppState};
 use obc_display::Framebuffer565;
-use obc_formats::io::{ByteSink, SliceSource};
+use obc_formats::io::{ByteSink, ByteSource, SliceSource};
+use obc_host_core::flat_map::FlatMap;
+use obc_host_core::flat_store::HostStore;
+use obc_host_core::frame::{self, Scene};
+use obc_host_core::test_support::CountedSource;
+use obc_host_core::RgbaFrame;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
@@ -489,15 +495,26 @@ fn snapped_box(summary: &CutSummary) -> (i64, i64, i64, i64) {
 /// Both maps plus the store and the box they were built over: what every comparison test needs.
 type Both = (Vec<u8>, Vec<u8>, MemoryStore, (i64, i64, i64, i64));
 
-/// Build both maps once for a test.
+/// Build both maps once for a test, from the seam-crossing fixture.
 fn both(name: &str) -> Both {
     let cfg = config();
     let (ing, ways) = fixture(&cfg);
+    both_of(name, &cfg, &ing, &ways)
+}
+
+/// …and from the uncut control fixture, whose scenes are [`uncut_scenes`].
+fn both_uncut(name: &str) -> Both {
+    let cfg = config();
+    let (ing, ways) = uncut_fixture(&cfg);
+    both_of(name, &cfg, &ing, &ways)
+}
+
+fn both_of(name: &str, cfg: &Config, ing: &Ingested, ways: &[RoutableWay]) -> Both {
     let dir = scratch(name);
-    let summary = cut(&dir, &cfg, &ing, &ways);
+    let summary = cut(&dir, cfg, ing, ways);
     let bbox = snapped_box(&summary);
-    let packed = monolithic(&cfg, &ing, &ways, bbox);
-    let (grafted, store) = assembled(&dir, &cfg, &summary);
+    let packed = monolithic(cfg, ing, ways, bbox);
+    let (grafted, store) = assembled(&dir, cfg, &summary);
     (packed, grafted, store, bbox)
 }
 
@@ -610,13 +627,7 @@ fn diff(a: &[u16], b: &[u16]) -> Diff {
 /// artefact.
 #[test]
 fn rendering_is_pixel_identical_where_no_feature_is_cut() {
-    let cfg = config();
-    let (ing, ways) = uncut_fixture(&cfg);
-    let dir = scratch("uncut");
-    let summary = cut(&dir, &cfg, &ing, &ways);
-    let bbox = snapped_box(&summary);
-    let packed = monolithic(&cfg, &ing, &ways, bbox);
-    let (grafted, _) = assembled(&dir, &cfg, &summary);
+    let (packed, grafted, _, _) = both_uncut("uncut");
     let backdrop = backdrop_color(&packed);
     for (name, center, mpp, heading) in uncut_scenes() {
         let a = render(&packed, center, mpp, heading);
@@ -625,6 +636,67 @@ fn rendering_is_pixel_identical_where_no_feature_is_cut() {
         let d = diff(&a, &b);
         assert_eq!(d.count, 0, "scene {name}: {} pixel(s) differ ({:?}) although no feature is cut", d.count, d.pairs);
     }
+}
+
+/// Draw one whole application frame — the map screen and its overlay — from `source`, through the
+/// same shared host path the simulator, the browser demo and the iPhone host draw with.
+fn app_frame(source: &dyn ByteSource, center: (i32, i32), mpp: f32) -> (Vec<u8>, obc_render::RenderStats) {
+    let tables = MapTables::parse(source).expect("the map parses");
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(source, &tables, &cache);
+    let mut app = App::new(AppState::new(center.0, center.1, zoom_for_mpp(mpp)));
+    let mut scratch = Box::new(RenderScratch::new());
+    let mut frame = RgbaFrame::new(WIDTH, HEIGHT);
+    let stats = frame::render(
+        &mut app,
+        &mut scratch,
+        &mut frame,
+        Scene { reader: &reader, route: None },
+        None,
+        (WIDTH as f32, HEIGHT as f32),
+        frame::device_rgb888,
+        &obc_render::NoopClock,
+        None,
+    );
+    (frame.as_rgba().to_vec(), stats)
+}
+
+/// (a) **Through the card, all the way into an application frame.**
+///
+/// The two tests above hand the assembled bytes straight to the renderer. This one takes the same
+/// bytes the way the device does: import them into a flat store, mount the committed object as a
+/// [`FlatMap`], and let the real `App` draw its map screen from that card-backed reader. The frame
+/// must be byte-identical to the one the same bytes draw with no card underneath, the card must
+/// really have been read, and the frame must contain map features — a blank screen would pass a
+/// bare "the buffer is not empty" check.
+///
+/// The viewport is `uncut_scenes()`'s `west-street`, 2 m/px over the western cell. Almost all of
+/// this synthetic fixture's ground is backdrop, so the viewport has to sit where there is geometry:
+/// this one is centred on the western lake with the primary road through it, and the test above
+/// already asserts that it draws more than backdrop.
+#[test]
+fn an_assembled_map_renders_through_the_card_into_an_app_frame() {
+    let (_, grafted, _, _) = both_uncut("app-frame");
+    let (name, center, mpp, _) = uncut_scenes()[0];
+    assert_eq!(name, "west-street", "the chosen scene moved — pick another one with geometry in it");
+
+    let card = HostStore::memory().expect("an in-memory card");
+    let map = FlatMap::from_bytes_in(&card, &grafted).expect("the assembled map imports and mounts");
+    let source = map.source();
+    let counted = CountedSource::new(&source);
+    let (through_card, card_stats) = app_frame(&counted, center, mpp);
+    let (direct, direct_stats) = app_frame(&SliceSource(&grafted), center, mpp);
+
+    assert!(counted.reads() > 0, "the frame drew without reading the card at all");
+    assert_eq!(card_stats.features_drawn, direct_stats.features_drawn);
+    assert!(card_stats.features_drawn > 0, "the card-backed frame drew no map feature");
+    assert_eq!(
+        through_card,
+        direct,
+        "the mounted map draws a different frame from the same bytes read directly ({} card read(s), {} byte(s))",
+        counted.reads(),
+        counted.bytes()
+    );
 }
 
 /// (a) **Pixel equivalence across seams: identical, or a one-pixel edge shift — and nothing else.**

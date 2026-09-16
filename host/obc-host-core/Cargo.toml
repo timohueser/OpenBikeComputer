@@ -7,6 +7,8 @@ description = "Shared std host glue for the three rendering hosts (obc-sim deskt
 
 [features]
 external-fixtures = []
+# Exposes `test_support` (the counted byte source) to a dependent's `[dev-dependencies]`.
+test-support = []
 
 [dependencies]
 obc-app = { path = "../../firmware/obc-app" }
