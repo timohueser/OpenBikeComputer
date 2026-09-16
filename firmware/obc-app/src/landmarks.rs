@@ -4,7 +4,7 @@ use crate::{
     screen::{Screen, Transition},
 };
 use obc_formats::{
-    io::{rd_u16, ByteSource},
+    io::{rd_u16, ByteSource, WindowSource},
     obcm::landmarks::*,
 };
 use obc_reader::{
@@ -31,6 +31,10 @@ pub enum Status {
 pub type Row = LandmarkHit;
 /// One content buffer serves both reading and attribution. Row identities do not change while reading.
 pub struct Landmarks {
+    pub peak_source: Option<obc_formats::obcm::SourceId>,
+    pub(crate) peak: Option<obc_reader::peaks::Selection>,
+    pub(crate) peak_language: Option<[u8; 2]>,
+    pub photo_available: bool,
     pub status: Status,
     pub rows: heapless::Vec<Row, ROWS>,
     pub origin: (i32, i32),
@@ -53,6 +57,10 @@ pub struct Landmarks {
 impl Landmarks {
     pub const fn new() -> Self {
         Self {
+            peak_source: None,
+            peak: None,
+            peak_language: None,
+            photo_available: false,
             status: Status::Idle,
             rows: heapless::Vec::new(),
             origin: (0, 0),
@@ -87,6 +95,7 @@ impl Landmarks {
         self.selected = 0;
         self.reading = false;
         self.loaded = None;
+        self.photo_available = false;
         self.record = None;
         self.article = None;
         self.name.clear();
@@ -95,24 +104,42 @@ impl Landmarks {
     }
     pub(crate) fn invalidate_selection(&mut self) {
         self.loaded = None;
+        self.photo_available = false;
         self.record = None;
         self.article = None;
     }
     pub(crate) fn invalidate(&mut self) {
         self.status = Status::Stale;
+        self.photo_available = false;
         self.record = None;
         self.article = None;
         self.loaded = None;
         self.text.clear();
     }
-    pub(crate) fn selection(&self) -> Option<Selection> {
+    pub(crate) fn selection(&self) -> Option<crate::photo::ContentSelection> {
+        if let Some(peak) = self.peak {
+            return Some(crate::photo::ContentSelection::Peak(peak));
+        }
         let row = self.selected()?;
-        Some(Selection { qid: row.key.qid, record_index: row.index, map_generation: self.generation? })
+        Some(crate::photo::ContentSelection::Landmark(Selection {
+            qid: row.key.qid,
+            record_index: row.index,
+            map_generation: self.generation?,
+        }))
     }
     pub(crate) fn read_step(&mut self, reader: &Reader, sources: bool, language: [u8; 2]) -> Result<(), Error> {
         if Some(reader.generation()) != self.generation {
             self.invalidate();
             return Ok(());
+        }
+        if let Some(selection) = self.peak {
+            return reader.with_peak_article(selection, |section, directory, record| {
+                let name = directory.content(section, &record, 0, MAX_NAME_BYTES)?;
+                let bundle = directory.content(section, &record, 1, obc_formats::articles::MAX_BYTES)?;
+                let photo = directory.content(section, &record, 2, PHOTO_MAX_COMPRESSED as u32).ok();
+                let credits = photo.and_then(|_| directory.content(section, &record, 3, MAX_ATTRIBUTION_BYTES).ok());
+                self.read_content(&name, &bundle, credits.as_ref().map(|s| s as &dyn ByteSource), sources, language)
+            });
         }
         let Some(section) = map_section(reader.source())? else {
             self.status = Status::Missing;
@@ -148,6 +175,33 @@ impl Landmarks {
         let Some(row) = self.selected().copied() else {
             return Ok(());
         };
+        let mut record = directory.record(&section, row.index)?;
+        if record.qid != row.key.qid {
+            self.invalidate();
+            return Ok(());
+        }
+        let name = directory.content(&section, record.name, MAX_NAME_BYTES)?;
+        let bundle = directory.content(&section, record.articles, obc_formats::articles::MAX_BYTES)?;
+        let photo = directory.content(&section, record.photo, PHOTO_MAX_COMPRESSED as u32).ok();
+        let credits =
+            photo.and_then(|_| directory.content(&section, record.photo_attribution, MAX_ATTRIBUTION_BYTES).ok());
+        self.read_content(&name, &bundle, credits.as_ref().map(|s| s as &dyn ByteSource), sources, language)?;
+        if !self.photo_available {
+            record.photo = ContentRef::default();
+            record.photo_attribution = ContentRef::default();
+        }
+        self.record = Some(record);
+        Ok(())
+    }
+
+    fn read_content(
+        &mut self,
+        name: &dyn ByteSource,
+        bundle: &dyn ByteSource,
+        photo_credits: Option<&dyn ByteSource>,
+        sources: bool,
+        language: [u8; 2],
+    ) -> Result<(), Error> {
         if self.loaded.is_some_and(|loaded| loaded.3 != language) {
             self.page = 0;
             self.source_page = 0;
@@ -156,69 +210,49 @@ impl Landmarks {
         if self.loaded == Some(requested) {
             return Ok(());
         }
-        let mut record = directory.record(&section, row.index)?;
-        if record.qid != row.key.qid {
-            self.invalidate();
-            return Ok(());
-        }
-        let article = directory.article(&section, &record, language)?;
+        let article = obc_reader::articles::select(bundle, language)?;
         self.name.clear();
-        let mut name = [0; MAX_NAME_BYTES as usize];
-        self.name.push_str(directory.name(&section, &record, &mut name)?).map_err(|_| Error::BadOffset)?;
-        if !self.name.chars().all(|c| matches!(c,' '..='~'|'\u{a0}'..='\u{17f}')) {
+        let mut bytes = [0; MAX_NAME_BYTES as usize];
+        let bytes = bytes.get_mut(..name.len() as usize).ok_or(Error::BadOffset)?;
+        name.read_at(0, bytes).map_err(Error::Source)?;
+        self.name.push_str(core::str::from_utf8(bytes).map_err(|_| Error::BadOffset)?).map_err(|_| Error::BadOffset)?;
+        if self.name.is_empty() || !self.name.chars().all(|c| matches!(c,' '..='~'|'\u{a0}'..='\u{17f}')) {
             return Err(Error::BadOffset);
         }
-        self.text.clear();
-        self.article_pages = credit_count(&directory, &section, article.attribution)?;
-        let photo_credits = if record.photo_attribution.is_absent()
-            || self.record.is_some_and(|r| r.qid == record.qid && r.photo_attribution.is_absent())
-        {
-            None
-        } else {
-            credit_count(&directory, &section, record.photo_attribution).ok()
-        };
-        if photo_credits.is_none() {
-            record.photo = ContentRef::default();
-            record.photo_attribution = ContentRef::default();
-        }
-        self.source_pages = self.article_pages + photo_credits.unwrap_or(0);
+        let text = content(bundle, article.text, MAX_TEXT_BYTES)?;
+        let credits = content(bundle, article.attribution, MAX_ATTRIBUTION_BYTES)?;
+        self.article_pages = credit_count(&credits)?;
+        let photo_credits = photo_credits.filter(|_| self.loaded.is_none() || self.photo_available);
+        let photo_count = photo_credits.and_then(|source| credit_count(source).ok());
+        self.photo_available = photo_count.is_some();
+        self.source_pages = self.article_pages + photo_count.unwrap_or(0);
         let photo_source = sources && self.source_page >= self.article_pages;
-        let (reference, index, count, limit) = if sources {
+        let (source, index, count) = if sources {
             if photo_source {
                 (
-                    record.photo_attribution,
+                    photo_credits.unwrap_or(&credits),
                     self.source_page - self.article_pages + 4,
-                    photo_credits.unwrap_or(0) + 4,
-                    MAX_ATTRIBUTION_BYTES,
+                    photo_count.unwrap_or(0) + 4,
                 )
             } else {
-                (article.attribution, self.source_page + 4, self.article_pages + 4, MAX_ATTRIBUTION_BYTES)
+                (&credits as &dyn ByteSource, self.source_page + 4, self.article_pages + 4)
             }
         } else {
-            (article.text, self.page.min(article.text_pages as u16 - 1), article.text_pages as u16, MAX_TEXT_BYTES)
+            (&text as &dyn ByteSource, self.page.min(article.text_pages as u16 - 1), article.text_pages as u16)
         };
         let mut bytes = [0; MAX_PAGE_BYTES];
-        let result = read_display_page(&directory, &section, reference, limit, count, index, &mut bytes);
+        let result = read_display_page(source, count, index, &mut bytes);
         let text = match result {
             Err(_) if photo_source => {
-                record.photo = ContentRef::default();
-                record.photo_attribution = ContentRef::default();
+                self.photo_available = false;
                 self.source_pages = self.article_pages;
                 self.source_page = 0;
-                read_display_page(
-                    &directory,
-                    &section,
-                    article.attribution,
-                    MAX_ATTRIBUTION_BYTES,
-                    self.article_pages + 4,
-                    4,
-                    &mut bytes,
-                )?
+                read_display_page(&credits, self.article_pages + 4, 4, &mut bytes)?
             }
             other => other?,
         };
+        self.text.clear();
         self.text.push_str(text).map_err(|_| Error::BadOffset)?;
-        self.record = Some(record);
         self.article = Some(article);
         self.loaded = Some(requested);
         Ok(())
@@ -229,24 +263,23 @@ impl Default for Landmarks {
         Self::new()
     }
 }
+fn content(source: &dyn ByteSource, reference: ContentRef, limit: u32) -> Result<WindowSource<'_>, Error> {
+    let range = reference.range(0, source.len() as u32, limit).ok_or(Error::BadOffset)?;
+    WindowSource::new(source, range.start, range.end - range.start).ok_or(Error::BadOffset)
+}
 fn read_display_page<'a>(
-    directory: &LandmarkDirectory,
-    section: &dyn ByteSource,
-    reference: ContentRef,
-    limit: u32,
+    source: &dyn ByteSource,
     count: u16,
     index: u16,
     bytes: &'a mut [u8; MAX_PAGE_BYTES],
 ) -> Result<&'a str, Error> {
-    let content = directory.content(section, reference, limit)?;
-    let text = page(&content, count, index, bytes)?;
-    if !display_page(text) {
+    let text = page(source, count, index, bytes)?;
+    if text.trim().is_empty() || !display_page(text) {
         return Err(Error::BadOffset);
     }
     Ok(text)
 }
-fn credit_count(directory: &LandmarkDirectory, section: &dyn ByteSource, reference: ContentRef) -> Result<u16, Error> {
-    let source = directory.content(section, reference, MAX_ATTRIBUTION_BYTES)?;
+fn credit_count(source: &dyn ByteSource) -> Result<u16, Error> {
     let mut count = [0; 2];
     source.read_at(0, &mut count).map_err(Error::Source)?;
     let count = rd_u16(&count, 0);
@@ -289,12 +322,44 @@ impl crate::App {
         let Some(screen) = self.ui.stack.last() else {
             return;
         };
-        if !matches!(screen, Screen::Landmarks(_) | Screen::LandmarkSources(_)) {
+        if !matches!(
+            screen,
+            Screen::Landmarks(_) | Screen::PeakArticle(_) | Screen::LandmarkSources(_) | Screen::LandmarkPhoto(_)
+        ) {
             return;
         }
         let sources = matches!(screen, Screen::LandmarkSources(_));
         let language = self.settings().language.article_code();
+        let peak = self
+            .ui
+            .stack
+            .iter()
+            .rev()
+            .find_map(|screen| match screen {
+                Screen::PeakArticle(page) => Some(Some((page.selection, page.source))),
+                Screen::Landmarks(_) => Some(None),
+                _ => None,
+            })
+            .flatten();
+        let fresh_position = self.fresh_position();
         let state = &mut self.ui.landmarks;
+        if peak.is_none() && state.peak_source.is_some() {
+            *state = Landmarks::new();
+            if let Some(fix) = fresh_position {
+                state.origin = (fix.lon, fix.lat);
+                state.status = Status::Loading;
+            } else {
+                state.status = Status::NoFix;
+            }
+        }
+        if let Some((selection, source)) = peak.filter(|(selection, _)| state.peak != Some(*selection)) {
+            *state = Landmarks::new();
+            state.peak = Some(selection);
+            state.peak_source = Some(source);
+            state.generation = reader.map(Reader::generation);
+            state.status = Status::Ready;
+            state.reading = true;
+        }
         if matches!(
             state.status,
             Status::Stale
@@ -335,10 +400,10 @@ impl crate::App {
                 self.ui.poi_scratch.detail_schedule = hours.ok().flatten();
             }
         }
-        if let Some(record) = state.record.filter(|r| r.photo.is_absent()) {
+        if state.ready() && !state.photo_available {
             for screen in &mut self.ui.stack {
                 if let Screen::LandmarkPhoto(photo) = screen {
-                    if photo.linked && photo.selection.qid == record.qid {
+                    if photo.linked && Some(photo.selection) == state.selection() {
                         photo.invalidate_source();
                     }
                 }

@@ -24,12 +24,14 @@ mod terrain;
 
 /// Live mode follows [`crate::AppState::effective_heading_deg`]. Stepping selects a summit and
 /// enters Browse, which freezes the panorama so every selection continues to refer to the terrain
-/// the rider was looking at. Select toggles Live/Browse; Back leaves Browse before it leaves the
-/// screen.
+/// the rider was looking at. Select enters Browse, then opens installed content or returns to Live.
+/// Back leaves Browse before it leaves the screen.
 #[derive(Debug, Default)]
 pub struct PeakViewScreen {
     browse_heading_q4: Option<u16>,
-    selected: Option<(i32, i32)>,
+    pub(crate) browse_position: Option<(i32, i32)>,
+    pub(crate) map_generation: Option<u32>,
+    selected: Option<obc_formats::obcm::SourceId>,
     spin: Spinner,
     status: Status,
 }
@@ -47,18 +49,29 @@ impl PeakViewScreen {
         let changed = self.status != status;
         if matches!(status, Status::Waiting | Status::Unavailable) {
             self.browse_heading_q4 = None;
+            self.browse_position = None;
             self.selected = None;
         }
         self.status = status;
         changed
     }
 
+    pub(crate) fn invalidate_map(&mut self) {
+        self.browse_heading_q4 = None;
+        self.browse_position = None;
+        self.selected = None;
+    }
+
     fn selected_index(&self, profile: &PeakViewProfile) -> Option<usize> {
-        self.selected.and_then(|position| profile.peaks.iter().position(|peak| (peak.lat, peak.lon) == position))
+        self.selected.and_then(|source| profile.peaks.iter().position(|peak| peak.source == source))
     }
 
     fn select(&mut self, profile: &PeakViewProfile, index: Option<usize>) {
-        self.selected = index.map(|i| (profile.peaks[i].lat, profile.peaks[i].lon));
+        self.selected = index.map(|i| profile.peaks[i].source);
+    }
+
+    pub(crate) fn selected_source(&self) -> Option<obc_formats::obcm::SourceId> {
+        self.browse_heading_q4.and(self.selected)
     }
 
     pub fn heading_q4(&self, state: &crate::AppState) -> u16 {
@@ -113,24 +126,39 @@ impl PeakViewScreen {
                         );
                     }
                 }
+                self.browse_position = Some((profile.observer_lat, profile.observer_lon));
                 self.browse_heading_q4 = Some(heading);
                 Transition::None
             }
             Gesture::Press => {
+                if self.selected_source().is_some_and(|source| cx.landmarks.peak_source == Some(source))
+                    && cx.landmarks.ready()
+                    && cx.landmarks.article.is_some()
+                {
+                    cx.landmarks.page = 0;
+                    cx.landmarks.reading = true;
+                    return Transition::Push(super::Screen::PeakArticle(super::PeakArticleScreen {
+                        selection: cx.landmarks.peak.unwrap(),
+                        source: self.selected.unwrap(),
+                    }));
+                }
                 if self.browse_heading_q4.take().is_none() {
                     let heading = live_heading_q4(cx.state, profile);
                     self.select(
                         profile,
                         visible_indices(profile, heading).into_iter().max_by_key(|i| profile.peaks[*i].score),
                     );
+                    self.browse_position = Some((profile.observer_lat, profile.observer_lon));
                     self.browse_heading_q4 = Some(heading);
                 } else {
                     self.selected = None;
+                    self.browse_position = None;
                 }
                 Transition::None
             }
             Gesture::Back if self.browse_heading_q4.take().is_some() => {
                 self.selected = None;
+                self.browse_position = None;
                 Transition::None
             }
             Gesture::Back => Transition::Pop,
@@ -344,7 +372,13 @@ fn draw_ledger(cv: &mut impl Surface, rx: &Render, profile: &PeakViewProfile, se
         return;
     };
 
-    let name_row = rect(10, top + 5, rx.w - 20, Font::Label.line_height() as i32);
+    let info = rx.landmarks.peak_source == Some(peak.source) && rx.landmarks.ready() && rx.landmarks.article.is_some();
+    let chars = chars.saturating_sub(if info { 2 } else { 0 });
+    if info {
+        cv.disc(Point::new(rx.w - 16, top + 17), 9, palette::WOOD);
+        cv.text("i", Point::new(rx.w - 16, top + 5), Font::Label, TextAlign::Center, palette::PARCHMENT);
+    }
+    let name_row = rect(10, top + 5, rx.w - if info { 44 } else { 20 }, Font::Label.line_height() as i32);
     let name = rx.marquee.fit(peak.name.as_str(), chars, Some(name_row));
     cv.text(&name, Point::new(10, top + 5), Font::Label, TextAlign::Left, palette::INK);
     let mut details: heapless::String<40> = heapless::String::new();
@@ -372,6 +406,7 @@ mod tests {
 
     static PEAKS: [PeakViewPeak; 3] = [
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(1),
             name: PeakName::new("A"),
             lat: 0,
             lon: 0,
@@ -383,6 +418,7 @@ mod tests {
             score: 1,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(2),
             name: PeakName::new("C"),
             lat: 1,
             lon: 0,
@@ -394,6 +430,7 @@ mod tests {
             score: 2,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(3),
             name: PeakName::new("B"),
             lat: 2,
             lon: 0,
@@ -418,6 +455,7 @@ mod tests {
     };
     static STACKED_PEAKS: [PeakViewPeak; 3] = [
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(4),
             name: PeakName::new("Near"),
             lat: 3,
             lon: 0,
@@ -429,6 +467,7 @@ mod tests {
             score: 1,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(5),
             name: PeakName::new("Middle"),
             lat: 4,
             lon: 0,
@@ -440,6 +479,7 @@ mod tests {
             score: 2,
         },
         PeakViewPeak {
+            source: obc_formats::obcm::SourceId(6),
             name: PeakName::new("Far"),
             lat: 5,
             lon: 0,
@@ -518,13 +558,13 @@ mod tests {
         let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
         assert_eq!(screen.selected, None);
         screen.handle(Gesture::Press, &mut cx);
-        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[2].source));
         screen.handle(Gesture::Press, &mut cx);
         assert_eq!(screen.selected, None);
         screen.handle(Gesture::Step(1), &mut cx);
-        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[2].source));
         screen.handle(Gesture::Step(1), &mut cx);
-        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[0].source));
         assert_eq!(screen.browse_heading_q4, Some(0));
         cx.state.peak_view_peaks[0] = PEAKS[2];
         cx.state.peak_view_peaks[1] = PEAKS[0];
@@ -532,15 +572,15 @@ mod tests {
         assert_eq!(screen.selected_index(&current_profile(cx.state).unwrap()), Some(1));
         screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(60));
-        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[0].source));
         screen.handle(Gesture::Step(2), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(180));
         screen.handle(Gesture::Press, &mut cx);
         assert_eq!(screen.heading_q4(cx.state), 0);
         screen.handle(Gesture::Step(-1), &mut cx);
-        assert_eq!(screen.selected, Some((PEAKS[0].lat, PEAKS[0].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[0].source));
         screen.handle(Gesture::Step(-1), &mut cx);
-        assert_eq!(screen.selected, Some((PEAKS[2].lat, PEAKS[2].lon)));
+        assert_eq!(screen.selected, Some(PEAKS[2].source));
     }
 
     #[test]
@@ -550,8 +590,13 @@ mod tests {
         state.compass_deg = Some(0.0);
         // Two peaks enter together at 40 degrees; two more share the same bearing.
         for (i, bearing) in [340, 0, 40, 44, 110, 110, 180, 280].into_iter().enumerate() {
-            state.peak_view_peaks[i] =
-                PeakViewPeak { lat: i as i32, azimuth_q4: bearing * 4, distance_m: 1000 + i as u32, ..PEAKS[0] };
+            state.peak_view_peaks[i] = PeakViewPeak {
+                source: obc_formats::obcm::SourceId(i as u64),
+                lat: i as i32,
+                azimuth_q4: bearing * 4,
+                distance_m: 1000 + i as u32,
+                ..PEAKS[0]
+            };
         }
         state.peak_view_peak_count = 8;
         let mut activity = Activity::new(Mode::Idle);
@@ -566,7 +611,7 @@ mod tests {
                 screen.handle(Gesture::Step(direction), &mut cx);
                 let turn = bearing_delta_q4(screen.heading_q4(cx.state), heading);
                 assert!(turn == 0 || turn == direction * 60);
-                if let Some((id, _)) = screen.selected {
+                if let Some(obc_formats::obcm::SourceId(id)) = screen.selected {
                     if visited.last() != Some(&id) {
                         visited.push(id);
                     }
@@ -581,21 +626,21 @@ mod tests {
         let mut screen = PeakViewScreen::new(None);
         screen.set_status(Status::Ready);
         screen.handle(Gesture::Step(2), &mut cx);
-        assert_eq!(screen.selected, Some((1, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(1)));
         screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(60));
-        assert_eq!(screen.selected, Some((2, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(2)));
         screen.handle(Gesture::Step(1), &mut cx);
-        assert_eq!(screen.selected, Some((3, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(3)));
         screen.handle(Gesture::Step(1), &mut cx);
         assert_eq!(screen.browse_heading_q4, Some(120));
-        assert_eq!(screen.selected, Some((3, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(3)));
         screen.handle(Gesture::Step(-1), &mut cx);
-        assert_eq!(screen.selected, Some((2, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(2)));
         screen.handle(Gesture::Step(4), &mut cx);
         assert_eq!(screen.selected, None);
         screen.handle(Gesture::Step(-1), &mut cx);
-        assert_eq!(screen.selected, Some((3, 0)));
+        assert_eq!(screen.selected, Some(obc_formats::obcm::SourceId(3)));
     }
 
     #[test]
