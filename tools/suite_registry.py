@@ -22,6 +22,10 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import test_exceptions
+
 LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "hardware"}
 # The only two spoken aliases: `obc test fixtures` and `obc test e2e`.
 LEVEL_ALIASES = {"fixtures": "fixture", "e2e": "end-to-end"}
@@ -509,6 +513,9 @@ def validate(root: Path, suites_doc: dict[str, Any], coverage_doc: dict[str, Any
             for owner in owners:
                 if not isinstance(owner, dict) or owner.get("kind") not in OWNERSHIP_KINDS:
                     errors.append(f"{suite_id}: invalid ownership rule {owner!r}")
+        for field_name in test_exceptions.EXCEPTION_FIELDS:
+            if field_name in suite:
+                errors.extend(test_exceptions.block_errors(f"{suite_id}.{field_name}", suite[field_name]))
         _validate_command(root, suite, rust_packages, errors)
         for pattern in suite.get("extra_triggers", []):
             if not isinstance(pattern, str) or not any(root.glob(pattern)):
