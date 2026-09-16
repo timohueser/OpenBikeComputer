@@ -5,6 +5,18 @@ The application database is the authority. Git contains the implementation, not 
 requirement prose. One inactive example is created in a new database. An example does not satisfy a
 release gate until the owner reviews and activates it.
 
+## Requirement groups
+
+Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.
+In the requirement editor, choose an existing group or type a new name. Leave the field blank for
+an ungrouped requirement. The sidebar can filter by group; search also matches group names.
+**Manage groups** renames a group or moves its requirements to Ungrouped. These changes remain in
+the draft until you select **Save revision**. Empty groups are not stored.
+
+Group names belong to the requirement revision. Existing candidates and reports keep the groups
+from their saved revision. Groups organize the view; they do not change verification or release
+rules. The API exposes the optional `group` field on each requirement.
+
 ## Local development
 
 Use Node 24.21 or a later Node 24 release:
