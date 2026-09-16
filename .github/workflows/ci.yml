@@ -251,6 +251,8 @@ jobs:
   test:
     env:
       CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target
+      OBC_COVERAGE: "1"
+      OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
     runs-on: ubuntu-latest
@@ -285,39 +287,19 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
+      # Each section is one step so it keeps its own name and result artifact; the file is
+      # the same one `obc check test` runs. The package set comes from the selection plan,
+      # so a three-crate change compiles three crates and not the workspace.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
-        env:
-          NEXTEST_PROFILE: ci
-        run: |
-          mkdir -p target
-          eval "$(cargo llvm-cov show-env --sh)"
-          find target -maxdepth 1 -name '*.profraw' -delete
-          rm -f target/nextest/ci/junit.xml
-          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fast)"
+        run: bash tools/ci/test.sh nextest-fast
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
-        env:
-          NEXTEST_PROFILE: fixtures
-        run: |
-          eval "$(cargo llvm-cov show-env --sh)"
-          rm -f target/nextest/fixtures/junit.xml
-          python3 tools/fixtures.py sync test
-          OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
-          export OBC_FIXTURE_ROOT
-          cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/suite_registry.py cargo-filter --tier fixtures)"
-      # nextest runs no doctests, so the whole workspace's doctests run here as one cheap step
-      # rather than being silently dropped from the gate.
-      - name: cargo test --doc (workspace, all features)
-        shell: bash
-        run: |
-          mkdir -p .artifacts/rust
-          cargo test --workspace --all-features --locked --doc 2>&1 | tee .artifacts/rust/doctests.log
+        run: bash tools/ci/test.sh nextest-fixtures
+      - name: cargo test --doc (selected packages, all features)
+        run: bash tools/ci/test.sh doctests
       - name: cargo test (obc-formats, default features = the device's shape)
-        shell: bash
-        run: |
-          mkdir -p .artifacts/rust
-          cargo test -p obc-formats --locked 2>&1 | tee .artifacts/rust/formats-default.log
+        run: bash tools/ci/test.sh formats-default
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -331,14 +313,8 @@ jobs:
           python3 -m coverage run --data-file=.artifacts/coverage/firmware-tools/.coverage --source=firmware/tools -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
-      # Render + read-path golden gate (issues #327, #1467): re-run the 7 fixed bench scenes and
-      # the 9 route-corridor cases over the deterministic testkit fixtures and fail if any frame
-      # hash *or* any read counter (chunks visited, cache hits/misses, SD reads, bytes) drifts from
-      # the committed golden file — so a cache change that halves the hit rate cannot pass on
-      # identical pixels. Timings are printed to the log but never gated (shared runners are noisy);
-      # an intentional change regenerates golden.txt (--write-golden) in the same PR.
       - name: obc-bench --check (render + read-counter golden gate)
-        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
+        run: bash tools/ci/test.sh bench-golden
       # Screen pixel-hash tripwire (#1441): re-render every UI screen through the headless
       # simulator and compare the frames to the committed digest manifest. The bench tripwire above
       # covers the map renderer's scenes; this covers the screens drawn over them, which is what a
@@ -434,14 +410,14 @@ jobs:
             .artifacts/rust/
           if-no-files-found: error
       - name: Upload Rust test results
-        if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.nextest.outputs.report == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-test-${{ github.run_attempt }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: error
       - name: Upload Rust fixture test results
-        if: ${{ !cancelled() && (steps.nextest-fixtures.outcome == 'success' || steps.nextest-fixtures.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.nextest-fixtures.outputs.report == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-fixtures-${{ github.run_attempt }}
