@@ -37,9 +37,16 @@ The range presets are 5 km and 10 km. Unit settings control how distances appear
 
 ## Opening status across Ride Assistant
 
-Exclude places known to be closed now. Include places open now and places with unknown hours.
-Do not present unknown hours as confirmed open. Use current opening status, not predicted arrival
-time. A closes-soon or unknown-hours note can appear in details where there is space.
+Find a Place hides places known to be closed now by default. Open **Down + Back** from the
+category overview, category results, or **More places** to change **Hide closed places**.
+Turn it off to include closed places. All categories and the paged browser use the same saved
+preference. Places with unknown hours remain included and are not labelled open.
+What's next continues to exclude places known to be closed.
+
+Opening hours are information when a rider selects a destination. They do not block a route
+preview or acceptance, including when a place closes during review. Landmarks remain visible
+and available for visits regardless of opening status. Use current opening status, not predicted
+arrival time.
 
 The installed map supplies opening schedules. A trusted local clock resolves the current state.
 Missing schedules, unsupported schedules, or unavailable time remain unknown.
@@ -63,12 +70,13 @@ also remains available when a photo cannot be decoded. If a photo-credit page fa
 returns to the article credits and omits the photo. The article remains readable. Photos use the
 existing RGB222 frame preparation path; text and source pages do not decode an image while they draw.
 
-Closed landmarks remain readable for identification. Current opening hours govern **Visit**:
-a known-closed site cannot be accepted. Unknown hours do not claim that a site is open. A site
+Closed landmarks remain readable and available for **Visit**. Available hours describe the site;
+they do not prevent a rider from viewing it from outside. Unknown hours do not claim that a site
+is open. A site
 without explicit mapped access for the selected bike profile remains information-only and shows
 **Unmapped access**. The photo footer shows the same availability and keeps its page-navigation hint.
 **Visit** opens the shared place detail and real route preview. A straight-line distance never
-promises a rideable connection. The selected map, current position, profile, and opening hours
+promises a rideable connection. The selected map, current position, profile, and mapped access
 are checked before acceptance. Browsing does not change an accepted visit or start recording.
 
 The [production evidence](../../assets/ride-assistant/implementation/ra10-evidence/README.md)
@@ -131,8 +139,14 @@ remain layout references; their synthetic alternatives do not ship.
 
 ## Discovery and limits
 
-Find a place includes all map categories. **More places** opens the complete paged browser for the
-selected category. Back returns to its overview. The last calculated category stays cached until
+Find a place includes all map categories. Its context drawer offers **Results: 2 / 4 / 6**, with
+four as the default. This saved preference applies to every category. A search calculates routes
+to at most that many nearby candidates and, with an active route, that many candidates ahead.
+It then ranks up to the selected number of recommendations. Fewer results reduce route work;
+more results offer a wider choice. Neither choice changes the search area or guarantees a full
+result page. Changing either search preference starts a fresh search for the current view.
+
+**More places** opens the complete paged browser for the selected category. Back returns to its overview. The last calculated category stays cached until
 another category replaces it or the Assistant closes, while its inputs remain valid. Accepting a
 place route starts recording if no ride session exists. An existing ride continues in the same
 session. What's next retains category and source filters, generic and categorized authored
