@@ -157,3 +157,24 @@ args = ["--clock", "2026-09-14T10:00", "--utc-offset-min", "60"]
 [profiles.assistant]
 summary = "Offline regional maps, landmark content, and authored motion for Ride Assistant"
 scenarios = ["assistant-out-and-back", "assistant-forward-rejoin", "assistant-loop-crossing", "assistant-monaco-dense", "assistant-dunlough-access"]
+
+[packages.peak-wiki]
+summary = "Pinned Wiki sources for nine Swiss OSM summit nodes"
+archive = "packages/992a9a81e417d5ca8f0a668bdca61d729d944518814d2c54889a9d69b46f55db.tar.gz"
+sha256 = "992a9a81e417d5ca8f0a668bdca61d729d944518814d2c54889a9d69b46f55db"
+bytes = 82385897
+provenance = "Bounded source capture from 2026-09-16: nine unchanged OSM summit nodes, seven explicitly linked canonical articles, original photos, credits and omission inputs. Exact source slice and digests: sources/peak-view/peak-articles-source.json. Not country coverage."
+license = "ODbL-1.0 (OSM); CC0-1.0 (Wikidata); source-specific article and image licenses in captured notices"
+tracked_sources = { "provenance.json" = "sources/peak-view/peak-articles-source.json" }
+
+[profiles.peak-articles]
+summary = "Bounded source evidence and compiled peak catalogue for host map integration"
+packages = ["peak-wiki", "peak-content"]
+
+[packages.peak-content]
+summary = "Seven compiled Swiss peak articles, shared photos and eight summit associations"
+archive = "packages/ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22.tar.gz"
+sha256 = "ff8d68fc279387b76a44d7924b9270f05abb7a842587e194a212db12d70aea22"
+bytes = 64463
+provenance = "Separate peak catalogue schema 1 from the bounded peak-wiki sources: seven records, 21 en/de/fr/es variants, six photos and eight original OSM node associations. Exact compiler and output digests: sources/peak-view/peak-articles-content.json. Host integration fixture; not a region artifact or installed map."
+license = "ODbL-1.0 (OSM associations); CC0-1.0 (Wikidata); source-specific article and media licenses retained per record"
