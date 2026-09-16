@@ -302,7 +302,7 @@ class CatalogServer(ThreadingHTTPServer):
             with self.log.open("a") as handle:
                 handle.write(json.dumps({"path": path, "status": status, "kind": kind}) + "\n")
 
-    def static_body(self, path: str) -> bytes | None:
+    def static_file(self, path: str) -> Path | None:
         """A file under the static root, or `None`. A path that escapes the root is not one."""
 
         if not self.static:
@@ -312,20 +312,24 @@ class CatalogServer(ThreadingHTTPServer):
             candidate = candidate / "index.html"
         if not candidate.is_file() or self.static not in candidate.parents:
             return None
-        return candidate.read_bytes()
+        return candidate
 
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's spelling
         server: CatalogServer = self.server  # type: ignore[assignment]
         path = urlsplit(self.path).path
-        body, kind = server.objects.get(path), "object"
+        body, kind, name = server.objects.get(path), "object", path
         if body is None:
-            body, kind = server.static_body(path), "static"
+            static = server.static_file(path)
+            # The served *file* names the type: a request for "/" is an index.html, and answering it
+            # as an octet-stream makes the browser download the app instead of running it.
+            if static:
+                body, kind, name = static.read_bytes(), "static", static.name
         status = 200 if body is not None else 404
         server.record(path, status, kind if body is not None else "missing")
         self.send_response(status)
-        self.send_header("Content-Type", content_type(path) if body is not None else "text/plain")
+        self.send_header("Content-Type", content_type(name) if body is not None else "text/plain")
         self.end_headers()
         self.wfile.write(body if body is not None else b"not found")
 
