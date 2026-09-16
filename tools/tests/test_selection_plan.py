@@ -427,7 +427,7 @@ class ShippedPlanTests(unittest.TestCase):
                 ["apps/obc-desktop/e2e/launch.py"],
                 ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges"],
             ),
-            ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app"]),
+            ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app", "ios-release"]),
             (
                 "web only",
                 ["builder/app/src/lib/panel.ts"],
@@ -436,12 +436,12 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
@@ -453,7 +453,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "OBCKit package source",
                 ["companion-ios/Packages/OBCKit/Sources/OBCTransport/BLE/Client.swift"],
-                ["ios-app", "ios-unit"],
+                ["ios-app", "ios-release", "ios-unit"],
             ),
             (
                 "repository tooling",

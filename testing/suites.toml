@@ -423,14 +423,31 @@ ci_only = true
 
 # The app links OBCKit, and no Swift dependency graph exists to derive that edge: an
 # OBCKit API change breaks `xcodebuild build` without touching a file under OBCCompanion/.
+# build-for-testing, because the same pass produces the UI-test bundle `ios.xcuitest` runs.
 [[suite]]
 id = "ci.ios-app-build"
 route = "ordinary"
-command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+command = "xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
   "companion-ios/scripts/generate-website-fixture.py",
+  "companion-ios/OBCCompanion/**",
+  "companion-ios/project.yml",
+  "companion-ios/Packages/OBCKit/Package.swift",
+  "companion-ios/Packages/OBCKit/Sources/**",
+]
+
+# Mock and developer-panel code must never ship. The Debug grep rides the build above and
+# proves this grep is not vacuous; the Release build is its own job because it shares no
+# output with the Debug one and would otherwise extend the pull-request wall clock.
+[[suite]]
+id = "ci.ios-release-build"
+route = "ordinary"
+command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
+jobs = ["ios-release"]
+platforms = ["macos"]
+triggers = [
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
   "companion-ios/Packages/OBCKit/Package.swift",
