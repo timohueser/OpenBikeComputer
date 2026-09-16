@@ -3,7 +3,7 @@
 This is a one-shot acquisition command. It writes country-scale raw sources to a local
 map-baker source directory. Do not publish that directory to the dev fixture or production maps
 bucket. The `obc-bake landmarks` compiler selects sites and builds content without network access.
-Acquisition does not use P17 country claims, a curated list, or the demonstration prose.
+Site eligibility does not use P17 country claims, a curated list, or the demonstration prose.
 
 Build the compiler and acquire the pinned country boundary first. Run from the repository root:
 
@@ -21,7 +21,7 @@ python3 tools/landmark_capture.py \
 Use the same arguments and output directory to resume. Completed requests are reused only
 after their URL, byte count and SHA-256 digest are checked. Failed requests remain failed.
 Add `--retry-failed` to make one more attempt at each failed request. Previous failure records
-are kept in `attempts/`. A changed boundary or category policy requires a new output directory.
+are kept in `attempts/`. A changed boundary, category policy, language set, or locale policy requires a new output directory.
 Do not run two capture processes against one output directory.
 
 The command uses two workers and at most four requests per second in total. It queries each
@@ -41,7 +41,7 @@ polygon or category selector can disagree with the production compiler.
 The executable digest is checked before and after selection. Keep a separate copy of the
 built executable when another build can replace the normal target binary.
 
-For each eligible site, acquisition captures available en/de/fr/it/ga sitelinks. Each article
+For each eligible site, acquisition captures available en/de/fr/es sitelinks, matching the UI languages. Each article
 has a raw revision query, exact-revision rendered HTML, and the supplied notices and footer.
 It captures P18 and each language's first lead image candidate in filename order. Commons
 metadata is kept before JPEG/PNG original bytes are downloaded. The limit is 32 MiB per
@@ -50,7 +50,9 @@ different outcomes. The offline compiler makes the final text, image and attribu
 
 `manifest.json` uses the same schema 1 interface as the small `assistant-wiki` fixture. Successful
 responses have source URLs, retrieval timestamps, byte counts and SHA-256 digests. Raw responses are in
-`queries/`, `entities/`, `classes/`, `articles/` and `images/`. The manifest also contains the
+`queries/`, `entities/`, `classes/`, `locales/`, `articles/` and `images/`.
+The locale responses pin administrative and country official-language claims for the baked
+local fallback. See the [compiler policy](../../../host/obc-pack/src/landmarks/README.md). The manifest also contains the
 request outcomes, coverage, and per-place article/image outcomes. The boundary, policy, recipe,
 candidate union and production selection result remain in the capture directory. Its timestamps
 describe a capture interval; upstream pages can change during that interval.
@@ -66,9 +68,9 @@ Compile twice into empty directories to check offline reproducibility:
 
 ```sh
 target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
-  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --language en --out .artifacts/content-a
+  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-a
 target/debug/obc-bake landmarks --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
-  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --language en --out .artifacts/content-b
+  --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" --out .artifacts/content-b
 diff -r .artifacts/content-a .artifacts/content-b
 ```
 
@@ -99,7 +101,7 @@ OBC_LANDMARK_CAPTURE="${OBC_LANDMARK_CAPTURE:-$HOME/.cache/openbikecomputer/bake
 target/release/obc-bake landmarks \
   --snapshot "$OBC_LANDMARK_CAPTURE/manifest.json" \
   --boundary "$OBC_LANDMARK_CAPTURE/boundary.geojson" \
-  --language en --out .artifacts/switzerland-content
+  --out .artifacts/switzerland-content
 ```
 
 Use a fresh output directory for each pass. The recorded capture supplies 3,013 exact-revision
