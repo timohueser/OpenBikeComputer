@@ -18,11 +18,13 @@ impl App {
         screen.map_generation = generation;
         let Some(source) = screen.selected_source() else { return };
         let state = &mut self.ui.landmarks;
-        if state.peak_source != Some(source) || state.generation != generation || state.peak_language != Some(language)
+        if state.peak_source != Some(source)
+            || state.generation != generation
+            || state.attempted_language != Some(language)
         {
             *state = Landmarks::new();
             state.peak_source = Some(source);
-            state.peak_language = Some(language);
+            state.attempted_language = Some(language);
             state.generation = generation;
             state.status = Status::Missing;
             let Some(reader) = reader else { return };
@@ -74,15 +76,16 @@ mod tests {
         let payload = section.len() as u32;
         let mut record = Record { id: [1; 32], content: [ContentRef::default(); 4] };
         let credits = ["url", "rev", "license", "authors", "Source credit."];
+        let local_credits = ["url", "rev", "license", "authors", if text == "雪" { "雪" } else { "Source credit." }];
         let variants: &[obcm_testkit::articles::Article<'_>] = if english {
             &[
-                (*b"de", &[text], &credits),
+                (*b"de", &[text], &local_credits),
                 (*b"en", &["English summit.", "Second page."], &credits),
                 (*b"fr", &["Sommet français."], &credits),
                 (*b"es", &["Cumbre española."], &credits),
             ]
         } else {
-            &[(*b"de", &[text], &credits)]
+            &[(*b"de", &[text], &local_credits)]
         };
         let mut pixels = vec![0x48, 0x0d, 1];
         let len = PHOTO_PIXELS as u16;
@@ -372,6 +375,28 @@ mod tests {
         app.set_settings(settings);
         prepare(&mut app, &reader);
         assert!(app.ui.landmarks.ready(), "changing language retries the selected article");
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PeakArticle(_)));
+        for sources in [false, true] {
+            if sources {
+                app.apply_chord(Chord::Context);
+                app.apply_gesture(Gesture::Press);
+            }
+            settings.language = crate::settings::Language::De;
+            app.set_settings(settings);
+            prepare(&mut app, &reader);
+            assert_eq!(app.ui.landmarks.status, Status::Failed);
+            prepare(&mut app, &reader);
+            assert_eq!(app.ui.landmarks.status, Status::Failed, "the same language keeps the failure latched");
+            settings.language = crate::settings::Language::En;
+            app.set_settings(settings);
+            prepare(&mut app, &reader);
+            assert!(app.ui.landmarks.ready(), "reading and Sources retry after a language change");
+            if sources {
+                app.apply_gesture(Gesture::Back);
+            }
+        }
+        app.apply_gesture(Gesture::Back);
         settings.language = crate::settings::Language::De;
         app.set_settings(settings);
         prepare(&mut app, &reader);

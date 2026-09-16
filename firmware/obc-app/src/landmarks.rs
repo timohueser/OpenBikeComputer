@@ -33,7 +33,7 @@ pub type Row = LandmarkHit;
 pub struct Landmarks {
     pub peak_source: Option<obc_formats::obcm::SourceId>,
     pub(crate) peak: Option<obc_reader::peaks::Selection>,
-    pub(crate) peak_language: Option<[u8; 2]>,
+    pub(crate) attempted_language: Option<[u8; 2]>,
     pub photo_available: bool,
     pub status: Status,
     pub rows: heapless::Vec<Row, ROWS>,
@@ -59,7 +59,7 @@ impl Landmarks {
         Self {
             peak_source: None,
             peak: None,
-            peak_language: None,
+            attempted_language: None,
             photo_available: false,
             status: Status::Idle,
             rows: heapless::Vec::new(),
@@ -359,6 +359,15 @@ impl crate::App {
             state.generation = reader.map(Reader::generation);
             state.status = Status::Ready;
             state.reading = true;
+        }
+        if state.attempted_language != Some(language) {
+            state.attempted_language = Some(language);
+            if matches!(state.status, Status::Failed | Status::Unsupported) {
+                state.status = Status::Ready;
+                state.page = 0;
+                state.source_page = 0;
+                state.invalidate_selection();
+            }
         }
         if matches!(
             state.status,
