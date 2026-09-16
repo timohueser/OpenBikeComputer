@@ -17,6 +17,28 @@ Group names belong to the requirement revision. Existing candidates and reports 
 from their saved revision. Groups organize the view; they do not change verification or release
 rules. The API exposes the optional `group` field on each requirement.
 
+## Incomplete definitions and release exceptions
+
+Mark a requirement **To do** when its definition still needs work, such as a target battery life
+or load time. The label is part of its saved revision. An active To do requirement blocks
+publication even if tests pass. Finish its definition, clear the label, and save a new revision
+before preparing a new candidate. Inactive requirements stay excluded from the release gate.
+
+An administrator can accept an exception for one defined, active requirement in a candidate. A
+reason is required. Use this for a known limitation, missing test coverage, or a failed manual
+check. The record includes the administrator and time. An exception does not mark tests as passed,
+change the requirement, or carry into a new candidate. It also supports known limitations that
+existing tests do not detect. To change a decision, remove it and record a new one. The candidate's
+stored history retains both changes. Publication freezes these decisions with the other evidence.
+If another administrator changes an exception during final review, publication stops until the
+updated decisions are reviewed. The
+server retains the exact HTML report and JSON evidence bytes for downloads and publication retries.
+
+The release review, HTML/JSON report, and GitHub release notes identify accepted exceptions.
+Verified and excepted requirements have separate counts. Active To do definitions, failed CI,
+missing build files, signing failures, and provenance checks cannot be bypassed by an exception.
+A failed automated test that also fails the required CI run therefore still blocks publication.
+
 ## Local development
 
 Use Node 24.21 or a later Node 24 release:
@@ -157,7 +179,8 @@ test workflows, it verifies the candidate ID, version, source SHA, and source an
 service. The candidate snapshots the requirement revision. `ci.yml` runs the registry's release
 selection, and `release.yml` builds and signs the shipping firmware once. The `verify` job requires
 both to succeed. Native results and exact firmware files are copied into the application after
-that gate completes. Missing or skipped linked tests cannot count as passes.
+that gate completes. Missing or skipped linked tests cannot count as passes. An administrator can
+accept a requirement exception, but the required CI and firmware gates must still pass.
 
 `verification-catalog.yml` imports observed native test identities after successful `develop` CI.
 A run without a report cannot establish that an unobserved test passed. The catalogue retains the
@@ -235,7 +258,8 @@ CI uses its separate token for catalogue imports, retained firmware uploads, and
 The service verifies the GitHub workflow, source revision, run attempt, and required job outcome.
 `ops/import_results.py` reads native JUnit and Swift result files. IDs include the report family,
 class, and test name. Matrix platforms stay separate; workflow attempt numbers do not change IDs.
-Skipped, missing, failed, or ambiguous results cannot satisfy a linked automated test.
+Skipped, missing, failed, or ambiguous results cannot satisfy a linked automated test. An accepted
+requirement exception is recorded separately and does not change these test results.
 
 Manual test inputs belong to the requirement revision. Evidence attachments belong to a specific
 manual execution. Neither file changes after upload. Each candidate stores its own definition and

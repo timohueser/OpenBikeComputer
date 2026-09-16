@@ -42,8 +42,9 @@ export function requirements(value: unknown, lookup: (id: string) => Attachment)
     assert(r.group === undefined || (typeof r.group === 'string' && r.group.length <= 80), 'Group must be a name of at most 80 characters.');
     const group = r.group?.trim();
     assert(!group || !/[\u0000-\u001f\u007f]/.test(group), 'Group must be a single line.');
+    assert(r.todo === undefined || typeof r.todo === 'boolean', 'To-do status must be a boolean.');
     const tests = new Set<string>();
-    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), active: r.active,
+    return { id, title: text(r.title, 'Title', 300), statement: text(r.statement, 'Statement', 50000), ...(group ? { group } : {}), ...(r.todo ? { todo: true } : {}), active: r.active,
       tests: r.tests.map((t: Record<string, unknown>) => {
         const testId = identifier(t.id, 'Test ID');
         assert(!tests.has(testId), 'Test IDs must be unique within a requirement.'); tests.add(testId);
@@ -64,30 +65,38 @@ export function testResults(value: unknown): TestResult[] {
     return { caseId, status: r.status, ...(r.detail ? { detail: text(r.detail, 'Result detail', 20000) } : {}) };
   });
 }
+export function requirementIssues(candidate: Candidate, requirement: Requirement, results = new Map(candidate.results.map((r) => [r.caseId, r.status]))): string[] {
+  const missing: string[] = [];
+  if (requirement.todo) missing.push(`${requirement.id}: definition is still to do.`);
+  if (!requirement.tests.length) missing.push(`${requirement.id}: no verification defined.`);
+  for (const test of requirement.tests) {
+    if (test.kind === 'automated') {
+      if (!test.caseId || results.get(test.caseId) !== 'pass') missing.push(`${requirement.id} / ${test.title}: automated pass required.`);
+    } else {
+      const latest = candidate.manualRuns.findLast((r) => r.requirementId === requirement.id && r.testId === test.id);
+      if (latest?.result !== 'pass') missing.push(`${requirement.id} / ${test.title}: manual pass required.`);
+    }
+  }
+  return missing;
+}
 export function readiness(candidate: Candidate): Readiness {
   const missing: string[] = [];
   const active = candidate.revision.requirements.filter((r) => r.active);
   let verified = 0;
+  let excepted = 0;
   if (!active.length) missing.push('No active requirements.');
   if (candidate.ciStatus !== 'success') missing.push('Automated release checks have not passed.');
   for (const name of ['UPDATE.BIN', 'manifest.json', 'SHA256SUMS.txt', 'obc-boot.elf', 'obc-fw-nrf54l.elf']) {
     if (!candidate.assets.some((a) => a.name === name)) missing.push(`Missing release asset: ${name}`);
   }
   const results = new Map(candidate.results.map((r) => [r.caseId, r.status]));
-  for (const req of active) {
-    const before = missing.length;
-    if (!req.tests.length) missing.push(`${req.id}: no verification defined.`);
-    for (const test of req.tests) {
-      if (test.kind === 'automated') {
-        if (!test.caseId || results.get(test.caseId) !== 'pass') missing.push(`${req.id} / ${test.title}: automated pass required.`);
-      } else {
-        const latest = candidate.manualRuns.findLast((r) => r.requirementId === req.id && r.testId === test.id);
-        if (latest?.result !== 'pass') missing.push(`${req.id} / ${test.title}: manual pass required.`);
-      }
-    }
-    if (missing.length === before) verified++;
+  for (const requirement of active) {
+    const issues = requirementIssues(candidate, requirement, results);
+    if (!requirement.todo && candidate.exceptions?.some((exception) => exception.requirementId === requirement.id)) excepted++;
+    else if (!issues.length) verified++;
+    else missing.push(...issues);
   }
-  return { ready: missing.length === 0, missing, verified, total: active.length };
+  return { ready: missing.length === 0, missing, verified, total: active.length, excepted };
 }
 export function refresh(candidate: Candidate): Candidate {
   if (candidate.status !== 'publishing' && candidate.status !== 'published') {
