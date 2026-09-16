@@ -11,7 +11,6 @@
 use obc_storage::flat::{EntryFlags, StoreId};
 use wasm_bindgen::prelude::*;
 
-use crate::card::MediaOp;
 use crate::json::{catalog_json, trace_json};
 use crate::sim::{SimDevice, SimOptions};
 use crate::Reaction;
@@ -120,35 +119,8 @@ impl JsDevice {
 
     // --- the wire and the power ------------------------------------------------
 
-    #[wasm_bindgen(js_name = linkUp)]
-    pub fn link_up(&mut self) {
-        self.inner.link_up();
-    }
-
-    #[wasm_bindgen(js_name = linkDown)]
-    pub fn link_down(&mut self) {
-        self.inner.link_down();
-    }
-
     pub fn reboot(&mut self) {
         self.inner.reboot();
-    }
-
-    #[wasm_bindgen(js_name = corruptCatalog)]
-    pub fn corrupt_catalog(&mut self) {
-        self.inner.corrupt_catalog();
-    }
-
-    /// Refuse the next media operation of this kind (`read`, `write` or `sync`), after letting
-    /// `skip` of them through.
-    #[wasm_bindgen(js_name = faultAfter)]
-    pub fn fault_after(&self, op: &str, skip: u32) {
-        self.inner.fault_after(media_op(op), skip);
-    }
-
-    #[wasm_bindgen(js_name = faultFired)]
-    pub fn fault_fired(&self) -> bool {
-        self.inner.fault_fired()
     }
 
     // --- what the card holds ---------------------------------------------------
@@ -174,11 +146,6 @@ impl JsDevice {
         self.inner.read_object(id, revision)
     }
 
-    #[wasm_bindgen(js_name = freeExtents)]
-    pub fn free_extents(&self) -> u32 {
-        self.inner.free_extents()
-    }
-
     /// Publish an object straight through the store seam. Returns the committed entry as JSON — the
     /// store assigns the id, so the caller reads it back rather than choosing it.
     pub fn seed(&mut self, kind: u16, name: &str, bytes: &[u8]) -> String {
@@ -199,12 +166,6 @@ impl JsDevice {
         catalog_json(&[self.inner.seed_retained(id, bytes, name)])
     }
 
-    /// The device's own FS8 path: reserve, journal the final bytes, publish them in one amend.
-    #[wasm_bindgen(js_name = finishRecording)]
-    pub fn finish_recording(&mut self, name: &str, bytes: &[u8]) -> String {
-        catalog_json(&[self.inner.finish_recording(bytes, name)])
-    }
-
     // --- the two test hooks ----------------------------------------------------
 
     #[wasm_bindgen(js_name = traceRequests)]
@@ -222,11 +183,6 @@ impl JsDevice {
     pub fn stop_answering(&mut self) {
         self.inner.stop_answering();
     }
-
-    #[wasm_bindgen(js_name = resumeAnswering)]
-    pub fn resume_answering(&mut self) {
-        self.inner.resume_answering();
-    }
 }
 
 /// §5.7's store identity, as 32 hex characters.
@@ -237,13 +193,4 @@ fn store_id_of(hex: &str) -> StoreId {
         *byte = u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).expect("a hex store identity");
     }
     StoreId(bytes)
-}
-
-fn media_op(name: &str) -> MediaOp {
-    match name {
-        "read" => MediaOp::Read,
-        "write" => MediaOp::Write,
-        "sync" => MediaOp::Sync,
-        other => panic!("no such media operation: {other}"),
-    }
 }
