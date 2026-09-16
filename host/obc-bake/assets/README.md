@@ -89,7 +89,7 @@ parses and covers the published camera centre.
 carry *"produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus
 Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union
 and ESA; all rights reserved"*. The string lives once, in
-`obc_dem::COPERNICUS_ATTRIBUTION`.
+`obc_elevation::COPERNICUS_ATTRIBUTION`.
 
 Refresh this fixture whenever the schema's style-id assignment or OBCM version
 changes. `obc-bake` checks the assignment before starting a region bake and

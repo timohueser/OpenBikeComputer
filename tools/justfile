@@ -533,6 +533,8 @@ build:
     cd "$OBC_ROOT"; _run cargo build --release
 
 # Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
+# The focused arm runs nextest and then the same scope's doctests; `--lib` runs the library
+# target alone and no doctests.
 # The registry selectors run whole suites and print why each one was selected:
 #
 #   obc test affected --base origin/develop [--head REF] [--dry-run]
@@ -562,6 +564,13 @@ test *args:
         case "$arg" in
           -p|--package|--package=*|--manifest-path|--manifest-path=*) return 0 ;;
         esac
+      done
+      return 1
+    }
+    library_only() {
+      local arg
+      for arg in "$@"; do
+        case "$arg" in --lib) return 0 ;; esac
       done
       return 1
     }
@@ -601,7 +610,11 @@ test *args:
           _hint "example: obc test -p obc-app"
           exit 2
         }
-        _run cargo test --locked "$@"
+        _run cargo nextest run --locked "$@"
+        # `--lib` is the library-only loop: nextest builds one target and doctests, which are a
+        # separate Cargo run over the whole package, stay out of it. Cargo rejects `--lib` on a
+        # package with no library, so an unbuildable scope fails before anything runs.
+        library_only "$@" || _run cargo test --locked --doc "$@"
         ;;
     esac
 
