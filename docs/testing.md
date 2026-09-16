@@ -105,6 +105,14 @@ fails the upload; setup failure can leave no bundle. The screenshot script also 
 `OBC_XCRESULT_PATH` for local retention. A workflow declaration alone does not establish a passing
 run. TS6 still owns the remaining critical application journeys.
 
+The iOS app work is two jobs. `ios-app` builds the app and the UI-test bundle one time with
+`xcodebuild build-for-testing`, then runs the screenshot capture against those products; it also
+proves that the OBCMock build marker is present in the Debug binary. `ios-release` makes the
+Release build and proves that the same marker is absent, which is the guarantee that mock and
+developer-panel code does not ship. The two builds share no output, so they run beside each
+other. Both jobs run on every pull request that selects them. A standalone run of
+`capture-website-screenshots.sh` has no prebuilt products and builds them itself.
+
 The UI snapshot sweep is its own `ui-snapshots` job, off the `test` job's serial path. The
 sweep step runs only when `ci.ui-snapshots` is selected, and that suite still selects only on
 its own rendering, screen and snapshot-input triggers. A broad coverage or policy change does
