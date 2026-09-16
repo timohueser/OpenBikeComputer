@@ -6,15 +6,32 @@ requirement prose. One excluded example is created in a new database. An example
 release gate until the owner reviews and includes it.
 
 New requirements receive sequential IDs such as `SYS-028`. The server reserves each number when
-a draft is created. Deleted or discarded draft numbers are not reused, including after history
-cleanup. Existing IDs stay unchanged.
+a draft is created; `POST /api/requirements/next-id` with `{"count": n}` reserves a block. Deleted
+or discarded draft numbers are not reused, including after history cleanup. Existing IDs stay
+unchanged.
+
+## Editing
+
+**+ Requirement** inserts a new requirement after the selected one, in the same group. In the
+editor, **Done, add next** (or Ctrl+Enter / ⌘+Enter) keeps the current requirement and opens the
+next one. **Move up** and **Move down** change the order within a group. **More** holds the
+secondary actions: Markdown import and export, group management, link proposals, and history.
+
+**Import Markdown** reads `## Group` headings and `- **ID — Title.** Statement` lines into the
+draft. An entry whose ID already exists in the draft is updated; every other entry receives a fresh
+`SYS` ID. Tests and labels are kept. **Export Markdown** writes the draft in the same format.
+Neither changes a saved revision until you select **Save revision**.
+
+**Revision history** shows each revision as a difference against the one before it: added,
+removed, and changed requirements, with the previous and new statement side by side.
 
 ## Requirement groups
 
 Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.
 In the requirement editor, choose an existing group or type a new name. Leave the field blank for
-an ungrouped requirement. The sidebar can filter by group; search also matches group names.
-**Manage groups** renames a group or moves its requirements to Ungrouped. These changes remain in
+an ungrouped requirement. The sidebar lists groups in the order they first appear, folded until
+you open them; search also matches group names. The release candidate view groups its evidence the
+same way and can show only outstanding requirements. **Manage groups** renames a group or moves its requirements to Ungrouped. These changes remain in
 the draft until you select **Save revision**. Empty groups are not stored.
 
 Group names belong to the requirement revision. Existing candidates and reports keep the groups

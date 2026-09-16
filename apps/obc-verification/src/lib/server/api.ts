@@ -71,7 +71,13 @@ async function route(event: RequestEvent): Promise<Response> {
   if (actor.role === 'ci') assert(parts[0] === 'files' || (parts[0] === 'candidates' && ['report', 'evidence'].includes(parts[2]) && method === 'GET'), 'CI access is limited to evidence ingestion and release artifacts.', 403);
   if (path === 'bootstrap' && method === 'GET') return json({ actor, revision: store().latestRevision(), catalog: store().catalog(), candidates: store().list<Candidate>('candidate'), configured: { github: githubEnabled(), oauth: oauthEnabled() } });
   if (path === 'requirements/next-id' && method === 'POST') {
-    allow('owner'); return json({ id: store().reserveRequirementId() });
+    allow('owner');
+    const raw = event.request.body && event.request.headers.get('content-type')?.includes('application/json') ? (await boundedBody(event.request, 1024)).toString('utf8').trim() : '';
+    let count = 1;
+    if (raw) { try { count = JSON.parse(raw).count ?? 1; } catch { throw new Problem(400, 'Invalid JSON.'); } }
+    assert(Number.isSafeInteger(count) && count >= 1 && count <= 1000, 'Count must be between 1 and 1000.');
+    const ids = store().reserveRequirementIds(count);
+    return json({ id: ids[0], ids });
   }
   if (path === 'requirements' && method === 'PUT') {
     allow('owner'); const data = await body(event);
