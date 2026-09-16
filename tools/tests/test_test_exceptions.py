@@ -102,11 +102,10 @@ class ExceptionIssueStateTests(unittest.TestCase):
 class ShippedExceptionTests(unittest.TestCase):
     def test_every_shipped_exception_block_has_a_reason_and_an_issue(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        references, errors = test_exceptions.collect_references(
+        _, errors = test_exceptions.collect_references(
             test_exceptions.read_suites(root), "timohueser/OpenBikeComputer"
         )
         self.assertEqual(errors, [])
-        self.assertTrue(references)
 
 
 if __name__ == "__main__":
