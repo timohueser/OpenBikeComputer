@@ -496,7 +496,7 @@ graph rather than nothing.
 | Desktop application composition | Affected platform build and desktop launch smoke |
 | Python tool or service implementation | Matching Python suite |
 | Documentation only | Documentation and generated-policy checks unless it produces a shared artifact |
-| Agent prose (`CLAUDE.md`, `AGENTS.md`) | Documentation and policy validation only; it decides nothing, so it builds no platform |
+| Agent prose (`CLAUDE.md`, `AGENTS.md`) | The unconditional `guards` job, which validates the plan and runs the tool suites. Owned by the documentation route so the path is not unowned; `build_docs.py` does not read these files. It decides nothing, so it builds no platform |
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 
 The aggregate gate reports pass, fail, not selected, selected but not run, or blocked by an upstream
