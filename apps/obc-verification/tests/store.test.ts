@@ -10,9 +10,14 @@ test('revisions reject stale saves and never alter historical content', () => {
   const db = new Store(directory);
   try {
     const first = db.latestRevision(); assert.equal(first.requirements.length, 1); assert.equal(first.requirements[0].active, false);
-    const changed = structuredClone(first.requirements); changed[0].statement = 'Human written requirement.';
+    const changed = structuredClone(first.requirements); changed[0].statement = 'Human written requirement.'; changed[0].group = 'Navigation';
     const next = db.saveRevision(first.id, 'owner', changed);
     assert.equal(next.id, first.id + 1);
+    const regrouped = structuredClone(next.requirements); regrouped[0].group = 'Bluetooth';
+    db.saveRevision(next.id, 'owner', regrouped);
+    assert.equal(db.revision(first.id).requirements[0].group, undefined);
+    assert.equal(db.revision(next.id).requirements[0].group, 'Navigation');
+    assert.equal(next.requirements[0].group, 'Navigation');
     assert.throws(() => db.saveRevision(first.id, 'other owner', changed), /changed/);
     assert.notEqual(db.revision(first.id).requirements[0].statement, changed[0].statement);
     db.put('example', 'id', { value: 1 }); db.put('example', 'id', { value: 2 });

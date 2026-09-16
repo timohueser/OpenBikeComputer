@@ -9,6 +9,7 @@ export function candidate(): Candidate {
 }
 test('release gate fails closed for missing, skipped, obsolete and partial evidence', () => {
   const c = candidate(); assert.equal(readiness(c).ready, true);
+  c.revision.requirements[0].group = 'Navigation'; assert.equal(readiness(c).ready, true);
   c.results[0].status = 'skip'; assert.equal(readiness(c).ready, false);
   c.results[0].status = 'pass'; c.manualRuns.push({ ...c.manualRuns[0], id: 'new-run', result: 'blocked' }); assert.equal(readiness(c).ready, false);
   c.manualRuns.pop(); c.assets.pop(); assert.equal(readiness(c).ready, false);
@@ -23,4 +24,16 @@ test('definitions preserve Markdown and reject ambiguous identities or forged at
   assert.throws(() => testResults([{ caseId: 'same', status: 'pass' }, { caseId: 'same', status: 'fail' }]), /Duplicate/);
   reqs[0].tests[0].inputs = [{ id: 'forged', name: 'ignored', sha256: '', size: 0 }];
   assert.throws(() => requirements(reqs, () => { throw new Error('unknown file'); }), /unknown file/);
+});
+
+test('requirements accept one optional flat group and normalize ungrouped values', () => {
+  const req = candidate().revision.requirements[0];
+  const read = (group: unknown) => requirements([{ ...req, group }], () => { throw new Error('unknown file'); })[0];
+  assert.equal(read('  Navigation  ').group, 'Navigation');
+  assert.equal(read(undefined).group, undefined);
+  assert.equal(read('   ').group, undefined);
+  assert.throws(() => read({ name: 'Navigation', parent: 'Device' }), /Group/);
+  assert.throws(() => read(['Navigation', 'Bluetooth']), /Group/);
+  assert.throws(() => read('x'.repeat(81)), /80/);
+  assert.throws(() => read('Navigation\nRoutes'), /single line/);
 });
