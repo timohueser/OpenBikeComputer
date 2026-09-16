@@ -326,12 +326,12 @@ fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
         gaps += (to > from) as usize;
     };
 
-    // §1: the 57-byte header, then the run to the style table's boundary.
-    assert_eq!(map[4], 16, "the version byte this walk is written against");
+    // §1: the 65-byte header, then the run to the style table's boundary.
+    assert_eq!(map[4], 17, "the version byte this walk is written against");
     assert_eq!(map[40], 4, "`Offset Scale`, so U = 16");
     let style_at = offset(map, 21);
-    assert_eq!(style_at, 64, "the style table starts at align_up(57)");
-    gap(57, style_at, "header → style table");
+    assert_eq!(style_at, 80, "the style table starts at align_up(65)");
+    gap(65, style_at, "header → style table");
 
     // §2 → §3: the style table's own tail, and the LOD table's.
     let lod_table_at = offset(map, 26);
@@ -711,7 +711,7 @@ fn the_summary_is_the_clis_json() {
     // The fixture's seam is real: nav nodes were unified across it and an islet was pruned.
     assert!(s["nav"]["unified"].as_u64().expect("a unified count") > 0, "the fixture's seam must unify junctions");
     assert!(s["nav"]["pruned_nodes"].as_u64().expect("a prune count") > 0, "the fixture's islet must be pruned");
-    assert_eq!(s["poi"]["records"], 4);
+    assert_eq!(s["poi"]["records"], 6);
     assert_eq!(out.warnings, Vec::<String>::new(), "this fixture is clean; a warning here is a real finding");
 }
 
@@ -1143,8 +1143,35 @@ fn landmarks_survive_the_normal_bridge_with_and_without_terrain() {
         let source = obc_formats::io::SliceSource(bytes);
         landmark_fixture::assert_content(&obc_reader::landmarks::map_section(&source).unwrap().unwrap());
         if terrain {
-            assert_eq!(start + len, u32::from_le_bytes(bytes[41..45].try_into().unwrap()) as usize * 16);
+            let peak_start = offset(bytes, 57);
+            let peak_len = offset(bytes, 61);
+            assert_eq!(start + len, peak_start);
+            assert_eq!(peak_start + peak_len, u32::from_le_bytes(bytes[41..45].try_into().unwrap()) as usize * 16);
         }
         assert_same_bytes(taken(&run(terrain, true)), bytes, "landmark cell shuffle");
+    }
+}
+
+#[test]
+fn peak_articles_survive_the_normal_bridge_as_a_separate_collection() {
+    use obc_formats::{io::SliceSource, obcm::SourceId};
+    let out = assemble_fixture(&options(), &mut NoHooks);
+    let src = SliceSource(taken(&out));
+    let tables = obc_reader::MapTables::parse(&src).unwrap();
+    let cache = obc_reader::MapCache::new_boxed();
+    let reader = obc_reader::Reader::new(&src, &tables, &cache);
+    assert!(obc_reader::landmarks::map_section(&src).unwrap().is_none());
+    let section = obc_reader::peaks::map_section(&src).unwrap().unwrap();
+    let d = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!((d.associations, d.records), (2, 1));
+    for id in [101, 102] {
+        let selected = reader.peak_article(SourceId::osm(1, id)).unwrap().unwrap();
+        reader
+            .with_peak_article(selected, |section, d, record| {
+                let bundle = d.content(section, &record, 1, obc_formats::articles::MAX_BYTES)?;
+                assert_eq!(obc_reader::articles::select(&bundle, *b"de")?.language, *b"de");
+                Ok(())
+            })
+            .unwrap();
     }
 }

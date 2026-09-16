@@ -25,6 +25,7 @@ use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_route::gpx_to_obcr;
 
 pub mod landmarks;
+pub mod peaks;
 
 /// The `specs/vectors/` directory at the repo root.
 pub fn dir() -> PathBuf {
@@ -720,6 +721,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // leave three implementations pinned to a number the firmware stopped saying.
         ("place-train-v15.bin", place_record()),
         ("landmark-section-v16.bin", landmarks::section()),
+        ("peak-section-v17.bin", peaks::section()),
         ("version-read.bin", version_read(2, 0xA1B2_C3D4, obc_formats::obcm::VERSION)),
         // The pre-E1 (#911) read: version + epoch, no obcm byte — an older firmware talking to a
         // newer host. Decodes with `obcmVersion` absent, never a fabricated 0.

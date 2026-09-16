@@ -648,6 +648,14 @@ The pool count MUST not exceed `0xFFFE` distinct blobs, because `HoursRef` is a 
 `0xFFFF` reserved. Measured, a whole country needs a few thousand; an assembler MUST nevertheless
 fail loudly rather than wrap.
 
+### 4.5.1 Peak article associations
+
+Core cells carry the separate `OBCM_Spec.md` §10 collection. Select associations by the summit
+SourceIds retained in the merged POI set. Keep each selected summit's article without a geographic
+content filter. Union summit associations, reject conflicting identities, deduplicate article
+records, and relocate all indexes and guarded content references. Apply §10.4's deterministic
+content precedence and bounded source-copy checks. Landmark queries remain separate.
+
 ### 4.6 Merging the navigation graph
 
 This is the most involved rebuild, and its order matters.

@@ -168,3 +168,65 @@ pub fn serialize(peaks: &Peaks) -> Result<Vec<u8>, String> {
     bytes[16..20].copy_from_slice(&len.to_le_bytes());
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_formats::{
+        io::{ByteSource, SliceSource},
+        obcm::landmarks::*,
+    };
+    use obc_reader::{
+        peaks::Directory,
+        photo::{PhotoDecoder, Progress},
+    };
+    use serde_json::json;
+    #[test]
+    fn regional_catalogues_deduplicate_photos_and_reject_conflicting_or_missing_links() {
+        let root = obcm_testkit::scratch::scratch_dir("peak-map", "sources");
+        let pixels = vec![7; PHOTO_PIXELS];
+        fs::write(root.join("photo.rgb222"), &pixels).unwrap();
+        let digest: String = Sha256::digest(&pixels).iter().map(|b| format!("{b:02x}")).collect();
+        let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Mountain&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Authors"]});
+        let mut catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":crate::landmarks::Counts::default(),"omissions":[],"records":[{"id":"Q7","name":"Mountain","default_language":"en","fallback_sources":[],"variants":[{"language":"en","text_pages":["A mountain."],"attribution":credit}],"photo":{"path":"photo.rgb222","bytes":PHOTO_PIXELS,"sha256":digest,"attribution":credit}}],"associations":[{"node_id":101,"article_id":"Q7","latitude":-80,"longitude":-160},{"node_id":102,"article_id":"Q7","latitude":80,"longitude":160}]});
+        let a = root.join("a.json");
+        fs::write(&a, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        catalogue["records"][0]["variants"][0]["text_pages"][0] = json!("Another captured revision.");
+        let b = root.join("b.json");
+        fs::write(&b, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        let forward = load(&[a.clone(), b.clone()]).unwrap();
+        let reverse = load(&[b.clone(), a.clone()]).unwrap();
+        let bytes = serialize(&forward).unwrap();
+        assert_eq!(bytes, serialize(&reverse).unwrap());
+        let src = SliceSource(&bytes);
+        let d = Directory::read(&src).unwrap();
+        assert_eq!((d.records, d.associations), (1, 2));
+        let record = d.record(&src, 0).unwrap();
+        let photo = d.content(&src, &record, 2, PHOTO_MAX_COMPRESSED as u32).unwrap();
+        let mut decoder = PhotoDecoder::new();
+        let mut decoded = vec![];
+        for _ in 0..1024 {
+            if decoder.step(&photo, |_, b| decoded.extend_from_slice(b)).unwrap() == Progress::Complete {
+                break;
+            }
+        }
+        assert_eq!(decoded, pixels);
+        let id = digest_id("Q7");
+        assert_eq!(forward.associations.get(&SourceId::osm(1, 102)), Some(&id));
+        let key = fingerprint(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(key, fingerprint(&[b.clone(), a.clone()]).unwrap());
+        catalogue["associations"][0]["article_id"] = json!("Q8");
+        fs::write(&b, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        assert!(load(std::slice::from_ref(&b)).is_err());
+        catalogue["records"][0]["id"] = json!("Q8");
+        catalogue["associations"][1]["article_id"] = json!("Q8");
+        fs::write(&b, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+        assert!(load(&[a.clone(), b.clone()]).is_err());
+        fs::write(root.join("photo.rgb222"), vec![0; PHOTO_PIXELS]).unwrap();
+        assert!(fingerprint(&[a]).is_err());
+        assert!(photo.len() < (PHOTO_PIXELS as u64));
+    }
+    fn digest_id(id: &str) -> ArticleId {
+        Sha256::digest(id.as_bytes()).into()
+    }
+}

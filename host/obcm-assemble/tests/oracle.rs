@@ -1603,3 +1603,119 @@ fn the_assembler_refuses_what_the_spec_says_it_must() {
         .expect_err("a skin that does not cover the cells' style ids must be refused");
     assert!(format!("{err}").contains("style table"), "got: {err}");
 }
+
+#[test]
+fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
+    use obc_formats::obcm::{SourceId, SUMMIT_SUBTYPE_ID};
+    use serde_json::json;
+    let cfg = config();
+    let (mut ing, ways) = fixture(&cfg);
+    let dir = scratch("peak-articles");
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Massif&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors","display_pages":["Source: Authors"]});
+    let write_catalogue = |name: &str, nodes: Vec<i64>| {
+        let p = dir.join(name);
+        let c = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy","languages":["en","de","fr","es"],"source_coverage":{},"counts":{},"omissions":[],
+            "records":[{"id":"Q7","name":"Massif","default_language":"de","fallback_sources":[],"variants":[
+                {"language":"de","text_pages":["Ein Gebirge."],"attribution":credit},
+                {"language":"en","text_pages":["A mountain range."],"attribution":credit}],"photo":null}],
+            "associations":nodes.iter().map(|id|json!({"node_id":id,"article_id":"Q7","latitude":0,"longitude":0})).collect::<Vec<_>>()});
+        // Counts are reports, not producer selectors.
+        let mut c = c;
+        c["counts"] = serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap();
+        std::fs::write(&p, serde_json::to_vec(&c).unwrap()).unwrap();
+        p
+    };
+    let west = write_catalogue("west.json", vec![101, 103]);
+    let east = write_catalogue("east.json", vec![102, 103]);
+    let sources = vec![west, east];
+    for (id, lon) in [(101, SEAM - 160_000), (102, SEAM + 100_000), (103, SEAM)] {
+        let mut p = poi(SUMMIT_SUBTYPE_ID, LAT, lon, "Same truncated name");
+        p.metadata.source = SourceId::osm(1, id);
+        p.elevation_m = Some(3000);
+        ing.pois.push(p);
+    }
+    let mut unrelated = poi(SUMMIT_SUBTYPE_ID, LAT + 1_000, SEAM, "Same truncated name");
+    unrelated.metadata.source = SourceId::osm(1, 999);
+    ing.pois.push(unrelated);
+    let mut opts = CutOptions {
+        bands: BandTable::parse(BANDS).unwrap(),
+        peaks: sources.clone(),
+        no_land: true,
+        ..Default::default()
+    };
+    let mut summary = cut_ingested(&ing, &ways, &cfg, &dir.join("cells"), &opts, &Progress::silent()).unwrap();
+    let mut found = std::collections::BTreeMap::new();
+    for cell in &summary.cells {
+        let bytes = std::fs::read(dir.join("cells").join(&cell.path)).unwrap();
+        let src = SliceSource(&bytes);
+        let Some(section) = obc_reader::peaks::map_section(&src).unwrap() else {
+            continue;
+        };
+        assert_eq!(cell.band, "network");
+        let d = obc_reader::peaks::Directory::read(&section).unwrap();
+        assert_eq!(d.records, 1);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new_boxed();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut summit_ids = std::collections::BTreeSet::new();
+        reader
+            .visit_summits_within((SEAM as i32, LAT as i32), 100_000, |s| {
+                summit_ids.insert(s.source);
+            })
+            .unwrap();
+        for i in 0..d.associations {
+            let a = d.association(&section, i).unwrap();
+            assert!(summit_ids.contains(&a.source));
+            *found.entry(a.source).or_insert(0) += 1;
+        }
+    }
+    assert_eq!(found.values().copied().collect::<Vec<_>>(), vec![1, 1, 1], "a seam summit belongs to exactly one cell");
+    let (bytes, _) = assembled(&dir.join("cells"), &cfg, &summary);
+    let src = SliceSource(&bytes);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let section = obc_reader::peaks::map_section(&src).unwrap().unwrap();
+    let d = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!((d.records, d.associations), (1, 3));
+    assert!(obc_reader::landmarks::map_section(&src).unwrap().is_none());
+    let mut far = false;
+    reader
+        .visit_summits_within((SEAM as i32 + 100_000, LAT as i32), 100_000, |s| {
+            if s.source == SourceId::osm(1, 101) {
+                far = s.distance_m > 10_000;
+            }
+            if ![101, 102, 103].into_iter().any(|id| s.source == SourceId::osm(1, id)) {
+                assert!(reader.peak_article(s.source).unwrap().is_none());
+                return;
+            }
+            let selected = reader.peak_article(s.source).unwrap().unwrap();
+            reader
+                .with_peak_article(selected, |section, d, r| {
+                    let bundle = d.content(section, &r, 1, obc_formats::articles::MAX_BYTES)?;
+                    let article = obc_reader::articles::select(&bundle, *b"de")?;
+                    assert_eq!(article.language, *b"de");
+                    Ok(())
+                })
+                .unwrap();
+        })
+        .unwrap();
+    assert!(far, "Peak View resolves a summit beyond the landmark query radius");
+    // Catalogue and cell arrival order cannot change the merged content.
+    opts.peaks.reverse();
+    let reverse = cut_ingested(&ing, &ways, &cfg, &dir.join("reverse"), &opts, &Progress::silent()).unwrap();
+    assert_eq!(assembled(&dir.join("reverse"), &cfg, &reverse).0, bytes);
+    summary.cells.reverse();
+    assert_eq!(assembled(&dir.join("cells"), &cfg, &summary).0, bytes);
+    // Clipping out the west summit retains the shared article for each remaining linked summit.
+    opts.select = vec![obc_pack::grid::CellId::new(18, 1204, 1053).unwrap()];
+    opts.only_bands = vec!["network".into()];
+    let clipped = cut_ingested(&ing, &ways, &cfg, &dir.join("clipped"), &opts, &Progress::silent()).unwrap();
+    let bytes = std::fs::read(dir.join("clipped").join(&clipped.cells[0].path)).unwrap();
+    let src = SliceSource(&bytes);
+    let section = obc_reader::peaks::map_section(&src).unwrap().unwrap();
+    let d = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!(d.records, 1);
+    assert!(d.find(&section, SourceId::osm(1, 101)).unwrap().is_none());
+    assert!(d.find(&section, SourceId::osm(1, 102)).unwrap().is_some());
+}

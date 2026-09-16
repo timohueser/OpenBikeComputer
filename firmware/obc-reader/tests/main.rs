@@ -11,6 +11,8 @@ mod far_offsets;
 mod format;
 #[path = "cases/landmarks.rs"]
 mod landmarks;
+#[path = "cases/peaks.rs"]
+mod peaks;
 #[path = "cases/photo.rs"]
 mod photo;
 #[path = "cases/poi_corridor.rs"]

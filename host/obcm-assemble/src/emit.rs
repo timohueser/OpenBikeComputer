@@ -127,7 +127,7 @@ pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
 
 /// The byte offset of the style table in every shard this engine writes: the first unit boundary at
 /// or after the 57-byte header (§1.2), which at `U = 16` is `64` — so `Style Offset` is `4` and
-/// bytes `57..64` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
+/// bytes `65..80` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
 pub const STYLE_OFFSET: u64 = 80;
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN as u64);
 
@@ -435,7 +435,7 @@ pub fn write(
         let mut w = MapWriter::new(SCALE, 0, &mut out);
 
         // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
-        //    carries the 57-byte header to the style table's unit boundary.
+        //    carries the 65-byte header to the style table's unit boundary.
         let mut header = header_bytes(
             plan.box_,
             plan.lods.len(),
