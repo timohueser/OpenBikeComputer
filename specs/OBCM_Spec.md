@@ -1,4 +1,4 @@
-# OBCM File Format Specification (v16)
+# OBCM File Format Specification (v17)
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
@@ -164,9 +164,11 @@ integration (§8.4); the edge record length is unchanged.
 
 **Version 16** extends the header to 57 bytes and adds one optional landmark section (§9).
 
-**v16 is the only supported version**; earlier maps get repacked. A reader MUST
+**Version 17** extends the header to 65 bytes and adds the separate peak article collection (§10).
+
+**v17 is the only supported version**; earlier maps get repacked. A reader MUST
 check `Version` before it reads any later field and MUST refuse every value other
-than `0x10`. The header version applies to the whole file.
+than `0x11`. The header version applies to the whole file.
 
 
 **Within v12** (issue #1095, same elevation epic) two of the style record's reserved
@@ -213,7 +215,7 @@ screen space is the renderer's responsibility, not the format's.
 ## File layout
 
 ```
-[Header]                            (57 bytes, fixed)
+[Header]                            (65 bytes, fixed)
 [Style Table]                       (global — shared by all LODs)
 [LOD Table]                         (LOD Count entries)
 [LOD 0 Index][LOD 0 Offset Table][LOD 0 Data Chunks]    (coarsest)
@@ -224,6 +226,7 @@ screen space is the renderer's responsibility, not the format's.
 [Hours-Pool Section]                  (§7.5)
 [Nav Directory][Profile Table][Node Index + Chunks][Edge Pool][Snap Index + Chunks]  (§8)
 [Landmark Directory + Content]        (§9 — optional)
+[Peak Associations + Articles]        (§10 — optional)
 [Terrain Region]                      (§1.3 — an OBCT container, absent when the header says 0)
 ```
 
@@ -237,14 +240,14 @@ integers are **little-endian**.
 
 ---
 
-## 1. Header (57 bytes)
+## 1. Header (65 bytes)
 
 Packed as `struct "<4sBiiiiIBIHIIBIIII"`.
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Magic | 4 | `char[4]` | Must be `b"OBCM"` |
-| 4 | Version | 1 | `uint8` | `0x10` |
+| 4 | Version | 1 | `uint8` | `0x11` |
 | 5 | Min Lat | 4 | `int32` | Global bbox min latitude (microdegrees) |
 | 9 | Min Lon | 4 | `int32` | Global bbox min longitude |
 | 13 | Max Lat | 4 | `int32` | Global bbox max latitude |
@@ -260,19 +263,21 @@ Packed as `struct "<4sBiiiiIBIHIIBIIII"`.
 | 45 | Terrain Length | 4 | `uint32` | **v14**: that region's length **in units**; `0` exactly when `Terrain Offset` is `0` |
 | 49 | Landmark Offset | 4 | `uint32` | Scaled offset to the optional landmark section (§9) |
 | 53 | Landmark Length | 4 | `uint32` | Section length in offset units; `0` exactly when Landmark Offset is `0` |
+| 57 | Peak Offset | 4 | `uint32` | Scaled offset to the separate peak collection (§10) |
+| 61 | Peak Length | 4 | `uint32` | Section length in offset units; `0` exactly when Peak Offset is `0` |
 
 Note the bbox field order in the file is **lat, lon, lat, lon**. A **scaled** offset is a count of
 `2^Offset Scale`-byte units, not of bytes — §1.1 is the whole of that rule, and it applies to every
 field this document marks that way, here and in the LOD table (§3), the offset tables (§5.1) and the
 POI (§7.1) and nav (§8.1) directories.
 
-The header is 57 bytes, which is not a whole number of units at any scale above `0`, so the Style
-Table begins at the first unit boundary at or after it — `64` at the default `U = 16`, giving
-`Style Offset = 4` — and the `57..64` gap is `0xFF` filler (§1.2). Reading `Style Offset` rather than
+The header is 65 bytes, which is not a whole number of units at any scale above `0`, so the Style
+Table begins at the first unit boundary at or after it — `80` at the default `U = 16`, giving
+`Style Offset = 5` — and the `65..80` gap is `0xFF` filler (§1.2). Reading `Style Offset` rather than
 assuming the section follows the header is what it was always for; v14 is simply the first version
 where the two differ. The POI and nav sections are always present, so neither of their offsets is
 ever `0` — a map with no POIs (or no routable ways) writes an **empty** directory there instead.
-`Terrain Offset` and `Landmark Offset` may be `0`; each is zero exactly when its corresponding length is zero.
+`Terrain Offset`, `Landmark Offset` and `Peak Offset` may be `0`; each is zero exactly when its corresponding length is zero.
 
 ### 1.1 Offset scale
 
@@ -332,7 +337,7 @@ structure would otherwise begin mid-unit, it writes `0xFF` filler up to the boun
 
 Three kinds of gap follow, and none of them is content:
 
-- **between sections** — the 57-byte header and the style table, and any two sections a header or
+- **between sections** — the 65-byte header and the style table, and any two sections a header or
   directory offset names;
 - **before a region's chunks** — a region's chunk data begins at the first unit boundary at or after
   the structure preceding it, which is the index (§7.1, §8.1) or the index plus the offset table
@@ -1734,3 +1739,105 @@ against the output section. Empty inputs produce an absent section. Content, pro
 encoder code and dependency hashes belong to cell cache identity; verify each declared photo hash
 before reusing a cached cell. Ordinary map transfer, flat-store checksums and revision ownership
 apply to this section as they do to the rest of the map.
+
+## 10. Peak article collection
+
+This optional section is independent of the landmark collection (§9). It contains only explicit
+OSM summit-to-article links. It has no radius, approach, category or article coordinate index.
+The summit's existing §7.3 SourceId is the lookup key. The collection is accessible only through
+Peak View; landmark and service-place queries MUST NOT return these records.
+
+The section follows landmarks and precedes terrain. The header offset and length use the map's
+Offset Scale. Interior offsets are unsigned byte offsets relative to the start of this section.
+Final unit padding is `0xFF`; it is outside the exact section length below. All integers are little-endian.
+
+### 10.1 Directory and identity tables
+
+The 24-byte section header is:
+
+| Offset | Field | Bytes | Rule |
+| --- | --- | --- | --- |
+| 0 | Section Version | 2 | `1` |
+| 2 | Article Record Length | 2 | `64` |
+| 4 | Association Count | 4 | At most 262,144 |
+| 8 | Article Count | 4 | At most 65,535 |
+| 12 | Payload Offset | 4 | Exactly `24 + 44 × Association Count + 64 × Article Count` |
+| 16 | Section Length | 4 | Exact bytes, excluding final padding; at least Payload Offset |
+| 20 | Reserved | 4 | Zero |
+
+Associations begin at byte 24. Each 44-byte association contains:
+
+| Offset | Field | Bytes | Rule |
+| --- | --- | --- | --- |
+| 0 | SourceId | 8 | Valid OSM node SourceId (§7.3); no ways or relations |
+| 8 | Article Identity | 32 | SHA-256 of the compiler's canonical UTF-8 article identity |
+| 40 | Article Index | 4 | Zero-based index into the article table |
+
+Associations MUST be strictly ordered by SourceId, with one record per source node. Several nodes
+can refer to the same article. Article Index MUST be in range, and the indexed article's identity
+MUST equal the association's identity. A conflicting link for the same node is a producer error.
+
+The article table follows the association table. Each 64-byte record contains its 32-byte Article
+Identity, then four 8-byte references in this order: display name, multilingual article bundle,
+optional compressed photo, optional photo attribution. Each reference is `(offset u32, length u32)`.
+Records MUST be strictly ordered by identity. An article is stored once per canonical identity.
+A producer MUST reject different canonical strings with the same identity digest.
+
+### 10.2 Guarded content and shared article payloads
+
+Every present reference points to a 33-byte guard followed by its payload. The guard contains the
+article's 32-byte identity and one slot byte (`0` name, `1` articles, `2` photo, `3` photo attribution).
+The reference length includes this guard. A consumer MUST check the guard against the selected
+record and slot before it exposes the payload. A reference redirected to another article, or to a
+different content slot of the same article, MUST fail. This is a reference-identity check; normal map
+object checksums protect the content bytes.
+
+The name and article bundle are required. Both photo references are `(0, 0)` when absent; otherwise
+both are present. A present reference MUST start at or after Payload Offset, contain more than
+33 bytes, and end at or before Section Length without integer overflow. Payload limits, excluding
+the guard, are the same as §9: name at most 256 bytes, article bundle at most the shared article
+limit, compressed photo at most 52,096 bytes, and photo attribution at most 65,535 bytes.
+The article bundle uses §9.2 unchanged. Its internal offsets are relative to the start of that
+bundle, after the guard. The photo stream uses §9.3 unchanged. One optional photo serves all text
+variants of an article. Name, text, attribution and photo use the existing bounded content readers.
+
+### 10.3 Direct access and map changes
+
+A reader locates an association by binary search on SourceId. With the format's maximum count,
+lookup needs at most 19 association comparisons, one exact-key check and one article-record read.
+It does not scan nearby landmarks or require a routable approach. Content reads are separate and
+bounded by their payload contracts.
+
+A selection retains the map generation and the full association. Before each content access, the
+reader MUST require the same active generation, SourceId, article identity and article index.
+A missing section or missing source key means no article. A malformed index, reference, guard or
+bundle is an error; it MUST NOT open another article. An old selection MUST fail after a map change,
+even when the new map reuses the same table index. Text language selection uses §9.2: UI language,
+then English, then the baked default. It does not change the summit association.
+
+### 10.4 Packing, clipping and assembly
+
+Only named OSM summit nodes carried by the output map select associations. Match their full
+SourceId to the compiler's explicit node association; never match names, truncated labels,
+coordinates or proximity. A linked summit selects its entire article, irrespective of the
+article's geographic location or the coordinates recorded in the source catalogue.
+
+Core cells contain peak content. A cell's existing half-open summit ownership rule selects its
+associations. Geometry-only cells have no peak section. Clipping MUST keep an article whenever
+any linked summit remains. Assembly selects associations from the summit SourceIds in its merged
+POI set. It unions associations, deduplicates article identities and remaps all article indexes
+and section-relative content references. It validates all input references, including losing
+duplicates, and copies source-backed content with bounded buffers. Changed source content or I/O
+failure aborts output.
+
+When regional inputs contain different compiled versions of the same article, select the
+lexicographically smallest array of four SHA-256 payload digests in slot order. The digest covers
+the complete guarded blob; an absent blob uses SHA-256 of the empty byte string. This rule applies
+to both catalogue packing and cell assembly. It retains one complete compiled article, including
+its baked default and all its language variants. Catalogue order and cell arrival order MUST NOT
+change the result. Conflicting summit-to-article identities MUST fail instead of choosing a link.
+
+Peak catalogue bytes, declared photo bytes, encoder policy and dependency identity belong to the
+cell cache key. Verify declared photo digests before a cache hit. The same normal pack, cut and
+assembly entry points carry this section. Automatic regional content capture and artifact delivery
+are orchestration concerns outside this byte contract.

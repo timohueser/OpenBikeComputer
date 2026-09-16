@@ -111,8 +111,8 @@ pub fn scaled(at: usize) -> u32 {
 }
 
 /// Byte offset of the style table in every file this kit builds: the first unit boundary at or
-/// after the 49-byte header (§1.2), which at the default `U = 16` is `64` — so `Style Offset` is
-/// `4` and bytes `49..64` are [`FILLER`].
+/// after the 65-byte header (§1.2), which at the default `U = 16` is `80` — so `Style Offset` is
+/// `5` and bytes `65..80` are [`FILLER`].
 pub const STYLE_OFFSET: usize = align_up(HEADER_LEN);
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and its data chunks. Each chunk is the tight

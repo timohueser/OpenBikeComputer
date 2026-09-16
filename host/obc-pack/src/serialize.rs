@@ -1740,12 +1740,12 @@ pub fn serialize_nav_section(
 }
 
 /// The byte offset of the style table in every file this packer writes: the first unit boundary at
-/// or after the 49-byte header (§1.2), which at the default `U = 16` is `64` — so `Style Offset` is
-/// `4` and bytes `49..64` are [`FILLER`]. Reading the field rather than assuming the table follows
+/// or after the 65-byte header (§1.2), which at the default `U = 16` is `80` — so `Style Offset` is
+/// `5` and bytes `65..80` are [`FILLER`]. Reading the field rather than assuming the table follows
 /// the header is what it was always for; v14 is simply the first version where the two differ.
 const STYLE_OFFSET: usize = 80;
 // Not just "past the header": §1.2 puts the style table on the *first unit boundary at or after*
-// it, so 64 is a derivation with two halves and both are asserted. A scale change that moved the
+// it, so 80 is a derivation with two halves and both are asserted. A scale change that moved the
 // boundary used to leave this literal silently one gap behind.
 const _: () = assert!(STYLE_OFFSET >= HEADER_LEN, "the style table cannot start inside the header");
 const _: () = assert!(
