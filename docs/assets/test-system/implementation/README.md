@@ -24,9 +24,10 @@ there must be re-counted before it is quoted again: the weather subsystem has si
 entirely, `obc-app` lost 27% of its test targets, and the golden manifest shrank from 317 frames to
 263.
 
-## The one open design question
+## The settled harness decision
 
-Whether to share the host-side application assembly, or to keep the hand-written copies in
-`apps/obc-sim`, `apps/obc-web-demo`, `apps/obc-ios-host` and the board. `plan.md` decided against
-sharing, but both of its stated reasons have since changed. This is an owner decision and must be
-settled before the composition-check milestone opens. See #1816.
+`plan.md` decided against sharing the host-side application assembly. All three of its stated
+reasons have since stopped holding, and the owner settled it on 2026-09-16: share only the frame
+seam that is provably identical in every host, and leave everything host-specific alone. The exact
+surface, and the explicit list of what must not be extracted, are in `epic.md` and in #1816. This
+overrides settled decision 1 and the corresponding row in `plan.md`.
