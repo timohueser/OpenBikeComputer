@@ -1,0 +1,12 @@
+{
+  "name": "obc-builder-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder', { recursive: true, force: true })\" && VITE_CATALOG_URL=/catalog/catalog.json npm run build:web --prefix ../..",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
