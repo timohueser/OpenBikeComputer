@@ -30,7 +30,7 @@ use obc_route::nav::{plan_route, NavScratch};
 #[cfg_attr(miri, ignore)]
 #[test]
 fn road_vs_mtb_diverge_over_grimsel() {
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let from = (8_169_610, 46_694_536);
     let to = (8_217_309, 46_706_261);
 
@@ -54,8 +54,8 @@ fn road_vs_mtb_diverge_over_grimsel() {
 #[cfg_attr(miri, ignore)]
 #[test]
 fn a_real_grimsel_plan_carries_the_pass_road_profile() {
-    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
-    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd");
     let terrain_src = SliceSource(&dem);
     let mut terrain = obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src)
         .expect("the baked terrain parses");
@@ -95,8 +95,8 @@ fn a_real_grimsel_plan_carries_the_pass_road_profile() {
 #[cfg_attr(miri, ignore)] // reads the committed fixtures from disk — see the note above
 #[test]
 fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
-    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
-    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
+    let dem = obc_fixtures::read("sim-grimsel", "grimsel.obcd");
     let terrain_src = SliceSource(&dem);
     let mut terrain =
         obc_elevation::TerrainElevation::<{ obc_elevation::DEFAULT_TILE_SLOTS }>::parse(&terrain_src).unwrap();
@@ -140,7 +140,7 @@ fn a_planned_route_exported_to_gpx_and_reimported_keeps_its_climb() {
 #[cfg_attr(miri, ignore)]
 #[test]
 fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm");
     let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
     let actual = core::array::from_fn::<_, 4, _>(|idx| {
         let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);

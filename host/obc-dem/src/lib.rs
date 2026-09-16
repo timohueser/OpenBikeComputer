@@ -46,9 +46,9 @@
 //!
 //! ## Attribution is a licence obligation
 //!
-//! [`COPERNICUS_ATTRIBUTION`] must travel with anything derived from GLO-30. `bake` prints it, and
-//! the catalog (EL3) and the builder (EL4) carry it onward to a rider. It is a `const` here so
-//! there is one copy of the wording in the repository.
+//! `obc_elevation::COPERNICUS_ATTRIBUTION` must travel with anything derived from GLO-30. `bake`
+//! prints it, and the catalog and the builder carry it onward to a rider. It is a `const` in the
+//! elevation leaf so there is one copy of the wording in the repository.
 
 /// The producer half — a GeoTIFF decoder (`geotiff`) and an HTTP client (`fetch`), together the
 /// default `dem` feature. [`container`] stands without either, so the assembler (EL4) can reuse the
@@ -61,20 +61,6 @@ pub mod fetch;
 #[cfg(feature = "geotiff")]
 pub mod geotiff;
 pub mod surface;
-
-/// The credit the Copernicus DEM licence requires on any product derived from the dataset, verbatim.
-///
-/// The licence ("Copernicus DEM Instance COP-DEM-GLO-30-F") requires this exact notice wherever the
-/// data have been adapted or modified — which a resample to a different lattice certainly is. It is
-/// not a courtesy and it is not paraphrasable: EL3 stamps it into the catalog, EL4 surfaces it in
-/// the builder, and `obc-dem bake` prints it at the end of every run so an operator producing cells
-/// cannot fail to have seen it.
-pub const COPERNICUS_ATTRIBUTION: &str = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 \
-and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and \
-ESA; all rights reserved";
-
-/// The dataset this tool is built for, as the catalog will name it (EL3).
-pub const SOURCE_DATASET: &str = "Copernicus DEM GLO-30";
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that
 /// selects cells is exact rather than a float that nearly lands on a cell boundary.
@@ -124,19 +110,6 @@ impl BboxUdeg {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_attribution_is_the_wording_the_licence_names() {
-        // Pinned as one line: the `const` is written with continuations, and a stray newline in it
-        // would travel into the catalog and the builder.
-        assert_eq!(
-            COPERNICUS_ATTRIBUTION,
-            "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and \
-             Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all \
-             rights reserved"
-        );
-        assert!(!COPERNICUS_ATTRIBUTION.contains('\n'));
-    }
 
     #[test]
     fn a_bbox_is_latitude_first_and_exact_in_microdegrees() {

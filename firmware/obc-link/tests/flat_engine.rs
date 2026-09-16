@@ -8,6 +8,8 @@
 #[path = "flat_engine/archive.rs"]
 mod archive;
 mod flat_harness;
+#[path = "flat_engine/recovery.rs"]
+mod recovery;
 
 use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;

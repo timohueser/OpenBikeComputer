@@ -84,9 +84,11 @@ being opened, or another agent also working in the repository is not by itself a
 Concurrent full runs are allowed; the discipline is to start one only when its coverage is needed.
 
 `obc test full` runs fast binaries, captured-fixture binaries and doctests in separate commands.
-`obc check test` runs the fast tier, doctests and the render contract. These workspace commands
-need the CI-pinned runner (`cargo install cargo-nextest --version 0.9.143 --locked`). Focused
-`obc test -p <crate>` commands continue to use Cargo's test harness.
+`obc check test` runs `tools/ci/test.sh`, the same file the CI `test` job runs: the fast tier,
+doctests, the default-feature formats shape and the render contract. Every command here, focused
+ones included, needs the CI-pinned runner (`cargo install cargo-nextest --version 0.9.143
+--locked`). `obc test -p <crate>` runs that scope on nextest and then its doctests; add `--lib`
+for the library target alone.
 
 ## Reclaiming stale development state
 

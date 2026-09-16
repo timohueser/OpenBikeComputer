@@ -2663,7 +2663,6 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
- "obc-dem",
  "obc-elevation",
  "obc-formats",
  "obc-map-scene",
@@ -2682,6 +2681,7 @@ dependencies = [
  "heapless 0.8.0",
  "image",
  "obc-dem",
+ "obc-elevation",
  "obc-formats",
  "obc-map-scene",
  "obc-pack",
@@ -2834,6 +2834,8 @@ version = "0.1.0"
 dependencies = [
  "obc-crc",
  "obc-flat-device",
+ "obc-formats",
+ "obc-route",
  "obc-storage",
  "sha2",
 ]
