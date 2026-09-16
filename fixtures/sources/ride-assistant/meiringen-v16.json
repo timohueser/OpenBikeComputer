@@ -1,49 +1,60 @@
 {
-  "schema": 1,
+  "schema": 2,
   "region": "meiringen",
   "coverage": "Swiss regional crop; not a full-country map",
+  "package": "sim-assistant-meiringen",
+  "bytes": 30370623,
+  "sha256": "a39497dd2fbf564837ceab4b0bd3f7078ec0d12a7c30450a2eac2b20ce5f96fe",
+  "recipe_commit": "7ca7aabb1e278b7446dc5ed00d89f5604f19ebf9",
+  "producer_source_commit": "e9b14df70e066e6b4a084006f5ea188bee457519",
+  "executables": {
+    "obc-bake": {
+      "sha256": "f748a5ef89d3d6c50d3cbaa42cdd793bb298175c363c7ecd69b0698c44703bc5"
+    },
+    "obc-dem": {
+      "sha256": "7dd1b261490def2510f8fbca9982bd70ee04dcc587c787cb0e3a3e95e887cc71"
+    },
+    "obcm-assemble": {
+      "sha256": "1d2e47cde6e16cc254ef130afe61f2035c1a4f80075b74da9cb367a5b0ee011a"
+    }
+  },
   "bounds_lon_lat": [
     8.1,
     46.5,
     8.4,
     46.8
   ],
-  "recipe_commit": "1ac36a0c7caa5da340c77ea1f9e48fddb912ed02",
-  "producer_source_attribution": {
-    "basis": "Retained executable modification times and branch reflog; not an embedded build stamp or cryptographic source proof.",
-    "obc-bake": "7b3771bf",
-    "obcm-assemble": "7b3771bf",
-    "obc-dem": "40f62ee8"
-  },
-  "executables": {
-    "obc-bake": {
-      "sha256": "7040748dccdc46669420d147e20a2c12503798c86b08a1b445437d193aca05d1"
-    },
-    "obc-dem": {
-      "sha256": "974824acbe14576ef77f55fa878f93b4bbe3c64e447f60ae94748f4e65303fb3"
-    },
-    "obcm-assemble": {
-      "sha256": "eed3aa0419c9b7c1e9611a91c3af49bc133c070189ba29bc3f0e91baa0eb0dd3"
-    }
+  "source_packages": {
+    "assistant-osm": "c63f8846fd6a3bfadd7a315a647e288c5d6cf22caefa43ff339cc3950966c224",
+    "assistant-terrain": "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+    "assistant-replays": "3bd059a2657283dadc12ba62f3428ab748e155e77245fbbe9b0d3ede40b4c574",
+    "assistant-switzerland-content": "42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd"
   },
   "source_selection": {
     "region_id": "europe/switzerland",
     "pbf_bytes": 545916978,
     "pbf_sha256": "e6ae53a3cfeb8fbefbab291073e61f0906b03576e773b7403ab9b6d6232a8e88",
-    "polygon_sha256": "973c47dd0f49d5f1c13704a6cd1dd7b9392f90ff90f45e91d4237e97ec060391",
+    "polygon_sha256": "3a721277dfee21b17e1875d0f6b62ef99282b6098f166049b10b381054e06d1f",
     "policy": "Full pinned Switzerland PBF; polygon selects output cells. No pre-extraction."
   },
   "content": {
+    "schema": 2,
     "input_sha256": "41348f1c7613ac423b653b78f6cad4aa636ab1e0cd242331fb5f584ec7a4f775",
-    "policy_sha256": "ab0ca42e41851a6a032b630020ff39dd6695d1a8d711f04e1917e66ff8edc5e6",
+    "policy_sha256": "2aebe70c9552885b5aab7385d4f117ecbb7068e542a461defe675429253a22d3",
     "category_policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
+    "languages": [
+      "en",
+      "de",
+      "fr",
+      "es"
+    ],
     "counts": {
       "captured": 6221,
       "candidates": 3508,
-      "texts": 1495,
-      "images": 1119,
+      "texts": 1478,
+      "images": 1109,
       "mapped_approaches": null,
-      "photo_bytes": 58008960
+      "photo_bytes": 57490560
     },
     "source_coverage": {
       "kind": "geographic-policy-superset",
@@ -211,13 +222,62 @@
       "unresolved_source_failures": 0,
       "missing_classes": [],
       "selection": "Best-rank P31/P279 policy-root union in geographic bounding box; compiler applies exact polygon, best-rank claims and exclusions. No P17 constraint."
-    },
-    "manifest_sha256": "4746bd01daf57012ca2a34eb62c269f20c859b981f0e7682c5742f6221e71f57"
+    }
+  },
+  "content_manifest_sha256": "07a318fa4c1891960d04e9c86b0ee0e24259cdc3f44058815b77db1e02675dc2",
+  "content_coverage_limits": "The retained capture has no Spanish articles or locale entities. Geographic acquisition completeness does not establish current-language or locale coverage. See switzerland-content.json.",
+  "land_source": {
+    "source": "https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip",
+    "cached_version": "Fri, 19 Jun 2026 03:38:23 GMT",
+    "files": [
+      {
+        "path": "README.txt",
+        "bytes": 890,
+        "sha256": "a63aa8d566fa34400252f02f30a4ad8573125ee697927d2155064eebc6700698"
+      },
+      {
+        "path": "land_polygons.cpg",
+        "bytes": 6,
+        "sha256": "146d6789ffe033a5297c1ad046e6a62ee35319b86b021444f05b6ea2aa8a1f4a"
+      },
+      {
+        "path": "land_polygons.dbf",
+        "bytes": 16002772,
+        "sha256": "568939e0f8622f78aca8dce33285a43b3cb5f795d5b6ca5ecab61319f6355881"
+      },
+      {
+        "path": "land_polygons.prj",
+        "bytes": 425,
+        "sha256": "f2e7fb14d55bdd8d6a3bc2c272a48729d8f9d0ad72936e20eae6a9a81c2fccd0"
+      },
+      {
+        "path": "land_polygons.shp",
+        "bytes": 1307422196,
+        "sha256": "363c37eb5941813c4c2f709a899b97017ecf1b5f456325a0337483ad018c131d"
+      },
+      {
+        "path": "land_polygons.shx",
+        "bytes": 6738068,
+        "sha256": "8618b46714146db21e9143ea3a4ecf38f2f185d724bb35bcd1d98be085eb264c"
+      }
+    ]
   },
   "map": {
-    "bytes": 44643264,
-    "sha256": "ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba",
-    "landmark_records": 65
+    "bytes": 44818976,
+    "sha256": "82dad944a7f1940832172a04e1ab0f530382594ba3377ad74a184d11f8acb16b",
+    "obcm_version": 16,
+    "landmark_records": 65,
+    "article_variants": {
+      "de": 58,
+      "en": 37,
+      "fr": 28
+    },
+    "default_languages": {
+      "de": 26,
+      "en": 37,
+      "fr": 2
+    },
+    "photos": 48
   },
   "native_terrain": [
     {
@@ -241,9 +301,9 @@
       "sha256": "33faece103746b2235337f933fbd4853459ffb0f407cbf80fcfa4f5b85ef3240"
     }
   ],
-  "catalog_sha256": "bde9c37dc5aaa93dc52e586b7be83eddc289afd2c168c987bcb2b3e2e1feb289",
+  "catalog_sha256": "5717061ad24df27a08e98b7d4f00029325c3e3819185a2b2e9035487d30c5fbc",
   "build_summary": {
-    "tree": ".artifacts/ra09-regional/tree",
+    "tree": "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/tree",
     "obcm_version": 16,
     "recipe_version": 3,
     "schema_id": "bikepacking",
@@ -307,33 +367,33 @@
           {
             "id": "18/1201/1054",
             "band": "network",
-            "bytes": 1210272,
+            "bytes": 1253344,
             "partial": true,
             "status": "cut"
           },
           {
             "id": "18/1201/1055",
             "band": "network",
-            "bytes": 948208,
+            "bytes": 972112,
             "partial": true,
             "status": "cut"
           },
           {
             "id": "18/1202/1054",
             "band": "network",
-            "bytes": 2312816,
+            "bytes": 2327904,
             "partial": true,
             "status": "cut"
           },
           {
             "id": "18/1202/1055",
             "band": "network",
-            "bytes": 2547568,
+            "bytes": 2583904,
             "partial": true,
             "status": "cut"
           }
         ],
-        "seconds": 6561.974776292,
+        "seconds": 325.550427958,
         "error": null
       },
       {
@@ -380,19 +440,19 @@
           {
             "id": "18/1201/1056",
             "band": "network",
-            "bytes": 1063424,
+            "bytes": 1087904,
             "partial": true,
             "status": "cut"
           },
           {
             "id": "18/1202/1056",
             "band": "network",
-            "bytes": 1889408,
+            "bytes": 1922240,
             "partial": true,
             "status": "cut"
           }
         ],
-        "seconds": 5163.319253167,
+        "seconds": 182.950374875,
         "error": null
       }
     ],
@@ -423,7 +483,7 @@
         "cell_log2": 18,
         "cells": 6,
         "partial_cells": 6,
-        "bytes": 9971696
+        "bytes": 10147408
       }
     ],
     "covered_km2": 763.8781507342053,
@@ -443,12 +503,22 @@
       "span_log2": 21
     },
     "cells": 18,
-    "bytes": 44643264,
-    "sha256": "ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba",
+    "file": "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/assembled/meiringen.obcm",
+    "bytes": 44818976,
+    "sha256": "82dad944a7f1940832172a04e1ab0f530382594ba3377ad74a184d11f8acb16b",
     "terrain": {
       "bytes": 8388704,
       "cells": 4,
       "slots": 16
+    },
+    "phases_us": {
+      "open": 956,
+      "poi": 2944,
+      "nav": 174722,
+      "plan": 5561,
+      "write": 216909,
+      "verify": 157935,
+      "total": 565892
     },
     "geometry_bytes": 26152816,
     "nav": {
@@ -474,10 +544,61 @@
     },
     "warnings": []
   },
-  "logs": {
-    "ra09-regional-bake.log": "6f272d0fb1d886fafc8df5c46ece908822c9bcda40f81bca7f6f45e4a6e6ce93",
-    "ra13-swiss-native-terrain.log": "b719ff8cc0ffee7b0edfb279131dae24f02dbbf755d020bdd70ae118b7df82f9",
-    "assembly.log": "7a30091457bf4369d577d269cef004139b6da0b5371f887ab8af1df500250cb5"
-  },
-  "recipe": "fixtures/build-assistant-package.py meiringen; full pinned Switzerland PBF, regional output selection, published compiled country content, shipping bake/cut and four native raster cells. Existing completed tree assembled with --accept-partial; no rebake, --accept-holes or --skip-verify."
+  "commands": [
+    [
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/target/release/obc-bake",
+      "bake",
+      "europe/switzerland",
+      "--regions",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/regions.toml",
+      "--source",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/input",
+      "--dem-sources",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/fixture-cache/packages/1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+      "--landmarks",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/fixture-cache/packages/42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd/content.json",
+      "--presets-dir",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/builder/presets",
+      "--skin",
+      "default",
+      "--out",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/tree",
+      "--base-url",
+      "http://localhost/assistant",
+      "--generated-at",
+      "2026-09-15T00:00:00Z",
+      "--summary-json",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/summary.json",
+      "--fail-fast"
+    ],
+    [
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/target/release/obc-dem",
+      "bake",
+      "--sources",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/fixture-cache/packages/1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+      "--bbox",
+      "46.5,8.1,46.8,8.4",
+      "--posting-log2",
+      "9",
+      "--cell-log2",
+      "19",
+      "--out",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/native-terrain"
+    ],
+    [
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/target/release/obcm-assemble",
+      "--cells",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/assembled/cells.json",
+      "--skin",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/assembled/skin.json",
+      "--terrain",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/assembled/native-terrain.json",
+      "--out",
+      "/Users/timo/Documents/OSM-agents/multilingual-fixture-refresh/.artifacts/maps/meiringen-work/assembled/meiringen.obcm",
+      "--accept-partial",
+      "--json"
+    ]
+  ],
+  "network": "Denied by macOS sandbox-exec for the full recipe. Source packages and land polygon cache copied into isolated caches.",
+  "log_sha256": "0acdc114a8067f3e2f4cedb74219412e3f74a0899529470c79125ab794b26db3"
 }

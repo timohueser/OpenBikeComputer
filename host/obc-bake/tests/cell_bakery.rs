@@ -379,11 +379,11 @@ fn landmark_input_changes_invalidate_cell_cache() {
     let mut f = fixture_dirs("landmark-cache");
     let path = f.dir.join("content.json");
     let mut content = obc_pack::landmarks::Content {
-        schema: 1,
+        schema: 2,
         input_sha256: "first source".into(),
         policy_sha256: "policy".into(),
         category_policy_sha256: "categories".into(),
-        language: "de".into(),
+        languages: vec!["en".into(), "de".into(), "fr".into(), "es".into()],
         source_coverage: serde_json::json!({}),
         counts: Default::default(),
         candidate_qids: vec![],

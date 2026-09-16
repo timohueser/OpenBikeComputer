@@ -133,3 +133,16 @@ class LandmarkCaptureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocaleCaptureTests(unittest.TestCase):
+    def test_administrative_cycle_is_bounded_and_country_is_captured(self):
+        from tools.landmark_capture import capture_locales, LANGUAGES
+        self.assertEqual(LANGUAGES, ("en", "de", "fr", "es"))
+        def claim(qid):
+            return {"mainsnak": {"datavalue": {"value": {"id": qid}}}}
+        place = {"claims": {"P131": [claim("Q10")], "P17": [claim("Q20")]}}
+        admin = {"claims": {"P131": [claim("Q10")]}}
+        with patch("tools.landmark_capture.entity", return_value=admin) as fetch:
+            capture_locales(Mock(), place)
+        self.assertEqual([call.args[1:] for call in fetch.call_args_list], [("Q20", "locales"), ("Q10", "locales")])

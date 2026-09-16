@@ -79,8 +79,8 @@ impl LandmarkPhotoScreen {
         if self.linked {
             match gesture {
                 Gesture::Step(n) => {
-                    if let Some(record) = cx.landmarks.record {
-                        cx.landmarks.page = if n < 0 { record.text_pages as u16 - 1 } else { 0 };
+                    if let Some(article) = cx.landmarks.article {
+                        cx.landmarks.page = if n < 0 { article.text_pages as u16 - 1 } else { 0 };
                     }
                     return Transition::Pop;
                 }
@@ -108,8 +108,8 @@ impl LandmarkPhotoScreen {
         S: MapScene,
     {
         cv.clear(PARCHMENT);
-        let page = self.linked.then_some(rx.landmarks.record).flatten().map(|record| {
-            let total = record.text_pages as u16 + 1;
+        let page = self.linked.then_some(rx.landmarks.article).flatten().map(|article| {
+            let total = article.text_pages as u16 + 1;
             (total, total)
         });
         super::landmarks::header(cv, self.title.as_str(), page, None);

@@ -43,6 +43,7 @@ console_error_panic_hook = "0.1"
 
 [dev-dependencies]
 obc-reader = { path = "../../firmware/obc-reader" }
+obcm-testkit = { path = "../../host/obcm-testkit" }
 # The fixture regenerator (`tests/fixture.rs`, `#[ignore]`d) drives the **real cutter** to write the
 # checked-in cell tree, exactly as `obcm-assemble`'s own oracle does. A dev-dep only: obc-pack
 # carries libGEOS and must never enter this bridge's build graph, let alone the wasm one.

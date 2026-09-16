@@ -49,6 +49,7 @@
 /// Throwaway temp paths for tests — not an OBCM concern, but this crate is the one dev-dep every
 /// host tool and shell already shares, which makes it the cheapest common home (the alternative,
 /// `obc-host-core`, drags the whole device render path into a CLI tool's test build).
+pub mod articles;
 pub mod scratch;
 pub mod terrain;
 

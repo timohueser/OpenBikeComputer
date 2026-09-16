@@ -38,7 +38,7 @@ the authored crop boundary. It does not accept missing cells or skip the final m
 The map embeds terrain, services, hours, graph, landmark text, compressed photos, and Sources.
 
 The Cork compiler input has four review sites. The Swiss recipe uses verified
-`assistant-switzerland-content`: 1,495 texts, 1,119 RGB222 photos, and their source notices.
+`assistant-switzerland-content`: 1,478 sites, 2,391 article variants, 1,109 RGB222 photos, and their source notices.
 `--landmarks PATH/content.json` can use another production compiler output with its own source coverage declaration. It must include
 its referenced photos. This does not turn the regional crop into full-country map coverage.
 No country raw archive is needed or published by the scenario.
@@ -56,26 +56,35 @@ python3 fixtures/build-assistant-package.py west-cork \
   --provenance fixtures/sources/ride-assistant/west-cork-v16.json
 ```
 
-The published Cork map is 4,746,240 bytes, SHA-256
-`a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23`.
-[The retained record](west-cork-v16.json) has source and executable hashes, the regional boundary,
-compiler coverage, and normal assembly counts. Source commit attribution uses retained build times
-and Git reflog; it is not an embedded binary build stamp. The new metadata adapter reproduced the
-completed map byte for byte from the retained tree and native terrain; the bake was not repeated.
-Monaco also uses its pinned 2026-09-13 v16 output. The published Swiss regional map is
-44,643,264 bytes, SHA-256 `ebe53f369a558e2c4e8da593b05433e55f730d83d07a928d46f7a236ec145bba`.
-[Its retained record](meiringen-v16.json) pins the full source PBF, polygon, content, producer
-executables, 18 selected cells, four native terrain cells and normal assembly result. The map
-contains 65 landmark records and 2,632 services. The completed tree was assembled without a rebake.
+The published Cork map is 4,749,504 bytes, SHA-256
+`4acbf4ba8588052c3a032b3a142eb5e25cd7dc187daf84a2c9b2dbc06c5512f2`.
+[The build record](west-cork-v16.json) pins the source and executable hashes, regional boundary,
+schema 2 content and compiler coverage. The shipping recipe rebuilt the map through the normal
+bake, cut and assembly stages, with native terrain.
+Monaco also uses its pinned 2026-09-13 v16 output. The Swiss regional map is
+44,818,976 bytes, SHA-256 `82dad944a7f1940832172a04e1ab0f530382594ba3377ad74a184d11f8acb16b`.
+[Its build record](meiringen-v16.json) pins the full source PBF, polygon, schema 2 content,
+producer executables, land polygons, 18 selected cells, four native terrain cells and assembly
+result. The full shipping recipe rebuilt this regional map with network access denied. It
+contains 65 landmark records, 123 article variants (37 English, 58 German and 28 French),
+48 photos and 2,632 services.
 
 ## Swiss compiled input
 
-`assistant-switzerland-content` is a 10,554,318-byte immutable archive. Its SHA-256 is
-`cf2a7ad213d91ba513fbbe24642d1615efd071c1e659c9e7885103f11c9d33b1`.
-[The source record](switzerland-content.json) pins the compiled manifest, input tree, compiler
-policy, counts, and coverage. The 1,120 content members are `content.json` and 1,119 RGB222 photos, plus the package manifest.
-Each published article and photo keeps its original source and license notice. Raw requests,
-article captures, and full-resolution photos remain in the local acquisition cache.
+`assistant-switzerland-content` is a 10,741,228-byte immutable archive. Its SHA-256 is
+`42a2f4986a77641753c99a91df8a3b419dd20cbf4ac1e35512a608a936434ebd`.
+[The source record](switzerland-content.json) pins schema 2, the source capture, compiler,
+policy, counts and coverage limits. Its 1,110 content members are `content.json` and 1,109
+RGB222 photos, plus the package manifest. Each article variant and photo keeps its original
+source and license notice. Raw requests, article captures and original photos stay in the
+local acquisition cache.
+
+The retained capture supplies 669 usable English, 1,200 German and 522 French article variants
+for 1,478 sites. It has no Spanish article capture or locale entities. All default languages
+therefore use the compiler's UI-language order fallback. The source's country-complete field
+refers to geographic and category acquisition; it does not establish complete coverage of the
+current language and locale policy. The compiler omits the captured Italian articles.
+Two compiler passes ran with network access denied. All 1,110 output files were byte-identical.
 
 The Swiss map recipe gives the full pinned national PBF to the shipping baker. It selects cells
 that intersect longitude 8.1–8.4 and latitude 46.5–46.8. It does not pre-extract the PBF: a pre-extract

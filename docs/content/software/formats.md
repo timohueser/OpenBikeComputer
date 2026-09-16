@@ -307,7 +307,14 @@ A zero terrain offset and length mean that the map has no terrain.
 A zero landmark offset and length mean that it has no landmark section.
 
 Landmark records form a bounded latitude index. Each record holds its QID, category,
-actual article language, display coordinate and an optional explicit OSM approach.
+display coordinate and an optional explicit OSM approach. A self-contained article bundle stores
+every usable text version in the supported UI languages: English, German, French and Spanish.
+Each version has its own source credits; all versions share one optional photo.
+
+The reader selects the device UI language, then English, then the default language stored by the
+baker. The baker prefers a known local language from captured administrative or country claims.
+If these facts do not resolve the choice, it uses the fixed supported-language order. Changing
+the device language selects another installed text version without a new map download.
 Text, source credits and independent compressed photos stay in the map object.
 The reader fetches these payloads only after selection. Each photo is a lossless
 216 × 240 RGB222 image with a 4 KiB DEFLATE history window. Decode steps write to

@@ -11,6 +11,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod articles;
 pub mod assistant;
 pub mod cache;
 pub mod io;

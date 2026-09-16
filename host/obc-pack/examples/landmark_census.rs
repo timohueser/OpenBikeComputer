@@ -37,10 +37,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         landmark_map::load(Path::new(&args[2]), &links, (-180_000_000, -90_000_000, 180_000_000, 90_000_000))?;
     let hours = vec![POI_HOURS_REF_NONE; records.len()];
     let section = landmark_map::serialize(&records, &hours)?;
-    let mut photos: Vec<_> = records.iter().map(|r| r.content[3].len()).filter(|n| *n != 0).collect();
+    let mut photos: Vec<_> = records.iter().map(|r| r.content[2].len()).filter(|n| *n != 0).collect();
     photos.sort_unstable();
     let quantile = |percent: usize| photos.get((photos.len() * percent).div_ceil(100).saturating_sub(1)).copied();
-    let blobs: Vec<_> = (0..5).map(|slot| records.iter().map(|r| r.content[slot].len()).sum::<usize>()).collect();
+    let blobs: Vec<_> = (0..4).map(|slot| records.iter().map(|r| r.content[slot].len()).sum::<usize>()).collect();
     let index_bytes =
         if records.is_empty() { 0 } else { landmarks::SECTION_HEADER_LEN + records.len() * landmarks::RECORD_LEN };
     let report = json!({
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "photo_bytes_p50": quantile(50),
         "photo_bytes_p95": quantile(95),
         "photo_bytes_max": photos.last(),
-        "name_text_article_photo_credit_bytes_before_dedup": blobs,
+        "name_articles_photo_credit_bytes_before_dedup": blobs,
         "encoded_directory_bytes": index_bytes,
         "encoded_content_bytes_after_dedup": section.len() - index_bytes,
         "encoded_section_bytes": section.len(),
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "qid": r.record.qid,
             "source": r.record.osm.map(|m| m.source.0),
             "profile_mask": r.record.osm.and_then(|m| m.approach).map(|a| a.profile_mask),
-            "photo_bytes": r.content[3].len(),
+            "photo_bytes": r.content[2].len(),
         })).collect::<Vec<_>>(),
     });
     fs::write(&args[3], format!("{}\n", serde_json::to_string_pretty(&report)?))?;

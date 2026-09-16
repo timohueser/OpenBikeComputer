@@ -1,33 +1,253 @@
 {
-  "schema": 1,
+  "schema": 2,
   "region": "west-cork",
-  "bounds_lon_lat": [
-    -9.9,
-    51.43,
-    -9.5,
-    51.65
-  ],
-  "producer_source_attribution": {
-    "basis": "Retained executable modification times and branch reflog; not an embedded build stamp or cryptographic source proof.",
-    "obc-bake": "7b3771bf",
-    "obcm-assemble": "7b3771bf",
-    "obc-dem": "40f62ee8"
+  "package": "sim-assistant-west-cork",
+  "archive_bytes": 2426061,
+  "archive_sha256": "b55e6946ea5e52b1a4d4aac899324ecb4ba03ff15efc1982a0da7b12d887ef26",
+  "map": {
+    "bytes": 4749504,
+    "sha256": "4acbf4ba8588052c3a032b3a142eb5e25cd7dc187daf84a2c9b2dbc06c5512f2",
+    "obcm_version": 16
   },
-  "executables": {
-    "obc-bake": {
-      "sha256": "7040748dccdc46669420d147e20a2c12503798c86b08a1b445437d193aca05d1"
+  "provenance": {
+    "recipe_commit": "75385822a3718c5cce6be57564edd8a664880b20",
+    "executables": {
+      "obc-bake": {
+        "sha256": "625132bb2031b3baf060d465ea36af64917b73006029de796cb91c38ce9392b5"
+      },
+      "obc-dem": {
+        "sha256": "810d3f78ccd68adb2b27d1b61401f7e332b4e15bf26dbbf4c1687f8eb971d747"
+      },
+      "obcm-assemble": {
+        "sha256": "2911c1b0a9063e839b5993447e3fe8b597dcec4872b886534b92dcb22231b774"
+      }
     },
-    "obc-dem": {
-      "sha256": "974824acbe14576ef77f55fa878f93b4bbe3c64e447f60ae94748f4e65303fb3"
+    "commands": [
+      [
+        "target/debug/obc-bake",
+        "landmarks",
+        "--snapshot",
+        "$OBC_FIXTURE_CACHE/packages/d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1/manifest.json",
+        "--boundary",
+        "$OBC_FIXTURE_CACHE/packages/d0e56c73a18abf03a07db73a9a90b97fc4862cc85f79381dcfa8eb51ee2589f1/regions.geojson",
+        "--out",
+        ".artifacts/fixture-refresh/west-cork-work/landmarks"
+      ],
+      [
+        "target/debug/obc-bake",
+        "bake",
+        "europe/ireland/west-cork",
+        "--regions",
+        ".artifacts/fixture-refresh/west-cork-work/regions.toml",
+        "--source",
+        ".artifacts/fixture-refresh/west-cork-work/input",
+        "--dem-sources",
+        "$OBC_FIXTURE_CACHE/packages/1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+        "--landmarks",
+        ".artifacts/fixture-refresh/west-cork-work/landmarks/content.json",
+        "--presets-dir",
+        "builder/presets",
+        "--skin",
+        "default",
+        "--out",
+        ".artifacts/fixture-refresh/west-cork-work/tree",
+        "--base-url",
+        "http://localhost/assistant",
+        "--generated-at",
+        "2026-09-15T00:00:00Z",
+        "--summary-json",
+        ".artifacts/fixture-refresh/west-cork-work/summary.json",
+        "--fail-fast"
+      ],
+      [
+        "target/debug/obc-dem",
+        "bake",
+        "--sources",
+        "$OBC_FIXTURE_CACHE/packages/1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c",
+        "--bbox",
+        "51.43,-9.9,51.65,-9.5",
+        "--posting-log2",
+        "9",
+        "--cell-log2",
+        "19",
+        "--out",
+        ".artifacts/fixture-refresh/west-cork-work/native-terrain"
+      ],
+      [
+        "target/debug/obcm-assemble",
+        "--cells",
+        ".artifacts/fixture-refresh/west-cork-work/assembled/cells.json",
+        "--skin",
+        ".artifacts/fixture-refresh/west-cork-work/assembled/skin.json",
+        "--terrain",
+        ".artifacts/fixture-refresh/west-cork-work/assembled/native-terrain.json",
+        "--out",
+        ".artifacts/fixture-refresh/west-cork-work/assembled/west-cork.obcm",
+        "--accept-partial",
+        "--json"
+      ]
+    ],
+    "bounds_lon_lat": [
+      -9.9,
+      51.43,
+      -9.5,
+      51.65
+    ],
+    "content_manifest_sha256": "c2d8a0d3eb78f4eca18a7873aadacdd65fc02d5168b4e2c950c6c4e5739a0c0a",
+    "content_counts": {
+      "captured": 4,
+      "candidates": 4,
+      "texts": 4,
+      "images": 3,
+      "mapped_approaches": null,
+      "photo_bytes": 155520
     },
-    "obcm-assemble": {
-      "sha256": "eed3aa0419c9b7c1e9611a91c3af49bc133c070189ba29bc3f0e91baa0eb0dd3"
+    "source_coverage": {
+      "kind": "review-examples",
+      "country_complete": false,
+      "remaining": [
+        "Full Switzerland candidate/content capture and production recount belong to RA08/RA13."
+      ]
+    },
+    "summary": {
+      "tree": ".artifacts/fixture-refresh/west-cork-work/tree",
+      "obcm_version": 16,
+      "recipe_version": 3,
+      "schema_id": "bikepacking",
+      "schema_revision": 1,
+      "plans": [
+        {
+          "sources": [
+            "europe/ireland/west-cork"
+          ],
+          "cells_planned": 6,
+          "cells": [
+            {
+              "id": "20/0305/0246",
+              "band": "coarse",
+              "bytes": 89840,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "19/0610/0493",
+              "band": "mid",
+              "bytes": 127328,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1220/0986",
+              "band": "fine",
+              "bytes": 432816,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1220/0987",
+              "band": "fine",
+              "bytes": 669696,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1221/0986",
+              "band": "fine",
+              "bytes": 305184,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1221/0987",
+              "band": "fine",
+              "bytes": 241136,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1220/0986",
+              "band": "network",
+              "bytes": 305296,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1220/0987",
+              "band": "network",
+              "bytes": 482304,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1221/0986",
+              "band": "network",
+              "bytes": 6144,
+              "partial": true,
+              "status": "cut"
+            },
+            {
+              "id": "18/1221/0987",
+              "band": "network",
+              "bytes": 18432,
+              "partial": true,
+              "status": "cut"
+            }
+          ],
+          "seconds": 134.368163959,
+          "error": null
+        }
+      ],
+      "bands": [
+        {
+          "band": "coarse",
+          "cell_log2": 20,
+          "cells": 1,
+          "partial_cells": 1,
+          "bytes": 89840
+        },
+        {
+          "band": "mid",
+          "cell_log2": 19,
+          "cells": 1,
+          "partial_cells": 1,
+          "bytes": 127328
+        },
+        {
+          "band": "fine",
+          "cell_log2": 18,
+          "cells": 4,
+          "partial_cells": 4,
+          "bytes": 1648832
+        },
+        {
+          "band": "network",
+          "cell_log2": 18,
+          "cells": 4,
+          "partial_cells": 4,
+          "bytes": 812176
+        }
+      ],
+      "covered_km2": 676.7397338187365,
+      "regions": [
+        {
+          "id": "europe/ireland/west-cork",
+          "km2": 676.7397338187365
+        }
+      ],
+      "uncovered_regions": [],
+      "warnings": []
     }
   },
   "content": {
-    "manifest_sha256": "1f9182b1b81190fd971bfc5e8cc7ffd1bc99c8419d8bd282abc08a6d958f36b1",
+    "schema": 2,
+    "languages": [
+      "en",
+      "de",
+      "fr",
+      "es"
+    ],
     "input_sha256": "ebd3314ed5059483f094d35a79b8c2e13919d28f4153b382fd009c6d49d28a19",
-    "policy_sha256": "ab0ca42e41851a6a032b630020ff39dd6695d1a8d711f04e1917e66ff8edc5e6",
+    "policy_sha256": "a4a3258c81c70479579fc0c30355249284cf7899e87fc0fb88fbe44d7a7bbfda",
     "category_policy_sha256": "b5efcb7a54590174e6dbb100097a638cc5b060317a62132e465db3cbd01a6dd8",
     "counts": {
       "captured": 4,
@@ -44,189 +264,5 @@
         "Full Switzerland candidate/content capture and production recount belong to RA08/RA13."
       ]
     }
-  },
-  "map": {
-    "sha256": "a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23",
-    "bytes": 4746240
-  },
-  "native_terrain": {
-    "sha256": "c87457f662a394f7cb84c11ec1f7f08f34f602357b5bc7da51667eec57da26b2",
-    "bytes": 2097188
-  },
-  "build_summary": {
-    "tree": "tree",
-    "obcm_version": 16,
-    "recipe_version": 3,
-    "schema_id": "bikepacking",
-    "schema_revision": 1,
-    "plans": [
-      {
-        "sources": [
-          "europe/ireland/west-cork"
-        ],
-        "cells_planned": 6,
-        "cells": [
-          {
-            "id": "20/0305/0246",
-            "band": "coarse",
-            "bytes": 89840,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "19/0610/0493",
-            "band": "mid",
-            "bytes": 127328,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1220/0986",
-            "band": "fine",
-            "bytes": 432816,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1220/0987",
-            "band": "fine",
-            "bytes": 669696,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1221/0986",
-            "band": "fine",
-            "bytes": 305184,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1221/0987",
-            "band": "fine",
-            "bytes": 241136,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1220/0986",
-            "band": "network",
-            "bytes": 302032,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1220/0987",
-            "band": "network",
-            "bytes": 482304,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1221/0986",
-            "band": "network",
-            "bytes": 6144,
-            "partial": true,
-            "status": "cut"
-          },
-          {
-            "id": "18/1221/0987",
-            "band": "network",
-            "bytes": 18432,
-            "partial": true,
-            "status": "cut"
-          }
-        ],
-        "seconds": 131.242308166,
-        "error": null
-      }
-    ],
-    "bands": [
-      {
-        "band": "coarse",
-        "cell_log2": 20,
-        "cells": 1,
-        "partial_cells": 1,
-        "bytes": 89840
-      },
-      {
-        "band": "mid",
-        "cell_log2": 19,
-        "cells": 1,
-        "partial_cells": 1,
-        "bytes": 127328
-      },
-      {
-        "band": "fine",
-        "cell_log2": 18,
-        "cells": 4,
-        "partial_cells": 4,
-        "bytes": 1648832
-      },
-      {
-        "band": "network",
-        "cell_log2": 18,
-        "cells": 4,
-        "partial_cells": 4,
-        "bytes": 808912
-      }
-    ],
-    "covered_km2": 676.7397338187365,
-    "regions": [
-      {
-        "id": "europe/ireland/west-cork",
-        "km2": 676.7397338187365
-      }
-    ],
-    "uncovered_regions": [],
-    "warnings": []
-  },
-  "assembly": {
-    "assembly_bbox_udeg": {
-      "min_lat": 51380224,
-      "min_lon": -10485760,
-      "span_log2": 20
-    },
-    "cells": 10,
-    "bytes": 4746240,
-    "sha256": "a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23",
-    "terrain": {
-      "bytes": 2097200,
-      "cells": 1,
-      "slots": 4
-    },
-    "geometry_bytes": 1845776,
-    "nav": {
-      "section_bytes": 768224,
-      "cell_nodes": 8068,
-      "nodes": 7986,
-      "edges": 8607,
-      "unified": 33,
-      "duplicate_edges": 0,
-      "components_found": 5,
-      "components_kept": 3,
-      "pruned_nodes": 49,
-      "pruned_edges": 47,
-      "largest_component_permille": 898,
-      "degree_truncated": 0,
-      "dropped_nodes": 0
-    },
-    "poi": {
-      "records": 55,
-      "duplicates": 0,
-      "dropped": 0,
-      "section_bytes": 5488
-    },
-    "warnings": []
-  },
-  "logs": {
-    "ra13-west-cork-card-import.log": "4670c85a784f8ee530a3726411e853168c8d2349e22b5340437882e723c30877",
-    "ra13-west-cork-bake.log": "bc3bf88a1608867da443cff55f771d32a4261e578612b8af8f34a15f7e714d72",
-    "ra13-west-cork-assemble-native.log": "9444413810e1523d31003a7e45f98db1c9572235c1943cb2b49d37a580e6c905",
-    "ra13-west-cork-assemble.log": "d336ba75b8eca7bf06314d24f14452f07fe4f83b960c1ccd38a4b2727e2a430d",
-    "ra13-west-cork-assemble-no-raster.log": "854673d0ed06d0262d4c4620aec99b63b5087d768fbaad71a59c8e54532848b6",
-    "ra13-west-cork-card-render.log": "4cd53dbea2ec9abd3cac41b6d4c598281e0ca0e204ea6df1d1efb7cd53439d6d",
-    "ra13-west-cork-native-terrain.log": "76817b2b72a8fe77ad7e7981b67d25a03bfa4d4bc4cfcede89dbb111721a6c43"
-  },
-  "recipe": "fixtures/build-assistant-package.py west-cork; shipping landmarks, bake/cut, native raster bake, and assembly with --accept-partial. No --accept-holes or --skip-verify. Existing completed map was reassembled from the normal tree and verified byte-identical before packaging."
+  }
 }

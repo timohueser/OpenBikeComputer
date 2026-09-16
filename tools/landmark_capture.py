@@ -18,7 +18,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 
-LANGUAGES = ("en", "de", "fr", "it", "ga")
+LANGUAGE_BYTES = (Path(__file__).resolve().parents[1] / "specs/content-languages.json").read_bytes()
+LANGUAGES = tuple(code for code, _ in json.loads(LANGUAGE_BYTES))
+MAX_LOCALE_DEPTH = 8
+MAX_LOCALES = 64
 USER_AGENT = "OpenBikeComputer-landmark-capture/1.0 (https://github.com/timohueser/OpenBikeComputer)"
 MAX_SOURCE = 32 * 1024 * 1024
 MAX_CLASSES = 16384
@@ -145,7 +148,7 @@ def select_candidates(executable: Path, snapshot: Path, boundary: Path, policy_s
     executable = executable.resolve()
     binary_hash = digest(executable.read_bytes())
     with tempfile.TemporaryDirectory(prefix="obc-landmark-selection-") as temporary:
-        subprocess.run([str(executable), "landmarks", "--snapshot", str(snapshot), "--boundary", str(boundary), "--language", "en", "--out", temporary], check=True)
+        subprocess.run([str(executable), "landmarks", "--snapshot", str(snapshot), "--boundary", str(boundary), "--out", temporary], check=True)
         if digest(executable.read_bytes()) != binary_hash:
             raise ValueError("compiler changed during selection; retry with a stable executable")
         content = json.loads((Path(temporary) / "content.json").read_text())
@@ -301,6 +304,25 @@ def photo(capture: Capture, filename: str) -> tuple[dict | None, str]:
     return dict(path=path, metadata_path=metadata, filename=filename), "captured"
 
 
+def capture_locales(capture: Capture, value: dict) -> None:
+    def ids(raw, prop):
+        return {v["id"] for v in claim_values(raw, prop) if isinstance(v, dict) and re.fullmatch(r"Q[1-9][0-9]*", v.get("id", ""))}
+    # Countries are fetched independently of the administrative traversal budget.
+    for qid in sorted(ids(value, "P17")):
+        entity(capture, qid, "locales")
+    pending, visited = ids(value, "P131"), set()
+    for _ in range(MAX_LOCALE_DEPTH):
+        following = set()
+        for qid in sorted(pending - visited):
+            if len(visited) >= MAX_LOCALES:
+                return
+            visited.add(qid)
+            raw = entity(capture, qid, "locales")
+            if raw:
+                following.update(ids(raw, "P131"))
+        pending = following
+
+
 def capture_place(capture: Capture, qid: str) -> dict:
     value = entity(capture, qid)
     place = dict(qid=qid, articles=[], images=[], outcomes=[])
@@ -314,6 +336,7 @@ def capture_place(capture: Capture, qid: str) -> dict:
     if not any(lang + "wiki" in value.get("sitelinks", {}) for lang in LANGUAGES):
         place["outcomes"].append(dict(asset="article", status="no-supported-sitelink"))
         return place
+    capture_locales(capture, value)
     candidates = {(name.replace("_", " "), "P18", None) for name in claim_values(value, "P18") if isinstance(name, str)}
     for language in LANGUAGES:
         link = value.get("sitelinks", {}).get(language + "wiki")
@@ -343,7 +366,7 @@ def run(args) -> int:
     policy_bytes = args.policy.read_bytes()
     boundary, policy = json.loads(boundary_bytes), json.loads(policy_bytes)
     capture = Capture(args.out)
-    recipe = dict(schema=1, rank="best-rank", boundary_sha256=digest(boundary_bytes), policy_sha256=digest(policy_bytes), languages=LANGUAGES)
+    recipe = dict(schema=1, rank="best-rank", boundary_sha256=digest(boundary_bytes), policy_sha256=digest(policy_bytes), languages=LANGUAGES, locale_policy="P131-P37-depth8-nodes64;P17-P37;ui-order", language_sha256=digest(LANGUAGE_BYTES))
     recipe_path = args.out / "recipe.json"
     if recipe_path.exists() and json.loads(recipe_path.read_text()) != json.loads(json.dumps(recipe)):
         raise ValueError("capture recipe changed; use a new output directory")

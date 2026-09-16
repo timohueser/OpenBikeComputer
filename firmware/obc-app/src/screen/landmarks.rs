@@ -24,9 +24,12 @@ impl LandmarksScreen {
                 let Some(record) = state.record else {
                     return Transition::None;
                 };
-                let count = record.text_pages as usize + usize::from(!record.photo.is_absent());
+                let Some(article) = state.article else {
+                    return Transition::None;
+                };
+                let count = article.text_pages as usize + usize::from(!record.photo.is_absent());
                 let next = list::step_selection(state.page as usize, n, count);
-                if next == record.text_pages as usize {
+                if next == article.text_pages as usize {
                     if let Some(selection) = state.selection() {
                         return Transition::Push(Screen::LandmarkPhoto(
                             super::LandmarkPhotoScreen::new(selection, &state.name).linked(),
@@ -209,7 +212,7 @@ where
         if sources {
             (state.source_page + 1, state.source_pages)
         } else {
-            (state.page + 1, record.text_pages as u16 + u16::from(!record.photo.is_absent()))
+            (state.page + 1, state.article.map_or(0, |a| a.text_pages as u16) + u16::from(!record.photo.is_absent()))
         }
     });
     header(
@@ -332,13 +335,10 @@ mod tests {
             lon: 0,
             lat: 0,
             category: 2,
-            language: *b"en",
-            text_pages: 1,
             hours_ref: 0,
             osm: None,
             name: ContentRef::default(),
-            text: ContentRef::default(),
-            article: ContentRef::default(),
+            articles: ContentRef::default(),
             photo: ContentRef::default(),
             photo_attribution: ContentRef::default(),
         });
