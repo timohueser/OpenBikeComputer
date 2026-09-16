@@ -5,6 +5,10 @@ The application database is the authority. Git contains the implementation, not 
 requirement prose. One excluded example is created in a new database. An example does not satisfy a
 release gate until the owner reviews and includes it.
 
+New requirements receive sequential IDs such as `SYS-028`. The server reserves each number when
+a draft is created. Deleted or discarded draft numbers are not reused, including after history
+cleanup. Existing IDs stay unchanged.
+
 ## Requirement groups
 
 Each requirement can have one optional group, such as Navigation or Bluetooth. Groups are flat.

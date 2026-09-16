@@ -70,6 +70,9 @@ async function route(event: RequestEvent): Promise<Response> {
   if (parts[0] === 'ci') { allow('ci'); return ci(event, parts.slice(1)); }
   if (actor.role === 'ci') assert(parts[0] === 'files' || (parts[0] === 'candidates' && ['report', 'evidence'].includes(parts[2]) && method === 'GET'), 'CI access is limited to evidence ingestion and release artifacts.', 403);
   if (path === 'bootstrap' && method === 'GET') return json({ actor, revision: store().latestRevision(), catalog: store().catalog(), candidates: store().list<Candidate>('candidate'), configured: { github: githubEnabled(), oauth: oauthEnabled() } });
+  if (path === 'requirements/next-id' && method === 'POST') {
+    allow('owner'); return json({ id: store().reserveRequirementId() });
+  }
   if (path === 'requirements' && method === 'PUT') {
     allow('owner'); const data = await body(event);
     return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, requirements(data.requirements, (id) => store().file(id))));

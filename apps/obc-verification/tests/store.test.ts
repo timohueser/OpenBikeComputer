@@ -84,3 +84,25 @@ test('new labels and requirement deletion preserve existing revisions and candid
     reopened.db.close();
   } finally { db.db.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+
+test('requirement numbers continue after legacy history, deletion, cleanup, and restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'obc-verification-numbers-'));
+  let db = new Store(directory);
+  try {
+    const first = db.latestRevision();
+    const saved = db.saveRevision(first.id, 'owner', [{ ...first.requirements[0], id: 'SYS-027' }]);
+    const deleted = db.saveRevision(saved.id, 'owner', []);
+    db.db.prepare("DELETE FROM records WHERE kind='sequence'").run();
+    db.db.close(); db = new Store(directory);
+    assert.equal(db.reserveRequirementId(), 'SYS-028');
+    const other = new Store(directory);
+    try { assert.equal(other.reserveRequirementId(), 'SYS-029'); } finally { other.db.close(); }
+    db.clearHistory(deleted.id, 'owner', true);
+    db.db.close(); db = new Store(directory);
+    assert.equal(db.reserveRequirementId(), 'SYS-030');
+    const current = db.latestRevision();
+    db.saveRevision(current.id, 'owner', [{ ...first.requirements[0], id: 'SYS-040' }]);
+    assert.equal(db.reserveRequirementId(), 'SYS-041');
+  } finally { db.db.close(); rmSync(directory, { recursive: true, force: true }); }
+});
