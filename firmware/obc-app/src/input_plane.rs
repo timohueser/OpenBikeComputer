@@ -155,6 +155,11 @@ impl InputPlane {
         self.gestures.cancel_holds();
     }
 
+    /// Whether an ordinary hold or the Assistant chord is waiting for its threshold.
+    pub fn hold_charging(&self) -> bool {
+        self.enc_progress > 0.0 || self.back_progress > 0.0 || self.gestures.chord_remaining_ms(self.now_ms).is_some()
+    }
+
     /// Time until a pending Assistant chord reaches its hold threshold.
     pub fn chord_remaining_ms(&self, now_ms: u32) -> Option<u32> {
         self.gestures.chord_remaining_ms(now_ms)
