@@ -25,6 +25,8 @@ use obc_pack::catalog::CatalogOptions;
 const USAGE: &str = "\
 usage:
   obc-bake landmarks --snapshot FILE --boundary GEOJSON --out DIR
+  obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
+  obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
 
   obc-bake regions [--regions FILE]
@@ -96,6 +98,8 @@ fn main() -> ExitCode {
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     let result = match command {
         "landmarks" => run_landmarks(rest),
+        "peaks" => run_peaks(rest),
+        "peak-candidates" => run_peak_candidates(rest),
         "regions" => run_regions(rest),
         "bake" => run_bake(rest),
         "terrain" => run_terrain(rest),
@@ -703,6 +707,38 @@ fn run_landmarks(args: &[String]) -> Result<(), String> {
         content.counts.texts,
         content.counts.images,
         content.counts.photo_bytes,
+        content.omissions.len()
+    );
+    Ok(())
+}
+
+fn run_peak_candidates(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["osm", "boundary", "out"])?;
+    if !positional.is_empty() {
+        return Err("peak-candidates accepts named flags only".into());
+    }
+    obc_pack::landmarks::peaks::discover(
+        Path::new(flags.get("osm").ok_or("peak-candidates requires --osm FILE")?),
+        Path::new(flags.get("boundary").ok_or("peak-candidates requires --boundary GEOJSON")?),
+        Path::new(flags.get("out").ok_or("peak-candidates requires --out FILE")?),
+    )
+}
+fn run_peaks(args: &[String]) -> Result<(), String> {
+    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out"])?;
+    if !positional.is_empty() {
+        return Err("peaks accepts named flags only".into());
+    }
+    let content = obc_pack::landmarks::peaks::compile(
+        Path::new(flags.get("snapshot").ok_or("peaks requires --snapshot FILE")?),
+        Path::new(flags.get("boundary").ok_or("peaks requires --boundary GEOJSON")?),
+        Path::new(flags.get("out").ok_or("peaks requires --out DIR")?),
+    )?;
+    println!(
+        "{} peak candidates, {} articles, {} photos, {} associations; {} omissions",
+        content.counts.candidates,
+        content.counts.texts,
+        content.counts.images,
+        content.associations.len(),
         content.omissions.len()
     );
     Ok(())

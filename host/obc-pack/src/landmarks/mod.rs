@@ -3,6 +3,7 @@
 
 mod assets;
 mod locale;
+pub mod peaks;
 mod photo;
 mod policy;
 pub mod text;
@@ -34,6 +35,8 @@ struct Snapshot {
     places: Vec<Value>,
     #[serde(default)]
     coverage: Value,
+    #[serde(default)]
+    peaks: Option<peaks::PeakCapture>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,19 +180,11 @@ fn coordinate(entity: &Value) -> Option<(f64, f64)> {
 
 /// `boundary` is a GeoJSON Polygon/MultiPolygon, not a country-claim filter. All inputs are local.
 pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<Content, String> {
-    let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
-    let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    if snapshot.schema != 1 {
-        return Err("unsupported source snapshot schema".into());
+    let (snapshot, raw) = load_snapshot(snapshot_path)?;
+    if snapshot.peaks.is_some() {
+        return Err("peak capture requires the peak compiler".into());
     }
     let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
-    let mut registered = BTreeSet::new();
-    for source in &snapshot.sources {
-        if !registered.insert(&source.path) {
-            return Err(format!("duplicate source: {}", source.path));
-        }
-        read_pinned(root, &snapshot.sources, &source.path, photo::MAX_SOURCE_BYTES as u64)?;
-    }
     let boundary_bytes = fs::read(boundary).map_err(|e| e.to_string())?;
     let boundary_json: Value = serde_json::from_slice(&boundary_bytes).map_err(|e| e.to_string())?;
     let geometry = if boundary_json["type"] == "Feature" { &boundary_json["geometry"] } else { &boundary_json };
@@ -228,14 +223,7 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
     }
     policy_input.extend_from_slice(locale::LANGUAGE_BYTES);
     policy_input.extend_from_slice(include_bytes!("locale.rs"));
-    let mut locales = BTreeMap::new();
-    for source in snapshot.sources.iter().filter(|s| s.path.starts_with("locales/")) {
-        let raw = json_pinned(root, &snapshot.sources, &source.path)?;
-        let id = Path::new(&source.path).file_stem().and_then(|s| s.to_str()).ok_or("invalid locale path")?;
-        if let Some(entity) = raw["entities"].get(id).filter(|e| e["id"] == id) {
-            locales.insert(id.to_owned(), entity.clone());
-        }
-    }
+    let locales = load_locales(root, &snapshot.sources)?;
     let mut input = raw;
     input.extend_from_slice(&boundary_bytes);
     let mut content = Content {
@@ -295,70 +283,11 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
         };
         content.counts.candidates += 1;
         content.candidate_qids.push(qid.clone());
-        let captures = place["articles"].as_array().ok_or("article captures missing")?;
-        let mut variants = Vec::new();
-        let mut lead = BTreeSet::new();
-        for (candidate, _) in locale::languages() {
-            if let Some(capture) = captures.iter().find(|item| item["language"] == candidate) {
-                match article(root, &snapshot.sources, entity, capture) {
-                    Ok(Article { language, pages, attribution, lead_image }) => {
-                        lead.extend(lead_image);
-                        variants.push(TextVariant { language, text_pages: pages, attribution });
-                    }
-                    Err(reason) => omit("article", format!("{candidate}: {reason}")),
-                }
-            }
-        }
-        if variants.is_empty() {
-            omit("article", "no_usable_captured_language".into());
+        let Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }) =
+            prepare_article(root, &snapshot.sources, &place, entity, &locales, output, &mut content.omissions)?
+        else {
             continue;
-        }
-        let (default_language, fallback_sources) = locale::default_language(entity, &locales, &variants);
-        let name = entity["labels"][&default_language]["value"]
-            .as_str()
-            .or_else(|| entity["labels"]["en"]["value"].as_str())
-            .ok_or("site name missing")?;
-        let name = text::normalize(name);
-        if !text::supported(&name) {
-            omit("site", "name_glyph".into());
-            continue;
-        }
-        let mut images: Vec<_> = place["images"].as_array().into_iter().flatten().collect();
-        images.sort_by_key(|image| {
-            (image["source"] != "P18", image["filename"].as_str().unwrap_or("").replace('_', " "))
-        });
-        let mut photo = None;
-        let p18: BTreeSet<_> = claims(entity, "P18")
-            .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
-            .map(|file| file.replace('_', " "))
-            .collect();
-        for image in images {
-            let allowed = match image["source"].as_str() {
-                Some("P18") => &p18,
-                Some("wikipedia-lead") => &lead,
-                _ => {
-                    omit("photo", "photo_source_kind".into());
-                    continue;
-                }
-            };
-            match assets::photo(root, &snapshot.sources, image, allowed, &qid) {
-                Ok((candidate, pixels))
-                    if variants.iter().all(|v| {
-                        candidate.attribution.display_pages.len() + v.attribution.display_pages.len()
-                            <= text::MAX_SOURCE_PAGES
-                    }) =>
-                {
-                    fs::write(output.join(&candidate.path), pixels).map_err(|e| e.to_string())?;
-                    photo = Some(candidate);
-                    break;
-                }
-                Ok(_) => omit("photo", "attribution_pages".into()),
-                Err(reason) => omit("photo", reason),
-            }
-        }
-        if photo.is_none() {
-            omit("photo", "no_usable_captured_image".into());
-        }
+        };
         content.counts.texts += 1;
         if let Some(image) = &photo {
             content.counts.images += 1;
@@ -382,6 +311,9 @@ pub fn compile(snapshot_path: &Path, boundary: &Path, output: &Path) -> Result<C
 }
 
 fn boundary_geometry(value: &Value) -> Result<Geometry, String> {
+    if value["type"] == "Feature" {
+        return boundary_geometry(&value["geometry"]);
+    }
     if value["type"] == "FeatureCollection" {
         let parts = value["features"]
             .as_array()
@@ -444,3 +376,123 @@ fn boundary_geometry(value: &Value) -> Result<Geometry, String> {
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PreparedArticle {
+    pub name: String,
+    pub default_language: String,
+    pub fallback_sources: Vec<String>,
+    pub variants: Vec<TextVariant>,
+    pub photo: Option<Photo>,
+}
+
+fn prepare_article(
+    root: &Path,
+    sources: &[Source],
+    place: &Value,
+    entity: &Value,
+    locales: &BTreeMap<String, Value>,
+    output: &Path,
+    omissions: &mut Vec<Omission>,
+) -> Result<Option<PreparedArticle>, String> {
+    let qid = string(place, "qid")?;
+    let mut omit = |asset: &str, reason: String| {
+        omissions.push(Omission { qid: qid.into(), asset: asset.into(), reason });
+    };
+    let captures = place["articles"].as_array().ok_or("article captures missing")?;
+    let mut variants = Vec::new();
+    let mut lead = BTreeSet::new();
+    for (candidate, _) in locale::languages() {
+        if let Some(capture) = captures.iter().find(|item| item["language"] == candidate) {
+            match article(root, sources, entity, capture) {
+                Ok(Article { language, pages, attribution, lead_image }) => {
+                    lead.extend(lead_image);
+                    variants.push(TextVariant { language, text_pages: pages, attribution });
+                }
+                Err(reason) => omit("article", format!("{candidate}: {reason}")),
+            }
+        }
+    }
+    if variants.is_empty() {
+        omit("article", "no_usable_captured_language".into());
+        return Ok(None);
+    }
+    let (default_language, fallback_sources) = locale::default_language(entity, locales, &variants);
+    let name = entity["labels"][&default_language]["value"]
+        .as_str()
+        .or_else(|| entity["labels"]["en"]["value"].as_str())
+        .or_else(|| place["name"].as_str())
+        .ok_or("site name missing")?;
+    let name = text::normalize(name);
+    if !text::supported(&name) {
+        omit("site", "name_glyph".into());
+        return Ok(None);
+    }
+    let mut images: Vec<_> = place["images"].as_array().into_iter().flatten().collect();
+    images.sort_by_key(|image| (image["source"] != "P18", image["filename"].as_str().unwrap_or("").replace('_', " ")));
+    let mut photo = None;
+    let p18: BTreeSet<_> = claims(entity, "P18")
+        .filter_map(|claim| claim["mainsnak"]["datavalue"]["value"].as_str())
+        .map(|file| file.replace('_', " "))
+        .collect();
+    for image in images {
+        let allowed = match image["source"].as_str() {
+            Some("P18") => &p18,
+            Some("wikipedia-lead") => &lead,
+            _ => {
+                omit("photo", "photo_source_kind".into());
+                continue;
+            }
+        };
+        match assets::photo(root, sources, image, allowed, qid) {
+            Ok((candidate, pixels))
+                if variants.iter().all(|v| {
+                    candidate.attribution.display_pages.len() + v.attribution.display_pages.len()
+                        <= text::MAX_SOURCE_PAGES
+                }) =>
+            {
+                fs::write(output.join(&candidate.path), pixels).map_err(|e| e.to_string())?;
+                photo = Some(candidate);
+                break;
+            }
+            Ok(_) => omit("photo", "attribution_pages".into()),
+            Err(reason) => omit("photo", reason),
+        }
+    }
+    if photo.is_none() {
+        omit("photo", "no_usable_captured_image".into());
+    }
+    Ok(Some(PreparedArticle { name, default_language, fallback_sources, variants, photo }))
+}
+
+fn load_snapshot(snapshot_path: &Path) -> Result<(Snapshot, Vec<u8>), String> {
+    let raw = fs::read(snapshot_path).map_err(|e| e.to_string())?;
+    let snapshot: Snapshot = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    if snapshot.schema != 1 {
+        return Err("unsupported source snapshot schema".into());
+    }
+    let root = snapshot_path.parent().ok_or("snapshot has no parent")?;
+    let mut registered = BTreeSet::new();
+    for source in &snapshot.sources {
+        if !registered.insert(&source.path) {
+            return Err(format!("duplicate source: {}", source.path));
+        }
+        read_pinned(root, &snapshot.sources, &source.path, photo::MAX_SOURCE_BYTES as u64)?;
+    }
+    Ok((snapshot, raw))
+}
+
+fn load_locales(root: &Path, sources: &[Source]) -> Result<BTreeMap<String, Value>, String> {
+    let mut locales = BTreeMap::new();
+    for source in sources.iter().filter(|s| s.path.starts_with("locales/")) {
+        let raw = json_pinned(root, sources, &source.path)?;
+        let id = Path::new(&source.path).file_stem().and_then(|s| s.to_str()).ok_or("invalid locale path")?;
+        if let Some(entity) = raw["entities"].get(id).filter(|e| e["id"] == id) {
+            locales.insert(id.to_owned(), entity.clone());
+        }
+    }
+    Ok(locales)
+}
+
+#[cfg(test)]
+mod peaks_tests;
