@@ -249,6 +249,35 @@ class ExecutionTests(unittest.TestCase):
             plan.gate_jobs(["nonexistent"])
 
 
+class ValidationTests(unittest.TestCase):
+    """The document rejections that protect the derived facts."""
+
+    TABLE = {"test": plan.Job(roots=(".",), script="tools/ci/test.sh")}
+
+    def errors(self, document):
+        graph = plan.CargoGraph(
+            {"core": package("core", "crates/core", examples=("writer",))}, {"core": frozenset()}
+        )
+        with patch.object(plan, "JOBS", self.TABLE):
+            return plan.validate(plan.repository_root(), graph, document, [])
+
+    def test_a_carved_target_must_exist(self) -> None:
+        suite = {"id": "manual.writer", "route": "manual", "command": "cargo run", "package": "core"}
+        self.assertEqual(self.errors({"suite": [dict(suite, targets=["writer"])]}), [])
+        self.assertIn(
+            "manual.writer: core has no target ghost",
+            self.errors({"suite": [dict(suite, targets=["ghost"])]}),
+        )
+
+    def test_a_job_script_must_exist(self) -> None:
+        with patch.object(plan, "JOBS", {"test": plan.Job(roots=(".",), script="tools/ci/missing.sh")}):
+            graph = plan.CargoGraph({"core": package("core", "crates/core")}, {"core": frozenset()})
+            self.assertIn(
+                "job test names a missing script tools/ci/missing.sh",
+                plan.validate(plan.repository_root(), graph, {"suite": []}, []),
+            )
+
+
 class WorkflowStructureTests(unittest.TestCase):
     """The parsed-YAML check, against a synthetic workflow."""
 
