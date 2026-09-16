@@ -300,6 +300,24 @@ fn key(meta: EntryMeta) -> (u64, u64) {
     (meta.id.0, meta.revision.0)
 }
 
+/// A [`ByteSink`] that keeps what was written: what a host hands an exporter when the file is going
+/// to a phone rather than to a card.
+#[derive(Default)]
+pub struct VecSink(pub Vec<u8>);
+
+impl obc_formats::io::ByteSink for VecSink {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        self.0.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn patch_at(&mut self, at: u32, bytes: &[u8]) -> Result<(), obc_formats::io::Error> {
+        let at = at as usize;
+        self.0[at..at + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
 use obc_storage::flat::seam::Store;
 
 /// Request bytes, written at the offsets `FLAT_Store_Protocol.md` §3 states.

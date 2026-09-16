@@ -41,7 +41,7 @@ fn with_sampler(bytes: &[u8], body: impl FnOnce(&mut dyn FnMut(f64, f64) -> Opti
 #[test]
 #[cfg(feature = "external-fixtures")]
 fn the_grimsel_sidecar_covers_its_map_and_reads_as_the_grimsel() {
-    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcd").expect("full fixture suite requires terrain");
+    let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcd");
     assert_eq!(bytes.len(), 786_560, "24 cells of 32 KiB behind a 4 × 6 directory");
 
     with_sampler(&bytes, |at| {

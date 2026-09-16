@@ -10,8 +10,8 @@ reconstructed from them. Production map summit records retain exact OSM coordina
 
 ## Obtain
 
-Run `obc fixtures sync sim-peak-view`. The package is also part of the `sim` and `test`
-profiles. The simulator resolves the package through the standard fixture cache.
+Run `obc fixtures sync sim-peak-view`. The package is also part of the `sim`
+profile. The simulator resolves the package through the standard fixture cache.
 `OBC_PEAK_TERRAIN_DIR` overrides it for a local bake.
 
 ## Generate

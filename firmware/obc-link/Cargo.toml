@@ -23,6 +23,15 @@ obc-storage = { path = "../obc-storage", features = ["std"] }
 # behaviour proved here is proved against the thing the phone and the builder talk to. A
 # **dev**-dependency for the same reason obc-storage is one, and it carries that store edge with it.
 obc-flat-device = { path = "../../host/obc-flat-device" }
+# The finished-ride readers and the GPX exporter, for the one test that carries a recovered
+# recording out over the wire and exports it. A **dev**-dependency for the same reason
+# `obc-storage` is one: `obc-route` is a core crate and this crate is a foundation crate, so
+# `firmware/tools/dependency_rules.json` forbids `obc-link -> obc-route` for anything the device
+# image links, and `check_dependencies.py` skips dev edges.
+obc-route = { path = "../obc-route" }
+# The byte source and sink those readers take. Foundation, like this crate, so it is an ordinary
+# edge that happens to be needed only by tests.
+obc-formats = { path = "../obc-formats" }
 
 [features]
 default = []

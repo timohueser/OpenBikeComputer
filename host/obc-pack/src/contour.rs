@@ -168,8 +168,12 @@ pub(crate) fn add_contours(
         cfg.simplify_m
     ));
     // The credit is a licence obligation and travels with the data, never retyped: it is one `const`
-    // in `obc-dem`, and this is the point at which a `.obcm` starts carrying GLO-30-derived geometry.
-    progress.log(format!("  contours derived from {}: {}", obc_dem::SOURCE_DATASET, obc_dem::COPERNICUS_ATTRIBUTION));
+    // in `obc-elevation`, and this is where a `.obcm` starts carrying GLO-30-derived geometry.
+    progress.log(format!(
+        "  contours derived from {}: {}",
+        obc_elevation::SOURCE_DATASET,
+        obc_elevation::COPERNICUS_ATTRIBUTION
+    ));
     Ok(())
 }
 
