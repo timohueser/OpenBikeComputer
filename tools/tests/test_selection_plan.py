@@ -241,6 +241,9 @@ class ExecutionTests(unittest.TestCase):
         printed_lines = " ".join(str(call.args[0]) for call in printed.call_args_list if call.args)
         self.assertIn("-p core", printed_lines)
         self.assertNotIn("--workspace", printed_lines)
+        # A narrowed set can hold only packages that declare no test yet; that is not a
+        # failed run. Only the workspace run in tools/ci/test.sh treats it as one.
+        self.assertIn("--no-tests warn", printed_lines)
 
     def test_a_selection_error_publishes_no_plan(self) -> None:
         """The `selection` job exits nonzero and prints nothing the aggregate can read."""

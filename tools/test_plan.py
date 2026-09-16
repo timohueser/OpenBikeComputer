@@ -654,8 +654,13 @@ def run_plan(
     if packages:
         # Package flags narrow compilation; the tier filter narrows execution. An empty
         # package set produces no Cargo invocation, never an implicit whole workspace.
+        #
+        # `--no-tests warn`, not `fail`: a narrowed set can legitimately contain only
+        # packages that declare no test yet, and that is not a failure of the change. The
+        # workspace run in `tools/ci/test.sh` keeps `fail`, where an empty run really does
+        # mean the filter is wrong.
         commands.append(
-            ["cargo", "nextest", "run", "--locked", "--all-features", "--no-tests", "fail"]
+            ["cargo", "nextest", "run", "--locked", "--all-features", "--no-tests", "warn"]
             + [argument for name in packages for argument in ("-p", name)]
             + ["--filter-expr", cargo_filter(graph, "fast", packages, carved)]
         )
