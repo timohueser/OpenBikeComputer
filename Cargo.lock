@@ -2834,6 +2834,8 @@ version = "0.1.0"
 dependencies = [
  "obc-crc",
  "obc-flat-device",
+ "obc-formats",
+ "obc-route",
  "obc-storage",
  "sha2",
 ]
