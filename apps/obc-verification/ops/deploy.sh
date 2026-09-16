@@ -22,7 +22,7 @@ revision=$(python3 -c 'import json,re,sys; s=json.load(open(sys.argv[1]))["sourc
 release="$root/releases/$revision-$(date -u +%Y%m%dT%H%M%S)"
 [ ! -e "$release" ] || { echo "Deployment directory already exists." >&2; exit 1; }
 chown -R root:root "$staging"
-chmod -R go-w "$staging"
+chmod -R a+rX,go-w "$staging"
 mv "$staging" "$release"
 previous=$(readlink "$root/current" || true)
 ln -s "$release" "$root/next"
