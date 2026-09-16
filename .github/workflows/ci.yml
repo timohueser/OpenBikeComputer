@@ -240,8 +240,9 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      # `shared-key` (not `key`) so all four test jobs restore *one* cache instead of four: they run
-      # the same build, so further copies would only spend the repository's cache budget again. This
+      # `shared-key` (not `key`) so the three jobs that build the host workspace — this one, the
+      # snapshot sweep and the builder's packer tests — restore *one* cache instead of three: they
+      # run the same build, so further copies would only spend the cache budget again. This
       # job is the one that writes it, and only on a push — a cache saved during a pull-request run
       # is scoped to that pull request, so it can never warm anyone else's, and saving one costs
       # every pull request the write while buying only its own re-runs. The cache that matters is
