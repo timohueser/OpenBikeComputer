@@ -1,8 +1,6 @@
 //! Boot-time recovered-ride offer: one-shot card, exact continuation, and guarded discard.
 
-mod common;
-
-use common::NoFix;
+use crate::common::NoFix;
 use obc_app::device_core::{ExternalFacts, OutcomeSlots};
 use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
 use obc_app::{App, AppState, Gesture, Mode, RideContinuation, RideDamage, Screen};
@@ -30,7 +28,7 @@ fn continuation() -> RideContinuation {
 fn continue_preserves_restored_totals_through_the_first_tick() {
     let expected = continuation();
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    common::mount_store(&mut app);
+    crate::common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(expected));
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
     assert!(!app.offer_recovered_ride(RideContinuation::default()), "the boot offer is one-shot");
@@ -52,20 +50,20 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
 #[test]
 fn discard_is_guarded_becomes_a_discard_effect_and_returns_home() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    common::mount_store(&mut app);
+    crate::common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(continuation()));
     app.apply_gesture(Gesture::Step(1)); // Continue ride → Discard
 
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "a tap cannot discard recovered bytes");
-    assert!(common::quiet_pass(&mut app, 1).effects.recorder.is_empty(), "and orders nothing");
+    assert!(crate::common::quiet_pass(&mut app, 1).effects.recorder.is_empty(), "and orders nothing");
 
     app.apply_gesture(Gesture::Hold);
     assert!(matches!(app.top_screen(), Screen::Home(_)));
     assert_eq!(app.mode(), Mode::Idle);
     assert!(!app.recording());
     // The recovered object belongs to no session, and it still has to leave the store.
-    let mut plan = common::quiet_pass(&mut app, 2);
+    let mut plan = crate::common::quiet_pass(&mut app, 2);
     assert!(matches!(plan.effects.recorder.take(), Some(RecorderEffect::Discard { .. })));
     assert!(!app.offer_recovered_ride(continuation()), "the decided offer never reopens this boot");
 }
@@ -73,7 +71,7 @@ fn discard_is_guarded_becomes_a_discard_effect_and_returns_home() {
 #[test]
 fn back_cannot_dismiss_the_recovery_decision() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    common::mount_store(&mut app);
+    crate::common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(continuation()));
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
@@ -98,14 +96,14 @@ fn start_from_home(app: &mut App) {
 #[test]
 fn the_failed_repair_card_retries_without_a_reboot() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    common::mount_store(&mut app);
+    crate::common::mount_store(&mut app);
     assert!(app.offer_damaged_ride(RideDamage::Payload), "the boot offer names the damage");
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
 
     // The rider confirms. One hold, one effect.
     app.apply_gesture(Gesture::Hold);
     assert!(matches!(app.top_screen(), Screen::Home(_)), "the confirmed card returns Home");
-    let effect = common::quiet_pass(&mut app, 1).effects.recorder.take().expect("the confirmed removal");
+    let effect = crate::common::quiet_pass(&mut app, 1).effects.recorder.take().expect("the confirmed removal");
     let RecorderEffect::Discard { token } = effect else { panic!("the repair is the exact removal: {effect:?}") };
 
     // The store refuses it. The card comes back in its failed mode — and **no warning card lands on
@@ -114,14 +112,14 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     let mut outcomes = OutcomeSlots::new();
     outcomes.recorder.try_put(RecorderOutcome::Failed { token, error: RecorderError::Write }).unwrap();
     let mut facts = ExternalFacts::NONE;
-    let plan = common::pass(&mut app, 2, &mut outcomes, &mut facts, None);
+    let plan = crate::common::pass(&mut app, 2, &mut outcomes, &mut facts, None);
     assert!(plan.effects.recorder.is_empty(), "the failure ordered nothing behind itself");
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the card is back, with no warning over it");
 
     // Nothing happens by itself from here — the finding this slice closes.
     for pass in 0..5 {
         assert!(
-            common::quiet_pass(&mut app, 3 + pass * 15_000).effects.recorder.is_empty(),
+            crate::common::quiet_pass(&mut app, 3 + pass * 15_000).effects.recorder.is_empty(),
             "pass {pass}: a latched failure re-attempts nothing"
         );
     }
@@ -138,7 +136,7 @@ fn the_failed_repair_card_retries_without_a_reboot() {
     // The real Start card must not overwrite Recorder's recovery decision with its Map transition.
     start_from_home(&mut app);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the decision wins over the requested Map");
-    let plan = common::quiet_pass(&mut app, 100_000);
+    let plan = crate::common::quiet_pass(&mut app, 100_000);
     assert!(plan.effects.recorder.is_empty(), "a refused Start cannot write to the standing object");
     assert!(!app.recording(), "no phantom session opens against a damaged object");
     assert_eq!(app.mode(), Mode::Idle, "a refused Start leaves the device in its non-recording mode");
@@ -153,16 +151,16 @@ fn the_failed_repair_card_retries_without_a_reboot() {
 
     // Retry, with no reboot anywhere in this test. This time the removal commits.
     app.apply_gesture(Gesture::Hold);
-    let retry = common::quiet_pass(&mut app, 100_001).effects.recorder.take().expect("the retried removal");
+    let retry = crate::common::quiet_pass(&mut app, 100_001).effects.recorder.take().expect("the retried removal");
     assert!(matches!(retry, RecorderEffect::Discard { .. }));
     let mut outcomes = OutcomeSlots::new();
     outcomes.recorder.try_put(RecorderOutcome::Discarded { token: retry.token() }).unwrap();
     let mut facts = ExternalFacts::NONE;
-    common::pass(&mut app, 100_002, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut app, 100_002, &mut outcomes, &mut facts, None);
 
     // The same visible Start action records at once after repair, in the same boot.
     start_from_home(&mut app);
-    common::quiet_pass(&mut app, 100_003);
+    crate::common::quiet_pass(&mut app, 100_003);
     assert!(app.recording(), "the repaired card records again without a reboot");
     assert_eq!(app.mode(), Mode::Riding);
     assert!(matches!(app.top_screen(), Screen::Map(_)));

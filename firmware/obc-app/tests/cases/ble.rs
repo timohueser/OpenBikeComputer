@@ -6,8 +6,6 @@
 
 use obc_app::{App, AppState, BleLink, BleStatus, DeviceStatus, Dirty};
 
-mod common;
-
 fn connected() -> BleStatus {
     BleStatus { link: BleLink::Connected, passkey: None, paired: true }
 }
@@ -197,9 +195,9 @@ fn a_link_change_does_not_repaint_the_map_or_statistics() {
     let mut app = App::new(AppState::new(0, 0, 0.05)); // base = Map
                                                        // Start a tracking session so the Map↔Statistics sibling ring exists (the Map's `back` swaps to
                                                        // Statistics only while tracking; without a ride it pops back to the Menu).
-    common::mount_store(&mut app);
+    crate::common::mount_store(&mut app);
     app.recorder.request(obc_app::RecorderIntent::Start);
-    common::quiet_pass(&mut app, 1);
+    crate::common::quiet_pass(&mut app, 1);
     assert!(app.recording(), "the ride the sibling ring depends on is actually open");
     let _ = app.take_dirty();
     app.set_ble_status(connected());
@@ -219,39 +217,39 @@ fn forget_requires_its_exact_result_even_after_disconnect_and_allows_explicit_re
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.state.device.ble_paired = true;
     app.state.ble_forget_requested = true;
-    let first = common::quiet_pass(&mut app, 1).effects.bond.take().unwrap();
+    let first = crate::common::quiet_pass(&mut app, 1).effects.bond.take().unwrap();
     assert_eq!(app.state.bond_status, BondStatus::Pending);
     app.set_ble_status(BleStatus::DISCONNECTED);
-    assert!(common::quiet_pass(&mut app, 2).effects.bond.is_empty());
+    assert!(crate::common::quiet_pass(&mut app, 2).effects.bond.is_empty());
     assert_eq!(app.state.bond_status, BondStatus::Pending, "a disconnect proves no deletion");
     let mut outcomes = OutcomeSlots::new();
     let mut facts = ExternalFacts::NONE;
     let failed = BondOutcome::Failed { token: first.token(), error: BondError::StoreWriteFailed };
     outcomes.bond.try_put(failed).unwrap();
-    common::pass(&mut app, 3, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut app, 3, &mut outcomes, &mut facts, None);
     assert_eq!(app.state.bond_status, BondStatus::Failed(BondError::StoreWriteFailed));
-    assert!(common::quiet_pass(&mut app, 4).effects.bond.is_empty(), "no automatic destructive retry");
+    assert!(crate::common::quiet_pass(&mut app, 4).effects.bond.is_empty(), "no automatic destructive retry");
     app.state.ble_forget_requested = true;
-    let retry = common::quiet_pass(&mut app, 5).effects.bond.take().unwrap();
+    let retry = crate::common::quiet_pass(&mut app, 5).effects.bond.take().unwrap();
     assert_ne!(first.token(), retry.token());
     outcomes
         .bond
         .try_put(BondOutcome::KeysRemoved { token: first.token(), controller: ControllerClearance::Confirmed })
         .unwrap();
-    common::pass(&mut app, 6, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut app, 6, &mut outcomes, &mut facts, None);
     assert_eq!(app.state.bond_status, BondStatus::Pending, "a stale success cannot finish the retry");
     let partial = BondOutcome::KeysRemoved { token: retry.token(), controller: ControllerClearance::Unconfirmed };
     outcomes.bond.try_put(partial).unwrap();
-    common::pass(&mut app, 7, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut app, 7, &mut outcomes, &mut facts, None);
     assert_eq!(app.state.bond_status, BondStatus::RestartRequired);
     outcomes
         .bond
         .try_put(BondOutcome::KeysRemoved { token: retry.token(), controller: ControllerClearance::Confirmed })
         .unwrap();
-    common::pass(&mut app, 8, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut app, 8, &mut outcomes, &mut facts, None);
     assert_eq!(app.state.bond_status, BondStatus::RestartRequired, "terminal answers are one-shot");
     let mut restarted = App::new_idle(AppState::new(0, 0, 1.0));
     outcomes.bond.try_put(partial).unwrap();
-    common::pass(&mut restarted, 9, &mut outcomes, &mut facts, None);
+    crate::common::pass(&mut restarted, 9, &mut outcomes, &mut facts, None);
     assert_eq!(restarted.state.bond_status, BondStatus::Idle, "reset does not inherit an operation");
 }

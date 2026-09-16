@@ -14,8 +14,7 @@ use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, PoiCategory
 use obc_route::{RouteIndex, RouteReader};
 use obcm_testkit::{build_poi_map, PoiSpec};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 /// The map bbox the POI fixture packs into, and the packer's default POI chunk size.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 47_000_000, 9_000_000, 49_000_000);

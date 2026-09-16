@@ -2,7 +2,7 @@
 //! screen draws actually changed, and a static screen with no input and no motion plans
 //! [`Dirty::CLEAN`]. The guiding rule is *over-redraw is safe, under-redraw is a bug*.
 //!
-//! Every test here drives the **DeviceCore pass** ([`common::Frames`]) rather than the frame
+//! Every test here drives the **DeviceCore pass** ([`crate::common::Frames`]) rather than the frame
 //! methods, because the pass is where the render keys are compared (#1447) — and it is the frame
 //! every runtime host runs. The pass drains the demand, so the construction-time frame is drained
 //! by the first frame and each assertion is about its own.
@@ -11,8 +11,7 @@ use obc_app::{App, AppState, Dirty, RouteSummary};
 use obc_map_scene::BBox;
 use obc_ports::{Button, Fix};
 
-mod common;
-use common::{down, step, tap, up, Frames};
+use crate::common::{down, step, tap, up, Frames};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
 
@@ -115,7 +114,7 @@ fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
                                                             // would sweep the screen out from under it — a repaint that is correct and not the one at issue.
     app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
     app.set_routes_with_ids(&[one_route()], &[0]);
-    common::mount_store(&mut app); // a device with a card — START RIDE needs somewhere to record
+    crate::common::mount_store(&mut app); // a device with a card — START RIDE needs somewhere to record
     let mut host = Frames::new();
 
     host.frame(&mut app, 0, &tap(Button::Select), None, None); // Home press → Menu (Routes selected)

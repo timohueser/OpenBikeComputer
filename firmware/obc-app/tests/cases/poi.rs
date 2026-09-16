@@ -16,8 +16,7 @@ use obc_ports::Fix;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
 use obcm_testkit::{build_poi_map, build_poi_map_with_hours, PoiSpec};
 
-mod common;
-use common::Buf;
+use crate::common::Buf;
 
 /// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` — a 1°×1° square near 43° N, matching
 /// the reader's POI query tests.
