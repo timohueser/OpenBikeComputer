@@ -71,6 +71,7 @@ JOBS: dict[str, Job] = {
     "ios-app": Job(needs=("selection",)),
     "web": Job(needs=("selection", "wasm-bridges")),
     "web-browser": Job(needs=("selection", "wasm-bridges")),
+    "verification": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
     "desktop": Job(needs=("selection", "desktop-frontend"), roots=("apps/obc-desktop",)),
     "desktop-launch": Job(needs=("selection", "desktop")),
@@ -101,7 +102,6 @@ ROUTES = {
     "ordinary": "selected by the change",
     "required": "runs whenever one of its jobs starts",
     "manual": "explicitly invoked only",
-    "weekly": "the weekly workflow runs it",
     "live": "contacts a live service; explicitly invoked only",
 }
 CI_ROUTES = {"ordinary", "required"}
@@ -139,6 +139,8 @@ CODE_OR_POLICY_SUFFIXES = {
 }
 # The captured-fixture tier is exactly the targets Cargo gates on this feature.
 FIXTURE_FEATURE = "external-fixtures"
+# The reason prefix that means "run everything, including the snapshot sweep".
+WHOLE_GRAPH = "whole graph:"
 
 class PlanError(Exception):
     """The plan or its inputs are invalid."""
@@ -498,7 +500,7 @@ def select(
         if path in gone:
             # The owner may have been deleted with it, and the base tree's Cargo graph is
             # not available here, so this runs the whole graph rather than nothing.
-            reason = f"deleted path has no owner in the head tree: {path}"
+            reason = f"{WHOLE_GRAPH} deleted path with no owner in the head tree: {path}"
             for name in graph.packages:
                 claim_package(name, reason)
             for unit in units:
@@ -511,9 +513,14 @@ def select(
             )
 
     # The snapshot sweep has an explicit rendering-input budget: broad policy and fixture
-    # changes must not add an otherwise unrelated full UI render run.
+    # changes must not add an otherwise unrelated full UI render run. A deleted path with no
+    # owner is the exception, because it may have been a rendering input.
     if sweep := by_id.get("ci.ui-snapshots"):
-        sweep.reasons = [reason for reason in sweep.reasons if reason.startswith("trigger ")]
+        sweep.reasons = [
+            reason
+            for reason in sweep.reasons
+            if reason.startswith("trigger ") or reason.startswith(WHOLE_GRAPH)
+        ]
 
     started = {job for unit in units if unit.selected for job in unit.jobs}
     always = {name for name, job in JOBS.items() if job.unconditional}
@@ -538,6 +545,20 @@ def select(
         packages=sorted(selected_packages),
         errors=sorted(set(errors)),
     )
+
+# A release candidate is verified whole, not by its diff. The sweep keeps its
+# rendering-input budget, and no live or physical route is ever pulled in.
+RELEASE_EXCLUDED = {"ci.ui-snapshots"}
+
+def select_release(plan: Plan) -> Plan:
+    """Require every unit with a CI route, whatever the change touched."""
+
+    for unit in plan.units:
+        if unit.jobs and unit.route in CI_ROUTES and unit.id not in RELEASE_EXCLUDED:
+            reason = "release candidate requires the complete CI suite"
+            if reason not in unit.reasons:
+                unit.reasons.append(reason)
+    return plan
 
 def required_jobs(plan: Plan) -> list[str]:
     """Close the selected jobs over the prerequisite graph so producers still run."""
@@ -874,6 +895,8 @@ def command_select(args: argparse.Namespace) -> int:
     graph, _, units = load(root)
     changed, deleted = git_changed_paths(root, args.base, args.head)
     plan = select(units, graph, changed, deleted=deleted, base=args.base, head=args.head)
+    if args.release:
+        plan = select_release(plan)
     data = plan_data(plan)
     if args.jobs_file:
         Path(args.jobs_file).write_text(json.dumps(data["required_jobs"]), encoding="utf-8")
@@ -958,6 +981,9 @@ def build_parser() -> argparse.ArgumentParser:
     select_parser.add_argument("--base", required=True)
     select_parser.add_argument("--head", default="HEAD")
     select_parser.add_argument("--format", choices=("text", "json"), default="text")
+    select_parser.add_argument(
+        "--release", action="store_true", help="require every CI suite for a release candidate"
+    )
     select_parser.add_argument("--jobs-file", help="also write the required jobs as a JSON array")
     select_parser.set_defaults(func=command_select)
 

@@ -138,6 +138,22 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(chosen.errors)
         self.assertNotIn("manual.fixture", {item.id for item in chosen.selected})
 
+    def test_release_selects_every_routed_suite_but_no_sweep_or_live_work(self) -> None:
+        self.units.append(unit("live.service", [], route="live"))
+        released = plan.select_release(self.plan_for("README.md"))
+        selected = {item.id for item in released.selected}
+        self.assertIn("rust.core", selected)
+        self.assertIn("swift.kit", selected)
+        self.assertNotIn("missing.route", selected)
+        self.assertNotIn("manual.writer", selected)
+        self.assertNotIn("live.service", selected)
+        self.assertEqual(released.errors, [])
+
+    def test_a_release_still_respects_the_snapshot_sweep_budget(self) -> None:
+        self.units.append(unit("ci.ui-snapshots", ["ui-snapshots"], triggers=("render/**",)))
+        released = plan.select_release(self.plan_for("README.md"))
+        self.assertNotIn("ci.ui-snapshots", {item.id for item in released.selected})
+
     def test_the_json_plan_reports_jobs_platforms_and_unselected_reasons(self) -> None:
         self.units[5].platforms = ("linux", "macos")
         data = plan.plan_data(self.plan_for("builder/app/src/panel.ts"))
@@ -410,12 +426,12 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),

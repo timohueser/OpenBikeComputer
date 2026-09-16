@@ -31,14 +31,22 @@ name: CI
 #   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      full_release:
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main, develop]
 
 # One run per ref; a new push cancels the previous in-flight run for that ref.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ inputs.source_sha || github.ref }}-${{ inputs.full_release && github.run_id || 'development' }}
+  cancel-in-progress: ${{ !inputs.full_release }}
 
 permissions:
   contents: read
@@ -62,16 +70,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Select affected suites
         id: plan
         env:
+          FULL_RELEASE: ${{ inputs.full_release }}
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          release_args=()
+          if [ "$FULL_RELEASE" = "true" ]; then
+            base="HEAD^"
+            release_args=(--release)
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
             base="$(git merge-base HEAD "origin/$BASE_REF")"
           elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
             base="$BEFORE_SHA"
@@ -80,7 +94,7 @@ jobs:
           fi
           echo '[]' > selection-jobs.json
           set +e
-          python3 tools/test_plan.py select --base "$base" --format json \
+          python3 tools/test_plan.py select "${release_args[@]}" --base "$base" --format json \
             --jobs-file selection-jobs.json > selection-plan.json
           rc=$?
           set -e
@@ -100,6 +114,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
@@ -162,6 +177,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -191,6 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -218,6 +235,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -350,6 +368,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -393,6 +412,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -461,6 +481,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -593,6 +614,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -626,6 +648,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -650,6 +673,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -691,6 +715,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -761,6 +786,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -812,6 +838,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: build_docs.py --check-links
         run: python3 docs/build_docs.py --check-links
@@ -833,6 +860,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: OBCKit package tests (XCTest and Swift Testing, host)
         id: swift-tests
@@ -881,6 +909,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Install XcodeGen and WebP tools
         run: brew install xcodegen webp
@@ -969,6 +998,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -1053,6 +1083,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -1102,6 +1133,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -1161,6 +1193,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -1279,6 +1312,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -1313,17 +1347,45 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  verification:
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'verification')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/obc-verification/package-lock.json
+      - run: npm ci --prefix apps/obc-verification
+      - run: npm run check --prefix apps/obc-verification
+      - run: npm run test:ci --prefix apps/obc-verification
+      - run: npm run build --prefix apps/obc-verification
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: web-verification-${{ github.run_attempt }}
+          path: apps/obc-verification/verification-junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
   # Single aggregate gate: make THIS the required status check on main/develop. It reports every
   # planned suite against the jobs the plan routed it to, so a job the plan never selected is
   # "not selected" and a selected job that was skipped is a failure. A failed `selection` job
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, web-browser, desktop-frontend, desktop, desktop-launch]
+    needs: [selection, guards, fmt, clippy, test, ui-snapshots, builder-python, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, web-browser, desktop-frontend, desktop, desktop-launch, verification]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Verify selected suites and required jobs
         env:

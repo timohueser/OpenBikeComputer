@@ -7,8 +7,9 @@ schema = 2
 # Cargo package owns.
 #
 # `route` says when a suite runs:
-#   ordinary  selected by the change              manual  explicitly invoked only
-#   required  runs whenever one of its jobs starts  weekly  the weekly workflow runs it
+#   ordinary  selected by the change
+#   required  runs whenever one of its jobs starts
+#   manual    explicitly invoked only
 #   live      contacts a live service, invoked by hand
 
 # ── Cargo packages with facts Cargo cannot derive ───────────────────────────
@@ -141,6 +142,14 @@ triggers = [
 # The whole app is the subject, the bridge fixture is the input, and the shared catalog
 # generator is what publishes it. The schema examples are not here: this catalog is cut
 # from the bridge fixture, and only the desktop smoke reads the examples.
+[[suite]]
+id = "web.verification"
+route = "ordinary"
+command = "npm run verify --prefix apps/obc-verification"
+jobs = ["verification"]
+platforms = ["linux", "macos"]
+triggers = ["apps/obc-verification/**", "apps/obc-verification/tests/*.test.ts"]
+
 [[suite]]
 id = "web.builder-browser"
 route = "ordinary"
@@ -531,9 +540,11 @@ command = "cargo test -p obc-dem --locked --test decode --test real_tile -- --ig
 package = "obc-dem"
 targets = ["decode", "real_tile"]
 
+# `test-weekly.yml` invokes this each Monday, and a maintainer can invoke it by hand. The
+# schedule belongs to that workflow; this row owns the XCUITest classes and the command.
 [[suite]]
 id = "ios.application-weekly"
-route = "weekly"
+route = "manual"
 command = "companion-ios/scripts/test-application.sh"
 platforms = ["macos"]
 triggers = ["companion-ios/OBCCompanionUITests/**"]
