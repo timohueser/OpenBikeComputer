@@ -69,6 +69,7 @@ JOBS: dict[str, Job] = {
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
     "ios-app": Job(needs=("selection",)),
+    "ios-release": Job(needs=("selection",)),
     "web": Job(needs=("selection", "wasm-bridges")),
     "web-browser": Job(needs=("selection", "wasm-bridges")),
     "verification": Job(needs=("selection",)),
