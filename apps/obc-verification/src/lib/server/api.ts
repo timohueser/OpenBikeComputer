@@ -41,6 +41,16 @@ async function route(event: RequestEvent): Promise<Response> {
   const allow = (...roles: Role[]) => assert(roles.includes(actor.role), 'This credential cannot perform this action.', 403);
   if (write && actor.role === 'owner') sameOrigin(event.request);
   if (path === 'logout' && method === 'POST') { allow('owner'); logout(event.cookies); return json({ ok: true }); }
+  if (path === 'admin/history') {
+    requireAdmin(actor);
+    if (method === 'GET') return json(store().historySummary());
+    assert(method === 'POST', 'Method not allowed.', 405);
+    const data = await body(event);
+    const admin = requireAdmin(actor);
+    assert(typeof data.clearCurrent === 'boolean', 'Choose whether to keep the current requirements.');
+    assert(data.confirmation === (data.clearCurrent ? 'START FRESH' : 'CLEAR HISTORY'), 'Type the confirmation phrase exactly.');
+    return json(store().clearHistory(positive(data.baseRevision, 'Base revision'), admin.name, data.clearCurrent));
+  }
   if (parts[0] === 'users') {
     requireAdmin(actor);
     if (parts.length === 1 && method === 'POST') {
@@ -77,8 +87,10 @@ async function route(event: RequestEvent): Promise<Response> {
     assert(/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version), 'Use a version such as 0.1.0 or 0.1.0-rc.1.');
     assert(!store().list<Candidate>('candidate').some((c) => c.version === version && ['publishing', 'published'].includes(c.status)), 'This version is already being published or published.', 409);
     const sourceRef = text(data.sourceRef, 'Source reference', 200);
-    const revision = store().revision(positive(data.revisionId, 'Revision'));
+    const revisionId = positive(data.revisionId, 'Revision');
+    store().revision(revisionId);
     const { sourceSha } = await sourceCommit(sourceRef);
+    const revision = store().revision(revisionId);
     const candidate: Candidate = { id: store().id(), version, sourceRef, sourceSha, revision, createdAt: new Date().toISOString(), status: 'queued', ciStatus: 'pending', results: [], manualRuns: [], assets: [] };
     store().put('candidate', candidate.id, candidate);
     try { await dispatch(candidate); }
