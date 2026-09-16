@@ -11,7 +11,7 @@ export interface VerificationTest {
   expected?: string;
   inputs: Attachment[];
 }
-export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; active: boolean; tests: VerificationTest[] }
+export interface Requirement { id: string; title: string; statement: string; group?: string; todo?: boolean; implementationNeeded?: boolean; active: boolean; tests: VerificationTest[] }
 export interface Revision { id: number; createdAt: string; author: string; requirements: Requirement[] }
 export interface CatalogCase { id: string; suite: string; name: string; file?: string }
 export interface Catalog { sourceSha: string; updatedAt: string; cases: CatalogCase[] }
@@ -26,6 +26,6 @@ export interface Candidate {
   results: TestResult[]; manualRuns: ManualRun[]; assets: ReleaseAsset[];
   releaseUrl?: string; failure?: string; evidenceFrozen?: boolean; exceptions?: RequirementException[];
 }
-export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number }
+export interface Readiness { ready: boolean; missing: string[]; verified: number; total: number; excepted: number; excluded: number }
 export interface Bootstrap { actor: Actor; revision: Revision; catalog: Catalog; candidates: Candidate[]; configured: { github: boolean; oauth: boolean } }
 export interface LinkProposal { id: string; baseRevision: number; requirementId: string; caseId: string; action: 'add' | 'remove'; reason: string; author: string; createdAt: string; status: 'pending' | 'accepted' | 'rejected' }

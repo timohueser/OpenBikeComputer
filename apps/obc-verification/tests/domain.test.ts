@@ -51,18 +51,18 @@ test('active unfinished definitions cannot be excepted and to-do status is a str
   assert.equal(readiness(c).ready, false);
   assert.equal(readiness(c).excepted, 0);
   assert.equal(readiness(c).verified, 0);
-  assert.match(readiness(c).missing.join(' '), /definition is still to do/);
+  assert.match(readiness(c).missing.join(' '), /definition is incomplete/);
   req.active = false;
   c.revision.requirements.push({ ...candidate().revision.requirements[0], id: 'REQ-2' });
   c.manualRuns.push({ ...c.manualRuns[0], requirementId: 'REQ-2' });
-  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 1, total: 1, excepted: 0 });
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 1, total: 1, excepted: 0, excluded: 1 });
 });
 
 test('candidate exceptions remain distinct from verification and never bypass CI or firmware gates', () => {
   const c = candidate();
   const req = c.revision.requirements[0];
   c.exceptions = [{ requirementId: req.id, reason: 'Known gap outside the assertions', author: 'owner', createdAt: '' }];
-  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 0, total: 1, excepted: 1 });
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 0, total: 1, excepted: 1, excluded: 0 });
   c.results[0].status = 'fail'; c.manualRuns[0].result = 'blocked';
   assert.equal(readiness(c).ready, true);
   c.ciStatus = 'failure'; assert.equal(readiness(c).ready, false);
@@ -74,4 +74,30 @@ test('candidate exceptions remain distinct from verification and never bypass CI
   const next = candidate(); next.results = []; next.manualRuns = [];
   assert.equal(readiness(next).ready, false); assert.equal(readiness(next).excepted, 0);
   c.revision.requirements = []; assert.equal(readiness(c).ready, false);
+});
+
+
+test('implementation-needed requirements block passing evidence, allow explicit exceptions, and count exclusions separately', () => {
+  const c = candidate();
+  const req = c.revision.requirements[0];
+  const read = (implementationNeeded: unknown) => requirements([{ ...req, implementationNeeded }], () => { throw new Error('unknown file'); })[0];
+  assert.equal(read(true).implementationNeeded, true);
+  assert.equal(read(false).implementationNeeded, undefined);
+  assert.equal(read(undefined).implementationNeeded, undefined);
+  for (const invalid of ['true', null, 1]) assert.throws(() => read(invalid), /boolean/);
+  req.implementationNeeded = true;
+  const incomplete = readiness(c);
+  assert.equal(incomplete.ready, false); assert.equal(incomplete.verified, 0);
+  assert.match(incomplete.missing.join(' '), /implementation is incomplete/);
+  c.exceptions = [{ requirementId: req.id, reason: 'Accepted implementation gap', author: 'owner', createdAt: '' }];
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 0, total: 1, excepted: 1, excluded: 0 });
+  req.todo = true;
+  assert.equal(readiness(c).ready, false); assert.equal(readiness(c).excepted, 0);
+  req.active = false; req.tests = [];
+  const excludedOnly = readiness(c);
+  assert.equal(excludedOnly.ready, false); assert.equal(excludedOnly.total, 0); assert.equal(excludedOnly.excluded, 1);
+  assert.deepEqual(excludedOnly.missing, ['No active requirements.']);
+  const included = candidate().revision.requirements[0]; included.id = 'REQ-2';
+  c.revision.requirements.push(included); c.manualRuns.push({ ...c.manualRuns[0], requirementId: included.id });
+  assert.deepEqual(readiness(c), { ready: true, missing: [], verified: 1, total: 1, excepted: 0, excluded: 1 });
 });

@@ -110,8 +110,12 @@ unless an administrator records a requirement exception for that candidate. An e
 reason and retains the original test results. It does not carry into another candidate. The report
 and release notes distinguish accepted exceptions from verified requirements.
 
-An active requirement marked **To do** has an incomplete definition and blocks publication. Resolve
-it in a new requirement revision and prepare a new candidate. Exceptions cannot bypass this rule,
+An included requirement marked **Definition incomplete** blocks publication. Resolve its definition
+in a new requirement revision and prepare a new candidate. **Implementation needed** also blocks
+publication, but an administrator can accept a candidate exception for this known gap. Requirements
+marked **Excluded from releases** do not need passing verification. The final review, report, and
+release notes list them separately; they are not counted as verified. Exclusion applies to future
+candidates until the owner removes the label. Exceptions cannot bypass incomplete definitions,
 failed CI, firmware signing, missing build files, or evidence provenance checks.
 
 When the release gate passes, the owner can publish. The [publication workflow](src:.github/workflows/verification-publish.yml)

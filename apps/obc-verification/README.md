@@ -2,8 +2,8 @@
 
 This application stores system requirements, linked tests, immutable revisions, and release evidence.
 The application database is the authority. Git contains the implementation, not an editable copy of
-requirement prose. One inactive example is created in a new database. An example does not satisfy a
-release gate until the owner reviews and activates it.
+requirement prose. One excluded example is created in a new database. An example does not satisfy a
+release gate until the owner reviews and includes it.
 
 ## Requirement groups
 
@@ -17,12 +17,31 @@ Group names belong to the requirement revision. Existing candidates and reports 
 from their saved revision. Groups organize the view; they do not change verification or release
 rules. The API exposes the optional `group` field on each requirement.
 
-## Incomplete definitions and release exceptions
+## Requirement labels and deletion
 
-Mark a requirement **To do** when its definition still needs work, such as a target battery life
-or load time. The label is part of its saved revision. An active To do requirement blocks
-publication even if tests pass. Finish its definition, clear the label, and save a new revision
-before preparing a new candidate. Inactive requirements stay excluded from the release gate.
+New requirements are included in future release candidates. The editor has three fixed labels;
+select a label to apply it, or select it again to remove it. More than one label can apply.
+
+- **Definition incomplete**: the requirement definition needs work, such as a target battery life
+  or load time. An included requirement with this label blocks publication, even if tests pass.
+  An exception cannot override it.
+- **Implementation needed**: the requirement is defined but has a known implementation gap. An
+  included requirement with this label blocks publication until the owner clears the label in a
+  new revision or an administrator accepts an exception for the candidate.
+- **Excluded from releases**: future candidates do not require this requirement to pass verification.
+  The candidate, final review, report, and release notes list exclusions separately from verified
+  requirements. This label remains in effect until the owner removes it.
+
+Save label changes in a new revision before preparing a new candidate. Existing candidates keep
+all labels from their saved revision. The API retains `todo` for Definition incomplete and `active`
+for inclusion, and adds the optional `implementationNeeded` boolean. Existing saved requirements
+need no database conversion.
+
+**Delete requirement** removes the selected requirement and its test links from the draft after
+confirmation. **Undo** restores it before saving. Select **Save revision** to save the deletion.
+Earlier revisions and existing release candidates retain the requirement, tests, and attachments.
+
+## Release exceptions
 
 An administrator can accept an exception for one defined, active requirement in a candidate. A
 reason is required. Use this for a known limitation, missing test coverage, or a failed manual
@@ -31,11 +50,10 @@ change the requirement, or carry into a new candidate. It also supports known li
 existing tests do not detect. To change a decision, remove it and record a new one. The candidate's
 stored history retains both changes. Publication freezes these decisions with the other evidence.
 If another administrator changes an exception during final review, publication stops until the
-updated decisions are reviewed. The
-server retains the exact HTML report and JSON evidence bytes for downloads and publication retries.
+updated decisions are reviewed. The server retains the exact HTML report and JSON evidence bytes for downloads and publication retries.
 
 The release review, HTML/JSON report, and GitHub release notes identify accepted exceptions.
-Verified and excepted requirements have separate counts. Active To do definitions, failed CI,
+Verified, excepted, and excluded requirements have separate counts. Incomplete included definitions, failed CI,
 missing build files, signing failures, and provenance checks cannot be bypassed by an exception.
 A failed automated test that also fails the required CI run therefore still blocks publication.
 

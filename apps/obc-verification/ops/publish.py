@@ -17,13 +17,20 @@ def command(*args):
 def release_notes(candidate, repo):
     version, source = candidate["version"], candidate["sourceSha"]
     exceptions = candidate.get("exceptions", [])
-    outcome = "Candidate accepted with requirement exceptions" if exceptions else "Verified candidate"
+    excluded = [r for r in candidate.get("revision", {}).get("requirements", []) if not r["active"]]
+    limitations = " and ".join(label for label, present in [("exceptions", exceptions), ("exclusions", excluded)] if present)
+    outcome = f"Candidate accepted with requirement {limitations}" if limitations else "Verified candidate"
     notice = ""
     if exceptions:
         ids = ", ".join(f"`{item['requirementId']}`" for item in exceptions)
         notice = (f"**Accepted requirement exceptions: {len(exceptions)}.** {ids}. "
                   "These requirements are not counted as verified. Reasons, approvers, and original test outcomes "
                   "are recorded in the attached `verification-report.html` and `verification-evidence.json`.\n\n")
+    if excluded:
+        ids = ", ".join(f"`{item['id']}`" for item in excluded)
+        notice += (f"**Excluded requirements: {len(excluded)}.** {ids}. "
+                   "These requirements are outside verification for this release and are not counted as verified. "
+                   "See the attached verification report for their definitions and labels.\n\n")
     return (
         f"{outcome} `{candidate['id']}` at `{source}`.\n\n" + notice +
         f"**Source and licences.** Firmware is licensed under [GPL-3.0](https://github.com/{repo}/blob/{version}/LICENSE). "
