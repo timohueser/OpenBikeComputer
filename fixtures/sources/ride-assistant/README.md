@@ -56,12 +56,11 @@ python3 fixtures/build-assistant-package.py west-cork \
   --provenance fixtures/sources/ride-assistant/west-cork-v16.json
 ```
 
-The published Cork map is 4,746,240 bytes, SHA-256
-`a48ebe53b9a545492b94ef4d59cdd2f371e70705683f092d9370112cccc29b23`.
-[The retained record](west-cork-v16.json) has source and executable hashes, the regional boundary,
-compiler coverage, and normal assembly counts. Source commit attribution uses retained build times
-and Git reflog; it is not an embedded binary build stamp. The new metadata adapter reproduced the
-completed map byte for byte from the retained tree and native terrain; the bake was not repeated.
+The published Cork map is 4,749,504 bytes, SHA-256
+`4acbf4ba8588052c3a032b3a142eb5e25cd7dc187daf84a2c9b2dbc06c5512f2`.
+[The build record](west-cork-v16.json) pins the source and executable hashes, regional boundary,
+schema 2 content and compiler coverage. The shipping recipe rebuilt the map through the normal
+bake, cut and assembly stages, with native terrain.
 Monaco also uses its pinned 2026-09-13 v16 output. The Swiss regional map is
 44,818,976 bytes, SHA-256 `82dad944a7f1940832172a04e1ab0f530382594ba3377ad74a184d11f8acb16b`.
 [Its build record](meiringen-v16.json) pins the full source PBF, polygon, schema 2 content,
