@@ -240,8 +240,8 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
 ///
 /// The `_ext_` trio is load-bearing, not an upgrade: the nRF54L15 blob (nrfxlib 3.3.0) **faults
 /// internally** (`SoftdeviceController: 50:701`) when a *legacy* `LeCreateConn` initiator receives
-/// its target's advertisement — pinned on glass with the minimal harness
-/// (`src/bin/ble_central_repro.rs`, 2026-07-12; reported upstream, #736) — while the same connect
+/// its target's advertisement — pinned on glass with a minimal MPSL + SDC harness
+/// (2026-07-12; reported upstream, #736) — while the same connect
 /// as `LeExtCreateConn` works. And since legacy and extended adv/scan/initiate commands are one
 /// mutually-exclusive HCI group (first use latches the mode), the *whole host* speaks extended:
 /// advertising ([`lifecycle`] — same legacy PDUs on air), scanning, and connecting ([`sensors`]).
