@@ -1,3 +1,12 @@
+//! The frame every rendering host draws: the whole-frame draw itself, the active route it draws,
+//! the device color it draws in, and the RGBA buffer the browser hosts draw into.
+//!
+//! The simulator, the landing demo and the iPhone host draw the same frame the same way. What
+//! differs — pacing, the time source, the photo phase, the draw target and its color — arrives as
+//! arguments, so nothing here branches on which host is calling.
+//!
+//! ## The RGBA framebuffer
+//!
 //! A plain in-memory RGBA8888 `DrawTarget` — the buffer `ctx.putImageData` reads.
 //!
 //! The shared render path draws the firmware-identical frame into this buffer; the page then
@@ -12,6 +21,78 @@
 //! alpha invariants, one test.
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
+use obc_app::photo::FramePhoto;
+use obc_app::App;
+use obc_reader::{rgb565_to_device64, Reader};
+use obc_render::{Clock, RenderScratch, RenderStats};
+use obc_route::RouteReader;
+
+use crate::{ActiveRouteSession, FlatRouteStore, RouteRepository};
+
+/// Everything a frame draws its map from: the map reader (map plane plus POI/hours) and the active
+/// route.
+#[derive(Clone, Copy)]
+pub struct Scene<'a, 'd> {
+    pub reader: &'a Reader<'d>,
+    pub route: Option<&'a RouteReader<'a>>,
+}
+
+/// Draw one whole frame through the app's real generic scene seam: the timed scene-map-photo pass,
+/// then the overlay. `scratch` is the caller's render scratch — the app borrows it for the call and
+/// keeps nothing. `clock` and `photo` are the caller's own time source and photo phase, values it
+/// already owns rather than modes this function branches on.
+#[allow(clippy::too_many_arguments)]
+pub fn render<D, F>(
+    app: &mut App,
+    scratch: &mut RenderScratch,
+    target: &mut D,
+    scene: Scene<'_, '_>,
+    panorama: Option<&obc_app::peak_view::Panorama>,
+    (w, h): (f32, f32),
+    color_fn: F,
+    clock: &dyn Clock,
+    photo: Option<FramePhoto<'_>>,
+) -> RenderStats
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let Scene { reader, route } = scene;
+    let stats = app.render_scene_map_photo_timed(
+        Some(scratch),
+        target,
+        Some(reader),
+        Some(reader),
+        route,
+        panorama,
+        w,
+        h,
+        &color_fn,
+        clock,
+        photo,
+    );
+    app.render_overlay(target, w, h, &color_fn);
+    stats
+}
+
+/// The resident active-route parse as a reader, when a route is active.
+///
+/// Ask again immediately before rendering: the executor may have committed new geometry under the
+/// route (a planned route, a spliced detour), and the frame must draw what is there now. A free
+/// function because a `&self` method would borrow the whole host for as long as the reader lives.
+pub fn active_route<'a>(session: &'a ActiveRouteSession, routes: &'a FlatRouteStore) -> Option<RouteReader<'a>> {
+    match (session.index(), routes.active_source()) {
+        (Some(index), Some(source)) => Some(RouteReader::new(index, source)),
+        _ => None,
+    }
+}
+
+/// One RGB565 style color quantized to the panel's 64-color palette and expanded back to RGB888 —
+/// the color every full-color host frame is drawn in, so what a host shows is what the glass will.
+pub fn device_rgb888(c: u16) -> Rgb888 {
+    let (r, g, b) = rgb565_to_device64(c);
+    Rgb888::new(r, g, b)
+}
 
 /// An owned `width`×`height` RGBA framebuffer (4 bytes/pixel, row-major, alpha always opaque).
 pub struct RgbaFrame {
