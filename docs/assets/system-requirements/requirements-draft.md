@@ -8,7 +8,9 @@ The system includes the bike computer, iOS companion, desktop application, brows
 
 The draft includes the owner's scope decisions from 16 September 2026 and excludes weather. Decisions and remaining questions are in [review-notes.md](review-notes.md). Numerical targets, support matrices, and test conditions are in [acceptance-targets.md](acceptance-targets.md). **TODO** means an unresolved value or policy, not an accepted default. **PROPOSED** identifies a suggested value awaiting owner review. A requirement with either marker in its acceptance criteria is not a complete release gate. New entries retain new IDs within the relevant group. REQ-321 is retired after tunnel warnings were removed from scope; its ID is not reused.
 
-## Maps and map management
+Entries REQ-336 to REQ-358 come from the 16 September review of this draft: REQ-336–340 split multi-clause entries whose clauses need different tests, and REQ-341–358 are proposed additions that await owner decision. **PROPOSED** additions are ones the reviewer would not add without an explicit decision. The 27 groups follow surface boundaries so each group can carry one minimum evidence level.
+
+## Map builder and map service
 
 - **REQ-001 — Coverage selection.** The map builder shall let the rider select a named region, a drawn area, or a corridor around an imported GPX route.
 - **REQ-002 — Combined coverage.** The rider shall be able to combine selected areas into one map and remove individual areas before building it.
@@ -25,6 +27,12 @@ The draft includes the owner's scope decisions from 16 September 2026 and exclud
 - **REQ-013 — Preparation recovery.** The rider shall be able to cancel preparation or retry a failed preparation without recreating the coverage selection. An incomplete result shall not be offered as ready to install.
 - **REQ-014 — Map appearance.** The builder shall let the rider preview and select a supplied or locally saved custom map appearance before creating the map. Appearance changes shall not change routing access rules or geographic data.
 - **REQ-015 — Map information.** The rider shall be able to inspect map coverage, available source-date information, and source attribution. A build date shall not be presented as the age of the source data.
+- **REQ-284 — Release geography.** The map service shall support map preparation for Europe, the United States, Canada, Australia, and New Zealand within the declared map-size limits. The exact country and territory manifest, including the remainder of North America, remains TODO in acceptance-targets.md.
+- **REQ-285 — Trail blazes.** The rider shall be able to show or hide mapped trail blazes independently of the active route. The display shall identify the marked trail without implying that the rider's selected route follows it.
+- **REQ-286 — Trail-blaze source.** Trail blazes shall use available source markings and associations. Missing or unsupported markings shall not be replaced by an invented blaze. Supported marking types remain TODO in acceptance-targets.md.
+
+## Map installation
+
 - **REQ-016 — Installation.** The desktop application and a supported browser shall let the rider send a newly prepared map or an existing supported map file to the device over USB.
 - **REQ-017 — Replacement notice.** Before transfer, the sending application shall state that installation replaces the active map and whether a restart is needed.
 - **REQ-018 — Insufficient storage.** If the map cannot be installed with the available storage, the device shall refuse the transfer without deleting the previous map and the application shall report insufficient storage.
@@ -35,6 +43,12 @@ The draft includes the owner's scope decisions from 16 September 2026 and exclud
 - **REQ-023 — Transfer retry.** After a failed or cancelled transfer, the rider shall be able to resend the map without manually removing partial data. Restarting the transfer from the beginning is permitted.
 - **REQ-024 — Map activation.** After successful installation and the requested restart, the device shall use the new map for display and all map-dependent features.
 - **REQ-025 — Other stored data.** Replacing a map shall preserve saved routes, rides, and settings. Selections that depend on the old map shall be checked again before use.
+- **REQ-282 — Map installation interlock.** The device shall refuse map transfer while a recording is active, paused, or awaiting a save or discard decision. The sending application shall show the reason before starting transfer.
+
+Map management has one active installed map, replaced through USB. Multiple selectable installed maps, phone map transfer, and automatic map updates are outside scope.
+
+## Map display on the device
+
 - **REQ-026 — Offline maps.** Installed map functions shall work after a restart without internet access or a connected phone.
 - **REQ-027 — Map browsing.** The rider shall be able to browse the installed map without loading a route or starting a recording.
 - **REQ-028 — Position following.** With a valid fix, the map shall follow the rider's position while following mode is active.
@@ -45,14 +59,8 @@ The draft includes the owner's scope decisions from 16 September 2026 and exclud
 - **REQ-033 — Map features.** The map shall distinguish the essential geographic features defined in the map-content table in acceptance-targets.md: roads by class, cycleways and trails, water, settlements and names, forests and open land, buildings at close scale, bridges and tunnels, contours, and service places.
 - **REQ-034 — Map unavailable.** The device shall distinguish no installed map, an unreadable map, and a location outside available coverage. It shall not present missing coverage as confirmed empty terrain.
 - **REQ-035 — Map failure recovery.** A map read failure shall leave ride controls and a means to install a replacement accessible. The device shall indicate when the displayed map is incomplete.
-
-Map management has one active installed map, replaced through USB. Multiple selectable installed maps, phone map transfer, and automatic map updates are outside scope.
-
-- **REQ-282 — Map installation interlock.** The device shall refuse map transfer while a recording is active, paused, or awaiting a save or discard decision. The sending application shall show the reason before starting transfer.
 - **REQ-283 — Map display switches.** The rider shall be able to enable and disable contours, the map clock, and the map scale bar independently. Each choice shall survive restart.
-- **REQ-284 — Release geography.** The map service shall support map preparation for Europe, the United States, Canada, Australia, and New Zealand within the declared map-size limits. The exact country and territory manifest, including the remainder of North America, remains TODO in acceptance-targets.md.
-- **REQ-285 — Trail blazes.** The rider shall be able to show or hide mapped trail blazes independently of the active route. The display shall identify the marked trail without implying that the rider's selected route follows it.
-- **REQ-286 — Trail-blaze source.** Trail blazes shall use available source markings and associations. Missing or unsupported markings shall not be replaced by an invented blaze. Supported marking types remain TODO in acceptance-targets.md.
+- **REQ-349 — Map orientation.** **PROPOSED.** The rider shall be able to choose heading-up or north-up map orientation. The choice shall survive restart and shall not change the no-heading fallback in REQ-280.
 
 ## Route import and trip management
 
@@ -78,14 +86,14 @@ Map management has one active installed map, replaced through USB. Multiple sele
 - **REQ-055 — Device trip browsing.** The device shall present trips as one level of ordered route groups. Each stage shall remain independently selectable. Reaching a stage end shall not start the next stage automatically.
 - **REQ-056 — Route deletion.** Device route deletion shall require a deliberate confirmation and shall not delete an active route. A deletion failure shall not be shown as success.
 - **REQ-057 — Trip deletion.** Before deleting a trip and its device routes, the device shall state the deletion scope. It shall preserve an active route and all routes outside that scope.
-
-Route reversal is an application function. An on-device reversal function and a route editor are outside scope.
-
 - **REQ-287 — Ordered segment gaps.** Import shall connect disconnected segments with straight lines when their order and direction are unambiguous. The preview shall identify the added connections as imported gaps, not verified mapped riding connections. Ambiguous ordering shall produce a warning and prevent import.
 - **REQ-288 — Multiple tracks or courses.** When a file contains several tracks or courses, the application shall warn the rider and let them choose a single track or course to import or cancel. It shall not silently combine or select them.
 - **REQ-289 — Point reduction.** When a selected route exceeds the supported point limit, the application shall reduce its point count before device transfer. An information popup shall state the reduction, and the preview shall show the resulting route. Failure to meet the approved shape tolerance shall prevent transfer.
 - **REQ-290 — Excess waypoints.** When a route exceeds the supported waypoint limit, the application shall warn the rider, retain the first supported waypoints in route order, and omit the remaining waypoints from the device copy. The warning shall state the retained and omitted counts before transfer.
 - **REQ-291 — Route reversal.** The companion and computer route-import applications shall let the rider reverse a route before transfer and preview the result. Reversal shall update travel direction, waypoint order, elevation profile direction, and ascent and descent summaries without changing geographic waypoint locations.
+- **REQ-350 — Trip stage status.** The device shall show which stages of a trip have been ridden, based on saved rides, without advancing to the next stage automatically.
+
+Route reversal is an application function. An on-device reversal function and a route editor are outside scope.
 
 ## Navigation and detours
 
@@ -106,9 +114,6 @@ Route reversal is an application function. An on-device reversal function and a 
 - **REQ-072 — Planning failures.** The device shall distinguish no route found from unavailable map data, unavailable planning resources, and a failure to save the result.
 - **REQ-073 — Changed inputs.** A route preview shall not be accepted against a different map, route, bike profile, or materially changed departure position without a new validation and, when the result changes, renewed rider acceptance.
 - **REQ-074 — Route completion.** Reaching the route finish shall not discard or automatically finish the ride recording.
-
-After restart, navigation resumes only by the rider's explicit choice. Back on route is a rider-requested Assistant action. It does not authorize automatic rerouting.
-
 - **REQ-292 — Off-route sound.** When the device establishes that the rider has left the active planned route, it shall issue an auditory cue as well as the off-route indication. The trigger, repeat, and re-arm conditions are TODO in acceptance-targets.md.
 - **REQ-293 — No automatic rerouting.** Leaving a route shall not automatically calculate or accept a replacement route. The existing planned route shall remain selected until the rider chooses a navigation change.
 - **REQ-294 — No turn-by-turn guidance.** The product shall not provide turn-by-turn maneuver instructions. Sharp-turn warnings shall remain distinct from maneuver guidance.
@@ -116,9 +121,16 @@ After restart, navigation resumes only by the rider's explicit choice. Back on r
 - **REQ-296 — Rejoin preview.** Before accepting Back on route, the rider shall see the proposed connection, rejoin location, and remaining planned route. Acceptance shall preserve the recording; cancellation or failure shall preserve the previous navigation. The rejoin-point selection policy is TODO.
 - **REQ-297 — Route to start.** The device shall let the rider request and preview an offline route from their current valid position to the first point of the selected route using the selected bike profile.
 - **REQ-298 — Start-route acceptance.** Route to start shall change navigation only after explicit acceptance. Failure or cancellation shall preserve the previous navigation and recording. The transition from reaching the start into following the selected route is TODO under D21.
-
-- **REQ-096 — Navigation recovery.** After a restart, the device shall offer Resume navigation for the saved ordinary route or Ride Assistant journey only after checking its map and route sources and a fresh, unambiguous position. Acceptance shall restore the navigation plan and its applicable progress or journey phase. Declining shall leave guidance inactive and preserve the route files.
+- **REQ-096 — Navigation recovery.** After a restart, the device shall offer Resume navigation for the saved ordinary route or Ride Assistant journey only after checking its map and route sources and a fresh, unambiguous position.
+- **REQ-338 — Resume decision.** Accepting Resume navigation shall restore the navigation plan and its applicable progress or journey phase. Declining shall leave guidance inactive and preserve the route files.
 - **REQ-097 — Separate recovery choices.** Resuming navigation shall not start recording. Continuing or discarding a recovered recording shall not silently accept or delete the saved navigation plan.
+- **REQ-320 — Sharp-turn warning.** While following an active route, the device shall give an auditory cue and a visual warning before a qualifying sharp turn derived from that route's geometry. It shall not issue these warnings without an active route. Geometric thresholds, valid-position conditions, approach speed, and lead distance or time are TODO in acceptance-targets.md.
+- **REQ-322 — Warning stability.** Position noise shall not repeatedly issue the same off-route or sharp-turn warning. Warning reset conditions shall permit a later distinct occurrence to be warned again; thresholds are TODO.
+- **REQ-323 — Warning interaction.** Warnings shall identify their cause without accepting an open confirmation or resetting the recording. A warning shall not hide emergency coordinates while that screen is open. The priority between simultaneous warnings is TODO.
+
+After restart, navigation resumes only by the rider's explicit choice. Back on route is a rider-requested Assistant action. It does not authorize automatic rerouting.
+
+Route-based sharp-turn warnings are required and are not maneuver guidance. Tunnel and other mapped-road hazard warnings are outside the present scope. Warning thresholds are TODO in acceptance-targets.md.
 
 ## Ride Assistant: places and visits
 
@@ -205,12 +217,14 @@ Peak View does not establish visibility through vegetation, buildings, or weathe
 - **REQ-143 — Failed save.** If final saving fails, the device shall retain the recoverable recording, show the failure, and allow retry rather than silently discard it.
 - **REQ-144 — Discard.** Discarding a recording shall require a deliberate confirmation and remove only the selected recording. A failed discard shall remain visible as a failure.
 - **REQ-145 — Fresh session.** Starting a new ride after saving or discarding shall create a separate recording with fresh totals and shall not inherit a prior recording error as a new failure.
-- **REQ-146 — Restart recovery.** After an interrupted recording, the device shall offer to continue the recovered ride or deliberately discard it. Continuing shall preserve its saved samples, start time, and accumulated totals.
+- **REQ-146 — Restart recovery.** After an interrupted recording, the device shall offer to continue the recovered ride or deliberately discard it.
+- **REQ-340 — Recovery continuation.** Continuing a recovered ride shall preserve its saved samples, start time, and accumulated totals.
 - **REQ-147 — Recovery boundary.** Recovery shall restore data through the last valid saved checkpoint without creating samples for the power-off interval. Lost accepted samples shall remain within the recording-loss limit in acceptance-targets.md.
 - **REQ-148 — Damaged recording.** A damaged recording shall be identified as damaged. Any offered repair or removal shall affect only the exact recording confirmed by the rider.
 - **REQ-149 — Recording failure.** Storage exhaustion or a write failure shall produce a visible recording warning. The device shall not continue to claim that the ride log is complete when samples could not be saved.
 - **REQ-150 — Saved rides.** The device shall list saved rides and let the rider inspect their available track, elevation profile, and summary before deletion.
 - **REQ-151 — Manual ride deletion.** Deleting a saved ride on the device shall require deliberate confirmation. A saved ride shall not be deleted automatically because it is old or has been archived elsewhere.
+- **REQ-351 — Ride identity.** A saved ride shall be identified by its start time and, when available, the name of the route ridden. The companion shall let the rider rename an archived ride without changing the identity of the device copy.
 
 ## Ride transfer, archives, and export
 
@@ -242,20 +256,19 @@ Peak View does not establish visibility through vegetation, buildings, or weathe
 - **REQ-174 — Route profile.** The statistics view shall show the available route elevation profile and the rider's matched progress. The rider shall be able to inspect the profile without changing navigation.
 - **REQ-175 — Elevation reference.** With suitable installed terrain and valid position data, the displayed altitude shall use the terrain reference to correct long-term barometer offset while retaining measured short-term height changes.
 - **REQ-176 — Recorded ascent.** Correcting the displayed altitude reference shall not add artificial ascent to the recording or rewrite recorded heights as map measurements.
-- **REQ-177 — Climb facts.** For a detected active route climb, the device shall show its elevation profile, rider progress, remaining distance, remaining ascent, current route grade, and average grade to the top.
+- **REQ-177 — Climb facts.** For a detected active route climb, the device shall show its elevation profile, rider progress, remaining distance, remaining ascent, current route grade, and average grade to the top. The thresholds that make a section a climb are TODO in acceptance-targets.md (CLIMB-01).
 - **REQ-178 — Climb modes.** The rider shall be able to turn the climb screen off, reach it manually, or allow it to appear automatically on climb entry and return to the map at the crest.
 - **REQ-179 — Climb interruptions.** Automatic climb presentation shall not interrupt a confirmation, an active input gesture, or an unrelated screen the rider is using. Position noise at a climb boundary shall not repeatedly switch views.
 - **REQ-180 — Personal time estimates.** Every predicted ride duration, remaining time, and arrival time on any product surface shall use a model learned from the rider's own recorded rides. A fixed bike-profile estimate shall not substitute for personal learning.
 - **REQ-181 — Arrival time.** Arrival clock time shall be shown only when a validated personal remaining-moving-time estimate and trusted local time are available. The presentation shall state that future stops are excluded. Missing elevation shall not be presented as evidence that the remaining route is flat.
 - **REQ-182 — Waypoint display.** The rider shall be able to hide next-waypoint notices, show them on approach, or show them whenever a named waypoint remains ahead.
-
-Personal pace learning is required product work. The current research and bike-profile estimator do not establish compliance. The accepted benchmark uses moving-time mean absolute percentage error below 10% after 300 km. Detailed validation conditions remain **TODO** under **D13**.
-
 - **REQ-299 — ETA release threshold.** Time-estimation features shall be included in a product release only after the personal model demonstrates mean absolute percentage error below 10% for moving-time predictions on unseen rides after 300 km of prior usable rider history. Validation shall evaluate each rider and report supported riding categories and long rides separately. The detailed sampling and validation conditions are TODO in acceptance-targets.md.
 - **REQ-300 — Insufficient learning.** When the rider has insufficient usable history or the current journey is outside the validated conditions, predicted duration and arrival values shall be unavailable. The interface shall explain the unavailable estimate without substituting an unvalidated generic estimate.
 - **REQ-301 — Learned pace continuity.** The system shall retain the rider's learned pace across ordinary restarts and learn from valid recorded movement without treating pauses, missing positions, or sensor failures as measured pace. The learning state shall be removed by factory reset.
 - **REQ-302 — Unreferenced altitude.** When barometric altitude has not obtained a valid elevation reference, the device shall distinguish it from referenced elevation in its displayed status.
 - **REQ-303 — Distance and ascent accuracy.** Recorded distance and ascent shall meet the reference-course and input-replay accuracy criteria in acceptance-targets.md. Those criteria shall state the reference method, measurement uncertainty, position cadence, and terrain and reception conditions; values are TODO.
+
+Personal pace learning is required product work. The current research and bike-profile estimator do not establish compliance. The accepted benchmark uses moving-time mean absolute percentage error below 10% after 300 km. Detailed validation conditions remain **TODO** under **D13**.
 
 ## External sensors
 
@@ -263,15 +276,15 @@ Personal pace learning is required product work. The current research and bike-p
 - **REQ-184 — Sensor selection.** The rider shall be able to discover, select, and forget one saved sensor for each supported quantity from the device.
 - **REQ-185 — Sensor reconnection.** The device shall retain saved sensor choices across restart and reconnect when the selected sensor is available and Bluetooth is enabled.
 - **REQ-186 — Sensor status.** The device shall distinguish an unset sensor from searching, connecting, and connected states and show reported sensor battery level when available.
-- **REQ-187 — Stale measurements.** A sensor value more than five seconds old shall become unavailable in live display and recording. A reported zero cadence shall remain distinguishable from missing cadence.
+- **REQ-187 — Stale measurements.** A sensor value more than five seconds old shall become unavailable in live display and recording.
+- **REQ-339 — Zero versus missing cadence.** A reported zero cadence shall remain distinguishable from missing cadence in live display, recording, and export.
 - **REQ-188 — Cadence source.** A selected cadence sensor shall take priority over cadence from a power meter. A power meter may supply cadence when no separate cadence sensor is selected.
 - **REQ-189 — Sensor summaries.** Ride sensor averages shall use only intervals with valid measurements during moving time. Missing data shall not lower the average as zero samples.
 - **REQ-190 — Optional sensors.** Failure or absence of an external sensor shall not prevent navigation or position recording.
-
-Wheel-speed sensors, ANT+, training zones, normalized power, and training-load metrics are outside scope. Power-meter zeroing is required when the meter exposes the operation over a supported Bluetooth Low Energy interface.
-
 - **REQ-330 — Power-meter zeroing.** The device shall offer Zero power meter for a connected power meter that exposes the operation over a supported Bluetooth Low Energy interface. The action shall explain the required unloaded preparation and require an explicit rider request. It shall not offer an unsupported operation as available.
 - **REQ-331 — Zeroing outcome.** After a zeroing request, the device shall show progress and report success only when the power meter confirms it. Meter-reported failure, disconnection, and timeout shall produce an explicit failed or unknown result and permit a deliberate retry.
+
+Wheel-speed sensors, ANT+, training zones, normalized power, and training-load metrics are outside scope. Power-meter zeroing is required when the meter exposes the operation over a supported Bluetooth Low Energy interface.
 
 ## Phone and USB connectivity
 
@@ -287,8 +300,9 @@ Wheel-speed sensors, ANT+, training zones, normalized power, and training-load m
 - **REQ-200 — Device changes.** After reconnect, storage replacement, or reformatting, applications shall refresh device contents before applying operations based on an old listing.
 - **REQ-201 — Conflicting operations.** Simultaneous requests shall not interleave file content or apply a command to the wrong object. A blocked request shall wait, be cancelled, or fail visibly.
 - **REQ-202 — Phone-independent operation.** Loss of the companion application, phone permissions, or phone internet access shall not disable already installed device functions.
+- **REQ-352 — Background transfer.** Ride download and route transfer shall continue when the phone screen locks or the companion moves to the background, within the limits the operating system permits. An interrupted transfer shall resume or restart visibly rather than appear complete.
 
-## Controls, settings, language, and time
+## Device controls and interaction
 
 - **REQ-203 — Device controls.** All rider-facing device functions shall be operable through the four physical buttons without a touchscreen or phone.
 - **REQ-204 — Deliberate destructive actions.** Finish, discard, delete, reset, and power-off actions shall require the intended confirmation. Releasing a hold before completion shall not perform the action.
@@ -298,30 +312,35 @@ Wheel-speed sensors, ANT+, training zones, normalized power, and training-load m
 - **REQ-208 — Context controls.** Feature-specific settings and secondary actions shall be accessible from the relevant view. Unavailable actions shall not appear usable.
 - **REQ-209 — Brightness.** The rider shall be able to preview and choose the supported brightness levels. Cancelling the brightness editor shall restore the previous level.
 - **REQ-210 — Idle return.** The rider shall be able to choose the idle-return interval or disable it. Idle return shall lead to the map during an active ride and Home otherwise, without accepting a pending confirmation.
+- **REQ-304 — Color accessibility.** The device shall let a rider with impaired color discrimination distinguish primary map features, navigation state, warnings, and available actions through the default presentation or a persistent accessibility mode in settings. The inspection cases are TODO in acceptance-targets.md.
+- **REQ-346 — Sound control.** The rider shall be able to silence all auditory cues in settings. Silencing shall not disable visual warnings or indications.
+- **REQ-347 — Button lock.** **PROPOSED.** The rider shall be able to lock the buttons against accidental presses while the device is stowed and unlock them with a documented action. Locking shall not stop recording or navigation.
+
+## Languages and text rendering
+
 - **REQ-211 — Release languages.** The device, iOS companion, desktop application, and public website including the map builder shall support English, German, French, and Spanish at release. Each language selector shall display each language in its own name.
 - **REQ-212 — Readable content.** Labels, values, and actions shall remain distinguishable in each supported language and unit system. Essential values shall not be hidden by overlapping text or clipped controls.
-- **REQ-213 — Persistent preferences.** Confirmed device preferences shall survive a normal restart. Unreadable preferences shall produce defined defaults rather than invalid controls or a startup failure.
-- **REQ-214 — Factory reset.** After explicit confirmation, factory reset shall restore device preferences to defaults and delete all stored files and rider state except the installed map. Deletion shall include routes, trips, recordings, temporary and update files, recovery state, learned pace data, saved sensor identities, and phone pairing credentials. Installed firmware shall remain usable.
-- **REQ-215 — Device name.** The companion shall let the rider name the device and shall distinguish a locally entered name from a device-confirmed change.
-- **REQ-216 — Clock sources.** The device shall obtain UTC time from valid GNSS or the paired phone. A stored time from an earlier boot shall not by itself establish a trusted current time.
-- **REQ-217 — Local time.** The rider shall be able to set the local UTC offset, including quarter-hour offsets. Opening-status decisions shall require both trusted UTC and an established local offset.
-- **REQ-218 — About information.** The rider shall be able to inspect device identity and installed firmware information from the device.
-
-The four release languages apply across the user interfaces. Native Greek/Cyrillic support is required within existing map text budgets, with a readable fallback where needed. The exact release repertoire and fallback examples remain TODO; full Unicode support is not assumed.
-
-- **REQ-304 — Color accessibility.** The device shall let a rider with impaired color discrimination distinguish primary map features, navigation state, warnings, and available actions through the default presentation or a persistent accessibility mode in settings. The inspection cases are TODO in acceptance-targets.md.
-- **REQ-305 — Reset scope notice.** Before factory reset, the device shall state that the map is retained and all other device rider data, preferences, learning, and pairings are removed. The notice shall distinguish device deletion from copies held on the phone or an external service.
-- **REQ-306 — Reset completion.** Factory reset shall report completion only after the reset scope is applied. If reset is interrupted or a deletion fails, the next startup shall report the incomplete reset and allow completion without falsely showing a clean device. A completed reset shall require new phone pairing.
 - **REQ-307 — Geographic text.** Names in the declared release regions shall remain readable under the device character policy, including text normalization, Romanian letters, and supported Greek and Cyrillic characters. Unsupported or over-limit names shall use the defined readable fallback without becoming strings of replacement marks.
-
 - **REQ-332 — Text normalization.** Text prepared for device display shall use precomposed Unicode characters where available and readable equivalents for unsupported typographic punctuation. Normalization shall preserve supported letters and names. Display normalization shall not overwrite original names in application libraries or exported source data.
 - **REQ-333 — Romanian characters.** All device text sizes used for names and prose shall render the Romanian letters Ș, ș, Ț, and ț in addition to the existing supported Latin characters.
 - **REQ-334 — Greek and Cyrillic characters.** All device text sizes used for names and prose shall render the modern Greek and Cyrillic repertoire defined for the release regions. This support shall apply to names preserved by map preparation and route import, subject to the map text limits.
 - **REQ-335 — Compact map text.** Additional character support shall retain existing fixed map-name field sizes, record widths, and text byte limits. It shall not require stored duplicate native and transliterated names. Where a native name cannot be represented readably within its limit, preparation shall use a consistent readable transliteration or shortened name within the same limit. Stored text shall end on complete characters.
+- **REQ-355 — Time and date format.** Clock times and dates shall follow the conventions of the selected language or an explicit 12-hour or 24-hour preference, consistently across device and application views.
+
+The four release languages apply across the user interfaces. Native Greek/Cyrillic support is required within existing map text budgets, with a readable fallback where needed. The exact release repertoire and fallback examples remain TODO; full Unicode support is not assumed.
+
+## Settings, preferences, and factory reset
+
+- **REQ-213 — Persistent preferences.** Confirmed device preferences shall survive a normal restart. Unreadable preferences shall produce defined defaults rather than invalid controls or a startup failure.
+- **REQ-214 — Factory reset.** After explicit confirmation, factory reset shall restore device preferences to defaults and delete all stored rider data except the installed map. Installed firmware shall remain usable.
+- **REQ-336 — Reset deletion scope.** Factory reset shall delete routes, trips, recordings, temporary and update files, recovery state, learned pace data, saved sensor identities, and phone pairing credentials, including rider state held in internal storage rather than on the storage card.
+- **REQ-305 — Reset scope notice.** Before factory reset, the device shall state that the map is retained and all other device rider data, preferences, learning, and pairings are removed. The notice shall distinguish device deletion from copies held on the phone or an external service.
+- **REQ-306 — Reset completion.** Factory reset shall report completion only after the reset scope is applied. A completed reset shall require new phone pairing.
+- **REQ-337 — Interrupted reset.** If factory reset is interrupted or a deletion fails, the next startup shall report the incomplete reset and allow completion. The device shall not present itself as clean until the reset scope is applied.
+- **REQ-215 — Device name.** The companion shall let the rider name the device and shall distinguish a locally entered name from a device-confirmed change.
+- **REQ-218 — About information.** The rider shall be able to inspect device identity and installed firmware information from the device.
 
 ## Power and charging
-
-This group includes proposed final-hardware behavior. The development board does not establish battery or charging acceptance.
 
 - **REQ-219 — Battery indication.** The device shall show available battery state and a low-battery indication. Unavailable battery measurement shall not be presented as a measured charge percentage.
 - **REQ-220 — Position interval.** The rider shall be able to select the supported position update interval. Changing it shall not reset the ride or silently discard every interval longer than the default cadence.
@@ -335,10 +354,13 @@ This group includes proposed final-hardware behavior. The development board does
 - **REQ-228 — Charging protection.** The final device shall keep battery charging within the selected cell's permitted voltage, current, and temperature limits and suspend charging when those limits cannot be met.
 - **REQ-229 — Charging state.** The final device shall distinguish charging, external power without charging, full charge, and charging failure when the hardware can establish those states.
 - **REQ-230 — Low-energy operation.** Before energy is too low for continued recording, the final device shall warn the rider and preserve recoverable ride data. The warning margin and shutdown threshold remain open in **D17**.
+- **REQ-308 — Power acceptance.** The final device shall meet every power and charging criterion in the Power and charging table in acceptance-targets.md. Each unresolved target and test condition is explicitly TODO.
+- **REQ-344 — Idle shutdown.** When no recording or navigation is active and no input has occurred for the configured interval, the device shall power off. The device shall never power off automatically during an active or paused ride. The interval and its rider control are TODO in acceptance-targets.md (PWR-15).
+- **REQ-345 — Charging while off.** The final device shall charge while switched off and shall indicate the charging state while off when the hardware can establish it.
+
+This group includes proposed final-hardware behavior. The development board does not establish battery or charging acceptance.
 
 Battery runtime, standby drain, charging duration, and critical-energy values are explicitly **TODO** in acceptance-targets.md. Runtime conditions must include battery age, temperature, GNSS mode, lighting, sensors, and phone activity.
-
-- **REQ-308 — Power acceptance.** The final device shall meet every power and charging criterion in the Power and charging table in acceptance-targets.md. Each unresolved target and test condition is explicitly TODO.
 
 ## Storage and fault handling
 
@@ -351,10 +373,11 @@ Battery runtime, standby drain, charging duration, and critical-energy values ar
 - **REQ-237 — Uncertain writes.** If the system cannot determine whether a write completed, it shall reconcile the stored result before retrying a conflicting change or reporting success.
 - **REQ-238 — Malformed content.** Unsupported or malformed map, route, trip, article, photo, or update content shall produce a bounded failure rather than an uncontrolled restart or an unrelated-data change.
 - **REQ-239 — Missing hardware.** Failure of GNSS, barometer, compass, or storage shall be reported for the affected function. Functions that do not require that component shall remain accessible where the device can continue operating.
+- **REQ-341 — Card removal.** Removal of the storage card during operation shall produce a visible storage failure for the affected functions and shall not restart the device. After reinsertion, the device shall restore access to the card or state the restart it needs.
+- **REQ-342 — Storage status.** The rider shall be able to see used and free storage on the device and in the applications. The device shall warn before the remaining space is too small for continued recording.
+- **REQ-343 — Diagnostics.** After an uncontrolled restart, the device shall record the fault reason. The applications shall let the rider export a diagnostic log that contains no ride, route, or location data.
 
 ## Firmware updates
-
-These are intended release requirements. Device installation is currently disabled by board policy; package upload is not proof of installation support.
 
 - **REQ-240 — Update discovery.** Supported companion and computer applications shall let the rider check for a newer released firmware version and inspect its release information before installation.
 - **REQ-241 — Release channels.** Normal update checks shall use stable releases. Prerelease firmware shall require an explicit opt-in, and an unrecognized development version shall not trigger a guessed automatic upgrade.
@@ -368,15 +391,16 @@ These are intended release requirements. Device installation is currently disabl
 - **REQ-249 — Trial failure.** If new firmware does not complete its required startup confirmation, the device shall restore the retained previous firmware rather than repeatedly boot the failed trial.
 - **REQ-250 — Installed version.** After a successful update and reconnect, the device shall report the installed version so the application can confirm the result.
 - **REQ-251 — Rider data during updates.** A normal supported firmware update shall preserve rider data declared compatible with that release. Required destructive preparation or incompatible stored formats shall be disclosed before installation. This does not require support for all historical prerelease formats.
+- **REQ-309 — Mandatory rollback reserve.** Before normal field installation begins, the device shall retain and verify a recoverable copy of the previous firmware. Failure to obtain that copy shall block installation.
+- **REQ-310 — Owner firmware.** The project shall provide a documented development flashing procedure for owner-built firmware. This procedure shall remain separate from authenticated public-release updates and shall state any data erasure or recovery steps it requires.
+- **REQ-353 — Map compatibility after update.** Before installation, a firmware update shall state whether the installed map remains usable with the new firmware. If it does not, the application shall tell the rider to prepare a new map, and the device shall report the incompatible map as unreadable rather than as no map.
+- **REQ-354 — Bootloader recovery.** With no valid application and no usable rollback reserve, the device shall enter a visible recovery state that accepts a firmware update over USB without a debug probe.
+
+These are intended release requirements. Device installation is currently disabled by board policy; package upload is not proof of installation support.
 
 Normal field updates require a retained rollback image and device confirmation. Background update checks and notifications remain **TODO** under **D18**. Firmware release tooling has its own requirements in the release console project.
 
-- **REQ-309 — Mandatory rollback reserve.** Before normal field installation begins, the device shall retain and verify a recoverable copy of the previous firmware. Failure to obtain that copy shall block installation.
-- **REQ-310 — Owner firmware.** The project shall provide a documented development flashing procedure for owner-built firmware. This procedure shall remain separate from authenticated public-release updates and shall state any data erasure or recovery steps it requires.
-
 ## Physical hardware and service
-
-The processor is an existing project constraint. Environmental, mechanical, lifetime, and service acceptance targets are explicitly **TODO** in acceptance-targets.md. No protection rating or certification is claimed.
 
 - **REQ-252 — Processor constraint.** The device shall use the nRF54LM20 as its main processor.
 - **REQ-253 — Outdoor display.** The mounted device shall let the rider read its primary map, navigation state, and ride values in full sunlight and complete darkness, using the supported display lighting as needed. The inspection conditions shall be defined in acceptance-targets.md.
@@ -388,8 +412,9 @@ The processor is an existing project constraint. Environmental, mechanical, life
 - **REQ-259 — Drop resistance.** After the agreed drop exposures, the device shall retain the required functions and shall not expose a battery or electrical hazard.
 - **REQ-260 — Service access.** The hardware release shall identify the parts the owner can replace and provide the required access and instructions. Battery, storage, enclosure seals, and mount service scope remain open in **D19**.
 - **REQ-261 — Hardware release information.** A released buildable hardware version shall include its schematics, PCB files, parts list, mechanical files, assembly instructions, and matching firmware and programming instructions.
-
 - **REQ-311 — Hardware acceptance.** The final hardware shall meet every applicable criterion in the Physical hardware and service table in acceptance-targets.md. Exposure conditions, limits, and service scope remain explicitly TODO.
+
+The processor is an existing project constraint. Environmental, mechanical, lifetime, and service acceptance targets are explicitly **TODO** in acceptance-targets.md. No protection rating or certification is claimed.
 
 ## User ownership and privacy
 
@@ -398,24 +423,28 @@ The processor is an existing project constraint. Environmental, mechanical, life
 - **REQ-264 — No silent sharing.** The system shall not upload private routes, rides, or live location to a remote service without an explicit rider action or an enabled feature that states what it sends.
 - **REQ-265 — Data removal.** The rider shall be able to delete locally held routes, rides, and pairing information through the relevant device or application controls.
 - **REQ-266 — Published source.** Each public product release shall identify the corresponding software source, hardware revision where applicable, and build instructions under the project's declared open-source licenses.
+- **REQ-357 — Card readability.** **PROPOSED.** Rides and routes stored on the card shall be readable on a computer without the device, so the rider can recover data from a failed device. If the storage format is not directly readable, the desktop application shall provide a documented recovery path from a removed card.
 
-## Supported applications and operating limits
+## Supported platforms and services
 
 - **REQ-267 — Supported platforms.** The desktop application shall support recent macOS, Windows, and Linux releases. The website and map builder shall support recent Firefox, Chrome, Safari, and Edge releases. The exact OS, browser, and iOS companion versions and available functions shall be specified in acceptance-targets.md.
 - **REQ-268 — Unsupported browser functions.** Where a browser cannot perform a required local device operation, the site shall explain that limitation and offer the supported desktop path without claiming the operation succeeded.
 - **REQ-269 — Offline libraries.** The companion and desktop applications shall allow access to saved local routes and rides when their internet services are unavailable.
 - **REQ-270 — Service failures.** Failure of map or update delivery services shall produce a retryable error and shall not prevent use of already installed maps or firmware.
+- **REQ-356 — Rider documentation.** The public website shall provide a rider guide that covers setup, map installation, route import, riding, and recovery in the four release languages and matches the released software.
+
+## Capacity, performance, and robustness
+
 - **REQ-271 — Published limits.** The product shall state its supported map size, route size, route and ride counts, recording duration, and import limits. Exceeding a limit shall use the specified warning, reduction, selection, or refusal flow without silent data loss.
 - **REQ-272 — Responsive controls.** Map loading, route planning, place search, panorama generation, and transfers shall meet the approved response and cancellation times without losing accepted ride samples under the declared operating conditions.
 - **REQ-273 — Operation under load.** The supported maximum map, route, and recording workloads shall operate within device memory and storage limits without an uncontrolled restart.
-
-The referenced tables contain incomplete acceptance criteria. Their TODO values must be resolved before the affected requirements can act as release gates.
-
 - **REQ-312 — Action timing.** The supported applications and device shall meet the response, completion, and cancellation limits for the actions in acceptance-targets.md. Limits and test workloads are TODO; an indefinite progress indicator shall not count as successful completion.
 - **REQ-313 — Recording capacity.** The device shall meet the continuous-recording and stored-ride capacity criteria in acceptance-targets.md while keeping every ride within the declared capacity accessible for review, export, and deletion.
 - **REQ-314 — Accepted-data preservation.** An orderly finish or shutdown shall preserve all accepted recording samples. After sudden power loss at one sample per second on supported healthy storage, accepted-data loss shall not exceed 30 seconds. Bounds for other supported cadences remain TODO in acceptance-targets.md. A storage failure shall be reported separately.
 
-## Position and heading
+The referenced tables contain incomplete acceptance criteria. Their TODO values must be resolved before the affected requirements can act as release gates.
+
+## Position, heading, and time
 
 - **REQ-274 — Independent positioning.** During a ride, the device shall obtain its position from its own GNSS receiver without needing the phone's location or an internet connection.
 - **REQ-275 — Acquisition state.** The device shall distinguish acquiring a position, having a valid position, and losing the position. A missing receiver shall not be presented as an established position.
@@ -425,26 +454,24 @@ The referenced tables contain incomplete acceptance criteria. Their TODO values 
 - **REQ-279 — Stationary direction.** When direction of travel is unavailable and a valid compass heading is available, the device shall use the compass for heading-relative map and Peak View presentation.
 - **REQ-280 — No heading.** When neither direction source is available, the map shall use a labelled north-up view without showing an assumed rider heading as measured. Peak View shall indicate unavailable live direction and permit manual direction browsing.
 - **REQ-281 — Position inspection while riding.** Browsing another map location, route point, or peak shall not replace the real rider position used for recording and active guidance.
+- **REQ-315 — Position on demand.** Opening position-following maps, nearby place search, Peak View, or emergency location shall request a current GNSS position even when no ride is recording. Acquisition shall show a waiting state and shall not itself start a recording.
+- **REQ-348 — Compass calibration.** The device shall let the rider calibrate the compass and shall indicate when the compass heading is untrusted. Compass headings shall be corrected for magnetic declination at the current position.
+- **REQ-216 — Clock sources.** The device shall obtain UTC time from valid GNSS or the paired phone. A stored time from an earlier boot shall not by itself establish a trusted current time.
+- **REQ-217 — Local time.** The rider shall be able to set the local UTC offset, including quarter-hour offsets. Opening-status decisions shall require both trusted UTC and an established local offset.
 
 Position accuracy, acquisition time, compass accuracy, and calibration conditions are **TODO** in acceptance-targets.md. A sensor polling interval is not an accuracy guarantee.
 
-- **REQ-315 — Position on demand.** Opening position-following maps, nearby place search, Peak View, or emergency location shall request a current GNSS position even when no ride is recording. Acquisition shall show a waiting state and shall not itself start a recording.
-
-## Emergency location and hazard warnings
-
-Emergency location and route-based sharp-turn warnings are required. Tunnel and other mapped-road hazard warnings are outside the present scope. Remaining interaction choices and numerical targets are TODO in acceptance-targets.md.
+## Emergency location
 
 - **REQ-316 — Emergency access.** The rider shall be able to open an emergency location screen through a short, documented action from normal device use, including when no ride is recording. The maximum number of actions is TODO.
 - **REQ-317 — Emergency coordinates.** The emergency screen shall show readable latitude and longitude, the coordinate format and reference system, and the age and validity of the position. Its information shall remain usable without a map, phone, or internet connection.
 - **REQ-318 — No current emergency fix.** When no current position is available, the emergency screen shall show acquisition status. Any displayed last known position shall be labelled with its age and shall not be presented as the rider's current location.
 - **REQ-319 — Emergency-screen continuity.** Opening and leaving the emergency location screen shall preserve recording and navigation. Automatic screen changes shall not dismiss it while the rider is using it.
-- **REQ-320 — Sharp-turn warning.** While following an active route, the device shall give an auditory cue and a visual warning before a qualifying sharp turn derived from that route's geometry. It shall not issue these warnings without an active route. Geometric thresholds, valid-position conditions, approach speed, and lead distance or time are TODO in acceptance-targets.md.
-- **REQ-322 — Warning stability.** Position noise shall not repeatedly issue the same off-route or sharp-turn warning. Warning reset conditions shall permit a later distinct occurrence to be warned again; thresholds are TODO.
-- **REQ-323 — Warning interaction.** Warnings shall identify their cause without accepting an open confirmation or resetting the recording. A warning shall not hide emergency coordinates while that screen is open. The priority between simultaneous warnings is TODO.
+- **REQ-358 — Emergency information.** **PROPOSED.** The emergency screen shall show rider-entered emergency information, such as name, contact, and medical note, entered through the companion. The information shall be stored only on the device and the phone.
+
+Emergency location is a display of position, not a remote SOS service. Remaining interaction choices and numerical targets are TODO in acceptance-targets.md.
 
 ## External ride services
-
-External ride export and optional synchronization are required. The release service list and application responsibilities are defined in acceptance-targets.md. Additional providers are a product goal until named there.
 
 - **REQ-324 — External-service export.** The system shall support export of completed rides to the approved external services, including Strava and intervals.icu where provider access permits it. For each service, the support matrix shall identify direct integration or a supported file-import path and disclose any missing capability.
 - **REQ-325 — Service consent.** Connecting a service and enabling automatic uploads shall require an explicit rider choice for that service. The application shall state which ride data it sends and whether future completed rides will be uploaded automatically.
@@ -452,3 +479,5 @@ External ride export and optional synchronization are required. The release serv
 - **REQ-327 — Service retry.** Provider outages, expired authorization, or interrupted uploads shall preserve the local ride and allow retry. Before retrying an uncertain upload, the application shall reconcile the provider result when possible; an unresolved outcome shall be shown instead of claiming success or blindly duplicating the activity.
 - **REQ-328 — Service disconnect.** The rider shall be able to disable automatic uploads or disconnect a service. Disconnecting shall clear local authorization credentials and stop further uploads; it shall not silently delete already uploaded activities.
 - **REQ-329 — Service data fidelity.** Service exports shall preserve supported timestamps, coordinates, elevation, sensor measurements, and recording gaps. The integration shall document any information that the provider cannot accept and keep the complete local recording available.
+
+External ride export and optional synchronization are required. The release service list and application responsibilities are defined in acceptance-targets.md. Additional providers are a product goal until named there.

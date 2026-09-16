@@ -62,6 +62,7 @@ The owner accepts personal pace learning with mean absolute percentage error bel
 | ACC-02 | Distance on a reference course | TODO: tolerance, course lengths, reference measurement and uncertainty, speed ranges, GNSS reception conditions, and repetitions. Separate open-sky from obstructed-course results. |
 | ACC-03 | Recorded ascent on reference courses | TODO: absolute and relative tolerance, elevation reference, filtering scale, minimum course ascent, weather/pressure conditions, and repetitions. Specify what counts as ascent before comparing totals. |
 | ACC-04 | No artificial movement or ascent | TODO: stationary duration and allowable drift; include terrain-reference adjustments and GNSS interruptions. |
+| CLIMB-01 | Climb detection | TODO: minimum length, minimum average grade, gap tolerance that keeps one climb together, and crest hysteresis. Applies to REQ-177–179. Proposed in the 16 September review. |
 | ACC-05 | Position and heading quality | TODO: horizontal-error percentile, compass error, speed at which travel heading is usable, freshness, mounting/calibration conditions, and reacquisition behavior. |
 
 Distance and ascent can have measurable acceptance criteria without a worldwide absolute-accuracy promise. An independently measured course or higher-quality reference trace supplies a reference with stated uncertainty. Replaying a trace checks calculation behavior; it does not prove the accuracy of the receiver or barometer outdoors. Another consumer bike computer is a comparison device, not an absolute reference.
@@ -86,6 +87,7 @@ REQ-308 requires the final device to meet these criteria after the TODO values a
 | PWR-12 | Charging protection | Cell voltage, current, and temperature limits TODO from the selected cell and charger; fault and recovery conditions TODO. |
 | PWR-13 | Battery aging | Retain at least TODO capacity after TODO cycles and storage exposure; test conditions TODO. |
 | PWR-14 | Charge and power-state reporting | Charge-percentage error and state-change delay at most TODO; establish performance across battery age and temperature TODO. |
+| PWR-15 | Idle shutdown | Power off after TODO minutes without recording, navigation, or input; rider control (interval choice or disable) TODO. Never during an active or paused ride. Proposed in the 16 September review (REQ-344). |
 
 ## Physical hardware and service
 
