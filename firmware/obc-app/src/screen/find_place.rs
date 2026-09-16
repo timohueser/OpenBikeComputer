@@ -48,6 +48,7 @@ impl FindPlaceScreen {
                 }
                 Gesture::Press if self.selected == len => {
                     cx.find.action = Action::More;
+                    self.selected = 0;
                 }
                 Gesture::Press
                     if cx.find.state == State::Ready
@@ -67,8 +68,10 @@ impl FindPlaceScreen {
                 Gesture::Press => {
                     let cat = PoiCategory::ALL[self.selected];
                     self.category = Some(cat);
+                    if cx.find.category != cat || cx.find.state != State::Ready {
+                        cx.find.action = Action::Refresh;
+                    }
                     cx.find.category = cat;
-                    cx.find.action = Action::Refresh;
                     self.selected = 0;
                 }
                 Gesture::Back => return Transition::Pop,
@@ -169,14 +172,7 @@ impl FindPlaceScreen {
             return;
         };
         let Some(cost) = rx.find.costs(self.selected) else { return };
-        let mut role = heapless::String::<32>::new();
-        let _ = write!(
-            role,
-            "{} {}",
-            letter(self.selected),
-            if cost.on_way() { rx.t(Msg::AssistantOnWay) } else { rx.t(Msg::AssistantNearby) }
-        );
-        cv.text(&role, Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT);
+        cv.text(letter(self.selected), Point::new(18, 212), Font::Label, TextAlign::Left, SUBTEXT);
         let mut number = heapless::String::<8>::new();
         let _ = write!(number, "{}/{}", self.selected + 1, count);
         cv.text(&number, Point::new(rx.w - 18, 212), Font::Label, TextAlign::Right, INK);
@@ -304,7 +300,7 @@ impl VisitReviewScreen {
                 min = (min.0.min(target.display.0), min.1.min(target.display.1));
                 max = (max.0.max(target.display.0), max.1.max(target.display.1));
             }
-            fit(min, max, rx.w, rx.h, if gap.is_some() { 142 } else { 192 })
+            fit(min, max, rx.w, rx.h, if self.accepted || self.returning { 192 } else { 168 })
         } else {
             rx.state.viewport(rx.w as f32, rx.h as f32)
         };
@@ -333,19 +329,17 @@ impl VisitReviewScreen {
                 let (target, colors) = cv.split();
                 scratch.draw_marker(target, &vp, fix.lon, fix.lat, fix.course, colors(color));
             }
-            if let Some((_, meters)) = gap {
-                let mut label = heapless::String::<40>::new();
-                super::vocab::fmt::write_distance_coarse(&mut label, "", meters, rx.settings.units);
-                let _ = write!(label, " {}", rx.t(Msg::AssistantStraightLine));
-                cv.round(rect(8, 142, rx.w - 16, 48), 4, PARCHMENT);
-                cv.text(
-                    rx.t(Msg::AssistantRouteEndToPin),
-                    Point::new(rx.w / 2, 142),
-                    Font::Label,
-                    TextAlign::Center,
-                    INK,
-                );
-                cv.text(&label, Point::new(rx.w / 2, 166), Font::Label, TextAlign::Center, INK);
+            if !self.accepted && !self.returning {
+                let hours = opening_hours(rx.poi_scratch.detail_schedule.as_ref(), rx.place_local);
+                let closed = rx
+                    .poi_scratch
+                    .detail_schedule
+                    .is_some_and(|s| s.status(rx.place_local) == obc_reader::hours::OpeningStatus::Closed);
+                let missing = rx.t(if closed { Msg::AssistantClosed } else { Msg::PoiDetailHoursNotListed });
+                let label = hours.as_ref().map_or(missing, |hours| hours.as_str());
+                let width = label.chars().count() as i32 * Font::Label.char_width() as i32 + 12;
+                cv.round(rect(8, 164, width, 26), 4, PARCHMENT);
+                cv.text(label, Point::new(14, 164), Font::Label, TextAlign::Left, INK);
             }
         }
         cv.fill(rect(0, 0, rx.w, 40), PARCHMENT);
@@ -403,6 +397,21 @@ impl VisitReviewScreen {
         }
     }
 }
+fn opening_hours(
+    schedule: Option<&obc_reader::WeeklySchedule>,
+    local: Option<(u8, u16)>,
+) -> Option<heapless::String<16>> {
+    let schedule = schedule.filter(|s| s.status(local) == obc_reader::hours::OpeningStatus::Open)?;
+    let (day, minute) = local?;
+    let ranges = schedule.intervals_on_day(day);
+    let range =
+        ranges.iter().find(|range| u16::from(range.open_q) * 15 <= minute && minute < u16::from(range.close_q) * 15)?;
+    let (open, close) = (u16::from(range.open_q) * 15, u16::from(range.close_q) * 15);
+    let mut label = heapless::String::new();
+    let _ = write!(label, "{:02}:{:02}-{:02}:{:02}", open / 60, open % 60, close / 60, close % 60);
+    Some(label)
+}
+
 fn destination_pin(cv: &mut impl Surface, point: Point) {
     let head = Point::new(point.x, point.y - 10);
     cv.triangle(point, Point::new(point.x - 7, point.y - 10), Point::new(point.x + 7, point.y - 10), INK);
@@ -449,4 +458,28 @@ fn figures(
     cv.triangle(Point::new(125, y + 18), Point::new(132, y + 6), Point::new(139, y + 18), INK);
     let c = super::vocab::fmt::elevation_short(climb, units);
     cv.text(&c, Point::new(146, y), Font::Label, TextAlign::Left, INK);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::opening_hours;
+
+    #[test]
+    fn hours_pill_uses_the_current_interval_and_requires_trusted_hours() {
+        let mut bytes = [0; 29];
+        bytes[1..5].copy_from_slice(&[32, 48, 56, 72]);
+        let schedule = obc_reader::WeeklySchedule::decode(&bytes).unwrap();
+        assert_eq!(opening_hours(Some(&schedule), Some((0, 600))).unwrap(), "08:00-12:00");
+        assert_eq!(opening_hours(Some(&schedule), Some((0, 900))).unwrap(), "14:00-18:00");
+        assert!(opening_hours(Some(&schedule), Some((0, 780))).is_none());
+        assert!(opening_hours(Some(&schedule), None).is_none());
+        assert!(opening_hours(None, Some((0, 600))).is_none());
+        bytes[0] = 1;
+        let uncertain = obc_reader::WeeklySchedule::decode(&bytes).unwrap();
+        assert!(opening_hours(Some(&uncertain), Some((0, 600))).is_none());
+        bytes[0] = 0;
+        bytes[1..5].copy_from_slice(&[88, 8, 0, 0]);
+        let overnight = obc_reader::WeeklySchedule::decode(&bytes).unwrap();
+        assert_eq!(opening_hours(Some(&overnight), Some((1, 60))).unwrap(), "00:00-02:00");
+    }
 }

@@ -475,7 +475,7 @@ fn run_find(scenario: Scenario) {
                         "deferred mode changes advance while preview redraws are withheld"
                     );
                     assert!(routes.read_checkpoint().unwrap().unwrap().original.is_none());
-                    assert_eq!(app.recorder.recording(), recording_before_mode);
+                    assert!(app.recorder.recording());
                 }
                 if scenario == Scenario::FreeAccept {
                     app.open_find_place();
@@ -514,7 +514,7 @@ fn run_find(scenario: Scenario) {
                 app.apply_gesture(Gesture::Step(4));
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiList(_)));
-                assert_eq!(app.find_place_state(), State::Idle);
+                assert_eq!(app.find_place_state(), State::Ready);
                 phase = 4;
             }
             4 => {
@@ -525,6 +525,12 @@ fn run_find(scenario: Scenario) {
                 app.apply_gesture(Gesture::Press);
                 assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiDetail(_)));
                 assert_eq!(acquisitions, expected_plans, "paging does not plan more candidates");
+                app.apply_gesture(Gesture::Back);
+                assert!(matches!(app.top_screen(), obc_app::screen::Screen::PoiList(_)));
+                app.apply_gesture(Gesture::Back);
+                assert!(matches!(app.top_screen(), obc_app::screen::Screen::FindPlace(_)));
+                assert_eq!(app.find_place_state(), State::Ready);
+                app.apply_gesture(Gesture::BackHold);
                 phase = 6;
             }
             6 if routes.ids() == [original] => break,

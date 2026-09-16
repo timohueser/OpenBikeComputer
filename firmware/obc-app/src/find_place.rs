@@ -89,6 +89,7 @@ pub struct FindState {
     bound_map: Option<RouteSourceKey>,
     pub origin: (i32, i32),
     pub results: heapless::Vec<u8, RESULT_LIMIT>,
+    places: heapless::Vec<Poi, RESULT_LIMIT>,
     costs: [Option<Costs>; PLAN_LIMIT],
     corridor_candidates: [u8; SOURCE_LIMIT],
     retained: [RetainedReview; PLAN_LIMIT],
@@ -117,6 +118,7 @@ impl FindState {
             bound_map: None,
             origin: (0, 0),
             results: heapless::Vec::new(),
+            places: heapless::Vec::new(),
             costs: [None; PLAN_LIMIT],
             corridor_candidates: [0, 1, 2, 3],
             retained: [RetainedReview::NONE; PLAN_LIMIT],
@@ -153,12 +155,12 @@ impl FindState {
             .map(|hit| &hit.poi)
     }
     pub fn selected<'a>(
-        &self,
+        &'a self,
         i: usize,
         nearby: &'a crate::screen::PoiScratch,
         corridor: &'a [obc_reader::CorridorPoi],
     ) -> Option<&'a Poi> {
-        self.candidate(*self.results.get(i)?, nearby, corridor)
+        self.places.get(i).or_else(|| self.candidate(*self.results.get(i)?, nearby, corridor))
     }
     fn rank(&mut self) {
         self.results.clear();
@@ -335,8 +337,7 @@ impl crate::App {
         {
             return;
         }
-        let keep_choices = self.ui.find.state == State::Ready
-            && self.ui.stack.iter().any(|screen| matches!(screen, Screen::FindPlace(screen) if screen.choices()));
+        let keep_choices = self.ui.find.state == State::Ready;
         if let Some(retained) = self.ui.find.retained.iter().enumerate().find_map(|(index, retained)| {
             (retained.object != 0 && !(keep_choices && self.ui.find.results.contains(&(index as u8))))
                 .then_some(*retained)
@@ -356,6 +357,7 @@ impl crate::App {
                 self.cancel_assistant();
                 self.ui.find.state = State::Start;
                 self.ui.find.results.clear();
+                self.ui.find.places.clear();
                 self.ui.find.costs.fill(None);
                 self.ui.find.context = None;
                 self.ui.find.next = 0;
@@ -364,12 +366,14 @@ impl crate::App {
             }
             Action::More => {
                 self.cancel_assistant();
-                self.ui.find.state = State::Idle;
+                if self.ui.find.state != State::Ready {
+                    self.ui.find.state = State::Stale;
+                }
                 self.ui.poi_scratch.invalidate();
                 self.ui.corridor_scratch.disarm();
                 crate::screen::apply(
                     &mut self.ui.stack,
-                    crate::screen::Transition::Replace(Screen::PoiList(crate::screen::PoiListScreen::new(
+                    crate::screen::Transition::Push(Screen::PoiList(crate::screen::PoiListScreen::new(
                         self.ui.find.category,
                     ))),
                 );
@@ -435,12 +439,17 @@ impl crate::App {
                 self.cancel_assistant();
             }
         }
-        let has_find = self.ui.stack.iter().any(|s| matches!(s, Screen::FindPlace(s) if s.choices()));
+        let has_find = self.ui.stack.iter().any(|s| match s {
+            Screen::Assistant(_) | Screen::FindPlace(_) if self.ui.find.state == State::Ready => true,
+            Screen::FindPlace(s) => s.choices(),
+            _ => false,
+        });
         if self.ui.find.owns_pages() && !has_find {
             if matches!(self.ui.find.state, State::Planning | State::Releasing) {
                 self.cancel_assistant();
             }
             self.ui.find.state = State::Idle;
+            self.ui.find.places.clear();
             self.ui.corridor_scratch.disarm();
         }
     }
@@ -726,6 +735,29 @@ impl crate::App {
             self.cancel_assistant();
             return;
         }
+        if self.ui.find.state == State::Ready && !self.ui.find.places.is_empty() {
+            if self.ui.find.context.is_some_and(|context| {
+                self.current_review_origin()
+                    .is_none_or(|origin| !context.accepts_origin(self.settings().bike_profile_idx, origin))
+            }) {
+                self.ui.find.state = State::Stale;
+                self.cancel_assistant();
+                return;
+            }
+            if self.ui.find.local != local {
+                let Some(reader) = reader else { return };
+                for poi in &mut self.ui.find.places {
+                    let Ok(schedule) = reader.try_poi_hours(poi.hours_ref) else {
+                        self.ui.find.state = State::Failed;
+                        self.ui.find.results.clear();
+                        return;
+                    };
+                    poi.opening = schedule.map_or(OpeningStatus::Unknown, |schedule| schedule.status(local));
+                }
+                self.ui.find.local = local;
+            }
+            return;
+        }
         if self.ui.find.local != local {
             let Some(reader) = reader else { return };
             if reader.refresh_place_hours(&mut self.ui.poi_scratch.pois, local).is_err() {
@@ -892,6 +924,12 @@ impl crate::App {
             }
         }
         self.ui.find.rank();
+        for &id in &self.ui.find.results {
+            if let Some(poi) = self.ui.find.candidate(id, &self.ui.poi_scratch, self.ui.corridor_scratch.entries()) {
+                let poi = poi.clone();
+                let _ = self.ui.find.places.push(poi);
+            }
+        }
         self.ui.find.state = State::Ready;
         self.ui.map_dirty = true;
     }
@@ -1073,6 +1111,59 @@ mod tests {
     }
 
     #[test]
+    fn last_category_survives_more_places_and_back_until_assistant_closes() {
+        let bytes = hours_map();
+        let source = SliceSource(&bytes);
+        let tables = MapTables::parse(&source).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut app = crate::App::new_idle(crate::AppState::new(50_000, 50_000, 1.0));
+        app.apply_chord(crate::input::Chord::Assistant);
+        app.apply_gesture(crate::Gesture::Press);
+        app.apply_gesture(crate::Gesture::Press);
+        let mut query = PlaceQuery::new(
+            0,
+            PoiCategorySet::ALL,
+            PlaceWindow::Nearby { position: (50_000, 50_000), radius_m: 1000 },
+            None,
+        );
+        while query.step(&reader, None, 0, &mut app.ui.poi_scratch.pois) == QueryProgress::Pending {}
+        let poi = app.ui.poi_scratch.pois[0].poi.clone();
+        app.ui.find.places.push(poi.clone()).unwrap();
+        app.ui.find.results.push(0).unwrap();
+        app.ui.find.costs[0] = cost(200, Some(5), 0);
+        let stored = RouteSourceKey { store: [1; 16], object: 7, revision: 2 };
+        app.ui.find.retained[0] = RetainedReview { object: stored.object, revision: stored.revision, rejoin_m: 0 };
+        app.ui.find.retained_store = Some(crate::device_core::StoreIdentity::from_bytes(stored.store));
+        app.ui.find.state = State::Ready;
+        app.ui.find.clock = (false, app.settings().utc_offset_min);
+        app.ui.find.profile = app.settings().bike_profile_idx;
+        app.apply_gesture(crate::Gesture::Step(1));
+        app.apply_gesture(crate::Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::PoiList(_)));
+        assert!(app.ui.poi_scratch.pois.is_empty());
+        app.prepare_find(Some(&reader), None);
+        assert!(app.retains_find_review(stored));
+        assert!(app.catalogs.can_admit_intent(), "the cached route is not queued for removal");
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::FindPlace(screen) if screen.choices()));
+        assert_eq!(app.ui.find.selected(0, &app.ui.poi_scratch, &[]), Some(&poi));
+        app.apply_gesture(crate::Gesture::Back);
+        app.apply_gesture(crate::Gesture::Press);
+        assert_eq!(app.find_place_state(), State::Ready);
+        assert_eq!(app.ui.find.action, Action::None);
+        app.apply_gesture(crate::Gesture::Back);
+        app.apply_gesture(crate::Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        assert_eq!(app.find_place_state(), State::Ready);
+        app.apply_gesture(crate::Gesture::Back);
+        assert_eq!(app.find_place_state(), State::Idle);
+        assert!(app.ui.find.places.is_empty());
+        app.prepare_find(Some(&reader), None);
+        assert!(!app.catalogs.can_admit_intent(), "closing the assistant releases its stored route");
+    }
+
+    #[test]
     fn direct_find_preview_resolves_hours_and_rejects_stale_or_abandoned_selection() {
         let bytes = hours_map();
         let source = SliceSource(&bytes);
@@ -1114,7 +1205,7 @@ mod tests {
             } else {
                 assert!(matches!(app.top_screen(), Screen::FindPlace(_)));
                 assert!(!app.ui.poi_scratch.detail_valid);
-                assert!(matches!(app.ui.find.state, State::Stale | State::Idle));
+                assert!(matches!(app.ui.find.state, State::Stale | State::Ready));
             }
         }
     }
