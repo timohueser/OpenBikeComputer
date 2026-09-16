@@ -82,7 +82,8 @@ npm run build:all
 The `desktop-launch` CI job downloads the release executable from `desktop`. Its embedded
 frontend is the existing `obc-desktop-frontend` build. The test opens the real window under
 Xvfb, checks its `tauri://localhost` origin, searches for Switzerland, and adds it to the map.
-A loopback catalog serves the producer's example fine-band cells with a 994 B price. The
+A loopback catalog serves the producer's example fine-band cells. Their 1,026-byte total
+is shown as 1.0 KB. The
 Rust catalog commands must fetch the root and all pinned index and region documents before
 the test can pass. No map download or device command is selected.
 
