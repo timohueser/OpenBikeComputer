@@ -21,7 +21,7 @@ Date: 2026-09-13. Evidence base: develop `d42e2e3a`. This replaces v2 as the pro
 
 ## 1. The design, settled
 
-1. Keep inline unit tests and existing App scenario tests. Do not relocate a fixed number of tests or add App seeding APIs to make relocation possible.
+1. Keep inline unit tests and existing App scenario tests. Do not relocate a fixed number of tests or add App seeding APIs to make relocation possible. **[PARTLY SUPERSEDED 2026-09-16: the owner settled that the provably identical frame seam is extracted into `obc-host-core`. See #1816. The rest of this decision stands: no relocation quota, no App seeding APIs.]**
 2. Consolidate ordinary Rust integration tests into one target per package. Separate targets are allowed for a different execution route or required isolation.
 3. Use Cargo's graph for Rust selection. Keep only cross-language, tool, fixture, and job relationships in a small explicit Python map.
 4. Run the same repository scripts locally and in CI. Preserve useful `obc` entry points; remove taxonomy commands when their replacement lands.
@@ -38,7 +38,7 @@ Why these choices: consolidation addresses the measured compile/launch cost with
 
 | Removed requirement | Replacement |
 |---|---|
-| New App-level `Device`, `testing` feature, and public route/recovery seeds | Existing App and host seams; small test-local setup where needed |
+| ~~New App-level `Device`, `testing` feature, and public route/recovery seeds~~ **[PARTLY SUPERSEDED 2026-09-16]** | No universal Device and no seeds, as written. But the identical render pair, render-on-demand predicate, route re-open and hold-cancel consumption are extracted into `obc-host-core`; see #1816 |
 | Estimated 150 scenarios moved and 100 reclassified | No relocation quota; move a test only when its new home is clearly simpler |
 | Retargeting app helpers to host-core | App helpers stay host-independent; no app → host-core dev-dependency |
 | In-process sweep and a new scenario table | Current script, isolated execution route, same PNGs and manifest |

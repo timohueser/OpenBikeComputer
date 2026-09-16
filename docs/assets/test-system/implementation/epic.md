@@ -7,9 +7,9 @@ The headless host assembly is now hand-written four times. CI computes which cra
 affects and then compiles the whole workspace anyway. Test binaries fan out far enough that the
 first-launch cost of freshly linked executables exceeds the compile.
 
-The design, its evidence and its rejected alternatives live in the plan document. **TS-0 lands that
-document in the repository and corrects it first**; until then it exists only in the owner's local
-`OUT/test-redesign-2026-09-13/plan-v3.md`. Every child is derived from that document. Do not
+The design, its evidence and its rejected alternatives live in the plan document. It is
+`docs/assets/test-system/implementation/plan.md`, landed and corrected in #1817, alongside
+`epic.md`, the ten subsystem surveys and the seven reviews it rests on. Every child is derived from that document. Do not
 re-derive the design here, and do not implement a section that has no open child.
 
 ## How this epic was produced
@@ -64,16 +64,40 @@ manifest from 317 frames to 263, the sweep from 233 simulator launches to 196. T
 still real, but its size is unproven at the new shape. One figure moved the other way: the golden
 manifest changed 24 times in three days, so the sweep's churn argument is stronger, not weaker.
 
-## The one open design question
+## Settled: share the frame seam, keep the hosts
 
-The plan dropped a shared host-side application harness, partly because "the simulator uses folder
-stores", which is no longer true, and partly because the assembly looked unstable. There are now
-four hand-written copies of it: `apps/obc-sim`, `apps/obc-web-demo`, `apps/obc-ios-host` and the
-board. `HostLoop::execute` has also since been split internally into `serve_effects` and a free
-`deliver`, which was the plan's stated reason for calling a shared harness a production change.
+The plan decided against a shared host-side application assembly. That decision was made on three
+reasons which have all since stopped holding: it claimed the simulator's storage differs, which is
+untrue; it claimed the assembly was not stable enough to share, but a fourth copy has since been
+written by hand and is driven by its own tests in about twenty lines; and it claimed sharing would
+force a change to `HostLoop::execute`, which has since been split into `serve_effects` and a free
+`deliver` for unrelated reasons.
 
-**Decide this with the owner before TS-E opens.** Do not let an implementer settle it inside
-another child. Either outcome is acceptable; an unrecorded drift into a fifth copy is not.
+**The owner's decision, 2026-09-16: extract only the part that is provably identical in every host,
+and leave everything host-specific alone.** Verified against source before adopting.
+
+Extract into `obc-host-core`, beside the existing `photo::Preparer`, which is the precedent for
+shared host frame machinery:
+
+- The render pair: `App::render_scene_map_photo_timed` followed by `App::render_overlay`, with the
+  shared `rgb565_to_device64` conversion. `apps/obc-web-demo` and `apps/obc-ios-host` inline this
+  identically, comments included; `apps/obc-sim/src/map_file.rs` has already factored the same pair
+  into a local helper, which collapses into the shared one.
+- The render-on-demand predicate, `plan.render.map || plan.render.overlay || !ready ||
+  app.photo_pending()`, identical in the web demo and the iPhone host.
+- The re-open-active-route step that must run before rendering, because the executor may have
+  committed new geometry under the frame.
+- The single-loop hold-cancel consumption, `app.take_hold_cancel()`, identical in both and carrying
+  the same rule.
+
+Do not extract, and do not let this grow to cover: the pacing and clock source, which is a display
+link, a browser animation frame and a replay player respectively; sensors; store and platform
+types; the `pass` and `execute` argument lists, which genuinely differ per host; or the board, which
+is asynchronous `no_std` and shares nothing here.
+
+The test of whether this stayed narrow is simple. If the shared piece acquires a switch, a mode or a
+capability flag to serve a second caller, it has become the framework this project does not want.
+Stop and put that behaviour back in the host that needs it.
 
 ## Existing owners to reuse
 
@@ -96,15 +120,16 @@ refined against current source, before implementation starts.
 
 | ID | Deliverable | Depends on |
 | --- | --- | --- |
-| TS-0 | Land the plan document under `docs/assets/test-system/implementation/`, apply every correction above, delete the dead weather sections, and re-take the quoted measurements at the current shape | — |
-| TS-A | One ordinary integration target per package, with the allocator and `fixtures.*` targets carved by name; local runner on nextest; move `COPERNICUS_ATTRIBUTION` and drop the app's `obc-dem` dev-dependency | TS-0 |
+| TS-0 | **Done in #1817.** Plan document landed under `docs/assets/test-system/implementation/` with every correction above applied in place | — |
+| TS-A | Re-take the build measurements at the current shape, then one ordinary integration target per package, with the allocator and `fixtures.*` targets carved by name; local runner on nextest; move `COPERNICUS_ATTRIBUTION` and drop the app's `obc-dem` dev-dependency | — |
 | TS-B | Execution routes: fixture-gated and ignored tests assigned, CI job scripts extracted, sweep and builder pytest off the Rust test job's serial path, guard jobs merged, llvm-cov cost measured | TS-A |
 | TS-C | Replace registry discovery with the explicit selection plan, including both live `suite_registry.py` call sites; migrate its tests; switch local and CI callers in one cutover; delete the superseded responsibilities | TS-B |
 | TS-D | `host/obc-flat-device`: the real engine and store behind a bounded adapter, native plus wasm; port the TypeScript flow suites; remove `MockDevice` | TS-B |
-| TS-E | The missing composition checks: assembled map through the card to a rendered App frame; interrupted recording through recovery and GET to GPX; the builder browser assembly and download journey; captured waypoint-bearing provider imports | TS-B, TS-D, and the harness decision |
+| TS-G | Extract the shared frame seam above into `obc-host-core`; collapse the simulator's local helper and both inlined copies onto it | TS-A; lands before TS-E |
+| TS-E | The missing composition checks: assembled map through the card to a rendered App frame; interrupted recording through recovery and GET to GPX; the builder browser assembly and download journey; captured waypoint-bearing provider imports | TS-B, TS-D, TS-G |
 | TS-F | Remove dead infrastructure, finish policy and release routes, update contributor and testing documentation | TS-C, TS-D, TS-E |
 
-TS-A and TS-B are the measured wins and carry no design risk. TS-C is the only step that changes how
+TS-G is a production refactor, not a test change, and carries its own acceptance: every host renders the same frames it rendered before, and the shared piece has no per-host switch. TS-A and TS-B are the measured wins and carry no design risk. TS-C is the only step that changes how
 CI decides anything; it lands as one cutover, never as two selectors running side by side.
 
 ## Shared implementation rules
